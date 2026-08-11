@@ -84,6 +84,85 @@ constexpr int variant_level(int v) {
     return kMaxLevel - variant_terrain_lod(v);
 }
 
+// ---------------------------------------------------------------------------
+// THE TILE COORDINATE RANGE (volumetric-sectors M1, design §3.1 and risk §7.8)
+//
+// The nested key used to be `4 bits level | 30 tx | 30 tz` with zero spare
+// bits, which is exactly why the third axis could not simply be added: there
+// was nowhere to put it. The repack to `4 level | 20 ty | 20 tx | 20 tz` buys
+// Y by spending range, and the trade is worth stating in numbers rather than
+// asserting is fine:
+//
+//   * 20 bits two's complement is [-524288, +524287] TILES per axis. At the
+//     smallest S_0 any world in this repo authors (16 m) that is +-8,388 km;
+//     at StreamMountain's and StreamCaverns' 64 m it is +-33,550 km. The
+//     largest streamed reach anywhere in the repo is StreamMountain's ~10 km,
+//     so the bound is roughly 3000x the demonstrated need.
+//   * The reduction from 30 bits is real (a factor of 1024 per axis) and it is
+//     therefore ASSERTED at world load rather than assumed -- see
+//     make_streaming_profile in matter_engine.cpp, which checks the authored
+//     reach against sector_coord_fits() and refuses to pretend. A silent
+//     overflow here would not crash; it would alias two distant tiles onto one
+//     key and stream one of them into the other's footprint, which is the
+//     worst possible failure to debug from the outside.
+//   * If the bound is ever genuinely a problem the fallback is a 16-byte
+//     struct key (design §8), not more folding. Not worth it now.
+//
+// Encoding is plain two's complement masked to the field width -- "offset
+// encoded" in the design's phrasing -- and nested_unkey sign-extends it back.
+// Three of every four quadrants have negative coordinates, so the round trip on
+// negatives is not an edge case, it is the common case.
+// ---------------------------------------------------------------------------
+constexpr int     kSectorCoordBits = 20;
+constexpr uint64_t kSectorCoordMask = (1ull << kSectorCoordBits) - 1ull;
+constexpr int64_t kSectorCoordMin = -(int64_t(1) << (kSectorCoordBits - 1));
+constexpr int64_t kSectorCoordMax =  (int64_t(1) << (kSectorCoordBits - 1)) - 1;
+constexpr bool sector_coord_fits(int64_t t) {
+    return t >= kSectorCoordMin && t <= kSectorCoordMax;
+}
+
+// The nested tile key: `4 bits level | 20 ty | 20 tx | 20 tz`.
+//
+// It was `4 | 30 tx | 30 tz` with ZERO spare bits, and that is the whole reason
+// the third axis needed a repack rather than an addition: there was nothing
+// left to spend. tz keeps the low field so the low-order behaviour of the
+// hashes built on this moves as little as it can; the ordering is otherwise
+// arbitrary.
+//
+// Y IS ALWAYS 0 IN M1 -- every call site in sector_streamer.cpp passes
+// SectorStreamer::kFlatTy. The field is here so the identity is right before
+// anything depends on it.
+//
+// At namespace scope, not inside SectorStreamer, for two reasons that are the
+// same reason: the format is a property of the streaming coordinate system
+// rather than of a streamer instance. matter_engine.cpp's world-load range
+// check reads the constants above, and the round-trip test reads these -- and a
+// key format whose only test is "streaming still works" is a sign-extension bug
+// waiting to surface a week later as inexplicable tiles.
+inline uint64_t nested_key(int level, int64_t tx, int64_t ty, int64_t tz) {
+    return (uint64_t(uint32_t(level) & 0xFu) << 60) |
+           ((uint64_t(ty) & kSectorCoordMask) << 40) |
+           ((uint64_t(tx) & kSectorCoordMask) << 20) |
+           (uint64_t(tz) & kSectorCoordMask);
+}
+inline void nested_unkey(uint64_t k, int& level, int64_t& tx, int64_t& ty,
+                         int64_t& tz) {
+    level = int((k >> 60) & 0xFu);
+    // Sign-extend the 20-bit field. Mirrors the sext30 this replaced, and is
+    // load-bearing for exactly the same reason: three of the four quadrants
+    // around any origin have negative tile indices, so a key that did not
+    // round-trip them would not be a rare failure, it would be the usual one.
+    const auto sext20 = [](uint64_t v) -> int64_t {
+        const int64_t s = int64_t(v & kSectorCoordMask);
+        return (s & (int64_t(1) << (kSectorCoordBits - 1)))
+                   ? s - (int64_t(1) << kSectorCoordBits)
+                   : s;
+    };
+    ty = sext20(k >> 40);
+    tx = sext20(k >> 20);
+    tz = sext20(k);
+}
+
 struct Config {
     float sector_size = 16.0f;
     // Innermost first. A sector's desired rung = the rung of the first ring
@@ -177,15 +256,30 @@ struct Config {
 // editor's LOD Settings query) call it to display the same resolved values.
 void resolve_terrain_defaults(Config& cfg);
 
-struct SectorRequest { int64_t tx, tz; int rung; };
-struct Eviction      { int64_t tx, tz; int rung; };
+// A tile's identity as it crosses the streamer's public boundary.
+//
+// `ty` is the VERTICAL tile index, added by volumetric-sectors M1. It is
+// carried, compared, hashed and mixed everywhere `tx`/`tz` are -- and in M1 it
+// is always 0, because the descent below is still the XZ quadtree. M3 is what
+// makes Y a real streaming axis; M1 exists so that when it does, the identity
+// plumbing is already right and the diff is the selection code alone.
+struct SectorRequest { int64_t tx, ty, tz; int rung; };
+struct Eviction      { int64_t tx, ty, tz; int rung; };
 
 class SectorStreamer {
 public:
     explicit SectorStreamer(Config cfg);
 
     // Recompute the desired set for this anchor position (call once per tick).
-    void update(float anchor_x, float anchor_z);
+    //
+    // ANCHOR Y IS STORED AND NOT USED (volumetric-sectors M1). Every distance
+    // helper below -- sector_dist, tile_centre_dist, tile_near_dist -- is still
+    // a 2-D XZ distance, so passing a camera altitude changes nothing about
+    // which tiles are selected. It is threaded now because the alternative is
+    // to thread it in M3 alongside the change that makes bands spheres instead
+    // of cylinders, where an anchor plumbing mistake would be indistinguishable
+    // from a selection-rule mistake.
+    void update(float anchor_x, float anchor_y, float anchor_z);
 
     // Next bake to launch: holes (nothing resident) before upgrades, nearest
     // first within each class. Returns false when nothing is needed or
@@ -197,15 +291,16 @@ public:
     // (anchor moved on / clear() happened) — the caller must discard the
     // artifact WITHOUT publishing. On an accepted upgrade, the previously
     // resident rung is queued as an eviction (publish-then-evict: no hole).
-    bool on_published(int64_t tx, int64_t tz, int rung);
+    bool on_published(int64_t tx, int64_t ty, int64_t tz, int rung);
 
     // Bake failed: drop from inflight, cool down before re-requesting.
-    void on_failed(int64_t tx, int64_t tz, int rung);
+    void on_failed(int64_t tx, int64_t ty, int64_t tz, int rung);
 
     // Caller could not retain bookkeeping for a request it just received.
     // Drop that exact inflight marker without treating it as a bake failure or
     // applying cooldown. Returns false when the tag is no longer inflight.
-    bool cancel_request(int64_t tx, int64_t tz, int rung) noexcept;
+    bool cancel_request(int64_t tx, int64_t ty, int64_t tz,
+                        int rung) noexcept;
 
     // Drain sectors to unpublish + release (each was previously accepted).
     std::vector<Eviction> take_evictions();
@@ -248,39 +343,31 @@ private:
         tz = int64_t(int32_t(uint32_t(k & 0xFFFFFFFFu)));
     }
 
-    // Nested key: 4 bits level, then 30 bits each of tx/tz -- +-2^29 tiles per
-    // axis, which is +-34,000 km at a 64 m level 0. The two-axis pack above
-    // cannot carry a level, and the two modes never share a streamer instance,
-    // so the pair below dispatches on the flag rather than trying to unify.
-    static uint64_t nested_key(int level, int64_t tx, int64_t tz) {
-        return (uint64_t(uint32_t(level) & 0xFu) << 60) |
-               ((uint64_t(tx) & 0x3FFFFFFFull) << 30) |
-               (uint64_t(tz) & 0x3FFFFFFFull);
+    // THE M1 FLAT-Y MARKER. Every nested_key() call in sector_streamer.cpp that
+    // names a tile the DESCENT chose passes this rather than a literal 0, so
+    // "where does the streamer still assume the world is one tile tall?" is a
+    // single grep. M3 replaces these with real vertical indices; nothing else
+    // about the key changes then.
+    static constexpr int64_t kFlatTy = 0;
+    uint64_t skey(int level, int64_t tx, int64_t ty, int64_t tz) const {
+        return cfg_.nested_sectors ? nested_key(level, tx, ty, tz)
+                                   : key(tx, tz);
     }
-    static void nested_unkey(uint64_t k, int& level, int64_t& tx, int64_t& tz) {
-        level = int((k >> 60) & 0xFu);
-        const auto sext30 = [](uint64_t v) -> int64_t {
-            int64_t s = int64_t(v & 0x3FFFFFFFull);
-            return (s & 0x20000000ll) ? s - 0x40000000ll : s;
-        };
-        tx = sext30(k >> 30);
-        tz = sext30(k);
-    }
-    uint64_t skey(int level, int64_t tx, int64_t tz) const {
-        return cfg_.nested_sectors ? nested_key(level, tx, tz) : key(tx, tz);
-    }
-    void sunkey(uint64_t k, int& level, int64_t& tx, int64_t& tz) const {
-        if (cfg_.nested_sectors) { nested_unkey(k, level, tx, tz); return; }
+    void sunkey(uint64_t k, int& level, int64_t& tx, int64_t& ty,
+                int64_t& tz) const {
+        if (cfg_.nested_sectors) { nested_unkey(k, level, tx, ty, tz); return; }
         level = 0;
+        ty = 0;   // the uniform grid is a single row of columns, by definition
         unkey(k, tx, tz);
     }
-    // The key an EXTERNAL (tx, tz, rung) triple names. This is why level needs
-    // no place in SectorRequest/Eviction: it is already inside the packed
+    // The key an EXTERNAL (tx, ty, tz, rung) tuple names. This is why level
+    // needs no place in SectorRequest/Eviction: it is already inside the packed
     // variant, so a publish or a failure finds its own entry with no new field
     // and no coordinator change.
-    uint64_t key_for(int64_t tx, int64_t tz, int rung) const {
-        return cfg_.nested_sectors ? nested_key(variant_level(rung), tx, tz)
-                                   : key(tx, tz);
+    uint64_t key_for(int64_t tx, int64_t ty, int64_t tz, int rung) const {
+        return cfg_.nested_sectors
+                   ? nested_key(variant_level(rung), tx, ty, tz)
+                   : key(tx, tz);
     }
 
     struct KeyHash {
@@ -291,6 +378,14 @@ private:
     std::vector<Eviction> evictions_;
     int inflight_ = 0;
     float last_anchor_x_ = 0.0f;
+    // STORED, NEVER READ (M1). Nothing below consults it: sector_dist,
+    // tile_centre_dist and tile_near_dist are XZ distances and the descent is
+    // an XZ quadtree, so a camera 900 m underground selects exactly the tiles
+    // it selected before this field existed. M3's octree is what starts reading
+    // it. Kept rather than dropped at the boundary so that the anchor's route
+    // -- WorldTransform m[7] -> submit_anchor -> AnchorSample -> here -- is
+    // proven end to end before any selection rule depends on it.
+    float last_anchor_y_ = 0.0f;
     float last_anchor_z_ = 0.0f;
 
     // desired_rung for a given anchor distance
@@ -361,7 +456,7 @@ private:
     void scan_subtree(int level, int64_t tx, int64_t tz,
                       bool& any_desired, bool& all_resident) const;
 
-    void update_nested(float anchor_x, float anchor_z);
+    void update_nested(float anchor_x, float anchor_y, float anchor_z);
     // Quadtree descent: mark (level, tx, tz) desired or recurse into its four
     // children. `finer_resident` holds the ancestors of every resident tile, so
     // a tile that is currently SPLIT can be told apart from one that is not --

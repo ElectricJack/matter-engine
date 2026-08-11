@@ -15,6 +15,7 @@ bool same_request(const TaggedRequest& lhs, const TaggedRequest& rhs) {
     return lhs.owner == rhs.owner && lhs.generation == rhs.generation &&
            lhs.issuance == rhs.issuance &&
            lhs.sector.tx == rhs.sector.tx &&
+           lhs.sector.ty == rhs.sector.ty &&
            lhs.sector.tz == rhs.sector.tz &&
            lhs.sector.rung == rhs.sector.rung;
 }
@@ -23,6 +24,7 @@ bool same_eviction(const TaggedEviction& lhs, const TaggedEviction& rhs) {
     return lhs.owner == rhs.owner && lhs.generation == rhs.generation &&
            lhs.issuance == rhs.issuance &&
            lhs.sector.tx == rhs.sector.tx &&
+           lhs.sector.ty == rhs.sector.ty &&
            lhs.sector.tz == rhs.sector.tz &&
            lhs.sector.rung == rhs.sector.rung;
 }
@@ -31,6 +33,7 @@ bool same_sector(
     const TaggedRequest& request,
     const matter_stream::Eviction& eviction) {
     return request.sector.tx == eviction.tx &&
+           request.sector.ty == eviction.ty &&
            request.sector.tz == eviction.tz &&
            request.sector.rung == eviction.rung;
 }
@@ -296,13 +299,14 @@ void Coordinator::set_profile(
     ++profile_revision_;
 }
 
-void Coordinator::submit_anchor(flecs::entity_t owner, float x, float z) {
+void Coordinator::submit_anchor(flecs::entity_t owner, float x, float y,
+                                float z) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (owner == 0 || intended_owner_ != owner) return;
     const uint64_t generation = published_snapshot_.owner == owner
         ? published_snapshot_.status.generation
         : 0;
-    intended_anchor_ = AnchorSample{owner, generation, x, z};
+    intended_anchor_ = AnchorSample{owner, generation, x, y, z};
 }
 
 void Coordinator::clear_anchor(flecs::entity_t owner) {
@@ -413,6 +417,7 @@ void Coordinator::invalidate_worker_publications() {
             request.issuance,
             matter_stream::Eviction{
                 request.sector.tx,
+                request.sector.ty,
                 request.sector.tz,
                 request.sector.rung}});
     }
@@ -508,7 +513,8 @@ void Coordinator::worker_step(
             streamer_ = std::make_unique<matter_stream::SectorStreamer>(*profile);
             worker_generation_ = allocate_generation();
         }
-        streamer_->update(worker_anchor_->x, worker_anchor_->z);
+        streamer_->update(worker_anchor_->x, worker_anchor_->y,
+                          worker_anchor_->z);
     }
 
     for (const auto& acknowledgement : acknowledgements) {
@@ -549,7 +555,7 @@ void Coordinator::worker_step(
         }
         if (acknowledgement.published) {
             if (streamer_->on_published(
-                    sector.tx, sector.tz, sector.rung)) {
+                    sector.tx, sector.ty, sector.tz, sector.rung)) {
                 resident_requests_.push_back(completed);
             } else if (began_publication) {
                 pending_evictions_.push_back(TaggedEviction{
@@ -557,10 +563,10 @@ void Coordinator::worker_step(
                     completed.generation,
                     completed.issuance,
                     matter_stream::Eviction{
-                        sector.tx, sector.tz, sector.rung}});
+                        sector.tx, sector.ty, sector.tz, sector.rung}});
             }
         } else {
-            streamer_->on_failed(sector.tx, sector.tz, sector.rung);
+            streamer_->on_failed(sector.tx, sector.ty, sector.tz, sector.rung);
         }
     }
 
@@ -612,7 +618,7 @@ bool Coordinator::next_request(
             erase_request(publication_candidates_);
             erase_request(issued_requests_);
             streamer_->cancel_request(
-                sector.tx, sector.tz, sector.rung);
+                sector.tx, sector.ty, sector.tz, sector.rung);
             return false;
         }
     } catch (...) {

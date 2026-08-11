@@ -16,7 +16,7 @@ using namespace matter_stream;
 template <typename F>
 static void service_all(SectorStreamer& s, F cb) {
     SectorRequest q;
-    while (s.next_request(q)) { cb(q); s.on_published(q.tx, q.tz, q.rung); }
+    while (s.next_request(q)) { cb(q); s.on_published(q.tx, q.ty, q.tz, q.rung); }
 }
 static void service_all(SectorStreamer& s) { service_all(s, [](const SectorRequest&){}); }
 
@@ -25,10 +25,10 @@ static void service_all(SectorStreamer& s) { service_all(s, [](const SectorReque
 static std::vector<Eviction> settle(SectorStreamer& s, float x, float z) {
     std::vector<Eviction> evs;
     for (int i = 0; i < 10000; ++i) {           // ~8 publishes per update
-        s.update(x, z);
+        s.update(x, 0.0f, z);
         SectorRequest q;
         bool any = false;
-        while (s.next_request(q)) { any = true; s.on_published(q.tx, q.tz, q.rung); }
+        while (s.next_request(q)) { any = true; s.on_published(q.tx, q.ty, q.tz, q.rung); }
         auto e = s.take_evictions();
         evs.insert(evs.end(), e.begin(), e.end());
         if (!any) break;
@@ -39,6 +39,63 @@ static std::vector<Eviction> settle(SectorStreamer& s, float x, float z) {
 int main() {
     Config cfg;   // defaults: rings 48/120/300/800, hysteresis 16, inflight 8
 
+    // --- the nested key round trip (volumetric-sectors M1) -------------------
+    //
+    // FIRST, deliberately. The key was repacked from `4 level | 30 tx | 30 tz`
+    // to `4 level | 20 ty | 20 tx | 20 tz` to make room for the vertical axis,
+    // and a sign-extension mistake in that repack does not announce itself: it
+    // produces a key that is merely WRONG, so a tile at (-1, -1) answers for
+    // some tile a million cells away, and the symptom surfaces days later as
+    // terrain appearing in the wrong place under a moving camera. Every other
+    // block in this file runs the streamer at positive-ish coordinates and
+    // would pass with a broken sext20.
+    //
+    // So: exhaustive-in-spirit over the cases that can break -- both signs on
+    // all three axes, the exact 20-bit extremes, and every level -- plus the
+    // distinctness the whole map depends on.
+    {
+        const int64_t probes[] = {
+            0, 1, -1, 2, -2, 1023, -1024, 65535, -65536,
+            kSectorCoordMax, kSectorCoordMin,
+            kSectorCoordMax - 1, kSectorCoordMin + 1,
+        };
+        int checked = 0;
+        for (int level = 0; level <= kMaxLevel; ++level) {
+            for (int64_t tx : probes) {
+                for (int64_t ty : probes) {
+                    for (int64_t tz : probes) {
+                        const uint64_t k = nested_key(level, tx, ty, tz);
+                        int rl = -1; int64_t rx = 0, ry = 0, rz = 0;
+                        nested_unkey(k, rl, rx, ry, rz);
+                        CHECK(rl == level && rx == tx && ry == ty && rz == tz,
+                              "nested key round trip");
+                        ++checked;
+                    }
+                }
+            }
+        }
+        // Distinctness on each axis independently -- a mask that was one bit
+        // too wide would round-trip fine and still collide with its neighbour
+        // field, which is the failure the round trip alone cannot see.
+        CHECK(nested_key(0, 1, 0, 0) != nested_key(0, 0, 1, 0), "tx vs ty");
+        CHECK(nested_key(0, 1, 0, 0) != nested_key(0, 0, 0, 1), "tx vs tz");
+        CHECK(nested_key(0, 0, 1, 0) != nested_key(0, 0, 0, 1), "ty vs tz");
+        CHECK(nested_key(1, 0, 0, 0) != nested_key(0, 0, 0, 0), "level");
+        CHECK(nested_key(0, -1, 0, 0) != nested_key(0, 0, -1, 0),
+              "negative tx vs ty");
+        // The wrap is exactly one past the range, not somewhere convenient.
+        CHECK(nested_key(0, kSectorCoordMax + 1, 0, 0) ==
+                  nested_key(0, kSectorCoordMin, 0, 0),
+              "20-bit wrap lands where the range check says it does");
+        CHECK(sector_coord_fits(kSectorCoordMax) &&
+                  sector_coord_fits(kSectorCoordMin) &&
+                  !sector_coord_fits(kSectorCoordMax + 1) &&
+                  !sector_coord_fits(kSectorCoordMin - 1),
+              "sector_coord_fits agrees with the packing");
+        std::printf("  key round trip: %d (level, tx, ty, tz) tuples, "
+                    "signs and 20-bit extremes on all three axes\n", checked);
+    }
+
     // --- desired rung by distance -------------------------------------------
     {
         SectorStreamer s(cfg);
@@ -47,7 +104,7 @@ int main() {
         int rung_00 = -1, rung_40 = -1, rung_10_0 = -1, rung_30_0 = -1;
         bool saw_60_0 = false;
         for (int i = 0; i < 10000; ++i) {
-            s.update(8.0f, 8.0f);        // camera at centre of sector (0,0)
+            s.update(8.0f, 0.0f, 8.0f);        // camera at centre of sector (0,0)
             bool any = false;
             service_all(s, [&](const SectorRequest& q) {
                 any = true;
@@ -69,7 +126,7 @@ int main() {
     // --- inflight cap + holes-before-upgrades --------------------------------
     {
         SectorStreamer s(cfg);
-        s.update(8.0f, 8.0f);
+        s.update(8.0f, 0.0f, 8.0f);
         SectorRequest q;
         int got = 0;
         while (s.next_request(q)) ++got;
@@ -90,7 +147,7 @@ int main() {
     {
         SectorStreamer s(cfg);
         settle(s, 8.0f, 8.0f);
-        s.update(8.0f + 8.0f, 8.0f);      // move less than hysteresis
+        s.update(8.0f + 8.0f, 0.0f, 8.0f);      // move less than hysteresis
         auto ev = s.take_evictions();
         CHECK(ev.empty(), "no eviction within hysteresis");
     }
@@ -111,9 +168,9 @@ int main() {
 
         auto oscillate = [&](int iters, std::vector<Eviction>* sink) {
             for (int b = 0; b < iters; ++b) {
-                s.update(8.0f + (b % 2 == 0 ? 7.0f : -7.0f), 8.0f);   // ±7 < hysteresis 16
+                s.update(8.0f + (b % 2 == 0 ? 7.0f : -7.0f), 0.0f, 8.0f);   // ±7 < hysteresis 16
                 SectorRequest q;
-                while (s.next_request(q)) s.on_published(q.tx, q.tz, q.rung);
+                while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
                 auto ev = s.take_evictions();
                 if (sink) sink->insert(sink->end(), ev.begin(), ev.end());
             }
@@ -130,37 +187,37 @@ int main() {
     // --- late publish rejected ------------------------------------------------
     {
         SectorStreamer s(cfg);
-        s.update(8.0f, 8.0f);
+        s.update(8.0f, 0.0f, 8.0f);
         SectorRequest q;
         CHECK(s.next_request(q), "got a request");
-        s.update(8.0f + 5000.0f, 8.0f);   // camera long gone
-        CHECK(!s.on_published(q.tx, q.tz, q.rung), "stale publish rejected");
+        s.update(8.0f + 5000.0f, 0.0f, 8.0f);   // camera long gone
+        CHECK(!s.on_published(q.tx, q.ty, q.tz, q.rung), "stale publish rejected");
     }
     // --- fail cooldown ---------------------------------------------------------
     {
         Config c2 = cfg; c2.fail_cooldown_updates = 10; c2.max_inflight = 1;
         SectorStreamer s(c2);
-        s.update(8.0f, 8.0f);
+        s.update(8.0f, 0.0f, 8.0f);
         SectorRequest q;
         CHECK(s.next_request(q), "first request");
-        int64_t fx = q.tx, fz = q.tz; int fr = q.rung;
-        s.on_failed(fx, fz, fr);
+        int64_t fx = q.tx, fy = q.ty, fz = q.tz; int fr = q.rung;
+        s.on_failed(fx, fy, fz, fr);
         bool re_requested_early = false;
         for (int i = 0; i < 9; ++i) {
-            s.update(8.0f, 8.0f);
+            s.update(8.0f, 0.0f, 8.0f);
             if (s.next_request(q)) {
                 if (q.tx == fx && q.tz == fz && q.rung == fr) re_requested_early = true;
-                s.on_published(q.tx, q.tz, q.rung);   // keep the queue moving
+                s.on_published(q.tx, q.ty, q.tz, q.rung);   // keep the queue moving
                 s.take_evictions();
             }
         }
         CHECK(!re_requested_early, "failed sector cools down");
         bool re_requested_later = false;
         for (int i = 0; i < 5000 && !re_requested_later; ++i) {
-            s.update(8.0f, 8.0f);
+            s.update(8.0f, 0.0f, 8.0f);
             if (s.next_request(q)) {
                 if (q.tx == fx && q.tz == fz && q.rung == fr) re_requested_later = true;
-                else { s.on_published(q.tx, q.tz, q.rung); s.take_evictions(); }
+                else { s.on_published(q.tx, q.ty, q.tz, q.rung); s.take_evictions(); }
             }
         }
         CHECK(re_requested_later, "failed sector retried after cooldown");
@@ -179,11 +236,11 @@ int main() {
     // --- clear(): late in-flight publish cannot restore residency ---------------
     {
         SectorStreamer s(cfg);
-        s.update(8.0f, 8.0f);
+        s.update(8.0f, 0.0f, 8.0f);
         SectorRequest q;
         CHECK(s.next_request(q), "clear late-publish test has an inflight request");
         s.clear();
-        CHECK(!s.on_published(q.tx, q.tz, q.rung),
+        CHECK(!s.on_published(q.tx, q.ty, q.tz, q.rung),
               "clear rejects a late publish");
         CHECK(s.resident_count() == 0 && s.inflight_count() == 0,
               "late publish after clear leaves no resident or inflight sectors");
@@ -194,7 +251,7 @@ int main() {
         size_t peak = 0;
         for (int step = 0; step < 500; ++step) {
             float x = 8.0f + step * 10.0f;   // 5,000 units of flight
-            s.update(x, 8.0f);
+            s.update(x, 0.0f, 8.0f);
             service_all(s);
             s.take_evictions();
             peak = std::max(peak, s.resident_count());
@@ -233,11 +290,11 @@ int main() {
             return (long long)((tx << 20) ^ (tz & 0xFFFFF));
         };
         for (int i = 0; i < 20000; ++i) {
-            s.update(32.0f, 32.0f);
+            s.update(32.0f, 0.0f, 32.0f);
             SectorRequest q; bool any = false;
             while (s.next_request(q)) {
                 any = true;
-                if (s.on_published(q.tx, q.tz, q.rung))
+                if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     final_variant[skey(q.tx, q.tz)] = q.rung;
             }
             s.take_evictions();
@@ -287,7 +344,7 @@ int main() {
         // Legacy path untouched: same rings without the flag produce bare rungs.
         Config bare = tcfg; bare.terrain_lod_enabled = false;
         SectorStreamer s2(bare);
-        s2.update(32.0f, 32.0f);
+        s2.update(32.0f, 0.0f, 32.0f);
         SectorRequest q;
         CHECK(s2.next_request(q), "legacy streamer still requests");
         CHECK(!variant_packed(q.rung) && q.rung >= 0 && q.rung <= 2,
@@ -321,11 +378,11 @@ int main() {
     auto settle_nested = [](SectorStreamer& s, float x, float z) {
         std::map<std::tuple<int,long long,long long>, int> live;
         for (int i = 0; i < 20000; ++i) {
-            s.update(x, z);
+            s.update(x, 0.0f, z);
             SectorRequest q; bool any = false;
             while (s.next_request(q)) {
                 any = true;
-                if (s.on_published(q.tx, q.tz, q.rung))
+                if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     live[{variant_level(q.rung), (long long)q.tx,
                           (long long)q.tz}] = q.rung;
             }
@@ -417,9 +474,9 @@ int main() {
         // different worlds rather than two ways of tiling one.
         SectorStreamer uni(u);
         for (int i = 0; i < 20000; ++i) {
-            uni.update(3.2f, 3.2f);
+            uni.update(3.2f, 0.0f, 3.2f);
             SectorRequest q; bool any = false;
-            while (uni.next_request(q)) { any = true; uni.on_published(q.tx, q.tz, q.rung); }
+            while (uni.next_request(q)) { any = true; uni.on_published(q.tx, q.ty, q.tz, q.rung); }
             uni.take_evictions();
             if (!any && i > 2) break;
         }
@@ -558,9 +615,9 @@ int main() {
 
         auto oscillate = [&](int iters, std::vector<Eviction>* sink) {
             for (int i = 0; i < iters; ++i) {
-                s.update(31.0f + (i % 2 ? 0.5f : -0.5f), 0.0f);  // < hysteresis 2
+                s.update(31.0f + (i % 2 ? 0.5f : -0.5f), 0.0f, 0.0f);  // < hysteresis 2
                 SectorRequest q;
-                while (s.next_request(q)) s.on_published(q.tx, q.tz, q.rung);
+                while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
                 auto ev = s.take_evictions();
                 if (sink) sink->insert(sink->end(), ev.begin(), ev.end());
             }
@@ -592,10 +649,10 @@ int main() {
         int splits = 0;
         std::map<std::tuple<int,long long,long long>, int> pub;
         for (int step = 0; step < 40; ++step) {
-            s.update(400.0f - step * 10.0f, 0.0f);
+            s.update(400.0f - step * 10.0f, 0.0f, 0.0f);
             SectorRequest q;
             while (s.next_request(q)) {
-                s.on_published(q.tx, q.tz, q.rung);
+                s.on_published(q.tx, q.ty, q.tz, q.rung);
                 pub[{variant_level(q.rung), (long long)q.tx, (long long)q.tz}]++;
             }
             for (const auto& e : s.take_evictions()) {
@@ -634,10 +691,10 @@ int main() {
         // this needs is the set.
         std::map<std::tuple<int,long long,long long>, int> resident;
         auto settle_at = [&](float x, float z, int budget) {
-            s.update(x, z);
+            s.update(x, 0.0f, z);
             SectorRequest q;
             for (int i = 0; i < budget && s.next_request(q); ++i)
-                if (s.on_published(q.tx, q.tz, q.rung))
+                if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     resident[{variant_level(q.rung), (long long)q.tx,
                               (long long)q.tz}] = q.rung;
             for (const auto& e : s.take_evictions()) {
@@ -725,10 +782,10 @@ int main() {
         std::map<std::tuple<int,long long,long long>, int> resident;
         int ev_mismatched = 0, ev_unknown = 0;
         auto settle_at = [&](float x, float z, int budget) {
-            s.update(x, z);
+            s.update(x, 0.0f, z);
             SectorRequest q;
             for (int i = 0; i < budget && s.next_request(q); ++i)
-                if (s.on_published(q.tx, q.tz, q.rung))
+                if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     resident[{variant_level(q.rung), (long long)q.tx,
                               (long long)q.tz}] = q.rung;
             for (const auto& e : s.take_evictions()) {
@@ -848,9 +905,9 @@ int main() {
         // Settle far out, so the tiles around the anchor are coarse and a move
         // inward forces splits.
         for (int i = 0; i < 4000; ++i) {
-            s.update(300.0f, 0.0f);
+            s.update(300.0f, 0.0f, 0.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.tz, q.rung);
+            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
             s.take_evictions();
         }
         // Move in and refuse exactly one request forever.
@@ -858,7 +915,7 @@ int main() {
         int64_t vtx = 0, vtz = 0; int vrung = 0;
         int parent_evictions_while_failing = 0;
         for (int i = 0; i < 400; ++i) {
-            s.update(120.0f, 0.0f);
+            s.update(120.0f, 0.0f, 0.0f);
             SectorRequest q;
             while (s.next_request(q)) {
                 if (!have_victim && variant_level(q.rung) <= 3) {
@@ -867,10 +924,10 @@ int main() {
                 }
                 if (have_victim && q.tx == vtx && q.tz == vtz &&
                     q.rung == vrung) {
-                    s.on_failed(q.tx, q.tz, q.rung);      // never succeeds
+                    s.on_failed(q.tx, 0, q.tz, q.rung);      // never succeeds
                     continue;
                 }
-                s.on_published(q.tx, q.tz, q.rung);
+                s.on_published(q.tx, q.ty, q.tz, q.rung);
             }
             // While the victim is missing, no tile whose footprint contains it
             // may be evicted -- that is the hole this prevents.
@@ -896,20 +953,20 @@ int main() {
     {
         SectorStreamer s(nested_cfg());
         for (int i = 0; i < 4000; ++i) {
-            s.update(0.0f, 0.0f);
+            s.update(0.0f, 0.0f, 0.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.tz, q.rung);
+            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
             s.take_evictions();
         }
         const size_t settled = s.resident_count();
         // Start a wave of splits by moving, then leave entirely without ever
         // servicing them.
-        s.update(200.0f, 0.0f);
-        s.update(5000.0f, 5000.0f);
+        s.update(200.0f, 0.0f, 0.0f);
+        s.update(5000.0f, 0.0f, 5000.0f);
         for (int i = 0; i < 4000; ++i) {
-            s.update(5000.0f, 5000.0f);
+            s.update(5000.0f, 0.0f, 5000.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.tz, q.rung);
+            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
             s.take_evictions();
         }
         printf("  nested groups: %zu resident at origin, %zu after leaving\n",
@@ -978,7 +1035,7 @@ int main() {
         std::map<std::pair<long long,long long>, std::vector<int>> col_seq;
 
         auto pump = [&](float x, float z, bool measure) {
-            s.update(x, z);
+            s.update(x, 0.0f, z);
             // Residency AS THE STREAMER SAW IT when it built this desired map:
             // publishes serviced below would otherwise let the model run ahead
             // of the decision being judged.
@@ -1007,7 +1064,7 @@ int main() {
                             r.deepest_wave, (int)col_seq[col].size());
                     }
                 }
-                if (s.on_published(q.tx, q.tz, q.rung))
+                if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     r.resident[{L, (long long)q.tx, (long long)q.tz}] = q.rung;
             }
             for (const auto& e : s.take_evictions()) {
@@ -1093,12 +1150,12 @@ int main() {
             std::vector<std::tuple<long long,long long,int>> trace;
             std::map<std::tuple<int,long long,long long>, int> live;
             for (int i = 0; i < 20000; ++i) {
-                s.update(3.2f, 3.2f);
+                s.update(3.2f, 0.0f, 3.2f);
                 SectorRequest q; bool any = false;
                 while (s.next_request(q)) {
                     any = true;
                     trace.push_back({q.tx, q.tz, q.rung});
-                    if (s.on_published(q.tx, q.tz, q.rung))
+                    if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                         live[{variant_level(q.rung), (long long)q.tx,
                               (long long)q.tz}] = q.rung;
                 }
@@ -1265,7 +1322,7 @@ int main() {
             int now = 0;
 
             auto pump = [&](float x, float z, int cap, bool measure) {
-                s.update(x, z);
+                s.update(x, 0.0f, z);
                 SectorRequest q;
                 bool any = false;
                 int n = 0;
@@ -1273,7 +1330,7 @@ int main() {
                     any = true; ++n;
                     if (measure) ++r.requests;
                     const int L = variant_level(q.rung);
-                    if (s.on_published(q.tx, q.tz, q.rung)) {
+                    if (s.on_published(q.tx, q.ty, q.tz, q.rung)) {
                         resident[{L, (long long)q.tx, (long long)q.tz}] = q.rung;
                         live[tkey(L, q.tx, q.tz)] = ++now;
                     }
@@ -1475,11 +1532,11 @@ int main() {
             SectorStreamer s(cfg);
             std::vector<std::tuple<long long,long long,int,int>> out;
             for (int step = 0; step < 60; ++step) {
-                s.update(32.0f + step * 25.0f, 32.0f);
+                s.update(32.0f + step * 25.0f, 0.0f, 32.0f);
                 SectorRequest q;
                 while (s.next_request(q)) {
                     out.push_back({q.tx, q.tz, q.rung, 0});
-                    s.on_published(q.tx, q.tz, q.rung);
+                    s.on_published(q.tx, q.ty, q.tz, q.rung);
                 }
                 for (const auto& e : s.take_evictions())
                     out.push_back({e.tx, e.tz, e.rung, 1});

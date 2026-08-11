@@ -1280,6 +1280,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
     $(TERRAIN_SRC) \
+    ../src/seam_weld.cpp \
     $(PF_CPP)
 
 GPU_MSL_CPP = \

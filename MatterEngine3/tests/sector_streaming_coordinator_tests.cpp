@@ -253,7 +253,7 @@ int main() {
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA),
               "streamer-transfer fault test owner attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto residents = drain_requests(coordinator);
         CHECK(residents.size() == 2,
@@ -311,7 +311,7 @@ int main() {
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA),
               "pending-transfer fault test owner attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto residents = drain_requests(coordinator);
         CHECK(residents.size() == 2,
@@ -599,7 +599,7 @@ int main() {
         CHECK(coordinator.attach(kOwnerA),
               "capacity regression attaches owner");
         coordinator.set_profile(&profile);
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
 
         struct RetainedCompletion {
@@ -674,7 +674,7 @@ int main() {
             CHECK(coordinator.attach(kOwnerA),
                   "tracking rollback test attaches owner");
             coordinator.set_profile(&profile);
-            coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+            coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
             coordinator.worker_step();
             const uint32_t baseline_inflight =
                 coordinator.snapshot().status.inflight_sectors;
@@ -725,7 +725,7 @@ int main() {
         auto profile = tiny_profile();
         CHECK(coordinator.attach(kOwnerA),
               "profile-readiness test attaches owner");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         activation.stage(profile);
         activation.fail(coordinator);
         coordinator.worker_step();
@@ -754,7 +754,7 @@ int main() {
         auto profile = tiny_profile();
         CHECK(coordinator.attach(kOwnerA),
               "reload-abort test attaches owner");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         activation.stage(profile);
         CHECK(activation.publish(coordinator),
               "reload-abort test publishes initial profile");
@@ -797,7 +797,7 @@ int main() {
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA),
               "publication-order test attaches owner");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
 
         TaggedRequest successful{};
@@ -834,7 +834,7 @@ int main() {
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA),
               "publication-detach test attaches owner");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         TaggedRequest old_request{};
         CHECK(coordinator.next_request(old_request) &&
@@ -855,7 +855,7 @@ int main() {
 
         CHECK(coordinator.attach(kOwnerA),
               "same owner reattaches after detach cleanup");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         TaggedRequest replacement{};
         CHECK(coordinator.next_request(replacement) &&
@@ -879,7 +879,7 @@ int main() {
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA),
               "profile-reload test attaches owner");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const uint64_t first_generation =
             coordinator.snapshot().status.generation;
@@ -941,7 +941,7 @@ int main() {
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA),
               "coalesced-clear test attaches owner");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto active = coordinator.snapshot();
         auto old_requests = drain_requests(coordinator);
@@ -957,7 +957,7 @@ int main() {
         CHECK(!coordinator.next_request(invalidated),
               "clear return blocks old-generation request allocation");
         coordinator.acknowledge(old_requests.back(), true);
-        coordinator.submit_anchor(kOwnerA, 168.0f, 24.0f);
+        coordinator.submit_anchor(kOwnerA, 168.0f, 0.0f, 24.0f);
         coordinator.worker_step();
 
         const auto restarted = coordinator.snapshot();
@@ -987,7 +987,7 @@ int main() {
         Coordinator coordinator;
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto snapshot = coordinator.snapshot();
         CHECK(snapshot.owner == 0 &&
@@ -1004,7 +1004,7 @@ int main() {
     {
         Coordinator coordinator;
         CHECK(coordinator.attach(kOwnerA), "first owner attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         CHECK(coordinator.snapshot().status.state ==
                   SectorStreamingState::PendingProfile,
@@ -1028,7 +1028,7 @@ int main() {
         CHECK(coordinator.snapshot().status.state ==
                   SectorStreamingState::PendingTransform,
               "attached profiled owner waits for anchor");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         CHECK(coordinator.snapshot().status.state == SectorStreamingState::Active,
               "anchor activates copied nonempty profile");
@@ -1042,12 +1042,12 @@ int main() {
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "first generational owner attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto initial = coordinator.snapshot();
         CHECK(!coordinator.attach(kOwnerB), "second owner is rejected");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
-        coordinator.submit_anchor(kOwnerA, 1000.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 1000.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto after = coordinator.snapshot();
         CHECK(after.owner == kOwnerA &&
@@ -1067,7 +1067,7 @@ int main() {
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "detach test owner attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         auto first = drain_requests(coordinator);
         CHECK(first.size() == 2, "detach test allocates capped initial requests");
@@ -1110,7 +1110,7 @@ int main() {
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "failure test owner attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         auto requests = drain_requests(coordinator);
         CHECK(!requests.empty(), "failure test obtains request");
@@ -1149,7 +1149,7 @@ int main() {
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "restart test owner attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const uint64_t first_generation = coordinator.snapshot().status.generation;
         coordinator.restart_if_attached();
@@ -1173,7 +1173,7 @@ int main() {
         profile.rings = {{24.0f, 1}};
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "anchor-clear test attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto active = coordinator.snapshot();
         auto requests = drain_requests(coordinator);
@@ -1208,7 +1208,7 @@ int main() {
                   evictions.front().generation == active.status.generation,
               "anchor clear emits old-generation resident eviction");
 
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto restarted = coordinator.snapshot();
         CHECK(restarted.status.state == SectorStreamingState::Active &&
@@ -1222,7 +1222,7 @@ int main() {
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "restart-detach test owner attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         coordinator.restart_if_attached();
         coordinator.detach(kOwnerA);
@@ -1244,7 +1244,7 @@ int main() {
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "same-owner boundary test attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         TaggedRequest resident{};
         CHECK(coordinator.next_request(resident),
@@ -1258,7 +1258,7 @@ int main() {
         coordinator.detach(kOwnerA);
         CHECK(coordinator.attach(kOwnerA),
               "same full owner ID reattaches before worker step");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         const auto after = coordinator.snapshot();
         CHECK(after.owner == kOwnerA &&
@@ -1278,7 +1278,7 @@ int main() {
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "detach-allocation test attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         coordinator.detach(kOwnerA);
         TaggedRequest request{};
@@ -1293,18 +1293,18 @@ int main() {
         auto profile = tiny_profile();
         coordinator.set_profile(&profile);
         CHECK(coordinator.attach(kOwnerA), "issuance ABA test attaches");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         TaggedRequest old_request{};
         CHECK(coordinator.next_request(old_request),
               "issuance ABA test obtains original request");
 
-        coordinator.submit_anchor(kOwnerA, 1000.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 1000.0f, 0.0f, 8.0f);
         coordinator.acknowledge(old_request, true);
         coordinator.worker_step();
         CHECK(coordinator.snapshot().status.resident_sectors == 0,
               "away anchor rejects original publication");
-        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 0.0f, 8.0f);
         coordinator.worker_step();
         TaggedRequest new_request{};
         CHECK(coordinator.next_request(new_request) &&

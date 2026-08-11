@@ -278,7 +278,7 @@ int SectorStreamer::desired_level_at(float wx, float wz) const {
         const float S = level_size(L);
         const int64_t tx = int64_t(std::floor(wx / S));
         const int64_t tz = int64_t(std::floor(wz / S));
-        auto it = sectors_.find(nested_key(L, tx, tz));
+        auto it = sectors_.find(nested_key(L, tx, kFlatTy, tz));
         if (it != sectors_.end() && it->second.desired_level == L) return L;
     }
     return -1;
@@ -289,7 +289,7 @@ int SectorStreamer::desired_level_at(float wx, float wz) const {
 // ---------------------------------------------------------------------------
 
 void SectorStreamer::mark_desired(int level, int64_t tx, int64_t tz) {
-    auto& st = sectors_[nested_key(level, tx, tz)];
+    auto& st = sectors_[nested_key(level, tx, kFlatTy, tz)];
     st.dist          = tile_centre_dist(level, tx, tz);
     st.desired_level = level;
     st.desired_lod   = kMaxLevel - level;
@@ -340,10 +340,11 @@ void SectorStreamer::descend(
     // a metre outward and re-requests them when it drifts back -- the uniform
     // path has always held that edge with `outer_r + hysteresis`.
     const bool is_split =
-        finer_resident.find(nested_key(level, tx, tz)) != finer_resident.end();
+        finer_resident.find(nested_key(level, tx, kFlatTy, tz)) !=
+        finer_resident.end();
     bool self_resident = false;
     {
-        auto it = sectors_.find(nested_key(level, tx, tz));
+        auto it = sectors_.find(nested_key(level, tx, kFlatTy, tz));
         self_resident = it != sectors_.end() &&
                         (it->second.resident_rung >= 0 ||
                          it->second.inflight_rung >= 0);
@@ -573,7 +574,8 @@ bool SectorStreamer::coarser_resident_beside(int level, int64_t tx,
         if (resident_at_level_[up] == 0) continue;
         const int sh = up - level;
         for (int n = 0; n < 4; ++n) {
-            auto it = sectors_.find(nested_key(up, ntx[n] >> sh, ntz[n] >> sh));
+            auto it = sectors_.find(
+                nested_key(up, ntx[n] >> sh, kFlatTy, ntz[n] >> sh));
             if (it != sectors_.end() && it->second.resident_rung >= 0)
                 return true;
         }
@@ -612,7 +614,7 @@ int SectorStreamer::resident_level_over(int level, int64_t tx,
     int coarsest = -1;
     for (int up = level; up <= max_level(); ++up) {
         const int sh = up - level;
-        auto it = sectors_.find(nested_key(up, tx >> sh, tz >> sh));
+        auto it = sectors_.find(nested_key(up, tx >> sh, kFlatTy, tz >> sh));
         if (it != sectors_.end() && it->second.resident_rung >= 0) coarsest = up;
     }
     return coarsest;
@@ -632,8 +634,9 @@ void SectorStreamer::restrict_levels() {
         std::vector<std::pair<int, std::pair<int64_t, int64_t>>> to_split;
         for (const auto& [k, st] : sectors_) {
             if (st.desired_level < 1) continue;
-            int lvl; int64_t tx, tz;
-            nested_unkey(k, lvl, tx, tz);
+            int lvl; int64_t tx, ty, tz;
+            nested_unkey(k, lvl, tx, ty, tz);
+            (void)ty;   // M1: one row; restrict_levels is an XZ pass
             const float S = level_size(lvl);
             const float ox = float(tx) * S, oz = float(tz) * S;
             const float out = 0.5f * cfg_.sector_size;   // just outside an edge
@@ -651,7 +654,7 @@ void SectorStreamer::restrict_levels() {
         for (const auto& e : to_split) {
             const int lvl = e.first;
             const int64_t tx = e.second.first, tz = e.second.second;
-            auto it = sectors_.find(nested_key(lvl, tx, tz));
+            auto it = sectors_.find(nested_key(lvl, tx, kFlatTy, tz));
             if (it != sectors_.end()) {
                 it->second.desired_level = -1;
                 it->second.desired_lod   = -1;
@@ -688,7 +691,7 @@ void SectorStreamer::restrict_levels() {
 
 void SectorStreamer::scan_subtree(int level, int64_t tx, int64_t tz,
                                   bool& any_desired, bool& all_resident) const {
-    auto it = sectors_.find(nested_key(level, tx, tz));
+    auto it = sectors_.find(nested_key(level, tx, kFlatTy, tz));
     if (it != sectors_.end() && it->second.desired_level == level) {
         any_desired = true;
         if (it->second.resident_rung < 0) all_resident = false;
@@ -707,7 +710,7 @@ void SectorStreamer::scan_footprint(int level, int64_t tx, int64_t tz,
     // ancestor can be desired, because exactly one level covers any column.
     for (int up = level + 1; up <= max_level(); ++up) {
         const int sh = up - level;
-        auto it = sectors_.find(nested_key(up, tx >> sh, tz >> sh));
+        auto it = sectors_.find(nested_key(up, tx >> sh, kFlatTy, tz >> sh));
         if (it != sectors_.end() && it->second.desired_level == up) {
             any_desired = true;
             if (it->second.resident_rung < 0) all_resident = false;
@@ -718,8 +721,10 @@ void SectorStreamer::scan_footprint(int level, int64_t tx, int64_t tz,
     scan_subtree(level, tx, tz, any_desired, all_resident);
 }
 
-void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
+void SectorStreamer::update_nested(float anchor_x, float anchor_y,
+                                   float anchor_z) {
     last_anchor_x_ = anchor_x;
+    last_anchor_y_ = anchor_y;   // stored, never read in M1 (see the header)
     last_anchor_z_ = anchor_z;
 
     // "Is anything finer than level L resident under this tile?" -- answered by
@@ -736,13 +741,16 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
     for (int L = 0; L <= kMaxLevel; ++L) resident_at_level_[L] = 0;
     for (const auto& [k, st] : sectors_) {
         if (st.resident_rung < 0 && st.inflight_rung < 0) continue;
-        int lvl; int64_t tx, tz;
-        nested_unkey(k, lvl, tx, tz);
+        int lvl; int64_t tx, ty, tz;
+        nested_unkey(k, lvl, tx, ty, tz);
         if (st.resident_rung >= 0 && lvl >= 0 && lvl <= kMaxLevel)
             ++resident_at_level_[lvl];
         for (int up = lvl + 1; up <= max_level(); ++up) {
             const int sh = up - lvl;
-            finer_resident[nested_key(up, tx >> sh, tz >> sh)] = 1;
+            // The ancestor's index on every axis is this tile's shifted down.
+            // ty is 0 in M1, so `ty >> sh` is 0 too -- written as the general
+            // form because it is the general form, not because it does work.
+            finer_resident[nested_key(up, tx >> sh, ty >> sh, tz >> sh)] = 1;
         }
     }
 
@@ -751,8 +759,9 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
         st.desired_lod   = -1;
         st.desired_level = -1;
         if (st.cooldown > 0) --st.cooldown;
-        int lvl; int64_t tx, tz;
-        nested_unkey(k, lvl, tx, tz);
+        int lvl; int64_t tx, ty, tz;
+        nested_unkey(k, lvl, tx, ty, tz);
+        (void)ty;   // M1: tile_centre_dist is an XZ distance
         st.dist = tile_centre_dist(lvl, tx, tz);
     }
 
@@ -796,12 +805,12 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
         if (st.desired_rung >= 0) continue;
         if (st.resident_rung >= 0) {
             if (stream_no_evict()) continue;
-            int lvl; int64_t tx, tz;
-            nested_unkey(k, lvl, tx, tz);
+            int lvl; int64_t tx, ty, tz;
+            nested_unkey(k, lvl, tx, ty, tz);
             bool any_desired = false, all_resident = true;
             scan_footprint(lvl, tx, tz, any_desired, all_resident);
             if (any_desired && !all_resident) continue;   // hold: still baking
-            evictions_.push_back({tx, tz, st.resident_rung});
+            evictions_.push_back({tx, ty, tz, st.resident_rung});
             if (st.inflight_rung >= 0) --inflight_;
             to_erase.push_back(k);
         } else if (st.inflight_rung < 0 && st.cooldown == 0) {
@@ -815,10 +824,14 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
 // update()
 // ---------------------------------------------------------------------------
 
-void SectorStreamer::update(float anchor_x, float anchor_z) {
-    if (cfg_.nested_sectors) { update_nested(anchor_x, anchor_z); return; }
+void SectorStreamer::update(float anchor_x, float anchor_y, float anchor_z) {
+    if (cfg_.nested_sectors) {
+        update_nested(anchor_x, anchor_y, anchor_z);
+        return;
+    }
 
     last_anchor_x_ = anchor_x;
+    last_anchor_y_ = anchor_y;   // stored, never read in M1 (see the header)
     last_anchor_z_ = anchor_z;
 
     // The outer ring radius is the last entry (rings are innermost-first).
@@ -902,7 +915,7 @@ void SectorStreamer::update(float anchor_x, float anchor_z) {
                 // The outer ring is the last ring's radius.
                 float outer_r = cfg_.rings.empty() ? 0.0f : cfg_.rings.back().radius;
                 if (!stream_no_evict() && st.dist > outer_r + cfg_.hysteresis) {
-                    evictions_.push_back({0, 0, st.resident_rung});
+                    evictions_.push_back({0, 0, 0, st.resident_rung});
                     int64_t etx, etz;
                     unkey(k, etx, etz);
                     evictions_.back().tx = etx;
@@ -969,9 +982,10 @@ bool SectorStreamer::next_request(SectorRequest& out) {
     if (!found) return false;
 
     auto& st = sectors_.at(best_k);
-    int level; int64_t tx, tz;
-    sunkey(best_k, level, tx, tz);
+    int level; int64_t tx, ty, tz;
+    sunkey(best_k, level, tx, ty, tz);
     out.tx   = tx;
+    out.ty   = ty;
     out.tz   = tz;
     out.rung = st.desired_rung;
     st.inflight_rung = st.desired_rung;
@@ -983,8 +997,9 @@ bool SectorStreamer::next_request(SectorRequest& out) {
 // on_published()
 // ---------------------------------------------------------------------------
 
-bool SectorStreamer::on_published(int64_t tx, int64_t tz, int rung) {
-    uint64_t k = key_for(tx, tz, rung);
+bool SectorStreamer::on_published(int64_t tx, int64_t ty, int64_t tz,
+                                  int rung) {
+    uint64_t k = key_for(tx, ty, tz, rung);
     auto it = sectors_.find(k);
     if (it == sectors_.end()) {
         // Entry was erased (anchor moved on / clear()).
@@ -1003,7 +1018,7 @@ bool SectorStreamer::on_published(int64_t tx, int64_t tz, int rung) {
 
     // Accept: if previously resident at a different rung, queue eviction.
     if (st.resident_rung >= 0 && st.resident_rung != rung) {
-        evictions_.push_back({tx, tz, st.resident_rung});
+        evictions_.push_back({tx, ty, tz, st.resident_rung});
     }
     st.resident_rung = rung;
     return true;
@@ -1013,8 +1028,9 @@ bool SectorStreamer::on_published(int64_t tx, int64_t tz, int rung) {
 // on_failed()
 // ---------------------------------------------------------------------------
 
-void SectorStreamer::on_failed(int64_t tx, int64_t tz, int rung) {
-    uint64_t k = key_for(tx, tz, rung);
+void SectorStreamer::on_failed(int64_t tx, int64_t ty, int64_t tz,
+                               int rung) {
+    uint64_t k = key_for(tx, ty, tz, rung);
     auto it = sectors_.find(k);
     if (it == sectors_.end()) return;
     auto& st = it->second;
@@ -1027,9 +1043,10 @@ void SectorStreamer::on_failed(int64_t tx, int64_t tz, int rung) {
 
 bool SectorStreamer::cancel_request(
     int64_t tx,
+    int64_t ty,
     int64_t tz,
     int rung) noexcept {
-    const auto it = sectors_.find(key_for(tx, tz, rung));
+    const auto it = sectors_.find(key_for(tx, ty, tz, rung));
     if (it == sectors_.end() || it->second.inflight_rung != rung) {
         return false;
     }
@@ -1067,9 +1084,9 @@ bool SectorStreamer::commit_evictions(
 void SectorStreamer::clear() {
     for (auto& [k, st] : sectors_) {
         if (st.resident_rung >= 0) {
-            int level; int64_t tx, tz;
-            sunkey(k, level, tx, tz);
-            evictions_.push_back({tx, tz, st.resident_rung});
+            int level; int64_t tx, ty, tz;
+            sunkey(k, level, tx, ty, tz);
+            evictions_.push_back({tx, ty, tz, st.resident_rung});
         }
     }
     sectors_.clear();

@@ -18,6 +18,10 @@ struct AnchorSample {
     flecs::entity_t owner = 0;
     uint64_t generation = 0;
     float x = 0.0f;
+    // Carried, forwarded to SectorStreamer::update, and read by nothing
+    // (volumetric-sectors M1). Selection is still an XZ problem; M3's octree
+    // is what starts consuming this. See SectorStreamer::update.
+    float y = 0.0f;
     float z = 0.0f;
 };
 
@@ -166,7 +170,7 @@ public:
         const matter_stream::Config* profile,
         SectorStreamingErrorCode profile_error =
             SectorStreamingErrorCode::None);
-    void submit_anchor(flecs::entity_t owner, float x, float z);
+    void submit_anchor(flecs::entity_t owner, float x, float y, float z);
     void clear_anchor(flecs::entity_t owner);
     void detach(flecs::entity_t owner);
     void restart_if_attached();

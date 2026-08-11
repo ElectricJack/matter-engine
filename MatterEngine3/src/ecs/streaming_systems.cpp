@@ -92,9 +92,16 @@ void sample_streaming_anchor(
     const ecs::WorldTransform* transform =
         entity.try_get<ecs::WorldTransform>();
     if (transform != nullptr) {
+        // m[7] is the transform's Y translation, threaded alongside m[3]/m[11]
+        // by volumetric-sectors M1. It reaches SectorStreamer::update and is
+        // read by nothing there: selection is still an XZ problem until M3
+        // turns the quadtree into an octree. Wired now so that when it does,
+        // the anchor's route is already proven and the diff is the selection
+        // rule alone.
         coordinator.submit_anchor(
             owner,
             transform->matrix.m[3],
+            transform->matrix.m[7],
             transform->matrix.m[11]);
     } else {
         coordinator.clear_anchor(owner);

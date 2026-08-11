@@ -427,6 +427,49 @@ matter_stream::Config make_streaming_profile(
     // Nesting IS the terrain ladder expressed as tile size; MATTER_TERRAIN_LOD=0
     // would otherwise leave the streamer with no bands to build levels from.
     if (profile.nested_sectors) profile.terrain_lod_enabled = true;
+
+    // ---- the 20-bit reach check (volumetric-sectors M1, design risk §7.8) ---
+    //
+    // The nested key repack bought a Y field by cutting each axis from 30 bits
+    // to 20 (sector_streamer.h, kSectorCoordBits). That is a factor of 1024 per
+    // axis, and the design says outright: "assert at world load that the
+    // authored reach fits". This is that assert, and it is at world load rather
+    // than in the key because of HOW the key fails. nested_key masks; it does
+    // not saturate and cannot report. An out-of-range tile would silently ALIAS
+    // onto a tile 2^20 away and be streamed into that footprint -- geometry
+    // from one end of the world drawn at the other, with no error anywhere and
+    // nothing in the drawn set to suggest a coordinate problem. Checking the
+    // authored numbers once, where the numbers are, is the only place this is
+    // cheap to notice.
+    //
+    // The reach is the outermost radius the world can ask for: the last band
+    // when nesting is on (bands bound residency there), the last ring
+    // otherwise, plus hysteresis, converted to LEVEL-0 tiles -- the finest
+    // grid, hence the largest index. Reported, not enforced: a world this large
+    // is a mis-authored table rather than an ambition, and refusing to load
+    // would turn one bad radius into an empty editor.
+    {
+        float reach = 0.0f;
+        for (const auto& band : profile.terrain_bands)
+            reach = std::max(reach, band.radius);
+        for (const auto& ring : profile.rings)
+            reach = std::max(reach, ring.radius);
+        reach += profile.hysteresis;
+        const float pitch = profile.sector_size > 0.0f
+                                ? profile.sector_size : 1.0f;
+        const double tiles = double(reach) / double(pitch) + 1.0;
+        if (tiles > double(matter_stream::kSectorCoordMax)) {
+            std::fprintf(stderr,
+                "[stream] AUTHORED REACH DOES NOT FIT THE SECTOR KEY: %.0f m at "
+                "S_0 = %.0f m is %.0f level-0 tiles, past the %lld the 20-bit "
+                "packed coordinate holds (sector_streamer.h kSectorCoordBits). "
+                "Tiles beyond that alias onto tiles %lld away instead of "
+                "failing -- shrink the outermost band/ring, or raise S_0.\n",
+                (double)reach, (double)pitch, tiles,
+                (long long)matter_stream::kSectorCoordMax,
+                (long long)(int64_t(1) << matter_stream::kSectorCoordBits));
+        }
+    }
     return profile;
 }
 
@@ -437,6 +480,7 @@ bool same_publication_tag(
            request.generation == eviction.generation &&
            request.issuance == eviction.issuance &&
            request.sector.tx == eviction.sector.tx &&
+           request.sector.ty == eviction.sector.ty &&
            request.sector.tz == eviction.sector.tz &&
            request.sector.rung == eviction.sector.rung;
 }
@@ -447,7 +491,8 @@ streaming::detail::TaggedEviction publication_eviction(
         request.owner,
         request.generation,
         request.issuance,
-        {request.sector.tx, request.sector.tz, request.sector.rung}};
+        {request.sector.tx, request.sector.ty, request.sector.tz,
+         request.sector.rung}};
 }
 
 void record_streaming_error(
@@ -1201,14 +1246,22 @@ struct WorldSession::Impl {
         // its bake. The welder treats absence as "no weld here".
         std::shared_ptr<const seam::SectorBoundary> boundary;
     };
+    // `ty` is the vertical tile index (volumetric-sectors M1). It is always 0
+    // today -- the streamer's descent is still the XZ quadtree -- and it is
+    // carried here anyway, because the moment M3 stacks tiles this is the map
+    // that would otherwise collapse two of them onto one entry.
     struct SectorKey {
-        int64_t tx, tz; int rung;
-        bool operator==(const SectorKey& o) const { return tx==o.tx && tz==o.tz && rung==o.rung; }
+        int64_t tx, ty, tz; int rung;
+        bool operator==(const SectorKey& o) const {
+            return tx==o.tx && ty==o.ty && tz==o.tz && rung==o.rung;
+        }
     };
     struct SectorKeyHash {
         size_t operator()(const SectorKey& k) const {
             uint64_t h = (uint64_t(uint32_t(int32_t(k.tx))) << 32) | uint32_t(int32_t(k.tz));
             h ^= h >> 33;
+            h ^= uint64_t(k.ty) * 0x9e3779b97f4a7c15ull;
+            h ^= h >> 29;
             h ^= uint64_t(k.rung) * 0xbf58476d1ce4e5b9ull;
             return (size_t)h;
         }
@@ -1242,6 +1295,16 @@ struct WorldSession::Impl {
     }
     // Do these two tiles cover any common ground? Distinct levels only: two
     // tiles at the SAME level are either the same tile or disjoint.
+    //
+    // OCTREE containment as of volumetric-sectors M1, not quadtree: all THREE
+    // coordinates are shifted and compared. The two-axis version was correct
+    // while every tile spanned the entire authored Y range -- a column either
+    // contained another column or it did not, and Y could not separate them.
+    // Once Y is tiled (M2/M3) two tiles can share (tx, tz) at different
+    // altitudes and be completely disjoint; a quadtree test would call those
+    // overlapping and park each behind the other, which is a deadlock the
+    // 30 s valve would have to break every single time. With ty pinned to 0
+    // the third comparison is `0 == 0` and the result is identical to before.
     static bool sector_footprints_overlap(const SectorKey& a,
                                           const SectorKey& b) {
         const int la = sector_level_of(a.rung), lb = sector_level_of(b.rung);
@@ -1251,7 +1314,9 @@ struct WorldSession::Impl {
         const int sh = (la < lb) ? (lb - la) : (la - lb);
         const SectorKey& fine   = (la < lb) ? a : b;
         const SectorKey& coarse = (la < lb) ? b : a;
-        return (fine.tx >> sh) == coarse.tx && (fine.tz >> sh) == coarse.tz;
+        return (fine.tx >> sh) == coarse.tx &&
+               (fine.ty >> sh) == coarse.ty &&
+               (fine.tz >> sh) == coarse.tz;
     }
     // Is some VISIBLE entry at another level still sitting on this footprint?
     // Parked entries do not block -- if they did, a parent parked behind its
@@ -1324,9 +1389,9 @@ struct WorldSession::Impl {
         return entry ? entry->boundary.get() : nullptr;
     }
 
-    // ---- Tile index (M0-WP3b) ----------------------------------------------
+    // ---- Tile index (M0-WP3b; 3D coordinate as of M1) -----------------------
     //
-    // (tx,tz) -> the rungs resident at that tile coordinate: a grouped mirror of
+    // (tx,ty,tz) -> the rungs resident at that tile coordinate: a grouped mirror of
     // sector_map's key set, so that "which tile occupies this footprint" is one
     // hash lookup rather than a sweep.
     //
@@ -1343,28 +1408,30 @@ struct WorldSession::Impl {
     // emplace, the eviction erase and the terminal clear. MATTER_SEAM_VERIFY=1
     // cross-checks it against sector_map on every weld rebuild, so a missed
     // site surfaces as a loud mismatch instead of as silently absent seams.
-    struct TileXZ {
-        int64_t tx = 0, tz = 0;
-        bool operator==(const TileXZ& o) const {
-            return tx == o.tx && tz == o.tz;
+    struct TileXYZ {
+        int64_t tx = 0, ty = 0, tz = 0;
+        bool operator==(const TileXYZ& o) const {
+            return tx == o.tx && ty == o.ty && tz == o.tz;
         }
     };
-    struct TileXZHash {
-        size_t operator()(const TileXZ& k) const {
+    struct TileXYZHash {
+        size_t operator()(const TileXYZ& k) const {
             uint64_t h = uint64_t(k.tx) * 0x9e3779b97f4a7c15ull;
+            h ^= uint64_t(k.ty) + 0x94d049bb133111ebull + (h << 6) + (h >> 2);
             h ^= uint64_t(k.tz) + 0xbf58476d1ce4e5b9ull + (h << 6) + (h >> 2);
             h ^= h >> 31;
             return (size_t)h;
         }
     };
-    std::unordered_map<TileXZ, std::vector<int>, TileXZHash> sector_tile_index;
+    std::unordered_map<TileXYZ, std::vector<int>, TileXYZHash> sector_tile_index;
     void tile_index_add(const SectorKey& key) {
-        auto& rungs = sector_tile_index[TileXZ{key.tx, key.tz}];
+        auto& rungs = sector_tile_index[TileXYZ{key.tx, key.ty, key.tz}];
         for (int r : rungs) if (r == key.rung) return;
         rungs.push_back(key.rung);
     }
     void tile_index_remove(const SectorKey& key) {
-        const auto it = sector_tile_index.find(TileXZ{key.tx, key.tz});
+        const auto it =
+            sector_tile_index.find(TileXYZ{key.tx, key.ty, key.tz});
         if (it == sector_tile_index.end()) return;
         auto& rungs = it->second;
         for (size_t i = 0; i < rungs.size(); ++i) {
@@ -1381,13 +1448,14 @@ struct WorldSession::Impl {
     // there, which is what the uniform grid needs (every tile is S_0 across and
     // the "level" is only a terrain-LOD label).
     static constexpr int kAnyLevel = std::numeric_limits<int>::min();
-    const SectorEntry* drawn_tile_entry(int64_t tx, int64_t tz, int level,
+    const SectorEntry* drawn_tile_entry(int64_t tx, int64_t ty, int64_t tz,
+                                        int level,
                                         SectorKey* out_key = nullptr) const {
-        const auto it = sector_tile_index.find(TileXZ{tx, tz});
+        const auto it = sector_tile_index.find(TileXYZ{tx, ty, tz});
         if (it == sector_tile_index.end()) return nullptr;
         for (int rung : it->second) {
             if (level != kAnyLevel && sector_level_of(rung) != level) continue;
-            const SectorKey k{tx, tz, rung};
+            const SectorKey k{tx, ty, tz, rung};
             const SectorEntry* e = drawn_entry(k);
             if (!e) continue;
             if (out_key) *out_key = k;
@@ -1400,11 +1468,11 @@ struct WorldSession::Impl {
     // the welder's side lookups work in both tiling modes: a WeldSide IS a rung,
     // and a record that disagrees is a different lattice.
     const seam::SectorBoundary* drawn_boundary_with_rung(
-            int64_t tx, int64_t tz, int mesher_rung) const {
-        const auto it = sector_tile_index.find(TileXZ{tx, tz});
+            int64_t tx, int64_t ty, int64_t tz, int mesher_rung) const {
+        const auto it = sector_tile_index.find(TileXYZ{tx, ty, tz});
         if (it == sector_tile_index.end()) return nullptr;
         for (int rung : it->second) {
-            const SectorEntry* e = drawn_entry(SectorKey{tx, tz, rung});
+            const SectorEntry* e = drawn_entry(SectorKey{tx, ty, tz, rung});
             if (!e || !e->boundary) continue;
             if (e->boundary->rung != mesher_rung) continue;
             return e->boundary.get();
@@ -1424,6 +1492,12 @@ struct WorldSession::Impl {
     struct FaceNeighbourSpan {
         int64_t normal = 0;              // tile index along the face's normal axis
         int64_t tan_lo = 0, tan_hi = 0;  // inclusive tile range along the tangent
+        // The neighbour's VERTICAL tile index (volumetric-sectors M1). A single
+        // value rather than a range because Y is not a tiled axis yet: every
+        // tile spans the whole authored slab, so a face's neighbours are one
+        // row deep whatever their level. M2 tiles Y and this becomes a second
+        // inclusive range alongside tan_lo/tan_hi, computed the same way.
+        int64_t ty = 0;
         bool    axis_x = true;           // normal is a tx (else a tz)
     };
     bool face_neighbour_span(const SectorKey& key, int face, int level,
@@ -1437,6 +1511,7 @@ struct WorldSession::Impl {
             const int64_t step = seam::face_is_positive(face) ? 1 : -1;
             out.normal = (axis == 0) ? key.tx + step : key.tz + step;
             out.tan_lo = out.tan_hi = (axis == 0) ? key.tz : key.tx;
+            out.ty = key.ty;   // one row; the uniform grid has no vertical axis
             return true;
         }
         const int L = sector_level_of(key.rung);
@@ -1457,12 +1532,17 @@ struct WorldSession::Impl {
         out.normal = across >> level;
         out.tan_lo = tan0 >> level;
         out.tan_hi = (tan0 + span - 1) >> level;
+        // The neighbour's row, expressed in level-0 units and shifted down the
+        // same way the tangent is. Y is untiled in M1 so key.ty is 0 and this
+        // is 0 for every level; written as the general expression because M2
+        // turns it into a range and this is the term the range grows from.
+        out.ty = (key.ty << L) >> level;
         return true;
     }
     SectorKey neighbour_key(const FaceNeighbourSpan& s, int64_t tan,
                             int rung) const {
-        return s.axis_x ? SectorKey{s.normal, tan, rung}
-                        : SectorKey{tan, s.normal, rung};
+        return s.axis_x ? SectorKey{s.normal, s.ty, tan, rung}
+                        : SectorKey{tan, s.ty, s.normal, rung};
     }
 
     // ---- The seam pool (M0-WP3b) -------------------------------------------
@@ -1510,18 +1590,25 @@ struct WorldSession::Impl {
     // The live SectorKey is resolved through the tile index at rebuild time,
     // which is one hash probe and is what every other neighbour lookup here
     // already does.
+    //
+    // `ty` joins the key for volumetric-sectors M1, and for the same reason
+    // SectorKey gains it: the coarse side of a pair is a TILE, and once tiles
+    // stack, two vertically separated coarse tiles at one (tx, tz) each own
+    // their own +x face. Sharing a key would make each retire the other's
+    // geometry. Always 0 in M1.
     struct WeldPairKey {
-        int64_t tx = 0, tz = 0;
+        int64_t tx = 0, ty = 0, tz = 0;
         int level = 0;      // sector level of the COARSE side (5 - terrain_lod)
         int face = 0;
         bool operator==(const WeldPairKey& o) const {
-            return tx == o.tx && tz == o.tz && level == o.level &&
-                   face == o.face;
+            return tx == o.tx && ty == o.ty && tz == o.tz &&
+                   level == o.level && face == o.face;
         }
     };
     struct WeldPairKeyHash {
         size_t operator()(const WeldPairKey& k) const {
             uint64_t h = uint64_t(k.tx) * 0x9e3779b97f4a7c15ull;
+            h ^= uint64_t(k.ty) + 0x94d049bb133111ebull + (h << 6) + (h >> 2);
             h ^= uint64_t(k.tz) + 0xbf58476d1ce4e5b9ull + (h << 6) + (h >> 2);
             h ^= uint64_t(uint32_t(k.level)) * 0x94d049bb133111ebull;
             h ^= uint64_t(uint32_t(k.face)) + 0x9e3779b97f4a7c15ull +
@@ -1800,11 +1887,26 @@ struct WorldSession::Impl {
     // exactly what identifies the sector, and they match SectorKey plus the
     // baked content:
     //
-    //   tx, tz   the signed tile coordinate. int64_t, and negative in three
+    //   tx, ty, tz
+    //            the signed tile coordinate. int64_t, and negative in three
     //            quadrants of every world, so each is mixed as its full 64-bit
     //            two's-complement pattern. Nothing is truncated to 32 bits and
     //            nothing is folded through abs(), so tx = -1 and tx = 2^32 - 1
     //            stay distinct however far the world extends.
+    //
+    //            `ty` is mixed UNCONDITIONALLY, not "when it is non-zero"
+    //            (volumetric-sectors M1, and it is a deliberate call). It is
+    //            always 0 today, so mixing it changes every streamed instance
+    //            id in the repo -- one cold temporal-history reset per world,
+    //            and the M1d fly-through determinism baselines have to be
+    //            re-taken. The alternative, skipping the mix at ty == 0, would
+    //            keep every id byte-identical and make this stage provably
+    //            inert, at the price of a special case inside a hash that
+    //            three subsystems' identity depends on. That price is paid
+    //            forever and the churn is paid once, so: pay it here, while
+    //            "the ids all moved" has exactly one possible cause and is
+    //            attributable to this commit, rather than at M3 where it would
+    //            arrive tangled with a real change in what gets drawn.
     //   rung     the packed sector variant (scatter rung + terrain LOD + edge
     //            masks). Required: sector_map is keyed by (tx,tz,rung), so two
     //            variants of one tile can be resident at once during a rung
@@ -1824,13 +1926,14 @@ struct WorldSession::Impl {
     // by a gap. It also makes the result non-zero, which vk_scene_renderer.cpp
     // requires: a zero stable_id falls back to `source_index + 1`, an
     // allocation-ordered value that would quietly reintroduce this very bug.
-    static uint32_t sector_instance_id(int64_t tx, int64_t tz, int rung,
-                                       uint64_t part_hash) {
+    static uint32_t sector_instance_id(int64_t tx, int64_t ty, int64_t tz,
+                                       int rung, uint64_t part_hash) {
         const auto mix = [](uint64_t hash, uint64_t value) {
             return hash ^ (value + 0x9e3779b97f4a7c15ull + (hash << 6) +
                            (hash >> 2));
         };
         uint64_t hash = mix(0x9e3779b97f4a7c15ull, (uint64_t)tx);
+        hash = mix(hash, (uint64_t)ty);
         hash = mix(hash, (uint64_t)tz);
         hash = mix(hash, (uint64_t)(int64_t)rung);
         hash = mix(hash, part_hash);
@@ -4708,6 +4811,12 @@ uint64_t WorldSession::Impl::weld_part_hash(const WeldPairKey& pair,
     static constexpr char kDomain[] = "seam.weld.v1";
     h = weld_fnv(h, kDomain, sizeof(kDomain));
     h = weld_fnv(h, &pair.tx, sizeof(pair.tx));
+    // ty joins the coarse tile's identity for M1. Always 0 today, so every
+    // weld hash in every world moves once -- the same one-off churn
+    // sector_instance_id takes, and taken here for the same reason: a hash
+    // with a special case at zero is a permanent liability, a re-registration
+    // is a cold start.
+    h = weld_fnv(h, &pair.ty, sizeof(pair.ty));
     h = weld_fnv(h, &pair.tz, sizeof(pair.tz));
     // The coarse side's LEVEL, never its packed rung: the rung's low four bits
     // are the scatter detail tier, which grades vegetation and cannot move a
@@ -4745,7 +4854,8 @@ uint64_t WorldSession::Impl::weld_part_hash(const WeldPairKey& pair,
 // more than sectors do.
 //
 // Inputs, and why each:
-//   coarse tx/tz/level the pool's key. Full 64-bit two's complement, never
+//   coarse tx/ty/tz/level
+//                      the pool's key. Full 64-bit two's complement, never
 //                      folded through abs(): three quadrants of every world are
 //                      negative. LEVEL rather than the packed rung, for the
 //                      reason WeldPairKey gives: the rung's scatter tier is not
@@ -4776,6 +4886,7 @@ uint32_t WorldSession::Impl::weld_instance_id(const WeldPairKey& pair,
     };
     uint64_t hash = mix(0x9e3779b97f4a7c15ull, 0x5EA3E1D0ull);  // domain
     hash = mix(hash, (uint64_t)pair.tx);
+    hash = mix(hash, (uint64_t)pair.ty);
     hash = mix(hash, (uint64_t)pair.tz);
     hash = mix(hash, (uint64_t)(int64_t)pair.level);
     hash = mix(hash, (uint64_t)(int64_t)pair.face);
@@ -5107,11 +5218,14 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
         for (const auto& [tile, rungs] : sector_tile_index) {
             indexed += rungs.size();
             for (int rung : rungs) {
-                if (sector_map.count(SectorKey{tile.tx, tile.tz, rung})) continue;
+                if (sector_map.count(
+                        SectorKey{tile.tx, tile.ty, tile.tz, rung}))
+                    continue;
                 fprintf(stderr,
-                        "[seam] tile index holds (%lld,%lld r%d) which is not "
-                        "in sector_map\n",
-                        (long long)tile.tx, (long long)tile.tz, rung);
+                        "[seam] tile index holds (%lld,%lld,%lld r%d) which "
+                        "is not in sector_map\n",
+                        (long long)tile.tx, (long long)tile.ty,
+                        (long long)tile.tz, rung);
             }
         }
         if (indexed != sector_map.size()) {
@@ -5131,7 +5245,7 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
 
     const int level = sector_level_of(key.rung);
     for (const int face : kSeamFaces) {
-        push_pair(WeldPairKey{key.tx, key.tz, level, face});
+        push_pair(WeldPairKey{key.tx, key.ty, key.tz, level, face});
         // (b): the drawn tile one level COARSER across this face. Under the
         // uniform grid `level + 1` is a terrain-LOD label rather than a size,
         // and face_neighbour_span ignores it -- the neighbour is the adjacent
@@ -5144,10 +5258,11 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
             const int64_t nz = span.axis_x ? t : span.normal;
             SectorKey coarse{};
             const SectorEntry* entry = drawn_tile_entry(
-                nx, nz, world_nested_sectors ? level + 1 : kAnyLevel, &coarse);
+                nx, span.ty, nz,
+                world_nested_sectors ? level + 1 : kAnyLevel, &coarse);
             if (!entry) continue;
             if (sector_level_of(coarse.rung) != level + 1) continue;
-            push_pair(WeldPairKey{coarse.tx, coarse.tz, level + 1,
+            push_pair(WeldPairKey{coarse.tx, coarse.ty, coarse.tz, level + 1,
                                   seam::face_opposite(face)});
         }
     }
@@ -5235,7 +5350,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     // and new variants answer the same key with the same records.
     SectorKey ckey{};
     const SectorEntry* centry =
-        drawn_tile_entry(pair.tx, pair.tz, pair.level, &ckey);
+        drawn_tile_entry(pair.tx, pair.ty, pair.tz, pair.level, &ckey);
     if (!centry) { drop(); return; }
     const seam::SectorBoundary* cb = centry->boundary.get();
     if (!cb) {
@@ -5266,10 +5381,11 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         fingerprint ^= v;
         fingerprint *= 0x100000001b3ull;
     };
-    const auto mix_record = [&](int64_t tx, int64_t tz,
+    const auto mix_record = [&](int64_t tx, int64_t ty, int64_t tz,
                                 const seam::SectorBoundary& sb, int face) {
         const seam::FaceRecord& fr = sb.faces[face];
         mix_u64((uint64_t)tx);
+        mix_u64((uint64_t)ty);
         mix_u64((uint64_t)tz);
         mix_u64((uint64_t)(int64_t)sb.rung);
         mix_u64((uint64_t)(int64_t)sb.cells);
@@ -5279,7 +5395,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         mix_u64((uint64_t)fr.verts.size());
         mix_u64((uint64_t)fr.band.triangle_count());
     };
-    mix_record(pair.tx, pair.tz, *cb, cface);
+    mix_record(pair.tx, pair.ty, pair.tz, *cb, cface);
 
     // ---- fine side: the tiles across this face one rung finer ---------------
     FaceNeighbourSpan span;
@@ -5296,10 +5412,11 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         // makes the lookup mode-independent -- under the uniform grid the
         // neighbour shares the tile coordinate and only the rung separates it.
         const seam::SectorBoundary* fb =
-            drawn_boundary_with_rung(ftx, ftz, frung);
+            drawn_boundary_with_rung(ftx, span.ty, ftz, frung);
         if (!fb) {
             const SectorEntry* drawn_here = drawn_tile_entry(
-                ftx, ftz, world_nested_sectors ? flevel : kAnyLevel);
+                ftx, span.ty, ftz,
+                world_nested_sectors ? flevel : kAnyLevel);
             if (drawn_here && !drawn_here->boundary)
                 ++seam_counters.drawn_without_record;
             continue;
@@ -5308,7 +5425,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         // coarse one, so the shared plane is `2 * coarse_plane` in fine
         // indices; a mismatch means these two records do not touch.
         if (fb->faces[fface].plane != cfr.plane * 2) continue;
-        mix_record(ftx, ftz, *fb, fface);
+        mix_record(ftx, span.ty, ftz, *fb, fface);
         fine_tiles[fine_count++] = fb;
     }
     if (fine_count == 0) { drop(); return; }
@@ -5329,6 +5446,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     // temporary. Both halves hold.
     struct SideCtx {
         int64_t normal = 0;      // tile index on the face's normal axis
+        int64_t ty = 0;          // the row both sides sit in (0 until M2)
         int     face = 0;        // which FaceRecord to read
         int     rung = 0;        // the rung that identifies this side
         int     cells = 1;       // cells per axis at that rung
@@ -5356,11 +5474,11 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
             const int64_t tx = c.axis_x ? c.normal : tile;
             const int64_t tz = c.axis_x ? tile : c.normal;
             const seam::SectorBoundary* sb =
-                drawn_boundary_with_rung(tx, tz, c.rung);
+                drawn_boundary_with_rung(tx, c.ty, tz, c.rung);
             if (sb) {
                 const seam::FaceRecord& fr = sb->faces[c.face];
                 if (fr.cell_layer == c.cell_layer) c.memo_rec = &fr;
-                mix_record(tx, tz, *sb, c.face);
+                mix_record(tx, c.ty, tz, *sb, c.face);
             } else {
                 // A tile the closure reached and did not find is as much an
                 // input as one it did: losing a DIAGONAL neighbour changes the
@@ -5368,6 +5486,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
                 // fingerprint blind to the absence would misreport that as
                 // nondeterminism.
                 mix_u64((uint64_t)tx);
+                mix_u64((uint64_t)c.ty);
                 mix_u64((uint64_t)tz);
                 mix_u64((uint64_t)(int64_t)c.rung);
                 mix_u64(0xA85E27ull);   // "absent", a tag distinct from any size
@@ -5381,6 +5500,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
 
     SideCtx cctx;
     cctx.normal     = span.axis_x ? pair.tx : pair.tz;
+    cctx.ty         = pair.ty;
     cctx.face       = cface;
     cctx.rung       = crung;
     cctx.cells      = cb->cells > 0 ? cb->cells : 1;
@@ -5389,6 +5509,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
 
     SideCtx fctx;
     fctx.normal     = span.normal;
+    fctx.ty         = span.ty;
     fctx.face       = fface;
     fctx.rung       = frung;
     fctx.cells      = fine_tiles[0]->cells > 0 ? fine_tiles[0]->cells : 1;
@@ -5491,8 +5612,8 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
                 if (!warned) {
                     warned = true;
                     fprintf(stderr,
-                            "[seam] weld (%lld,%lld L%d face %d): %s\n",
-                            (long long)pair.tx,
+                            "[seam] weld (%lld,%lld,%lld L%d face %d): %s\n",
+                            (long long)pair.tx, (long long)pair.ty,
                             (long long)pair.tz, pair.level,
                             cface, err.c_str());
                 }
@@ -5620,12 +5741,14 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         if (!warned) {
             warned = true;
             fprintf(stderr,
-                    "[seam] weld (%lld,%lld L%d face %d) re-derived DIFFERENT "
+                    "[seam] weld (%lld,%lld,%lld L%d face %d) re-derived "
+                    "DIFFERENT "
                     "geometry from identical inputs (fingerprint %016llx, "
                     "content %016llx -> %016llx). The welder is not a function "
                     "of its inputs; R3's ensure_part(new)/release_part(old) "
                     "swap assumes it is.\n",
-                    (long long)pair.tx, (long long)pair.tz, pair.level,
+                    (long long)pair.tx, (long long)pair.ty,
+                    (long long)pair.tz, pair.level,
                     pair.face, (unsigned long long)rec.input_fingerprint,
                     (unsigned long long)prev_content,
                     (unsigned long long)new_hash);
@@ -5649,10 +5772,12 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         else          ++seam_counters.pairs_created;
         if (seam_churn_trace) {
             fprintf(stderr,
-                    "[seam.churn] %s (%lld,%lld L%d f%d) fine %d/%d tri %zu | "
+                    "[seam.churn] %s (%lld,%lld,%lld L%d f%d) fine %d/%d "
+                    "tri %zu | "
                     "created=%llu recontented=%llu noop=%llu stable=%llu\n",
                     was_live ? "recontent" : "create  ",
-                    (long long)pair.tx, (long long)pair.tz, pair.level,
+                    (long long)pair.tx, (long long)pair.ty,
+                    (long long)pair.tz, pair.level,
                     pair.face, live.fine_sides_drawn, live.fine_sides_expected,
                     live.mesh.triangle_count(),
                     (unsigned long long)seam_counters.pairs_created,
@@ -5695,7 +5820,7 @@ bool WorldSession::Impl::sector_drawn_level_conflict(const SectorKey& key,
             for (int64_t t = span.tan_lo; t <= span.tan_hi; ++t) {
                 const int64_t nx = span.axis_x ? span.normal : t;
                 const int64_t nz = span.axis_x ? t : span.normal;
-                if (!drawn_tile_entry(nx, nz, other)) continue;
+                if (!drawn_tile_entry(nx, span.ty, nz, other)) continue;
                 if (out_other_level) *out_other_level = other;
                 return true;
             }
@@ -5736,12 +5861,13 @@ void WorldSession::Impl::note_drawn_level_violation(const SectorKey& key) {
     ++seam_counters.drawn_level_violations;
     if (seam_counters.drawn_level_violations > 16) return;
     fprintf(stderr,
-            "[stream] sector (%lld,%lld r%d) shown at level %d beside a DRAWN "
+            "[stream] sector (%lld,%lld,%lld r%d) shown at level %d beside a "
+            "DRAWN "
             "level-%d face neighbour -- the +-1 drawn invariant is broken, "
             "which means staged refinement let a multi-level jump through "
             "(the welder spans exactly one level, so this face gets no seam)\n",
-            (long long)key.tx, (long long)key.tz, key.rung,
-            sector_level_of(key.rung), other);
+            (long long)key.tx, (long long)key.ty, (long long)key.tz,
+            key.rung, sector_level_of(key.rung), other);
 }
 
 // Show every parked publication whose blocker has left.
@@ -5910,6 +6036,7 @@ bool WorldSession::Impl::apply_sector_evictions(
     for (const auto& eviction : evictions) {
         const SectorKey key{
             eviction.sector.tx,
+            eviction.sector.ty,
             eviction.sector.tz,
             eviction.sector.rung};
         const auto found = sector_map.find(key);
@@ -6420,10 +6547,28 @@ void WorldSession::Impl::bake_and_stage_sector(
         // keep their hashes only because WorldSector.js still declares
         // `edgeMask: 0` in its static params, which is what the merged params
         // now always resolve to. Delete the caches; do not try to migrate them.
+        // `ty` (volumetric-sectors M1) is in the identity from here on, and it
+        // is in it BEFORE anything reads it -- which is the point. WorldSector's
+        // build() ignores an undeclared param, so at ty = 0 this changes no
+        // baked triangle; what it changes is what the cache is keyed on. Once
+        // M2 tiles Y, a stack of tiles at one (tx, tz) differs in nothing else,
+        // so a cache keyed without ty would happily hand a tile 400 m up the
+        // artifact baked for the one at ground level. Landing the key change
+        // while it is provably inert means that if a stacked world ever comes
+        // back wrong, the cache key is not on the suspect list.
+        //
+        // CACHE CONSEQUENCE, expected and accepted: the merge in
+        // ScriptHost::merge_params_canonical is a union of static params and
+        // these overrides, so a new key changes the canonical params string and
+        // therefore EVERY streamed sector's hash -- not just the boundary tiles
+        // the edgeMask removal touched (M0 resolution R5). Every world cold
+        // bakes once. Taken now rather than at M2 for the same reason
+        // sector_instance_id mixes ty unconditionally: one attributable cold
+        // start beats one tangled up in a real change to what gets meshed.
         char params_buf[1024];
         std::snprintf(params_buf, sizeof(params_buf),
-            R"({"tx":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"sectorSize":%.6g,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
-            (long long)req.tx, (long long)req.tz,
+            R"({"tx":%lld,"ty":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"sectorSize":%.6g,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
+            (long long)req.tx, (long long)req.ty, (long long)req.tz,
             matter_stream::variant_scatter(req.rung),
             matter_stream::variant_terrain_lod(req.rung),
             (double)sector_size,
@@ -6854,6 +6999,7 @@ void WorldSession::Impl::bake_and_stage_sector(
                     PROFILE_SCOPE_NAMED(pub_ledger, "publish.ledger");
                     const SectorKey key{
                         request.sector.tx,
+                        request.sector.ty,
                         request.sector.tz,
                         request.sector.rung};
                     // Reject a stale same-tuple publication before PartStore can
@@ -6870,7 +7016,7 @@ void WorldSession::Impl::bake_and_stage_sector(
                     SectorEntry entry;
                     entry.request = request;
                     entry.instance_id = sector_instance_id(
-                        key.tx, key.tz, key.rung, sector_hash);
+                        key.tx, key.ty, key.tz, key.rung, sector_hash);
                     entry.part_hash = sector_hash;
                     // The 31-bit fold makes an id collision astronomically
                     // unlikely rather than impossible, and a collision would
