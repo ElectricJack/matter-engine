@@ -252,6 +252,24 @@ struct ViewerStats {
     // Intra-cell impostor parallax (Debug View panel). Default ON = the
     // shipped look; off is a measurement aid, not a fix.
     bool  impostor_parallax     = true;
+    // Freeze the STREAMING ANCHOR at wherever it is, so the camera stops
+    // dragging the terrain's level-of-detail around with it. Inspection aid:
+    // it lets you fly up to a seam and look at the exact geometry that was
+    // selected from a distance, instead of watching the tiles refine out from
+    // under you as you approach.
+    //
+    // Gated at the update_sector_streaming call site rather than by clearing
+    // StreamingAnchorState::follow_editor_camera, because that flag also
+    // decides whether the anchor gizmo is draggable
+    // (streaming_anchor_controller.cpp: gizmo_translation_allowed) -- freezing
+    // the view should not silently hand the anchor to the gizmo.
+    //
+    // What this does NOT freeze: the virtual texture (pages stay demand-driven
+    // off the real camera, which is what you want -- you are flying in to LOOK
+    // at the surface), and the GPU cull's per-cluster rung, which still comes
+    // from projected size. Force that separately with the draw.overrides
+    // per-module LOD if a part's own ladder is what you are chasing.
+    bool  freeze_stream_anchor  = false;
     // Sub-pixel floor cull (RenderOptions::min_projected_size). A part whose
     // projected size falls below this is floor-culled at RESOLVE time, so its
     // instances are never created -- they never reach cull.instances, the
@@ -480,8 +498,11 @@ public:
     // via WorldSession::sea_level, which only succeeds for world-kind).
     // Returns true only on the call that actually created the anchor.
     bool ensure_streaming_anchor(matter::WorldSession& session);
+    // `follow == false` (ViewerStats::freeze_stream_anchor) leaves the anchor
+    // where it is; the anchor's validation still runs.
     void update_sector_streaming(matter::WorldSession& session,
-                                 const matter::CameraDesc& camera);
+                                 const matter::CameraDesc& camera,
+                                 bool follow);
     // draw_sector_streaming_panel retired in Phase 4 Task 12: sector streaming
     // editing now lives in the Properties panel via SpecializedEditors
     // (see MatterEditor/src/specialized_editors.h). update_sector_streaming above

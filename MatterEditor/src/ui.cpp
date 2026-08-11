@@ -1909,13 +1909,19 @@ bool Ui::ensure_streaming_anchor(matter::WorldSession& session) {
 }
 
 void Ui::update_sector_streaming(matter::WorldSession& session,
-                                 const matter::CameraDesc& camera) {
+                                 const matter::CameraDesc& camera,
+                                 bool follow) {
     flecs::world& world = session.ecs();
     const flecs::entity_t selected_before = streaming_anchor_.selected;
     matter_viewer::validate_anchor(streaming_anchor_, world);
     if (selected_before != 0 && streaming_anchor_.selected == 0) {
         anchor_id_input_ = 0;
     }
+    // `follow == false` is ViewerStats::freeze_stream_anchor. Validation above
+    // still runs every frame -- a world reload has to drop the stale selection
+    // whether or not the anchor is frozen, or unfreezing would push the camera
+    // into an entity that no longer exists.
+    if (!follow) return;
     const float camera_position[3] = {
         camera.position.x, camera.position.y, camera.position.z};
     matter_viewer::follow_camera(streaming_anchor_, world, camera_position);

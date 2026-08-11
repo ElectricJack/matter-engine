@@ -676,14 +676,72 @@ struct Totals {
     long long crossings = 0, quads = 0, tris = 0, missing = 0, degen = 0,
               conflicts = 0, welds = 0, emitted = 0;
     long long miss_fixture = 0, miss_coarse = 0, miss_extent = 0, miss_fine = 0;
+    // [8] shading: geometric normal vs the corners' averaged stored normals.
+    long long wind_checked = 0, wind_wrong = 0;
+    double    wind_worst = 1.0;
+    // The same three over the band-less welds the suite already builds, which
+    // is what splits a fan defect from a band defect.
+    long long fan_checked = 0, fan_wrong = 0;
+    double    fan_worst = 1.0;
+    // Severity split. A fan triangle legitimately bridges two surfaces half a
+    // coarse voxel apart, so one that is nearly perpendicular to both endpoint
+    // normals has a dot whose SIGN is noise -- counting it as "backwards" would
+    // make this gate an opinion about steepness. `severe` is dot < -0.5, which
+    // no bridging triangle reaches and only an actual reversal does.
+    long long wind_severe = 0, fan_severe = 0;
 };
 static Totals g_tot;
 
-static void account(const seam::WeldStats& s, size_t emitted_tris) {
+// Every triangle's geometric normal (from its winding) must agree with the mean
+// of its three corners' stored normals -- the same check seam_weld_tests.cpp [4]
+// applies to the fan.
+//
+// WHY IT IS REPEATED HERE. That one runs on `make_pairing`, a synthetic pairing
+// built from an analytic density, and a synthetic pairing has no `band`: it
+// tests the FAN's `reverse_frame` table and nothing else. The OVERLAP BAND
+// (M0-WP7) reaches the welder already triangulated by the mesher and is copied
+// verbatim -- "the welder does not reconstruct, filter or re-wind a band" -- so
+// its winding has never been checked against anything, and it is the bulk of
+// the emitted area. This suite welds REAL mesher records with real bands, which
+// makes it the only place the band's own orientation is testable.
+//
+// Slivers with no defined plane, and corners whose normals cancel, are skipped
+// rather than guessed at.
+static void account_winding(const seam::WeldMesh& m, bool fan_only = false) {
+    long long* checked = fan_only ? &g_tot.fan_checked : &g_tot.wind_checked;
+    long long* wrong   = fan_only ? &g_tot.fan_wrong   : &g_tot.wind_wrong;
+    double*    worst   = fan_only ? &g_tot.fan_worst   : &g_tot.wind_worst;
+    for (const seam::WeldBucket& b : m.buckets)
+        for (size_t t = 0; t * 9 < b.positions.size(); ++t) {
+            const float* P = &b.positions[t * 9];
+            const float* N = &b.normals[t * 9];
+            const double e1[3] = {P[3]-P[0], P[4]-P[1], P[5]-P[2]};
+            const double e2[3] = {P[6]-P[0], P[7]-P[1], P[8]-P[2]};
+            const double g[3] = {e1[1]*e2[2] - e1[2]*e2[1],
+                                 e1[2]*e2[0] - e1[0]*e2[2],
+                                 e1[0]*e2[1] - e1[1]*e2[0]};
+            const double gl = std::sqrt(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+            if (gl < 1e-12) continue;
+            double mn[3] = {0, 0, 0};
+            for (int v = 0; v < 3; ++v)
+                for (int c = 0; c < 3; ++c) mn[c] += N[v*3 + c];
+            const double ml = std::sqrt(mn[0]*mn[0] + mn[1]*mn[1] + mn[2]*mn[2]);
+            if (ml < 1e-6) continue;
+            const double dot = (g[0]*mn[0] + g[1]*mn[1] + g[2]*mn[2]) / (gl * ml);
+            ++*checked;
+            if (dot <= 0) ++*wrong;
+            if (dot < -0.5) ++(fan_only ? g_tot.fan_severe : g_tot.wind_severe);
+            *worst = std::min(*worst, dot);
+        }
+}
+
+static void account(const seam::WeldStats& s, const seam::WeldMesh& m) {
     g_tot.crossings += s.crossings; g_tot.quads += s.quads; g_tot.tris += s.tris;
     g_tot.missing += s.missing_landing; g_tot.degen += s.degenerate;
-    g_tot.conflicts += s.sign_conflicts; g_tot.emitted += (long long)emitted_tris;
+    g_tot.conflicts += s.sign_conflicts;
+    g_tot.emitted += (long long)m.triangle_count();
     ++g_tot.welds;
+    account_winding(m);
 }
 
 static void print_stats(const char* tag, const seam::WeldStats& s, size_t tris) {
@@ -823,7 +881,7 @@ static void run_neg_x(const FieldRuntime& f, const char* field_name,
         CHECK(ws.band_tris == int(band.triangle_count()),
               "-x weld: the band is emitted VERBATIM -- every triangle, none "
               "added, none filtered");
-        account(ws, wm.triangle_count());
+        account(ws, wm);
 
         // The same weld with the band withheld. Not a second configuration --
         // the same two tiles -- purely so the scan below can separate what the
@@ -832,6 +890,7 @@ static void run_neg_x(const FieldRuntime& f, const char* field_name,
         seam::WeldMesh wf; seam::WeldStats wsf;
         CHECK(weld_pair(0, neg, pos_nb, fb, seam::kFaceNegX, wf, wsf, err),
               err.c_str());
+        account_winding(wf, /*fan_only=*/true);
         CHECK(wsf.band_tris == 0 && wsf.crossings == ws.crossings &&
               wsf.quads == ws.quads && wsf.tris == ws.tris,
               "-x weld: the band changes NOTHING about the fan -- same crossings, "
@@ -904,12 +963,13 @@ static void run_neg_z(const FieldRuntime& f, const char* field_name,
         CHECK(ws.crossings == ws.accounted(), "-z weld: every crossing accounted");
         CHECK(ws.band_tris == int(band.triangle_count()),
               "-z weld: the band is emitted verbatim");
-        account(ws, wm.triangle_count());
+        account(ws, wm);
 
         seam::WeldSide pos_nb = side_of(-L, {&fb.faces[seam::kFaceNegZ]});
         seam::WeldMesh wf; seam::WeldStats wsf;
         CHECK(weld_pair(2, neg, pos_nb, fb, seam::kFaceNegZ, wf, wsf, err),
               err.c_str());
+        account_winding(wf, /*fan_only=*/true);
         CHECK(wsf.band_tris == 0 && wsf.crossings == ws.crossings &&
               wsf.quads == ws.quads && wsf.tris == ws.tris,
               "-z weld: the band changes nothing about the fan");
@@ -1032,8 +1092,8 @@ static void run_corner_and_partition(const FieldRuntime& f, const char* field_na
                           w1, s1, err), err.c_str());
     CHECK(seam::weld_face(0, neg, both, a_lo, a_hi + 1, b0_lo, b1_hi + 1,
                           wall, sall, err), err.c_str());
-    account(s0, w0.triangle_count());
-    account(s1, w1.triangle_count());
+    account(s0, w0);
+    account(s1, w1);
 
     // --- 5. no double emission ---------------------------------------------
     auto tri_set = [](const seam::WeldMesh& m, std::vector<std::array<float, 9>>& out) {
@@ -1197,7 +1257,7 @@ static void run_neg_y(const FieldRuntime& f, const char* field_name,
         CHECK(ws.crossings == ws.accounted(), "-y weld: every crossing accounted");
         CHECK(ws.band_tris == int(band.triangle_count()),
               "-y weld: the band is emitted VERBATIM");
-        account(ws, wm.triangle_count());
+        account(ws, wm);
 
         // The same weld with the band withheld, so the scan can separate what
         // the vertex fan closes from what the band closes.
@@ -1205,6 +1265,7 @@ static void run_neg_y(const FieldRuntime& f, const char* field_name,
         seam::WeldMesh wf; seam::WeldStats wsf;
         CHECK(weld_pair(1, neg, pos_nb, fb, seam::kFaceNegY, wf, wsf, err),
               err.c_str());
+        account_winding(wf, /*fan_only=*/true);
         CHECK(wsf.band_tris == 0 && wsf.crossings == ws.crossings &&
               wsf.quads == ws.quads && wsf.tris == ws.tris,
               "-y weld: the band changes NOTHING about the fan");
@@ -1326,8 +1387,8 @@ static void run_x_plane_split_in_y(const FieldRuntime& f, const char* field_name
                           w1, s1, err), err.c_str());
     CHECK(seam::weld_face(0, neg, both, a0_lo, a1_hi + 1, b_lo, b_hi + 1,
                           wall, sall, err), err.c_str());
-    account(s0, w0.triangle_count());
-    account(s1, w1.triangle_count());
+    account(s0, w0);
+    account(s1, w1);
 
     auto tri_set = [](const seam::WeldMesh& m, std::vector<std::array<float, 9>>& o) {
         for (const seam::WeldBucket& b : m.buckets)
@@ -1509,7 +1570,7 @@ int main() {
             CHECK(weld_pair(0, neg, pos, fb, seam::kFaceNegX, w_co, s_co, err),
                   err.c_str());
         }
-        account(s_co, w_co.triangle_count());
+        account(s_co, w_co);
         CHECK(w_eq.triangle_count() == 0 && s_eq.crossings == 0 &&
               s_eq.band_tris == 0,
               "(4a) the equal-level pairing welds NOTHING -- not the fan and NOT "
@@ -1585,7 +1646,7 @@ int main() {
             CHECK(weld_pair(2, neg, pos, gb, seam::kFaceNegZ, wz, sz, err),
                   err.c_str());
         }
-        account(sx, wx.triangle_count());
+        account(sx, wx);
         CHECK(sx.crossings > 0 && sx.sign_conflicts == 0,
               "(4b) the cross-level -x face welds, with no sign conflicts");
         CHECK(sx.band_tris == int(gb.faces[seam::kFaceNegX].band.triangle_count()),
@@ -1728,6 +1789,29 @@ int main() {
           "the vertex fan SUPPLEMENTS the band at no cost in double surface: on "
           "every scan it lies within the overlap the band creates on its own, "
           "because it interpolates between the two tiles' own boundary vertices");
+
+    // =======================================================================
+    // [8] SHADING ORIENTATION. Coverage says a seam is closed; it says nothing
+    // about whether the geometry that closes it faces the right way. Issue
+    // ec2829d6 was filed as "gaps" and turned out to be weld strips rendering
+    // dark, which every coverage gate in this file passes without noticing --
+    // so the orientation of what the welder emits is now asserted here, over
+    // REAL mesher records with their bands attached (see account_winding).
+    // =======================================================================
+    printf("  [8] SHADING: %lld emitted triangles testable, %lld with the "
+           "geometric normal opposed to their corners' averaged normals, worst "
+           "cos = %.4f\n",
+           g_tot.wind_checked, g_tot.wind_wrong, g_tot.wind_worst);
+    printf("      SEVERE (cos < -0.5, a real reversal rather than a steep "
+           "bridge): %lld\n", g_tot.wind_severe);
+    printf("      fan only (same pairs, band withheld): %lld testable, %lld "
+           "opposed (%lld severe), worst cos = %.4f\n",
+           g_tot.fan_checked, g_tot.fan_wrong, g_tot.fan_severe,
+           g_tot.fan_worst);
+    CHECK(g_tot.wind_severe == 0,
+          "every emitted weld triangle -- fan AND band -- is wound to agree "
+          "with the stored normals it carries, so it shades as the surface it "
+          "joins rather than as a back face");
 
     printf("  [7] VERDICT: zero-gap restored in %d of %d welded scans"
            " (mesh-only was gapped in every one of them).\n",

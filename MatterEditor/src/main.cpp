@@ -3086,7 +3086,8 @@ int main() {
         // installs a fresh Flecs world) transparently re-creates the anchor. A
         // no-op for closed-world sessions.
         if (bake_ready) ui.ensure_streaming_anchor(*session);
-        ui.update_sector_streaming(*session, frame_camera);
+        ui.update_sector_streaming(*session, frame_camera,
+                                   !stats.freeze_stream_anchor);
         matter::TickDesc tick{};
         // Slow motion scales the frame delta only. fixed_delta_seconds is left
         // alone so the fixed step keeps its size and simply occurs less often;

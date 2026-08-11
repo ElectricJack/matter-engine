@@ -674,7 +674,15 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "devices without VkPhysicalDeviceFeatures::fillModeNonSolid."),
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
         .label("Volumetric view").enums(kVolDebugLabels, 6)
-        .doc("Only meaningful while volumetrics are enabled."));
+        .doc("Only meaningful while volumetrics are enabled."),
+    prop(&ViewerStats::freeze_stream_anchor, "freeze_stream_anchor")
+        .label("Freeze terrain streaming")
+        .doc("Stop the camera from dragging the streaming anchor, so sector "
+             "levels, the drawn tile set and the seam welds all hold where "
+             "they are. Fly in to inspect the geometry that was chosen from a "
+             "distance instead of watching it refine as you approach. The "
+             "virtual texture still follows the real camera, and so does the "
+             "GPU cull's per-cluster rung."));
 
 // ---- render.gpu ----------------------------------------------------------
 //
