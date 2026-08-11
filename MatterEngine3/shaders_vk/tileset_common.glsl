@@ -271,9 +271,15 @@ vec3 tileset_blend_normal_detail(vec3 base_ts, vec3 detail_ts) {
 // `issues/render-ground-normal-green-inverted` stays a five-line change
 // instead of gaining a special case.
 //
-// The frames are sign-independent, so content on a -X face is mirrored w.r.t.
-// a +X face. That is the accepted tier-1 tradeoff vt_composite.comp already
-// documents; for stochastic rock/scree detail it is invisible.
+// The frames as TABULATED are sign-independent, so content on a -X face is
+// mirrored w.r.t. a +X face. That is the accepted tier-1 tradeoff
+// vt_composite.comp already documents; for stochastic rock/scree detail it is
+// invisible.
+//
+// The NORMAL reconstruction is not allowed the same latitude and applies a
+// hemisphere sign to T and N at the point of use -- see the long note in
+// tileset_sample_ground_triplanar. Sign-independent content is a mirrored
+// texture; a sign-independent normal is a 180-degree lighting error.
 const vec3 kTriplanarT[3] =
     vec3[3](vec3(0, 0, 1), vec3(1, 0, 0), vec3(1, 0, 0));
 const vec3 kTriplanarB[3] =
@@ -384,9 +390,46 @@ vec3 tileset_sample_ground_triplanar(int slot, vec3 world_pos, vec3 geo_normal,
         if (ax == 1) {
             nrm_ws += wa * tileset_rotate_normal(vec3(rg, rz), n);
         } else {
-            nrm_ws += wa * (kTriplanarT[ax] * rg.x +
+            // HEMISPHERE. `rz` is sqrt(1 - |rg|^2), so it is >= 0 always, and
+            // kTriplanarN[ax] is the POSITIVE cardinal axis. Reconstructing
+            // against it unsigned makes the X and Z taps return a normal
+            // pointing +X / +Z whichever way the surface actually faces -- on a
+            // -Z-facing wall steep enough for the Z tap to carry most of the
+            // |n|^4 weight, the result is very nearly the exact opposite of the
+            // surface. N.L then goes negative, the diffuse sun term vanishes,
+            // and the fragment renders on sky ambient alone: black.
+            //
+            // The sign-independence noted above the frame tables is about
+            // CONTENT (a -X face samples the same texels as a +X face, mirrored)
+            // and is a real tradeoff. This is not that. A mirrored albedo is
+            // invisible on stochastic detail; a 180-degree normal is a hole in
+            // the lighting.
+            //
+            // Flip T with N rather than B, for two reasons. cross(T, B) == N
+            // holds on all three rows, so negating N alone would leave a
+            // left-handed frame and light the bumps backwards; negating T with
+            // it restores cross(-T, B) == -N. And B carries the deliberately
+            // inverted green convention documented above the tables -- the
+            // five-site flip that `issues/render-ground-normal-green-inverted`
+            // owns -- so it must not acquire a special case here.
+            //
+            // Inert wherever the shader was already correct: +X/+Z faces take
+            // s = +1 and are bit-identical, and the Y tap is untouched, so flat
+            // ground does not move. The discontinuity at n.x == 0 / n.z == 0 is
+            // unreachable: that axis's weight is |n|^4 there, far below
+            // kTriplanarCutoff, so the tap is dropped before the sign matters.
+            //
+            // Found via the seam welds (issues ec2829d6 / 81dd722b), which were
+            // the only ground on screen taking this path at all -- every staged
+            // terrain sector carries a warp frame and goes through
+            // tileset_sample_ground_warp instead, while build_weld_part leaves
+            // warp_uv/warp_tangent/warp_scales zeroed. The defect is general to
+            // any chartless part on a steep -X/-Z face, not specific to welds.
+            float s = (ax == 0) ? (n.x >= 0.0 ? 1.0 : -1.0)
+                                : (n.z >= 0.0 ? 1.0 : -1.0);
+            nrm_ws += wa * (kTriplanarT[ax] * (rg.x * s) +
                             kTriplanarB[ax] * rg.y +
-                            kTriplanarN[ax] * rz);
+                            kTriplanarN[ax] * (rz * s));
         }
     }
     normal_ws = normalize(nrm_ws);
