@@ -1437,6 +1437,11 @@ int main() {
         uint64_t level_gap_pairs = UINT64_MAX;
         uint64_t build_errors = UINT64_MAX;
         uint64_t level_holds = UINT64_MAX;
+        // The merge direction's own mechanism (evictions deferred to keep a
+        // parked coarse newcomer covered). In the change key because a row that
+        // shows a violation without showing whether the hold fired cannot say
+        // which of the two mechanisms was in play.
+        uint64_t merge_coverage_holds = UINT64_MAX;
         uint64_t drawn_level_violations = UINT64_MAX;
         uint64_t drawn_without_record = UINT64_MAX;
         uint64_t register_failures = UINT64_MAX;
@@ -1453,6 +1458,7 @@ int main() {
                    level_gap_pairs != o.level_gap_pairs ||
                    build_errors != o.build_errors ||
                    level_holds != o.level_holds ||
+                   merge_coverage_holds != o.merge_coverage_holds ||
                    drawn_level_violations != o.drawn_level_violations ||
                    drawn_without_record != o.drawn_without_record ||
                    register_failures != o.register_failures ||
@@ -1532,6 +1538,11 @@ int main() {
                     (unsigned long long)s.drawn_without_record);
         std::printf("  level_holds                %llu\n",
                     (unsigned long long)s.level_holds);
+        // A PARK count (level_holds) and an EVICTION-DEFERRAL count
+        // (merge_coverage_holds) are two different mechanisms on two different
+        // tiles; printed apart so a run can attribute what closed the gap.
+        std::printf("  merge_coverage_holds       %llu\n",
+                    (unsigned long long)s.merge_coverage_holds);
         std::printf("  drawn_level_violations     %llu",
                     (unsigned long long)s.drawn_level_violations);
         if (seam_run.first_level_violation >= 0)
@@ -3453,6 +3464,7 @@ int main() {
             key.level_gap_pairs = s.level_gap_pairs;
             key.build_errors = s.build_errors;
             key.level_holds = s.level_holds;
+            key.merge_coverage_holds = s.merge_coverage_holds;
             key.drawn_level_violations = s.drawn_level_violations;
             key.drawn_without_record = s.drawn_without_record;
             key.register_failures = s.register_failures;
@@ -3464,7 +3476,8 @@ int main() {
                     "[seam] #f%llu eye=(%.0f,%.0f,%.0f) sect=%u pairs=%d "
                     "drawn=%d parts=%d tri=%llu dtri=%llu | cross=%d q=%d t=%d "
                     "miss=%d sign=%d degen=%d fine_inc=%d coarse_null=%d | "
-                    "gap=%llu err=%llu holds=%llu viol=%llu norec=%llu "
+                    "gap=%llu err=%llu holds=%llu mholds=%llu viol=%llu "
+                    "norec=%llu "
                     "reg=%llu rel=%llu noop=%llu regfail=%llu hcol=%llu "
                     "icol=%llu peak=%d\n",
                     (unsigned long long)label, frame_camera.position.x,
@@ -3477,6 +3490,7 @@ int main() {
                     (unsigned long long)s.level_gap_pairs,
                     (unsigned long long)s.build_errors,
                     (unsigned long long)s.level_holds,
+                    (unsigned long long)s.merge_coverage_holds,
                     (unsigned long long)s.drawn_level_violations,
                     (unsigned long long)s.drawn_without_record,
                     (unsigned long long)s.parts_registered,

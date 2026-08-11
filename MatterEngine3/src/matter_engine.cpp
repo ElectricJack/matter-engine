@@ -984,9 +984,25 @@ struct WorldSession::Impl {
     bool clear_streaming_profile(
         std::string& err,
         bool restore_on_failure = true);
+    // What an eviction batch may do with the merge-coverage eviction stash.
+    // Declared up here only because apply_sector_evictions takes one; the
+    // mechanism, and why it has three states rather than a bool, is documented
+    // on DeferredEviction next to the stash itself.
+    //
+    //   Allow  the ordinary streaming batch: retry the stash at the head, and
+    //          defer anew from this batch.
+    //   Flush  the require_empty barrier (clear_streaming_profile): retry the
+    //          stash and apply everything, because the caller's postcondition
+    //          is an EMPTY sector_map and a held eviction would fail it.
+    //   None   a publication rollback, and the targeted pre-publish flush.
+    //          Neither may touch the stash: the rollback is undoing a ledger
+    //          insert that has nothing to do with these holds, and the flush
+    //          has already removed exactly the entries it wants applied.
+    enum class DeferMode { Allow, Flush, None };
     bool apply_sector_evictions(
         const std::vector<streaming::detail::TaggedEviction>& evictions,
-        std::string& err);
+        std::string& err,
+        DeferMode mode = DeferMode::Allow);
     // batch: when non-null the entry's world-state removal is APPENDED to it
     // and the caller applies one delta for the whole eviction batch. See the
     // definition -- per-entry was an 841 ms render-thread stall.
@@ -1353,6 +1369,97 @@ struct WorldSession::Impl {
     int parked_sectors = 0;
     void unpark_ready_sectors();
 
+    // ---- Merge-coverage eviction holds (resolution R13, closing paragraph) --
+    //
+    // The MERGE direction of the drawn +-1 defect, and the reason it needs its
+    // own mechanism rather than another park clause.
+    //
+    // A multi-level merge lands one coarse tile K while the neighbouring
+    // footprint still draws tiles two or more levels finer. K is parked at
+    // publish (its own footprint is still covered by the fine tiles it
+    // replaces), so nothing is wrong yet -- and then the streamer evicts those
+    // fine tiles, which is exactly the event that unparks K. K becomes drawn
+    // beside a >= 2-level neighbour, the welder correctly refuses to span it
+    // (level_gap_pairs stays 0), and that face draws with no seam.
+    //
+    // PARKING K LONGER IS NOT AVAILABLE. The transition-group hold releases on
+    // RESIDENCY, not drawn-ness (sector_streamer.cpp tests `resident_rung < 0`,
+    // and the publish path acks even when parked), so the eviction that removes
+    // K's cover is the same event that would have to be waited on. Holding K
+    // past it leaves its whole footprint -- 16 base tiles for a four-level
+    // merge -- EMPTY for a full bake skew, capped only by kMaxParkedTime. It
+    // would also be the first park clause that is not the coverage test, which
+    // is what makes `parked => covered` hold unconditionally today.
+    //
+    // So the coverage is held instead of the newcomer: the EVICTION of a drawn
+    // fine tile is deferred while its parked coarser ancestor would violate the
+    // invariant if shown. K then stays parked for free under the existing
+    // `blocked` clause, no new park clause exists, and `parked => covered` is
+    // preserved by construction -- a deferred eviction can only ever ADD to the
+    // drawn set relative to applying it, and coverage is monotone in that set.
+    //
+    // A TaggedEviction is a value snapshot (owner/generation/issuance plus the
+    // sector tuple), so retaining one is safe; `same_publication_tag` still
+    // guards it against a newer resident occupying the same tuple when it is
+    // finally applied.
+    struct DeferredEviction {
+        streaming::detail::TaggedEviction eviction{};
+        // WALL TIME, for the same reason kMaxParkedTime is (see above): what is
+        // being waited on is a neighbour's BAKE, which has no fixed
+        // relationship to a step count. Preserved across retries, so the valve
+        // measures the whole hold rather than the last batch.
+        std::chrono::steady_clock::time_point deferred_at{};
+    };
+    // A/B kill switch for the merge-coverage hold ALONE, in the family of
+    // MATTER_NO_SEAM_WELD and MATTER_STREAM_NO_LATERAL, and for the same
+    // reason those exist: the evidence that decides this mechanism is a
+    // captured editor flight measured against settled residency, and R10 says
+    // a soak whose two arms settled differently is not a comparison. Two arms
+    // of ONE binary at matched frame rate is the only A/B that has ever
+    // settled anything here.
+    //
+    // With MATTER_NO_MERGE_DEFER=1, DeferMode::Allow is never chosen, so the
+    // stash is never populated, the retry hook never arms, and the eviction
+    // loop is byte-for-byte the pre-hold path (one extra bool test).
+    bool merge_defer_enabled = [] {
+        const char* env = std::getenv("MATTER_NO_MERGE_DEFER");
+        const bool off = env != nullptr && env[0] == '1';
+        // Self-report so a diagnostic run can prove the toggle reached this
+        // exe -- env prefixes and stale builds have burned that assumption
+        // before (worktree-bootstrap gotcha #8).
+        if (off)
+            std::fprintf(stderr,
+                         "[stream] MATTER_NO_MERGE_DEFER=1: the merge-coverage "
+                         "eviction hold is DISABLED (A/B baseline)\n");
+        return !off;
+    }();
+    std::vector<DeferredEviction> deferred_evictions;
+    // Mirror of deferred_evictions.size(), maintained for the same reason
+    // parked_sectors is: drain_sector_evictions asks "is there anything to
+    // retry?" from outside the GpuJob, and that question must cost one int
+    // compare and must not read a vector another job may be mutating.
+    int deferred_sector_evictions = 0;
+    // A stash this size is not a hold any more, it is a leak; warned about once
+    // with the numbers a reader needs. The structural expectation is a handful
+    // of tiles per merge in flight (16 base tiles for one four-level merge),
+    // and the 30 s valve drains anything that genuinely sticks.
+    static constexpr int kDeferredEvictionAlarm = 512;
+    // The <= 6-probe walk up sector_tile_index for a PARKED coarser ancestor of
+    // `key`. This is the cheap guard that keeps the face enumeration off the
+    // eviction hot path (issues/bfb5f13e lives in that loop).
+    const SectorEntry* parked_ancestor_of(const SectorKey& key,
+                                          SectorKey* out) const;
+    // Apply any deferred eviction naming exactly `key`, immediately.
+    //
+    // Load-bearing rather than tidiness: the streamer erases a sector from its
+    // own ledger the moment it emits the eviction (sector_streamer.cpp's
+    // to_erase), so while the engine holds one it can be re-requested, and the
+    // publish path hard-fails a same-tuple publication ("stale sector
+    // publication collided with app residency"). Worse, a re-request carries a
+    // NEW issuance, so the retained eviction would then fail same_publication_tag
+    // and the entry would never leave. One int compare when nothing is held.
+    void flush_deferred_eviction_for(const SectorKey& key);
+
     // ---- Seam welding (volumetric-sectors M0-WP3a) --------------------------
     //
     // The boundary record of a tile that is actually DRAWN, or null.
@@ -1713,6 +1820,13 @@ struct WorldSession::Impl {
         uint64_t build_errors = 0;
         uint64_t drawn_level_violations = 0;
         uint64_t level_holds = 0;
+        // Evictions deferred to keep a parked coarse newcomer covered (R13's
+        // merge direction). DISTINCT FROM level_holds, which is a publish/unpark
+        // PARK count on the tile that is being withheld -- this one counts the
+        // opposite mechanism acting on a different tile, and the soak has to be
+        // able to tell them apart. Counted once per eviction on first deferral,
+        // not per retry: a retry every batch would make it a frame counter.
+        uint64_t merge_coverage_holds = 0;
         // ---- draw-side (M0-WP8) --------------------------------------------
         uint64_t parts_registered = 0;   // ensure_part calls that took
         uint64_t parts_released = 0;     // release_part calls
@@ -1856,8 +1970,22 @@ struct WorldSession::Impl {
     // §4.5 half 2 -- the drawn +-1 backstop. True when some DRAWN tile touching
     // `key` across one of its faces is two or more levels away, which is
     // outside the welder's domain entirely (§4.4) and is also the 8x detail pop.
-    bool sector_drawn_level_conflict(const SectorKey& key,
-                                     int* out_other_level = nullptr) const;
+    //
+    // `ignore`, when non-null, is a set of keys to treat as NOT drawn -- the
+    // tiles an eviction batch is about to remove. It exists for exactly one
+    // caller (the merge-coverage hold below) and it is what makes that hold
+    // deadlock-free; see the definition. Null for every other caller, at the
+    // cost of one null compare per probe.
+    //
+    // `out_other_key` names the offending neighbour. It exists for the
+    // violation classifier: "which tile" is what separates a merge-direction
+    // violation from a refine-direction one, and separates a conflict this
+    // session is itself holding drawn from one it is not.
+    bool sector_drawn_level_conflict(
+        const SectorKey& key,
+        int* out_other_level = nullptr,
+        const std::unordered_set<SectorKey, SectorKeyHash>* ignore = nullptr,
+        SectorKey* out_other_key = nullptr) const;
     // The gate as it is actually applied: a level conflict may only WITHHOLD a
     // tile whose footprint some drawn tile is still covering. See the definition
     // for why that qualifier is not optional.
@@ -1865,7 +1993,38 @@ struct WorldSession::Impl {
     // Count (and, for the first few, log) a tile that became drawn anyway with
     // a >= 2-level drawn face neighbour. Called at the two sites a tile enters
     // the world state.
-    void note_drawn_level_violation(const SectorKey& key);
+    //
+    // CLASSIFIED, because "3 violations" is not a diagnosis. The first soak of
+    // the merge-coverage hold fired 79 holds and moved the count by zero, and
+    // no counter in the tree could say whether that was the wrong subclass,
+    // the wrong tile, or the hold creating as many as it closed. Four facts
+    // settle it, and all four are free at the moment of the count:
+    //
+    //   site       publish | unpark -- WHERE a tile enters the drawn set.
+    //   direction  merge (this tile is the COARSE newcomer, own level >
+    //              neighbour's) or refine (this tile is the FINE newcomer).
+    //              The hold addresses merge ONLY; a refine-classified
+    //              violation is R13's lateral term, not this mechanism.
+    //   co-unpark  the offending neighbour became drawn in the SAME
+    //              unpark_ready_sectors pass. That pass marks every entry it
+    //              shows drawn before any of them is checked, so two parked
+    //              entries >= 2 levels apart can be shown together -- a
+    //              conflict that did not exist in the drawn set when the
+    //              eviction was tested, and therefore one clause (d) is
+    //              structurally blind to.
+    //   held       the offending neighbour is a tile THIS session is holding
+    //              drawn (its eviction is in the stash). That is the hold
+    //              causing the violation it exists to prevent, and it is the
+    //              one outcome that would argue for reverting rather than
+    //              extending.
+    //
+    // `co_shown` is the unpark pass's shown list, or null at the publish site.
+    // Scanned linearly and only AFTER a conflict is found, so a pass with no
+    // violation pays nothing for it.
+    void note_drawn_level_violation(
+        const SectorKey& key,
+        const char* site,
+        const std::vector<SectorKey>* co_shown = nullptr);
 
     // Instance id for a streamed sector placement: CONTENT-DERIVED, never an
     // allocation counter.
@@ -5808,8 +5967,11 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
 // chain; residency is not drawn-ness (parking is what stops the double draw),
 // but "staging is on" is not a proof about the drawn set, so this enumerates
 // every level rather than only +-2.
-bool WorldSession::Impl::sector_drawn_level_conflict(const SectorKey& key,
-                                                     int* out_other_level) const {
+bool WorldSession::Impl::sector_drawn_level_conflict(
+        const SectorKey& key,
+        int* out_other_level,
+        const std::unordered_set<SectorKey, SectorKeyHash>* ignore,
+        SectorKey* out_other_key) const {
     if (!world_nested_sectors) return false;
     const int level = sector_level_of(key.rung);
     for (const int face : kSeamFaces) {
@@ -5820,13 +5982,54 @@ bool WorldSession::Impl::sector_drawn_level_conflict(const SectorKey& key,
             for (int64_t t = span.tan_lo; t <= span.tan_hi; ++t) {
                 const int64_t nx = span.axis_x ? span.normal : t;
                 const int64_t nz = span.axis_x ? t : span.normal;
-                if (!drawn_tile_entry(nx, span.ty, nz, other)) continue;
+                SectorKey found{};
+                if (!drawn_tile_entry(nx, span.ty, nz, other, &found)) continue;
+                // Treat a tile this eviction batch is about to remove as
+                // already gone. Only the merge-coverage hold passes a set, and
+                // that substitution is the deadlock break -- see
+                // apply_sector_evictions.
+                if (ignore && ignore->count(found) != 0) continue;
                 if (out_other_level) *out_other_level = other;
+                if (out_other_key) *out_other_key = found;
                 return true;
             }
         }
     }
     return false;
+}
+
+// The parked coarser ancestor of `key`, or null.
+//
+// THE CHEAP GUARD of the merge-coverage hold, and the reason the face
+// enumeration never runs on an ordinary eviction burst. At most
+// kMaxLevel - level(key) probes -- six on this ladder -- each one hash lookup
+// into sector_tile_index plus a scan of the one-or-two rungs it holds.
+//
+// At most one ancestor can be parked in practice (a merge publishes one coarse
+// tile over the footprint), but the walk does not depend on that: it returns
+// the first it finds, and every ancestor it could find has the same footprint
+// relationship to `key`, so holding `key` covers any of them.
+const WorldSession::Impl::SectorEntry* WorldSession::Impl::parked_ancestor_of(
+        const SectorKey& key, SectorKey* out) const {
+    if (parked_sectors <= 0) return nullptr;
+    const int level = sector_level_of(key.rung);
+    if (level < 0 || level >= matter_stream::kMaxLevel) return nullptr;
+    for (int up = level + 1; up <= matter_stream::kMaxLevel; ++up) {
+        const int shift = up - level;
+        const TileXYZ tile{key.tx >> shift, key.ty >> shift, key.tz >> shift};
+        const auto it = sector_tile_index.find(tile);
+        if (it == sector_tile_index.end()) continue;
+        for (int rung : it->second) {
+            if (sector_level_of(rung) != up) continue;
+            const SectorKey ancestor{tile.tx, tile.ty, tile.tz, rung};
+            const auto entry = sector_map.find(ancestor);
+            if (entry == sector_map.end()) continue;
+            if (!entry->second.parked) continue;
+            if (out) *out = ancestor;
+            return &entry->second;
+        }
+    }
+    return nullptr;
 }
 
 // The gate as it is actually applied.
@@ -5854,20 +6057,69 @@ bool WorldSession::Impl::sector_level_hold(const SectorKey& key) const {
 // One line per tile that becomes drawn in violation of the +-1 invariant.
 // Firing this signals a STREAMER bug (staged refinement should make level
 // changes monotone coarse->fine per region), not an accepted race.
-void WorldSession::Impl::note_drawn_level_violation(const SectorKey& key) {
+void WorldSession::Impl::note_drawn_level_violation(
+        const SectorKey& key,
+        const char* site,
+        const std::vector<SectorKey>* co_shown) {
     if (!world_nested_sectors || !seam_welds_enabled) return;
     int other = 0;
-    if (!sector_drawn_level_conflict(key, &other)) return;
+    SectorKey other_key{};
+    if (!sector_drawn_level_conflict(key, &other, nullptr, &other_key)) return;
     ++seam_counters.drawn_level_violations;
     if (seam_counters.drawn_level_violations > 16) return;
+
+    // ---- the classification (see the declaration for why each fact) --------
+    const int level = sector_level_of(key.rung);
+    // Which side of the pair is the newcomer. A tile shown COARSER than its
+    // offending neighbour is the merge direction -- the coarse target landing
+    // beside a still-drawn fine footprint, which is what the merge-coverage
+    // hold exists to stop. Shown FINER is the refine direction, which is
+    // R13's lateral staging term's business and not this mechanism's.
+    const bool merge_direction = level > other;
+    // Did the neighbour become drawn in this very unpark pass? If so no
+    // eviction test could have seen the conflict: both entries were parked
+    // when the batch that released them ran, and the pass marks them all
+    // drawn together.
+    bool co_unparked = false;
+    if (co_shown) {
+        for (const SectorKey& shown_key : *co_shown) {
+            if (!(shown_key == other_key)) continue;
+            co_unparked = true;
+            break;
+        }
+    }
+    // Is the offender a tile this session is deliberately holding drawn? Then
+    // the hold is manufacturing the violation, not preventing it.
+    bool offender_held = false;
+    for (const auto& held : deferred_evictions) {
+        const auto& sector = held.eviction.sector;
+        if (sector.tx != other_key.tx || sector.ty != other_key.ty ||
+            sector.tz != other_key.tz || sector.rung != other_key.rung)
+            continue;
+        offender_held = true;
+        break;
+    }
+
     fprintf(stderr,
             "[stream] sector (%lld,%lld,%lld r%d) shown at level %d beside a "
-            "DRAWN "
-            "level-%d face neighbour -- the +-1 drawn invariant is broken, "
-            "which means staged refinement let a multi-level jump through "
-            "(the welder spans exactly one level, so this face gets no seam)\n",
+            "DRAWN level-%d face neighbour (%lld,%lld,%lld r%d) -- the +-1 "
+            "drawn invariant is broken (the welder spans exactly one level, so "
+            "this face gets no seam) | site=%s dir=%s co-unpark=%s "
+            "offender-held=%s holds-live=%d\n",
             (long long)key.tx, (long long)key.ty, (long long)key.tz,
-            key.rung, sector_level_of(key.rung), other);
+            key.rung, level, other,
+            (long long)other_key.tx, (long long)other_key.ty,
+            (long long)other_key.tz, other_key.rung,
+            site,
+            merge_direction ? "MERGE(this tile is the coarse newcomer)"
+                            : "REFINE(this tile is the fine newcomer)",
+            co_unparked ? "YES(same unpark pass -- no eviction test could see "
+                          "this conflict)"
+                        : "no",
+            offender_held ? "YES(the merge-coverage hold is keeping the "
+                            "offender drawn)"
+                          : "no",
+            deferred_sector_evictions);
 }
 
 // Show every parked publication whose blocker has left.
@@ -5989,7 +6241,12 @@ void WorldSession::Impl::unpark_ready_sectors() {
         WeldTxn weld_txn;
         weld_txn.delta = &delta;
         for (const SectorKey& shown_key : shown_keys) {
-            note_drawn_level_violation(shown_key);
+            // `shown_keys` is handed to the classifier so it can say whether
+            // the offending neighbour was shown by THIS pass. Every entry in
+            // it was marked drawn a few statements above, before any of them
+            // was checked, so a conflict between two of them is one no
+            // eviction-time test could have seen.
+            note_drawn_level_violation(shown_key, "unpark", &shown_keys);
             rebuild_welds_for(shown_key, weld_txn);
         }
         state.apply(delta);
@@ -5999,9 +6256,58 @@ void WorldSession::Impl::unpark_ready_sectors() {
     }
 }
 
+// Apply an eviction batch, less whatever this batch must HOLD to keep a parked
+// coarse newcomer covered (resolution R13's merge direction).
+//
+// THE PREDICATE. An eviction of tile F is deferred when all of:
+//
+//   (a) nested sectors and seam welding are on;
+//   (b) F is DRAWN (a parked or never-applied F covers nothing, so holding it
+//       would hold nothing);
+//   (c) F has a PARKED coarser ancestor K -- the <= 6-probe walk in
+//       parked_ancestor_of. F is inside K's footprint, so F being drawn is
+//       precisely why sector_blocked_by_visible(K) is true, i.e. why K is
+//       parked. Holding F holds K, with no new park clause anywhere;
+//   (d) K would violate the drawn +-1 invariant if it were shown now: some
+//       DRAWN face neighbour of K is two or more levels away AND is not itself
+//       leaving in this batch.
+//
+// ORDERED CHEAPEST-FIRST, and that ordering is not stylistic. This loop is the
+// one issues/bfb5f13e lives in -- a flying camera sustains ~12 evictions/frame
+// arriving in bursts of hundreds, and per-entry whole-world work here measured
+// 841 ms. (a) is two bools hoisted out of the loop; the `parked_sectors > 0`
+// test inside parked_ancestor_of is one int compare and is exact, because (c)
+// cannot hold with nothing parked; (b) is two loads on an entry the loop has
+// already found; (c) is a handful of hash probes; only (d) enumerates faces,
+// and only for a drawn tile that really does sit under a parked ancestor. The
+// key set (d) needs is built lazily for the same reason -- a batch that defers
+// nothing never allocates it.
+//
+// (d) IS THE DEADLOCK BREAK AND IS NOT OPTIONAL. Without it the symmetric case
+// wedges: coarse targets KA and KB are both parked, KA holds its fine tiles
+// because KB's are drawn, KB holds its fine tiles because KA's are drawn, and
+// only the 30 s valve resolves it. With it:
+//
+//   * both fine sets pending in one batch  -> each is invisible to the other's
+//     test, both release, both coarse targets unpark in the SAME
+//     unpark_ready_sectors pass that follows this batch;
+//   * KA resident first                    -> KA's fines are deferred; when
+//     KB's fines arrive later, the stash is retried AT THE HEAD of that batch,
+//     so both sets are in one working list and the first case applies.
+//
+// The wait is therefore on bake completion, which no deferral gates -- the
+// same trick sector_blocked_by_visible already uses when it refuses to let
+// parked entries block each other. What (d) does NOT model is a third party: a
+// neighbour's eviction that is in this batch but gets deferred for its OWN
+// reason still counts as leaving, so K can be released one batch early. That
+// fails towards a violation rather than towards a wedge, which is the correct
+// direction (kMaxParkedTime encodes the same ordering: an artifact beats a
+// stall) and the alternative is the fixed-point iteration that reintroduces
+// the deadlock this clause exists to remove.
 bool WorldSession::Impl::apply_sector_evictions(
     const std::vector<streaming::detail::TaggedEviction>& evictions,
-    std::string& err) {
+    std::string& err,
+    DeferMode mode) {
     matter_async::assert_gl_thread("stream.apply_evictions");
     // Evictions the streamer ASKED for, and the subset that actually removed a
     // sector. They differ whenever the publication-tag guard below drops one,
@@ -6033,18 +6339,115 @@ bool WorldSession::Impl::apply_sector_evictions(
     // loop measured 841 ms).
     std::vector<SectorKey> weld_dirty;
     PROFILE_SCOPE("stream.evict_batch");
-    for (const auto& eviction : evictions) {
-        const SectorKey key{
-            eviction.sector.tx,
-            eviction.sector.ty,
-            eviction.sector.tz,
-            eviction.sector.rung};
+
+    // (a), hoisted: three bools, once per batch rather than once per eviction.
+    const bool may_defer = (mode == DeferMode::Allow) && merge_defer_enabled &&
+                           world_nested_sectors && seam_welds_enabled;
+    // The stash is retried at the head of this batch. Taken by swap so that a
+    // re-deferral pushes onto a fresh vector and cannot invalidate the range
+    // being walked.
+    std::vector<DeferredEviction> retried;
+    if (mode != DeferMode::None && deferred_sector_evictions > 0) {
+        retried.swap(deferred_evictions);
+        deferred_sector_evictions = 0;
+    }
+    const auto eviction_key = [](
+            const streaming::detail::TaggedEviction& e) {
+        return SectorKey{e.sector.tx, e.sector.ty, e.sector.tz, e.sector.rung};
+    };
+    // Every key leaving in this batch, for clause (d). LAZY: built on the first
+    // candidate that gets past (a)-(c), which on a batch that defers nothing is
+    // never.
+    std::unordered_set<SectorKey, SectorKeyHash> leaving;
+    bool leaving_built = false;
+    const auto ensure_leaving = [&] {
+        if (leaving_built) return;
+        leaving_built = true;
+        leaving.reserve(retried.size() + evictions.size());
+        for (const auto& held : retried) leaving.insert(eviction_key(held.eviction));
+        for (const auto& e : evictions) leaving.insert(eviction_key(e));
+    };
+    const auto now = std::chrono::steady_clock::now();
+    uint64_t evictions_deferred = 0;
+
+    const auto process = [&](const streaming::detail::TaggedEviction& eviction,
+                             std::chrono::steady_clock::time_point since,
+                             bool first_sight) {
+        const SectorKey key = eviction_key(eviction);
         const auto found = sector_map.find(key);
         if (found == sector_map.end() ||
             !same_publication_tag(found->second.request, eviction)) {
             // A delayed old-generation/issuance eviction must never delete a
             // newer replacement occupying the same sector tuple.
-            continue;
+            return;
+        }
+
+        // ---- the merge-coverage hold (see the function comment) -------------
+        const SectorEntry& candidate = found->second;
+        SectorKey ancestor{};
+        if (may_defer &&
+            // (b) drawn
+            !candidate.parked && candidate.resources.world_state_attempted &&
+            // (c) parked coarser ancestor (this is the cheap guard; it
+            //     early-outs on `parked_sectors <= 0` before any probe)
+            parked_ancestor_of(key, &ancestor) != nullptr) {
+            ensure_leaving();
+            int other_level = 0;
+            // (d) the ancestor would violate the drawn +-1 invariant if shown
+            if (sector_drawn_level_conflict(ancestor, &other_level, &leaving)) {
+                const auto held_for = now - since;
+                if (held_for <= kMaxParkedTime) {
+                    // Dedupe: a batch that failed and is being retried by
+                    // PendingEvictionBatch can present an eviction that is
+                    // already in the stash.
+                    bool known = false;
+                    for (const auto& held : deferred_evictions) {
+                        if (!(eviction_key(held.eviction) == key)) continue;
+                        known = true;
+                        break;
+                    }
+                    if (!known) {
+                        deferred_evictions.push_back(
+                            DeferredEviction{eviction, since});
+                        ++deferred_sector_evictions;
+                        ++evictions_deferred;
+                        if (first_sight) ++seam_counters.merge_coverage_holds;
+                        if (deferred_sector_evictions ==
+                            kDeferredEvictionAlarm) {
+                            fprintf(stderr,
+                                    "[stream] %d evictions are being held to "
+                                    "keep parked coarse tiles covered. The "
+                                    "expectation is a handful per merge in "
+                                    "flight, so this means coarse targets are "
+                                    "not becoming resident, not that the world "
+                                    "grew.\n",
+                                    deferred_sector_evictions);
+                        }
+                    }
+                    return;
+                }
+                // The valve. Which condition SURVIVED is the whole point of
+                // this message: the hold waits on a neighbour's coarse target
+                // becoming resident, and nothing here gates that, so a hold
+                // that outlives the valve means the bake or the streamer
+                // failed -- not a race this design accepts.
+                fprintf(stderr,
+                        "[stream] eviction of sector (%lld,%lld,%lld r%d) held "
+                        "%.1f s to keep parked ancestor (%lld,%lld,%lld r%d, "
+                        "level %d) covered -- that ancestor STILL has a drawn "
+                        "level-%d face neighbour, so the neighbouring "
+                        "footprint's own coarse target never became resident. "
+                        "Applying the eviction anyway (a stale hole beats a "
+                        "stall); expect one drawn_level_violation, and read it "
+                        "as a bake/streamer failure rather than an accepted "
+                        "race.\n",
+                        (long long)key.tx, (long long)key.ty,
+                        (long long)key.tz, key.rung,
+                        std::chrono::duration<double>(held_for).count(),
+                        (long long)ancestor.tx, (long long)ancestor.ty,
+                        (long long)ancestor.tz, ancestor.rung,
+                        sector_level_of(ancestor.rung), other_level);
+            }
         }
 
         if (release_sector_entry(found->second, err, &batch_delta)) {
@@ -6060,7 +6463,16 @@ bool WorldSession::Impl::apply_sector_evictions(
         } else {
             ok = false;
         }
-    }
+    };
+
+    // The stash first: retrying at the HEAD is what puts a previously held set
+    // and a newly arriving one into the same working list, which is what makes
+    // the symmetric case release in one batch.
+    for (const auto& held : retried)
+        process(held.eviction, held.deferred_at, /*first_sight=*/false);
+    for (const auto& eviction : evictions)
+        process(eviction, now, /*first_sight=*/true);
+    PROFILE_COUNT("stream.evictions_deferred", evictions_deferred);
     // Retire the welds of everything this batch removed, into the batch's OWN
     // delta so that the removals and the weld changes reach world state in one
     // apply (§4.1). The entries are already erased, so drawn_entry reports
@@ -6084,10 +6496,35 @@ bool WorldSession::Impl::apply_sector_evictions(
     }
     finish_weld_txn(weld_txn);
     PROFILE_COUNT("stream.evictions_applied", evictions_applied);
+    PROFILE_COUNT("stream.evictions_held", double(deferred_sector_evictions));
     // Same frame as the removals above: the parent leaves and its children
-    // appear without anything rendering in between.
+    // appear without anything rendering in between. A batch that released a
+    // merge-coverage hold unparks the coarse newcomer HERE, in the same frame
+    // its cover left -- which is the same atomicity the split case already had.
     unpark_ready_sectors();
     return ok;
+}
+
+void WorldSession::Impl::flush_deferred_eviction_for(const SectorKey& key) {
+    if (deferred_sector_evictions <= 0) return;
+    std::vector<streaming::detail::TaggedEviction> forced;
+    for (size_t i = 0; i < deferred_evictions.size();) {
+        const auto& sector = deferred_evictions[i].eviction.sector;
+        if (!(sector.tx == key.tx && sector.ty == key.ty &&
+              sector.tz == key.tz && sector.rung == key.rung)) {
+            ++i;
+            continue;
+        }
+        forced.push_back(deferred_evictions[i].eviction);
+        deferred_evictions[i] = deferred_evictions.back();
+        deferred_evictions.pop_back();
+        --deferred_sector_evictions;
+    }
+    if (forced.empty()) return;
+    // DeferMode::None: these are the only entries to apply, and the rest of the
+    // stash is none of this publication's business.
+    std::string ignored;
+    apply_sector_evictions(forced, ignored, DeferMode::None);
 }
 
 WorldSession::Impl::PublicationCompletion*
@@ -6228,7 +6665,11 @@ bool WorldSession::Impl::rollback_publication_completion(
                 [&owner](
                     const std::vector<streaming::detail::TaggedEviction>& evictions,
                     std::string& endpoint_error) {
-                    return owner.apply_sector_evictions(evictions, endpoint_error);
+                    // DeferMode::None: a rollback is undoing THIS publication's
+                    // ledger insert. It must complete unconditionally, and it
+                    // has no business retrying an unrelated batch's holds.
+                    return owner.apply_sector_evictions(
+                        evictions, endpoint_error, DeferMode::None);
                 },
                 err);
             if (!released) return false;
@@ -6336,6 +6777,11 @@ void WorldSession::Impl::terminal_streaming_teardown_noexcept() noexcept {
     seam_welds.clear();
     seam_counters = SeamCounters{};
     parked_sectors = 0;
+    // The merge-coverage stash goes with parked_sectors, and for the same
+    // reason: every entry it names has just been released above, so a retained
+    // eviction could only ever be applied against a later world's tuple.
+    deferred_evictions.clear();
+    deferred_sector_evictions = 0;
     pending_sector_evictions.abandon_noexcept();
     streaming_profile_activation.finish_clear();
     ecs_runtime.streaming_coordinator().terminal_clear();
@@ -6361,7 +6807,12 @@ bool WorldSession::Impl::drain_sector_evictions(
         job.name = "stream.apply_evictions";
         job.fn = [this, shared_evictions, require_empty](
                      std::string& job_error) {
-            if (!apply_sector_evictions(*shared_evictions, job_error)) {
+            // The barrier's postcondition is an EMPTY sector_map, which a
+            // merge-coverage hold would fail -- so the barrier flushes the
+            // stash instead of retrying it.
+            if (!apply_sector_evictions(
+                    *shared_evictions, job_error,
+                    require_empty ? DeferMode::Flush : DeferMode::Allow)) {
                 return false;
             }
             if (require_empty && !sector_map.empty()) {
@@ -6383,10 +6834,25 @@ bool WorldSession::Impl::drain_sector_evictions(
         // stuck-park safety valve only advances when something looks at it.
         // Gated on the counter so the overwhelmingly common case -- nothing
         // parked -- costs one comparison and schedules no job at all.
-        if (!require_empty && parked_sectors > 0) {
+        //
+        // The merge-coverage stash rides the same hook, for exactly the reason
+        // the sweep does: what a held eviction waits on is a NEIGHBOUR's
+        // transition, which arrives in some other batch or in no batch at all,
+        // and the 30 s valve only advances when something looks at it. Same
+        // gating discipline -- one int compare when nothing is held.
+        if (!require_empty &&
+            (parked_sectors > 0 || deferred_sector_evictions > 0)) {
             matter_async::GpuJob sweep;
             sweep.name = "stream.unpark_sectors";
-            sweep.fn = [this](std::string&) {
+            sweep.fn = [this](std::string& sweep_job_error) {
+                if (deferred_sector_evictions > 0) {
+                    // Retrying the (empty) batch retries the stash at its head
+                    // and ends in unpark_ready_sectors, so this covers both.
+                    static const std::vector<
+                        streaming::detail::TaggedEviction> none;
+                    return apply_sector_evictions(none, sweep_job_error,
+                                                  DeferMode::Allow);
+                }
                 unpark_ready_sectors();
                 return true;
             };
@@ -7002,6 +7468,15 @@ void WorldSession::Impl::bake_and_stage_sector(
                         request.sector.ty,
                         request.sector.tz,
                         request.sector.rung};
+                    // A merge-coverage hold makes the engine outlive the
+                    // streamer's own ledger for this tuple (the streamer erases
+                    // a sector the moment it emits the eviction), so a
+                    // re-request would collide with an entry only this session
+                    // still knows about -- and, because the re-request carries a
+                    // new issuance, the held eviction would then fail
+                    // same_publication_tag and never release it. Apply the hold
+                    // instead. One int compare when nothing is held.
+                    flush_deferred_eviction_for(key);
                     // Reject a stale same-tuple publication before PartStore can
                     // load or release content owned by the newer app resident.
                     if (sector_map.find(key) != sector_map.end()) {
@@ -7179,7 +7654,7 @@ void WorldSession::Impl::bake_and_stage_sector(
                         tracer_dirty = true;
                         tracer.reset();
                         finish_weld_txn(weld_txn);
-                        note_drawn_level_violation(key);
+                        note_drawn_level_violation(key, "publish");
                     }
                     t_state = pub_split();
                     t_tracer = pub_split();
@@ -10544,6 +11019,7 @@ WorldSession::SeamWeldStatus WorldSession::seam_weld_status() const {
     out.build_errors             = impl.seam_counters.build_errors;
     out.level_holds              = impl.seam_counters.level_holds;
     out.drawn_level_violations   = impl.seam_counters.drawn_level_violations;
+    out.merge_coverage_holds     = impl.seam_counters.merge_coverage_holds;
     out.registered_parts         = (int)impl.weld_parts.size();
     out.parts_registered         = impl.seam_counters.parts_registered;
     out.parts_released           = impl.seam_counters.parts_released;

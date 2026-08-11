@@ -617,6 +617,24 @@ public:
         // staged refinement is doing its job.
         uint64_t level_holds = 0;
         uint64_t drawn_level_violations = 0;
+        // The MERGE direction's mechanism, and deliberately a separate number
+        // from `level_holds` so a soak can tell the two apart.
+        //
+        // `level_holds` is a PARK count: it counts the tile being withheld, at
+        // the publish/unpark sites, under the coverage-qualified +-1 gate.
+        // `merge_coverage_holds` counts EVICTIONS DEFERRED -- a different tile
+        // (a drawn fine tile), at a different site (the eviction batch), to
+        // keep a parked coarse newcomer's footprint covered so that it stays
+        // parked under the existing coverage clause. Nothing new is ever
+        // parked by it, which is what preserves `parked => covered`.
+        //
+        // Counted once per eviction on first deferral, never on the per-batch
+        // retries, so it is a population and not a frame counter. A hold that
+        // outlives the 30 s valve prints one line naming the condition that
+        // survived; a surviving hold means the neighbouring footprint's coarse
+        // target never became resident, i.e. a bake/streamer failure rather
+        // than an accepted race.
+        uint64_t merge_coverage_holds = 0;
 
         // ---- the drawn representation (M0-WP8) ----
         //
