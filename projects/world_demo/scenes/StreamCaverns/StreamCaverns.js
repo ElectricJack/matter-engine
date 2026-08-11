@@ -80,6 +80,22 @@ class StreamCaverns extends World {
   static streaming = {
     nestedSectors: true,
 
+    // VOLUMETRIC SECTORS (volumetric-sectors M3). This is the world the mode
+    // exists for: yMin is -1024, so under the column path a level-0 tile
+    // samples ~590 rows of density down to the floor whether or not there is
+    // anything in them, and yMin is this world's dominant cost dial for exactly
+    // that reason. With cubes, a tile away from the surface or a cavern shell
+    // costs one all-air/all-solid pass and yields nothing.
+    //
+    // It also turns the bands from cylinders into spheres, which is what makes
+    // flying DOWN a tunnel refine the rock around you rather than the surface
+    // 800 m overhead.
+    //
+    // StreamCaverns flips first and alone; StreamMountain stays on columns
+    // until this has been soaked. MATTER_VOLUMETRIC_SECTORS=0 forces it off
+    // without editing the world, which is the A/B baseline.
+    volumetricSectors: true,
+
     // BANDS PULLED IN HARD vs StreamMountain's 318/1186/2605/4702/7753/10095.
     // A heightfield sector's cost is its surface area; a volumetric sector's is
     // its VOLUME, and the near band pays that at the 2 m voxel. These radii keep

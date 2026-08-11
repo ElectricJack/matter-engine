@@ -202,6 +202,19 @@ globalThis.Part = class Part {
   terrainVolume(tx,tz,rung,mats) {
     __terrainVolume(tx,tz,rung,(mats===undefined?null:mats));
   }
+  // The Y-TILED sibling (volumetric-sectors M3). Meshes the CUBE
+  // [ty*S, (ty+1)*S) rather than the column [yMin, surface], and returns
+  // positions tile-local in y as well as x/z -- the engine's publish transform
+  // supplies transform[7] = ty * sectorSize to put it back.
+  //
+  // A world calls this INSTEAD OF terrainVolume, never as well: the two describe
+  // the same matter at different extents, and running both would mesh the
+  // world's whole column and then a 64 m slice of it again. `p.ty` is sent by
+  // the engine only when the world declares `streaming.volumetricSectors`, so a
+  // sector that reads it without the flag gets undefined and bakes at ty 0.
+  terrainVolumeTiled(tx,ty,tz,rung,mats) {
+    __terrainVolumeTiled(tx,ty,tz,rung,(mats===undefined?null:mats));
+  }
   heightAt(x,z)   { return __heightAt(x,z); }
   slopeAt(x,z)    { return __slopeAt(x,z); }
   moistureAt(x,z) { return __moistureAt(x,z); }

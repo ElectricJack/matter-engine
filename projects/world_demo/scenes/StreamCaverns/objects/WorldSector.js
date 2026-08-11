@@ -21,8 +21,14 @@ class WorldSector extends Part {
   // Same parameter block every streamed sector takes (matter_engine.cpp builds
   // the JSON); the scatter-only fields are absent because nothing reads them.
   // terrainLod 5 = the 2 m voxel rung, counting DOWN with distance.
-  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5,
-                    sectorSize: SECTOR,
+  // `ty` is the VERTICAL tile index (volumetric-sectors M3). It is 0 for every
+  // request unless the world declares `streaming.volumetricSectors`, in which
+  // case a stack of tiles at one (tx, tz) differs in nothing else -- which is
+  // why it is in the params at all: it is part of the tile's bake identity, and
+  // a cache keyed without it would hand a tile 400 m up the artifact baked for
+  // the one at ground level.
+  static params = { tx: 0, ty: 0, tz: 0, rung: 0, terrainLod: 5,
+                    sectorSize: SECTOR, volumetric: 0,
                     worldSeed: 0, fieldHash: '', biomes: '' };
 
   // NO ASSETS. StreamMountain installs 16 rock variants plus a vegetation
@@ -56,6 +62,23 @@ class WorldSector extends Part {
     // (volumetric-sectors M0). The parameter is gone.
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
-    this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
+
+    // COLUMN OR CUBE, and never both -- the two verbs describe the same matter
+    // at different extents, so calling both would mesh the world's whole column
+    // and then a 64 m slice of it a second time.
+    //
+    // `volumetric` is sent by the engine, not inferred from `ty`, because ty is
+    // legitimately 0 for the ground-level tile in BOTH modes and there would be
+    // no way to tell them apart at exactly the tile a mistake is least visible.
+    if ((p.volumetric | 0) !== 0) {
+      // A CUBE: [ty*S, (ty+1)*S) in y. This is what makes yMin cheap -- the
+      // column path samples every row from the surface down to yMin (-1000 m
+      // here, ~590 rows at level 0) whether or not anything is down there,
+      // while a cube away from the surface or a cavern shell costs one
+      // all-air/all-solid pass and yields nothing at all.
+      this.terrainVolumeTiled(p.tx, p.ty | 0, p.tz, voxelRung, terrainMaterials);
+    } else {
+      this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
+    }
   }
 }

@@ -467,6 +467,17 @@ matter_stream::Config make_streaming_profile(
     // right and sometimes unused.
     profile.y_min = world_settings.y_min;
     profile.y_max = world_settings.y_max;
+    // Say which tiling is live, POSITIVELY, once per world load. The refusals
+    // below and the env override above are the only other things that print
+    // here, so silence used to mean "volumetric, probably" -- and the whole
+    // point of a gated mode is that you can tell which side of the gate you are
+    // on from the log rather than by inferring it from what did not happen.
+    if (profile.volumetric_sectors) {
+        std::fprintf(stderr,
+                     "[stream] tiling: VOLUMETRIC (octree cubes), octree "
+                     "extent y %.1f..%.1f, S_0 %.1f m\n",
+                     profile.y_min, profile.y_max, profile.sector_size);
+    }
     if (profile.volumetric_sectors && !(profile.y_max > profile.y_min)) {
         // An inverted or empty extent would make the ty range empty on every
         // tick -- a world that streams nothing, with no other symptom. Refuse
@@ -1646,29 +1657,38 @@ struct WorldSession::Impl {
     // three. Arithmetic right shift is floor division for negative indices --
     // every quadrant but one has them -- which is the same assumption
     // sector_footprints_overlap already makes.
+    // The tiles at `level` that touch one face of `key`, as an inclusive tile
+    // range PER AXIS. The face's normal axis has lo == hi (the single layer
+    // across the plane); the two tangential axes carry the face's extent.
+    //
+    // It was one tangential range plus a scalar `ty`, which said exactly what
+    // was true while Y was untiled: every tile spanned the whole authored slab,
+    // so a face's neighbours were one row deep whatever their level. Under the
+    // octree a lateral face is a SQUARE -- `span` tiles across horizontally and
+    // `span` tiles tall -- so the vertical term is a range like any other, and
+    // a y-normal face has two HORIZONTAL tangents and no distinguished vertical
+    // one at all. Three symmetric ranges express all six faces; a tangent plus
+    // a special-cased y cannot express two of them.
     struct FaceNeighbourSpan {
-        int64_t normal = 0;              // tile index along the face's normal axis
-        int64_t tan_lo = 0, tan_hi = 0;  // inclusive tile range along the tangent
-        // The neighbour's VERTICAL tile index (volumetric-sectors M1). A single
-        // value rather than a range because Y is not a tiled axis yet: every
-        // tile spans the whole authored slab, so a face's neighbours are one
-        // row deep whatever their level. M2 tiles Y and this becomes a second
-        // inclusive range alongside tan_lo/tan_hi, computed the same way.
-        int64_t ty = 0;
-        bool    axis_x = true;           // normal is a tx (else a tz)
+        int64_t lo[3] = {0, 0, 0};   // inclusive tile range, indexed x=0,y=1,z=2
+        int64_t hi[3] = {0, 0, 0};
+        int     axis  = 0;           // the face's NORMAL axis (lo == hi there)
     };
     bool face_neighbour_span(const SectorKey& key, int face, int level,
                              FaceNeighbourSpan& out) const {
         const int axis = seam::face_axis(face);
-        if (axis == 1) return false;             // +-y is not tiled in M0
-        out.axis_x = (axis == 0);
+        // A +-y face is a face between two TILES only once Y is tiled. Under
+        // the column path the tile above is the same tile, and asking for its
+        // neighbour would name the tile itself.
+        if (axis == 1 && !world_volumetric_sectors) return false;
+        out.axis = axis;
+        const int64_t self[3] = {key.tx, key.ty, key.tz};
         if (!world_nested_sectors) {
             // Uniform grid: every tile is S_0 across, so the neighbour is the
             // adjacent tile index whatever its rung, and `level` is not a size.
             const int64_t step = seam::face_is_positive(face) ? 1 : -1;
-            out.normal = (axis == 0) ? key.tx + step : key.tz + step;
-            out.tan_lo = out.tan_hi = (axis == 0) ? key.tz : key.tx;
-            out.ty = key.ty;   // one row; the uniform grid has no vertical axis
+            for (int a = 0; a < 3; ++a)
+                out.lo[a] = out.hi[a] = self[a] + (a == axis ? step : 0);
             return true;
         }
         const int L = sector_level_of(key.rung);
@@ -1679,27 +1699,25 @@ struct WorldSession::Impl {
         // negative shift is undefined rather than merely wrong.
         if (L < 0 || L > matter_stream::kMaxLevel) return false;
         if (level < 0 || level > matter_stream::kMaxLevel) return false;
-        const int64_t nx0 = key.tx << L, nz0 = key.tz << L;   // level-0 span
-        const int64_t span = int64_t(1) << L;
-        // The level-0 coordinate of the column immediately across the face.
-        const int64_t across = seam::face_is_positive(face)
-            ? ((axis == 0 ? nx0 : nz0) + span)
-            : ((axis == 0 ? nx0 : nz0) - 1);
-        const int64_t tan0 = (axis == 0) ? nz0 : nx0;
-        out.normal = across >> level;
-        out.tan_lo = tan0 >> level;
-        out.tan_hi = (tan0 + span - 1) >> level;
-        // The neighbour's row, expressed in level-0 units and shifted down the
-        // same way the tangent is. Y is untiled in M1 so key.ty is 0 and this
-        // is 0 for every level; written as the general expression because M2
-        // turns it into a range and this is the term the range grows from.
-        out.ty = (key.ty << L) >> level;
+        const int64_t span = int64_t(1) << L;     // this tile, in level-0 units
+        for (int a = 0; a < 3; ++a) {
+            const int64_t base = self[a] << L;
+            if (a == axis) {
+                const int64_t across = seam::face_is_positive(face)
+                                           ? base + span
+                                           : base - 1;
+                out.lo[a] = out.hi[a] = across >> level;
+            } else {
+                out.lo[a] = base >> level;
+                out.hi[a] = (base + span - 1) >> level;
+            }
+        }
+        // COLUMN PATH: collapse y back to the single row. Without this the
+        // general expression above would hand a level-0 caller `span` rows of a
+        // tile that is not tiled in y at all -- eight phantom neighbours for one
+        // real one, every one of them the same tile under a different name.
+        if (!world_volumetric_sectors) out.lo[1] = out.hi[1] = key.ty;
         return true;
-    }
-    SectorKey neighbour_key(const FaceNeighbourSpan& s, int64_t tan,
-                            int rung) const {
-        return s.axis_x ? SectorKey{s.normal, s.ty, tan, rung}
-                        : SectorKey{tan, s.ty, s.normal, rung};
     }
 
     // ---- The seam pool (M0-WP3b) -------------------------------------------
@@ -2042,6 +2060,9 @@ struct WorldSession::Impl {
     // tile whose footprint some drawn tile is still covering. See the definition
     // for why that qualifier is not optional.
     bool sector_level_hold(const SectorKey& key) const;
+    // How many of kSeamFaces are live. Four under the column path, six under
+    // the octree -- see kSeamFaces.
+    int seam_face_count() const { return world_volumetric_sectors ? 6 : 4; }
     // Count (and, for the first few, log) a tile that became drawn anyway with
     // a >= 2-level drawn face neighbour. Called at the two sites a tile enters
     // the world state.
@@ -4947,10 +4968,13 @@ bool WorldSession::Impl::release_sector_entry(
         !entry.resources.transient_artifact;
 }
 
-// The four XZ faces. +y/-y are unwelded in M0 (the grid is still columnar in
-// Y); M2 tiles Y and this becomes seam::kFaceCount.
-static constexpr int kSeamFaces[4] = {
-    seam::kFacePosX, seam::kFaceNegX, seam::kFacePosZ, seam::kFaceNegZ};
+// The faces a cross-level weld can live on. The four XZ ones always; +y/-y only
+// once Y is a tiled axis, because under the column path the tile above a tile
+// IS that tile. `seam_face_count()` is the live count -- iterate
+// `kSeamFaces[i]` for i < seam_face_count(), never the array's extent.
+static constexpr int kSeamFaces[6] = {
+    seam::kFacePosX, seam::kFaceNegX, seam::kFacePosZ, seam::kFaceNegZ,
+    seam::kFacePosY, seam::kFaceNegY};
 
 // ---------------------------------------------------------------------------
 // Weld draw plumbing (volumetric-sectors M0-WP8, resolution R3)
@@ -5568,7 +5592,8 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
     };
 
     const int level = sector_level_of(key.rung);
-    for (const int face : kSeamFaces) {
+    for (int fi = 0; fi < seam_face_count(); ++fi) {
+        const int face = kSeamFaces[fi];
         push_pair(WeldPairKey{key.tx, key.ty, key.tz, level, face});
         // (b): the drawn tile one level COARSER across this face. Under the
         // uniform grid `level + 1` is a terrain-LOD label rather than a size,
@@ -5577,12 +5602,12 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
         // cross-level.
         FaceNeighbourSpan span;
         if (!face_neighbour_span(key, face, level + 1, span)) continue;
-        for (int64_t t = span.tan_lo; t <= span.tan_hi; ++t) {
-            const int64_t nx = span.axis_x ? span.normal : t;
-            const int64_t nz = span.axis_x ? t : span.normal;
+        for (int64_t nx = span.lo[0]; nx <= span.hi[0]; ++nx)
+        for (int64_t ny = span.lo[1]; ny <= span.hi[1]; ++ny)
+        for (int64_t nz = span.lo[2]; nz <= span.hi[2]; ++nz) {
             SectorKey coarse{};
             const SectorEntry* entry = drawn_tile_entry(
-                nx, span.ty, nz,
+                nx, ny, nz,
                 world_nested_sectors ? level + 1 : kAnyLevel, &coarse);
             if (!entry) continue;
             if (sector_level_of(coarse.rung) != level + 1) continue;
@@ -5725,21 +5750,24 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     FaceNeighbourSpan span;
     if (!face_neighbour_span(ckey, cface, flevel, span)) { drop(); return; }
 
+    // Up to FOUR fine siblings across a face in 3D (2x2 over the face's two
+    // tangential axes) where the column path has two. The array was already
+    // sized 8 for headroom; the loop bound is what has to admit the extra pair.
     const seam::SectorBoundary* fine_tiles[8];
     int fine_count = 0, fine_expected = 0;
-    for (int64_t t = span.tan_lo; t <= span.tan_hi && fine_count < 8; ++t) {
+    for (int64_t ftx = span.lo[0]; ftx <= span.hi[0] && fine_count < 8; ++ftx)
+    for (int64_t fty = span.lo[1]; fty <= span.hi[1] && fine_count < 8; ++fty)
+    for (int64_t ftz = span.lo[2]; ftz <= span.hi[2] && fine_count < 8; ++ftz) {
         ++fine_expected;
-        const int64_t ftx = span.axis_x ? span.normal : t;
-        const int64_t ftz = span.axis_x ? t : span.normal;
         // Identity by MESHER RUNG, not by level: a WeldSide *is* a rung, and a
         // record at another rung is a different lattice. This is also what
         // makes the lookup mode-independent -- under the uniform grid the
         // neighbour shares the tile coordinate and only the rung separates it.
         const seam::SectorBoundary* fb =
-            drawn_boundary_with_rung(ftx, span.ty, ftz, frung);
+            drawn_boundary_with_rung(ftx, fty, ftz, frung);
         if (!fb) {
             const SectorEntry* drawn_here = drawn_tile_entry(
-                ftx, span.ty, ftz,
+                ftx, fty, ftz,
                 world_nested_sectors ? flevel : kAnyLevel);
             if (drawn_here && !drawn_here->boundary)
                 ++seam_counters.drawn_without_record;
@@ -5749,7 +5777,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         // coarse one, so the shared plane is `2 * coarse_plane` in fine
         // indices; a mismatch means these two records do not touch.
         if (fb->faces[fface].plane != cfr.plane * 2) continue;
-        mix_record(ftx, span.ty, ftz, *fb, fface);
+        mix_record(ftx, fty, ftz, *fb, fface);
         fine_tiles[fine_count++] = fb;
     }
     if (fine_count == 0) { drop(); return; }
@@ -5775,11 +5803,14 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         int     rung = 0;        // the rung that identifies this side
         int     cells = 1;       // cells per axis at that rung
         int64_t cell_layer = 0;  // the layer this side must be describing
-        bool    axis_x = true;   // true: the tiled tangential index is b
-        // One-entry memo. weld_face walks the tangent, so the owning tile
-        // changes once every `cells` steps; without this every lookup is a
-        // hash probe.
-        int64_t memo_tile = 0;
+        int     axis = 0;        // the face's NORMAL axis (0=x, 1=y, 2=z)
+        int64_t flat_ty = 0;     // the single y row, column path only
+        // One-entry memo on the OWNING TILE, now named by both tangential
+        // indices rather than one. weld_face walks the tangent, so the owning
+        // tile changes once every `cells` steps; without this every lookup is a
+        // hash probe. Under the column path the second index is pinned, so the
+        // memo hits exactly as often as it did when there was only one.
+        int64_t memo_a = 0, memo_b = 0;
         const seam::FaceRecord* memo_rec = nullptr;
         bool    memo_valid = false;
         int     nulls = 0;
@@ -5787,22 +5818,43 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     const auto floor_div = [](int64_t v, int64_t n) -> int64_t {
         return v >= 0 ? v / n : -(((-v) + n - 1) / n);
     };
+    // Resolve a face cell (a, b) to the tile that owns it. BOTH tangential
+    // axes are resolved now, not one: under the column path a lateral face's
+    // vertical extent lives inside a single tile, so only the horizontal
+    // tangent named a tile; a cube's face crosses tiles in both directions,
+    // and a y-normal face has two horizontal tangents and no vertical one.
+    // `face_tangent_axes` already published the (a, b) -> axis mapping both
+    // sides of a plane agree on, so this is a lookup rather than a convention.
     const auto side_at = [&](SideCtx& c, int64_t a,
                              int64_t b) -> const seam::BoundaryVert* {
-        const int64_t tangential = c.axis_x ? b : a;
-        const int64_t tile = floor_div(tangential, int64_t(c.cells));
-        if (!c.memo_valid || c.memo_tile != tile) {
-            c.memo_tile = tile;
+        int a_axis = 0, b_axis = 0;
+        seam::face_tangent_axes(c.face, a_axis, b_axis);
+        // A y index is only a TILE index when y is tiled. Pinning it on the
+        // column path is what keeps this reducible to the one-axis original --
+        // including the memo, which would otherwise miss on every step of the
+        // vertical walk.
+        const auto tile_of = [&](int64_t coord, int axis) -> int64_t {
+            if (axis == 1 && !world_volumetric_sectors) return c.flat_ty;
+            return floor_div(coord, int64_t(c.cells));
+        };
+        const int64_t ta = tile_of(a, a_axis);
+        const int64_t tb = tile_of(b, b_axis);
+        if (!c.memo_valid || c.memo_a != ta || c.memo_b != tb) {
+            c.memo_a = ta;
+            c.memo_b = tb;
             c.memo_valid = true;
             c.memo_rec = nullptr;
-            const int64_t tx = c.axis_x ? c.normal : tile;
-            const int64_t tz = c.axis_x ? tile : c.normal;
+            int64_t t[3];
+            t[c.axis] = c.normal;
+            t[a_axis] = ta;
+            t[b_axis] = tb;
+            const int64_t tx = t[0], ty = t[1], tz = t[2];
             const seam::SectorBoundary* sb =
-                drawn_boundary_with_rung(tx, c.ty, tz, c.rung);
+                drawn_boundary_with_rung(tx, ty, tz, c.rung);
             if (sb) {
                 const seam::FaceRecord& fr = sb->faces[c.face];
                 if (fr.cell_layer == c.cell_layer) c.memo_rec = &fr;
-                mix_record(tx, c.ty, tz, *sb, c.face);
+                mix_record(tx, ty, tz, *sb, c.face);
             } else {
                 // A tile the closure reached and did not find is as much an
                 // input as one it did: losing a DIAGONAL neighbour changes the
@@ -5810,7 +5862,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
                 // fingerprint blind to the absence would misreport that as
                 // nondeterminism.
                 mix_u64((uint64_t)tx);
-                mix_u64((uint64_t)c.ty);
+                mix_u64((uint64_t)ty);
                 mix_u64((uint64_t)tz);
                 mix_u64((uint64_t)(int64_t)c.rung);
                 mix_u64(0xA85E27ull);   // "absent", a tag distinct from any size
@@ -5822,23 +5874,27 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         return v;
     };
 
+    // The coarse side's own tile index on the face's normal axis, and the fine
+    // side's, which is the one layer `span` collapsed to.
+    const int64_t coarse_t[3] = {pair.tx, pair.ty, pair.tz};
+
     SideCtx cctx;
-    cctx.normal     = span.axis_x ? pair.tx : pair.tz;
-    cctx.ty         = pair.ty;
+    cctx.normal     = coarse_t[span.axis];
+    cctx.flat_ty    = pair.ty;
+    cctx.axis       = span.axis;
     cctx.face       = cface;
     cctx.rung       = crung;
     cctx.cells      = cb->cells > 0 ? cb->cells : 1;
     cctx.cell_layer = cfr.cell_layer;
-    cctx.axis_x     = span.axis_x;
 
     SideCtx fctx;
-    fctx.normal     = span.normal;
-    fctx.ty         = span.ty;
+    fctx.normal     = span.lo[span.axis];
+    fctx.flat_ty    = span.lo[1];
+    fctx.axis       = span.axis;
     fctx.face       = fface;
     fctx.rung       = frung;
     fctx.cells      = fine_tiles[0]->cells > 0 ? fine_tiles[0]->cells : 1;
     fctx.cell_layer = fine_tiles[0]->faces[fface].cell_layer;
-    fctx.axis_x     = span.axis_x;
 
     seam::WeldSide cside;
     cside.rung = crung;
@@ -6139,16 +6195,17 @@ bool WorldSession::Impl::sector_drawn_level_conflict(
         SectorKey* out_other_key) const {
     if (!world_nested_sectors) return false;
     const int level = sector_level_of(key.rung);
-    for (const int face : kSeamFaces) {
+    for (int fi = 0; fi < seam_face_count(); ++fi) {
+        const int face = kSeamFaces[fi];
         for (int other = 0; other <= matter_stream::kMaxLevel; ++other) {
             if (other >= level - 1 && other <= level + 1) continue;
             FaceNeighbourSpan span;
             if (!face_neighbour_span(key, face, other, span)) continue;
-            for (int64_t t = span.tan_lo; t <= span.tan_hi; ++t) {
-                const int64_t nx = span.axis_x ? span.normal : t;
-                const int64_t nz = span.axis_x ? t : span.normal;
+            for (int64_t nx = span.lo[0]; nx <= span.hi[0]; ++nx)
+            for (int64_t ny = span.lo[1]; ny <= span.hi[1]; ++ny)
+            for (int64_t nz = span.lo[2]; nz <= span.hi[2]; ++nz) {
                 SectorKey found{};
-                if (!drawn_tile_entry(nx, span.ty, nz, other, &found)) continue;
+                if (!drawn_tile_entry(nx, ny, nz, other, &found)) continue;
                 // Treat a tile this eviction batch is about to remove as
                 // already gone. Only the merge-coverage hold passes a set, and
                 // that substitution is the deadlock break -- see
@@ -7198,11 +7255,22 @@ void WorldSession::Impl::bake_and_stage_sector(
         // start beats one tangled up in a real change to what gets meshed.
         char params_buf[1024];
         std::snprintf(params_buf, sizeof(params_buf),
-            R"({"tx":%lld,"ty":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"sectorSize":%.6g,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
+            R"({"tx":%lld,"ty":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"sectorSize":%.6g,"volumetric":%d,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
             (long long)req.tx, (long long)req.ty, (long long)req.tz,
             matter_stream::variant_scatter(req.rung),
             matter_stream::variant_terrain_lod(req.rung),
             (double)sector_size,
+            // `volumetric` tells WorldSector.js which verb describes its extent:
+            // a COLUMN spanning the authored slab, or the CUBE at this ty. It is
+            // sent rather than inferred from ty because ty is legitimately 0 for
+            // the ground-level tile in both modes -- exactly the tile where
+            // guessing wrong would be least visible and most confusing.
+            //
+            // It is also correctly part of the bake identity: the same (tx, ty,
+            // tz, rung) means different geometry in the two modes, so the two
+            // must not share a cache entry. That is the ty lesson again, one
+            // field over.
+            world_volumetric_sectors ? 1 : 0,
             (unsigned long long)world_seed, world_field_hash.c_str(),
             biomes_escaped.c_str());
         std::string sector_params(params_buf);
@@ -7552,6 +7620,15 @@ void WorldSession::Impl::bake_and_stage_sector(
                     static_cast<float>(req.tx) * sector_size;
                 sector_surface.local_to_world[11] =
                     static_cast<float>(req.tz) * sector_size;
+                // Must match the publish transform below exactly, or the tape
+                // classifies a cube tile's vertices at the wrong world height
+                // and the surface it picks is a different surface from the one
+                // that gets drawn. This is the same class of mismatch that made
+                // welds render in the pre-tape material.
+                if (world_volumetric_sectors) {
+                    sector_surface.local_to_world[7] =
+                        static_cast<float>(req.ty) * sector_size;
+                }
                 surface_ptr = &sector_surface;
             }
             auto built = std::make_shared<viewer::VkScenePart>();
@@ -7760,6 +7837,22 @@ void WorldSession::Impl::bake_and_stage_sector(
                         static_cast<float>(request.sector.tx) * sector_size;
                     instance.transform[11] =
                         static_cast<float>(request.sector.tz) * sector_size;
+                    // transform[7] -- the Y translation, and the reason a cube
+                    // tile lands where it belongs (design §3.3, M3-WP6).
+                    //
+                    // `mesh_sector` returns positions sector-local in x/z and
+                    // WORLD-ABSOLUTE in y, because a column tile has no y
+                    // origin to be local to: it spans the authored slab. So the
+                    // column path leaves this zero and always has.
+                    // `mesh_sector_tiled` returns them tile-local in y as well,
+                    // because a cube tile HAS one. Leaving this at zero would
+                    // stack every tile of a vertical column on top of the
+                    // ground-level one, which is not a subtle failure -- it is
+                    // the whole world collapsed into a 64 m band.
+                    if (world_volumetric_sectors) {
+                        instance.transform[7] =
+                            static_cast<float>(request.sector.ty) * sector_size;
+                    }
 
                     // PARK instead of drawing when this tile's footprint is
                     // still covered by a visible tile at another level -- the
