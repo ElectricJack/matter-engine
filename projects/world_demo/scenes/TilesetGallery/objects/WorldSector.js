@@ -141,17 +141,17 @@ function anyBiomeWantsTrees(biomesJson) {
 }
 
 class WorldSector extends Part {
-  // terrainLod: 5 = native voxel mesh (near), 0-4 = heightfield LOD grids
-  // (1x1 .. 16x16 cells) — see the alpine terrain design. edgeMask marks
-  // cardinal neighbors exactly one LOD coarser (bit 0 = +x, 1 = -x, 2 = +z,
-  // 3 = -z); the mesher stitches those borders 2:1. Defaults keep older
-  // engines (which send neither) on the voxel path.
+  // terrainLod: 5 = the 2 m voxel rung, 0-4 coarsen 2x per step. The name is
+  // historical: 0-4 were once heightfield LOD grids meshed by a separate path,
+  // which is exactly what put a visible seam between near and far terrain.
+  // That path was deleted 2026-08-11 and every level is voxel now. The default
+  // keeps an older engine, which does not send it, on the 2 m rung.
   // sectorSize: the TILE's own width. Under nested sector LOD a level-L tile
   // is 64 << L metres across and meshes at voxel rung -L, so cells-per-tile is
   // constant; the engine sends the size because only the streamer knows a
   // request's level. Defaults to 64 so an older engine (which sends neither
   // this nor terrainLod) still bakes a level-0 tile.
-  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5, edgeMask: 0,
+  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5,
                     sectorSize: SECTOR,
                     worldSeed: 0, fieldHash: '', biomes: '' };
   // FIXED variant list — independent of tx/tz so the whole asset set installs
@@ -186,16 +186,18 @@ class WorldSector extends Part {
     //   terrainLod 1 -> voxel rung -4 -> 32 m
     //   terrainLod 0 -> voxel rung -5 -> 64 m   (one cell per sector)
     //
-    // edgeMask still matters, and for the same reason it always did. The
-    // [1..n] ownership rule only makes EQUAL-rung neighbours watertight; across
-    // rungs the coarse side interpolates between every other sample while the
-    // fine side follows the field, and the two part company. That never showed
-    // before because terrainVolume was always called at rung 0 -- one rung
-    // everywhere, so no unequal pair existed to crack.
+    // CROSS-RUNG SEAMS ARE NOT THIS FILE'S PROBLEM any more. The [1..n]
+    // ownership rule only makes EQUAL-rung neighbours watertight; across rungs
+    // the coarse side interpolates between every other sample while the fine
+    // side follows the field, and the two part company. A sector used to pass
+    // an `edgeMask` naming the neighbours it believed were one rung coarser so
+    // the mesher could stitch that border at BAKE time. The engine now welds
+    // the two ACTUALLY DRAWN tiles at runtime (volumetric-sectors M0), so the
+    // parameter is gone and a tile's geometry depends on nothing outside it.
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
     pbegin(P_TERRAIN);
-    this.terrainVolume(p.tx, p.tz, voxelRung, p.edgeMask | 0, terrainMaterials);
+    this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
     pend(P_TERRAIN);
     if (!table) return;   // no biome table -> terrain only
 

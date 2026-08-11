@@ -1638,12 +1638,18 @@ static void read_mat_palette(JSContext* c, JSValueConst arg, uint32_t mat[4]) {
     }
 }
 
-// terrainVolume(tx, tz, rung[, edgeMask][, matArray])
+// terrainVolume(tx, tz, rung[, matArray])
 // Meshes one sector of the bound terrain field using native surface-nets and
 // pushes the result directly into the triangle buffer. matArray is an array of
 // four material IDs [grass, dirt, rock, snow] indexed by the field's material_at.
-// edgeMask is ACCEPTED AND IGNORED (M0-WP1) -- see the note at the argument.
 // Fails loudly if no world binding is installed.
+//
+// THE 4TH SLOT USED TO BE `edgeMask` and is now the material array. The mask
+// stopped meaning anything in M0-WP1 and was accepted-and-ignored until the
+// WorldSector.js copies passing it were swept (2026-08-11); the slot is reused
+// rather than left as a hole because the alternative -- a permanently dead
+// argument -- is what let `fixtures/world_stream/objects/WorldSector.js` pass
+// its material array positionally into the mask for months without a symptom.
 static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     DslState* st = state_of(c);
     if (st->generating_animation()) {
@@ -1655,31 +1661,18 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
         st->set_error("terrainVolume: no world bound — set BakeOptions.world before baking a terrain sector");
         return JS_UNDEFINED;
     }
-    if (n < 3) { st->set_error("terrainVolume: requires (tx, tz, rung[, edgeMask][, mats])"); return JS_UNDEFINED; }
+    if (n < 3) { st->set_error("terrainVolume: requires (tx, tz, rung[, mats])"); return JS_UNDEFINED; }
 
     int64_t tx = 0, tz = 0;
     JS_ToInt64(c, &tx, a[0]);
     JS_ToInt64(c, &tz, a[1]);
     int32_t rung = 0;
     JS_ToInt32(c, &rung, a[2]);
-    // The 4th argument was `edgeMask`: cardinal neighbours exactly one rung
-    // coarser, which the voxel mesher used to bake a cross-level stitch from.
-    // ACCEPTED AND IGNORED as of M0-WP1 -- mesh_sector no longer takes a mask,
-    // because the mask named the level the streamer WANTED next door rather
-    // than the tile actually drawn, and it put a neighbour guess into the
-    // tile's bake identity (terrain_mesher.h has the full retraction).
-    // Cross-level seams are welded at runtime from the boundary record below.
-    //
-    // It is still read off the argument list rather than dropped because ~8
-    // copies of WorldSector.js across the scene tree still pass
-    // `p.edgeMask | 0` here, and this repo does not edit JS from the C++ side
-    // of a migration. Delete this once those copies are swept.
-    if (n >= 4) { int32_t ignored_edge_mask = 0; JS_ToInt32(c, &ignored_edge_mask, a[3]); }
 
     // Optional material array: up to 4 entries [grass, dirt, rock, snow].
     // Defaults to 0..3 if not supplied.
     uint32_t mat[4] = {0, 1, 2, 3};
-    if (n >= 5) read_mat_palette(c, a[4], mat);
+    if (n >= 4) read_mat_palette(c, a[3], mat);
 
     terrain_mesher::SectorMesh mesh;
     seam::SectorBoundary boundary;
@@ -1765,72 +1758,6 @@ static JSValue j_terrainVolumeTiled(JSContext* c, JSValueConst, int n,
     // publication or the streamer's desired map never converges — engine side,
     // M3.
     emit_terrain_volume(st, mesh, boundary, mat);
-    return JS_UNDEFINED;
-}
-
-// terrainHeightfield(tx, tz, lod, edgeMask, matArray)
-// Meshes one sector as a heightfield LOD grid (terrain LODs 0-4 of the
-// alpine ladder: 1x1 .. 16x16 cells) and pushes the result into the triangle
-// buffer. Evaluates height_at per lattice point only — no voxel volume.
-// edgeMask marks cardinal neighbors exactly one LOD coarser (bit 0 = +x,
-// bit 1 = -x, bit 2 = +z, bit 3 = -z); those borders are stitched 2:1
-// against the coarse neighbor's boundary vertices. matArray as terrainVolume.
-static JSValue j_terrainHeightfield(JSContext* c, JSValueConst, int n,
-                                    JSValueConst* a) {
-    DslState* st = state_of(c);
-    if (st->generating_animation()) {
-        st->set_error("geometry authoring is forbidden during generate");
-        return JS_UNDEFINED;
-    }
-    const WorldBinding& w = st->world();
-    if (!w.field) {
-        st->set_error("terrainHeightfield: no world bound — set "
-                      "BakeOptions.world before baking a terrain sector");
-        return JS_UNDEFINED;
-    }
-    if (n < 4) {
-        st->set_error(
-            "terrainHeightfield: requires (tx, tz, lod, edgeMask[, mats])");
-        return JS_UNDEFINED;
-    }
-
-    int64_t tx = 0, tz = 0;
-    JS_ToInt64(c, &tx, a[0]);
-    JS_ToInt64(c, &tz, a[1]);
-    int32_t lod = 0, edge_mask = 0;
-    JS_ToInt32(c, &lod, a[2]);
-    JS_ToInt32(c, &edge_mask, a[3]);
-
-    uint32_t mat[4] = {0, 1, 2, 3};
-    if (n >= 5 && JS_IsArray(a[4])) {
-        for (int i = 0; i < 4; ++i) {
-            JSValue v = JS_GetPropertyUint32(c, a[4], (uint32_t)i);
-            if (!JS_IsUndefined(v)) {
-                int32_t m = 0; JS_ToInt32(c, &m, v);
-                mat[i] = (uint32_t)m;
-            }
-            JS_FreeValue(c, v);
-        }
-    }
-
-    terrain_mesher::SectorMesh mesh;
-    std::string err;
-    if (!terrain_mesher::mesh_sector_heightfield(
-            *w.field, tx, tz, lod, edge_mask,
-            w.sector_size, w.y_min, w.y_max, mesh, err)) {
-        st->set_error("terrainHeightfield: " + err);
-        return JS_UNDEFINED;
-    }
-
-    for (const auto& bkt : mesh.buckets) {
-        uint32_t mat_id = bkt.material < 4 ? mat[bkt.material] : mat[0];
-        const size_t n_tris = bkt.positions.size() / 9;
-        for (size_t t = 0; t < n_tris; ++t) {
-            st->pushTerrainTriangle(&bkt.positions[t * 9],
-                                    &bkt.normals[t * 9],
-                                    (int)mat_id);
-        }
-    }
     return JS_UNDEFINED;
 }
 
@@ -1933,8 +1860,6 @@ void install_bindings(JSContext* ctx) {
     // M2: the Y-tiled sibling. No part_base.js wrapper yet -- that, and the
     // WorldSector.js calls, are M3's (see the note on j_terrainVolumeTiled).
     bind("__terrainVolumeTiled",j_terrainVolumeTiled,5);
-    // Heightfield terrain LOD ladder (alpine design, LODs 0-4).
-    bind("__terrainHeightfield",j_terrainHeightfield,5);
     // World query verbs (Task 7: heightAt/slopeAt/moistureAt/biomeAt).
     bind("__heightAt",j_heightAt,2);
     bind("__slopeAt",j_slopeAt,2);

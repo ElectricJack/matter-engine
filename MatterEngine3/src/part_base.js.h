@@ -184,19 +184,24 @@ globalThis.Part = class Part {
   position()             { return __dsl_position(); }
   paths(rec,opts)        { __pf_stampPaths((rec&&rec.__id!==undefined)?rec.__id:rec, opts); }
   emitVolume(opts)       { __dsl_emitVolume(opts); }
-  // FIVE parameters. This wrapper was left at the pre-edgeMask four-parameter
-  // form when the mask was added to the C binding and to WorldSector's call
-  // site, and the shape of the mistake hid it: WorldSector passes
-  // (tx, tz, rung, edgeMask, mats), so edgeMask bound to `mats` and was
-  // forwarded positionally into the binding's 4th slot -- which IS edgeMask,
-  // so masking worked perfectly. The MATERIAL ARRAY was the casualty: it fell
-  // off the end silently, every voxel sector meshed with the binding's default
-  // raw ids 0..3 instead of the authored [grass, dirt, rock, snow], and a
-  // world's material override on the voxel path did nothing at all.
-  terrainVolume(tx,tz,rung,edgeMask,mats) {
-    __terrainVolume(tx,tz,rung,edgeMask|0,(mats===undefined?null:mats));
+  // FOUR parameters, and the arity is the whole history of this wrapper. It
+  // used to be five: (tx, tz, rung, edgeMask, mats). Before that it was four
+  // WITHOUT the mask, and the mask was added to the C binding and to
+  // WorldSector's call site but not here -- so `edgeMask` bound to the `mats`
+  // parameter and was forwarded positionally into the binding's 4th slot,
+  // which IS edgeMask. Masking therefore worked perfectly and the MATERIAL
+  // ARRAY was the silent casualty: it fell off the end, every voxel sector
+  // meshed with the binding's default raw ids 0..3 instead of the authored
+  // [grass, dirt, rock, snow], and a world's material override on the voxel
+  // path did nothing at all.
+  //
+  // The mask is gone entirely now (2026-08-11) and the 4th slot is the
+  // material array again. If you change this arity, change the binding, the
+  // ~9 WorldSector.js copies AND tests/fixtures/world_stream's copy together:
+  // a positional mismatch here does not throw, it silently mis-colours a world.
+  terrainVolume(tx,tz,rung,mats) {
+    __terrainVolume(tx,tz,rung,(mats===undefined?null:mats));
   }
-  terrainHeightfield(tx,tz,lod,edgeMask,mats) { __terrainHeightfield(tx,tz,lod,edgeMask,(mats===undefined?null:mats)); }
   heightAt(x,z)   { return __heightAt(x,z); }
   slopeAt(x,z)    { return __slopeAt(x,z); }
   moistureAt(x,z) { return __moistureAt(x,z); }

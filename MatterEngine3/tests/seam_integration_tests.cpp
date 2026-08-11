@@ -693,23 +693,29 @@ struct Totals {
     double    mesh_worst = 1.0;
     long long band_checked = 0, band_wrong = 0, band_severe = 0;
     double    band_worst = 1.0;
-    // Same three again, but only over the HEIGHTFIELD fixtures. Surface nets
-    // legitimately emits a quad whose geometric normal opposes its corners'
-    // averaged gradient normals wherever the field has a feature thinner than
-    // a voxel -- the four cells' gradients genuinely disagree there, and no
-    // winding rule can fix it. A heightfield has no such feature: it is one
-    // single-valued sheet. So a reversal that survives on kNoise is a WINDING
-    // BUG, and one that appears only on kCave0 is the field being pathological.
+    // Same three again, but only over the SINGLE-SHEET fixtures -- fields whose
+    // density is `h(x, z) - y`, which `FieldRuntime::is_heightfield()` reports.
+    // This is a property of the FIXTURE FIELD, not of a meshing path: there is
+    // one mesher and it is the voxel one. (A second, heightfield-specific
+    // mesher used to exist; it was deleted 2026-08-11 and never had anything to
+    // do with this split.)
+    //
+    // Surface nets legitimately emits a quad whose geometric normal opposes its
+    // corners' averaged gradient normals wherever the field has a feature
+    // thinner than a voxel -- the four cells' gradients genuinely disagree
+    // there, and no winding rule can fix it. A single sheet has no such
+    // feature. So a reversal that survives on kNoise is a WINDING BUG, and one
+    // that appears only on kCave0 is the field being pathological.
     long long hf_mesh_severe = 0, hf_band_severe = 0, hf_fan_severe = 0;
     long long hf_mesh_checked = 0, hf_band_checked = 0, hf_fan_checked = 0;
-    // Heightfield fan reversals broken out by the plane's normal axis, which
+    // Single-sheet fan reversals broken out by the plane's normal axis, which
     // is what `reverse_frame` switches on.
     long long hf_fan_severe_axis[3] = {0, 0, 0};
     long long hf_fan_checked_axis[3] = {0, 0, 0};
 };
 static Totals g_tot;
-// True while the fixture in flight is a single-valued heightfield.
-static bool g_heightfield = false;
+// True while the fixture FIELD in flight is a single-valued sheet.
+static bool g_single_sheet = false;
 // Plane normal axis of the weld in flight, for the per-axis breakdown.
 static int g_face_axis = 0;
 
@@ -767,7 +773,7 @@ static void account_mesh(const SectorMesh& m) {
         winding_scan(b.positions.data(), b.normals.data(),
                      b.positions.size() / 9, g_tot.mesh_checked,
                      g_tot.mesh_wrong, g_tot.mesh_severe, g_tot.mesh_worst);
-        if (g_heightfield) {
+        if (g_single_sheet) {
             long long w = 0; double d = 1.0;
             winding_scan(b.positions.data(), b.normals.data(),
                          b.positions.size() / 9, g_tot.hf_mesh_checked, w,
@@ -781,7 +787,7 @@ static void account_band(const seam::OverlapBand& band) {
         winding_scan(b.positions.data(), b.normals.data(),
                      b.positions.size() / 9, g_tot.band_checked,
                      g_tot.band_wrong, g_tot.band_severe, g_tot.band_worst);
-        if (g_heightfield) {
+        if (g_single_sheet) {
             long long w = 0; double d = 1.0;
             winding_scan(b.positions.data(), b.normals.data(),
                          b.positions.size() / 9, g_tot.hf_band_checked, w,
@@ -813,7 +819,7 @@ static void account_winding(const seam::WeldMesh& m, bool fan_only = false) {
             const double dot = (g[0]*mn[0] + g[1]*mn[1] + g[2]*mn[2]) / (gl * ml);
             ++*checked;
             if (dot <= 0) ++*wrong;
-            if (fan_only && g_heightfield) {
+            if (fan_only && g_single_sheet) {
                 ++g_tot.hf_fan_checked;
                 ++g_tot.hf_fan_checked_axis[g_face_axis];
                 if (dot < -0.5) {
@@ -952,7 +958,7 @@ static MissDiag diag_for(int face_axis, const seam::WeldSide& neg,
 static void run_neg_x(const FieldRuntime& f, const char* field_name,
                       float y_min, float y_max, int max_level,
                       bool one_sheet) {
-    g_heightfield = one_sheet;
+    g_single_sheet = one_sheet;
     printf("  [1] -x pairing (coarse WEST of fine -- the orientation the [1..n]"
            " ownership rule leaves open), field %s\n", field_name);
     for (int L = 0; L <= max_level; ++L) {
@@ -1045,7 +1051,7 @@ static void run_neg_x(const FieldRuntime& f, const char* field_name,
 static void run_neg_z(const FieldRuntime& f, const char* field_name,
                       float y_min, float y_max, int max_level,
                       bool one_sheet) {
-    g_heightfield = one_sheet;
+    g_single_sheet = one_sheet;
     printf("  [2] -z mirror (coarse SOUTH of fine), field %s\n", field_name);
     for (int L = 0; L <= max_level; ++L) {
         const float SL = 64.0f * float(1 << L);
@@ -1325,7 +1331,8 @@ static void run_corner_and_partition(const FieldRuntime& f, const char* field_na
 // all of it (`scan_columns`). Away from the contour every column is trivially
 // covered by one tile or the other, so the gapped columns it finds are the seam.
 //
-// HEIGHTFIELD ONLY for the coverage gate, and the reason is the probe's known
+// SINGLE-SHEET FIXTURES ONLY for the coverage gate (a field of the form
+// `h(x, z) - y`), and the reason is the probe's known
 // limit rather than a preference: `y_at` returns the HIGHEST triangle, so a
 // column is "covered" the moment anything is above it. In a cave world a roof
 // thirty metres down would answer for a missing terrain top and the scan would
@@ -1335,7 +1342,7 @@ static void run_corner_and_partition(const FieldRuntime& f, const char* field_na
 // sides disagreeing about the shared plane's samples.
 static void run_neg_y(const FieldRuntime& f, const char* field_name,
                       int max_level, bool one_sheet) {
-    g_heightfield = one_sheet;
+    g_single_sheet = one_sheet;
     printf("  [8] -y pairing (coarse BELOW fine -- the vertical orientation the"
            " [1..n] ownership rule leaves open), field %s\n", field_name);
     for (int L = 0; L <= max_level; ++L) {
@@ -1927,13 +1934,13 @@ int main() {
            " worst cos = %.4f\n",
            g_tot.band_checked, g_tot.band_wrong, g_tot.band_severe,
            g_tot.band_worst);
-    printf("      HEIGHTFIELD ONLY (no sub-voxel feature can excuse a "
-           "reversal): mesh %lld severe / %lld, band %lld / %lld, fan %lld / "
+    printf("      SINGLE-SHEET FIXTURES ONLY (no sub-voxel feature can excuse "
+           "a reversal): mesh %lld severe / %lld, band %lld / %lld, fan %lld / "
            "%lld\n",
            g_tot.hf_mesh_severe, g_tot.hf_mesh_checked,
            g_tot.hf_band_severe, g_tot.hf_band_checked,
            g_tot.hf_fan_severe, g_tot.hf_fan_checked);
-    printf("      heightfield fan by plane normal axis: x %lld/%lld, y %lld/%lld,"
+    printf("      single-sheet fan by plane normal axis: x %lld/%lld, y %lld/%lld,"
            " z %lld/%lld\n",
            g_tot.hf_fan_severe_axis[0], g_tot.hf_fan_checked_axis[0],
            g_tot.hf_fan_severe_axis[1], g_tot.hf_fan_checked_axis[1],

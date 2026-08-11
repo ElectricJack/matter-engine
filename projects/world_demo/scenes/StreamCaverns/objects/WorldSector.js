@@ -21,7 +21,7 @@ class WorldSector extends Part {
   // Same parameter block every streamed sector takes (matter_engine.cpp builds
   // the JSON); the scatter-only fields are absent because nothing reads them.
   // terrainLod 5 = the 2 m voxel rung, counting DOWN with distance.
-  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5, edgeMask: 0,
+  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5,
                     sectorSize: SECTOR,
                     worldSeed: 0, fieldHash: '', biomes: '' };
 
@@ -47,12 +47,15 @@ class WorldSector extends Part {
     // ALL-VOXEL LADDER, same mapping every streamed world uses:
     //   terrainLod 5 -> voxel rung  0 ->  2 m ... terrainLod 0 -> rung -5 -> 64 m
     //
-    // edgeMask marks cardinal neighbours exactly one LOD coarser. It matters
-    // MORE here than in a heightfield world: across a rung step the mesher has
-    // to reconcile a whole boundary PLANE of density rather than a surface
-    // polyline, or every band boundary rings the world in cracked tunnels.
+    // CROSS-RUNG SEAMS MATTER MORE HERE than in a single-sheet world: across
+    // a rung step the join has to reconcile a whole boundary PLANE of density
+    // rather than a surface polyline, or every band boundary rings the world
+    // in cracked tunnels. It is not this file's problem -- a sector used to
+    // pass an `edgeMask` so the mesher could stitch that border at BAKE time,
+    // and the engine now welds the two ACTUALLY DRAWN tiles at runtime
+    // (volumetric-sectors M0). The parameter is gone.
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
-    this.terrainVolume(p.tx, p.tz, voxelRung, p.edgeMask | 0, terrainMaterials);
+    this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
   }
 }

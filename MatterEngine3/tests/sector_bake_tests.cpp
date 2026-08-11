@@ -533,17 +533,25 @@ class BareHab extends Part {
               nb.error.message.c_str());
     }
 
-    // ---- terrainVolume forwards ALL FIVE arguments ---------------------------
+    // ---- terrainVolume forwards ALL FOUR arguments ---------------------------
     //
-    // The wrapper in part_base.js.h was left at its pre-edgeMask four-parameter
-    // form after the mask was added to the C binding and to WorldSector's call
-    // site. The shape of the mistake is why it survived: WorldSector passes
+    // AN ARITY GUARD, and the arity has now changed twice. The wrapper in
+    // part_base.js.h was once left at its pre-edgeMask four-parameter form after
+    // the mask was added to the C binding and to WorldSector's call site. The
+    // shape of the mistake is why it survived: WorldSector passed
     // (tx, tz, rung, edgeMask, mats), so edgeMask bound to the wrapper's `mats`
-    // parameter and was forwarded into the binding's 4th slot -- which IS
+    // parameter and was forwarded into the binding's 4th slot -- which WAS
     // edgeMask. Masking worked perfectly. The MATERIAL ARRAY fell off the end,
     // every voxel sector meshed with the binding's default raw ids 0..3 instead
     // of the authored [grass, dirt, rock, snow], and a world's material
     // override did nothing on the voxel path.
+    //
+    // The mask is gone entirely (2026-08-11) and the 4th slot is the material
+    // array again, so the signature is back to (tx, tz, rung, mats) -- which is
+    // exactly the shape that hid the bug the first time. That is precisely why
+    // this test exists rather than being retired with the mask: a positional
+    // mismatch between wrapper and binding does not throw, it silently
+    // mis-colours a world.
     //
     // Tested by intercepting the native binding from JS, because that is where
     // the defect lives -- the C side was always correct, and a test that only
@@ -557,24 +565,24 @@ class MatFwd extends Part {
     const real = globalThis.__terrainVolume;
     globalThis.__terrainVolume = function(...args) { seen = args; return real.apply(null, args); };
     try {
-      this.terrainVolume(3, 4, 0, 5, [16, 11, 17, 2]);
+      this.terrainVolume(3, 4, 0, [16, 11, 17, 2]);
     } finally {
       globalThis.__terrainVolume = real;
     }
     if (!seen) throw new Error('binding was never called');
-    if (seen.length !== 5)
-      throw new Error('forwarded ' + seen.length + ' args, expected 5');
-    if (seen[3] !== 5)
-      throw new Error('edgeMask arrived as ' + seen[3] + ', expected 5');
-    if (!Array.isArray(seen[4]) || seen[4][0] !== 16 || seen[4][3] !== 2)
-      throw new Error('material array did not arrive: ' + JSON.stringify(seen[4]));
+    if (seen.length !== 4)
+      throw new Error('forwarded ' + seen.length + ' args, expected 4');
+    if (!Array.isArray(seen[3]) || seen[3][0] !== 16 || seen[3][3] !== 2)
+      throw new Error('material array did not arrive: ' + JSON.stringify(seen[3]));
     // And omitting mats entirely must still be legal (null, not undefined).
     let seen2 = null;
     const real2 = globalThis.__terrainVolume;
     globalThis.__terrainVolume = function(...args) { seen2 = args; return real2.apply(null, args); };
-    try { this.terrainVolume(0, 0, 0, 0); } finally { globalThis.__terrainVolume = real2; }
-    if (seen2[4] !== null)
-      throw new Error('omitted mats should forward null, got ' + seen2[4]);
+    try { this.terrainVolume(0, 0, 0); } finally { globalThis.__terrainVolume = real2; }
+    if (seen2.length !== 4)
+      throw new Error('omitted mats forwarded ' + seen2.length + ' args, expected 4');
+    if (seen2[3] !== null)
+      throw new Error('omitted mats should forward null, got ' + seen2[3]);
   }
 }
 )JS";
@@ -584,8 +592,8 @@ class MatFwd extends Part {
         fopts.world.sector_size = 16.0f;
         BakeResult fr = host.bake_source(fwd_src, "{}", fopts);
         CHECK(fr.error.ok, fr.error.message.c_str());
-        printf("  terrainVolume(tx,tz,rung,edgeMask,mats): all five reach the "
-               "binding\n");
+        printf("  terrainVolume(tx,tz,rung,mats): all four reach the binding, "
+               "and the material array lands in the slot the mask vacated\n");
     }
 
     // ---- __candidatesInRect is BITWISE identical to the JS ------------------

@@ -19,9 +19,9 @@ struct Ring { float radius; int rung; };
 // rung, exactly as before.
 // ---------------------------------------------------------------------------
 // THE EDGE MASK IS GONE FROM THIS ENCODING. Bits 7-10 used to carry a
-// four-bit "which cardinal neighbours are one level coarser" mask, matching
-// terrain_mesher::EdgeMaskBits, and the mesher gated its cross-level ownership
-// reach on it. Two things killed it
+// four-bit "which cardinal neighbours are one level coarser" mask, matching a
+// `terrain_mesher::EdgeMaskBits` enum that has since been deleted outright, and
+// the mesher gated its cross-level ownership reach on it. Two things killed it
 // (docs/volumetric-sectors-design-2026-08-10.md §2.4, §4.1 "Consequences" 2):
 //
 //   * The mask was a promise about the DESIRED map that the DRAWN map

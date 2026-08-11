@@ -350,9 +350,10 @@ int main() {
             std::string err;
             // coarse tile 0 at 2*SL: x,z in [0, 2 SL), rung -(L+1)
             // fine   tile 2 at SL:   x in [2 SL, 3 SL), z in [0, SL), rung -L
-            // The coarse tile is on the fine tile's -x side, so the FINE tile
-            // carries kEdgeNegX. The coarse tile carries nothing: the mask
-            // marks neighbours one rung COARSER, and its +x neighbour is finer.
+            // The coarse tile is on the fine tile's -x side. Neither tile is
+            // told that: mesh_sector takes no mask, so both mesh exactly as
+            // they would beside an equal-rung neighbour, and the resulting
+            // cross-rung strip is the runtime welder's to close.
             CHECK(mesh_sector(f, 0, 0, -(L + 1), 2.0f * SL, -300, 300,
                               coarse_m, nullptr, err), err.c_str());
             CHECK(mesh_sector(f, 2, 0, -L, SL, -300, 300, fine, nullptr, err),
@@ -492,195 +493,6 @@ int main() {
         CHECK(y_lo > -1e29f && y_hi > -1e29f,
               "nested corner: both siblings cover the column just inside their "
               "shared edge");
-    }
-
-    // =======================================================================
-    // Heightfield LOD ladder (mesh_sector_heightfield, terrain LODs 0-4)
-    // =======================================================================
-
-    // Surface tris have strictly positive stored ny; skirts have EXACTLY 0.
-    auto surface_tris = [](const SectorMesh& m) {
-        size_t n = 0;
-        for (const auto& b : m.buckets)
-            for (size_t t = 0; t * 9 < b.normals.size(); ++t)
-                if (b.normals[t*9+1] != 0.0f) ++n;
-        return n;
-    };
-    auto skirt_tris = [](const SectorMesh& m) {
-        size_t n = 0;
-        for (const auto& b : m.buckets)
-            for (size_t t = 0; t * 9 < b.normals.size(); ++t)
-                if (b.normals[t*9+1] == 0.0f) ++n;
-        return n;
-    };
-    // Coverage: signed + absolute xz area over surface tris. Consistent
-    // outward winding makes every signed area negative (x-right/z-up paper),
-    // so |sum(signed)| == sum(|area|) == S*S iff no gaps and no overlaps.
-    auto surface_area = [](const SectorMesh& m, double& signed_sum,
-                           double& abs_sum) {
-        signed_sum = 0.0; abs_sum = 0.0;
-        for (const auto& b : m.buckets)
-            for (size_t t = 0; t * 9 < b.normals.size(); ++t) {
-                if (b.normals[t*9+1] == 0.0f) continue;
-                const float* p = &b.positions[t*9];
-                const double a2 =
-                    double(p[3]-p[0]) * double(p[8]-p[2]) -
-                    double(p[5]-p[2]) * double(p[6]-p[0]);
-                signed_sum += a2 * 0.5;
-                abs_sum += std::fabs(a2) * 0.5;
-            }
-    };
-
-    // --- LOD tri counts + skirt counts (flat field, no masks) ---------------
-    {
-        FieldRuntime f = make(kFlat5);
-        const size_t expect_surface[5] = {2, 8, 32, 128, 512};
-        for (int lod = 0; lod <= 4; ++lod) {
-            SectorMesh m; std::string err;
-            CHECK(mesh_sector_heightfield(f, 0, 0, lod, 0, 64.0f, -64, 192, m, err),
-                  err.c_str());
-            const int N = 1 << lod;
-            CHECK(surface_tris(m) == expect_surface[lod],
-                  "heightfield surface tri count per design table");
-            // Was 4*N*2 border-skirt tris; removed 2026-07-30. The coverage
-            // assertions immediately below are what made them removable here:
-            // the surface alone measures exactly 64x64 with no gaps.
-            (void)N;
-            CHECK(skirt_tris(m) == 0,
-                  "heightfield emits no skirts, surface only");
-            double sgn = 0, abs = 0;
-            surface_area(m, sgn, abs);
-            CHECK(std::fabs(abs - 64.0*64.0) < 1e-2, "full coverage, no gaps");
-            CHECK(std::fabs(-sgn - 64.0*64.0) < 1e-2, "consistent winding");
-        }
-    }
-    // --- coverage + winding under every mask shape (noise field) ------------
-    {
-        FieldRuntime f = make(kNoise);
-        const int masks[] = {0, 1, 2, 4, 8, 1|4, 2|8, 1|2, 4|8, 1|2|4, 15};
-        for (int lod = 1; lod <= 4; ++lod)
-            for (int mask : masks) {
-                SectorMesh m; std::string err;
-                CHECK(mesh_sector_heightfield(f, 3, -2, lod, mask, 64.0f,
-                                              -300, 300, m, err), err.c_str());
-                double sgn = 0, abs = 0;
-                surface_area(m, sgn, abs);
-                CHECK(std::fabs(abs - 64.0*64.0) < 1e-2,
-                      "masked mesh covers the full sector");
-                CHECK(std::fabs(-sgn - 64.0*64.0) < 1e-2,
-                      "masked mesh winding consistent");
-            }
-    }
-    // --- determinism ---------------------------------------------------------
-    {
-        FieldRuntime f = make(kNoise);
-        SectorMesh a, b; std::string err;
-        CHECK(mesh_sector_heightfield(f, 5, 7, 3, 5, 64.0f, -300, 300, a, err), err.c_str());
-        CHECK(mesh_sector_heightfield(f, 5, 7, 3, 5, 64.0f, -300, 300, b, err), err.c_str());
-        bool same = a.buckets.size() == b.buckets.size();
-        for (size_t i = 0; same && i < a.buckets.size(); ++i)
-            same = a.buckets[i].positions == b.buckets[i].positions &&
-                   a.buckets[i].normals == b.buckets[i].normals;
-        CHECK(same, "heightfield mesh deterministic");
-    }
-    // --- equal-LOD border verts bitwise-identical across neighbors ----------
-    {
-        FieldRuntime f = make(kNoise);
-        SectorMesh a, b; std::string err;
-        CHECK(mesh_sector_heightfield(f, 0, 0, 3, 0, 64.0f, -300, 300, a, err), err.c_str());
-        CHECK(mesh_sector_heightfield(f, 1, 0, 3, 0, 64.0f, -300, 300, b, err), err.c_str());
-        auto border = [](const SectorMesh& m, float bx) {
-            std::vector<std::pair<float,float>> out;   // (z, y) on surface tris
-            for (const auto& bkt : m.buckets)
-                for (size_t t = 0; t * 9 < bkt.normals.size(); ++t) {
-                    if (bkt.normals[t*9+1] == 0.0f) continue;
-                    for (int v = 0; v < 3; ++v) {
-                        const float* p = &bkt.positions[t*9+v*3];
-                        if (p[0] == bx) out.push_back({p[2], p[1]});
-                    }
-                }
-            std::sort(out.begin(), out.end());
-            out.erase(std::unique(out.begin(), out.end()), out.end());
-            return out;
-        };
-        auto ba = border(a, 64.0f);
-        auto bb = border(b, 0.0f);
-        CHECK(ba.size() == size_t(9), "equal-LOD border has N+1 verts");
-        CHECK(ba == bb, "equal-LOD border verts bitwise-identical");
-    }
-    // --- 2:1 masked border equals the coarse neighbor's border --------------
-    {
-        FieldRuntime f = make(kNoise);
-        SectorMesh fine, coarse; std::string err;
-        // fine sector (0,0) lod 3 with +x masked; coarse neighbor (1,0) lod 2.
-        CHECK(mesh_sector_heightfield(f, 0, 0, 3, 1, 64.0f, -300, 300, fine, err), err.c_str());
-        CHECK(mesh_sector_heightfield(f, 1, 0, 2, 0, 64.0f, -300, 300, coarse, err), err.c_str());
-        auto border = [](const SectorMesh& m, float bx) {
-            std::vector<std::pair<float,float>> out;
-            for (const auto& bkt : m.buckets)
-                for (size_t t = 0; t * 9 < bkt.normals.size(); ++t) {
-                    if (bkt.normals[t*9+1] == 0.0f) continue;
-                    for (int v = 0; v < 3; ++v) {
-                        const float* p = &bkt.positions[t*9+v*3];
-                        if (p[0] == bx) out.push_back({p[2], p[1]});
-                    }
-                }
-            std::sort(out.begin(), out.end());
-            out.erase(std::unique(out.begin(), out.end()), out.end());
-            return out;
-        };
-        auto bf = border(fine, 64.0f);
-        auto bc = border(coarse, 0.0f);
-        CHECK(bf.size() == size_t(5), "masked border keeps only even verts");
-        // XZ lattice positions coincide bitwise, but the HEIGHTS do not: the
-        // two sectors evaluate the same world XZ through different uniform
-        // filter scales (cell/2 vs cell), so a cross-LOD border vertex lands
-        // at a different y on each side.
-        //
-        // This is the one place skirts were load-bearing, and removing them
-        // (2026-07-30) leaves this delta as an OPEN VERTICAL CRACK at every
-        // terrain-band boundary -- the >= 8 m curtain used to swallow it. The
-        // bound below is unchanged in value but has changed meaning entirely:
-        // it was "the crack stays smaller than the cover", it is now "this is
-        // how big the uncovered crack is". Kept as a characterization gate so
-        // a filter change that widened it cannot land silently.
-        //
-        // The real fix is to make both sides agree on the border height --
-        // evaluate masked border vertices at the COARSE side's filter scale on
-        // both sides, the same way the XZ lattice is already forced to agree.
-        // Until then, cross-LOD seams are visible where band radii fall inside
-        // the streamed area.
-        bool xz_match = bf.size() == bc.size();
-        float max_dy = 0.0f;
-        for (size_t i = 0; xz_match && i < bf.size(); ++i) {
-            xz_match = bf[i].first == bc[i].first;
-            max_dy = std::max(max_dy, std::fabs(bf[i].second - bc[i].second));
-        }
-        CHECK(xz_match, "masked border lattice positions bitwise-match");
-        CHECK(max_dy < 6.0f,
-              "cross-LOD border height delta (now an uncovered crack) "
-              "stays within its characterized bound");
-    }
-    // --- LOD1 with all four neighbors coarser (centre fan) ------------------
-    {
-        FieldRuntime f = make(kNoise);
-        SectorMesh m; std::string err;
-        CHECK(mesh_sector_heightfield(f, -4, 9, 1, 15, 64.0f, -300, 300, m, err), err.c_str());
-        CHECK(surface_tris(m) == 4, "lod1 fully-masked collapses to 4-tri fan");
-        double sgn = 0, abs = 0;
-        surface_area(m, sgn, abs);
-        CHECK(std::fabs(abs - 64.0*64.0) < 1e-2, "fan covers the sector");
-    }
-    // --- error paths ---------------------------------------------------------
-    {
-        FieldRuntime f = make(kFlat5);
-        SectorMesh m; std::string err;
-        CHECK(!mesh_sector_heightfield(f, 0, 0, 5, 0, 64.0f, -64, 192, m, err),
-              "lod 5 rejected (voxel path owns it)");
-        CHECK(!mesh_sector_heightfield(f, 0, 0, 0, 1, 64.0f, -64, 192, m, err),
-              "coarsest level with edge mask rejected");
-        CHECK(!mesh_sector_heightfield(f, 0, 0, 2, 0, 64.0f, -64, 4, m, err),
-              "height above authored range rejected");
     }
 
     // =======================================================================
@@ -862,7 +674,7 @@ int main() {
     // --- REPURPOSED: the volumetric cross-rung pair --------------------------
     //
     // This block used to prove the VOLUMETRIC snap was load-bearing, in the same
-    // shape as the heightfield one retired further up: it walked a shared
+    // shape as the heightfield snap retired alongside it: it walked a shared
     // boundary plane and counted how often a raw fine density sample differs
     // from the average of the two even samples the coarse neighbour would have
     // interpolated between. It always differed, which was the point -- without

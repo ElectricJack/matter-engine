@@ -94,9 +94,10 @@ struct SectorMesh {
 // `rung` is a power-of-two voxel ladder about a 2 m base, in BOTH directions:
 //   3 -> 0.25 m, 2 -> 0.5 m, 1 -> 1 m, 0 -> 2 m, -1 -> 4 m ... -5 -> 64 m.
 // The negative half lets the terrain ladder stay voxel at distance instead of
-// switching to the heightfield mesher below, which is what produced a visible
+// switching to a separate heightfield mesher, which is what produced a visible
 // seam between near and far terrain -- two different surfaces rather than two
-// resolutions of one.
+// resolutions of one. That mesher has since been deleted; see the note at the
+// end of this header.
 // Returns false + err on degenerate config (rung outside -5..3, sector_size <= 0,
 // y_min >= y_max).
 bool mesh_sector(const terrain_field::FieldRuntime& field,
@@ -165,48 +166,27 @@ bool mesh_sector_tiled(const terrain_field::FieldRuntime& field,
                        SectorMesh& out, seam::SectorBoundary* boundary_out,
                        std::string& err);
 
-// Heightfield terrain LOD ladder (2026-07-28 alpine design, LODs 0-4).
+// THERE IS NO SECOND MESHER, AND NO EDGE MASK (both deleted 2026-08-11).
 //
-// Meshes one sector as an N x N regular height grid, N = 1 << lod
-// (lod 0 -> one quad, lod 4 -> 16x16 cells). Evaluates height_at once per
-// X/Z lattice point (plus four fixed-step probes per USED vertex for the
-// gradient normal) and never allocates a voxel density volume. Positions are
-// sector-local in x/z, world-absolute in y — same contract as mesh_sector.
+// `mesh_sector_heightfield` used to sit here: an N x N regular height grid
+// (LODs 0-4) that meshed `height_at` directly instead of a density volume, with
+// an `edge_mask`/`EdgeMaskBits` scheme that re-triangulated the border rows
+// against a coarser neighbour's even lattice points. Both are gone.
 //
-// edge_mask marks cardinal neighbors that are exactly ONE terrain LOD
-// coarser (bit 0 = +x, bit 1 = -x, bit 2 = +z, bit 3 = -z). On a masked
-// edge the odd boundary vertices are dropped and the border cell rows are
-// re-triangulated against the coarse neighbor's boundary vertices (even
-// lattice points), so the shared border polyline is bitwise-identical to
-// the coarse neighbor's own edge — watertight, with no T-vertices. Unmasked
-// edges keep the full grid boundary, which is bitwise-identical between
-// equal-LOD neighbors. lod 0 is the coarsest level and must pass
-// edge_mask 0.
+// The mesher went because a world cannot be two surfaces. The voxel ladder's
+// negative rungs (see `rung` above) already carry terrain out to 64 m voxels,
+// so nothing had to switch representation at distance -- and while both existed
+// the switch printed a visible seam between near and far terrain. Its last
+// caller was the `terrainHeightfield` DSL verb, which no scene in the tree ever
+// called.
 //
-// Lattice coordinates are computed as double(S) * i / N (exact for the
-// power-of-two N), so a coarse neighbor's lattice point and the fine
-// sector's even lattice point produce identical height_at arguments.
-// Normal probes use a fixed 2 m step regardless of lod, so a border vertex
-// shades identically at every level.
+// The mask went in M0-WP1 for the reasons set out at length on `mesh_sector`
+// above: it named the level the streamer WANTED next door rather than the tile
+// actually drawn, and it put a neighbour guess into the tile's bake identity.
+// It outlived the voxel path by a few weeks only as an accepted-and-ignored
+// argument, until the ~9 WorldSector.js copies passing it were swept.
 //
-// No border skirts (removed 2026-07-30): the masked-edge re-triangulation
-// above is already watertight, so there was never a crack to cover.
-bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
-                             int64_t tx, int64_t tz, int lod, int edge_mask,
-                             float sector_size, float y_min, float y_max,
-                             SectorMesh& out, std::string& err);
-
-// Edge-mask bit layout. Now used ONLY by mesh_sector_heightfield above (and by
-// the WorldSector.js copies that still compute a mask for the voxel verb, where
-// it is accepted and ignored). The voxel path stopped taking a mask in
-// M0-WP1 -- see the long note on mesh_sector. Ordered to match seam::Face's
-// first four entries so a mask bit and a face index are trivially convertible
-// while the two coexist.
-enum EdgeMaskBits {
-    kEdgePosX = 1,
-    kEdgeNegX = 2,
-    kEdgePosZ = 4,
-    kEdgeNegZ = 8,
-};
+// A face index into `seam::Face` is now the only way to name a boundary
+// direction; the mask bits used to shadow its first four entries.
 
 } // namespace terrain_mesher

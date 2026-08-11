@@ -108,13 +108,11 @@ function assetVariants(biomesJson) {
 
 class WorldSector extends Part {
   // terrainLod: 5 = native voxel mesh (rung 0), 0-4 coarsen 2x per step (see
-  // PHASE 1 below). edgeMask marks cardinal neighbors exactly one LOD
-  // coarser (bit 0 = +x, 1 = -x, 2 = +z, 3 = -z) for the mesher's 2:1 border
-  // stitch. sectorSize is the TILE's own width -- a level-L tile is 64 << L
-  // metres and meshes at voxel rung -L, so cells-per-tile stays constant.
-  // Defaults (5, 0, SECTOR) keep an older engine, which sends none of these,
+  // PHASE 1 below). sectorSize is the TILE's own width -- a level-L tile is
+  // 64 << L metres and meshes at voxel rung -L, so cells-per-tile stays
+  // constant. Defaults (5, SECTOR) keep an older engine, which sends neither,
   // on the voxel path at a level-0 tile.
-  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5, edgeMask: 0,
+  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5,
                     sectorSize: SECTOR,
                     worldSeed: 0, fieldHash: '', biomes: '' };
   // FIXED variant list — independent of tx/tz so the whole asset set installs
@@ -141,14 +139,18 @@ class WorldSector extends Part {
     //   terrainLod 1 -> voxel rung -4 -> 32 m
     //   terrainLod 0 -> voxel rung -5 -> 64 m   (one cell per sector)
     //
-    // edgeMask still matters: the [1..n] ownership rule only makes
-    // EQUAL-rung neighbours watertight, and across rungs the coarse side
-    // interpolates every other sample while the fine side follows the field
-    // -- an unequal pair that never showed before every rung shared rung 0.
+    // CROSS-RUNG SEAMS ARE NOT THIS FILE'S PROBLEM any more. The [1..n]
+    // ownership rule only makes EQUAL-rung neighbours watertight; across rungs
+    // the coarse side interpolates between every other sample while the fine
+    // side follows the field, and the two part company. A sector used to pass
+    // an `edgeMask` naming the neighbours it believed were one rung coarser so
+    // the mesher could stitch that border at BAKE time. The engine now welds
+    // the two ACTUALLY DRAWN tiles at runtime (volumetric-sectors M0), so the
+    // parameter is gone and a tile's geometry depends on nothing outside it.
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
     pbegin(P_TERRAIN);
-    this.terrainVolume(p.tx, p.tz, voxelRung, p.edgeMask | 0, terrainMaterials);
+    this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
     pend(P_TERRAIN);
     if (!table) return;   // no biome table -> terrain only
 
