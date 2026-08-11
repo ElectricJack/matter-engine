@@ -997,6 +997,25 @@ int main() {
         return value != nullptr && value[0] != '\0' && value[0] != '0';
     }();
     int cam_path_warmup = 30;
+    // MATTER_CAM_PATH_SETTLE: SECONDS of unchanged resident_sectors required
+    // before the path starts. 0 = off (frame warmup only).
+    //
+    // SECONDS, not polls, and that distinction is the whole point. The first
+    // version of this counted consecutive frames, which is the very
+    // frame-rate dependence it exists to remove: at 193 fps a 120-frame
+    // plateau is 0.6 s, far shorter than one sector bake, so an ordinary
+    // mid-fill lull satisfies it. Measured: it released at 22 resident
+    // sectors against a settled ~590 and produced a clean-looking PASS with
+    // essentially no world drawn. A bake-latency-scale wall-clock window is
+    // the only threshold that means "the fill converged" on any machine.
+    double cam_path_settle_s = 0.0;
+    std::chrono::steady_clock::time_point cam_path_settle_since =
+        std::chrono::steady_clock::now();
+    uint32_t cam_path_settle_last = UINT32_MAX;
+    if (const char* s = std::getenv("MATTER_CAM_PATH_SETTLE")) {
+        const double parsed = std::atof(s);
+        if (parsed >= 0.0) cam_path_settle_s = parsed;
+    }
     if (const char* value = std::getenv("MATTER_CAM_PATH_WARMUP")) {
         const int parsed = std::atoi(value);
         if (parsed >= 0) cam_path_warmup = parsed;
@@ -2854,13 +2873,46 @@ int main() {
                 // Start only once the world is genuinely drawing. Same signal
                 // the perf harness and the screenshot path already gate on.
                 if (bake_ready && session->frame_stats().instances_drawn > 0) {
+                    // MATTER_CAM_PATH_SETTLE=<n>: hold until the streamed world
+                    // stops growing, instead of (or as well as) counting frames.
+                    //
+                    // WHY THIS EXISTS. `cam_path_warmup` counts FRAMES, but the
+                    // sector fill is bake-rate-limited in WALL TIME. So any
+                    // change that alters frame rate silently changes how much
+                    // world exists when the path starts -- and a smaller world
+                    // trivially shows fewer seams, fewer weld pairs and fewer
+                    // level violations. Measured on StreamCaverns: two builds at
+                    // the same warmup=4000 settled to 590 vs 431 sectors purely
+                    // because the second ran at 193 fps against 50 and so gave
+                    // the baker half the wall time. Comparing their seam numbers
+                    // was meaningless until this was controlled for.
+                    //
+                    // Plateau in WALL TIME: residency unchanged for N seconds
+                    // means the fill converged. Measured in seconds precisely
+                    // because a frame count reintroduces the dependence this
+                    // removes -- see the note where cam_path_settle_s is read.
+                    // The frame warmup still applies first, so default
+                    // behaviour is unchanged when this is unset.
+                    const uint32_t resident = session->frame_stats().resident_sectors;
+                    const auto settle_now = std::chrono::steady_clock::now();
+                    if (resident != cam_path_settle_last) {
+                        cam_path_settle_last = resident;
+                        cam_path_settle_since = settle_now;
+                    }
+                    const double settled_for =
+                        std::chrono::duration<double>(settle_now -
+                                                      cam_path_settle_since).count();
                     if (cam_path_warmup > 0) {
                         --cam_path_warmup;
+                    } else if (cam_path_settle_s > 0.0 &&
+                               (resident == 0 || settled_for < cam_path_settle_s)) {
+                        // keep holding the first pose
                     } else {
                         cam_path_running = true;
                         viewer::lod_trace::set_capture_enabled(true);
-                        std::printf("MATTER_CAM_PATH: starting (%zu poses)\n",
-                                    cam_path.size());
+                        std::printf("MATTER_CAM_PATH: starting (%zu poses, "
+                                    "%u resident sectors at settle)\n",
+                                    cam_path.size(), resident);
                     }
                 }
                 // Hold the first pose through the warmup so the trace's opening

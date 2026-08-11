@@ -1479,18 +1479,55 @@ struct WorldSession::Impl {
     //
     // Adding or retiring one pair touches no other pair, which is what R2's
     // fan-out bound is for.
+    //
+    // BY LEVEL, NOT BY PACKED RUNG -- and that is a fix, not a shorthand.
+    //
+    // The key used to be the coarse tile's whole SectorKey. A SectorKey's rung
+    // is the packed variant, whose low four bits are the SCATTER DETAIL TIER
+    // (sector_streamer.h: `pack_variant(scatter, terrain_lod)`; the tier grades
+    // vegetation density by distance ring and nothing else). The seam geometry
+    // is a pure function of the two tiles' boundary RECORDS, and a record comes
+    // out of `mesh_sector(field, tx, tz, MESHER RUNG, ...)` -- the mesher rung
+    // being a function of the terrain LOD alone (WorldSector.js: "p.rung is a
+    // SCATTER DETAIL TIER ... NOT a mesh resolution"). So the scatter tier
+    // cannot change a single welded triangle.
+    //
+    // With the tier inside the key it changed the pair's IDENTITY anyway. A
+    // tile that merely crosses a scatter ring is republished under a new
+    // variant and the old one is evicted a frame later (publish-then-evict,
+    // and same-level footprints are never parked because
+    // sector_footprints_overlap requires DISTINCT levels), so every weld pair
+    // on that tile's coarse faces was retired and recreated with byte-identical
+    // geometry: an ensure_part, a release_part, a WorldDelta add and remove, an
+    // rt_geometry_epoch bump -- and, for the frame the two overlapped, two
+    // coincident copies of the same strip. That is exactly the "created at
+    // frame N, released at N+1" flicker the M0 soak logged, and on StreamMountain
+    // (scatter rings at 150 m and 500 m) it is pure churn. StreamCaverns
+    // declares a single ring, so it never showed this and its ratio has a
+    // different explanation -- see the note above `noop_rebuilds`.
+    //
+    // Keying by (tile, LEVEL, face) makes the key mean what the geometry means.
+    // The live SectorKey is resolved through the tile index at rebuild time,
+    // which is one hash probe and is what every other neighbour lookup here
+    // already does.
     struct WeldPairKey {
-        SectorKey coarse{0, 0, 0};
+        int64_t tx = 0, tz = 0;
+        int level = 0;      // sector level of the COARSE side (5 - terrain_lod)
         int face = 0;
         bool operator==(const WeldPairKey& o) const {
-            return coarse == o.coarse && face == o.face;
+            return tx == o.tx && tz == o.tz && level == o.level &&
+                   face == o.face;
         }
     };
     struct WeldPairKeyHash {
         size_t operator()(const WeldPairKey& k) const {
-            size_t h = SectorKeyHash{}(k.coarse);
-            h ^= size_t(k.face) * 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-            return h;
+            uint64_t h = uint64_t(k.tx) * 0x9e3779b97f4a7c15ull;
+            h ^= uint64_t(k.tz) + 0xbf58476d1ce4e5b9ull + (h << 6) + (h >> 2);
+            h ^= uint64_t(uint32_t(k.level)) * 0x94d049bb133111ebull;
+            h ^= uint64_t(uint32_t(k.face)) + 0x9e3779b97f4a7c15ull +
+                 (h << 6) + (h >> 2);
+            h ^= h >> 31;
+            return (size_t)h;
         }
     };
     struct WeldRecord {
@@ -1500,7 +1537,33 @@ struct WorldSession::Impl {
         // what a tile is. See SeamWeldStatus for what each one means.
         int fine_sides_expected = 0;
         int fine_sides_drawn = 0;
-        int coarse_side_nulls = 0;
+        // FAILED COARSE-SIDE LANDING LOOKUPS on this pair's last rebuild. Not a
+        // pair count and never was: `side_at` increments it once per lookup
+        // that resolved no vertex, which for a busy plane is thousands. R11
+        // caught the pool sum being read as a pair count (9,054 against 72
+        // pairs); SeamWeldStatus now reports both, under names that say which
+        // is which.
+        int coarse_null_lookups = 0;
+
+        // ---- the INPUT fingerprint (the churn discriminator) ---------------
+        //
+        // A hash over the IDENTITY of every boundary record this pair's last
+        // rebuild consulted -- both principals and every diagonal tile the
+        // WeldSide closures reached -- keyed by things a rebake of the same
+        // tile at the same rung reproduces exactly (tile coordinate, mesher
+        // rung, cell layer, vertex count, band triangle count), never by
+        // pointer.
+        //
+        // It exists to split one number into two. When a rebuild produces a
+        // different content hash it is either because the DRAWN SET MOVED (a
+        // sibling arrived, a level changed, a tile left) -- irreducible, the
+        // world really is different -- or because the welder is not a function
+        // of its inputs, which would be a determinism bug wearing a performance
+        // symptom's clothes and would undermine R3 outright: R3's whole update
+        // scheme (ensure_part(new) -> swap -> release_part(old)) rests on
+        // identical geometry re-deriving an identical hash. Same fingerprint +
+        // different content hash is that bug, and it is counted separately.
+        uint64_t input_fingerprint = 0;
 
         // ---- the DRAWN representation (M0-WP8, resolution R3) --------------
         //
@@ -1522,6 +1585,12 @@ struct WorldSession::Impl {
         // exactly today's behaviour (§4.1 consequence 4).
         uint64_t part_hash = 0;
         uint32_t instance_id = 0;
+        // The last computed CONTENT hash, whether or not it ever became a part.
+        // `part_hash` is 0 in a headless session, under
+        // MATTER_NO_SEAM_WELD_DRAW=1, and whenever a registration was refused,
+        // so it cannot answer "did the geometry change?" -- which is what the
+        // determinism gate needs and what `part_hash` was doing double duty for.
+        uint64_t content_hash = 0;
         // The attempted-flag discipline PublicationResources establishes for
         // sectors (streaming/sector_streaming_coordinator.h:126-132), applied
         // to the two external calls a weld makes. Each is set BEFORE the call
@@ -1565,6 +1634,39 @@ struct WorldSession::Impl {
         uint64_t hash_collisions = 0;    // a weld hash named a non-weld part
         uint64_t id_collisions = 0;      // a weld instance id was already live
         int      pairs_peak = 0;         // high-water mark of the pool
+
+        // ---- the churn breakdown -------------------------------------------
+        //
+        // `parts_registered` conflates three different events, which is why the
+        // M0 soak's "noop_rebuilds : parts_registered" could not be read. These
+        // three partition it exactly:
+        //
+        //   parts_registered == pairs_created + pairs_recontented
+        //   pairs_recontented >= content_changed_inputs_stable
+        //
+        // pairs_created           a cross-level face pair appeared in the drawn
+        //                         set and got its first part. IRREDUCIBLE: the
+        //                         seam did not exist a moment ago. On the M0
+        //                         soak this is most of `parts_registered` --
+        //                         196 registrations against 97 live pairs is
+        //                         about two per pair, and the pair lifecycle
+        //                         alone accounts for that (see below).
+        // pairs_recontented       a LIVE pair's geometry changed and its part
+        //                         was swapped. THIS is the churn number, and
+        //                         the one to compare against noop_rebuilds.
+        //                         Its irreducible core is the 2:1 fine side
+        //                         arriving one sibling at a time: the first
+        //                         sibling to be drawn gets a half-plane weld,
+        //                         and the second re-welds the whole plane.
+        // content_changed_inputs_stable
+        //                         a subset of pairs_recontented in which the
+        //                         input fingerprint did NOT move. Must be 0.
+        //                         Non-zero means the welder is not a function
+        //                         of its inputs and R3's swap discipline is
+        //                         unsound; see WeldRecord::input_fingerprint.
+        uint64_t pairs_created = 0;
+        uint64_t pairs_recontented = 0;
+        uint64_t content_changed_inputs_stable = 0;
     };
     SeamCounters seam_counters{};
     // MATTER_NO_SEAM_WELD=1 disables the welder outright (the rollback
@@ -1578,6 +1680,16 @@ struct WorldSession::Impl {
     bool seam_weld_draw_enabled =
         std::getenv("MATTER_NO_SEAM_WELD_DRAW") == nullptr;
     bool seam_verify = std::getenv("MATTER_SEAM_VERIFY") != nullptr;
+    // One stderr line per weld REGISTRATION, classified. Rides
+    // MATTER_SEAM_TRACE because that is the flag the acceptance soak already
+    // sets and this is the breakdown that soak could not read; MATTER_SEAM_CHURN
+    // turns it on alone. Emitted from the GL thread at the moment of the swap
+    // rather than polled, because the question it answers -- WHICH pair churned
+    // and why -- is lost by the time a per-frame gauge sees the totals. A soak
+    // registers a few hundred times, so this is a few hundred lines, not a per
+    // frame firehose.
+    bool seam_churn_trace = std::getenv("MATTER_SEAM_CHURN") != nullptr ||
+                            std::getenv("MATTER_SEAM_TRACE") != nullptr;
 
     // One transaction's worth of weld draw changes.
     //
@@ -4595,9 +4707,14 @@ uint64_t WorldSession::Impl::weld_part_hash(const WeldPairKey& pair,
     uint64_t h = 0xcbf29ce484222325ull;
     static constexpr char kDomain[] = "seam.weld.v1";
     h = weld_fnv(h, kDomain, sizeof(kDomain));
-    h = weld_fnv(h, &pair.coarse.tx, sizeof(pair.coarse.tx));
-    h = weld_fnv(h, &pair.coarse.tz, sizeof(pair.coarse.tz));
-    h = weld_fnv(h, &pair.coarse.rung, sizeof(pair.coarse.rung));
+    h = weld_fnv(h, &pair.tx, sizeof(pair.tx));
+    h = weld_fnv(h, &pair.tz, sizeof(pair.tz));
+    // The coarse side's LEVEL, never its packed rung: the rung's low four bits
+    // are the scatter detail tier, which grades vegetation and cannot move a
+    // welded triangle. Mixing it in made a scatter-ring crossing look like new
+    // content and swapped a renderer part for geometry that had not changed.
+    // See WeldPairKey.
+    h = weld_fnv(h, &pair.level, sizeof(pair.level));
     h = weld_fnv(h, &pair.face, sizeof(pair.face));
     h = weld_fnv(h, &mesh.origin_x, sizeof(mesh.origin_x));
     h = weld_fnv(h, &mesh.origin_y, sizeof(mesh.origin_y));
@@ -4628,9 +4745,13 @@ uint64_t WorldSession::Impl::weld_part_hash(const WeldPairKey& pair,
 // more than sectors do.
 //
 // Inputs, and why each:
-//   coarse tx/tz/rung  the pool's key. Full 64-bit two's complement, never
+//   coarse tx/tz/level the pool's key. Full 64-bit two's complement, never
 //                      folded through abs(): three quadrants of every world are
-//                      negative.
+//                      negative. LEVEL rather than the packed rung, for the
+//                      reason WeldPairKey gives: the rung's scatter tier is not
+//                      part of the seam's identity, and letting it re-key the
+//                      pair meant a scatter-ring crossing reset the instance's
+//                      temporal history for geometry that had not moved.
 //   face               the other half of the key. Two faces of one coarse tile
 //                      are two independent welds and must not share an id.
 //   part_hash          the content. A weld whose geometry CHANGES becomes a new
@@ -4654,9 +4775,9 @@ uint32_t WorldSession::Impl::weld_instance_id(const WeldPairKey& pair,
                        (hash >> 2));
     };
     uint64_t hash = mix(0x9e3779b97f4a7c15ull, 0x5EA3E1D0ull);  // domain
-    hash = mix(hash, (uint64_t)pair.coarse.tx);
-    hash = mix(hash, (uint64_t)pair.coarse.tz);
-    hash = mix(hash, (uint64_t)(int64_t)pair.coarse.rung);
+    hash = mix(hash, (uint64_t)pair.tx);
+    hash = mix(hash, (uint64_t)pair.tz);
+    hash = mix(hash, (uint64_t)(int64_t)pair.level);
     hash = mix(hash, (uint64_t)(int64_t)pair.face);
     hash = mix(hash, part_hash);
     const uint64_t folded = hash ^ (hash >> 32);
@@ -4791,11 +4912,11 @@ bool WorldSession::Impl::publish_weld_draw(const WeldPairKey& pair,
         if (taken) {
             ++seam_counters.hash_collisions;
             fprintf(stderr,
-                    "[seam] weld (%lld,%lld r%d face %d) hashed to %016llx, "
+                    "[seam] weld (%lld,%lld L%d face %d) hashed to %016llx, "
                     "which already names a baked part -- leaving this pair "
                     "undrawn rather than aliasing it\n",
-                    (long long)pair.coarse.tx, (long long)pair.coarse.tz,
-                    pair.coarse.rung, pair.face,
+                    (long long)pair.tx, (long long)pair.tz,
+                    pair.level, pair.face,
                     (unsigned long long)hash);
             return false;
         }
@@ -5010,7 +5131,7 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
 
     const int level = sector_level_of(key.rung);
     for (const int face : kSeamFaces) {
-        push_pair(WeldPairKey{key, face});
+        push_pair(WeldPairKey{key.tx, key.tz, level, face});
         // (b): the drawn tile one level COARSER across this face. Under the
         // uniform grid `level + 1` is a terrain-LOD label rather than a size,
         // and face_neighbour_span ignores it -- the neighbour is the adjacent
@@ -5026,7 +5147,8 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
                 nx, nz, world_nested_sectors ? level + 1 : kAnyLevel, &coarse);
             if (!entry) continue;
             if (sector_level_of(coarse.rung) != level + 1) continue;
-            push_pair(WeldPairKey{coarse, seam::face_opposite(face)});
+            push_pair(WeldPairKey{coarse.tx, coarse.tz, level + 1,
+                                  seam::face_opposite(face)});
         }
     }
 
@@ -5104,7 +5226,16 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     if (axis == 1) { drop(); return; }          // +-y untiled in M0
 
     // ---- coarse side --------------------------------------------------------
-    const SectorEntry* centry = drawn_entry(pair.coarse);
+    //
+    // Resolved through the tile index by LEVEL, not by an exact SectorKey. The
+    // pair key no longer carries the packed rung (see WeldPairKey), so this is
+    // the lookup that turns the key back into whichever drawn variant currently
+    // occupies that footprint at that level -- and it is precisely what makes a
+    // scatter-tier republish a no-op instead of a retire-and-recreate: the old
+    // and new variants answer the same key with the same records.
+    SectorKey ckey{};
+    const SectorEntry* centry =
+        drawn_tile_entry(pair.tx, pair.tz, pair.level, &ckey);
     if (!centry) { drop(); return; }
     const seam::SectorBoundary* cb = centry->boundary.get();
     if (!cb) {
@@ -5120,13 +5251,39 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     const seam::FaceRecord& cfr = cb->faces[cface];
     const int     crung  = cb->rung;
     const int     frung  = crung + 1;           // finer = larger rung
-    const int     clevel = sector_level_of(pair.coarse.rung);
+    const int     clevel = pair.level;
     const int     flevel = clevel - 1;
     const int     fface  = seam::face_opposite(cface);
 
+    // ---- the input fingerprint (see WeldRecord::input_fingerprint) ----------
+    //
+    // Mixed from record IDENTITY, never from pointers: a republished tile gets
+    // a fresh SectorBoundary at a fresh address with identical contents, and
+    // fingerprinting the address would call that an input change and hide the
+    // very determinism question this counter is here to answer.
+    uint64_t fingerprint = 0xcbf29ce484222325ull;
+    const auto mix_u64 = [&fingerprint](uint64_t v) {
+        fingerprint ^= v;
+        fingerprint *= 0x100000001b3ull;
+    };
+    const auto mix_record = [&](int64_t tx, int64_t tz,
+                                const seam::SectorBoundary& sb, int face) {
+        const seam::FaceRecord& fr = sb.faces[face];
+        mix_u64((uint64_t)tx);
+        mix_u64((uint64_t)tz);
+        mix_u64((uint64_t)(int64_t)sb.rung);
+        mix_u64((uint64_t)(int64_t)sb.cells);
+        mix_u64((uint64_t)(int64_t)face);
+        mix_u64((uint64_t)fr.plane);
+        mix_u64((uint64_t)fr.cell_layer);
+        mix_u64((uint64_t)fr.verts.size());
+        mix_u64((uint64_t)fr.band.triangle_count());
+    };
+    mix_record(pair.tx, pair.tz, *cb, cface);
+
     // ---- fine side: the tiles across this face one rung finer ---------------
     FaceNeighbourSpan span;
-    if (!face_neighbour_span(pair.coarse, cface, flevel, span)) { drop(); return; }
+    if (!face_neighbour_span(ckey, cface, flevel, span)) { drop(); return; }
 
     const seam::SectorBoundary* fine_tiles[8];
     int fine_count = 0, fine_expected = 0;
@@ -5151,6 +5308,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         // coarse one, so the shared plane is `2 * coarse_plane` in fine
         // indices; a mismatch means these two records do not touch.
         if (fb->faces[fface].plane != cfr.plane * 2) continue;
+        mix_record(ftx, ftz, *fb, fface);
         fine_tiles[fine_count++] = fb;
     }
     if (fine_count == 0) { drop(); return; }
@@ -5197,10 +5355,22 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
             c.memo_rec = nullptr;
             const int64_t tx = c.axis_x ? c.normal : tile;
             const int64_t tz = c.axis_x ? tile : c.normal;
-            if (const seam::SectorBoundary* sb =
-                    drawn_boundary_with_rung(tx, tz, c.rung)) {
+            const seam::SectorBoundary* sb =
+                drawn_boundary_with_rung(tx, tz, c.rung);
+            if (sb) {
                 const seam::FaceRecord& fr = sb->faces[c.face];
                 if (fr.cell_layer == c.cell_layer) c.memo_rec = &fr;
+                mix_record(tx, tz, *sb, c.face);
+            } else {
+                // A tile the closure reached and did not find is as much an
+                // input as one it did: losing a DIAGONAL neighbour changes the
+                // emitted band without changing either principal, so a
+                // fingerprint blind to the absence would misreport that as
+                // nondeterminism.
+                mix_u64((uint64_t)tx);
+                mix_u64((uint64_t)tz);
+                mix_u64((uint64_t)(int64_t)c.rung);
+                mix_u64(0xA85E27ull);   // "absent", a tag distinct from any size
             }
         }
         if (!c.memo_rec) { ++c.nulls; return nullptr; }
@@ -5210,7 +5380,7 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     };
 
     SideCtx cctx;
-    cctx.normal     = span.axis_x ? pair.coarse.tx : pair.coarse.tz;
+    cctx.normal     = span.axis_x ? pair.tx : pair.tz;
     cctx.face       = cface;
     cctx.rung       = crung;
     cctx.cells      = cb->cells > 0 ? cb->cells : 1;
@@ -5244,10 +5414,13 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
     // Weld positions are rebased on the COARSE tile's origin. A weld spans two
     // tiles with two different origins, which is exactly why the records carry
     // world doubles and the rebasing happens once, here.
-    const double corigin = double(sector_size_for(pair.coarse.rung));
-    rec.mesh.origin_x = double(pair.coarse.tx) * corigin;
+    // sector_size_for() is a function of variant_level() alone, so the origin is
+    // the same for every scatter variant of this tile -- which is what lets the
+    // level-keyed pair survive a tier republish with an identical content hash.
+    const double corigin = double(sector_size_for(ckey.rung));
+    rec.mesh.origin_x = double(pair.tx) * corigin;
     rec.mesh.origin_y = 0.0;
-    rec.mesh.origin_z = double(pair.coarse.tz) * corigin;
+    rec.mesh.origin_z = double(pair.tz) * corigin;
     seam_scratch.origin_x = rec.mesh.origin_x;
     seam_scratch.origin_y = rec.mesh.origin_y;
     seam_scratch.origin_z = rec.mesh.origin_z;
@@ -5318,9 +5491,9 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
                 if (!warned) {
                     warned = true;
                     fprintf(stderr,
-                            "[seam] weld (%lld,%lld r%d face %d): %s\n",
-                            (long long)pair.coarse.tx,
-                            (long long)pair.coarse.tz, pair.coarse.rung,
+                            "[seam] weld (%lld,%lld L%d face %d): %s\n",
+                            (long long)pair.tx,
+                            (long long)pair.tz, pair.level,
                             cface, err.c_str());
                 }
                 drop();
@@ -5352,7 +5525,8 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
             fside.band = nullptr;
         }
     }
-    rec.coarse_side_nulls = cctx.nulls;
+    rec.coarse_null_lookups = cctx.nulls;
+    rec.input_fingerprint   = fingerprint;
 
     // Nothing crossed this plane: keep the pool to pairs that actually carry
     // something, so its size is a usable measure of the seam surface.
@@ -5361,42 +5535,133 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         return;
     }
 
+    // ---- canonicalise the bucket order before it becomes an identity --------
+    //
+    // `weld_part_hash` walks `mesh.buckets` in order, so bucket ORDER is part of
+    // the content hash. Without this the order is inherited from `seam_scratch`,
+    // which is process-wide state: `WeldMesh::clear_geometry` deliberately keeps
+    // its buckets (their capacity is the point), so `bucket_for` reuses whatever
+    // material slots earlier welds happened to create, in whatever order they
+    // created them, and `append_mesh` copies non-empty buckets out in that
+    // order. Two rebuilds emitting the SAME triangles could therefore hash
+    // differently while the scratch's material list was still growing -- a
+    // spurious part swap, and worse, a hole in the premise R3 rests on
+    // (identical geometry MUST re-derive an identical hash, or ensure_part's
+    // early-out silently keeps drawing the old triangles).
+    //
+    // Sorting by material makes the hash a function of the geometry alone.
+    // There are a handful of materials per weld, so this is a few comparisons,
+    // and it is a pure reordering: triangle order WITHIN a bucket is untouched.
+    std::sort(rec.mesh.buckets.begin(), rec.mesh.buckets.end(),
+              [](const seam::WeldBucket& a, const seam::WeldBucket& b) {
+                  return a.material < b.material;
+              });
+
     // ---- the drawn swap (M0-WP8) -------------------------------------------
     //
     // THE NO-OP. Rebuilding a pair whose two tiles have not changed reproduces
     // the same triangles, hence the same content hash, and the live part and
-    // instance are left strictly alone. That matters because the fan-out
-    // deliberately reaches every neighbour of a published tile: without this,
-    // one publish would churn up to 8 renderer parts per frame while a world
-    // streams, for geometry that did not move.
-    const uint64_t new_hash =
-        seam_weld_draw_enabled ? weld_part_hash(pair, rec.mesh) : 0;
+    // instance are left strictly alone.
+    //
+    // WHAT THIS NO-OP DOES AND DOES NOT COVER -- worth stating, because the M0
+    // soak's `noop_rebuilds : parts_registered` of ~0.9 : 1 was read as churn
+    // and half of it is not. The fan-out is PRECISE: `rebuild_welds_for(key)`
+    // enumerates only pairs `key` is itself a side of, never a neighbour's
+    // unrelated pairs. So a rebuild nearly always coincides with a real change
+    // to one of the pair's own two sides, and the steady-state population of
+    // no-ops is smaller than "the fan-out reaches everything, so almost all of
+    // it is redundant" suggests. No-ops come from the cases where a side event
+    // did NOT move the geometry: a PARKED publish (the tile is not drawn, so
+    // the pair is unchanged), a same-level variant republish, a second fine
+    // sibling rebuilt inside a batch that already welded the pair, and the
+    // eviction of a tile that was never shown.
+    //
+    // The number that actually measures churn is `pairs_recontented` -- a LIVE
+    // pair whose geometry changed -- and it is counted separately from
+    // `pairs_created`, which is a seam that did not exist a moment ago and is
+    // irreducible. See SeamCounters.
+    //
+    // Computed unconditionally, where it used to be skipped when drawing was
+    // off. It is now the pair's CONTENT identity as well as its part hash, and
+    // the determinism check below has to work under MATTER_NO_SEAM_WELD_DRAW=1
+    // -- which is precisely the configuration a geometry bisect runs in.
+    const uint64_t new_hash = weld_part_hash(pair, rec.mesh);
     const auto existing = seam_welds.find(pair);
     if (existing != seam_welds.end() && existing->second.part_hash != 0 &&
         existing->second.part_hash == new_hash) {
         ++seam_counters.noop_rebuilds;
-        // The diagnostics still refresh: fine_sides_drawn and coarse_side_nulls
+        // The diagnostics still refresh: fine_sides_drawn and the null count
         // describe the LOOKUP, which can change (a fine sibling parked) while
         // the emitted band does not.
         WeldRecord& live = existing->second;
         live.stats = rec.stats;
         live.fine_sides_expected = rec.fine_sides_expected;
         live.fine_sides_drawn = rec.fine_sides_drawn;
-        live.coarse_side_nulls = rec.coarse_side_nulls;
+        live.coarse_null_lookups = rec.coarse_null_lookups;
+        live.input_fingerprint = rec.input_fingerprint;
+        live.content_hash = new_hash;
         live.mesh = std::move(rec.mesh);
         return;
     }
 
-    // Content changed (or this is a new pair). Retire the old drawn
-    // representation into this transaction FIRST, so the delta carries the
-    // removal and the add together and the renderer never holds two parts for
-    // one seam; then register the new one. R3's swap order -- ensure_part(new),
-    // swap the instance, release_part(old) -- is preserved because
-    // retire_weld_draw only STAGES the release, and finish_weld_txn performs it
-    // after the caller's apply.
-    if (existing != seam_welds.end()) retire_weld_draw(existing->second, txn);
+    // THE DETERMINISM GATE. A live pair whose input fingerprint did not move
+    // but whose geometry did means the welder is not a function of its inputs.
+    // That is a correctness bug, not a performance one: R3's update scheme
+    // (ensure_part(new) -> swap -> release_part(old)) and the no-op above both
+    // rest on identical geometry re-deriving an identical hash. Checked before
+    // the swap, while the old record is still readable, and shouted once rather
+    // than left to accumulate silently in a counter nobody reads.
+    const bool was_live = existing != seam_welds.end();
+    const uint64_t prev_content = was_live ? existing->second.content_hash : 0;
+    if (was_live && prev_content != 0 && prev_content != new_hash &&
+        existing->second.input_fingerprint == rec.input_fingerprint) {
+        ++seam_counters.content_changed_inputs_stable;
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            fprintf(stderr,
+                    "[seam] weld (%lld,%lld L%d face %d) re-derived DIFFERENT "
+                    "geometry from identical inputs (fingerprint %016llx, "
+                    "content %016llx -> %016llx). The welder is not a function "
+                    "of its inputs; R3's ensure_part(new)/release_part(old) "
+                    "swap assumes it is.\n",
+                    (long long)pair.tx, (long long)pair.tz, pair.level,
+                    pair.face, (unsigned long long)rec.input_fingerprint,
+                    (unsigned long long)prev_content,
+                    (unsigned long long)new_hash);
+        }
+    }
+
+    // Retire the old drawn representation into this transaction FIRST, so the
+    // delta carries the removal and the add together and the renderer never
+    // holds two parts for one seam; then register the new one. R3's swap order
+    // -- ensure_part(new), swap the instance, release_part(old) -- is preserved
+    // because retire_weld_draw only STAGES the release, and finish_weld_txn
+    // performs it after the caller's apply.
+    if (was_live) retire_weld_draw(existing->second, txn);
     WeldRecord& live = (seam_welds[pair] = std::move(rec));
-    publish_weld_draw(pair, live, txn);
+    live.content_hash = new_hash;
+    // Counted on the REGISTRATION, not on the decision, so that
+    // parts_registered == pairs_created + pairs_recontented holds exactly and a
+    // refused registration cannot inflate either half.
+    if (publish_weld_draw(pair, live, txn)) {
+        if (was_live) ++seam_counters.pairs_recontented;
+        else          ++seam_counters.pairs_created;
+        if (seam_churn_trace) {
+            fprintf(stderr,
+                    "[seam.churn] %s (%lld,%lld L%d f%d) fine %d/%d tri %zu | "
+                    "created=%llu recontented=%llu noop=%llu stable=%llu\n",
+                    was_live ? "recontent" : "create  ",
+                    (long long)pair.tx, (long long)pair.tz, pair.level,
+                    pair.face, live.fine_sides_drawn, live.fine_sides_expected,
+                    live.mesh.triangle_count(),
+                    (unsigned long long)seam_counters.pairs_created,
+                    (unsigned long long)seam_counters.pairs_recontented,
+                    (unsigned long long)seam_counters.noop_rebuilds,
+                    (unsigned long long)
+                        seam_counters.content_changed_inputs_stable);
+        }
+    }
 }
 
 // §4.5 half 2 -- is some DRAWN tile touching `key` across a face two or more
@@ -5528,9 +5793,25 @@ void WorldSession::Impl::unpark_ready_sectors() {
             // The second is qualified by the first inside sector_level_hold,
             // because withholding an uncovered tile trades a seam for a hole.
             const bool blocked = sector_blocked_by_visible(key);
-            const bool level_hold = !blocked && sector_level_hold(key);
+            // `level_hold` is a STRICT SUBSET of `blocked`, not an independent
+            // reason: sector_level_hold() early-returns false unless
+            // sector_blocked_by_visible() is already true, because withholding
+            // an uncovered tile trades a one-voxel seam for a missing tile and
+            // a hole is strictly worse.
+            //
+            // This line used to read `!blocked && sector_level_hold(key)`,
+            // which expands to `!blocked && blocked && …` -- identically false.
+            // The clause was dead: it never held anything, never incremented
+            // the counter here, and made the stuck-park log below unable to
+            // print anything but "blocker". Keep the query for TRIAGE (it says
+            // *why* a covered tile is still held) but do not pretend it gates
+            // independently. See docs/volumetric-sectors-m0-resolutions.md R12:
+            // as an engine-side park the +-1 clause cannot withhold anything
+            // coverage does not already withhold, and the merge direction it
+            // was meant to catch needs a different mechanism entirely (R13).
+            const bool level_hold = blocked && sector_drawn_level_conflict(key);
             if (level_hold) ++seam_counters.level_holds;
-            if (!stuck && (blocked || level_hold)) continue;
+            if (!stuck && blocked) continue;
             if (stuck) {
                 // Which condition was still holding matters for triage: a
                 // surviving level conflict is a STREAMER bug (staged refinement
@@ -10099,7 +10380,12 @@ WorldSession::SeamWeldStatus WorldSession::seam_weld_status() const {
         out.missing_landing += rec.stats.missing_landing;
         out.sign_conflicts  += rec.stats.sign_conflicts;
         out.degenerate      += rec.stats.degenerate;
-        out.coarse_side_nulls += rec.coarse_side_nulls;
+        // R11: two numbers, two names. `coarse_side_nulls` is a count of LIVE
+        // PAIRS -- what the field's own documentation always claimed and what
+        // it never was -- and the raw lookup total keeps its own field, so a
+        // bisect reading either one gets what it expects.
+        out.coarse_null_lookups += rec.coarse_null_lookups;
+        if (rec.coarse_null_lookups > 0) ++out.coarse_side_nulls;
         if (rec.fine_sides_drawn < rec.fine_sides_expected)
             ++out.fine_side_incomplete;
         if (rec.part_hash != 0) {
@@ -10120,6 +10406,10 @@ WorldSession::SeamWeldStatus WorldSession::seam_weld_status() const {
     out.hash_collisions          = impl.seam_counters.hash_collisions;
     out.id_collisions            = impl.seam_counters.id_collisions;
     out.pairs_peak               = impl.seam_counters.pairs_peak;
+    out.pairs_created            = impl.seam_counters.pairs_created;
+    out.pairs_recontented        = impl.seam_counters.pairs_recontented;
+    out.content_changed_inputs_stable =
+        impl.seam_counters.content_changed_inputs_stable;
     return out;
 }
 

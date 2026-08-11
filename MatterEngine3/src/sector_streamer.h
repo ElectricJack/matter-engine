@@ -141,6 +141,34 @@ struct Config {
     // globally without a rebuild. The rule itself lives in descend(), where
     // the split decision is made — see the long block there.
     bool staged_refinement = true;
+
+    // LATERAL STAGING (§4.5 again, and the M0 acceptance defect R12). The
+    // footprint clamp above synchronises a column with its own ancestors and
+    // deliberately says nothing about the tiles BESIDE it. That is the hole
+    // the M0 soak measured: StreamCaverns settled at 590 sectors logged
+    // `drawn_level_violations = 28`, tiles drawn at level 2 against a DRAWN
+    // level-4 face neighbour. Two adjacent columns are staged independently,
+    // so one whose transition group completes early evicts its coarse parent,
+    // is unblocked by the footprint rule, and refines a second level while its
+    // neighbour is still holding the coarse tile it has not finished replacing.
+    // A two-level face is outside the seam welder's domain entirely (§4.4), so
+    // those faces draw with no seam at all.
+    //
+    // On, the clamp gains a lateral term:
+    //
+    //     effective_level = max(desired_level,
+    //                           resident_level_over(own footprint) - 1,
+    //                           coarsest face-neighbour resident level - 1)
+    //
+    // Requires staged_refinement (it is the same rule widened, and
+    // MATTER_STREAM_NO_STAGING=1 kills both); MATTER_STREAM_NO_LATERAL=1 turns
+    // off only this term, so the lateral half can be A/B'd against the
+    // footprint half in a captured editor flight without a rebuild.
+    //
+    // It is a NO-OP in any state whose residency is already ±1-balanced,
+    // which is what every settled state is — proof in descend(). That is why
+    // it cannot lower settled residency: it only ever fires on the transient.
+    bool lateral_staging = true;
 };
 
 // Fill Config::terrain_bands with the default radial profile (scaled by
@@ -366,6 +394,36 @@ private:
     // and merging coarser is a single bake with nothing to stage).
     int  resident_level_over(int level, int64_t tx, int64_t tz) const;
     bool staged_refinement_active() const;
+
+    // LATERAL STAGING. "Is anything resident STRICTLY COARSER than `level`
+    // touching one of this tile's four faces?" — the lateral half of the
+    // clamp, and deliberately a predicate rather than a level.
+    //
+    // `max(desired, coarsest_face_neighbour_resident - 1)` blocks a descent
+    // from `level` to `level - 1` exactly when some face neighbour is resident
+    // at `level + 1` or coarser, so the value is never needed, only whether
+    // one exists — which lets the search stop at the first hit instead of
+    // ranking them. Existence is also the coarsest-wins answer R7 demands,
+    // for free.
+    //
+    // COST. One tile at level L has exactly ONE face neighbour per side at
+    // level L, and any resident tile coarser than L that touches a side must
+    // cover that neighbour's column (coarser grids nest and are aligned), so
+    // four ancestor chains answer the question exactly — 4 x (max_level -
+    // level) hash lookups, no wider probe, and it is only reached on a node
+    // the descent was otherwise going to split. `resident_at_level_` skips a
+    // whole rank of four when no tile is resident at that level at all, which
+    // is every rank on a cold world. This is the bound min_edge_level's
+    // comment is about: probing the face at the finest tile pitch would be
+    // 2^level lookups a side and would put update() back at the top of the
+    // profile.
+    bool coarser_resident_beside(int level, int64_t tx, int64_t tz) const;
+    bool lateral_staging_active() const;
+
+    // Resident tile count per level, refreshed at the top of update_nested()
+    // in the same sweep that builds `finer_resident`. Only a filter for the
+    // probe above; nothing decides anything on it.
+    int resident_at_level_[kMaxLevel + 1] = {0};
 };
 
 } // namespace matter_stream

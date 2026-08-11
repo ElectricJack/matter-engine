@@ -591,7 +591,21 @@ public:
         // one missing_landing number and cannot tell them apart, so these two
         // fields carry the attribution the pair's shape can prove.
         int      fine_side_incomplete = 0;   // live pairs, not cumulative
+        // R11: these two used to be one field that said "live pairs" and held a
+        // sum of lookups -- 9,054 against 72 pairs, which as a pair count is
+        // nonsense and which a bisect would misread. They are now separate and
+        // each says what it is.
+        //   coarse_side_nulls   LIVE PAIRS on which at least one coarse-side
+        //                       landing lookup failed. A pair count, comparable
+        //                       against `pairs`.
+        //   coarse_null_lookups the raw total those pairs recorded, summed over
+        //                       the pool. `side_at` increments it once per
+        //                       failed lookup, so a busy plane contributes
+        //                       thousands on its own; it is a magnitude, not a
+        //                       population, and it is refreshed on each pair's
+        //                       last rebuild rather than accumulated over time.
         int      coarse_side_nulls = 0;      // live pairs, not cumulative
+        uint64_t coarse_null_lookups = 0;    // live pairs' lookup total
         // Face pairs rejected because the two sides were more than one level
         // apart. Non-zero means the drawn +-1 invariant broke (§4.4/§4.5).
         uint64_t level_gap_pairs = 0;
@@ -615,15 +629,54 @@ public:
         int      drawn_pairs = 0;        // live pairs with a registered part
         int      registered_parts = 0;   // renderer parts the welder holds
         uint64_t drawn_triangles = 0;    // triangles across the drawn pairs
-        // Cumulative. `noop_rebuilds` is the one to watch: the fan-out reaches
-        // every neighbour of a published tile, so in the steady state almost
-        // every rebuild must re-derive the same content hash and change
-        // nothing. A ratio of parts_registered to noop_rebuilds that is not
-        // small means the pool is churning renderer parts for geometry that did
-        // not move.
+        // Cumulative.
+        //
+        // `parts_registered` on its own IS NOT A CHURN MEASURE, and reading it
+        // as one is what made the M0 soak's "noop_rebuilds : parts_registered"
+        // of ~0.9 : 1 look like a defect. It counts three different events, and
+        // only one of them is churn. Use the breakdown:
+        //
+        //     parts_registered == pairs_created + pairs_recontented
+        //
+        //   pairs_created      a cross-level face pair APPEARED in the drawn
+        //                      set and got its first part. Irreducible -- the
+        //                      seam did not exist a moment ago -- and it
+        //                      dominates on a moving camera, because every band
+        //                      boundary the view sweeps past creates and
+        //                      retires pairs. 196 registrations against 97 live
+        //                      pairs is roughly two per pair, which is the pair
+        //                      LIFECYCLE, not repeated churn on one pair.
+        //   pairs_recontented  a LIVE pair's geometry changed and its renderer
+        //                      part was swapped. THIS is the number to compare
+        //                      against `noop_rebuilds`. Its irreducible core is
+        //                      the 2:1 fine side arriving one sibling at a
+        //                      time: the first sibling drawn gets a half-plane
+        //                      weld and the second re-welds the whole plane.
+        //
+        // And note what `noop_rebuilds` does and does not measure. The R2
+        // fan-out is PRECISE -- rebuild_welds_for(key) enumerates only pairs
+        // that `key` is itself a side of, never a neighbour's unrelated pairs
+        // -- so a rebuild nearly always coincides with a real change to one of
+        // the pair's own sides. "Almost every rebuild is a no-op in the steady
+        // state" describes a coarser fan-out than the one that was built; the
+        // no-ops that do occur are the side events that did not move geometry
+        // (a parked publish, a same-level variant republish, a second sibling
+        // rebuilt in a batch that already welded the pair, the eviction of a
+        // tile that was never shown). A ratio near 1 : 1 is therefore normal,
+        // and the thing to watch is `pairs_recontented` growing faster than the
+        // drawn set moves.
         uint64_t parts_registered = 0;
         uint64_t parts_released = 0;
         uint64_t noop_rebuilds = 0;
+        uint64_t pairs_created = 0;
+        uint64_t pairs_recontented = 0;
+        // MUST BE ZERO. A live pair whose input fingerprint did not move but
+        // whose geometry did -- i.e. the welder is not a function of its
+        // inputs. That is a determinism bug, not a performance one: the no-op
+        // path above and R3's ensure_part(new)/release_part(old) swap both rest
+        // on identical geometry re-deriving an identical content hash. The
+        // engine also prints the first occurrence to stderr.
+        uint64_t content_changed_inputs_stable = 0;
         uint64_t register_failures = 0;
         // A weld part hash that already named a baked part, or a weld instance
         // id that was already live. Both are ~2^-64 events that would corrupt

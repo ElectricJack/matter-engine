@@ -125,6 +125,82 @@ z-fighting plus a triangle count that scales with how fragmented the record happ
 must ride exactly one call per fine tile, and a tile whose face record has a band but no verts needs
 its own empty-region call or its band is dropped.
 
+## R13 — The lateral staging term closes the REFINE direction; merge stays open
+
+R12's 28 violations were the refine direction. The footprint clamp deliberately ignores
+neighbours; nothing stopped a tile refining two levels ahead of a still-drawn lateral neighbour.
+Added a third term to the `descend()` clamp:
+
+```
+effective_level = max(desired,
+                      resident_level_over(own footprint) - 1,
+                      coarsest face-neighbour resident level - 1)
+```
+
+Expressed as a stop condition only the *existence* of a coarser resident neighbour is needed, so
+it is four ancestor chains with an early-out, `4 × (max_level - level)` lookups on nodes the
+descent was going to split anyway. Measured `update()` cost +2.6/+2.7 %.
+
+**It cannot fight the band gradient or stall the fill, structurally:** the term is
+`neighbour - 1`, hence a no-op on any ±1-balanced residency, and every settled state is
+±1-balanced (settled residency = the desired map, which `restrict_levels` balances). It can only
+fire on a transient. Measured: settled tiles and *minimum residency during the fill* are
+byte-identical across unstaged / footprint-only / +lateral (1188 and 1141). It costs path, not
+tiles — +0.3 % requests on top of the footprint clamp (total staged overhead +18.9 % → +19.3 %
+against R6's derived +33 % 2D ceiling).
+
+**Deadlock-free by a strict order:** at the coarsest resident level M anywhere in reach, a node
+can have no neighbour at M+1 or coarser, so it is always free to split; M then falls. A tile only
+ever waits on something strictly coarser than itself.
+
+Harness gate: refine gaps **21341 → 0**, with `CHECK(footprint_only.refine_gaps > 1000)` as the
+failability arm. Note the test needs a publish **budget** — with instant service every transition
+group completes in its issuing tick, neighbours are in lockstep for free, and the defect cannot
+appear. That is why every pre-existing streamer block was green while the real world was not.
+
+**Still open — the merge direction (~2900 gaps, unchanged).** A multi-level *merge* lands one
+coarse tile while the neighbouring footprint still draws fine tiles. The lateral term withholds
+*requests*, and on a merge the level in question is the one already being asked for, so there is
+nothing to withhold. Staging the coarsening direction is not the answer: intermediate merge waves
+are *finer* than the target, so a four-level merge costing one bake today would cost 4+16+64.
+**R1's coverage objection does NOT apply here**, which is the useful part: at the moment a merge
+target publishes, its own footprint is still fully covered by the fine tiles the streamer has not
+yet evicted, so parking the coarse newcomer until its faces are within ±1 withholds nothing that
+is not already drawn. That is the engine-side fix, and unlike the refine case it is available.
+
+Also measured, confirming R7's warning: footprint staging **alone** sometimes shows *more* drawn
+violations than staging fully off (21341 vs 16462) — it can widen the drawn spread it exists to
+narrow. Only the lateral term closes it.
+
+## R14 — Two spurious causes of weld-pool churn, one of them a determinism hole
+
+Chasing R12's `noop_rebuilds : parts_registered` = 0.9 : 1 found three things, and the header's
+expectation was itself wrong for the fan-out that got built (`rebuild_welds_for` is *precise* —
+it touches only pairs the published tile is a side of — so a rebuild nearly always coincides with
+a real change). `parts_registered` also conflates pair *creation* with pair *churn*: ~2
+registrations per live pair is the lifecycle (band sweeps on; the 2:1 fine side arrives one
+sibling at a time), not re-welding. Split into `pairs_created` / `pairs_recontented`.
+
+The two real bugs:
+
+1. **The content hash was not a function of the geometry.** `weld_part_hash` walks
+   `mesh.buckets` in order, and that order came from the process-wide `seam_scratch`, whose
+   `clear_geometry()` deliberately keeps its buckets (a capacity optimisation) — so `bucket_for`
+   reused whatever material slots earlier welds had created, in whatever order. Identical
+   triangles could hash differently. This is a hole straight through R3's premise, which assumes
+   identical geometry ⇒ identical hash. Fixed by sorting buckets by material before hashing.
+2. **The scatter tier was inside the pair identity.** `WeldPairKey` carried the coarse tile's
+   packed rung, whose low four bits are the scatter detail tier — but a boundary record depends
+   on the terrain LOD alone. A tile crossing a *scatter ring* republished under a new variant and
+   retired/recreated every weld on its coarse faces with byte-identical geometry (the `reg=1
+   rel=1` flicker). Re-keyed to `(tx, tz, level, face)`. Honest bound: StreamCaverns declares one
+   scatter ring and is immune, so this cannot explain its ratio.
+
+New counter `content_changed_inputs_stable` — a live pair whose input fingerprint (the identity,
+never the pointer, of every record consulted including diagonals that were *looked for and not
+found*) did not move but whose geometry did. It must be 0; non-zero means a further
+nondeterminism.
+
 ## R12 — M0 acceptance soak: the welder passes, the drawn ±1 invariant does not
 
 Settle-then-fly, `MATTER_SEAM_TRACE=1`, `MATTER_CAM_PATH_WARMUP=4000`.

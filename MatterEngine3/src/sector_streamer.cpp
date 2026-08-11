@@ -51,6 +51,27 @@ static bool stream_no_staging() {
     return value;
 }
 
+// A/B kill switch for the LATERAL half of staged refinement alone
+// (Config::lateral_staging). Separate from the switch above on purpose: the
+// footprint clamp and the lateral clamp fix different halves of the same
+// invariant and cost different amounts, and the interesting evidence for both
+// is a captured editor flight (`drawn_level_violations` under MATTER_SEAM_TRACE
+// against settled residency), where a rebuild between the two arms is not
+// available. MATTER_STREAM_NO_STAGING=1 still turns off both.
+static bool stream_no_lateral() {
+    static const bool value = [] {
+        const char* env = std::getenv("MATTER_STREAM_NO_LATERAL");
+        const bool active = env != nullptr && env[0] == '1';
+        if (active)
+            std::fprintf(stderr,
+                         "[stream] MATTER_STREAM_NO_LATERAL=1: the lateral "
+                         "half of staged refinement is DISABLED (the footprint "
+                         "clamp still runs)\n");
+        return active;
+    }();
+    return value;
+}
+
 void resolve_terrain_defaults(Config& cfg) {
     if (!cfg.terrain_lod_enabled || !cfg.terrain_bands.empty()) return;
     // Radial profile in sector sizes: near disc native voxel (LOD 5),
@@ -370,13 +391,10 @@ void SectorStreamer::descend(
     // requested. What the eye gets is progressively refining terrain instead of
     // a hold followed by an 8^n pop.
     //
-    // The footprint, not the neighbourhood at large, is the right region to ask
-    // about. Asking about cardinal neighbours too would fight the legitimate
-    // band gradient: a level-0 tile near the anchor is *supposed* to sit beside
-    // level-1 tiles, and a clamp that took the coarsest neighbour would pin the
-    // whole disc at the outermost band's level forever. What we want to detect
-    // is specifically "this patch of world is currently being drawn coarse",
-    // and the tile that is drawing it coarse is this tile's own ancestor.
+    // The footprint is the right region to ask about for THIS clamp, and it is
+    // not the whole story — see the lateral term below. What the footprint term
+    // detects is specifically "this patch of world is currently being drawn
+    // coarse", and the tile drawing it coarse is this tile's own ancestor.
     //
     // COLD START IS NOT CLAMPED, and that falls out rather than being a special
     // case: resident_level_over returns -1 when nothing at or above this level
@@ -438,6 +456,82 @@ void SectorStreamer::descend(
         // resident_level - 1, so the descent is admissible iff
         // level - 1 >= resident_level - 1.
         if (resident_level >= 0 && level < resident_level) split = false;
+
+        // ---- LATERAL TERM ------------------------------------------------
+        // (§4.5 again; the defect is M0 acceptance resolution R12.)
+        //
+        // Everything above synchronises a column with its OWN ancestors and
+        // says nothing about the tiles beside it, and the M0 soak measured
+        // exactly that hole: 28 `drawn_level_violations` on a settled
+        // StreamCaverns, tiles drawn at level 2 against a DRAWN level-4 face
+        // neighbour, which the welder correctly refuses to span (§4.4) so the
+        // face gets no seam at all.
+        //
+        // How two levels open up with the footprint clamp already on. Adjacent
+        // columns A and B sit under DIFFERENT coarse parents P1 and P2, both
+        // resident at level 4. Within one parent the waves are already
+        // lockstepped for free — the transition-group hold keeps P resident
+        // until every tile replacing it is resident, and resident_level_over
+        // answers with the COARSEST resident level, so no child of P can pass
+        // level 3 while P is up. Across parents nothing couples them: P1's
+        // group completes, P1 is evicted, A's footprint answer drops to 3 and
+        // A refines to 2 — while P2 is still waiting on one slow bake and is
+        // still drawn at 4, one face away.
+        //
+        //     effective_level = max(desired_level,
+        //                           resident_level_over(footprint) - 1,
+        //                           coarsest face-neighbour resident - 1)
+        //
+        // and, as above, that reads as a stop condition on the descent: a
+        // split from `level` to `level - 1` is inadmissible when some face
+        // neighbour is resident at `level + 1` or coarser. Hence a predicate,
+        // not a level (coarser_resident_beside).
+        //
+        // THIS DOES NOT FIGHT THE BAND GRADIENT, which is the objection the
+        // footprint-only comment above records and the reason a "clamp to the
+        // coarsest neighbour" was rejected. The term is `neighbour - 1`, not
+        // `neighbour`: a level-0 tile beside level-1 tiles yields max(0, 0) =
+        // 0 and nothing happens. Sharper, it is a NO-OP on any ±1-balanced
+        // residency, and every settled state is ±1-balanced because settled
+        // residency equals the desired map and restrict_levels() makes that
+        // map ±1. Proof: for the term to fire, this node must split (putting a
+        // desired tile at level-1 against that face) while a neighbour is
+        // resident at level+1 or coarser — a gap of two in a map that has
+        // none. So it cannot pin the disc at the outer band, and it cannot
+        // lower settled residency: it can only ever fire on a transient.
+        //
+        // NO DEADLOCK, and the worry is real — the footprint clamp waits on a
+        // strict ancestor, which cannot wait back, whereas two neighbours can
+        // in principle each wait on the other. They do not, because the wait
+        // is not symmetric. Take the coarsest resident level M anywhere in the
+        // reach. A node at level M is blocked laterally only by a neighbour
+        // resident at M+1 or coarser, and by construction there is none; its
+        // footprint answer is M, and `level < resident_level` is `M < M`,
+        // false. So EVERY node at the coarsest resident level is free to
+        // split, in every state. Its children are then requested, become
+        // resident, and the level-M tile is evicted by the transition hold, so
+        // M falls. Levels are bounded below by the banded desired level and
+        // the clamp only ever moves a tile coarser, never finer, so the
+        // descent is monotone and terminates. Informally: refinement always
+        // proceeds from the coarsest level downwards, and a tile only ever
+        // waits on something strictly coarser than itself, which is a strict
+        // order — there is no cycle to close. (The unit suite asserts the
+        // consequence rather than the argument: the staged settle terminates
+        // and lands on exactly the resident set the unstaged one does.)
+        //
+        // ONE-SIDED ON PURPOSE. A drawn pair needs both sides, so refusing to
+        // request the fine side is enough to prevent it; nothing here holds a
+        // COARSE tile back. The case that leaves open is the mirror image — a
+        // multi-level MERGE, where the coarse replacement lands while a
+        // neighbour is still drawn fine. Merging is one bake with nothing to
+        // stage (see resident_level_over's -1 contract), so closing that would
+        // mean staging coarsening too, which costs bakes on every fly-out and
+        // can conflict with this term over the same tile. Not done; measured
+        // instead (sector_streamer_tests.cpp reports the merge direction
+        // separately).
+        if (split && lateral_staging_active() &&
+            coarser_resident_beside(level, tx, tz))
+            split = false;
     }
 
     if (split) {
@@ -453,6 +547,38 @@ void SectorStreamer::descend(
 
 bool SectorStreamer::staged_refinement_active() const {
     return cfg_.staged_refinement && !stream_no_staging();
+}
+
+bool SectorStreamer::lateral_staging_active() const {
+    // Subordinate to the master switch: the lateral term is the same rule
+    // widened, and an A/B of "staging off" must mean all of it off.
+    return staged_refinement_active() && cfg_.lateral_staging &&
+           !stream_no_lateral();
+}
+
+bool SectorStreamer::coarser_resident_beside(int level, int64_t tx,
+                                             int64_t tz) const {
+    // The four face neighbours AT THIS LEVEL. Only one tile per side exists at
+    // this level, and every resident tile coarser than this one that touches a
+    // side must cover that side's whole face -- the grids nest and are aligned,
+    // so a bigger tile adjacent to any part of the face spans all of it, and
+    // therefore contains the level-`level` neighbour column probed here. Four
+    // ancestor chains are the exact answer, not a sample of it.
+    const int64_t ntx[4] = {tx + 1, tx - 1, tx, tx};
+    const int64_t ntz[4] = {tz, tz, tz + 1, tz - 1};
+    // Rank-major so the census filter skips four probes at a time. Arithmetic
+    // shift is floor division, which is what nesting means for negative tile
+    // indices (same convention as resident_level_over and scan_footprint).
+    for (int up = level + 1; up <= max_level(); ++up) {
+        if (resident_at_level_[up] == 0) continue;
+        const int sh = up - level;
+        for (int n = 0; n < 4; ++n) {
+            auto it = sectors_.find(nested_key(up, ntx[n] >> sh, ntz[n] >> sh));
+            if (it != sectors_.end() && it->second.resident_rung >= 0)
+                return true;
+        }
+    }
+    return false;
 }
 
 int SectorStreamer::resident_level_over(int level, int64_t tx,
@@ -600,11 +726,20 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
     // walking each resident tile's ancestors once (O(resident x levels)) rather
     // than by a range query per descent node. Inflight counts as residency in
     // the making: a tile whose children are being baked is already split.
+    //
+    // The same sweep counts residency per level for coarser_resident_beside's
+    // filter. Residency (not inflight) is what that predicate is about: a
+    // neighbour still baking is not DRAWN, so it is not half of a drawn pair,
+    // and the transition hold guarantees something coarser is drawn there in
+    // the meantime -- which this census does see.
     std::unordered_map<uint64_t, char, KeyHash> finer_resident;
+    for (int L = 0; L <= kMaxLevel; ++L) resident_at_level_[L] = 0;
     for (const auto& [k, st] : sectors_) {
         if (st.resident_rung < 0 && st.inflight_rung < 0) continue;
         int lvl; int64_t tx, tz;
         nested_unkey(k, lvl, tx, tz);
+        if (st.resident_rung >= 0 && lvl >= 0 && lvl <= kMaxLevel)
+            ++resident_at_level_[lvl];
         for (int up = lvl + 1; up <= max_level(); ++up) {
             const int sh = up - lvl;
             finer_resident[nested_key(up, tx >> sh, tz >> sh)] = 1;

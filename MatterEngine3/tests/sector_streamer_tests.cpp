@@ -950,10 +950,11 @@ int main() {
         int skips            = 0;   // a column's request sequence skipped a level
         int deepest_wave     = 0;   // distinct levels requested in one column
     };
-    auto teleport_run = [&](bool staged, float fx, float fz,
+    auto teleport_run = [&](bool staged, bool lateral, float fx, float fz,
                             float tox, float toz) {
         Config c = nested_cfg();
         c.staged_refinement = staged;
+        c.lateral_staging   = lateral;
         SectorStreamer s(c);
         StageRun r;
         // Coarsest resident level at or above L over the footprint of
@@ -1049,8 +1050,8 @@ int main() {
     // jump in a single update. No request may be issued more than one level
     // finer than what is resident over it.
     {
-        const auto on  = teleport_run(true,  3.2f, 3.2f, 600.0f, 0.0f);
-        const auto off = teleport_run(false, 3.2f, 3.2f, 600.0f, 0.0f);
+        const auto on  = teleport_run(true,  true,  3.2f, 3.2f, 600.0f, 0.0f);
+        const auto off = teleport_run(false, false, 3.2f, 3.2f, 600.0f, 0.0f);
         printf("  staged jump ON : %lld requests over %d updates, "
                "%d/%d over-fine, %d wave skips, deepest wave chain %d\n",
                on.requests, on.updates, on.clamp_violations, on.probes,
@@ -1136,8 +1137,8 @@ int main() {
     // asserts that claim rather than trusting the argument: the settle
     // terminates, and it terminates at the same place the unstaged one does.
     {
-        const auto on  = teleport_run(true,  3.2f, 3.2f, 600.0f, 0.0f);
-        const auto off = teleport_run(false, 3.2f, 3.2f, 600.0f, 0.0f);
+        const auto on  = teleport_run(true,  true,  3.2f, 3.2f, 600.0f, 0.0f);
+        const auto off = teleport_run(false, false, 3.2f, 3.2f, 600.0f, 0.0f);
         printf("  staged converge: %d updates ON vs %d OFF (%.2fx), "
                "%zu resident tiles ON vs %zu OFF\n",
                on.updates, off.updates,
@@ -1174,8 +1175,8 @@ int main() {
     // waves (the plausible failure: a clamp that oscillates and re-issues an
     // already-resident level) blows straight through it.
     {
-        const auto on  = teleport_run(true,  3.2f, 3.2f, 600.0f, 0.0f);
-        const auto off = teleport_run(false, 3.2f, 3.2f, 600.0f, 0.0f);
+        const auto on  = teleport_run(true,  true,  3.2f, 3.2f, 600.0f, 0.0f);
+        const auto off = teleport_run(false, false, 3.2f, 3.2f, 600.0f, 0.0f);
         const double ratio = off.requests
             ? double(on.requests) / double(off.requests) : 0.0;
         printf("  staged work: %lld requests ON vs %lld OFF (%.3fx, +%.1f%%) "
@@ -1185,6 +1186,278 @@ int main() {
         CHECK(ratio < 1.35,
               "staged refinement's intermediate waves cost a bounded fraction "
               "of the direct jump, not a multiple of it");
+        // What the LATERAL term adds on top of the footprint clamp, which is
+        // the number the next reader will want and cannot get from the two
+        // above. Both arms are staged; only the lateral half differs.
+        const auto fp = teleport_run(true, false, 3.2f, 3.2f, 600.0f, 0.0f);
+        printf("  lateral work: %lld requests with the lateral term vs %lld "
+               "footprint-only (%+.1f%%)\n",
+               on.requests, fp.requests,
+               fp.requests
+                   ? 100.0 * (double(on.requests) / double(fp.requests) - 1.0)
+                   : 0.0);
+    }
+
+    // =======================================================================
+    // THE DRAWN ±1 INVARIANT ACROSS FACES -- LATERAL STAGING
+    // (docs/volumetric-sectors-m0-resolutions.md R12, R1, R7, R10.)
+    //
+    // M0's acceptance soak found the footprint clamp above is not sufficient.
+    // A settled StreamCaverns (590 sectors, 6454 samples) logged
+    // `drawn_level_violations = 28` -- tiles DRAWN at level 2 against a DRAWN
+    // level-4 face neighbour. The welder spans exactly one level by design and
+    // correctly refuses those pairs (`level_gap_pairs == 0`), so each of those
+    // faces draws with no seam at all: the missing-strip class this whole
+    // stage exists to remove.
+    //
+    // Everything above measures the REQUEST stream against RESIDENCY. This
+    // block measures the DRAWN map, which is the thing the invariant is about
+    // and is a different quantity -- residency transiently stacks levels over
+    // one column (R7) and parking is what keeps that off the screen. The model
+    // used here is the engine's: a publication whose footprint a visible
+    // different-level entry still covers is PARKED
+    // (`sector_blocked_by_visible`), so during a split the incumbent coarse
+    // tile keeps the column and the newcomer waits. Hence
+    //
+    //     drawn level of a column = the COARSEST resident level covering it
+    //
+    // and the drawn map is a partition of the world, exactly like the engine's.
+    // Two cardinally adjacent columns whose drawn levels differ by >= 2 are one
+    // violation -- the same predicate the engine's `[stream]` warning applies,
+    // rebuilt here from nothing but the public request/publish/evict stream.
+    //
+    // WHY IT NEEDS A BUDGET. Service every request in the update that issued it
+    // and every transition group completes in the same tick, so neighbouring
+    // columns are in lockstep for free and the defect cannot appear -- which is
+    // why the blocks above, which do exactly that, are all green while the real
+    // world is not. The bakes here are deliberately slow and staggered (a fixed
+    // few publishes per tick), which is what lets one group finish a wave while
+    // the group beside it is still on the previous one.
+    // =======================================================================
+    {
+        struct DrawnRun {
+            long long requests     = 0;
+            long long refine_gaps  = 0;  // the FINE side landed last (a split)
+            long long merge_gaps   = 0;  // the COARSE side landed last (a merge)
+            int       gap_ticks    = 0;
+            int       worst_gap    = 0;
+            int       first_tick   = -1;
+            size_t    settled      = 0;
+            size_t    min_resident = size_t(-1);
+        };
+        // Test-local tile key. Deliberately NOT the streamer's nested_key: this
+        // probe has to be able to disagree with the implementation.
+        auto tkey = [](int L, long long tx, long long tz) {
+            return (unsigned long long)((uint64_t(unsigned(L) & 0xFu) << 60) |
+                                        ((uint64_t(tx) & 0x3FFFFFFFull) << 30) |
+                                        (uint64_t(tz) & 0x3FFFFFFFull));
+        };
+
+        auto drawn_run = [&](bool staged, bool lateral) {
+            Config c = nested_cfg();
+            c.staged_refinement = staged;
+            c.lateral_staging   = lateral;
+            SectorStreamer s(c);
+            DrawnRun r;
+
+            std::map<std::tuple<int,long long,long long>, int> resident;
+            std::map<unsigned long long, int> live;   // tile -> publish order
+            int now = 0;
+
+            auto pump = [&](float x, float z, int cap, bool measure) {
+                s.update(x, z);
+                SectorRequest q;
+                bool any = false;
+                int n = 0;
+                while ((cap < 0 || n < cap) && s.next_request(q)) {
+                    any = true; ++n;
+                    if (measure) ++r.requests;
+                    const int L = variant_level(q.rung);
+                    if (s.on_published(q.tx, q.tz, q.rung)) {
+                        resident[{L, (long long)q.tx, (long long)q.tz}] = q.rung;
+                        live[tkey(L, q.tx, q.tz)] = ++now;
+                    }
+                }
+                for (const auto& e : s.take_evictions()) {
+                    // Guarded erase, for the reason the transition-group test
+                    // spells out: a 1:1 variant swap publishes the new value
+                    // first, so a blind erase deletes a tile still resident.
+                    const int L = variant_level(e.rung);
+                    const auto k = std::make_tuple(L, (long long)e.tx,
+                                                   (long long)e.tz);
+                    auto it = resident.find(k);
+                    if (it != resident.end() && it->second == e.rung) {
+                        resident.erase(it);
+                        live.erase(tkey(L, e.tx, e.tz));
+                    }
+                }
+                return any;
+            };
+
+            // Settle cold at the origin. Full service, no measurement: R10 --
+            // a soak on an UNSETTLED streaming world passes vacuously, because
+            // with no stable neighbours there are no cross-level faces at all
+            // and every invariant holds by absence.
+            { int quiet = 0;
+              for (int i = 0; i < 4000 && quiet < 8; ++i)
+                  quiet = pump(3.2f, 3.2f, -1, false) ? 0 : quiet + 1; }
+
+            const float S0 = 6.4f, TOX = 600.0f, TOZ = 0.0f;
+
+            // Which SIDE of a violating face arrived last says which direction
+            // produced it, and the two have different fixes: the lateral clamp
+            // withholds a REQUEST, so it can only ever close the refinement
+            // direction. Publish order is recorded in `live`.
+            auto classify = [&](int la, long long ax, long long az,
+                                int lb, long long bx, long long bz) {
+                const int lf = std::min(la, lb), lc = std::max(la, lb);
+                const long long fx = (la <= lb ? ax : bx);
+                const long long fz = (la <= lb ? az : bz);
+                const long long gx = (la <= lb ? bx : ax);
+                const long long gz = (la <= lb ? bz : az);
+                auto ord = [&](int L, long long x, long long z) {
+                    auto it = live.find(tkey(L, x >> L, z >> L));
+                    return it == live.end() ? 0 : it->second;
+                };
+                if (ord(lf, fx, fz) > ord(lc, gx, gz)) ++r.refine_gaps;
+                else                                   ++r.merge_gaps;
+            };
+            // One rectangular window of the drawn map, in level-0 cells.
+            std::vector<int> drawn;
+            auto scan = [&](float wx, float wz, float radius) {
+                const int half = int(radius / S0);
+                const int W = 2 * half + 1;
+                const long long c0x = (long long)std::floor(wx / S0);
+                const long long c0z = (long long)std::floor(wz / S0);
+                drawn.assign(size_t(W) * size_t(W), -1);
+                for (int j = 0; j < W; ++j)
+                    for (int i = 0; i < W; ++i) {
+                        const long long cx = c0x + i - half;
+                        const long long cz = c0z + j - half;
+                        for (int L = 5; L >= 0; --L)     // COARSEST wins
+                            if (live.count(tkey(L, cx >> L, cz >> L))) {
+                                drawn[size_t(j) * W + i] = L; break;
+                            }
+                    }
+                long long gaps = 0;
+                for (int j = 0; j < W; ++j)
+                    for (int i = 0; i < W; ++i) {
+                        const int a = drawn[size_t(j) * W + i];
+                        if (a < 0) continue;
+                        const long long ax = c0x + i - half;
+                        const long long az = c0z + j - half;
+                        if (i + 1 < W) {
+                            const int b = drawn[size_t(j) * W + i + 1];
+                            if (b >= 0 && std::abs(a - b) >= 2) {
+                                ++gaps;
+                                r.worst_gap = std::max(r.worst_gap,
+                                                       std::abs(a - b));
+                                classify(a, ax, az, b, ax + 1, az);
+                            }
+                        }
+                        if (j + 1 < W) {
+                            const int b = drawn[size_t(j + 1) * W + i];
+                            if (b >= 0 && std::abs(a - b) >= 2) {
+                                ++gaps;
+                                r.worst_gap = std::max(r.worst_gap,
+                                                       std::abs(a - b));
+                                classify(a, ax, az, b, ax, az + 1);
+                            }
+                        }
+                    }
+                return gaps;
+            };
+
+            for (int t = 0; t < 300; ++t) {
+                pump(TOX, TOZ, 4, true);            // 4 publishes per tick
+                if (resident.size() < r.min_resident)
+                    r.min_resident = resident.size();
+                // Two windows, because the jump drives BOTH directions at once
+                // and they fail differently: the region landed on refines, and
+                // the region departed coarsens. A probe on the landing alone
+                // reports the merge direction as zero and reads as a clean
+                // sweep it has not earned.
+                long long tick_gaps = scan(TOX, TOZ, 300.0f)     // refining
+                                    + scan(3.2f, 3.2f, 250.0f);  // coarsening
+                if (tick_gaps) {
+                    ++r.gap_ticks;
+                    if (r.first_tick < 0) r.first_tick = t;
+                }
+            }
+            { int quiet = 0;                          // settle out
+              for (int i = 0; i < 8000 && quiet < 8; ++i)
+                  quiet = pump(TOX, TOZ, -1, true) ? 0 : quiet + 1; }
+            r.settled = resident.size();
+            return r;
+        };
+
+        const auto none = drawn_run(false, false);   // no staging at all
+        const auto fp   = drawn_run(true,  false);   // footprint clamp only
+        const auto lat  = drawn_run(true,  true);    // + the lateral term
+
+        auto report = [](const char* name, const DrawnRun& r) {
+            printf("  drawn +-1 [%s]: refine-direction gaps %lld, "
+                   "merge-direction %lld, on %d/300 ticks (worst %d, first "
+                   "%d), %lld requests, settled %zu (min during fill %zu)\n",
+                   name, r.refine_gaps, r.merge_gaps, r.gap_ticks,
+                   r.worst_gap, r.first_tick, r.requests, r.settled,
+                   r.min_resident);
+        };
+        report("staging OFF   ", none);
+        report("footprint only", fp);
+        report("+ lateral     ", lat);
+
+        // FAILABILITY FIRST. "0 violations" means nothing unless the same probe
+        // reports thousands with the term removed -- and the arm that has to
+        // light up is `fp`, staged refinement exactly as it shipped, because
+        // that is the configuration the soak measured 28 violations in.
+        CHECK(fp.refine_gaps > 1000,
+              "the drawn probe is failable: with the footprint clamp alone, a "
+              "budgeted four-level jump draws tiles two or more levels from a "
+              "drawn face neighbour -- the M0 acceptance defect, reproduced");
+        CHECK(fp.worst_gap >= 2,
+              "the reproduced defect really is a multi-level face, not a "
+              "rounding artifact in the probe");
+        CHECK(lat.refine_gaps == 0,
+              "lateral staging: no tile is ever DRAWN more than one level "
+              "finer than a drawn face neighbour");
+
+        // NOT A STALL. The measured failure mode of an over-eager clamp is
+        // that residency never reaches its settled value and the probe passes
+        // because nothing is drawn (R10 again). Both halves are asserted: the
+        // same settled set, and no dip in coverage on the way there.
+        CHECK(lat.settled == fp.settled && lat.settled == none.settled,
+              "lateral staging settles to exactly the same residency as the "
+              "footprint clamp alone and as no staging at all -- it costs "
+              "path, not tiles");
+        CHECK(lat.min_resident >= fp.min_resident * 9 / 10,
+              "lateral staging does not starve the fill: residency during the "
+              "jump never dips below the footprint-only arm's");
+
+        // NO DEADLOCK. Two neighbours can in principle each wait on the other;
+        // the argument in descend() is that they cannot, because a tile only
+        // ever waits on something strictly COARSER than itself and the
+        // coarsest resident level is never blocked. What is asserted here is
+        // the consequence: the settle-out terminated (a deadlock would have
+        // burned all 8000 updates and left residency short), and it terminated
+        // where the unstaged descent does.
+        CHECK(lat.settled > 1000,
+              "lateral staging terminates: the settle-out reached the full "
+              "resident set rather than parking on a mutual wait");
+
+        // THE MERGE DIRECTION IS NOT CLOSED, and is reported rather than
+        // asserted. A multi-level MERGE lands one coarse tile while the
+        // neighbouring footprint still draws fine tiles; the lateral term
+        // withholds REQUESTS, and there is no request to withhold when the
+        // level in question is the one already being asked for. Staging the
+        // coarsening direction is not the answer -- the intermediate waves
+        // there are FINER than the target, so a four-level merge that costs
+        // one bake today would cost 4+16+64. It shows up in the arm with no
+        // staging at all too, so it is not something this term introduced.
+        printf("  drawn +-1: merge-direction gaps are NOT closed by the "
+               "lateral term (staging off %lld, footprint %lld, lateral "
+               "%lld) -- see descend()'s ONE-SIDED ON PURPOSE note\n",
+               none.merge_gaps, fp.merge_gaps, lat.merge_gaps);
     }
 
     // --- legacy: the flag off is the old streamer, request for request ------
