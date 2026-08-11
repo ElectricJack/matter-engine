@@ -306,7 +306,24 @@ struct WorldSettings {
     // which is the rollback position. On, sector_size below is the LEVEL 0
     // tile and the terrain bands are reinterpreted as per-level annuli.
     bool nested_sectors = false;
+
+    // Volumetric sectors (streaming.volumetricSectors, volumetric-sectors M3).
+    // Off = today's COLUMN tiles: one tile per (tx, tz) covering [y_min, y_max],
+    // which is why y_min is a streamed world's dominant cost dial. On = CUBE
+    // tiles selected by an octree, and y_min/y_max stop being the mesher's slab
+    // and become the octree's vertical EXTENT instead (design §3.3).
+    //
+    // REQUIRES nested_sectors. The octree is the nested quadtree with a third
+    // axis, not an independent mechanism: it reuses the same level<->rung
+    // identity, the same reinterpreted band table and the same 2:1 restriction.
+    // With nesting off there are no levels to descend, so the streamer forces
+    // this back off rather than half-honouring it.
+    bool volumetric_sectors = false;
+
     float sector_size = 16.0f;
+    // With volumetric_sectors ON these bound the octree, not a mesh slab: the
+    // selector will not descend outside [y_min, y_max] and no tile is requested
+    // there. A cube tile IS its own extent (mesh_sector_tiled takes no y range).
     float y_min = -64.0f;
     float y_max = 192.0f;
 

@@ -1163,6 +1163,88 @@ class NestedWorld extends World {
               "the band table a nested world is tiled by survives with it");
         CHECK(definition.settings.streaming_rings.empty(),
               "a nested world needs no rings");
+        CHECK(!definition.settings.volumetric_sectors,
+              "nesting alone does NOT imply volumetric sectors -- the implication "
+              "runs one way, and a nested world must keep the column path");
+    }
+}
+
+// volumetricSectors (M3). Parsed beside nestedSectors and before the rings
+// early-out for the same reason, and NOT validated against it here: the loader
+// reports what the world authored and the streamer decides whether the
+// combination is coherent (see make_streaming_profile). So a world that asks
+// for volumetric without nesting must still PARSE as having asked -- otherwise
+// the engine cannot tell "did not ask" from "asked and was refused", and the
+// diagnostic it prints would be unreachable.
+void test_volumetric_sectors_flag() {
+    Fixture fixture;
+    {
+        const fs::path path = fixture.write("ColumnWorld.js", R"JS(
+class ColumnWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static streaming = { nestedSectors: true, rings: [{ radius: 128, rung: 0 }] };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(!definition.settings.volumetric_sectors,
+              "volumetricSectors defaults off");
+    }
+    // Authored on, with no rings, exactly as StreamCaverns will declare it.
+    {
+        const fs::path path = fixture.write("VolumetricWorld.js", R"JS(
+class VolumetricWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static world = { sectorSize: 64, yMin: -1024, yMax: 704 };
+  static streaming = {
+    nestedSectors: true,
+    volumetricSectors: true,
+    terrainBands: [
+      { radius: 318, lod: 5 },
+      { radius: 1186, lod: 4 },
+      { radius: 2605, lod: 3 },
+      { radius: 4702, lod: 2 },
+      { radius: 7753, lod: 1 },
+      { radius: 10095, lod: 0 },
+    ],
+  };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.settings.volumetric_sectors,
+              "volumetricSectors parsed with no rings declared");
+        CHECK(definition.settings.nested_sectors,
+              "and nesting alongside it");
+        // yMin/yMax mean the OCTREE's extent under this flag rather than a
+        // mesh slab, but they are the same two authored numbers and the loader
+        // does not reinterpret them -- the streamer does.
+        CHECK(definition.settings.y_min == -1024.0f &&
+              definition.settings.y_max == 704.0f,
+              "the authored vertical extent survives verbatim");
+    }
+    // Asked for WITHOUT nesting. Must parse as asked; the refusal is the
+    // engine's, not the loader's.
+    {
+        const fs::path path = fixture.write("UnnestedVolumetric.js", R"JS(
+class UnnestedVolumetric extends World {
+  static roots = [{ module: 'Root' }];
+  static streaming = { volumetricSectors: true, rings: [{ radius: 128, rung: 0 }] };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.settings.volumetric_sectors,
+              "an incoherent request still parses -- the loader reports, the "
+              "streamer decides");
+        CHECK(!definition.settings.nested_sectors,
+              "and nesting is genuinely absent");
     }
 }
 
@@ -1945,6 +2027,7 @@ int main() {
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();
     test_nested_sectors_flag();
+    test_volumetric_sectors_flag();
     test_vulkan_volumetrics_settings_defaults();
     test_atmosphere_and_cloud_quality_extraction();
     test_atmosphere_and_cloud_quality_validation_paths();

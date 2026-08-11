@@ -1549,5 +1549,62 @@ int main() {
               "uniform path is deterministic and untouched by the nested code");
     }
 
+    // --- volumetric sectors: the flag cannot outlive its ladder (M3-WP1) -----
+    //
+    // `volumetric_sectors` is the octree, and the octree descends the NESTED
+    // level ladder with a third axis. Two ways that ladder can fail to exist,
+    // and the constructor has to refuse the flag in both -- because a streamer
+    // that kept it would hand out column keys while the engine's publish path
+    // read them as cubes, which is a keyspace disagreement rather than a
+    // degraded picture.
+    {
+        printf("== volumetric sectors: flag coherence ==\n");
+        Config base;
+        base.sector_size = 64.0f;
+        base.terrain_bands = { {320.0f, 5}, {640.0f, 4}, {1280.0f, 3},
+                               {2560.0f, 2}, {5120.0f, 1}, {10240.0f, 0} };
+        CHECK(!base.volumetric_sectors, "volumetric_sectors defaults OFF");
+
+        // 1. Asked for with nesting: kept.
+        {
+            Config c = base;
+            c.nested_sectors = true;
+            c.volumetric_sectors = true;
+            SectorStreamer s(c);
+            CHECK(s.config().volumetric_sectors,
+                  "volumetric survives alongside a resolvable nested ladder");
+            CHECK(s.config().nested_sectors, "and nesting with it");
+        }
+        // 2. Asked for WITHOUT nesting: refused. This is the case the engine
+        //    prints a diagnostic for; here we assert the streamer's half.
+        {
+            Config c = base;
+            c.nested_sectors = false;
+            c.volumetric_sectors = true;
+            SectorStreamer s(c);
+            CHECK(!s.config().volumetric_sectors,
+                  "volumetric without nesting is refused, not half-honoured");
+        }
+        // 3. Nesting asked for but the band table resolves NO levels, so the
+        //    ladder collapses to uniform. Nesting already turned itself off
+        //    here; volumetric has to go with it or it would be the only flag
+        //    left claiming a keyspace nothing produces. A table starting at
+        //    level 1 (band lod 4) has no level 0 to descend from, which is the
+        //    contiguous-run rule in the constructor.
+        {
+            Config c = base;
+            c.terrain_bands = { {640.0f, 4}, {1280.0f, 3} };
+            c.nested_sectors = true;
+            c.volumetric_sectors = true;
+            SectorStreamer s(c);
+            CHECK(!s.config().nested_sectors,
+                  "a table with no level 0 collapses nesting to uniform");
+            CHECK(!s.config().volumetric_sectors,
+                  "and volumetric cannot outlive the ladder it descends");
+        }
+        printf("  refused without nesting, and refused when the band table "
+               "resolves no level ladder\n");
+    }
+
     return check_summary();
 }

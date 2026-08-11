@@ -378,6 +378,12 @@ public:
         // switching tiling mid-session would strand every resident tile under
         // a keyspace the streamer no longer uses.
         bool nested_sectors = false;
+        // Volumetric sectors (M3). Informational for the same reason and with
+        // the same force: tiles are cubes on an octree rather than columns on a
+        // quadtree, which changes the keyspace, so it is read back from the
+        // active profile and never settable as a live override. Implies
+        // nested_sectors -- the engine forces it off without one.
+        bool volumetric_sectors = false;
         // Informational (filled by streaming_lod_config, ignored by
         // set_streaming_lod_overrides): the world's sector size, for UI
         // spacing hints.

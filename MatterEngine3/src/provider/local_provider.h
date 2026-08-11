@@ -255,6 +255,13 @@ struct ProceduralWorldProfile {
     // the streaming caller overrides it per bake, because it is the only place
     // that knows which level a request is.
     bool nested_sectors = false;
+    // Volumetric sectors (M3): tiles are cubes and a request carries `ty`.
+    // Like the flag above it does not reach `apply` -- but for a sharper
+    // reason. A cube tile IS its own vertical extent, so under this flag
+    // y_min/y_max stop describing any tile's slab and become the OCTREE's
+    // bounds; the per-request origin the mesher needs is ty * sector_size and
+    // only the streaming caller knows ty.
+    bool volumetric_sectors = false;
 
     template <typename WorldBinding>
     void apply(WorldBinding& binding) const {
@@ -270,7 +277,7 @@ inline ProceduralWorldProfile select_procedural_world_profile(
     const matter::WorldSettings& legacy) {
     const matter::WorldSettings& selected = project_layout ? authored : legacy;
     return {selected.sector_size, selected.y_min, selected.y_max,
-            selected.nested_sectors};
+            selected.nested_sectors, selected.volumetric_sectors};
 }
 
 inline ProviderWorldDefinition adapt_world_definition(

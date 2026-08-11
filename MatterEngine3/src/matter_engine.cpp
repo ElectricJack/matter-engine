@@ -435,6 +435,31 @@ matter_stream::Config make_streaming_profile(
     // would otherwise leave the streamer with no bands to build levels from.
     if (profile.nested_sectors) profile.terrain_lod_enabled = true;
 
+    // Volumetric sectors (M3): the quadtree becomes an octree and tiles become
+    // cubes. Gated per world and defaulting off, so every existing world keeps
+    // the column path byte-for-byte until it opts in.
+    profile.volumetric_sectors = world_settings.volumetric_sectors;
+    if (const char* vol_env = std::getenv("MATTER_VOLUMETRIC_SECTORS")) {
+        profile.volumetric_sectors = vol_env[0] != '0';
+        std::fprintf(stderr,
+                     "[stream] MATTER_VOLUMETRIC_SECTORS=%s: volumetric "
+                     "sectors %s\n",
+                     vol_env,
+                     profile.volumetric_sectors ? "ON" : "OFF");
+    }
+    // The octree descends the nested LEVEL ladder with a third axis; without
+    // nesting there is no ladder and nothing to descend. Reported rather than
+    // silently corrected because unlike the two implications above -- where the
+    // flag turns something ON that it needs -- this one takes the world's
+    // request AWAY, and a StreamCaverns that quietly ran the column path while
+    // its script said otherwise is exactly the confusion M3 has to avoid.
+    if (profile.volumetric_sectors && !profile.nested_sectors) {
+        std::fprintf(stderr,
+                     "[stream] volumetricSectors requires nestedSectors; "
+                     "running the column path\n");
+        profile.volumetric_sectors = false;
+    }
+
     // ---- the 20-bit reach check (volumetric-sectors M1, design risk §7.8) ---
     //
     // The nested key repack bought a Y field by cutting each axis from 30 bits
@@ -2119,6 +2144,13 @@ struct WorldSession::Impl {
     // level 0 and sector_size_for() returns S_0, which is what makes all the
     // per-request size plumbing inert until the flag is set.
     bool world_nested_sectors = false;
+    // Volumetric sectors (M3). The engine-side mirror of the streamer's flag,
+    // cached here for the same reason as nesting: the publish/evict/weld paths
+    // below consult it per request and must not reach back into the profile.
+    // With it OFF every request is a column at ty = 0 -- which is exactly the
+    // state M1 left the `ty` plumbing in, so this flag is what gives that
+    // plumbing a value other than zero.
+    bool world_volumetric_sectors = false;
     float sector_size_for(int rung) const {
         return world_nested_sectors
             ? world_sector_size *
@@ -4122,6 +4154,15 @@ bool WorldSession::Impl::install_world(
             legacy_settings);
     world_sector_size = runtime_profile.sector_size;
     world_nested_sectors = runtime_profile.nested_sectors;
+    // AND-ed with nesting rather than copied. This profile comes straight from
+    // the world's authored settings, NOT through make_streaming_profile, so it
+    // has not been past the "volumetricSectors requires nestedSectors" rule the
+    // streamer applies -- and the two disagreeing would put the engine on the
+    // cube publish path while the streamer only ever hands out columns. Where
+    // one flag gates the keyspace and another gates how it is read, they have to
+    // be derived from the same predicate, not from the same source.
+    world_volumetric_sectors =
+        runtime_profile.volumetric_sectors && runtime_profile.nested_sectors;
     world_profile = runtime_profile;
     {
         char hbuf[32];
@@ -11157,6 +11198,7 @@ bool WorldSession::streaming_lod_config(StreamingLodConfig& out) const {
         out.terrain_bands.push_back({band.radius, band.rung});
     out.terrain_lod_enabled = profile.terrain_lod_enabled;
     out.nested_sectors = profile.nested_sectors;
+    out.volumetric_sectors = profile.volumetric_sectors;
     out.sector_size = profile.sector_size;
     out.hysteresis = profile.hysteresis;
     out.max_inflight = profile.max_inflight;

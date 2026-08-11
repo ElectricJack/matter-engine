@@ -93,11 +93,19 @@ struct SectorMesh {
 //
 // `rung` is a power-of-two voxel ladder about a 2 m base, in BOTH directions:
 //   3 -> 0.25 m, 2 -> 0.5 m, 1 -> 1 m, 0 -> 2 m, -1 -> 4 m ... -5 -> 64 m.
-// The negative half lets the terrain ladder stay voxel at distance instead of
-// switching to a separate heightfield mesher, which is what produced a visible
-// seam between near and far terrain -- two different surfaces rather than two
-// resolutions of one. That mesher has since been deleted; see the note at the
-// end of this header.
+// THE NEGATIVE HALF IS THE ENTIRE DISTANCE LADDER, not a fallback. The streamer
+// pairs a level-L tile (`sector_size << L` metres across) with rung -L, so
+// cells-per-tile is CONSTANT at every level and one mesher covers the camera to
+// the fog wall. Take the negative rungs away and either tiles stop growing (the
+// part explosion nested sector LOD exists to fix) or cells-per-tile grows with
+// them (a 2 m voxel out to 2.5 km, measured at 45 GB). `terrain_bands` is a
+// radius->rung table, and cross-rung tile pairs are the only reason the seam
+// welder exists.
+//
+// This is also what let the SEPARATE HEIGHTFIELD MESHER be deleted (see the
+// note at the end of this header): coarse terrain used to come from its LOD 0-4
+// height grids, and having two surfaces meet mid-world printed a visible seam
+// between near and far terrain. One representation at two resolutions cannot.
 // Returns false + err on degenerate config (rung outside -5..3, sector_size <= 0,
 // y_min >= y_max).
 bool mesh_sector(const terrain_field::FieldRuntime& field,

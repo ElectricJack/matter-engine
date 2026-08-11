@@ -94,6 +94,10 @@ SectorStreamer::SectorStreamer(Config cfg)
     // ladder rather than composing with it. Without this a world that set only
     // `nestedSectors` would resolve no bands and fall straight back to uniform.
     if (cfg_.nested_sectors) cfg_.terrain_lod_enabled = true;
+    // The octree IS the nested ladder with a third axis -- same levels, same
+    // reinterpreted band table, same 2:1 restriction. With nesting off there is
+    // nothing to descend, so this cannot be half-honoured.
+    if (!cfg_.nested_sectors) cfg_.volumetric_sectors = false;
     resolve_terrain_defaults(cfg_);
     if (!cfg_.nested_sectors) return;
 
@@ -118,7 +122,13 @@ SectorStreamer::SectorStreamer(Config cfg)
     // turning one typo into an empty world.
     for (size_t i = 1; i < level_radius_.size(); ++i)
         level_radius_[i] = std::max(level_radius_[i], level_radius_[i - 1]);
-    if (level_radius_.empty()) cfg_.nested_sectors = false;
+    // A table that resolved no levels leaves nesting itself unusable, and the
+    // octree with it -- otherwise a world would fall back to the uniform grid
+    // while still believing it was volumetric.
+    if (level_radius_.empty()) {
+        cfg_.nested_sectors = false;
+        cfg_.volumetric_sectors = false;
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1130,6 +1130,23 @@ bool extract_streaming(JSContext* context,
         JS_FreeValue(context, nested);
     }
 
+    // Volumetric sectors (volumetric-sectors M3). Same placement and the same
+    // reason: it is nesting with a third axis, so it lives before the rings
+    // early-out for exactly the case nesting does.
+    //
+    // NOT validated against nestedSectors here. The loader's job is to report
+    // what the world authored; the streamer owns whether the combination is
+    // coherent and forces this off when there is no ladder to descend, which is
+    // where the same decision already lives for terrain_lod_enabled.
+    {
+        JSValue volumetric =
+            JS_GetPropertyStr(context, streaming, "volumetricSectors");
+        if (!JS_IsUndefined(volumetric))
+            definition.settings.volumetric_sectors =
+                JS_ToBool(context, volumetric) != 0;
+        JS_FreeValue(context, volumetric);
+    }
+
     // Rings are OPTIONAL, and an absent `rings` used to return from this whole
     // function -- taking `terrainBands` with it. A world that authored bands
     // and no rings therefore lost its band table silently. That was survivable

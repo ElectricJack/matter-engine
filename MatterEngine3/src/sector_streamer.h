@@ -202,6 +202,24 @@ struct Config {
     //     hole-free quadtree.
     bool nested_sectors = false;
 
+    // VOLUMETRIC SECTORS (design §3, volumetric-sectors M3). Nested only,
+    // default OFF. The quadtree becomes an OCTREE: a tile is the cube
+    // [ty*S, (ty+1)*S) in y as well as x and z, `descend` produces 8 children
+    // rather than 4, and `restrict_levels` runs over 6 faces rather than 4.
+    //
+    // What it buys, and the number that motivates it: a column tile covers
+    // [y_min, surface] for its (tx, tz), so a StreamCaverns level-0 tile samples
+    // ~590 rows of density to reach -1000 m whether or not there is anything
+    // down there. A cube tile samples at most (n+5)^3, and one away from the
+    // surface or a cavern shell costs a single all-air/all-solid pass and yields
+    // nothing at all.
+    //
+    // The mesher half already exists and is pinned (`mesh_sector_tiled`, M2);
+    // this flag is what makes the streamer ask for vertical stacks so that
+    // meshing a 64 m band is the whole tile rather than a tile's worth of world.
+    // Forced off when `nested_sectors` is off -- see the note there.
+    bool volumetric_sectors = false;
+
     // STAGED REFINEMENT (docs/volumetric-sectors-design-2026-08-10.md §4.5,
     // first half). Nested only, default ON.
     //
@@ -319,6 +337,15 @@ public:
 
     size_t resident_count() const;
     size_t inflight_count() const;
+
+    // The RESOLVED config, which is not the one you passed in. The constructor
+    // rewrites it: `terrain_lod_enabled` is forced on by nesting, defaults are
+    // filled into an empty band table, and both `nested_sectors` and
+    // `volumetric_sectors` are forced OFF when the authored bands resolve no
+    // level ladder. Every one of those was silent and unobservable until this
+    // accessor existed -- a world could ask for volumetric sectors, be refused
+    // on the spot, and nothing outside this object could tell.
+    const Config& config() const noexcept { return cfg_; }
 
 private:
     Config cfg_;
