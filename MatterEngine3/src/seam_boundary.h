@@ -29,8 +29,10 @@ namespace seam {
 // ---------------------------------------------------------------------------
 //
 // Six faces, ordered so the xz four keep the historical edge-mask order
-// (+x, -x, +z, -z) that WorldSector.js and the streamer used. +y/-y are unused
-// in M0 (the grid is still XZ-columnar) and become live in M2 when Y is tiled.
+// (+x, -x, +z, -z) that WorldSector.js and the streamer used. +y/-y are empty on
+// the COLUMN mesher path (the grid is XZ-columnar there, so a tile has no
+// neighbour above or below) and live on the Y-TILED path from M2 -- see
+// SectorBoundary::y_tiled.
 enum Face : int {
     kFacePosX = 0,
     kFaceNegX = 1,
@@ -197,12 +199,18 @@ struct FaceRecord {
     int64_t cell_layer = 0;
     std::vector<BoundaryVert> verts;
 
-    // The overlap band for this face (M0-WP7). Populated by the mesher on
-    // kFaceNegX and kFaceNegZ ONLY, and empty on the other four: the [1..n]
+    // The overlap band for this face (M0-WP7). Populated by the mesher on the
+    // NEGATIVE faces only -- kFaceNegX and kFaceNegZ always, and kFaceNegY as
+    // well once Y is tiled (M2) -- and empty on the positive ones: the [1..n]
     // ownership rule is direction-asymmetric, so a tile already overshoots its
-    // -x/-z border and already stops short of its +x/+z one. It is the +side
-    // faces that are bridged by the neighbour, and a band there would be
+    // -x/-z/-y border and already stops short of its +x/+z/+y one. It is the
+    // +side faces that are bridged by the neighbour, and a band there would be
     // overlap on top of overlap.
+    //
+    // (Which Y face that is, is derived rather than assumed by symmetry: the
+    // tile ABOVE a horizontal plane is the one that bridges it, so the
+    // under-reached face is -y. terrain_mesher.cpp works it out from
+    // `emit_quad`'s call sites.)
     OverlapBand band;
 
     const BoundaryVert* find(int64_t a, int64_t b) const {
@@ -226,6 +234,22 @@ struct SectorBoundary {
     int      rung = 0;       // this tile's rung (finer = larger)
     int      cells = 0;      // cells per axis (n); with the tile size this fixes the lattice
     int64_t  tx = 0, ty = 0, tz = 0;
+
+    // Which mesher regime produced this record (M2).
+    //
+    //   false — the COLUMN path (`mesh_sector`): the tile spans the authored
+    //     [y_min, y_max] slab, `ty` is 0 and means nothing, ±y are empty, and a
+    //     face's Y cell extent can only be read from the record's own entries
+    //     because there is no tile identity to derive it from.
+    //   true  — the Y-TILED path (`mesh_sector_tiled`): `ty` is real, all six
+    //     faces are populated, and the Y cell box is `[ty*cells, ty*cells +
+    //     cells - 1]` exactly as the x and z ones are.
+    //
+    // Carried on the record rather than inferred by the consumer because the
+    // difference is not observable from the data: an empty ±y face is also what
+    // a tiled tile whose top and bottom are pure air exports.
+    bool     y_tiled = false;
+
     FaceRecord faces[kFaceCount];
 
     // NOTE: `empty` and `vert_count` speak about the VERTEX records only, not

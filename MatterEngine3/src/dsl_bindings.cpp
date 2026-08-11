@@ -1578,6 +1578,66 @@ static JSValue j_biomeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
     return JS_NewString(c, s);
 }
 
+// Shared tail of the two terrain-volume verbs: remap the raw field materials
+// through the caller's palette, hand the boundary record to the bake, and push
+// the triangles. Both verbs must do EXACTLY this, which is why it is one
+// function -- the remap in particular has to hit the mesh buckets, the boundary
+// vertices and the overlap bands identically or a welded strip renders in a
+// different palette entry from the triangles it joins.
+static void emit_terrain_volume(DslState* st,
+                                terrain_mesher::SectorMesh& mesh,
+                                seam::SectorBoundary& boundary,
+                                const uint32_t mat[4]) {
+    for (auto& fr : boundary.faces) {
+        for (auto& bv : fr.verts)
+            bv.material = bv.material < 4 ? mat[bv.material] : mat[0];
+        // The overlap band (M0-WP7, and -y from M2) is the mesher's own emitted
+        // quads, so its buckets carry raw field materials too and need the
+        // identical remap. Missing this does not fail any test -- the band would
+        // simply render in the wrong palette entry, which reads as a mis-shaded
+        // strip rather than as a bug in the remap.
+        for (auto& ob : fr.band.buckets)
+            ob.material = ob.material < 4 ? mat[ob.material] : mat[0];
+    }
+    // Hand the record to the bake. This is the ONLY route from the mesher to
+    // the engine's resident ledger: DslState -> BakedGeometry -> stage_from_bake
+    // -> LoadedPart -> SectorEntry, where the welder reads it for the drawn
+    // pair. Without this line the runtime welder is dead code -- and silently
+    // so, because every seam test drives mesh_sector directly and never touches
+    // the DSL path, so the whole suite stays green while no world ever welds.
+    st->set_sector_boundary(std::move(boundary));
+    for (const auto& bkt : mesh.buckets)
+        g_volume_tris.fetch_add(bkt.positions.size() / 9,
+                                std::memory_order_relaxed);
+
+    // Emit each material bucket with the mesher's gradient normals for smooth
+    // terrain shading. Uses pushTerrainTriangle to bypass the face-normal
+    // fallback in the standard beginShape/vertex/endShape path.
+    for (const auto& bkt : mesh.buckets) {
+        uint32_t mat_id = bkt.material < 4 ? mat[bkt.material] : mat[0];
+        const size_t n_tris = bkt.positions.size() / 9;
+        for (size_t t = 0; t < n_tris; ++t) {
+            st->pushTerrainTriangle(&bkt.positions[t * 9],
+                                    &bkt.normals[t * 9],
+                                    (int)mat_id);
+        }
+    }
+}
+
+// Read the optional material palette argument: an array of up to 4 entries
+// [grass, dirt, rock, snow], defaulting to 0..3.
+static void read_mat_palette(JSContext* c, JSValueConst arg, uint32_t mat[4]) {
+    if (!JS_IsArray(arg)) return;
+    for (int i = 0; i < 4; ++i) {
+        JSValue v = JS_GetPropertyUint32(c, arg, (uint32_t)i);
+        if (!JS_IsUndefined(v)) {
+            int32_t m = 0; JS_ToInt32(c, &m, v);
+            mat[i] = (uint32_t)m;
+        }
+        JS_FreeValue(c, v);
+    }
+}
+
 // terrainVolume(tx, tz, rung[, edgeMask][, matArray])
 // Meshes one sector of the bound terrain field using native surface-nets and
 // pushes the result directly into the triangle buffer. matArray is an array of
@@ -1619,16 +1679,7 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
     // Optional material array: up to 4 entries [grass, dirt, rock, snow].
     // Defaults to 0..3 if not supplied.
     uint32_t mat[4] = {0, 1, 2, 3};
-    if (n >= 5 && JS_IsArray(a[4])) {
-        for (int i = 0; i < 4; ++i) {
-            JSValue v = JS_GetPropertyUint32(c, a[4], (uint32_t)i);
-            if (!JS_IsUndefined(v)) {
-                int32_t m = 0; JS_ToInt32(c, &m, v);
-                mat[i] = (uint32_t)m;
-            }
-            JS_FreeValue(c, v);
-        }
-    }
+    if (n >= 5) read_mat_palette(c, a[4], mat);
 
     terrain_mesher::SectorMesh mesh;
     seam::SectorBoundary boundary;
@@ -1643,45 +1694,77 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
         }
     }
     // The record carries RAW field materials (0..3), the same space the mesh
-    // buckets use; remap them through the caller's palette here so that every
-    // downstream consumer -- mesh and seam band alike -- sees final material
-    // ids and the welded strip cannot come out a different colour from the
-    // triangles it joins. Identical expression to the bucket remap below;
-    // if one changes, so must the other.
-    for (auto& fr : boundary.faces) {
-        for (auto& bv : fr.verts)
-            bv.material = bv.material < 4 ? mat[bv.material] : mat[0];
-        // The overlap band (M0-WP7) is the mesher's own emitted quads, so its
-        // buckets carry raw field materials too and need the identical remap.
-        // Missing this does not fail any test -- the band would simply render
-        // in the wrong palette entry, which reads as a mis-shaded strip rather
-        // than as a bug in the remap.
-        for (auto& ob : fr.band.buckets)
-            ob.material = ob.material < 4 ? mat[ob.material] : mat[0];
-    }
-    // Hand the record to the bake. This is the ONLY route from the mesher to
-    // the engine's resident ledger: DslState -> BakedGeometry -> stage_from_bake
-    // -> LoadedPart -> SectorEntry, where the welder reads it for the drawn
-    // pair. Without this line the runtime welder is dead code -- and silently
-    // so, because every seam test drives mesh_sector directly and never touches
-    // the DSL path, so the whole suite stays green while no world ever welds.
-    st->set_sector_boundary(std::move(boundary));
-    for (const auto& bkt : mesh.buckets)
-        g_volume_tris.fetch_add(bkt.positions.size() / 9,
-                                std::memory_order_relaxed);
+    // buckets use; the palette remap, the hand-off to the bake and the triangle
+    // push are all in emit_terrain_volume, shared with the tiled verb below.
+    emit_terrain_volume(st, mesh, boundary, mat);
+    return JS_UNDEFINED;
+}
 
-    // Emit each material bucket with the mesher's gradient normals for smooth
-    // terrain shading. Uses pushTerrainTriangle to bypass the face-normal
-    // fallback in the standard beginShape/vertex/endShape path.
-    for (const auto& bkt : mesh.buckets) {
-        uint32_t mat_id = bkt.material < 4 ? mat[bkt.material] : mat[0];
-        const size_t n_tris = bkt.positions.size() / 9;
-        for (size_t t = 0; t < n_tris; ++t) {
-            st->pushTerrainTriangle(&bkt.positions[t * 9],
-                                    &bkt.normals[t * 9],
-                                    (int)mat_id);
+// terrainVolumeTiled(tx, ty, tz, rung[, matArray])  — M2, design §3.3
+//
+// The Y-TILED sibling of terrainVolume above: it meshes the CUBE
+// [ty*S, (ty+1)*S) rather than the column [yMin, surface], so a caller must
+// request a vertical STACK of these to cover what one terrainVolume call covers.
+// Mesh positions come back tile-local in y as well as x/z, so the publish
+// transform needs `transform[7] = ty * sector_size` — engine side, M3.
+//
+// NOT REACHABLE FROM `part_base.js` YET, deliberately. The prelude wrapper and
+// the `WorldSector.js` copies that would call it are M3's, and this repo does
+// not edit world JS from the C++ side of a migration (the same reason
+// terrainVolume still accepts and ignores an `edgeMask`). The native binding
+// lands now so the route from mesher to `set_sector_boundary` exists and is
+// exercisable — R8 of docs/volumetric-sectors-m0-resolutions.md is about
+// exactly this gap: every seam test drives the mesher directly, so a missing
+// DSL hop leaves the runtime welder dead with the whole suite green.
+// `globalThis.__terrainVolumeTiled(...)` reaches it from a bake script today.
+static JSValue j_terrainVolumeTiled(JSContext* c, JSValueConst, int n,
+                                    JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (st->generating_animation()) {
+        st->set_error("geometry authoring is forbidden during generate");
+        return JS_UNDEFINED;
+    }
+    const WorldBinding& w = st->world();
+    if (!w.field) {
+        st->set_error("terrainVolumeTiled: no world bound — set BakeOptions.world before baking a terrain sector");
+        return JS_UNDEFINED;
+    }
+    if (n < 4) {
+        st->set_error("terrainVolumeTiled: requires (tx, ty, tz, rung[, mats])");
+        return JS_UNDEFINED;
+    }
+
+    int64_t tx = 0, ty = 0, tz = 0;
+    JS_ToInt64(c, &tx, a[0]);
+    JS_ToInt64(c, &ty, a[1]);
+    JS_ToInt64(c, &tz, a[2]);
+    int32_t rung = 0;
+    JS_ToInt32(c, &rung, a[3]);
+
+    uint32_t mat[4] = {0, 1, 2, 3};
+    if (n >= 5) read_mat_palette(c, a[4], mat);
+
+    terrain_mesher::SectorMesh mesh;
+    seam::SectorBoundary boundary;
+    std::string err;
+    {
+        VerbTimer _vt(g_volume_us, g_volume_calls);
+        // No y_min/y_max: the tile IS the extent. `w.y_min`/`w.y_max` become the
+        // octree's vertical bounds instead of the mesher's slab (§3.3), and
+        // validating a request against them is world-load / streamer work.
+        if (!terrain_mesher::mesh_sector_tiled(*w.field, tx, ty, tz, rung,
+                                               w.sector_size, mesh, &boundary,
+                                               err)) {
+            st->set_error("terrainVolumeTiled: " + err);
+            return JS_UNDEFINED;
         }
     }
+    // An all-air or all-solid tile is a normal outcome here, not an error: it
+    // emits no triangles and an empty record, which is §3.3's "resident, no
+    // geometry". The publish path has to carry that through as a successful
+    // publication or the streamer's desired map never converges — engine side,
+    // M3.
+    emit_terrain_volume(st, mesh, boundary, mat);
     return JS_UNDEFINED;
 }
 
@@ -1847,6 +1930,9 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_emitVolume",j_emitVolume,1);
     // Terrain verb binding (Task 5: terrainVolume).
     bind("__terrainVolume",j_terrainVolume,4);
+    // M2: the Y-tiled sibling. No part_base.js wrapper yet -- that, and the
+    // WorldSector.js calls, are M3's (see the note on j_terrainVolumeTiled).
+    bind("__terrainVolumeTiled",j_terrainVolumeTiled,5);
     // Heightfield terrain LOD ladder (alpine design, LODs 0-4).
     bind("__terrainHeightfield",j_terrainHeightfield,5);
     // World query verbs (Task 7: heightAt/slopeAt/moistureAt/biomeAt).

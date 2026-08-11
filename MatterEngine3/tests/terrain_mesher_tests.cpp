@@ -1392,5 +1392,329 @@ int main() {
         }
     }
 
+    // =======================================================================
+    // M2 — Y BECOMES A TILED AXIS (`mesh_sector_tiled`)
+    // Design: docs/volumetric-sectors-design-2026-08-10.md §3.3.
+    //
+    // Everything above this line is the COLUMN path and stays exactly what it
+    // was -- including the six bitwise pins immediately above, which are the
+    // gate on that claim. This block is the SECOND regime: the tile is a cube
+    // [ty*S, (ty+1)*S) and Y is indexed, owned and welded exactly as X and Z
+    // are. The two coexist because a Y-tiled tile covers 64 m of height, so
+    // covering a world takes a vertical STACK of requests -- which is the
+    // streamer's job (M3, gated on `volumetricSectors`, default off).
+    // =======================================================================
+
+    // A volumetric fixture whose TOP SURFACE straddles y = 0: kNoiseCave with
+    // its `const 30` height offset replaced by `const 0`, so h = 20*noise runs
+    // roughly [-20, 20] instead of [10, 50], with the same ridge tunnels and the
+    // same hard floor at -100. Needed because every vertical test wants a tile
+    // BOUNDARY the surface actually crosses, and kNoiseCave's surface sits
+    // entirely inside one 64 m tile.
+    static const char* kCave0 =
+        "noise2 1234 0.02 4 0.5 2.0\nconst 20\nmul r0 r1\n"
+        "const 0\nadd r2 r3\n"
+        "input wy\n"
+        "sub r4 r5\n"
+        "ridge3 4242 0.02 2 0.5 2\n"
+        "const 0.45\nsub r7 r8\n"
+        "const -1\nmul r9 r10\n"
+        "min r6 r11\n"
+        "const -100\nsub r13 r5\n"
+        "max r12 r14\n"
+        "const 0.5\n"
+        "height r4\ndensity r15\nmoisture r16\nrelief r16\n"
+        "seaLevel -1000\nbiome 0.65 0.35\n";
+
+    // --- M2 (a) tile-local Y, and the tile IS the extent ---------------------
+    //
+    // The column path returns world-absolute y and meshes [y_min, surface]. The
+    // tiled path returns TILE-LOCAL y in [0, S] (plus the ghost/band reach on the
+    // low side) and meshes nothing outside its own cube. On kFlat5 both are
+    // hand-checkable: the surface is the plane y = 5, so it lands in exactly one
+    // tile of any stack, at local height 5 - ty*S.
+    {
+        FieldRuntime f = make(kFlat5);
+        const float S = 4.0f;              // n = 4 at rung 1 (1 m voxel)
+        std::string err;
+        // ty = 1 covers world y in [4, 8): it holds the surface, at local y = 1.
+        SectorMesh m1;
+        CHECK(mesh_sector_tiled(f, 0, 1, 0, 1, S, m1, nullptr, err), err.c_str());
+        CHECK(m1.triangle_count() > 0, "the tile holding the surface meshes it");
+        float ylo = 1e30f, yhi = -1e30f;
+        for (const MaterialBucket& b : m1.buckets)
+            for (size_t i = 1; i < b.positions.size(); i += 3) {
+                ylo = std::min(ylo, b.positions[i]);
+                yhi = std::max(yhi, b.positions[i]);
+            }
+        printf("  M2 tile-local Y: ty=1 (world y in [4,8)) surface at local y in "
+               "[%.3f, %.3f] -- world 5 means local 1\n", ylo, yhi);
+        CHECK(std::fabs(ylo - 1.0f) < 1e-3f && std::fabs(yhi - 1.0f) < 1e-3f,
+              "mesh positions are TILE-LOCAL in y: the y=5 plane comes back at "
+              "local y = 1 in the tile whose origin is y = 4");
+        // ...and the same field through the COLUMN path still reports world y.
+        SectorMesh mc;
+        CHECK(mesh_sector(f, 0, 0, 1, S, -64.0f, 192.0f, mc, nullptr, err),
+              err.c_str());
+        float cy = -1e30f;
+        for (const MaterialBucket& b : mc.buckets)
+            for (size_t i = 1; i < b.positions.size(); i += 3)
+                cy = std::max(cy, b.positions[i]);
+        CHECK(std::fabs(cy - 5.0f) < 1e-3f,
+              "the column path is untouched: it still returns world-absolute y");
+
+        // Tiles above and below the surface are EMPTY, and that is a normal
+        // outcome rather than an error -- §3.3's "resident, no geometry". The
+        // column path could not express it: its slab always contained the
+        // surface, and a tile that did not was a hard failure ("sampled height
+        // outside authored Y range"). That check is gone here on purpose; the
+        // octree's Y extent is validated at world load instead (M3).
+        for (int64_t ty : {int64_t(3), int64_t(-3)}) {
+            SectorMesh me; seam::SectorBoundary sbe;
+            CHECK(mesh_sector_tiled(f, 0, ty, 0, 1, S, me, &sbe, err), err.c_str());
+            CHECK(me.triangle_count() == 0,
+                  "a tile wholly above or below the surface yields no geometry");
+            CHECK(sbe.empty() && sbe.band_triangle_count() == 0,
+                  "...and no boundary record and no band either: nothing to weld");
+        }
+        // The column path's Y-range check still fires, unchanged.
+        {
+            SectorMesh mm; std::string e2;
+            CHECK(!mesh_sector(f, 0, 0, 1, S, 10.0f, 20.0f, mm, nullptr, e2),
+                  "the column path still rejects a slab that misses the surface");
+        }
+    }
+
+    // --- M2 (b) THE VERTICAL CROSS-TILE INVARIANT ----------------------------
+    //
+    // The vertical analogue of (c) above, and the same strongest-form gate:
+    // tile A's +y record and tile B's -y record describe the SAME world plane,
+    // neither tile was told the other exists, and if the Y indexing is right they
+    // name it with the same `plane`, their (a, b) sets coincide, and -- because
+    // the dyadic-double construction makes both sides read BITWISE identical
+    // samples -- their corner_signs match bit for bit.
+    //
+    // This is the assertion the whole "no weld for an equal-level pair" claim
+    // rests on in the vertical direction. If it fails, every stacked pair in a
+    // volumetric world is welded against the wrong cells, silently.
+    {
+        FieldRuntime f = make(kCave0);
+        SectorMesh ma, mb; seam::SectorBoundary sa, sb; std::string err;
+        // Stacked equal-level pair sharing the plane y = 0.
+        CHECK(mesh_sector_tiled(f, 0, -1, 0, 0, 64.0f, ma, &sa, err), err.c_str());
+        CHECK(mesh_sector_tiled(f, 0,  0, 0, 0, 64.0f, mb, &sb, err), err.c_str());
+        CHECK(sa.y_tiled && sb.y_tiled && sa.ty == -1 && sb.ty == 0,
+              "the record identifies its regime and carries a real ty");
+        const seam::FaceRecord& A = sa.faces[seam::kFacePosY];   // lower tile, top
+        const seam::FaceRecord& B = sb.faces[seam::kFaceNegY];   // upper tile, base
+        CHECK(!A.verts.empty() && !B.verts.empty(),
+              "both sides of the horizontal plane exported a face -- the +-y "
+              "records are populated at last (they are empty on the column path)");
+        CHECK(A.plane == B.plane,
+              "stacked equal-rung neighbours name the shared horizontal plane "
+              "identically");
+        CHECK(A.plane == 0 && A.cell_layer == -1 && B.cell_layer == 0,
+              "y = 0 is global lattice 0; the lower tile's top cell layer is -1 "
+              "and the upper tile's base layer is 0, with the plane between them");
+        int shared = 0, sign_mismatch = 0;
+        for (const seam::BoundaryVert& va : A.verts) {
+            const seam::BoundaryVert* vb = B.find(va.a, va.b);
+            if (!vb) continue;
+            ++shared;
+            if (va.corner_signs != vb->corner_signs) ++sign_mismatch;
+        }
+        int a_only = 0, b_only = 0;
+        for (const seam::BoundaryVert& va : A.verts)
+            if (!B.find(va.a, va.b)) ++a_only;
+        for (const seam::BoundaryVert& vb : B.verts)
+            if (!A.find(vb.a, vb.b)) ++b_only;
+        printf("  M2 vertical equal-rung: A+y %zu verts, B-y %zu verts, %d shared "
+               "(a,b), %d sign mismatches, %d only-A, %d only-B\n",
+               A.verts.size(), B.verts.size(), shared, sign_mismatch,
+               a_only, b_only);
+        CHECK(shared > 20, "the two records overlap over most of the plane");
+        CHECK(sign_mismatch == 0,
+              "corner_signs match BIT FOR BIT across the horizontal plane: both "
+              "tiles evaluated the field at the same doubles, which is the "
+              "dyadic-double property the whole seam contract rests on");
+        CHECK(a_only + b_only < shared,
+              "the shared cells dominate: the two records describe one plane");
+
+        // The bridge itself: the lower tile owns the shared cell layer and the
+        // UPPER tile is the one whose geometry crosses the plane. Measured off
+        // the meshes rather than argued: the upper tile has vertices BELOW its
+        // own origin (in its ghost cell), the lower tile has none above its top.
+        float b_min = 1e30f, a_max = -1e30f;
+        for (const MaterialBucket& bk : mb.buckets)
+            for (size_t i = 1; i < bk.positions.size(); i += 3)
+                b_min = std::min(b_min, bk.positions[i]);
+        for (const MaterialBucket& bk : ma.buckets)
+            for (size_t i = 1; i < bk.positions.size(); i += 3)
+                a_max = std::max(a_max, bk.positions[i]);
+        const float v0 = 2.0f;   // rung 0
+        printf("  M2 bridge direction: upper tile reaches to local y %.3f "
+               "(%.2f voxels below its origin); lower tile tops out at local y "
+               "%.3f (%.2f voxels below its top)\n",
+               b_min, b_min / v0, a_max, (64.0f - a_max) / v0);
+        CHECK(b_min < 0.0f && b_min >= -1.01f * v0,
+              "THE TOP TILE BRIDGES: the upper tile's surface reaches back into "
+              "the ghost cell below its own origin, by at most one of its own "
+              "voxels -- the vertical form of the east/north rule");
+        CHECK(a_max <= 64.0f - 0.0f && a_max < 64.0f,
+              "...and the lower tile stops short of its +y border rather than "
+              "crossing it, so the plane is bridged exactly once");
+    }
+
+    // --- M2 (c) determinism on the tiled path --------------------------------
+    // Same gate the column path has: a tiled tile's mesh, record AND bands must
+    // be byte-identical across two bakes, or nothing downstream can cache it.
+    {
+        FieldRuntime f = make(kCave0);
+        SectorMesh m1, m2; seam::SectorBoundary s1, s2; std::string err;
+        CHECK(mesh_sector_tiled(f, 1, -1, 2, 0, 64.0f, m1, &s1, err), err.c_str());
+        CHECK(mesh_sector_tiled(f, 1, -1, 2, 0, 64.0f, m2, &s2, err), err.c_str());
+        bool mesh_same = m1.buckets.size() == m2.buckets.size();
+        for (size_t i = 0; mesh_same && i < m1.buckets.size(); ++i)
+            mesh_same = m1.buckets[i].material == m2.buckets[i].material &&
+                        m1.buckets[i].positions == m2.buckets[i].positions &&
+                        m1.buckets[i].normals   == m2.buckets[i].normals;
+        size_t differing = 0;
+        bool rec_same = s1.vert_count() == s2.vert_count() &&
+                        s1.ty == s2.ty && s1.y_tiled == s2.y_tiled;
+        for (int fa = 0; fa < seam::kFaceCount && rec_same; ++fa) {
+            const seam::FaceRecord& X = s1.faces[fa];
+            const seam::FaceRecord& Y = s2.faces[fa];
+            if (X.verts.size() != Y.verts.size() || X.plane != Y.plane ||
+                X.cell_layer != Y.cell_layer) { rec_same = false; break; }
+            for (size_t i = 0; i < X.verts.size(); ++i)
+                if (std::memcmp(&X.verts[i], &Y.verts[i],
+                                sizeof(seam::BoundaryVert)) != 0) ++differing;
+            if (X.band.buckets.size() != Y.band.buckets.size()) { rec_same = false; break; }
+            for (size_t i = 0; i < X.band.buckets.size(); ++i)
+                if (X.band.buckets[i].material  != Y.band.buckets[i].material ||
+                    X.band.buckets[i].positions != Y.band.buckets[i].positions ||
+                    X.band.buckets[i].normals   != Y.band.buckets[i].normals)
+                    rec_same = false;
+        }
+        printf("  M2 determinism: %zu tris, %zu boundary verts, %zu band tris; "
+               "%zu differing record bytes\n", m1.triangle_count(),
+               s1.vert_count(), s1.band_triangle_count(), differing);
+        CHECK(m1.triangle_count() > 0 && s1.vert_count() > 0,
+              "the fixture tile actually produced something to compare");
+        CHECK(mesh_same, "two bakes of one tiled tile give an identical MESH");
+        CHECK(rec_same && differing == 0,
+              "...and an identical boundary RECORD and BANDS");
+    }
+
+    // --- M2 (d) the -y overlap band ------------------------------------------
+    //
+    // WHICH Y FACE, derived: this tile bridges DOWNWARD (see (b)), so its bridge
+    // reaches ~v/2 below its base while a neighbour one level coarser stops
+    // ~V/2 = v short of the same plane. The strip between them belongs to
+    // neither -- exactly the -x/-z situation, one axis over -- so the band goes
+    // on kFaceNegY. The +y face is bridged by the tile above it, and a band
+    // there would be overlap on top of overlap.
+    {
+        FieldRuntime f = make(kCave0);
+        SectorMesh m; seam::SectorBoundary sb; std::string err;
+        const float S = 64.0f;
+        CHECK(mesh_sector_tiled(f, 1, 0, 1, 0, S, m, &sb, err), err.c_str());
+        const seam::OverlapBand& by = sb.faces[seam::kFaceNegY].band;
+        CHECK(by.triangle_count() > 0,
+              "a tile with surface at its -y border exports a -y band");
+        CHECK(sb.faces[seam::kFacePosY].band.empty() &&
+              sb.faces[seam::kFacePosX].band.empty() &&
+              sb.faces[seam::kFacePosZ].band.empty(),
+              "bands exist on the NEGATIVE faces only, on all three axes");
+        CHECK(!sb.faces[seam::kFaceNegX].band.empty() &&
+              !sb.faces[seam::kFaceNegZ].band.empty(),
+              "and the two horizontal bands are still there alongside it");
+        // The band lies BELOW the tile's own -y border and reaches about 2.5
+        // fine voxels down -- one coarse voxel past the ~v/2 the mesh itself
+        // already bridges, which is the number the mechanism exists for.
+        const double v = seam::rung_voxel(0);
+        const double y0 = 0.0;              // ty = 0, so the -y border is y = 0
+        double below = 0.0, above = -1e30;
+        for (const seam::OverlapBucket& bk : by.buckets)
+            for (size_t i = 1; i < bk.positions.size(); i += 3) {
+                const double dy = bk.positions[i] - y0;
+                below = std::min(below, dy);
+                above = std::max(above, dy);
+            }
+        printf("  M2 -y band: %zu tris spanning y-y0 in [%.2f, %.2f] m = "
+               "[%.2f, %.2f] voxels\n", by.triangle_count(), below, above,
+               below / v, above / v);
+        CHECK(below <= -1.5 * v,
+              "the -y band reaches at least 1.5 fine voxels below the tile's "
+              "base -- past a coarse neighbour's last vertex at ~1 voxel");
+        CHECK(above <= 0.5 * v + 1e-6,
+              "the band stays BELOW: it is the strip the tile does not own, not "
+              "a second copy of the tile's own surface");
+        // Band positions are WORLD-absolute even though the mesh is tile-local:
+        // a band spans two tiles with two origins, so it cannot inherit either.
+        SectorMesh m2; seam::SectorBoundary sb2;
+        CHECK(mesh_sector_tiled(f, 1, 1, 1, 0, S, m2, &sb2, err), err.c_str());
+        double b2_min = 1e30;
+        for (const seam::OverlapBucket& bk : sb2.faces[seam::kFaceNegY].band.buckets)
+            for (size_t i = 1; i < bk.positions.size(); i += 3)
+                b2_min = std::min(b2_min, bk.positions[i]);
+        CHECK(sb2.faces[seam::kFaceNegY].band.triangle_count() == 0 ||
+              b2_min > S - 3.0 * v,
+              "the ty=1 tile's -y band sits at world y just under 64, not just "
+              "under 0: band positions are world-absolute doubles");
+
+        // Asking for no record still gives the same mesh -- the band must never
+        // leak into geometry, on the tiled path as on the column one.
+        SectorMesh mn;
+        CHECK(mesh_sector_tiled(f, 1, 0, 1, 0, S, mn, nullptr, err), err.c_str());
+        bool same = mn.buckets.size() == m.buckets.size();
+        for (size_t i = 0; same && i < mn.buckets.size(); ++i)
+            same = mn.buckets[i].material == m.buckets[i].material &&
+                   mn.buckets[i].positions == m.buckets[i].positions;
+        CHECK(same,
+              "asking for a boundary record (and therefore three bands) does not "
+              "change the tiled mesh that comes back");
+    }
+
+    // --- M2 (e) the vertical 2:1 map -----------------------------------------
+    //
+    // The welder's fan is `coarse = floor_div2(fine)` on BOTH tangential axes.
+    // On a +-y face those are x and z, and -- unlike a +-x face, where one of
+    // them was the untiled Y and had to be read out of the record -- both now
+    // come from tile identity. That is the half of the design §3.3 promises:
+    // "Y gets the identical ownership treatment as X/Z".
+    {
+        FieldRuntime f = make(kCave0);
+        SectorMesh mf, mc; seam::SectorBoundary sf, sc; std::string err;
+        // Coarse tile (0,-1,0) at 128 m / rung -1: x,z in [0,128), y in [-128,0).
+        // Fine tile   (0, 0,0) at  64 m / rung  0: x,z in [0, 64), y in [0, 64).
+        // They share the horizontal plane y = 0.
+        CHECK(mesh_sector_tiled(f, 0, -1, 0, -1, 128.0f, mc, &sc, err), err.c_str());
+        CHECK(mesh_sector_tiled(f, 0,  0, 0,  0,  64.0f, mf, &sf, err), err.c_str());
+        const seam::FaceRecord& F = sf.faces[seam::kFaceNegY];
+        const seam::FaceRecord& C = sc.faces[seam::kFacePosY];
+        CHECK(!F.verts.empty() && !C.verts.empty(), "both sides exported a face");
+        CHECK(F.plane == 0 && C.plane == 0,
+              "y = 0 is lattice 0 at every rung, so both sides name it 0");
+        CHECK(seam::floor_div2(F.plane) == C.plane,
+              "floor_div2 carries the fine plane index onto the coarse one");
+        // Both tangential domains from the coarse tile's identity.
+        const int64_t ca_lo = sc.tx * sc.cells, ca_hi = ca_lo + sc.cells - 1;
+        const int64_t cb_lo = sc.tz * sc.cells, cb_hi = cb_lo + sc.cells - 1;
+        int in_box = 0, hit = 0;
+        for (const seam::BoundaryVert& v : F.verts) {
+            const int64_t a = seam::floor_div2(v.a), b = seam::floor_div2(v.b);
+            if (a >= ca_lo && a <= ca_hi && b >= cb_lo && b <= cb_hi) ++in_box;
+            if (C.find(a, b)) ++hit;
+        }
+        printf("  M2 vertical 2:1: fine %zu verts, coarse %zu verts; %d/%zu halve "
+               "into the coarse tile's (x,z) cell box, %d onto a coarse cell\n",
+               F.verts.size(), C.verts.size(), in_box, F.verts.size(), hit);
+        CHECK(in_box == int(F.verts.size()),
+              "every fine -y boundary cell halves onto an (x, z) cell the coarse "
+              "tile below actually owns -- the vertical fan has somewhere to land");
+        CHECK(hit > 0, "fine cells do find their coarse parent");
+    }
+
     return check_summary();
 }

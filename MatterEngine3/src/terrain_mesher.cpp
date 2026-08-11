@@ -45,12 +45,20 @@ seam::OverlapBucket& band_bucket_for(seam::OverlapBand& band, uint32_t mat) {
     return band.buckets.back();
 }
 
-void push_band_tri(seam::OverlapBucket& b, double ox, double oz,
+// `tile_local_y` says whether CellVert::p.y is tile-local (the Y-TILED path, M2)
+// or already world-absolute (the COLUMN path). It is a branch rather than an
+// unconditional `oy + p.y` with oy = 0 on the column path because the column
+// path's band bytes are pinned bitwise (terrain_mesher_tests "M0-WP7"), and
+// `0.0 + -0.0` is `+0.0` -- a one-value difference that no plausible test would
+// catch and that would be a real change to a value the cache keys on.
+void push_band_tri(seam::OverlapBucket& b, double ox, double oy, double oz,
+                   bool tile_local_y,
                    const CellVert& a, const CellVert& c, const CellVert& d) {
     const CellVert* vs[3] = {&a, &c, &d};
     for (const CellVert* v : vs) {
         b.positions.push_back(ox + double(v->p.x));
-        b.positions.push_back(double(v->p.y));
+        b.positions.push_back(tile_local_y ? oy + double(v->p.y)
+                                           : double(v->p.y));
         b.positions.push_back(oz + double(v->p.z));
         b.normals.push_back(v->n.x);
         b.normals.push_back(v->n.y);
@@ -67,11 +75,42 @@ const int kEdges[12][6] = {
 
 } // namespace
 
-bool mesh_sector(const terrain_field::FieldRuntime& field,
-                 int64_t tx, int64_t tz, int rung,
-                 float sector_size, float y_min, float y_max,
-                 SectorMesh& out, seam::SectorBoundary* boundary_out,
-                 std::string& err) {
+// ---------------------------------------------------------------------------
+// ONE implementation, TWO axis regimes (M2)
+// ---------------------------------------------------------------------------
+//
+// `y_tiled == false` is the COLUMN path: the historical `mesh_sector`, meshing
+// [y_min, surface] in one slab anchored to a global Y lattice at y_min. Every
+// world in the tree still uses it, and it is pinned BITWISE -- mesh and boundary
+// record -- over six configurations in terrain_mesher_tests.cpp. It must not
+// move by an ulp.
+//
+// `y_tiled == true` is the Y-TILED path (M2, design §3.3): the tile is a cube
+// `[ty*S, (ty+1)*S)` and Y becomes an ordinary tiled axis alongside X and Z.
+//
+// WHY THE TWO COEXIST RATHER THAN THE SECOND REPLACING THE FIRST. A Y-tiled tile
+// covers 64 m of height, so a world whose streamer still asks for one tile per
+// column would mesh a thin band and nothing else. Covering the world takes a
+// vertical STACK of requests, which is the streamer's job (M3, gated on the
+// world flag `volumetricSectors`). Until that lands the column path is what
+// every live world draws, so it stays, unchanged, and the regime is selected
+// explicitly by which public entry point the caller uses.
+//
+// WHY ONE FUNCTION RATHER THAN TWO COPIES. The regimes differ in about forty
+// lines out of four hundred -- the Y lattice's origin and bounds, the ownership
+// predicate's third clause, the band's third face, and where a global Y cell
+// index comes from. Everything else (the density fill, surface-nets placement,
+// quad emission, the record export machinery) is identical, and this repo's
+// history is unambiguous about what happens to a copy: `surface.c` was copied
+// twice and drifted for a year (CLAUDE.md, "Code Sharing Between Projects").
+// The bitwise pins are what make sharing safe here -- they fail loudly if the
+// column branch ever picks up a Y-tiled expression by accident.
+static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
+                             int64_t tx, int64_t ty, int64_t tz, int rung,
+                             bool y_tiled,
+                             float sector_size, float y_min, float y_max,
+                             SectorMesh& out, seam::SectorBoundary* boundary_out,
+                             std::string& err) {
     // Rung is a power-of-two voxel ladder around a 2 m base, extending in BOTH
     // directions:
     //   rung  3 -> 0.25 m      rung  0 -> 2 m (the base)
@@ -99,7 +138,7 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         err = "terrain_mesher: rung out of -5..3";
         return false;
     }
-    if (sector_size <= 0.0f || y_min >= y_max) {
+    if (sector_size <= 0.0f || (!y_tiled && y_min >= y_max)) {
         err = "terrain_mesher: bad slab config";
         return false;
     }
@@ -109,6 +148,56 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     const int   n     = int(std::lround(double(sector_size) / double(voxel)));
     const double ox   = double(tx) * double(sector_size);
     const double oz   = double(tz) * double(sector_size);
+
+    // ---- The Y tile origin, and why a shared lattice point is BITWISE equal --
+    //
+    // (Y-tiled path only; the column path has no `oy` -- its Y lattice is
+    // anchored globally at `y_min`, see the slab block below.)
+    //
+    //     oy = double(ty) * double(sector_size)
+    //     world y of lattice index j = oy + (j - 1) * voxel
+    //
+    // -- letter for letter the construction the X and Z axes already use. That
+    // is not stylistic symmetry; the whole seam contract rests on it, so here is
+    // the derivation rather than the assertion.
+    //
+    // Write S for sector_size and v for the voxel. Both are powers of two times
+    // a small integer and exactly representable as float, hence exactly as
+    // double. S = n*v with n an integer (`n` above; the ladder guarantees it).
+    //
+    //   1. `double(ty) * double(S)` is EXACT. ty is an integer well inside 2^53
+    //      (the §3.1 key allows +-2^19 tiles) and S is a power of two times a
+    //      small integer, so the product needs at most ~26 significant bits.
+    //      No rounding, so oy is exactly the real number ty*S.
+    //   2. `(j - 1) * double(v)` is EXACT for the same reason: a small integer
+    //      times a power-of-two-scaled value.
+    //   3. Their SUM is exact. Both are integer multiples of v, and their sum's
+    //      magnitude is bounded by (|ty|+1)*S, so it needs no more mantissa bits
+    //      than the operands. IEEE addition of two exactly-representable values
+    //      whose exact sum is representable rounds to that sum.
+    //
+    // So the double is the exact real number, and `float(...)` of it is the
+    // correctly-rounded float of that real number -- both determined by the
+    // VALUE alone, not by how it was reached.
+    //
+    // Now take two tiles sharing a horizontal plane at world height Y, at rungs
+    // r and r-m (voxels v and 2^m v, tile sizes S and 2^m S). Y is an integer
+    // multiple of the COARSER voxel by construction: the coarse tile's border is
+    // ty'*2^m*S = ty'*n*2^m*v. Each tile computes Y as `oy + (j-1)*v` for its
+    // own j, and by (1)-(3) each computation is exact, so each produces the
+    // double whose value is exactly Y. Two doubles with the same value are the
+    // same double. Both tiles therefore hand `field.density_at` / `height_at`
+    // BITWISE IDENTICAL arguments, so they read bitwise identical densities, and
+    // their sign bits and interpolated vertex positions on that plane agree
+    // exactly. That -- not any stitching -- is why an equal-level pair is
+    // watertight and why the welder's `corner_signs` can be compared across a
+    // plane at all (seam_boundary.h).
+    //
+    // The trap this avoids is accumulating y by repeated addition, or basing it
+    // on the slab's `y0` (a float sum involving y_min, which is NOT a lattice
+    // multiple in general). Either would make the shared plane's coordinate
+    // depend on which tile asked.
+    const double oy = double(ty) * double(sector_size);
 
     // ---- The direction-asymmetric bridge, and what is NOT done about it -----
     //
@@ -272,46 +361,91 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         }
     }
 
-    if (h_min < y_min || h_max > y_max) {
+    // THE COLUMN PATH ONLY. "Sampled height outside authored Y range" is a
+    // statement about a slab that is supposed to contain the whole surface, and
+    // a Y-TILED tile is not: a tile is one 64 m cube of a stack, and the surface
+    // leaving it through the top or the bottom is the normal case, not an error
+    // -- it is the neighbouring tile's geometry. Design §3.3 moves the check to
+    // world-load-time validation of the octree's Y extent (`yMin`/`yMax` stop
+    // being the mesher's cost dial and become the octree's vertical bounds,
+    // rounded outward to coarsest-tile multiples), which is the only level at
+    // which "the authored world does not contain its own terrain" is meaningful.
+    // That validation belongs to M3's world-load path, not here; noted in the
+    // report so it is sequenced and not silently dropped.
+    if (!y_tiled && (h_min < y_min || h_max > y_max)) {
         err = "terrain_mesher: sampled height outside authored Y range";
         return false;
     }
 
-    // ---- Y slab -------------------------------------------------------------
+    // ---- Y lattice ----------------------------------------------------------
     //
-    // A HEIGHTFIELD world meshes a few voxels either side of the sampled
-    // surface, and that narrowing is sound only because `density = h - y` says
-    // everything below the surface is solid and everything above it is air --
-    // there is provably nothing to mesh outside the band.
+    // COLUMN PATH. A HEIGHTFIELD world meshes a few voxels either side of the
+    // sampled surface, and that narrowing is sound only because `density = h - y`
+    // says everything below the surface is solid and everything above it is air
+    // -- there is provably nothing to mesh outside the band.
     //
     // A VOLUMETRIC world (tunnels, caverns, overhangs) has no such guarantee:
     // air a kilometre down is exactly the point. So the slab runs from the
     // authored floor up to just above the surface, and `yMin` becomes the
     // world's cost dial -- the slab is (h_max - yMin) / voxel samples deep, and
     // every one of them is a field evaluation.
-    const int global_ny =
-        std::max(1, int(std::ceil((y_max - y_min) / voxel)));
-    const int j0_global = volumetric
-        ? 0
-        : std::max(0, int(std::floor((h_min - y_min) / voxel)) - 2);
-    const int j1_global = std::min(
-        global_ny, int(std::ceil((h_max - y_min) / voxel)) + 2);
-    const float y0 = y_min + float(j0_global) * voxel;
-    const int sy = j1_global - j0_global + 1;
+    //
+    // Y-TILED PATH. There is no slab and no cost dial: the extent is the tile,
+    // and Y is indexed exactly as X and Z are. Lattice index j sits at
+    // world y = oy + (j-1)*voxel, the tile's own lattice points are j in
+    // [1, n+1], j = 0 and j = n+2 are the ghost ring, and the band reaches
+    // `kBandCells` further NEGATIVE -- the same shape as i and k, for the same
+    // reason (see the -y band note below). This is the cost-model flip of §3.3:
+    // a StreamCaverns level-0 tile went from sampling 35 x ~590 x 35 to
+    // 37 x 37 x 37, and tiles away from the surface/cavern shell fall out
+    // essentially free.
+    int j_lo, j_hi;
+    float y0 = 0.0f;          // column path only; the tiled path uses `oy`
+    int64_t gy_off = 0;       // global Y CELL index of local cell j == 0
+    if (y_tiled) {
+        j_lo = -kBandCells;
+        j_hi = n + 2;
+        // Global cell index of local cell cj is `ty*n + cj - 1`, exactly as
+        // `tx*n + ci - 1` in x (derived in the record-export block below).
+        gy_off = ty * int64_t(n) - 1;
+    } else {
+        const int global_ny =
+            std::max(1, int(std::ceil((y_max - y_min) / voxel)));
+        const int j0_global = volumetric
+            ? 0
+            : std::max(0, int(std::floor((h_min - y_min) / voxel)) - 2);
+        const int j1_global = std::min(
+            global_ny, int(std::ceil((h_max - y_min) / voxel)) + 2);
+        y0 = y_min + float(j0_global) * voxel;
+        j_lo = 0;
+        j_hi = j1_global - j0_global;
+        gy_off = int64_t(j0_global);
+    }
+    const int sy = j_hi - j_lo + 1;
+    const auto idx_j = [&](int j) { return size_t(j - j_lo); };
+
+    // World Y of lattice index j. The column branch is the historical
+    // expression, operand for operand, so the pinned column bytes cannot move;
+    // the tiled branch is the dyadic-double construction derived at the top.
+    const auto y_at = [&](int j) -> float {
+        return y_tiled ? float(oy + (j - 1) * double(voxel))
+                       : y0 + j * voxel;
+    };
 
     // Narrow density lattice dimensions:
     //   x/z: sx samples — the tile's n+1 lattice points, one ghost ring on each
     //        side, and kBandCells more on the -x/-z sides (i, k in [i_lo, i_hi])
-    //   y: globally aligned samples from j0_global through j1_global
+    //   y:   column path — globally aligned samples from j0_global to j1_global;
+    //        tiled path  — j in [-kBandCells, n+2], mirroring x and z
     std::vector<float> d(size_t(sx) * size_t(sy) * size_t(szn));
     auto at = [&](int i, int j, int k) -> float& {
-        return d[(idx_k(k) * size_t(sy) + size_t(j)) * size_t(sx) + idx_i(i)];
+        return d[(idx_k(k) * size_t(sy) + idx_j(j)) * size_t(sx) + idx_i(i)];
     };
     if (!volumetric) {
         for (int k = k_lo; k <= k_hi; ++k)
-            for (int j = 0; j < sy; ++j)
+            for (int j = j_lo; j <= j_hi; ++j)
                 for (int i = i_lo; i <= i_hi; ++i)
-                    at(i, j, k) = hat(i, k) - (y0 + j * voxel);
+                    at(i, j, k) = hat(i, k) - y_at(j);
     } else {
         // One ColumnCache per (x, z), reused down the column. The y-independent
         // part of the program -- typically the whole multi-octave surface fbm --
@@ -329,9 +463,9 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
             for (int i = i_lo; i <= i_hi; ++i) {
                 const float wx = float(ox + (i - 1) * double(voxel));
                 field.eval_column(cc, wx, wz);
-                for (int j = 0; j < sy; ++j) {
+                for (int j = j_lo; j <= j_hi; ++j) {
                     // Not `d` -- that is the lattice vector this writes into.
-                    const float dens = field.density_at(cc, y0 + j * voxel);
+                    const float dens = field.density_at(cc, y_at(j));
                     if (!std::isfinite(dens)) {
                         err = "terrain_mesher: non-finite density";
                         return false;
@@ -370,11 +504,12 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // resulting position by so much as an ulp.
     std::unordered_map<int64_t, CellVert> verts;
     auto key = [&](int ci, int cj, int ck) -> int64_t {
-        return (int64_t(idx_k(ck)) * sy + cj) * sx + int64_t(idx_i(ci));
+        return (int64_t(idx_k(ck)) * sy + int64_t(idx_j(cj))) * sx +
+               int64_t(idx_i(ci));
     };
     auto get_vert = [&](int ci, int cj, int ck) -> const CellVert* {
-        if (ci < i_lo || cj < 0 || ck < k_lo ||
-            ci > i_hi - 1 || cj >= sy - 1 || ck > k_hi - 1) return nullptr;
+        if (ci < i_lo || cj < j_lo || ck < k_lo ||
+            ci > i_hi - 1 || cj > j_hi - 1 || ck > k_hi - 1) return nullptr;
         auto it = verts.find(key(ci, cj, ck));
         if (it != verts.end()) return &it->second;
         float px = 0, py = 0, pz = 0; int cnt = 0;
@@ -392,15 +527,25 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         CellVert cv;
         // Local x/z: (lattice_index - 1) * voxel — undoes the ghost-ring offset,
         // so local (0,0) is the tile's own corner and a bridging vertex in the
-        // ring is simply negative. World y: y0 + lattice_j * voxel.
+        // ring is simply negative.
+        //
+        // Y: on the COLUMN path positions are world-absolute (y0 + lattice_j *
+        // voxel), the historical contract every consumer of a column tile
+        // assumes. On the Y-TILED path they are TILE-LOCAL, by the identical
+        // (lattice - 1) * voxel expression as x and z -- design §3.3. The engine
+        // side of that is `transform[7] = ty * sector_size` on the publish
+        // transform, which lives in matter_engine.cpp and belongs to M3.
         cv.p = {
             (px / cnt - 1.0f) * voxel,
-            y0 + (py / cnt) * voxel,
+            y_tiled ? (py / cnt - 1.0f) * voxel
+                    : y0 + (py / cnt) * voxel,
             (pz / cnt - 1.0f) * voxel
         };
         // Gradient normal from the WORLD position.
         const float e2 = voxel;
-        float wx = float(ox) + cv.p.x, wy = cv.p.y, wz = float(oz) + cv.p.z;
+        float wx = float(ox) + cv.p.x;
+        float wy = y_tiled ? float(oy) + cv.p.y : cv.p.y;
+        float wz = float(oz) + cv.p.z;
         float gx = field.density_at(wx + e2, wy, wz) - field.density_at(wx - e2, wy, wz);
         // gy analytically FOR A HEIGHTFIELD: density = height(x,z) - y, so the
         // y-difference is (h - (wy+e2)) - (h - (wy-e2)) = -2*e2 -- the height
@@ -455,8 +600,42 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // overlap band re-introduces: the band goes to a separate soup that the
     // welder may or may not draw, and `owned` still says exactly what the tile
     // itself puts on screen.
-    auto owned = [&](int i, int k) -> bool {
-        return i >= 1 && i <= n && k >= 1 && k <= n;
+    //
+    // ---- Y (M2), and WHICH tile bridges a horizontal plane -------------------
+    //
+    // On the Y-TILED path j joins the predicate on identical terms, [1..n]. The
+    // consequence is derived, not assumed, and it is the vertical half of the
+    // seam contract, so here is the reading of `emit_quad`'s call sites that
+    // produces it:
+    //
+    //   The +x edge at lattice (i, j, k) is spanned by the four cells with
+    //   ci = i, cj in {j-1, j}, ck in {k-1, k}  (the q0..q3 above). Same for the
+    //   +z edge. So an OWNED edge (j in [1..n]) uses cell layer cj = j-1 as well
+    //   as cj = j, and at j = 1 that is cj = 0 -- the GHOST cell below the tile,
+    //   spanning world y in [oy - v, oy].
+    //
+    //   Cell cj = 0 of tile ty has global index ty*n - 1. Cell cj = n of tile
+    //   ty-1 has global index (ty-1)*n + n - 1 = ty*n - 1. THE SAME CELL, built
+    //   from the same lattice samples (bitwise, by the derivation at the top),
+    //   so the two tiles compute the same vertex in it.
+    //
+    //   At the other end, j = n uses cj in {n-1, n} and never n+1, so the tile's
+    //   vertical faces stop half a voxel short of its +y border.
+    //
+    // Therefore: A HORIZONTAL SHARED PLANE IS BRIDGED BY THE TILE ABOVE IT --
+    // the +y side, exactly as a vertical plane is bridged by its +x/+z side.
+    // The tile above reaches down ~v/2 past the plane and the tile below stops
+    // ~v/2 short of it, and at equal level the two meet on the same cell, which
+    // is the same watertightness argument the east/north rule has always made.
+    //
+    // The +y edge case is consistent and needs no extra clause: the +y edge from
+    // lattice j to j+1 lies ENTIRELY inside cell cj = j, so ownership j in [1..n]
+    // selects exactly the tile's own cells. The +y edge at j = 0 -- inside the
+    // shared cell -- is emitted by the tile BELOW (its j = n), which owns it.
+    // Nothing is emitted twice and nothing is dropped.
+    auto owned = [&](int i, int j, int k) -> bool {
+        return i >= 1 && i <= n && k >= 1 && k <= n &&
+               (!y_tiled || (j >= 1 && j <= n));
     };
 
     // ---- Band emission (M0-WP7) ---------------------------------------------
@@ -470,12 +649,37 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // and puts the 2x2 corner block in both (see the note at the top of this
     // function for why the duplication is wanted).
     //
+    // ---- WHICH Y FACE CARRIES A BAND (M2) -----------------------------------
+    //
+    // -y, and it follows from the bridging direction derived at `owned` above
+    // rather than from symmetry with x/z.
+    //
+    // The band exists on the faces where THIS tile is the bridging side and the
+    // bridge UNDER-REACHES a coarser neighbour. This tile reaches ~v/2 back past
+    // its -x/-z/-y borders; a neighbour one level coarser (voxel V = 2v) stops
+    // ~V/2 = v short of the same plane. The strip between v and v/2 is emitted
+    // by neither. On the +side faces the neighbour is the bridging one, so a
+    // band there is overlap on top of overlap.
+    //
+    // The tile bridges DOWNWARD (the tile above a horizontal plane is the one
+    // that crosses it), so the under-reached Y face is -y and the band goes
+    // there. On the Y-TILED path the sampled box is `[-1,n]^3` minus `[1,n]^3`,
+    // split by  i <= 0 -> -x,  k <= 0 -> -z,  j <= 0 -> -y.  Those three cover
+    // the shell exactly, with the shared edge/corner blocks duplicated into two
+    // or three bands -- the same deliberate duplication as the 2D corner block,
+    // for the same reason: a band's coverage must not depend on WHICH of the
+    // faces meeting there happens to be the cross-level one, and coincident
+    // opaque triangles cost nothing while a corner hole is the defect the band
+    // exists to remove.
+    //
+    // The COLUMN path is untouched: two bands, `[-1,n]^2` in x/z, all j.
+    //
     // Emitted only when there is a record to carry it. `boundary_out == nullptr`
     // means the caller wants a mesh and nothing else -- a tile that will never be
     // welded -- and the band's per-cell gradient normals are real field probes,
     // not free. The SAMPLING above is unconditional either way; what is skipped
     // here is only writing down a soup with nowhere to go.
-    seam::OverlapBand band_neg_x, band_neg_z;
+    seam::OverlapBand band_neg_x, band_neg_z, band_neg_y;
     auto emit_band_quad = [&](seam::OverlapBand& band,
                               const CellVert* v00, const CellVert* v10,
                               const CellVert* v11, const CellVert* v01,
@@ -484,19 +688,21 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         seam::OverlapBucket& b = band_bucket_for(band,
             uint32_t(field.material_at(wxc, wzc)));
         if (flip) std::swap(v10, v01);
-        push_band_tri(b, ox, oz, *v00, *v10, *v11);
-        push_band_tri(b, ox, oz, *v00, *v11, *v01);
+        push_band_tri(b, ox, oy, oz, y_tiled, *v00, *v10, *v11);
+        push_band_tri(b, ox, oy, oz, y_tiled, *v00, *v11, *v01);
     };
     const bool want_band = boundary_out != nullptr;
-    auto band_extra = [&](int i, int k) -> bool {
-        return !owned(i, k) && i >= -1 && i <= n && k >= -1 && k <= n;
+    auto in_band_box = [&](int v) -> bool { return v >= -1 && v <= n; };
+    auto band_extra = [&](int i, int j, int k) -> bool {
+        return !owned(i, j, k) && in_band_box(i) && in_band_box(k) &&
+               (!y_tiled || in_band_box(j));
     };
 
     for (int k = k_lo; k <= k_hi; ++k)
-        for (int j = 0; j < sy; ++j)
+        for (int j = j_lo; j <= j_hi; ++j)
             for (int i = i_lo; i <= i_hi; ++i) {
-                const bool own   = owned(i, k);
-                const bool extra = want_band && band_extra(i, k);
+                const bool own   = owned(i, j, k);
+                const bool extra = want_band && band_extra(i, j, k);
                 if (!own && !extra) continue;
                 float a = at(i, j, k);
                 // World coords of this sample (for material query midpoint).
@@ -504,7 +710,7 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                 float wzs = float(oz) + float(k - 1) * voxel;
 
                 // +y edge — the typical terrain surface case (horizontal face).
-                if (j + 1 <= sy - 1) {
+                if (j + 1 <= j_hi) {
                     float b = at(i, j + 1, k);
                     if ((a > 0) != (b > 0)) {
                         const CellVert* q0 = get_vert(i - 1, j, k - 1);
@@ -517,6 +723,8 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                             emit_band_quad(band_neg_x, q0, q1, q2, q3, a > 0, wxs, wzs);
                         if (extra && k <= 0)
                             emit_band_quad(band_neg_z, q0, q1, q2, q3, a > 0, wxs, wzs);
+                        if (extra && y_tiled && j <= 0)
+                            emit_band_quad(band_neg_y, q0, q1, q2, q3, a > 0, wxs, wzs);
                     }
                 }
                 // +x edge (vertical face in x direction).
@@ -534,6 +742,8 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                             emit_band_quad(band_neg_x, q0, q1, q2, q3, a <= 0, mx, wzs);
                         if (extra && k <= 0)
                             emit_band_quad(band_neg_z, q0, q1, q2, q3, a <= 0, mx, wzs);
+                        if (extra && y_tiled && j <= 0)
+                            emit_band_quad(band_neg_y, q0, q1, q2, q3, a <= 0, mx, wzs);
                     }
                 }
                 // +z edge (vertical face in z direction).
@@ -551,6 +761,8 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                             emit_band_quad(band_neg_x, q0, q1, q2, q3, a <= 0, wxs, mz);
                         if (extra && k <= 0)
                             emit_band_quad(band_neg_z, q0, q1, q2, q3, a <= 0, wxs, mz);
+                        if (extra && y_tiled && j <= 0)
+                            emit_band_quad(band_neg_y, q0, q1, q2, q3, a <= 0, wxs, mz);
                     }
                 }
             }
@@ -572,9 +784,16 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // using S = n*v. Interior (owned) cells are ci in [1..n], which is exactly
     // gx in [tx*n, tx*n + n - 1] -- n cells, no overlap with either neighbour,
     // and the fine cells 2g/2g+1 of a rung-(r) tile sit inside coarse cell g of
-    // rung (r-1) by construction. Same in z. For y there is no tiling yet: the
-    // slab is already anchored to the global lattice at y_min, so cell cj is
-    // global cell gy = j0_global + cj.
+    // rung (r-1) by construction. Same in z.
+    //
+    // Y depends on the regime, and `gy_off` (set with the Y lattice above) is
+    // the one place that difference lives -- global y cell = gy_off + cj:
+    //   COLUMN   gy_off = j0_global. The slab is anchored to the global lattice
+    //            at y_min, and cell cj is global cell j0_global + cj.
+    //   Y-TILED  gy_off = ty*n - 1, i.e. global = ty*n + cj - 1, letter for
+    //            letter the x/z map above with ty for tx. That is what makes
+    //            `coarse = floor_div2(fine)` work on the vertical axis too, and
+    //            hence what makes a ±y face weldable by exactly the same fan.
     //
     // Per face, then:
     //   kFaceNegX  cell layer ci = 1      cell_layer = tx*n            plane = tx*n
@@ -599,98 +818,114 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // no vertex are cells the surface misses entirely, and they carry no
     // crossing to lose.
     //
-    // +y/-y stay empty in M0: the grid is still XZ-columnar and there is no
-    // neighbour above or below to weld against until Y is tiled (M2).
+    // On the COLUMN path +y/-y stay empty: the grid is XZ-columnar, one tile
+    // spans the whole authored slab, and there is no neighbour above or below to
+    // weld against. The Y-TILED path builds all six, by the same code -- see the
+    // axis-generic rewrite below.
     if (boundary_out) {
         seam::SectorBoundary& sb = *boundary_out;
         sb = seam::SectorBoundary{};
-        sb.rung  = rung;
-        sb.cells = n;
-        sb.tx    = tx;
-        sb.tz    = tz;
-        sb.ty    = 0;
+        sb.rung    = rung;
+        sb.cells   = n;
+        sb.tx      = tx;
+        sb.tz      = tz;
+        sb.ty      = y_tiled ? ty : 0;
+        sb.y_tiled = y_tiled;
 
-        const int64_t gx0 = tx * int64_t(n);      // global x cell of ci == 1
-        const int64_t gz0 = tz * int64_t(n);      // global z cell of ck == 1
-        const int64_t gy0 = int64_t(j0_global);   // global y cell of cj == 0
+        // Global CELL index of a LOCAL cell index c, per axis: global = goff + c.
+        //   x: global = tx*n + ci - 1        (derived above)
+        //   z: global = tz*n + ck - 1
+        //   y: global = gy_off + cj          (regime-dependent; see the Y block)
+        // Index 0/1/2 = x/y/z, matching seam::face_axis.
+        const int64_t goff[3] = {
+            tx * int64_t(n) - 1, gy_off, tz * int64_t(n) - 1
+        };
+        // The LOCAL cell range each axis contributes to a record. x and z always
+        // export their owned cells [1..n]. Y exports [1..n] when tiled, and the
+        // whole slab [0, sy-2] when not (there is no Y ownership on the column
+        // path, so every cell of the slab is on the tile's ±x/±z boundary layer).
+        const int cell_lo[3] = { 1, y_tiled ? 1 : 0,      1 };
+        const int cell_hi[3] = { n, y_tiled ? n : sy - 2, n };
 
+        // AXIS-GENERIC, and that is the M2 change here: the four XZ faces used
+        // to be built by a body that hard-coded "normal is x or z, the other
+        // tangential axis is y, and y is special". With Y tiled that distinction
+        // is gone -- all three axes are tiled, indexed and owned identically --
+        // so the body is written once over (normal axis, a axis, b axis) and the
+        // ±y faces fall out of it rather than needing a second implementation.
+        // Reproduces the previous XZ output exactly (the pinned record hashes in
+        // terrain_mesher_tests.cpp are the gate on that claim).
         const auto build_face = [&](int face) {
             seam::FaceRecord& fr = sb.faces[face];
             fr.face = face;
-            const int  axis     = seam::face_axis(face);        // 0 = x, 2 = z
+            const int  ax       = seam::face_axis(face);     // 0 = x, 1 = y, 2 = z
             const bool positive = seam::face_is_positive(face);
-            const int  layer    = positive ? n : 1;             // local CELL index
-            const int  plane    = positive ? n + 1 : 1;         // local LATTICE index
-            const int64_t gt0   = (axis == 0) ? gz0 : gx0;      // tangential base
-            const int64_t gn0   = (axis == 0) ? gx0 : gz0;      // normal-axis base
-            fr.cell_layer = gn0 + int64_t(layer - 1);
-            fr.plane      = gn0 + int64_t(plane - 1);
+            const int  layer    = positive ? cell_hi[ax] : cell_lo[ax];  // local CELL
+            const int  plane    = positive ? layer + 1 : layer;          // local LATTICE
+            int a_axis = 0, b_axis = 0;
+            seam::face_tangent_axes(face, a_axis, b_axis);
+            fr.cell_layer = goff[ax] + int64_t(layer);
+            fr.plane      = goff[ax] + int64_t(plane);
 
-            // `t` is the in-plane HORIZONTAL cell index (z on a +-x face, x on
-            // a +-z face); `cj` is the vertical one.
-            const auto cell_vert = [&](int t, int cj) -> const CellVert* {
-                return axis == 0 ? get_vert(layer, cj, t) : get_vert(t, cj, layer);
+            // (ca, cb) are LOCAL cell indices along the face's two tangential
+            // axes; this scatters them plus `layer` into an (x, y, z) triple.
+            const auto spread = [&](int ca, int cb, int nrm, int c[3]) {
+                c[ax] = nrm; c[a_axis] = ca; c[b_axis] = cb;
             };
-            // Density at a corner of the cell's face ON THE PLANE, offset by
-            // (dt, dj) cells along the two tangential axes.
-            const auto corner = [&](int t, int cj, int dt, int dj) -> float {
-                return axis == 0 ? at(plane, cj + dj, t + dt)
-                                 : at(t + dt, cj + dj, plane);
-            };
-            const auto emit_vert = [&](int t, int cj) {
-                const CellVert* v = cell_vert(t, cj);
+            const auto emit_vert = [&](int ca, int cb) {
+                int c[3];
+                spread(ca, cb, layer, c);
+                const CellVert* v = get_vert(c[0], c[1], c[2]);
                 if (!v) return;
                 seam::BoundaryVert bv;
-                if (axis == 0) {                     // (a, b) = (y cell, z cell)
-                    bv.a = gy0 + int64_t(cj);
-                    bv.b = gt0 + int64_t(t - 1);
-                } else {                             // (a, b) = (x cell, y cell)
-                    bv.a = gt0 + int64_t(t - 1);
-                    bv.b = gy0 + int64_t(cj);
-                }
-                // WORLD position, in double. The mesh stores x/z tile-local, so
-                // the origin goes back on here rather than in the welder, which
-                // must never have to know how this tile was rebased.
+                bv.a = goff[a_axis] + int64_t(ca);
+                bv.b = goff[b_axis] + int64_t(cb);
+                // WORLD position, in double. The mesh stores x/z tile-local (and
+                // y tile-local too once Y is tiled), so the origin goes back on
+                // here rather than in the welder, which must never have to know
+                // how this tile was rebased.
                 bv.px = ox + double(v->p.x);
-                bv.py = double(v->p.y);
+                bv.py = y_tiled ? oy + double(v->p.y) : double(v->p.y);
                 bv.pz = oz + double(v->p.z);
                 bv.nx = v->n.x; bv.ny = v->n.y; bv.nz = v->n.z;
                 // RAW field material, the same 0..3 space MaterialBucket uses --
                 // callers that remap buckets through a palette must remap these
-                // identically (j_terrainVolume does).
-                const int ci = (axis == 0) ? layer : t;
-                const int ck = (axis == 0) ? t : layer;
+                // identically (j_terrainVolume does). Sampled at the cell's x/z
+                // centre; material_at is a 2D query, so a ±y face's cells are
+                // named by their own (x, z) exactly as any other face's are.
                 bv.material = uint32_t(field.material_at(
-                    float(ox + (double(ci) - 0.5) * double(voxel)),
-                    float(oz + (double(ck) - 0.5) * double(voxel))));
-                // bit0 (a,b)  bit1 (a+1,b)  bit2 (a,b+1)  bit3 (a+1,b+1),
-                // with `> 0` = solid, matching the mesher's own sign test.
-                const int da1 = (axis == 0) ? 0 : 1;   // "+1 in a" as (dt, dj)
-                const int dj1 = (axis == 0) ? 1 : 0;
-                const int db1 = (axis == 0) ? 1 : 0;   // "+1 in b" as (dt, dj)
-                const int dk1 = (axis == 0) ? 0 : 1;
+                    float(ox + (double(c[0]) - 0.5) * double(voxel)),
+                    float(oz + (double(c[2]) - 0.5) * double(voxel))));
+                // Density at the four corners of this cell's face ON THE PLANE:
+                // bit0 (a,b)  bit1 (a+1,b)  bit2 (a,b+1)  bit3 (a+1,b+1), with
+                // `> 0` = solid, matching the mesher's own sign test. Cell index
+                // and its minimum LATTICE index are the same integer, so a
+                // corner offset of (da, db) cells is (da, db) lattice steps.
+                const auto corner = [&](int da, int db) -> float {
+                    int L[3];
+                    spread(ca + da, cb + db, plane, L);
+                    return at(L[0], L[1], L[2]);
+                };
                 uint8_t bits = 0;
-                if (corner(t, cj, 0, 0) > 0)                     bits |= 1u << 0;
-                if (corner(t, cj, da1, dj1) > 0)                 bits |= 1u << 1;
-                if (corner(t, cj, db1, dk1) > 0)                 bits |= 1u << 2;
-                if (corner(t, cj, da1 + db1, dj1 + dk1) > 0)     bits |= 1u << 3;
+                if (corner(0, 0) > 0) bits |= 1u << 0;
+                if (corner(1, 0) > 0) bits |= 1u << 1;
+                if (corner(0, 1) > 0) bits |= 1u << 2;
+                if (corner(1, 1) > 0) bits |= 1u << 3;
                 bv.corner_signs = bits;
                 fr.verts.push_back(bv);
             };
 
-            // Loop so that (a, b) comes out ascending without a sort: on a +-x
-            // face `a` is the y cell, so cj is the outer loop; on a +-z face `a`
-            // is the x cell, so `t` is. The std::sort below is a no-op given
-            // that, and is kept because FaceRecord::find binary-searches and a
-            // byte-identical record across two bakes is a determinism gate --
-            // the invariant should not rest on reading the loop nesting right.
-            if (axis == 0) {
-                for (int cj = 0; cj + 1 < sy; ++cj)
-                    for (int t = 1; t <= n; ++t) emit_vert(t, cj);
-            } else {
-                for (int t = 1; t <= n; ++t)
-                    for (int cj = 0; cj + 1 < sy; ++cj) emit_vert(t, cj);
-            }
+            // Loop `a` outer so (a, b) comes out ascending without a sort: the
+            // global index is monotonic in the local one on every axis. (On a ±x
+            // face `a` is the y cell, so this is the historical cj-outer/t-inner
+            // nesting; on a ±z face it is t-outer/cj-inner. Both preserved.) The
+            // std::sort below is therefore a no-op, and is kept because
+            // FaceRecord::find binary-searches and a byte-identical record across
+            // two bakes is a determinism gate -- the invariant should not rest on
+            // reading the loop nesting right.
+            for (int ca = cell_lo[a_axis]; ca <= cell_hi[a_axis]; ++ca)
+                for (int cb = cell_lo[b_axis]; cb <= cell_hi[b_axis]; ++cb)
+                    emit_vert(ca, cb);
             std::sort(fr.verts.begin(), fr.verts.end(),
                       [](const seam::BoundaryVert& p, const seam::BoundaryVert& q) {
                           return p.a != q.a ? p.a < q.a : p.b < q.b;
@@ -700,15 +935,22 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         build_face(seam::kFaceNegX);
         build_face(seam::kFacePosZ);
         build_face(seam::kFaceNegZ);
-        sb.faces[seam::kFacePosY].face = seam::kFacePosY;
-        sb.faces[seam::kFaceNegY].face = seam::kFaceNegY;
+        if (y_tiled) {
+            build_face(seam::kFacePosY);
+            build_face(seam::kFaceNegY);
+        } else {
+            sb.faces[seam::kFacePosY].face = seam::kFacePosY;
+            sb.faces[seam::kFaceNegY].face = seam::kFaceNegY;
+        }
 
-        // The overlap bands (M0-WP7), on the two -side faces only. Like the
-        // vertex records they depend on nothing but this tile and the field, so
-        // they are not part of its bake identity either; unlike them they are
-        // finished geometry, emitted verbatim by the welder rather than joined.
+        // The overlap bands (M0-WP7, and -y from M2), on the -side faces only.
+        // Like the vertex records they depend on nothing but this tile and the
+        // field, so they are not part of its bake identity either; unlike them
+        // they are finished geometry, emitted verbatim by the welder rather than
+        // joined.
         sb.faces[seam::kFaceNegX].band = std::move(band_neg_x);
         sb.faces[seam::kFaceNegZ].band = std::move(band_neg_z);
+        if (y_tiled) sb.faces[seam::kFaceNegY].band = std::move(band_neg_y);
     }
 
     // Border skirts REMOVED 2026-07-30. This path used to hang a vertical
@@ -729,6 +971,27 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // now shows through as background rather than as a wall. That is the
     // intended trade: a streaming hole is momentary, a seam grid is not.
     return true;
+}
+
+// The COLUMN entry point. Unchanged signature, unchanged bytes.
+bool mesh_sector(const terrain_field::FieldRuntime& field,
+                 int64_t tx, int64_t tz, int rung,
+                 float sector_size, float y_min, float y_max,
+                 SectorMesh& out, seam::SectorBoundary* boundary_out,
+                 std::string& err) {
+    return mesh_sector_impl(field, tx, /*ty=*/0, tz, rung, /*y_tiled=*/false,
+                            sector_size, y_min, y_max, out, boundary_out, err);
+}
+
+// The Y-TILED entry point (M2). No y_min/y_max: the tile IS the extent.
+bool mesh_sector_tiled(const terrain_field::FieldRuntime& field,
+                       int64_t tx, int64_t ty, int64_t tz, int rung,
+                       float sector_size,
+                       SectorMesh& out, seam::SectorBoundary* boundary_out,
+                       std::string& err) {
+    return mesh_sector_impl(field, tx, ty, tz, rung, /*y_tiled=*/true,
+                            sector_size, /*y_min=*/0.0f, /*y_max=*/0.0f,
+                            out, boundary_out, err);
 }
 
 // ---------------------------------------------------------------------------

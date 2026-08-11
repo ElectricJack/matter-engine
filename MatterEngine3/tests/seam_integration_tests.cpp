@@ -155,6 +155,27 @@ static const char* kNoiseCave =
     "height r4\ndensity r15\nmoisture r16\nrelief r16\n"
     "seaLevel -1000\nbiome 0.65 0.35\n";
 
+// kNoiseCave with its `const 30` height offset replaced by `const 0`, so the top
+// surface runs h = 20*noise ~ [-20, 20] and STRADDLES y = 0 instead of sitting
+// at [10, 50]. Same tunnels, same -100 m floor. The vertical cases (8, 9) need a
+// tile BOUNDARY that the geometry actually crosses, and every 64 m boundary is a
+// multiple of 64; kNoiseCave's surface fits inside one tile and would make a
+// vertical seam test pass by having nothing to test.
+static const char* kCave0 =
+    "noise2 1234 0.02 4 0.5 2.0\nconst 20\nmul r0 r1\n"
+    "const 0\nadd r2 r3\n"
+    "input wy\n"
+    "sub r4 r5\n"
+    "ridge3 4242 0.02 2 0.5 2\n"
+    "const 0.45\nsub r7 r8\n"
+    "const -1\nmul r9 r10\n"
+    "min r6 r11\n"
+    "const -100\nsub r13 r5\n"
+    "max r12 r14\n"
+    "const 0.5\n"
+    "height r4\ndensity r15\nmoisture r16\nrelief r16\n"
+    "seaLevel -1000\nbiome 0.65 0.35\n";
+
 // ---------------------------------------------------------------------------
 // The probe. Copied from terrain_mesher_tests.cpp:177-197 (`surface_y_at`) and
 // :296-411 (the union-coverage row scan). See the header note above for why it
@@ -171,7 +192,11 @@ static const char* kNoiseCave =
 struct Probe {
     std::vector<float> pos;   // world space, 9 floats per triangle
 
-    void add_soup(const std::vector<float>& P, float ox, float oz,
+    // `oy` is 0 for every COLUMN-path mesh (their y is already world-absolute)
+    // and `ty * S` for a Y-TILED one (M2), whose y is tile-local like its x/z.
+    // It is a parameter rather than an assumption because this suite now probes
+    // both regimes in the same file.
+    void add_soup(const std::vector<float>& P, float ox, float oy, float oz,
                   int axis, float lo, float hi) {
         for (size_t t = 0; t * 9 < P.size(); ++t) {
             const float* p = &P[t * 9];
@@ -183,18 +208,24 @@ struct Probe {
             if (mx < lo || mn > hi) continue;      // cannot cover the scan band
             for (int i = 0; i < 3; ++i) {
                 pos.push_back(p[i * 3 + 0] + ox);
-                pos.push_back(p[i * 3 + 1]);
+                pos.push_back(p[i * 3 + 1] + oy);
                 pos.push_back(p[i * 3 + 2] + oz);
             }
         }
     }
     void add(const SectorMesh& m, float ox, float oz, int axis, float lo, float hi) {
         for (const MaterialBucket& b : m.buckets)
-            add_soup(b.positions, ox, oz, axis, lo, hi);
+            add_soup(b.positions, ox, 0.0f, oz, axis, lo, hi);
+    }
+    void add_tiled(const SectorMesh& m, float ox, float oy, float oz,
+                   int axis, float lo, float hi) {
+        for (const MaterialBucket& b : m.buckets)
+            add_soup(b.positions, ox, oy, oz, axis, lo, hi);
     }
     void add(const seam::WeldMesh& m, int axis, float lo, float hi) {
         for (const seam::WeldBucket& b : m.buckets)
-            add_soup(b.positions, float(m.origin_x), float(m.origin_z), axis, lo, hi);
+            add_soup(b.positions, float(m.origin_x), float(m.origin_y),
+                     float(m.origin_z), axis, lo, hi);
     }
     // An overlap band on its own (M0-WP7), so the suite can scan mesh+band
     // WITHOUT the vertex fan and answer "does the band replace the fan or
@@ -204,7 +235,7 @@ struct Probe {
         for (const seam::OverlapBucket& b : band.buckets) {
             std::vector<float> f(b.positions.size());
             for (size_t i = 0; i < b.positions.size(); ++i) f[i] = float(b.positions[i]);
-            add_soup(f, 0.0f, 0.0f, axis, lo, hi);
+            add_soup(f, 0.0f, 0.0f, 0.0f, axis, lo, hi);
         }
     }
 
@@ -254,6 +285,49 @@ static GapStat scan(const Probe& pr, int axis, float P0, float v,
         float run = 0.0f, run_max = 0.0f, run_end = 0.0f;
         for (float u = P0 - 2.5f * v; u <= P0 + 2.0f * v; u += step) {
             const float y = (axis == 0) ? pr.y_at(u, t) : pr.y_at(t, u);
+            if (y > -1e29f) run = 0.0f;
+            else {
+                run += step;
+                if (run > run_max) { run_max = run; run_end = u; }
+            }
+        }
+        if (run_max > 0.25f * v) ++g.gapped;
+        if (run_max > g.worst_run) {
+            g.worst_run = run_max; g.worst_t = t; g.worst_u = run_end;
+        }
+    }
+    return g;
+}
+
+// THE VERTICAL SCAN (M2). Same probe, same run-length gap rule, same GapStat --
+// only the u span changes, and the reason it has to is the whole geometric
+// difference between a vertical seam and a horizontal one.
+//
+// On a VERTICAL plane (normal x or z) the seam is a straight line in the ground
+// plane, so `scan` above walks rows parallel to it and samples a narrow +-2.5v
+// band across it. On a HORIZONTAL plane (normal y) the seam is wherever the
+// SURFACE crosses height Y0 -- a CONTOUR in (x, z), whose position is a property
+// of the field, not of the tiling. There is no band to narrow to, so the scan
+// walks the fine tile's whole (x, z) footprint and asks the union question over
+// all of it:
+//
+//     every column must be covered by the tile below, the tile above, or the
+//     weld -- and away from the contour that is trivially true, so the gapped
+//     columns this finds ARE the seam.
+//
+// Rows are z at v spacing and samples are x at v/8, exactly as `scan` uses; the
+// caller keeps the cost down by band-filtering the soup in z (Probe::add's
+// existing filter), which matters because a volumetric tile is ~10^5 triangles
+// and the probe is O(triangles) per column.
+static GapStat scan_columns(const Probe& pr, float x_lo, float x_hi,
+                            float z_lo, float z_hi, float v) {
+    GapStat g;
+    const float step = v / 8.0f;
+    for (float t = z_lo; t <= z_hi; t += v) {
+        ++g.rows;
+        float run = 0.0f, run_max = 0.0f, run_end = 0.0f;
+        for (float u = x_lo; u <= x_hi; u += step) {
+            const float y = pr.y_at(u, t);
             if (y > -1e29f) run = 0.0f;
             else {
                 run += step;
@@ -404,33 +478,42 @@ static seam::WeldSide side_of(int rung, std::vector<const seam::FaceRecord*> rec
 
 // The box of GLOBAL fine cell indices a tile owns on one face.
 //
-//   The TILED tangential axis (z on a +-x face, x on a +-z face) comes from the
-//   tile identity, not from the record: the mesher's export maps local cell
-//   ci in [1..n] to global tx*n + ci - 1, so the tile owns exactly n cells and
-//   the box is known whether or not every cell produced a vertex.
+//   A TILED axis's extent comes from the tile identity, not from the record: the
+//   mesher's export maps local cell c in [1..n] to global t*n + c - 1, so the
+//   tile owns exactly n cells and the box is known whether or not every cell
+//   produced a vertex.
 //
-//   The Y axis is UNTILED in M0 -- one tile spans the whole authored slab -- so
-//   there is no identity to read it from and its extent comes from the record.
-//   (M2 tiles Y and this half collapses into the first.)
+//   The Y axis is UNTILED on the COLUMN path -- one tile spans the whole
+//   authored slab -- so there is no identity to read it from and its extent
+//   comes from the record. M2's Y-TILED path (SectorBoundary::y_tiled) folds Y
+//   into the first case, and then a +-y face's BOTH tangential axes are x and z,
+//   i.e. both from identity. That collapse is the point of the stage, so it is
+//   written as one rule over the axis rather than as an extra branch.
 static bool face_cell_box(const seam::SectorBoundary& sb, int face,
                           int64_t& a_lo, int64_t& a_hi,
                           int64_t& b_lo, int64_t& b_hi) {
     const seam::FaceRecord& fr = sb.faces[face];
     if (fr.verts.empty()) return false;
-    const int axis = seam::face_axis(face);
     const int64_t n = sb.cells;
-    const int64_t t_lo = (axis == 0) ? sb.tz * n : sb.tx * n;
-    const int64_t t_hi = t_lo + n - 1;
-    int64_t y_lo = 0, y_hi = 0;
-    bool first = true;
-    for (const seam::BoundaryVert& v : fr.verts) {
-        const int64_t y = (axis == 0) ? v.a : v.b;
-        if (first) { y_lo = y_hi = y; first = false; }
-        y_lo = std::min(y_lo, y);
-        y_hi = std::max(y_hi, y);
-    }
-    if (axis == 0) { a_lo = y_lo; a_hi = y_hi; b_lo = t_lo; b_hi = t_hi; }
-    else           { a_lo = t_lo; a_hi = t_hi; b_lo = y_lo; b_hi = y_hi; }
+    int a_axis = 0, b_axis = 0;
+    seam::face_tangent_axes(face, a_axis, b_axis);
+    const auto axis_box = [&](int axis, bool is_a, int64_t& lo, int64_t& hi) {
+        if (axis == 1 && !sb.y_tiled) {           // untiled Y: read the record
+            bool first = true;
+            for (const seam::BoundaryVert& v : fr.verts) {
+                const int64_t y = is_a ? v.a : v.b;
+                if (first) { lo = hi = y; first = false; }
+                lo = std::min(lo, y);
+                hi = std::max(hi, y);
+            }
+        } else {                                   // tiled: read the identity
+            const int64_t t = axis == 0 ? sb.tx : (axis == 1 ? sb.ty : sb.tz);
+            lo = t * n;
+            hi = lo + n - 1;
+        }
+    };
+    axis_box(a_axis, true,  a_lo, a_hi);
+    axis_box(b_axis, false, b_lo, b_hi);
     return true;
 }
 
@@ -1058,6 +1141,283 @@ static void run_corner_and_partition(const FieldRuntime& f, const char* field_na
     CHECK(gc.gapped == 0, "the three rows straddling the corner are covered");
 }
 
+// ---------------------------------------------------------------------------
+// Case 8: the VERTICAL seam (M2) — coarse BELOW fine
+// ---------------------------------------------------------------------------
+//
+// The direct mirror of case 1, one axis over. `mesh_sector_tiled` gives Y the
+// same [1..n] ownership x and z have, and the consequence (derived in
+// terrain_mesher.cpp, not assumed) is that the tile ABOVE a horizontal plane is
+// the one that bridges it. So the orientation ownership leaves open is COARSE
+// BELOW / FINE ABOVE, exactly as it is coarse-west/fine-east horizontally, and
+// the -y face is the one that carries an overlap band.
+//
+// WHAT IS DIFFERENT ABOUT MEASURING IT, and it is geometry rather than
+// bookkeeping: a vertical seam plane meets the ground plane in a LINE, so case 1
+// scans a narrow band across it. A horizontal seam plane meets the SURFACE in a
+// CONTOUR whose position is a property of the field. There is no band; the scan
+// covers the fine tile's whole (x, z) footprint and asserts the union rule over
+// all of it (`scan_columns`). Away from the contour every column is trivially
+// covered by one tile or the other, so the gapped columns it finds are the seam.
+//
+// HEIGHTFIELD ONLY for the coverage gate, and the reason is the probe's known
+// limit rather than a preference: `y_at` returns the HIGHEST triangle, so a
+// column is "covered" the moment anything is above it. In a cave world a roof
+// thirty metres down would answer for a missing terrain top and the scan would
+// pass vacuously. The volumetric case therefore runs the STRUCTURAL gates only
+// (crossings accounted, no sign conflicts, band verbatim) -- which is where a
+// vertical indexing error would show anyway, since a sign conflict IS the two
+// sides disagreeing about the shared plane's samples.
+static void run_neg_y(const FieldRuntime& f, const char* field_name,
+                      int max_level, bool one_sheet) {
+    printf("  [8] -y pairing (coarse BELOW fine -- the vertical orientation the"
+           " [1..n] ownership rule leaves open), field %s\n", field_name);
+    for (int L = 0; L <= max_level; ++L) {
+        const float SL = 64.0f * float(1 << L);
+        const float v  = SL / 32.0f;          // the FINE voxel
+        const float Y0 = 0.0f;                // the shared plane, y = 0
+        SectorMesh cm, fm;
+        seam::SectorBoundary cb, fb;
+        std::string err;
+        // coarse tile (0,-1,0) at 2*SL, rung -(L+1): x,z in [0, 2SL), y in [-2SL, 0)
+        // fine   tile (0, 0,0) at   SL, rung -L:     x,z in [0,  SL), y in [0,  SL)
+        CHECK(mesh_sector_tiled(f, 0, -1, 0, -(L + 1), 2.0f * SL, cm, &cb, err),
+              err.c_str());
+        CHECK(mesh_sector_tiled(f, 0, 0, 0, -L, SL, fm, &fb, err), err.c_str());
+
+        const seam::OverlapBand& band = fb.faces[seam::kFaceNegY].band;
+        seam::WeldSide neg = side_of(-(L + 1), {&cb.faces[seam::kFacePosY]});
+        seam::WeldSide pos = side_of(-L,       {&fb.faces[seam::kFaceNegY]}, &band);
+        seam::WeldMesh wm; seam::WeldStats ws;
+        CHECK(weld_pair(1, neg, pos, fb, seam::kFaceNegY, wm, ws, err), err.c_str());
+        CHECK(ws.crossings > 0, "-y weld: the shared plane carries crossings");
+        CHECK(ws.sign_conflicts == 0,
+              "-y weld: the two tiles agree about every shared plane sample -- "
+              "the vertical half of the dyadic-double property, measured");
+        CHECK(ws.crossings == ws.accounted(), "-y weld: every crossing accounted");
+        CHECK(ws.band_tris == int(band.triangle_count()),
+              "-y weld: the band is emitted VERBATIM");
+        account(ws, wm.triangle_count());
+
+        // The same weld with the band withheld, so the scan can separate what
+        // the vertex fan closes from what the band closes.
+        seam::WeldSide pos_nb = side_of(-L, {&fb.faces[seam::kFaceNegY]});
+        seam::WeldMesh wf; seam::WeldStats wsf;
+        CHECK(weld_pair(1, neg, pos_nb, fb, seam::kFaceNegY, wf, wsf, err),
+              err.c_str());
+        CHECK(wsf.band_tris == 0 && wsf.crossings == ws.crossings &&
+              wsf.quads == ws.quads && wsf.tris == ws.tris,
+              "-y weld: the band changes NOTHING about the fan");
+        print_stats("-y", ws, wm.triangle_count());
+        print_missing("-y", diag_for(1, neg, pos, fb, seam::kFaceNegY,
+                                     &cb.faces[seam::kFacePosY]));
+
+        if (!one_sheet) {
+            printf("      (volumetric: structural gates only -- the plumb probe "
+                   "takes the highest triangle and a cave roof would answer for "
+                   "a missing terrain top)\n");
+            continue;
+        }
+
+        // Coverage. Both tile meshes are Y-TILED, so their y is tile-local and
+        // the probe is told each tile's origin (`add_tiled`) -- getting that
+        // wrong would stack the two tiles on top of each other and read as a
+        // spectacular, obvious failure rather than a subtle one.
+        const float m = 2.0f * v;                      // stay off the x/z borders
+        Probe mesh_only, fan_only, band_only, welded;
+        mesh_only.add_tiled(cm, 0.0f, -2.0f * SL, 0.0f, 2, -1e30f, 1e30f);
+        mesh_only.add_tiled(fm, 0.0f, 0.0f,       0.0f, 2, -1e30f, 1e30f);
+        fan_only  = mesh_only; fan_only.add(wf, 2, -1e30f, 1e30f);
+        band_only = mesh_only; band_only.add_band(band, 2, -1e30f, 1e30f);
+        welded    = mesh_only; welded.add(wm, 2, -1e30f, 1e30f);
+
+        const GapStat gm = scan_columns(mesh_only, m, SL - m, m, SL - m, v);
+        const GapStat gf = scan_columns(fan_only,  m, SL - m, m, SL - m, v);
+        const GapStat gb = scan_columns(band_only, m, SL - m, m, SL - m, v);
+        const GapStat gw = scan_columns(welded,    m, SL - m, m, SL - m, v);
+        printf("    L%d/%d (voxel %.2f/%.2f m, plane y = %.0f): mesh only %d/%d"
+               " rows gapped, worst %.3f m (%.2f v) | mesh+weld %d/%d rows"
+               " gapped, worst %.3f m (%.2f v)\n",
+               L, L + 1, v, 2 * v, Y0, gm.gapped, gm.rows, gm.worst_run,
+               gm.worst_run / v, gw.gapped, gw.rows, gw.worst_run,
+               gw.worst_run / v);
+        printf("      SPLIT: mesh %d gapped | +fan only %d | +band only %d |"
+               " +both %d  (of %d rows; band %zu tris)\n",
+               gm.gapped, gf.gapped, gb.gapped, gw.gapped, gm.rows,
+               band.triangle_count());
+        report_worst("-y", gw, 0, Y0, v);
+        { char t[64]; snprintf(t, sizeof t, "%s -y L%d/%d", field_name, L, L + 1);
+          log_scan(t, gw, v); }
+        CHECK(gm.gapped > 0,
+              "-y: the mesh-only baseline IS gapped -- if it were not, the weld "
+              "would be closing nothing and this scan would prove nothing");
+        // The gate.
+        CHECK(gw.gapped == 0,
+              "-y cross-level seam: every column of the fine tile's footprint is "
+              "covered by the tile below, the tile above, or the weld band");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Case 9: a HORIZONTAL weld whose fine side is SPLIT IN Y (M2)
+// ---------------------------------------------------------------------------
+//
+// Case 3/5 partitions a vertical plane between two fine siblings adjacent in z.
+// Once Y is tiled the same plane can be split in Y instead -- and that is the
+// configuration that did not exist before this stage, because on the column path
+// a tile spanned the whole slab and one record answered for the entire vertical
+// extent of a face.
+//
+// So: coarse tile (0,-1,0) at 2S against fine tiles (2,-2,0) and (2,-1,0) at S,
+// sharing the plane x = 2S. On an x-plane the `a` axis IS the global Y cell, so
+// the anchor partition now runs along a, the fine side's lookup must span the
+// two records to answer the cells one lower in a, and the internal ty border is
+// a place a Y indexing error would show as a sign conflict or a dropped row.
+//
+// Volumetric fixture, necessarily: a heightfield's surface is a single sheet and
+// therefore lives in exactly ONE tile of any vertical stack, so two stacked fine
+// tiles cannot both have a face record. The zero-gap coverage number here is
+// taken on the -100 m floor sheet alone (Probe::y_lo/y_hi), which is inside the
+// LOWER fine tile -- one sheet, so the plumb probe means something, and it is the
+// tile the split introduced.
+static void run_x_plane_split_in_y(const FieldRuntime& f, const char* field_name,
+                                   int L) {
+    const float SL = 64.0f * float(1 << L);
+    const float v  = SL / 32.0f;
+    const float X0 = 2.0f * SL;
+    printf("  [9] x-plane whose FINE side is split in Y, field %s: coarse"
+           " (0,-1,0) @ %.0f m rung %d, fine (2,-2,0) and (2,-1,0) @ %.0f m"
+           " rung %d, plane x = %.0f\n",
+           field_name, 2.0f * SL, -(L + 1), SL, -L, X0);
+
+    SectorMesh cm, f0m, f1m;
+    seam::SectorBoundary cb, f0b, f1b;
+    std::string err;
+    CHECK(mesh_sector_tiled(f, 0, -1, 0, -(L + 1), 2.0f * SL, cm, &cb, err),
+          err.c_str());
+    CHECK(mesh_sector_tiled(f, 2, -2, 0, -L, SL, f0m, &f0b, err), err.c_str());
+    CHECK(mesh_sector_tiled(f, 2, -1, 0, -L, SL, f1m, &f1b, err), err.c_str());
+
+    const seam::FaceRecord& r0 = f0b.faces[seam::kFaceNegX];   // lower fine tile
+    const seam::FaceRecord& r1 = f1b.faces[seam::kFaceNegX];   // upper fine tile
+    CHECK(!r0.verts.empty() && !r1.verts.empty(),
+          "both vertically stacked fine tiles exported a -x face -- otherwise "
+          "there is no y split to test");
+    seam::WeldSide neg  = side_of(-(L + 1), {&cb.faces[seam::kFacePosX]});
+    seam::WeldSide both = side_of(-L, {&r0, &r1});
+
+    int64_t a0_lo, a0_hi, b0_lo, b0_hi, a1_lo, a1_hi, b1_lo, b1_hi;
+    CHECK(face_cell_box(f0b, seam::kFaceNegX, a0_lo, a0_hi, b0_lo, b0_hi),
+          "lower fine tile exported a -x face");
+    CHECK(face_cell_box(f1b, seam::kFaceNegX, a1_lo, a1_hi, b1_lo, b1_hi),
+          "upper fine tile exported a -x face");
+    CHECK(a0_hi + 1 == a1_lo,
+          "the two stacked tiles own ADJACENT, non-overlapping y cell runs -- "
+          "read from tile identity, which is only possible now Y is tiled");
+    CHECK(b0_lo == b1_lo && b0_hi == b1_hi,
+          "and the same z cell run, since they differ only in ty");
+    const int64_t b_lo = b0_lo, b_hi = b0_hi;
+
+    seam::WeldMesh w0, w1, wall;
+    seam::WeldStats s0, s1, sall;
+    CHECK(seam::weld_face(0, neg, both, a0_lo, a0_hi + 1, b_lo, b_hi + 1,
+                          w0, s0, err), err.c_str());
+    CHECK(seam::weld_face(0, neg, both, a1_lo, a1_hi + 1, b_lo, b_hi + 1,
+                          w1, s1, err), err.c_str());
+    CHECK(seam::weld_face(0, neg, both, a0_lo, a1_hi + 1, b_lo, b_hi + 1,
+                          wall, sall, err), err.c_str());
+    account(s0, w0.triangle_count());
+    account(s1, w1.triangle_count());
+
+    auto tri_set = [](const seam::WeldMesh& m, std::vector<std::array<float, 9>>& o) {
+        for (const seam::WeldBucket& b : m.buckets)
+            for (size_t t = 0; t * 9 < b.positions.size(); ++t) {
+                std::array<float, 9> a{};
+                for (int i = 0; i < 9; ++i) a[i] = b.positions[t * 9 + i];
+                o.push_back(a);
+            }
+    };
+    std::vector<std::array<float, 9>> t0, t1, tall;
+    tri_set(w0, t0); tri_set(w1, t1); tri_set(wall, tall);
+    std::set<std::array<float, 9>> set0(t0.begin(), t0.end());
+    size_t shared = 0;
+    for (const std::array<float, 9>& t : t1) if (set0.count(t)) ++shared;
+    std::vector<std::array<float, 9>> tsum = t0;
+    tsum.insert(tsum.end(), t1.begin(), t1.end());
+    std::sort(tsum.begin(), tsum.end());
+    std::sort(tall.begin(), tall.end());
+    printf("      partition in Y: lower anchors a in [%lld,%lld) -> %zu tris;"
+           " upper a in [%lld,%lld) -> %zu tris; %zu shared (must be 0);"
+           " combined %zu tris\n",
+           (long long)a0_lo, (long long)(a0_hi + 1), t0.size(),
+           (long long)a1_lo, (long long)(a1_hi + 1), t1.size(), shared,
+           tall.size());
+    CHECK(shared == 0,
+          "no double emission across the ty boundary: the two stacked fine "
+          "tiles emit DISJOINT seam triangle sets on the shared x plane");
+    CHECK(tsum == tall,
+          "the per-tile y regions PARTITION the plane: the two passes together "
+          "are the single full-plane weld, triangle for triangle");
+    CHECK(s0.crossings + s1.crossings == sall.crossings &&
+          s0.quads + s1.quads == sall.quads && s0.tris + s1.tris == sall.tris,
+          "partition in Y: the two passes' crossing counts sum to the plane's");
+    CHECK(s0.sign_conflicts == 0 && s1.sign_conflicts == 0 &&
+          sall.sign_conflicts == 0,
+          "no sign conflicts across the ty boundary: the upper tile's lowest "
+          "boundary cells and the lower tile's highest read the same samples");
+    CHECK(s0.crossings == s0.accounted() && s1.crossings == s1.accounted(),
+          "every crossing accounted on both sides of the ty boundary");
+    print_stats("split-y lower", s0, w0.triangle_count());
+    print_missing("split-y lower",
+                  diagnose_missing(0, neg, both, a0_lo, a0_hi + 1, b_lo, b_hi + 1,
+                                   a0_lo, a1_hi, b_lo, b_hi,
+                                   &cb.faces[seam::kFacePosX]));
+    print_stats("split-y upper", s1, w1.triangle_count());
+    print_missing("split-y upper",
+                  diagnose_missing(0, neg, both, a1_lo, a1_hi + 1, b_lo, b_hi + 1,
+                                   a0_lo, a1_hi, b_lo, b_hi,
+                                   &cb.faces[seam::kFacePosX]));
+
+    // The upper tile's pass reaches one cell LOWER in a -- into the lower
+    // tile -- which is exactly why `both` is a two-record lookup. If it were
+    // one record those cells would answer null and be banked as
+    // missing_landing, opening a hole running the length of the ty border.
+    {
+        seam::WeldSide only1 = side_of(-L, {&r1});
+        seam::WeldMesh w1s; seam::WeldStats s1s;
+        CHECK(seam::weld_face(0, neg, only1, a1_lo, a1_hi + 1, b_lo, b_hi + 1,
+                              w1s, s1s, err), err.c_str());
+        printf("      single-record control: upper pass with a lookup that does"
+               " NOT span the ty border -> missing_fine %d (vs %d spanning)\n",
+               s1s.missing_fine, s1.missing_fine);
+        CHECK(s1s.missing_fine > s1.missing_fine,
+              "...and the control proves the multi-tile lookup is load-bearing: "
+              "narrowing it to one record strands the cells on the ty border");
+    }
+
+    // NO PLUMB-LINE COVERAGE NUMBER HERE, and the reason is worth recording
+    // because the obvious scan looks reasonable and is not a measurement.
+    //
+    // This case needs a volumetric field (see the note above), and a volumetric
+    // column has no single surface for `y_at` to report. Restricting the soup to
+    // a y band around the -100 m floor was tried and is WRONG for a sharper
+    // reason than multi-sheet ambiguity: in this field the -100 m plane is a
+    // floor only where a tunnel is open above it, and everywhere else that band
+    // is solid rock with no geometry in it at all. The probe cannot tell "no
+    // triangle because the seam is open" from "no triangle because it is inside
+    // the mountain", so it reported 8 of 31 rows gapped by up to 4.6 voxels on a
+    // weld that is provably complete. A coverage gate that fires on solid rock is
+    // not a gate.
+    //
+    // What IS gated here is what the Y split can actually break, and all of it
+    // is checked above: the partition, disjointness, the crossing sums, zero
+    // sign conflicts across the ty border, and the single-record control showing
+    // the cross-tile lookup is load-bearing. The zero-gap coverage claim for a
+    // horizontal plane lives in case 8, on a single-sheet field where the probe
+    // means something.
+    (void)f0m; (void)f1m; (void)v; (void)X0;
+}
+
 int main() {
     printf("=== seam integration: mesh + weld (M0-WP6) ===\n");
 
@@ -1272,6 +1632,30 @@ int main() {
             CHECK(gz.gapped == 0,
                   "(4b) the equal-level face stays watertight on mesh alone");
         }
+    }
+
+    // =======================================================================
+    // [8/9] THE VERTICAL AXIS (M2). Y stops being a slab and becomes a tiled
+    // axis, so the two configurations below did not exist before this stage:
+    // a shared HORIZONTAL plane between two levels, and a shared VERTICAL plane
+    // whose fine side is two tiles stacked in Y.
+    //
+    // Both run through the same `seam::weld_face` with face_axis = 1 and 0
+    // respectively -- no new welder code, which is the claim being tested as
+    // much as anything. seam_weld.h's winding derivation already covers all
+    // three normal axes and seam_weld_tests.cpp already cross-checks them
+    // against averaged vertex normals; what was never exercised was a real
+    // mesher record on a y plane.
+    // =======================================================================
+    {
+        FieldRuntime f = make(kNoise);
+        run_neg_y(f, "kNoise", 2, /*one_sheet=*/true);
+    }
+    {
+        FieldRuntime f = make(kCave0);
+        CHECK(!f.is_heightfield(), "kCave0 is volumetric");
+        run_neg_y(f, "kCave0", 1, /*one_sheet=*/false);
+        run_x_plane_split_in_y(f, "kCave0", 0);
     }
 
     // =======================================================================

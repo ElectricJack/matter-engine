@@ -105,6 +105,66 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                  SectorMesh& out, seam::SectorBoundary* boundary_out,
                  std::string& err);
 
+// ---------------------------------------------------------------------------
+// mesh_sector_tiled — the same surface nets with Y AS A TILED AXIS (M2)
+// ---------------------------------------------------------------------------
+//
+// Design: docs/volumetric-sectors-design-2026-08-10.md §3.3.
+//
+// `mesh_sector` above meshes a COLUMN: one tile covers [y_min, surface] for its
+// (tx, tz), which is why `yMin` is a streamed world's dominant cost dial (a
+// StreamCaverns level-0 tile samples ~590 rows of density to reach -1000 m).
+// This function meshes a CUBE: the tile is `[ty*S, (ty+1)*S)` in y as well as
+// x and z, so it samples at most (n+5)^3 and a tile away from the surface or a
+// cavern shell costs one all-air/all-solid sampling pass and yields nothing.
+//
+// BOTH EXIST ON PURPOSE, AND WHICH ONE RUNS IS THE CALLER'S EXPLICIT CHOICE.
+// A Y-tiled tile covers 64 m of height. A world whose streamer still asks for
+// one tile per (tx, tz) column would therefore mesh a 64 m band and nothing
+// else -- so this cannot simply replace the column path, and it is not a
+// migration that can be half-done. The streamer side (a vertical stack of
+// requests, 8-child octree descent, `transform[7] = ty * sector_size` on the
+// publish transform) is M3 and is gated on the world flag `volumetricSectors`,
+// default off. Until then every live world runs `mesh_sector`, whose output is
+// pinned BITWISE -- mesh and boundary record, six configurations -- in
+// terrain_mesher_tests.cpp. Do not "unify" the two behind an abstraction that
+// moves those bytes.
+//
+// WHAT CHANGES, all of it a straight extension of what x and z already do:
+//
+//   * Tile origin `oy = double(ty) * double(sector_size)`, sample
+//     `y = oy + (j-1) * voxel` -- the same dyadic-`double` construction as x/z,
+//     which makes a shared lattice point BITWISE identical from any tile at any
+//     level. terrain_mesher.cpp derives that in full; it is the basis of the
+//     whole seam contract and not a coincidence worth re-deriving by hand.
+//   * Mesh positions are TILE-LOCAL in y as well as x/z.
+//   * Ownership is `j in [1..n]`, identically to i and k, and its consequence
+//     (derived at `owned` in the .cpp, not assumed) is that THE TOP TILE BRIDGES
+//     each horizontal shared plane -- the natural extension of the east/north
+//     rule, and what makes an equal-level vertical pair watertight with no weld.
+//   * The boundary record covers all six faces symmetrically, so a ±y pair
+//     welds through exactly the same `seam::weld_face` fan as a ±x one.
+//   * The overlap band (M0-WP7) gains its Y counterpart on kFaceNegY -- the
+//     face whose neighbour the `[1..n]` rule under-reaches, by the same argument
+//     that put bands on -x/-z. Sampled unconditionally, kept out of the mesh,
+//     drawn by the welder only for a cross-level pair.
+//
+// WHAT IS DELIBERATELY DROPPED: the `h_min < y_min` check ("sampled height
+// outside authored Y range"). It asks whether a slab contains the whole surface,
+// and a Y-tiled tile is one cube of a stack -- the surface leaving through its
+// top or bottom is the normal case. §3.3 moves that validation to world-load
+// time, against the octree's Y extent, which is M3's.
+//
+// Returns false + err on degenerate config (rung outside -5..3, sector_size<=0).
+// An all-air or all-solid tile is NOT an error: it returns true with an empty
+// mesh and an empty record, which is the "resident, no geometry" outcome §3.3
+// requires of the publish path.
+bool mesh_sector_tiled(const terrain_field::FieldRuntime& field,
+                       int64_t tx, int64_t ty, int64_t tz, int rung,
+                       float sector_size,
+                       SectorMesh& out, seam::SectorBoundary* boundary_out,
+                       std::string& err);
+
 // Heightfield terrain LOD ladder (2026-07-28 alpine design, LODs 0-4).
 //
 // Meshes one sector as an N x N regular height grid, N = 1 << lod
