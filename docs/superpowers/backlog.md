@@ -157,3 +157,65 @@ streaming worlds) — that one is NOT a safe incremental target (prefix-sum ripp
 from shared-part instance growth + interior range recycling) and should be
 profiled with `MATTER_VK_BUILD_PROFILE=1` before any change; see the 2026-08-07
 analysis notes. This dynamic-relayout memo is the clean, isolated half.
+
+## Seam welder — emit the overlap band only where the fan failed to land
+
+**Why it exists.** The runtime welder (M0, `MatterEngine3/src/seam_weld.cpp`)
+closes a cross-level plane with *two* mechanisms that are deliberately additive:
+
+- the **vertex fan**, which joins both tiles' own boundary vertices 2:1 through
+  `floor_div2` — the true weld, exact, zero redundant area;
+- the **overlap band**, the fine side's surface extended two voxels past the
+  plane (the revival of the retired `reach`), copied verbatim from the mesher.
+
+The band is emitted **unconditionally** for every cross-level plane
+(`seam_weld.cpp:103`), but it only *has* to exist where the fan cannot land:
+`stats.missing_coarse_pair` (`seam_weld.cpp:209`) — the coarse side has no
+vertex pair near the plane at all, because the feature is smaller than a coarse
+voxel, so there is no second side to weld to. Measured holes there run
+1.75–12 m, so the band is not optional; it is just far larger than the residue
+it covers. In `seam_integration_tests.cpp` roughly **4% of crossings** hit
+`missing_coarse_pair`, meaning the large majority of the emitted band is a
+redundant sheet of fine surface laid over coarse surface that the fan already
+joined correctly.
+
+**What that redundancy costs.** Nothing correctness-wise — coverage is a union
+and the tests scan mesh+fan, mesh+band and mesh+fan+band separately. But the
+sheet is real geometry: weld triangles, BLAS/TLAS entries, and a second surface
+a few centimetres off the coarse one, which is what makes weld *shading* defects
+visible as ribbons instead of as invisible hole-fill. Two such defects were
+found and fixed in 2026-08-11 (`7173c974` pre-tape `material_index`, `f382a616`
+triplanar hemisphere) precisely because the band paints over ground that was
+already correct. Shrinking it shrinks the blast radius of the next one, and it
+is the cheap alternative to the rejected "draw welds in a second stencil-masked
+pass" idea — which would need a stencil-capable depth format (today
+`VK_FORMAT_D32_SFLOAT`, `vk_scene_renderer.cpp:2547`), a per-instance pass flag
+`cull.comp` does not have, and would fix only the raster lane while leaving the
+sheet in the TLAS.
+
+**The work.**
+1. Run the fan loop first and record the tangential cells that exit via
+   `missing_coarse_pair` (and, arguably, `missing_fine` — decide deliberately;
+   `missing_fine` means a tile is about to arrive, so covering it may be wrong).
+2. Emit band triangles only where they overlap that set, dilated by one cell so
+   the band's edge still meets the fan's.
+3. Restructure `weld_plane` so the band copy happens *after* the fan rather than
+   before it (today it is at the top of the function).
+
+**The trap.** `OverlapBucket` (`seam_boundary.h:169`) is raw triangle soup —
+world-absolute positions and normals, **no cell index**. Filtering therefore
+needs either (a) the tangential cell derived per triangle from position, the
+plane axis and the fine rung's voxel size (feasible with no mesher change; use a
+conservative any-vertex-in-set test), or (b) a parallel per-triangle cell index
+added to the bucket at export time in the mesher. Prefer (a) first — it keeps
+the band a verbatim mesher artifact, which is the property the design note at
+`seam_weld.cpp:83` says makes it a faithful revival of `reach` rather than a
+second guess at it.
+
+**Gate.** The existing union-coverage rows harness must stay at zero gaps for
+every drawn cross-level pairing, and `crack_scan.py` on a StreamMountain
+fly-through must not gain components. Report band triangle counts before/after
+in the `seam-weld summary`; the expected win is roughly an order of magnitude.
+
+**Priority: low.** Filed 2026-08-11 after the two shading defects were fixed —
+with those closed the remaining artifacts are not bad enough to schedule.
