@@ -1110,6 +1110,14 @@ EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp
                 $(COMMON_MSL_FULL_SRC)
 EVALWORLD_C = $(COMMON_MSL_C)
 
+# cavern_probe — NOT a test: a measuring instrument for volumetric worlds. Same
+# dependency set as eval_world (it evaluates a scene's field() and samples the
+# resulting program); see cavern_probe.cpp for what it reports and why.
+CAVERNPROBE_TARGET = build/cavern_probe
+CAVERNPROBE_CPP = $(subst eval_world_tests.cpp,cavern_probe.cpp,$(EVALWORLD_CPP)) \
+                  ../src/script/world_definition_loader.cpp
+CAVERNPROBE_C = $(COMMON_MSL_C)
+
 # Phase C Task 1: fold cache in ScriptHost (sh flavor).
 FOLDCACHE_TARGET = build/fold_cache_tests
 FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
@@ -1418,6 +1426,7 @@ qjs_CPP_SRCS := $(sort \
 
 sh_CPP_SRCS := $(sort \
     $(EVALWORLD_CPP) \
+    $(CAVERNPROBE_CPP) \
     $(TERRAINVERB_CPP) \
     $(SECTORBAKE_CPP) \
     $(FOLDCACHE_CPP) \
@@ -1596,6 +1605,7 @@ TERRAINNOISE_OBJS = $(call obj_list,qjs,$(TERRAINNOISE_CPP)) $(qjsc_C_OBJS)
 WORLD_DEFINITION_OBJS = $(call obj_list,qjs,$(WORLD_DEFINITION_CPP)) $(call obj_list,mslc,$(WORLD_DEFINITION_C)) $(qjsc_C_OBJS)
 PHYSICS_PLAYGROUND_OBJS = $(call obj_list,qjs,$(PHYSICS_PLAYGROUND_CPP)) $(call obj_list,mslc,$(PHYSICS_PLAYGROUND_C)) $(qjsc_C_OBJS)
 EVALWORLD_OBJS = $(call obj_list,sh,$(EVALWORLD_CPP)) $(call obj_list,mslc,$(EVALWORLD_C)) $(qjsc_C_OBJS)
+CAVERNPROBE_OBJS = $(call obj_list,sh,$(CAVERNPROBE_CPP)) $(call obj_list,mslc,$(CAVERNPROBE_C)) $(qjsc_C_OBJS)
 FOLDCACHE_OBJS = $(call obj_list,sh,$(FOLDCACHE_CPP)) $(call obj_list,mslc,$(FOLDCACHE_C)) $(qjsc_C_OBJS)
 
 GRAPH_INT_OBJS = $(call obj_list,sh_test,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRAPH_INT_C)) $(qjsc_C_OBJS)
@@ -1931,6 +1941,15 @@ $(EVALWORLD_TARGET): $(EVALWORLD_OBJS)
 
 run-evalworld: $(EVALWORLD_TARGET)
 	./$(EVALWORLD_TARGET)
+
+# cavern_probe. No `run-` target and not in the suite list on purpose: it prints
+# measurements, it asserts nothing, and a target that always passes in a test
+# Makefile is a target somebody will eventually believe means something.
+#   make -C MatterEngine3/tests build/cavern_probe
+#   cd MatterEngine3/tests && ./build/cavern_probe <scene.js>
+$(CAVERNPROBE_TARGET): $(CAVERNPROBE_OBJS)
+	$(CC) $(CAVERNPROBE_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 $(WORLD_DEFINITION_TARGET): $(WORLD_DEFINITION_OBJS)
 	$(CC) $(WORLD_DEFINITION_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm

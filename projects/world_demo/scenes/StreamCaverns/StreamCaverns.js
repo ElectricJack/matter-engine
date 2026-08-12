@@ -13,6 +13,18 @@
 // through the surface wherever they happen to reach it -- the openings are not
 // authored, they are what a 3D field does when it meets a 2D one.
 //
+// SCALE. The network is sized to be flown, not squeezed through, and that is a
+// measured property rather than an eyeballed one: MatterEngine3/tests/cavern_probe
+// reads this world's density directly and reports the clearance distribution and
+// whether a ball of a given radius can travel from open sky to the floor.
+// Current (2048 m box, 8 m lattice): 26.5% air, mean clearance 23.6 m, 54% of
+// the network's volume clears 12 m, and a 16 m ball reaches y = -980 m. Before
+// the widening those were 12.6 m / 31.6% / -980 m -- note the last number did
+// NOT move, which is the whole reason the probe reports both: the world was
+// always connected to the bottom, it was connected through cracks.
+//
+//   cd MatterEngine3/tests && make build/cavern_probe && ./build/cavern_probe
+//
 // NO VEGETATION. objects/WorldSector.js here meshes terrain and returns; the
 // biome table below carries no counts and no __vegetation profile, so the
 // alpine planner never runs. That is deliberate: scatter is instance cost, and
@@ -151,9 +163,22 @@ class StreamCaverns extends World {
     // Written as `t.sub(TH).mul(-1)` because FieldNode has no reverse subtract:
     // the value wanted is (TH - t), positive in rock and negative in air, so the
     // pair MAXes -- solid wherever either field falls short of its threshold.
+    // SCALE IS THE WIDTH DIAL, not the threshold. Both control how much of the
+    // volume is air, but they do it differently and only one of them makes a
+    // tunnel you can fly down: fbm is scale-invariant, so doubling the
+    // wavelength doubles every passage's cross-section at an unchanged air
+    // fraction, while lowering the threshold keeps the passages the width they
+    // were and simply adds more of them. Measured on the 1/130 original
+    // (MatterEngine3/tests/cavern_probe.cpp): 40% of the network's volume sat
+    // under 4 m of clearance and only 31.6% cleared 12 m -- a connected network
+    // of cracks, which is exactly what "too small to fly through" describes.
+    //
+    // 1/240 is ~1.85x, and the second octave's gain drops 0.5 -> 0.4 because
+    // that octave lands at half the wavelength and is what shreds a wall into
+    // pinches: it was adding 8 m of relief to a 20 m passage.
     const TH = 0.58;
-    const t1 = ridge3(p.worldSeed ^ 0x21, 1 / 130, 2, 0.5, 2.0);
-    const t2 = ridge3(p.worldSeed ^ 0x22, 1 / 130, 2, 0.5, 2.0);
+    const t1 = ridge3(p.worldSeed ^ 0x21, 1 / 240, 2, 0.4, 2.0);
+    const t2 = ridge3(p.worldSeed ^ 0x22, 1 / 240, 2, 0.4, 2.0);
     const tunnels = t1.sub(TH).mul(-1).max(t2.sub(TH).mul(-1));
 
     // ---- the shafts: what actually makes the network DEEP -------------------
@@ -182,17 +207,25 @@ class StreamCaverns extends World {
     // evaluates it once per column and never again down the ~590 samples of
     // depth. The part of this world that reaches deepest is also the cheapest
     // part of it.
+    // Scaled with the tunnels (1/210 -> 1/330) so a shaft stays wider than the
+    // passages feeding it -- a shaft narrower than its tunnels reads as a dead
+    // end you cannot enter rather than as a way down. The wobble's wavelength
+    // goes with it (1/70 -> 1/150): at 70 m it was displacing the wall faster
+    // than the shaft was wide, which frays a pipe instead of bending it.
     const SH = 0.70;
-    const wobble = noise3(p.worldSeed ^ 0x41, 1 / 70, 2, 0.5, 2.0).mul(0.22);
-    const s1 = ridge2(p.worldSeed ^ 0x51, 1 / 210, 2, 0.5, 2.0).add(wobble);
-    const s2 = ridge2(p.worldSeed ^ 0x52, 1 / 210, 2, 0.5, 2.0).add(wobble);
+    const wobble = noise3(p.worldSeed ^ 0x41, 1 / 150, 2, 0.5, 2.0).mul(0.22);
+    const s1 = ridge2(p.worldSeed ^ 0x51, 1 / 330, 2, 0.5, 2.0).add(wobble);
+    const s2 = ridge2(p.worldSeed ^ 0x52, 1 / 330, 2, 0.5, 2.0).add(wobble);
     const shafts = s1.sub(SH).mul(-1).max(s2.sub(SH).mul(-1));
 
     // ---- the caverns --------------------------------------------------------
     // Rooms, not corridors: one low-frequency 3D field thresholded high, so the
     // top few percent of its range opens out into chambers tens of metres
     // across. These are what the tunnel network runs between.
-    const cav = noise3(p.worldSeed ^ 0x31, 1 / 260, 3, 0.5, 2.0);
+    // 1/260 -> 1/420, for the same reason the tunnels moved: these are supposed
+    // to be the rooms the network runs between, and a room has to be
+    // conspicuously bigger than the corridor or it is just a wide spot.
+    const cav = noise3(p.worldSeed ^ 0x31, 1 / 420, 3, 0.5, 2.0);
     const caverns = cav.sub(0.42).mul(-1);
 
     // ---- the floor ----------------------------------------------------------
@@ -210,8 +243,10 @@ class StreamCaverns extends World {
     //
     // Note what this makes the surface openings: nothing authored them. A tunnel
     // that happens to reach y = h(x, z) is simply air on both sides of the
-    // surface, and the mesher emits the hole. The 1/130 m tunnel spacing against
-    // a ~110 m mean surface height is what sets how many there are.
+    // surface, and the mesher emits the hole. The 1/240 m tunnel spacing against
+    // a ~110 m mean surface height is what sets how many there are -- widening
+    // the network made each opening bigger and, at an unchanged air fraction,
+    // made them rarer.
     const density = heightToDensity(height)
       .min(tunnels)
       .min(shafts)
