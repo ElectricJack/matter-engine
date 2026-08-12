@@ -537,8 +537,18 @@ $(LIB_FLAGS_STAMP): FORCE | build
 	@[ "`cat $@ 2>/dev/null`" = '$(EXTRA_CFLAGS)' ] || printf '%s' '$(EXTRA_CFLAGS)' > $@
 
 # ME3 + MSL C++ sources (each source file gets its own .o via pattern rule).
-# ME3 objects depend on the generated shader header.
-$(ME3_OBJ): shaders_gen/embedded_shaders.h
+# ME3 objects depend on the generated shader headers -- BOTH of them.
+#
+# embedded_spirv.h was missing from this line, and its absence is a silent
+# failure with a long fuse: `make -C MatterEngine3` regenerates the header when
+# a .spv changes but does NOT then recompile the translation unit that #includes
+# it, so the link keeps whatever shader blob the last full rebuild happened to
+# embed. A renderer that binds a descriptor its embedded shader never declared
+# is not a build error, it is a validation error at run time -- or, when the
+# shader is missing outright, a FATAL several minutes into a world load.
+# Measured: hzb_build.comp compiled at 14:29, the header regenerated at 14:55,
+# and the shipped binary still could not find hzb_build.comp.spv.
+$(ME3_OBJ): shaders_gen/embedded_shaders.h shaders_gen/embedded_spirv.h
 $(ME3_OBJ) $(MSL_OBJ): $(LIB_FLAGS_STAMP)
 $(OBJDIR)/%.o: %.cpp | $(OBJDIR)
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
