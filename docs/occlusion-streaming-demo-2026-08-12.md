@@ -97,31 +97,53 @@ Both toggles are also properties, so a scripted run can drive them over
     set viewer.debug.freeze_cull_camera true
     set viewer.debug.debug_view_mode 5
 
-## 3. The HZB (Phase B) — culling what is behind a wall
+## 3. Where the visibility signal comes from
 
-By default the visibility signal is frustum-only: a tile is "drawn" if it
-survived the frustum test, not if it survived being behind a wall. Underground
-that is a real gap — the mountain overhead is in frustum and occluded.
+There are two possible answers to "was this sector drawn", and they are not
+close:
 
-Phase B closes it, opt-in. **Viewer Debug → HZB occlusion cull** (or `hiz on`
-over the FIFO, or `set viewer.debug.hiz_occlusion true`): each frame's depth is
-min-reduced into a fixed 256/64/16/4 pyramid, and the next frame's cull tests
-every cluster's screen AABB against it. `hiz_culled` in the Viewer Debug panel
-is the count, and because the streaming loop harvests what the cull *emitted*,
-every HZB-rejected cluster automatically ages toward the detail cap too — the
-two features compose without a line of glue.
+- **`emitted`** — the tokens the GPU cull pass emitted, i.e. survivors of the
+  **frustum** test. A sector buried in solid rock is in-frustum, so it reads as
+  visible. Underground that is most of the world.
+- **`idbuffer`** (the default) — the tokens that own a pixel of the G-buffer's
+  identity attachment, i.e. survivors of the **depth** test.
 
-It is off by default for one honest reason: the pyramid is one frame old, so
-while the camera moves, geometry revealed this frame can be rejected for a
-frame. It is exact whenever the cull camera is still — which is precisely the
-frozen-cull-camera mode above, and why the two toggles are designed to be
-turned on together.
+The second needs no extra work from the renderer, which is the whole reason it
+wins. `gbuffer.frag` already writes `uvec2(material, instance_token)` per pixel,
+and a pixel is in that attachment precisely because it won the depth test — so
+the visible set is a reduction over something the frame already produced. A
+sector seen through one crack in the rock counts as visible, because it owns a
+pixel.
 
-Every uncertain case fails open (near-plane crossers, boxes reaching off
-screen, footprints larger than the coarsest level, animated instances whose
-bound record does not carry the occlusion-enabled bit): a false negative draws
-a few hidden triangles, a false positive deletes visible geometry, and the two
-are not symmetric.
+`MATTER_OCCLUSION_SOURCE=emitted` is the rollback. Measured on StreamCaverns
+from one pose, everything else equal:
+
+| | resident sectors | batches | triangles |
+|---|---|---|---|
+| cap off            | — (741 instances) | 114 | 600,795 |
+| cap on, `emitted`  | 310 | 95 | 530,852 |
+| cap on, `idbuffer` | **192** | **57** | **285,835** |
+
+The screenshots at that pose are indistinguishable. That is the doctrine
+working: coverage survived, only detail moved.
+
+## 4. The HZB — what it is for now
+
+An HZB depth pyramid also exists (`shaders_vk/hzb_build.comp`, `hzb_occluded()`
+in `cull.comp`), opt-in via **Viewer Debug → HZB occlusion cull** or `hiz on`.
+It is **not** the streaming signal and never became one.
+
+It was built to be, and could not be. A streamed sector is ONE cluster whose
+AABB is the whole cube tile, so its screen footprint is nearly always larger
+than the coarsest pyramid level or crosses the screen edge — and every such
+case fails open by design. It rejected 4 clusters out of ~900. The identity
+buffer sidesteps that entirely by never looking at a bounding box.
+
+What the HZB remains is a *draw-cost* optimization, worth revisiting when
+clusters are finer than a whole tile (the design's "4 clusters per tile"
+option). Its pyramid is built from the previous frame's depth, so it is one
+frame stale while the camera moves and exact when the cull camera is frozen —
+which is why the two toggles are meant to be used together.
 
 ## The two bugs this took to work
 
