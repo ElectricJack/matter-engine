@@ -283,6 +283,12 @@ struct ViewerStats {
     // of them are DRAWN. Freezing only the cull leaves the streamer refining
     // the world around a camera the cull cannot see.
     bool  freeze_cull_camera    = false;
+    // HZB occlusion culling (RenderOptions::hiz_occlusion, M4 Phase B). Off by
+    // default because the depth pyramid is one frame old: while the camera
+    // moves, geometry that has just been revealed can be rejected for a frame.
+    // Exact whenever the cull camera is still, which is why this and
+    // freeze_cull_camera above are the pair you turn on together to look at it.
+    bool  hiz_occlusion         = false;
     // The camera pose captured when freeze_cull_camera last went on, kept so
     // the viewport overlay can draw that frustum. Reconstructed by the editor
     // rather than read back from the renderer: the overlay is a sketch of where

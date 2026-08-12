@@ -692,7 +692,18 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "The frozen frustum is outlined in the viewport. Pins LOD "
              "selection with it (same eye). Pair with \"Freeze terrain "
              "streaming\", which holds which tiles exist rather than which "
-             "are drawn."));
+             "are drawn."),
+    prop(&ViewerStats::hiz_occlusion, "hiz_occlusion")
+        .label("HZB occlusion cull")
+        .doc("Reject clusters hidden behind what the previous frame drew, by "
+             "testing each one's screen AABB against a min-reduced depth "
+             "pyramid. This is what makes \"culled\" mean occluded rather than "
+             "merely off-screen, and what gives the hiz counter a non-zero "
+             "value.\n\n"
+             "OFF by default because the pyramid is one frame old: while the "
+             "camera moves, something just revealed can be rejected for a "
+             "frame. It is exact whenever the cull camera is still -- so turn "
+             "it on together with \"Freeze cull camera\" to look at it."));
 
 // ---- render.gpu ----------------------------------------------------------
 //

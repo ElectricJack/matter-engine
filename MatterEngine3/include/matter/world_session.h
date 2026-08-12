@@ -95,7 +95,17 @@ struct RenderOptions {
     // push-back is NOT affected -- that places the card at the depth it
     // depicts and is a correctness term, not an appearance one.
     bool  impostor_parallax = true;
-    bool  hiz_occlusion   = false;    // default OFF (known false-positive issue)
+    // HZB OCCLUSION CULLING (M4 Phase B, design §5.1). Tests each cluster's
+    // screen AABB against a min-reduced depth pyramid, so geometry behind a
+    // wall is rejected before it is drawn and `hiz_culled` finally has a
+    // non-zero meaning.
+    //
+    // Default OFF, and the reason is latency rather than doubt about the test:
+    // the pyramid is built from the depth the PREVIOUS frame finished, so while
+    // the camera moves something just revealed can be rejected for one frame.
+    // It is exact whenever the cull camera is not moving, which includes the
+    // frozen-cull-camera inspection mode this was checked with.
+    bool  hiz_occlusion   = false;
     // FREEZE THE CULL CAMERA (M4, an inspection aid rather than a feature).
     //
     // Pins the frustum planes and the eye position the cull dispatch tests

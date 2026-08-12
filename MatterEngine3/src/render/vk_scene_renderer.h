@@ -35,6 +35,8 @@
 #include "vk_animation_bounds.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
+// For VkComputePipelineResource (the HZB pyramid's per-level build pipelines).
+#include "vk_pipeline.h"
 #include "vk_temporal.h"
 #include "vt_compositor.h"  // WP-D: tier-1 page compositor (the filler)
 #include "vt_enrich.h"      // WP-H: tier-2 hemisphere AO page enrichment
@@ -993,6 +995,13 @@ public:
     // is taken on the RISING EDGE inside upload_frame_constants -- the one
     // place that writes both pinned fields -- so there is no second copy of
     // "what the cull camera is" to drift.
+    // HZB occlusion culling (M4 Phase B). Off by default: the pyramid is one
+    // frame old, so while the camera moves it can reject something that was
+    // just revealed. Exact whenever the cull camera is not moving, which
+    // includes the frozen-cull-camera inspection mode.
+    void set_hzb_occlusion(bool on) noexcept { hzb_enabled_ = on; }
+    bool hzb_occlusion() const noexcept { return hzb_enabled_; }
+
     void set_cull_camera_frozen(bool on) noexcept {
         cull_camera_freeze_requested_ = on;
         if (!on) cull_camera_frozen_ = false;
@@ -2209,6 +2218,37 @@ private:
     matter::VkImageResource velocity_;
     matter::VkImageResource material_instance_;
     matter::VkImageResource depth_;
+    // ---- HZB occlusion pyramid (M4 Phase B, design §5.1) -------------------
+    // Four levels at 256, 64, 16 and 4 texels square. Separate images rather
+    // than mips of one: matter::create_image has no mip parameter, and four
+    // small images cost less machinery than a per-mip view array. cull.comp
+    // declares `sampler2D hzb[4]` to match.
+    //
+    // Held in VK_IMAGE_LAYOUT_GENERAL for their whole life -- written as a
+    // storage image by hzb_build.comp and read through a sampler by cull.comp,
+    // and GENERAL is legal for both. The alternative is a layout transition per
+    // level per frame to buy nothing.
+    static constexpr uint32_t kHzbLevels = 4;
+    static constexpr uint32_t hzb_level_size(uint32_t level) {
+        return 256u >> (2u * level);   // 256, 64, 16, 4
+    }
+    std::array<matter::VkImageResource, kHzbLevels> hzb_;
+    std::array<matter::VkComputePipelineResource, kHzbLevels> hzb_build_;
+    // Whether a frame has reduced real depth into the pyramid yet. Until one
+    // has, the images hold whatever the allocation left there, so the test must
+    // not run -- see the note where this is cleared.
+    bool hzb_primed_ = false;
+    bool hzb_descriptors_valid_ = false;
+    // The clip matrix of the frame whose depth the pyramid currently holds.
+    // Recorded at build time and handed to the NEXT frame's cull dispatch,
+    // because a screen-space test is only meaningful against the projection
+    // that produced the screen it is testing.
+    viewer::GpuMat4 hzb_world_to_clip_{};
+    // This frame's clip matrix, staged at constant-upload time and promoted to
+    // hzb_world_to_clip_ only when the build actually records. See the note at
+    // the staging site for why the two are separate.
+    viewer::GpuMat4 hzb_pending_world_to_clip_{};
+    bool hzb_enabled_ = false;
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;
     matter::VkImageResource raw_diffuse_;
@@ -2255,6 +2295,11 @@ private:
 
     bool create_impostor_atlas(std::string& error);
     void write_impostor_descriptor_for_frame(VkDescriptorSet set);
+    // HZB occlusion (M4 Phase B). See the block comment at the definitions.
+    bool create_hzb_pyramid(std::string& error);
+    void write_hzb_descriptor_for_frame(VkDescriptorSet set);
+    bool ensure_hzb_pipelines(std::string& error);
+    void record_hzb_build(VkCommandBuffer command_buffer);
     // Assigns atlas slots for `part`, uploads its atlases, and patches the
     // billboard vertices already staged at `vertex_base`. Failure is reported
     // and the part still registers -- with its impostor rungs drawing as

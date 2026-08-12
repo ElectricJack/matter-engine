@@ -97,19 +97,31 @@ Both toggles are also properties, so a scripted run can drive them over
     set viewer.debug.freeze_cull_camera true
     set viewer.debug.debug_view_mode 5
 
-## What this is NOT yet
+## 3. The HZB (Phase B) — culling what is behind a wall
 
-**The visibility signal is frustum-only.** `hiz_culled` still reads 0 in the
-Viewer Debug panel, because there is no depth pyramid: a tile is "drawn" if it
+By default the visibility signal is frustum-only: a tile is "drawn" if it
 survived the frustum test, not if it survived being behind a wall. Underground
-in StreamCaverns that is a real gap — the mountain overhead is in frustum and
-occluded, and today the cap does not demote it.
+that is a real gap — the mountain overhead is in frustum and occluded.
 
-That is M4 Phase B (design §5.1), and the plumbing for it is deliberately
-already in place: the `hiz_culled` stat, the `flags & 1` HZB permission bit on
-dynamic animation bounds (`cull.comp:50-54`), and set-1 binding 16 free. Phase A
-was landed first because it is the half that needed the octree to exist, and
-because a frustum-only signal is a shippable increment with identical plumbing.
+Phase B closes it, opt-in. **Viewer Debug → HZB occlusion cull** (or `hiz on`
+over the FIFO, or `set viewer.debug.hiz_occlusion true`): each frame's depth is
+min-reduced into a fixed 256/64/16/4 pyramid, and the next frame's cull tests
+every cluster's screen AABB against it. `hiz_culled` in the Viewer Debug panel
+is the count, and because the streaming loop harvests what the cull *emitted*,
+every HZB-rejected cluster automatically ages toward the detail cap too — the
+two features compose without a line of glue.
+
+It is off by default for one honest reason: the pyramid is one frame old, so
+while the camera moves, geometry revealed this frame can be rejected for a
+frame. It is exact whenever the cull camera is still — which is precisely the
+frozen-cull-camera mode above, and why the two toggles are designed to be
+turned on together.
+
+Every uncertain case fails open (near-plane crossers, boxes reaching off
+screen, footprints larger than the coarsest level, animated instances whose
+bound record does not carry the occlusion-enabled bit): a false negative draws
+a few hidden triangles, a false positive deletes visible geometry, and the two
+are not symmetric.
 
 ## The two bugs this took to work
 

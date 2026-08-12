@@ -1596,6 +1596,18 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
             "part of what there is to inspect.\n\n"
             "Pair with \"Freeze terrain streaming\" above. That one holds which "
             "tiles exist and at what rung; this one holds which are drawn.");
+    ImGui::Checkbox("HZB occlusion cull", &s.hiz_occlusion);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Reject clusters hidden behind what the previous frame drew, by "
+            "testing each one's screen AABB against a min-reduced depth "
+            "pyramid. This is what makes the cull's \"culled\" count mean "
+            "occluded rather than merely off-screen, and what gives the hiz "
+            "counter below a non-zero value.\n\n"
+            "Off by default: the pyramid is one frame old, so while the camera "
+            "moves something just revealed can be rejected for a frame. Exact "
+            "whenever the cull camera is still -- turn it on together with "
+            "\"Freeze cull camera\" and fly out to see what it rejected.");
     ImGui::Checkbox("Impostor parallax", &s.impostor_parallax);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(

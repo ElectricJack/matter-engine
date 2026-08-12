@@ -2493,7 +2493,16 @@ int main() {
                     viewer::FifoGetProp cmd; cmd.path = word;
                     registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "hiz %255s", word) == 1) {
-                    std::printf("hiz: not available in Vulkan milestone\n");
+                    // M4 Phase B gave this command something to do again. It
+                    // predates the Vulkan port and had been answering "not
+                    // available" since; the property path below is the general
+                    // form and this is kept because scripts already use it.
+                    stats.hiz_occlusion =
+                        std::strcmp(word, "on") == 0 ||
+                        std::strcmp(word, "1") == 0 ||
+                        std::strcmp(word, "true") == 0;
+                    std::printf("hiz: %s\n",
+                                stats.hiz_occlusion ? "on" : "off");
                 } else if (std::sscanf(line.c_str(), "dlss %255s", word) == 1) {
                     viewer::FifoDlss cmd; cmd.mode = word;
                     registry.dispatch(cmd);
@@ -3283,7 +3292,7 @@ int main() {
             (stats.debug_view_mode == 5 || force_lod_tint)
                 ? matter::GeometryDebugView::LodTint
                 : matter::GeometryDebugView::None;
-        options.hiz_occlusion = false;
+        options.hiz_occlusion = stats.hiz_occlusion;
         // Frozen cull camera (M4). The renderer takes its own snapshot of the
         // planes and the eye on the rising edge; this side captures the POSE at
         // the same moment, purely so the viewport can outline that frustum.
