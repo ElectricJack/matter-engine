@@ -367,6 +367,23 @@ int SectorStreamer::desired_level_at(float wx, float wy, float wz) const {
 // Nested mode: the desired set
 // ---------------------------------------------------------------------------
 
+void SectorStreamer::mark_visible(int64_t tx, int64_t ty, int64_t tz,
+                                  int rung) {
+    // Stamps an EXISTING entry only. Creating one here would let a stale
+    // readback -- which is stale by construction, the readback is fenced and a
+    // few frames behind -- resurrect a tile the streamer has already evicted,
+    // as an entry with no desired and no resident rung that the eviction sweep
+    // would then have to reason about. Visibility is an input to priority, and
+    // an input has no business creating the thing it prioritises.
+    const uint64_t k = cfg_.nested_sectors
+                           ? nested_key(matter_stream::variant_level(rung), tx,
+                                        cfg_.volumetric_sectors ? ty : kFlatTy,
+                                        tz)
+                           : key(tx, tz);
+    auto it = sectors_.find(k);
+    if (it != sectors_.end()) it->second.last_visible = vis_frame_;
+}
+
 void SectorStreamer::mark_desired(int level, int64_t tx, int64_t ty,
                                   int64_t tz) {
     auto& st = sectors_[nested_key(level, tx, ty, tz)];
@@ -628,6 +645,42 @@ void SectorStreamer::descend(
         if (split && lateral_staging_active() &&
             coarser_resident_beside(level, tx, ty, tz))
             split = false;
+    }
+
+    // ---- OCCLUSION DETAIL CAP (M4 Phase A, design §5.2) --------------------
+    //
+    // A tile nobody has drawn for `occlusion_grace_ticks` is desired
+    // `occlusion_cap_levels` COARSER than its band asks, by refusing the last
+    // splits rather than by rewriting a level afterwards. Expressing it as a
+    // refusal is what keeps it safe: the desired set still COVERS this
+    // footprint at every moment, so a wrong or stale visibility bit costs
+    // detail and can never open a hole. Nothing here can make a region
+    // undesired.
+    //
+    // NEVER SEEN reads as VISIBLE (last_visible == 0 is skipped below), and
+    // that is the difference between a cap and a cold-start stall: during the
+    // fill almost nothing has been drawn yet, so treating unseen as occluded
+    // would demote the entire world exactly when it is trying to become
+    // visible for the first time.
+    //
+    // A tile is judged by ITSELF, not by its subtree: an occluded parent stops
+    // descending, so the question never reaches children it would have had.
+    if (split && cfg_.occlusion_grace_ticks > 0 && level > 0) {
+        auto it = sectors_.find(nested_key(level, tx, ty, tz));
+        const uint64_t seen = it != sectors_.end() ? it->second.last_visible : 0;
+        if (seen != 0 && vis_frame_ > seen + uint64_t(cfg_.occlusion_grace_ticks)) {
+            // The level the bands alone would have put here. The cap is
+            // relative to that rather than absolute, so it demotes by a fixed
+            // amount of detail wherever the camera is, instead of pinning
+            // distant tiles that were already coarse.
+            int banded = 0;
+            for (int L = 0; L <= max_level(); ++L) {
+                banded = L;
+                if (nd <= level_radius_[L]) break;
+            }
+            const int floor_level = banded + cfg_.occlusion_cap_levels;
+            if (level <= floor_level) split = false;
+        }
     }
 
     if (split) {
@@ -1158,7 +1211,21 @@ bool SectorStreamer::next_request(SectorRequest& out) {
         const float width = cfg_.nested_sectors
             ? level_size(st.desired_level < 0 ? 0 : st.desired_level)
             : cfg_.sector_size;
-        const float score = is_hole ? st.dist - width : st.dist;
+        float score = is_hole ? st.dist - width : st.dist;
+        // OCCLUSION PRIORITY (M4 Phase A, §5.2): "visible holes, then offscreen
+        // holes", expressed as a distance penalty rather than as a separate
+        // class so it composes with the hole bonus above instead of overriding
+        // it. A tile that has gone unseen past the grace ranks as if it were
+        // one further tile-width away -- deliberately the SAME magnitude as the
+        // hole bonus, so being unseen exactly cancels being a hole and no more.
+        // A stronger penalty would let a large occluded region starve
+        // indefinitely behind a trickle of visible upgrades.
+        //
+        // Never-seen (0) does not pay it, for the reason the cap has: during a
+        // cold fill nothing has been drawn yet.
+        if (cfg_.occlusion_grace_ticks > 0 && st.last_visible != 0 &&
+            vis_frame_ > st.last_visible + uint64_t(cfg_.occlusion_grace_ticks))
+            score += width;
         if (score < best_score) {
             best_score = score;
             best_k = k;

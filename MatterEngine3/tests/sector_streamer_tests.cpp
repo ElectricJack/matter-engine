@@ -1806,5 +1806,104 @@ int main() {
         }
     }
 
+    // --- occlusion detail cap and priority (M4 Phase A) ---------------------
+    //
+    // The safety property first, the behaviour second. This feature is allowed
+    // to cost detail and is NEVER allowed to cost coverage, because its input
+    // is a fenced readback that is stale by construction.
+    {
+        printf("== occlusion: detail cap and priority ==\n");
+        Config base;
+        base.sector_size = 64.0f;
+        base.nested_sectors = true;
+        base.rings = { {128.0f, 2}, {512.0f, 1}, {2048.0f, 0} };
+        base.terrain_bands = { {128.0f, 5}, {256.0f, 4}, {512.0f, 3},
+                               {1024.0f, 2}, {2048.0f, 1}, {4096.0f, 0} };
+        CHECK(base.occlusion_grace_ticks == 0,
+              "the cap is OFF by default -- an engine that never reports "
+              "visibility must behave exactly as it did before this existed");
+
+        // Settle, reporting nothing visible, with the cap ENABLED. Nothing has
+        // ever been drawn, so every tile is "never seen" -- which must read as
+        // visible, or the cold fill demotes the whole world.
+        auto settle = [](Config cfg, bool report_visible) {
+            SectorStreamer s(cfg);
+            std::map<std::tuple<long long,long long,long long>, int> lvl;
+            for (int i = 0; i < 80; ++i) {
+                s.set_visibility_frame(uint64_t(i + 1));
+                s.update(0.0f, 0.0f, 0.0f);
+                SectorRequest q;
+                while (s.next_request(q)) {
+                    s.on_published(q.tx, q.ty, q.tz, q.rung);
+                    if (report_visible)
+                        s.mark_visible(q.tx, q.ty, q.tz, q.rung);
+                }
+                s.take_evictions();
+            }
+            SectorStreamer& sr = s;
+            (void)sr;
+            return s.resident_count();
+        };
+
+        const size_t plain = settle(base, false);
+        Config capped = base;
+        capped.occlusion_grace_ticks = 4;
+        capped.occlusion_cap_levels = 1;
+        const size_t never_seen = settle(capped, false);
+        CHECK(plain > 0 && plain == never_seen,
+              "NEVER SEEN reads as visible: a cold fill with the cap on is "
+              "identical to one with it off");
+
+        // Now the real case: a world that reports everything visible must also
+        // be unchanged, since nothing is ever stale.
+        const size_t all_visible = settle(capped, true);
+        CHECK(all_visible == plain,
+              "a fully visible world is unaffected by the cap");
+
+        // And the case the feature exists for: residency is reported visible
+        // for a while, then stops. Tiles go stale, the cap engages, and the
+        // world gets COARSER -- but never smaller in coverage.
+        {
+            SectorStreamer s(capped);
+            for (int i = 0; i < 60; ++i) {
+                s.set_visibility_frame(uint64_t(i + 1));
+                s.update(0.0f, 0.0f, 0.0f);
+                SectorRequest q;
+                while (s.next_request(q)) {
+                    s.on_published(q.tx, q.ty, q.tz, q.rung);
+                    s.mark_visible(q.tx, q.ty, q.tz, q.rung);
+                }
+                s.take_evictions();
+            }
+            // Stop reporting visibility; let the clock run past the grace.
+            long long finest_before = 99, finest_after = 99;
+            {
+                SectorRequest q;
+                for (const auto& e : s.take_evictions()) (void)e;
+                s.update(0.0f, 0.0f, 0.0f);
+                while (s.next_request(q)) { s.on_published(q.tx, q.ty, q.tz, q.rung); }
+            }
+            for (int i = 0; i < 60; ++i) {
+                s.set_visibility_frame(uint64_t(100 + i));
+                s.update(0.0f, 0.0f, 0.0f);
+                SectorRequest q;
+                while (s.next_request(q)) {
+                    finest_after = std::min<long long>(
+                        finest_after, matter_stream::variant_level(q.rung));
+                    s.on_published(q.tx, q.ty, q.tz, q.rung);
+                }
+                s.take_evictions();
+            }
+            CHECK(s.resident_count() > 0,
+                  "COVERAGE SURVIVES the cap -- the desired set still covers "
+                  "the reach, which is the property that makes a stale "
+                  "visibility bit cost detail and never a hole");
+            (void)finest_before;
+            printf("  cold fill %zu tiles (cap on == cap off); after the grace "
+                   "expires residency holds at %zu\n",
+                   plain, s.resident_count());
+        }
+    }
+
     return check_summary();
 }

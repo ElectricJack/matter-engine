@@ -220,6 +220,18 @@ struct Config {
     // Forced off when `nested_sectors` is off -- see the note there.
     bool volumetric_sectors = false;
 
+    // ---- occlusion detail cap (M4 Phase A, design 5.2) --------------------
+    // Ticks a tile may go unseen before its desired level is capped coarser.
+    // Zero DISABLES the cap outright, which is the default and the rollback
+    // position -- an engine that never calls mark_visible must behave exactly
+    // as it did before this existed.
+    int occlusion_grace_ticks = 0;
+    // How many levels coarser an unseen tile is allowed to fall. One is the
+    // design's conservative suggestion; the 2:1 restriction pass still runs
+    // afterwards, so a cap that would break the +-1 invariant against a visible
+    // neighbour is undone by restrict_levels rather than drawn.
+    int occlusion_cap_levels = 1;
+
     // The OCTREE'S VERTICAL EXTENT, and only that (volumetric_sectors only).
     // The selector will not descend outside [y_min, y_max] and no tile is
     // requested there, which is what stops an octree over an unbounded axis.
@@ -349,6 +361,32 @@ public:
     size_t resident_count() const;
     size_t inflight_count() const;
 
+    // ---- OCCLUSION FEEDBACK (M4 Phase A, design §5.2) ----------------------
+    //
+    // Report which tiles the renderer actually drew, and how long ago. The
+    // streamer folds that into TWO things and never into a third:
+    //
+    //   * PRIORITY -- a visible hole outranks an offscreen one (next_request);
+    //   * a DETAIL CAP -- a tile unseen for longer than `occlusion_grace_ticks`
+    //     is desired one or more levels COARSER than its band asks.
+    //
+    // IT NEVER GATES EXISTENCE. The desired set still covers everything the
+    // bands reach, so a wrong or stale visibility bit costs a few seconds of
+    // detail and can never open a hole. That asymmetry is the whole safety
+    // argument: the readback is fenced and a few frames old by construction,
+    // and a signal that could remove coverage would turn that staleness into
+    // the exact class of bug M0 spent itself closing.
+    //
+    // ABSENT BY DEFAULT, which is what keeps headless streaming deterministic:
+    // a streamer nobody calls `mark_visible` on has every tile permanently at
+    // "never seen", and the cap is written to treat never-seen as VISIBLE
+    // rather than as occluded. A test that does not know about occlusion gets
+    // the pre-M4 desired map, byte for byte.
+    void mark_visible(int64_t tx, int64_t ty, int64_t tz, int rung);
+    // Advance the visibility clock. One call per streamer tick, by the caller
+    // that owns the readback; `mark_visible` stamps this value.
+    void set_visibility_frame(uint64_t frame) noexcept { vis_frame_ = frame; }
+
     // The RESOLVED config, which is not the one you passed in. The constructor
     // rewrites it: `terrain_lod_enabled` is forced on by nesting, defaults are
     // filled into an empty band table, and both `nested_sectors` and
@@ -367,6 +405,12 @@ private:
         int   desired_rung  = -1;   // recomputed each update(); -1 = not desired
         int   desired_lod   = -1;   // transient terrain LOD during update()
         int   desired_level = -1;   // transient nesting level during update()
+        // Visibility clock stamp of the last frame this tile was reported
+        // drawn. 0 = NEVER SEEN, which the cap deliberately reads as "visible"
+        // rather than "occluded" -- a tile that has never been drawn is usually
+        // one that has never been resident, and demoting it on that basis would
+        // make the cap fire hardest during the cold fill it can least afford.
+        uint64_t last_visible = 0;
         float dist          = 0.0f; // anchor distance at last update
         int   cooldown      = 0;    // updates remaining before re-request allowed
     };
@@ -427,6 +471,8 @@ private:
     // submit_anchor -> AnchorSample -> here -- was proven end to end before a
     // selection rule depended on it. A wrong altitude and a wrong octree would
     // otherwise have been indistinguishable.
+    // Visibility clock, advanced by the caller that owns the readback.
+    uint64_t vis_frame_ = 0;
     float last_anchor_y_ = 0.0f;
     float last_anchor_z_ = 0.0f;
 
