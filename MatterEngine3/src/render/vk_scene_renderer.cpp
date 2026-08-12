@@ -10505,6 +10505,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     // upload_scene_buffers below restores command_template_ unconditionally,
     // which is why the capture cannot live any later in this function.
     capture_lod_trace(selected);
+    capture_visible_instances(selected);
     // Advance the range recycler's notion of time: a freed range becomes
     // reusable once every frame that could read its old bytes has retired.
     if (frame.serial > static_frame_serial_)
@@ -10724,6 +10725,63 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         command_template_.size());
     PROFILE_FRAME();
     return retained;
+}
+
+// VISIBILITY HARVEST (M4 Phase A, design §5.2).
+//
+// An instance that appears in the retired frame's command buffer is one
+// `cull.comp` EMITTED -- it survived the frustum test and, once the HZB lands,
+// the occlusion test too. So "what did the renderer actually draw" needs no new
+// GPU work at all: it is the same two host-visible buffers capture_lod_trace
+// reads, at the same point in the frame and for the same reason (this slot's
+// fence has retired and upload_scene_buffers has not yet overwritten them).
+//
+// A SEPARATE FUNCTION FROM capture_lod_trace, deliberately, though they read
+// the same bytes. lod_trace is a diagnostic with its own enable, its own frame
+// labelling and its own determinism contract for a differ; this is a control
+// input a shipping feature depends on. Folding them would mean occlusion
+// streaming silently stops the moment somebody turns tracing off -- and it
+// would tie a production loop to a facility whose output format exists to be
+// diffed, so any change to one becomes a change to both.
+//
+// Only the TOKEN is taken. Mapping it back to a sector is the engine's job
+// (it owns the publish side that knows what a token names); the renderer has
+// no business knowing what a sector is.
+void VkSceneRenderer::capture_visible_instances(FrameResources& frame) {
+    const bool had_result = frame.cull_result_valid;
+    if (!had_result || !visibility_capture_) return;
+    const uint32_t command_count = frame.lod_trace_command_count;
+    const uint32_t slot_count = frame.lod_trace_transform_slots;
+    if (command_count == 0 || slot_count == 0) return;
+
+    std::string error;
+    std::vector<DrawCommand> commands(command_count);
+    if (!matter::readback_buffer(
+            *vulkan_, frame.commands, commands.data(),
+            commands.size() * sizeof(DrawCommand), 0, error))
+        return;   // silent: this is a hint, and a missed frame costs nothing
+    std::vector<GpuDrawTransform> transforms(slot_count);
+    if (!matter::readback_buffer(
+            *vulkan_, frame.draw_transforms, transforms.data(),
+            transforms.size() * sizeof(GpuDrawTransform), 0, error))
+        return;
+
+    // Same bucket inversion capture_lod_trace documents: a command's occupied
+    // slot range names exactly the instances that selected it. The cluster and
+    // rung it selected are irrelevant here -- visibility is per INSTANCE.
+    visible_tokens_.clear();
+    for (uint32_t bucket = 0; bucket < command_count; ++bucket) {
+        const uint32_t drawn = commands[bucket].instance_count;
+        if (drawn == 0) continue;
+        const uint32_t first = commands[bucket].first_instance;
+        for (uint32_t offset = 0; offset < drawn; ++offset) {
+            const uint64_t index = static_cast<uint64_t>(first) + offset;
+            if (index >= transforms.size()) break;
+            visible_tokens_.push_back(
+                transforms[static_cast<size_t>(index)].instance_token);
+        }
+    }
+    visible_tokens_valid_ = true;
 }
 
 void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
@@ -12429,6 +12487,9 @@ bool VkSceneRenderer::record_cull_and_render(
     // through to here. The counts travel with the flag; see FrameResources.
     selected.lod_trace_valid =
         lod_trace::enabled() && lod_trace::capture_enabled();
+    // Unconditional: this slot now holds a readable cull result whether or not
+    // anybody is tracing it.
+    selected.cull_result_valid = true;
     selected.lod_trace_command_count = uploaded_command_count_;
     selected.lod_trace_transform_slots = uploaded_transform_slots_;
     // The editor's camera-path pose index when one is driving, else the frame
@@ -13964,6 +14025,7 @@ void VkSceneRenderer::reset() {
         frame.stats_valid = false;
         // A reset invalidates the part set the pending cull results describe.
         frame.lod_trace_valid = false;
+        frame.cull_result_valid = false;
     }
     raster_attachments_ready_ = false;
     ++static_generation_;

@@ -467,6 +467,21 @@ matter_stream::Config make_streaming_profile(
     // right and sometimes unused.
     profile.y_min = world_settings.y_min;
     profile.y_max = world_settings.y_max;
+    // OCCLUSION DETAIL CAP (M4 Phase A). Opt-in by env for now rather than by
+    // world flag: it changes what the streamer keeps resident, and the first
+    // thing anyone needs from it is an A/B against the same world with it off.
+    // A world flag would make that A/B an edit.
+    if (const char* occl = std::getenv("MATTER_OCCLUSION_GRACE")) {
+        profile.occlusion_grace_ticks = std::atoi(occl);
+        if (profile.occlusion_grace_ticks < 0)
+            profile.occlusion_grace_ticks = 0;
+        std::fprintf(stderr,
+                     "[stream] MATTER_OCCLUSION_GRACE=%s: unseen tiles are "
+                     "capped %d level(s) coarser after %d ticks%s\n",
+                     occl, profile.occlusion_cap_levels,
+                     profile.occlusion_grace_ticks,
+                     profile.occlusion_grace_ticks == 0 ? " (DISABLED)" : "");
+    }
     // Say which tiling is live, POSITIVELY, once per world load. The refusals
     // below and the env override above are the only other things that print
     // here, so silence used to mean "volumetric, probably" -- and the whole
@@ -2204,6 +2219,31 @@ struct WorldSession::Impl {
     // state M1 left the `ty` plumbing in, so this flag is what gives that
     // plumbing a value other than zero.
     bool world_volumetric_sectors = false;
+
+    // ---- OCCLUSION FEEDBACK (M4 Phase A, design 5.2) ----------------------
+    //
+    // instance_token -> the sector that owns it. The renderer hands back the
+    // tokens the cull pass EMITTED; `sector_instance_id` is a one-way hash, so
+    // the only way back is a forward map built where the id is minted.
+    //
+    // COLLISIONS ARE TOLERATED, on purpose. The token is a 32-bit fold
+    // (vulkan_history_token) of a 64-bit id, so two sectors can share one, and
+    // a collision stamps a tile visible that was not. That costs DETAIL --
+    // a tile stays finer than it needed to -- and can never cost coverage,
+    // because the streamer folds visibility into priority and a cap and into
+    // nothing else. Paying for exactness here (a wider token through the GPU
+    // instance struct) would buy nothing this feature can spend.
+    std::unordered_map<uint32_t, matter_stream::SectorRequest> visible_by_token;
+    // Frame clock for the visibility stamps. Its own counter rather than the
+    // render frame serial: the streamer's grace is measured in the ticks it
+    // actually receives, and a serial that advances while capture is off would
+    // age every tile out the moment it came back on.
+    uint64_t visibility_frame = 0;
+    // Mirrors the active profile's occlusion_grace_ticks > 0. The renderer's
+    // harvest costs two buffer readbacks a frame, so it is enabled only when
+    // something downstream will actually consume the answer.
+    bool occlusion_feedback_enabled = false;
+    std::vector<uint32_t> visible_token_scratch;
     float sector_size_for(int rung) const {
         return world_nested_sectors
             ? world_sector_size *
@@ -4512,6 +4552,9 @@ bool WorldSession::Impl::install_world(
         matter_stream::resolve_terrain_defaults(profile);
         active_streaming_lod = profile;
         has_active_streaming_lod = true;
+        // Turn the renderer's visibility harvest on only when the streamer
+        // will consume it (M4 Phase A).
+        occlusion_feedback_enabled = profile.occlusion_grace_ticks > 0;
         // Publish the resolver's activation radius from the SAME resolved
         // profile the streamer is built from, at the one point where world
         // JS, env vars and the editor's overrides have all been folded in.
@@ -7841,6 +7884,22 @@ void WorldSession::Impl::bake_and_stage_sector(
                     instance.instance_id = published.instance_id;
                     instance.part_hash = sector_hash;
                     instance.module = "WorldSector";
+                    // Remember which sector this instance names, so the cull
+                    // pass's emitted tokens can be mapped back (M4 Phase A).
+                    // Minted here because this is where the id is.
+                    //
+                    // Guarded because `vulkan_history_token` lives behind the
+                    // renderer header, which a HEADLESS MatterEngine3 build
+                    // does not include -- and correctly so: with no renderer
+                    // there are no emitted instances to map, so the map would
+                    // be built and never read.
+#ifdef MATTER_VULKAN_VIEWER
+                    visible_by_token[viewer::vulkan_history_token(
+                        published.instance_id)] =
+                        matter_stream::SectorRequest{
+                            request.sector.tx, request.sector.ty,
+                            request.sector.tz, request.sector.rung};
+#endif
                     std::memset(
                         instance.transform, 0, sizeof(instance.transform));
                     instance.transform[0] = 1.0f;
@@ -11011,6 +11070,51 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vol_allocation_rejected = impl_->vk_scene->volumetrics_allocation_rejected();
     impl_->stats.vol_allocation_error = impl_->vk_scene->volumetrics_allocation_error();
     impl_->stats.gpu_vt_ms               = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVt);
+
+    // ---- OCCLUSION FEEDBACK (M4 Phase A, design §5.2) ---------------------
+    //
+    // Close the loop: the cull pass emitted these instances, so the sectors
+    // they name are what the renderer actually drew. Map tokens to sectors and
+    // hand the batch to the coordinator, which applies it on the worker before
+    // its next selection tick.
+    //
+    // A frame with NO capture is not a frame that drew nothing. take_ returns
+    // false there and this whole block is skipped, so the visibility clock does
+    // not advance and no tile ages -- which is the difference between "we did
+    // not look" and "nothing was visible". Conflating them would demote the
+    // world every time capture was off for a few frames.
+    impl_->vk_scene->set_visibility_capture(
+        impl_->occlusion_feedback_enabled);
+    if (impl_->vk_scene->visibility_capture()) {
+        if (impl_->vk_scene->take_visible_tokens(impl_->visible_token_scratch)) {
+            std::vector<matter_stream::SectorRequest> drawn;
+            drawn.reserve(impl_->visible_token_scratch.size());
+            for (uint32_t token : impl_->visible_token_scratch) {
+                auto it = impl_->visible_by_token.find(token);
+                if (it != impl_->visible_by_token.end())
+                    drawn.push_back(it->second);
+            }
+            ++impl_->visibility_frame;
+            // Report the mapping yield periodically. Three numbers, because
+            // three different things break here and they look identical from
+            // the outside: tokens harvested (renderer), tokens that mapped
+            // (the publish-side map), and map size (whether it was populated
+            // at all). A batch that arrives empty is indistinguishable from a
+            // world where everything is visible, since never-seen reads as
+            // visible by design.
+            if (impl_->visibility_frame % 300 == 0) {
+                std::fprintf(stderr,
+                             "[occlusion] frame %llu: %zu tokens harvested, "
+                             "%zu mapped to sectors, map holds %zu\n",
+                             (unsigned long long)impl_->visibility_frame,
+                             impl_->visible_token_scratch.size(), drawn.size(),
+                             impl_->visible_by_token.size());
+            }
+            impl_->ecs_runtime.streaming_coordinator().submit_visible(
+                impl_->ecs_runtime.streaming_coordinator().intended_owner(),
+                impl_->visibility_frame, std::move(drawn));
+        }
+    }
     return true;
 }
 

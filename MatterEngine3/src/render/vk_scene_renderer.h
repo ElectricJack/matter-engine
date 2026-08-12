@@ -970,6 +970,23 @@ public:
         return upload_counters_;
     }
     VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
+
+    // ---- visibility harvest (M4 Phase A, design 5.2) ----------------------
+    // Enable the per-frame readback of which instances the cull pass emitted.
+    void set_visibility_capture(bool on) noexcept { visibility_capture_ = on; }
+    bool visibility_capture() const noexcept { return visibility_capture_; }
+    // The tokens from the most recently harvested frame, and whether there was
+    // one. MOVED OUT rather than copied: the caller maps and forwards them and
+    // has no reason to keep them, and a frame with no capture must be
+    // distinguishable from a frame that drew nothing -- the first means "no
+    // information", which the streamer must not read as "nothing is visible".
+    bool take_visible_tokens(std::vector<uint32_t>& out) noexcept {
+        if (!visible_tokens_valid_) return false;
+        out = std::move(visible_tokens_);
+        visible_tokens_.clear();
+        visible_tokens_valid_ = false;
+        return true;
+    }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
@@ -1786,6 +1803,13 @@ private:
         // frame-slot rotation later, by which time the global
         // uploaded_command_count_ may describe a different part set.
         bool lod_trace_valid = false;
+        // The same publication contract as lod_trace_valid, WITHOUT its enable.
+        // The trace flag answers "should this frame be traced"; this one
+        // answers "does this slot hold a readable cull result", which is a
+        // property of the frame and not of anyone's diagnostic settings. They
+        // were briefly the same flag and the visibility harvest silently never
+        // ran, because tracing was off.
+        bool cull_result_valid = false;
         uint32_t lod_trace_command_count = 0;
         uint32_t lod_trace_transform_slots = 0;
         uint64_t lod_trace_serial = 0;
@@ -1950,6 +1974,7 @@ private:
     // yet been overwritten by upload_scene_buffers' unconditional restore of
     // command_template_. Inert unless MATTER_LOD_TRACE is set.
     void capture_lod_trace(FrameResources& frame);
+    void capture_visible_instances(FrameResources& frame);
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool apply_dynamic_command_layout(std::string& error);
@@ -2610,6 +2635,14 @@ private:
     }
     VkSceneUploadCounters upload_counters_{};
     VkCullStats cached_stats_{};
+    // ---- visibility harvest (M4 Phase A) ----------------------------------
+    // Off unless something asks for it, because it costs two buffer readbacks
+    // per frame. `visible_tokens_` holds the instance tokens the cull pass
+    // emitted on the most recently retired frame; the engine drains it and
+    // maps tokens to sectors.
+    bool visibility_capture_ = false;
+    bool visible_tokens_valid_ = false;
+    std::vector<uint32_t> visible_tokens_;
     // GPU timestamp support. Cached at init time from device properties.
     bool gpu_timers_supported_ = false;
     float timestamp_period_ns_ = 0.0f;
