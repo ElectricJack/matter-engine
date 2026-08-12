@@ -531,6 +531,21 @@ $(W_OBJ_DIR)/glfw/glfw_vulkan_only_context.o: src/glfw_vulkan_only_context.c
 $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
 
+# A SECOND COPY of MatterEngine3/Makefile's VK_SPV list, and it generates THE
+# SAME header ($(VK_EMBEDDED_HEADER) below is $(ME3_DIR)/shaders_gen/
+# embedded_spirv.h). So a shader added to only one of the two lists is silently
+# DROPPED by whichever build runs last: `make -C MatterEngine3 vulkan-spirv`
+# writes a header containing it, then `make -C MatterEditor windows` rewrites
+# the same header from this list without it, the link succeeds, and the binary
+# dies at world load with
+#
+#     FATAL: render: embedded SPIR-V not found: <name>.comp.spv
+#
+# minutes after start. That has now happened twice. ADD NEW SHADERS TO BOTH
+# LISTS. (The right fix is for this list to be the other one -- include it, or
+# have the editor delegate the header to MatterEngine3 the way it already
+# delegates embedded_shaders.h at the `$(MAKE) -C $(ME3_DIR)` rule above -- but
+# that is a build refactor, and this comment is the guard until then.)
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/atmosphere_transmittance.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \
@@ -539,6 +554,8 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
+         build/shaders_vk/hzb_build.comp.spv \
+         build/shaders_vk/visible_ids.comp.spv \
          build/shaders_vk/raster.vert.spv \
          build/shaders_vk/raster_skin.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \

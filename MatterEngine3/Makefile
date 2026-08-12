@@ -329,6 +329,11 @@ shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	python3 tools/embed_shaders.py $@ . $(SHADER_LOGICAL)
 
 GLSLC ?= glslc
+# MIRRORED IN MatterEditor/Makefile, which has its own copy of this list and
+# regenerates THE SAME shaders_gen/embedded_spirv.h from it. A shader added
+# here and not there is dropped by the next editor build, and the failure is a
+# FATAL minutes into a world load rather than anything the build says. See the
+# longer note at that copy. ADD NEW SHADERS TO BOTH.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/atmosphere_transmittance.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \
@@ -338,6 +343,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/hzb_build.comp.spv \
+         build/shaders_vk/visible_ids.comp.spv \
          build/shaders_vk/raster.vert.spv \
          build/shaders_vk/raster_skin.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \

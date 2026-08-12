@@ -292,10 +292,28 @@ bool hzb_occluded(const vec3 world_corners[8]) {
     // for the half that is outside.
     if (lo.x < -1.0 || lo.y < -1.0 || hi.x > 1.0 || hi.y > 1.0) return false;
 
-    // NDC xy [-1,1] -> uv [0,1]. Vulkan's y already runs down the screen the
-    // same way the depth image's rows do, so there is no flip here.
-    const vec2 uv_lo = lo.xy * 0.5 + 0.5;
-    const vec2 uv_hi = hi.xy * 0.5 + 0.5;
+    // NDC xy [-1,1] -> uv [0,1], AND Y IS FLIPPED. That flip is not a Vulkan
+    // convention, it is this engine's: record_raster binds a NEGATIVE-HEIGHT
+    // viewport (origin at y = height, height = -height) to keep a top-left
+    // framebuffer convention without flipping the projection. So
+    //
+    //     framebuffer_y = height + (ndc.y * 0.5 + 0.5) * (-height)
+    //                   = height * (0.5 - ndc.y * 0.5)
+    //
+    // and the depth image's rows run OPPOSITE to NDC y. Getting this wrong
+    // does not fail loudly: it mirrors every cluster's lookup rectangle about
+    // the horizontal centreline, so the test reads depth belonging to
+    // unrelated geometry. Observed symptom, which is worth recording because
+    // it looks nothing like an inverted mapping -- almost nothing was culled
+    // (the mirrored rectangle usually lands on sky, whose reversed-Z clear of
+    // 0.0 occludes nothing), and the few clusters that were culled were
+    // plainly visible ones (the mirrored rectangle happened to land on near
+    // ground).
+    //
+    // Flipping y swaps which NDC bound is the smaller uv, hence hi/lo crossing
+    // over on the second component.
+    const vec2 uv_lo = vec2(lo.x * 0.5 + 0.5, 0.5 - hi.y * 0.5);
+    const vec2 uv_hi = vec2(hi.x * 0.5 + 0.5, 0.5 - lo.y * 0.5);
 
     // Pick the level whose texels make this footprint at most two wide, so the
     // 2x2 fetch below covers it completely. Level sizes fall by 4 each step.

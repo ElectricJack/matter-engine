@@ -1,0 +1,89 @@
+#version 460
+
+// WHICH SECTORS OWN A PIXEL (M4, identity-buffer occlusion).
+//
+// Reduces the G-buffer's identity attachment to a bitmask of the instance
+// tokens that survived the depth test. That is the whole occlusion signal, and
+// it needs no depth pyramid, no screen-space AABB, and no second rasterization:
+// gbuffer.frag already writes `uvec2(material, instance_token)` per pixel, and
+// a pixel is in that attachment precisely because it won the depth test.
+//
+// It answers the question the streamer actually asks -- "was any part of this
+// sector on screen" -- rather than a conservative proxy for it. An HZB says "is
+// this box definitely hidden", which on terrain means testing a box the size of
+// a whole cube tile and failing open almost every time (measured: 4 clusters of
+// ~900). Here a sector seen through one crack in the rock is visible, because
+// it owns a pixel.
+//
+// TWO LEVELS OF DEDUP, because the naive form convoys. A single 64 m tile can
+// own hundreds of thousands of pixels, and every one of them would atomicOr the
+// same word: thousands of invocations serialised on one cache line. So each
+// workgroup first folds its 256 pixels into a small shared table and only the
+// invocation that WINS a token emits the global atomic. Terrain is spatially
+// coherent, so a workgroup usually sees one or two distinct tokens and emits
+// one or two atomics instead of 256.
+//
+// Deliberately NOT using subgroup ops for that fold, which would be the obvious
+// alternative: nothing else in shaders_vk requires the subgroup feature set,
+// and a visibility signal is not the place to introduce a new device
+// requirement whose absence would fail at pipeline creation.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform usampler2D identity;
+layout(set = 0, binding = 1, std430) buffer VisibleBits {
+    uint bits[];
+};
+
+// The GLSL twin of render/visibility_hash.h. Keep the expression textually the
+// same as the C++ one: uint32 multiplication wraps identically in both, so
+// "textually the same" is also "bit-for-bit the same", and any divergence here
+// is a signal that is wrong with nothing to report it.
+const uint kVisibleIdShift = 32u - 19u;
+uint visible_id_hash(uint token) {
+    return (token * 2654435761u) >> kVisibleIdShift;
+}
+
+// record_raster clears the identity attachment to UINT32_MAX, not zero. Skip
+// it, or every pixel of sky sets a bit and the mask says the whole world is
+// visible. This doubles as the shared table's empty sentinel.
+const uint kEmpty = 0xFFFFFFFFu;
+
+// One slot per invocation. Sized to the workgroup so the clear below is a
+// single store each and the load factor is at worst 1.
+const uint kLocalSlots = 256u;
+shared uint local_tokens[kLocalSlots];
+
+void main() {
+    local_tokens[gl_LocalInvocationIndex] = kEmpty;
+    barrier();
+
+    const ivec2 size = textureSize(identity, 0);
+    const ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    uint token = kEmpty;
+    if (texel.x < size.x && texel.y < size.y)
+        token = texelFetch(identity, texel, 0).y;
+
+    if (token != kEmpty) {
+        // Open-addressed insert. Three outcomes, and only the first emits:
+        //   won the slot   -> this invocation owns the token, emit
+        //   found it there -> another invocation already emitted, stay quiet
+        //   probes ran out -> the table is saturated; emit rather than risk
+        //                     dropping the token, since a missed token is a
+        //                     sector reading occluded and a redundant atomic is
+        //                     only a redundant atomic.
+        uint slot = visible_id_hash(token) & (kLocalSlots - 1u);
+        bool duplicate = false;
+        for (uint probe = 0u; probe < 8u; ++probe) {
+            const uint previous =
+                atomicCompSwap(local_tokens[slot], kEmpty, token);
+            if (previous == kEmpty) break;            // won it
+            if (previous == token) { duplicate = true; break; }
+            slot = (slot + 1u) & (kLocalSlots - 1u);
+        }
+        if (!duplicate) {
+            const uint bit = visible_id_hash(token);
+            atomicOr(bits[bit >> 5u], 1u << (bit & 31u));
+        }
+    }
+}

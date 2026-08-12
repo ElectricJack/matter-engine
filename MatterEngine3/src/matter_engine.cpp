@@ -51,6 +51,7 @@
 #include "render/vk_lighting_controls.h"
 #include "render/matrix_math.h"
 #include "render/vt_surface_tape.h"  // P2: field-lane scan + f16 lane values
+#include "render/visibility_hash.h"  // M4: the id-buffer bitmask's one hash
 #endif
 // Headless builds (no MATTER_VULKAN_VIEWER) still compile the streaming
 // publish path, which declares an (always-empty there) prebuilt-part handle.
@@ -324,6 +325,41 @@ public:
         return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t).count();
     }
 };
+
+// WHICH VISIBILITY SIGNAL feeds the occlusion cap (M4).
+//
+// Same reasoning as MATTER_OCCLUSION_GRACE for being an env var: the two
+// sources answer measurably different questions, and the first thing anyone
+// needs is to run them against each other on one world.
+//
+//   (default)  a sector counts as drawn when the CULL PASS EMITTED it, i.e.
+//              it survived the FRUSTUM test. Rock does not occlude it, so
+//              underground almost everything reads as visible.
+//   idbuffer   a sector counts as drawn when it OWNS A PIXEL of the G-buffer
+//              identity attachment, i.e. it survived the DEPTH test.
+//
+// Read once into a function-local static: it is a launch-time choice, and the
+// drain that consults it runs per frame.
+bool occlusion_source_is_id_buffer() {
+    static const bool value = []() {
+        const char* source = std::getenv("MATTER_OCCLUSION_SOURCE");
+        const bool id_buffer =
+            source != nullptr && std::strcmp(source, "idbuffer") == 0;
+        if (source != nullptr) {
+            std::fprintf(stderr,
+                         "[stream] MATTER_OCCLUSION_SOURCE=%s: a sector counts "
+                         "as drawn when it %s\n",
+                         source,
+                         id_buffer
+                             ? "owns a pixel of the G-buffer identity "
+                               "attachment (survived DEPTH)"
+                             : "was emitted by the cull pass (survived "
+                               "FRUSTUM -- so rock does not occlude it)");
+        }
+        return id_buffer;
+    }();
+    return value;
+}
 
 matter_stream::Config make_streaming_profile(
     float sector_size,
@@ -2256,6 +2292,7 @@ struct WorldSession::Impl {
     // something downstream will actually consume the answer.
     bool occlusion_feedback_enabled = false;
     std::vector<uint32_t> visible_token_scratch;
+    std::vector<uint32_t> visible_bit_scratch;
     float sector_size_for(int rung) const {
         return world_nested_sectors
             ? world_sector_size *
@@ -10455,8 +10492,33 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->sec.set_min_projected_size(opts.min_projected_size);
     impl_->sec.set_pixel_budget(budget);
     viewer::SectorLodResolver& resolver = impl_->sec;
+    // FROZEN CULL CAMERA (M4): the resolver has to freeze with it.
+    //
+    // This function's `cam` is the live camera, and the resolver does two
+    // camera-dependent things with it that both REMOVE INSTANCES before the
+    // cull dispatch ever sees them: it drops sectors outside active_radius_ of
+    // the eye (resolvers.cpp, "emit instances only for sectors within the
+    // activation sphere"), and it picks each sector's LOD from the same eye.
+    //
+    // Leaving that live made "freeze cull camera" a half-measure that could
+    // not be used for what it exists for: fly away from the frozen viewpoint
+    // and sectors kept vanishing behind you, so what you were looking at was
+    // the frozen frustum's decision MINUS the live camera's activation sphere,
+    // and there was no way to tell the two apart. Measured before this: 376
+    // instances at the frozen viewpoint, 345 after flying 1.9 km out with
+    // everything supposedly pinned.
+    //
+    // The eye comes from the RENDERER's snapshot rather than a second one
+    // taken here, so the frustum planes the cull tests against and the sphere
+    // the resolver applies are the same instant by construction.
+    // cull_camera_frozen() is false until that snapshot exists (the first
+    // frame after the toggle), which is exactly when the live eye is still the
+    // right answer.
+    matter::Float3 cull_eye = cam.position;
+    if (impl_->vk_scene && impl_->vk_scene->cull_camera_frozen())
+        cull_eye = impl_->vk_scene->frozen_cull_eye();
     const float3 camera_pos =
-        make_float3(cam.position.x, cam.position.y, cam.position.z);
+        make_float3(cull_eye.x, cull_eye.y, cull_eye.z);
     const auto resolve_start = std::chrono::steady_clock::now();
     // Render-lane ProfileLib zones mirroring the resolve/build/draw chrono spans,
     // so the frame table attributes this render-thread CPU instead of dumping it
@@ -11151,9 +11213,64 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // not advance and no tile ages -- which is the difference between "we did
     // not look" and "nothing was visible". Conflating them would demote the
     // world every time capture was off for a few frames.
+    //
+    // TWO SOURCES, and the second one is the reason this feature works
+    // underground (occlusion_source, MATTER_OCCLUSION_SOURCE):
+    //
+    //   Emitted  - the tokens the CULL PASS emitted, i.e. survivors of the
+    //              FRUSTUM test. A sector buried in solid rock is in frustum
+    //              and reads as visible, which underground is most of the
+    //              world. Cheap (the buffers are read back anyway) and the
+    //              only source that existed through Phase A.
+    //
+    //   IdBuffer - the tokens that own a pixel of the G-buffer identity
+    //              attachment, i.e. survivors of the DEPTH test. That is the
+    //              question the streamer is actually asking, answered per
+    //              pixel with no pyramid and no screen-space box. Costs one
+    //              compute reduction over the G-buffer.
+    //
+    // The membership test runs the other way round from Emitted's: the mask
+    // cannot be enumerated, so instead of walking harvested tokens and looking
+    // each up, this walks the map and tests each token's bit. Same result,
+    // and the walk is over resident sectors rather than over drawn instances.
+    const bool id_buffer = occlusion_source_is_id_buffer();
     impl_->vk_scene->set_visibility_capture(
-        impl_->occlusion_feedback_enabled);
-    if (impl_->vk_scene->visibility_capture()) {
+        impl_->occlusion_feedback_enabled && !id_buffer);
+    impl_->vk_scene->set_visibility_reduce(
+        impl_->occlusion_feedback_enabled && id_buffer);
+    if (impl_->vk_scene->visibility_reduce()) {
+        if (impl_->vk_scene->take_visible_bits(impl_->visible_bit_scratch)) {
+            std::vector<matter_stream::SectorRequest> drawn;
+            size_t bits_set = 0;
+            for (uint32_t word : impl_->visible_bit_scratch)
+                bits_set += size_t(__builtin_popcount(word));
+            for (const auto& [token, sector] : impl_->visible_by_token) {
+                const uint32_t bit = viewer::visible_id_hash(token);
+                const uint32_t word = impl_->visible_bit_scratch[bit >> 5];
+                if (word & (1u << (bit & 31u))) drawn.push_back(sector);
+            }
+            ++impl_->visibility_frame;
+            if (impl_->visibility_frame % 300 == 0) {
+                // bits_set is the COLLISION INSTRUMENT. It counts distinct
+                // hash slots the GPU lit, so `bits_set` well above the number
+                // of sectors that mapped means either real non-sector geometry
+                // (props, welds, skinned parts -- expected) or a hash behaving
+                // badly, and the two are told apart by whether it moves with
+                // the scene or with the map size.
+                std::fprintf(stderr,
+                             "[occlusion] frame %llu: id-buffer, %zu bits set, "
+                             "%zu of %zu mapped sectors visible "
+                             "(%zu sectors resident)\n",
+                             (unsigned long long)impl_->visibility_frame,
+                             bits_set, drawn.size(),
+                             impl_->visible_by_token.size(),
+                             impl_->sector_map.size());
+            }
+            impl_->ecs_runtime.streaming_coordinator().submit_visible(
+                impl_->ecs_runtime.streaming_coordinator().intended_owner(),
+                impl_->visibility_frame, std::move(drawn));
+        }
+    } else if (impl_->vk_scene->visibility_capture()) {
         if (impl_->vk_scene->take_visible_tokens(impl_->visible_token_scratch)) {
             std::vector<matter_stream::SectorRequest> drawn;
             drawn.reserve(impl_->visible_token_scratch.size());

@@ -990,6 +990,26 @@ public:
         return true;
     }
 
+    // ---- identity-buffer visibility (M4) ----------------------------------
+    // The other answer to "what did the renderer draw", and a strictly better
+    // one: `take_visible_tokens` above reports what the CULL PASS EMITTED, so a
+    // sector buried in solid rock is in-frustum and reads as visible. This
+    // reports which tokens own a pixel that SURVIVED THE DEPTH TEST, read off
+    // the G-buffer identity attachment the raster pass already writes.
+    //
+    // A BITMASK, not a list, and the asymmetry is the point: the GPU can only
+    // afford to record membership over two million pixels, and the CPU only
+    // ever asks about tokens it already holds. See render/visibility_hash.h.
+    void set_visibility_reduce(bool on) noexcept { visibility_reduce_ = on; }
+    bool visibility_reduce() const noexcept { return visibility_reduce_; }
+    bool take_visible_bits(std::vector<uint32_t>& out) noexcept {
+        if (!visible_bits_valid_) return false;
+        out = std::move(visible_bits_);
+        visible_bits_.clear();
+        visible_bits_valid_ = false;
+        return true;
+    }
+
     // ---- frozen cull camera (M4 inspection aid) ---------------------------
     // See RenderOptions::freeze_cull_camera for what this is for. The snapshot
     // is taken on the RISING EDGE inside upload_frame_constants -- the one
@@ -1770,6 +1790,19 @@ private:
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
         matter::VkBufferResource stats;
+        // ---- identity-buffer visibility (M4) --------------------------------
+        // The bitmask visible_ids.comp ORs this frame's surviving instance
+        // tokens into, and the pipeline that writes it.
+        //
+        // BOTH are per frame slot, and the pipeline is per slot for the same
+        // reason the buffer is: its descriptor set names THIS slot's buffer,
+        // and a set bound by an in-flight command buffer must not be rewritten
+        // to point somewhere else. One pipeline object with one set, rewritten
+        // each frame, is the version of this that works until the frame rate
+        // drops and two frames are in flight at once.
+        matter::VkBufferResource visibility_bits;
+        matter::VkComputePipelineResource visibility_pipeline;
+        bool visibility_bits_valid = false;
         matter::VkBufferResource animation_bounds;
         matter::VkBufferResource material_upload;
         matter::VkBufferResource materials;
@@ -2295,6 +2328,11 @@ private:
 
     bool create_impostor_atlas(std::string& error);
     void write_impostor_descriptor_for_frame(VkDescriptorSet set);
+    // Identity-buffer visibility (M4). See the block comment at the definitions.
+    bool ensure_visibility_pipelines(std::string& error);
+    void record_visibility_reduce(VkCommandBuffer command_buffer,
+                                  FrameResources& frame, VkExtent2D extent);
+    void capture_visible_bits(FrameResources& frame);
     // HZB occlusion (M4 Phase B). See the block comment at the definitions.
     bool create_hzb_pyramid(std::string& error);
     void write_hzb_descriptor_for_frame(VkDescriptorSet set);
@@ -2702,6 +2740,13 @@ private:
     bool visibility_capture_ = false;
     bool visible_tokens_valid_ = false;
     std::vector<uint32_t> visible_tokens_;
+    // Identity-buffer visibility (M4). `visibility_reduce_` is the caller's
+    // switch; `visibility_descriptors_valid_` says the per-slot sets have been
+    // written against the CURRENT identity attachment, which a resize replaces.
+    bool visibility_reduce_ = false;
+    bool visibility_descriptors_valid_ = false;
+    bool visible_bits_valid_ = false;
+    std::vector<uint32_t> visible_bits_;
     // Frozen cull camera. `requested` is the caller's switch; `frozen` says a
     // snapshot has actually been taken, which cannot happen until a frame
     // uploads its constants.
