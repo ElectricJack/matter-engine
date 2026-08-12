@@ -217,11 +217,21 @@ class WorldSector extends Part {
     // COLUMN OR CUBE, never both: the two verbs describe the same matter at
     // different extents, so calling both would mesh the whole column and then
     // a slice of it again.
-    if ((p.volumetric | 0) !== 0) {
-      this.terrainVolumeTiled(p.tx, p.ty | 0, p.tz, voxelRung, terrainMaterials);
-    } else {
-      this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
-    }
+    // COLUMN PATH COMMENTED OUT (2026-08-12). Every streamed scene declares
+    // `volumetricSectors`, so `p.volumetric` is always 1 and the else-branch
+    // below was dead; `terrainVolume` itself is commented out in part_base.js
+    // and its native binding is gone, so calling it would now throw.
+    //
+    //   } else {
+    //     this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
+    //   }
+    //
+    // The engine still SENDS `volumetric`, and this file still ignores it
+    // rather than asserting on it: MATTER_VOLUMETRIC_SECTORS=0 remains the
+    // A/B, and under it the streamer hands out column keys while this bakes a
+    // cube at ty 0 -- wrong, but wrong in the one configuration a person has
+    // to opt into by hand. Restoring the branch is how you take that A/B back.
+    this.terrainVolumeTiled(p.tx, p.ty | 0, p.tz, voxelRung, terrainMaterials);
     pend(P_TERRAIN);
     if (!table) return;   // no biome table -> terrain only
 

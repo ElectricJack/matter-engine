@@ -106,6 +106,29 @@ struct SectorMesh {
 // note at the end of this header): coarse terrain used to come from its LOD 0-4
 // height grids, and having two surfaces meet mid-world printed a visible seam
 // between near and far terrain. One representation at two resolutions cannot.
+// DEPRECATED (2026-08-12): THE COLUMN PATH IS ON ITS WAY OUT.
+//
+// `mesh_sector_tiled` below is the direction. Every world that streams with
+// `nestedSectors` now also sets `volumetricSectors` and meshes CUBES; this
+// function survives for two reasons and neither is "it is still the design":
+//
+//   * the UNIFORM-GRID worlds -- ChartVtProof, MetalProof, PomProof,
+//     PomProofBrick, TilesetGallery and the shared world_demo WorldSector --
+//     declare no nesting at all, so they have no level ladder for an octree to
+//     descend. Rolling them forward means giving each one a band table, which
+//     changes what those scenes are proving. Not a mesher decision;
+//   * it is the ROLLBACK and the A/B baseline. `MATTER_VOLUMETRIC_SECTORS=0`
+//     runs any world on columns without editing it, which is how the octree's
+//     cost was measured at all (StreamMountain: 0.19 ms/tick and ~450 resident
+//     on columns against 1.57 ms and ~2400 on cubes). Deleting the control is
+//     how a migration stops being able to answer "compared to what".
+//
+// So: no new caller, no new feature, and the two shortcuts below stay only
+// because they are provable consequences of `density == h(x, z) - y` rather
+// than approximations worth porting. When the uniform worlds are retired or
+// given ladders, this goes with them -- and `mesh_sector_impl` already
+// implements both paths, so it is a deletion, not a rewrite.
+//
 // Returns false + err on degenerate config (rung outside -5..3, sector_size <= 0,
 // y_min >= y_max).
 bool mesh_sector(const terrain_field::FieldRuntime& field,

@@ -63,22 +63,18 @@ class WorldSector extends Part {
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
 
-    // COLUMN OR CUBE, and never both -- the two verbs describe the same matter
-    // at different extents, so calling both would mesh the world's whole column
-    // and then a 64 m slice of it a second time.
+    // A CUBE: [ty*S, (ty+1)*S) in y. This is what makes yMin cheap -- the
+    // column path sampled every row from the surface down to yMin (-1000 m
+    // here, ~590 rows at level 0) whether or not anything was down there,
+    // while a cube away from the surface or a cavern shell costs one
+    // all-air/all-solid pass and yields nothing at all. That is the difference
+    // this world was built to show, and it is why it flipped first.
     //
-    // `volumetric` is sent by the engine, not inferred from `ty`, because ty is
-    // legitimately 0 for the ground-level tile in BOTH modes and there would be
-    // no way to tell them apart at exactly the tile a mistake is least visible.
-    if ((p.volumetric | 0) !== 0) {
-      // A CUBE: [ty*S, (ty+1)*S) in y. This is what makes yMin cheap -- the
-      // column path samples every row from the surface down to yMin (-1000 m
-      // here, ~590 rows at level 0) whether or not anything is down there,
-      // while a cube away from the surface or a cavern shell costs one
-      // all-air/all-solid pass and yields nothing at all.
-      this.terrainVolumeTiled(p.tx, p.ty | 0, p.tz, voxelRung, terrainMaterials);
-    } else {
-      this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
-    }
+    // COLUMN PATH COMMENTED OUT (2026-08-12):
+    //
+    //   } else {
+    //     this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
+    //   }
+    this.terrainVolumeTiled(p.tx, p.ty | 0, p.tz, voxelRung, terrainMaterials);
   }
 }

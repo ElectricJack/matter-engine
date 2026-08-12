@@ -53,6 +53,18 @@ class TilesetGallery extends World {
   };
 
   static streaming = {
+    // OCTREE STREAMING (volumetric-sectors M3). Every streamed scene runs cube
+    // tiles now; the column path is deprecated and its world-facing route is
+    // commented out (part_base.js.h, dsl_bindings.cpp).
+    //
+    // These scenes were on the UNIFORM grid -- no nesting, so no level ladder
+    // for an octree to descend -- which is why they needed `nestedSectors` as
+    // well. With no `terrainBands` authored, resolve_terrain_defaults() fills a
+    // table scaled off sectorSize (5S/8S/12S/18S/27S/40S), so the ladder each
+    // one gets is proportional to its own tile size rather than inherited from
+    // a world it has nothing to do with.
+    nestedSectors: true,
+    volumetricSectors: true,
     rings: [
       { radius: 96.0, rung: 1 },
       { radius: 224.0, rung: 0 },

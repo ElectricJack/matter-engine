@@ -21,11 +21,18 @@ function assetVariants() {
 }
 
 class WorldSector extends Part {
-  static params = { tx: 0, tz: 0, rung: 0, worldSeed: 0, fieldHash: '', biomes: '' };
+  static params = { tx: 0, ty: 0, tz: 0, rung: 0, volumetric: 0,
+                    worldSeed: 0, fieldHash: '', biomes: '' };
   static requires = assetVariants();
 
   build(p) {
-    this.terrainVolume(p.tx, p.tz, p.rung, [MAT.grass, MAT.dirt, MAT.rock, MAT.snow]);
+    // Was `terrainVolume(p.tx, p.tz, p.rung, [...])` -- which also happened to
+    // be passing its palette positionally into the old edgeMask slot, so this
+    // fixture had been meshing with the binding's default ids for months. Both
+    // are fixed by the move to the cube verb (column path commented out
+    // 2026-08-12).
+    this.terrainVolumeTiled(p.tx, p.ty | 0, p.tz, p.rung,
+                            [MAT.grass, MAT.dirt, MAT.rock, MAT.snow]);
     if (p.rung < 2) return;
 
     const table = p.biomes ? JSON.parse(p.biomes) : {};

@@ -1638,60 +1638,70 @@ static void read_mat_palette(JSContext* c, JSValueConst arg, uint32_t mat[4]) {
     }
 }
 
-// terrainVolume(tx, tz, rung[, matArray])
-// Meshes one sector of the bound terrain field using native surface-nets and
-// pushes the result directly into the triangle buffer. matArray is an array of
-// four material IDs [grass, dirt, rock, snow] indexed by the field's material_at.
-// Fails loudly if no world binding is installed.
+// COLUMN PATH COMMENTED OUT (2026-08-12). `terrainVolumeTiled` below is the
+// verb every streamed scene uses; this one meshed the COLUMN
+// [yMin, surface] for a (tx, tz) and is what the octree replaced.
 //
-// THE 4TH SLOT USED TO BE `edgeMask` and is now the material array. The mask
-// stopped meaning anything in M0-WP1 and was accepted-and-ignored until the
-// WorldSector.js copies passing it were swept (2026-08-11); the slot is reused
-// rather than left as a hole because the alternative -- a permanently dead
-// argument -- is what let `fixtures/world_stream/objects/WorldSector.js` pass
-// its material array positionally into the mask for months without a symptom.
-static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) {
-    DslState* st = state_of(c);
-    if (st->generating_animation()) {
-        st->set_error("geometry authoring is forbidden during generate");
-        return JS_UNDEFINED;
-    }
-    const WorldBinding& w = st->world();
-    if (!w.field) {
-        st->set_error("terrainVolume: no world bound — set BakeOptions.world before baking a terrain sector");
-        return JS_UNDEFINED;
-    }
-    if (n < 3) { st->set_error("terrainVolume: requires (tx, tz, rung[, mats])"); return JS_UNDEFINED; }
-
-    int64_t tx = 0, tz = 0;
-    JS_ToInt64(c, &tx, a[0]);
-    JS_ToInt64(c, &tz, a[1]);
-    int32_t rung = 0;
-    JS_ToInt32(c, &rung, a[2]);
-
-    // Optional material array: up to 4 entries [grass, dirt, rock, snow].
-    // Defaults to 0..3 if not supplied.
-    uint32_t mat[4] = {0, 1, 2, 3};
-    if (n >= 4) read_mat_palette(c, a[3], mat);
-
-    terrain_mesher::SectorMesh mesh;
-    seam::SectorBoundary boundary;
-    std::string err;
-    {
-        VerbTimer _vt(g_volume_us, g_volume_calls);
-        if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung,
-                                          w.sector_size, w.y_min, w.y_max, mesh,
-                                          &boundary, err)) {
-            st->set_error("terrainVolume: " + err);
-            return JS_UNDEFINED;
-        }
-    }
-    // The record carries RAW field materials (0..3), the same space the mesh
-    // buckets use; the palette remap, the hand-off to the bake and the triangle
-    // push are all in emit_terrain_volume, shared with the tiled verb below.
-    emit_terrain_volume(st, mesh, boundary, mat);
-    return JS_UNDEFINED;
-}
+// Commented rather than deleted for one reason: `mesh_sector` is still
+// compiled and still pinned bitwise by terrain_mesher_tests, so the code
+// below is not dead in the linker's sense -- it is dead in the WORLD's
+// sense, and this is the exact boundary where that became true. Restoring
+// it means restoring the part_base.js wrapper too; neither works alone.
+//
+// // terrainVolume(tx, tz, rung[, matArray])
+// // Meshes one sector of the bound terrain field using native surface-nets and
+// // pushes the result directly into the triangle buffer. matArray is an array of
+// // four material IDs [grass, dirt, rock, snow] indexed by the field's material_at.
+// // Fails loudly if no world binding is installed.
+// //
+// // THE 4TH SLOT USED TO BE `edgeMask` and is now the material array. The mask
+// // stopped meaning anything in M0-WP1 and was accepted-and-ignored until the
+// // WorldSector.js copies passing it were swept (2026-08-11); the slot is reused
+// // rather than left as a hole because the alternative -- a permanently dead
+// // argument -- is what let `fixtures/world_stream/objects/WorldSector.js` pass
+// // its material array positionally into the mask for months without a symptom.
+// static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+//     DslState* st = state_of(c);
+//     if (st->generating_animation()) {
+//         st->set_error("geometry authoring is forbidden during generate");
+//         return JS_UNDEFINED;
+//     }
+//     const WorldBinding& w = st->world();
+//     if (!w.field) {
+//         st->set_error("terrainVolume: no world bound — set BakeOptions.world before baking a terrain sector");
+//         return JS_UNDEFINED;
+//     }
+//     if (n < 3) { st->set_error("terrainVolume: requires (tx, tz, rung[, mats])"); return JS_UNDEFINED; }
+//
+//     int64_t tx = 0, tz = 0;
+//     JS_ToInt64(c, &tx, a[0]);
+//     JS_ToInt64(c, &tz, a[1]);
+//     int32_t rung = 0;
+//     JS_ToInt32(c, &rung, a[2]);
+//
+//     // Optional material array: up to 4 entries [grass, dirt, rock, snow].
+//     // Defaults to 0..3 if not supplied.
+//     uint32_t mat[4] = {0, 1, 2, 3};
+//     if (n >= 4) read_mat_palette(c, a[3], mat);
+//
+//     terrain_mesher::SectorMesh mesh;
+//     seam::SectorBoundary boundary;
+//     std::string err;
+//     {
+//         VerbTimer _vt(g_volume_us, g_volume_calls);
+//         if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung,
+//                                           w.sector_size, w.y_min, w.y_max, mesh,
+//                                           &boundary, err)) {
+//             st->set_error("terrainVolume: " + err);
+//             return JS_UNDEFINED;
+//         }
+//     }
+//     // The record carries RAW field materials (0..3), the same space the mesh
+//     // buckets use; the palette remap, the hand-off to the bake and the triangle
+//     // push are all in emit_terrain_volume, shared with the tiled verb below.
+//     emit_terrain_volume(st, mesh, boundary, mat);
+//     return JS_UNDEFINED;
+// }
 
 // terrainVolumeTiled(tx, ty, tz, rung[, matArray])  — M2, design §3.3
 //
@@ -1856,7 +1866,11 @@ void install_bindings(JSContext* ctx) {
     // Volumetric emitter binding.
     bind("__dsl_emitVolume",j_emitVolume,1);
     // Terrain verb binding (Task 5: terrainVolume).
-    bind("__terrainVolume",j_terrainVolume,4);
+    // COLUMN PATH COMMENTED OUT (2026-08-12) -- see j_terrainVolume above.
+    // Unbinding it, rather than only removing the prelude wrapper, is what
+    // makes a restored `terrainVolume(...)` fail loudly with a ReferenceError
+    // instead of silently baking a column beside cubes.
+    // bind("__terrainVolume",j_terrainVolume,4);
     // M2: the Y-tiled sibling. No part_base.js wrapper yet -- that, and the
     // WorldSector.js calls, are M3's (see the note on j_terrainVolumeTiled).
     bind("__terrainVolumeTiled",j_terrainVolumeTiled,5);

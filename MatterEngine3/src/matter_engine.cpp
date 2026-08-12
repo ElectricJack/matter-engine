@@ -477,6 +477,20 @@ matter_stream::Config make_streaming_profile(
                      "[stream] tiling: VOLUMETRIC (octree cubes), octree "
                      "extent y %.1f..%.1f, S_0 %.1f m\n",
                      profile.y_min, profile.y_max, profile.sector_size);
+    } else {
+        // THE COLUMN PATH IS DEPRECATED (2026-08-12). Say so at world load,
+        // once, with the reason a given world is still on it -- there are two
+        // and they need different fixes, so one message for both would send
+        // half its readers the wrong way.
+        std::fprintf(stderr,
+                     "[stream] tiling: COLUMN (DEPRECATED -- %s). Cube tiles "
+                     "are the direction; see terrain_mesher.h. "
+                     "MATTER_VOLUMETRIC_SECTORS=1 forces the octree.\n",
+                     profile.nested_sectors
+                         ? "this world is nested but has not set "
+                           "streaming.volumetricSectors"
+                         : "this world declares no nestedSectors, so there is "
+                           "no level ladder for an octree to descend");
     }
     if (profile.volumetric_sectors && !(profile.y_max > profile.y_min)) {
         // An inverted or empty extent would make the ty range empty on every

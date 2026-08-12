@@ -487,7 +487,7 @@ class HabProbe extends Part {
                           ': verb ' + got + ' vs runtime ' + exp);
       }
     }
-    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+    this.terrainVolumeTiled(0, 0, 0, 0, [16,16,16,16]);
   }
 }
 )JS";
@@ -521,7 +521,7 @@ class BareHab extends Part {
   build(p) {
     const out = [];
     this.habitatAt(0, 0, out);
-    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+    this.terrainVolumeTiled(0, 0, 0, 0, [16,16,16,16]);
   }
 }
 )JS";
@@ -533,7 +533,7 @@ class BareHab extends Part {
               nb.error.message.c_str());
     }
 
-    // ---- terrainVolume forwards ALL FOUR arguments ---------------------------
+    // ---- terrainVolumeTiled forwards ALL FIVE arguments ----------------------
     //
     // AN ARITY GUARD, and the arity has now changed twice. The wrapper in
     // part_base.js.h was once left at its pre-edgeMask four-parameter form after
@@ -562,27 +562,27 @@ class BareHab extends Part {
 class MatFwd extends Part {
   build(p) {
     let seen = null;
-    const real = globalThis.__terrainVolume;
-    globalThis.__terrainVolume = function(...args) { seen = args; return real.apply(null, args); };
+    const real = globalThis.__terrainVolumeTiled;
+    globalThis.__terrainVolumeTiled = function(...args) { seen = args; return real.apply(null, args); };
     try {
-      this.terrainVolume(3, 4, 0, [16, 11, 17, 2]);
+      this.terrainVolumeTiled(3, 1, 4, 0, [16, 11, 17, 2]);
     } finally {
-      globalThis.__terrainVolume = real;
+      globalThis.__terrainVolumeTiled = real;
     }
     if (!seen) throw new Error('binding was never called');
-    if (seen.length !== 4)
-      throw new Error('forwarded ' + seen.length + ' args, expected 4');
-    if (!Array.isArray(seen[3]) || seen[3][0] !== 16 || seen[3][3] !== 2)
-      throw new Error('material array did not arrive: ' + JSON.stringify(seen[3]));
+    if (seen.length !== 5)
+      throw new Error('forwarded ' + seen.length + ' args, expected 5');
+    if (!Array.isArray(seen[4]) || seen[4][0] !== 16 || seen[4][3] !== 2)
+      throw new Error('material array did not arrive: ' + JSON.stringify(seen[4]));
     // And omitting mats entirely must still be legal (null, not undefined).
     let seen2 = null;
-    const real2 = globalThis.__terrainVolume;
-    globalThis.__terrainVolume = function(...args) { seen2 = args; return real2.apply(null, args); };
-    try { this.terrainVolume(0, 0, 0); } finally { globalThis.__terrainVolume = real2; }
-    if (seen2.length !== 4)
-      throw new Error('omitted mats forwarded ' + seen2.length + ' args, expected 4');
-    if (seen2[3] !== null)
-      throw new Error('omitted mats should forward null, got ' + seen2[3]);
+    const real2 = globalThis.__terrainVolumeTiled;
+    globalThis.__terrainVolumeTiled = function(...args) { seen2 = args; return real2.apply(null, args); };
+    try { this.terrainVolumeTiled(0, 0, 0, 0); } finally { globalThis.__terrainVolumeTiled = real2; }
+    if (seen2.length !== 5)
+      throw new Error('omitted mats forwarded ' + seen2.length + ' args, expected 5');
+    if (seen2[4] !== null)
+      throw new Error('omitted mats should forward null, got ' + seen2[4]);
   }
 }
 )JS";
@@ -643,7 +643,7 @@ class GridCmp extends Part {
       total += a.length;
     }
     if (total < 100) throw new Error('suspiciously few candidates: ' + total);
-    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+    this.terrainVolumeTiled(0, 0, 0, 0, [16,16,16,16]);
   }
 }
 )JS";
@@ -664,7 +664,7 @@ class GridPath extends Part {
   build(p) {
     if (typeof __candidatesInRect !== 'function')
       throw new Error('__candidatesInRect is not installed in a part bake');
-    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+    this.terrainVolumeTiled(0, 0, 0, 0, [16,16,16,16]);
   }
 }
 )JS";
@@ -746,7 +746,7 @@ class PlanCmp extends Part {
       total += count;
     }
     if (total < 100) throw new Error('suspiciously few candidates: ' + total);
-    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+    this.terrainVolumeTiled(0, 0, 0, 0, [16,16,16,16]);
   }
 }
 )JS";
@@ -768,7 +768,7 @@ class PlanNoTape extends Part {
     if (flat.length !== 2 + count * 5)
       throw new Error('unexpected flat length ' + flat.length +
                       ' for count ' + count);
-    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+    this.terrainVolumeTiled(0, 0, 0, 0, [16,16,16,16]);
   }
 }
 )JS";
@@ -784,7 +784,7 @@ class PlanPath extends Part {
   build(p) {
     if (typeof __planCandidates !== 'function')
       throw new Error('__planCandidates is not installed in a part bake');
-    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+    this.terrainVolumeTiled(0, 0, 0, 0, [16,16,16,16]);
   }
 }
 )JS";
@@ -871,7 +871,7 @@ class ProfProbe extends Part {
     let acc = 0;
     for (let i = 0; i < 200000; ++i) acc += Math.sqrt(i);
     profEnd(S);
-    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+    this.terrainVolumeTiled(0, 0, 0, 0, [16,16,16,16]);
   }
 }
 )JS";

@@ -36,6 +36,13 @@ class StreamMeadow extends World {
   // rings only grade scatter, so the engine's sector-scaled defaults are fine.
   static streaming = {
     nestedSectors: true,
+
+    // VOLUMETRIC SECTORS. Every NESTED streamed world runs cubes now; the
+    // column path is deprecated (see terrain_mesher.h). This world's extent is
+    // only 128 m (-32..96), so a column becomes a stack of two level-0 cubes
+    // and the change is nearly free here -- which is also why it is the least
+    // interesting of the three to measure.
+    volumetricSectors: true,
     terrainBands: [
       { radius:   192, lod: 5 },   // level 0:   64 m tiles,  2 m voxels
       { radius:   576, lod: 4 },   // level 1:  128 m tiles,  4 m

@@ -199,9 +199,17 @@ globalThis.Part = class Part {
   // material array again. If you change this arity, change the binding, the
   // ~9 WorldSector.js copies AND tests/fixtures/world_stream's copy together:
   // a positional mismatch here does not throw, it silently mis-colours a world.
-  terrainVolume(tx,tz,rung,mats) {
-    __terrainVolume(tx,tz,rung,(mats===undefined?null:mats));
-  }
+  // COLUMN PATH COMMENTED OUT (2026-08-12). `terrainVolumeTiled` below is the
+  // verb; every streamed scene in the tree uses it. Left here rather than
+  // deleted because the arity history above is the whole reason this wrapper
+  // has a comment at all, and a reader who restores it needs the warning:
+  //
+  //   terrainVolume(tx,tz,rung,mats) {
+  //     __terrainVolume(tx,tz,rung,(mats===undefined?null:mats));
+  //   }
+  //
+  // `__terrainVolume` is commented out in dsl_bindings.cpp too, so restoring
+  // this line alone gets a ReferenceError, not a silent column bake.
   // The Y-TILED sibling (volumetric-sectors M3). Meshes the CUBE
   // [ty*S, (ty+1)*S) rather than the column [yMin, surface], and returns
   // positions tile-local in y as well as x/z -- the engine's publish transform
