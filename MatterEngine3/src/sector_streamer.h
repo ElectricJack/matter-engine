@@ -378,10 +378,14 @@ public:
     // the exact class of bug M0 spent itself closing.
     //
     // ABSENT BY DEFAULT, which is what keeps headless streaming deterministic:
-    // a streamer nobody calls `mark_visible` on has every tile permanently at
-    // "never seen", and the cap is written to treat never-seen as VISIBLE
-    // rather than as occluded. A test that does not know about occlusion gets
-    // the pre-M4 desired map, byte for byte.
+    // both consumers are gated on `occlusion_grace_ticks > 0`, which no world
+    // sets unless it asks for the feature, so a test that does not know about
+    // occlusion gets the pre-M4 desired map, byte for byte.
+    //
+    // Stamps the tile AND EVERY ANCESTOR of it. A parent's question is "is
+    // anything under me on screen", so a drawn leaf is evidence about its whole
+    // chain -- see VisState for why judging a parent by its own draws could
+    // never work.
     void mark_visible(int64_t tx, int64_t ty, int64_t tz, int rung);
     // Advance the visibility clock. One call per streamer tick, by the caller
     // that owns the readback; `mark_visible` stamps this value.
@@ -405,15 +409,59 @@ private:
         int   desired_rung  = -1;   // recomputed each update(); -1 = not desired
         int   desired_lod   = -1;   // transient terrain LOD during update()
         int   desired_level = -1;   // transient nesting level during update()
-        // Visibility clock stamp of the last frame this tile was reported
-        // drawn. 0 = NEVER SEEN, which the cap deliberately reads as "visible"
-        // rather than "occluded" -- a tile that has never been drawn is usually
-        // one that has never been resident, and demoting it on that basis would
-        // make the cap fire hardest during the cold fill it can least afford.
-        uint64_t last_visible = 0;
         float dist          = 0.0f; // anchor distance at last update
         int   cooldown      = 0;    // updates remaining before re-request allowed
     };
+
+    // ---- the occlusion visibility ledger (M4 Phase A) ----------------------
+    //
+    // A SEPARATE MAP from `sectors_`, and that is the design rather than an
+    // accident. Three reasons, in order of how much trouble each one saved:
+    //
+    // 1. It has to hold INTERIOR nodes. The cap's question is asked in
+    //    `descend` about the tile it is deciding whether to split, and a tile
+    //    that is being split is by construction not resident and never drawn.
+    //    Judging it by its own draws (which was the first implementation) means
+    //    judging it by a bit that is structurally always zero -- the cap read
+    //    "never seen", treated that as visible, and never fired once. So
+    //    visibility PROPAGATES UP: a node is visible if anything in its subtree
+    //    was drawn. `sectors_` holds only tiles that were desired, so it cannot
+    //    carry that, and adding interior entries to it would put rows with no
+    //    desired and no resident rung in front of the eviction sweep.
+    //
+    // 2. It keeps the feature removable. Nothing outside the two guarded call
+    //    sites touches this map, and both are behind `occlusion_grace_ticks > 0`
+    //    -- so a headless streamer produces the pre-M4 desired set byte for
+    //    byte, which is what the existing suites assert.
+    //
+    // 3. Its lifetime is not a sector's. A stale readback naming an evicted
+    //    tile may create an entry here; that costs a map slot and a little
+    //    conservatism, where the same write into `sectors_` would resurrect a
+    //    tile the eviction sweep has already reasoned about.
+    struct VisState {
+        // Visibility clock at the last frame anything in this node's SUBTREE
+        // was reported drawn. 0 = never.
+        uint64_t last_visible = 0;
+        // Visibility clock when the descent first reached this node, and when
+        // it last did. `first_visit` is what makes "never seen" decidable: a
+        // node is judged occluded once the clock has passed
+        // max(last_visible, first_visit) + grace, so a node that has never been
+        // drawn still has to have been ELIGIBLE to be drawn for a full grace
+        // period before the cap touches it. Without that term, never-seen had
+        // to be read as visible (there is no other safe reading), and a tile
+        // behind the camera at world load was immune forever.
+        uint64_t first_visit = 0;
+        uint64_t last_visit = 0;
+    };
+    std::unordered_map<uint64_t, VisState> vis_;
+    // Prune horizon for the ledger, in visibility ticks. The descent visits a
+    // bounded node set each tick, but flying across a world walks that set over
+    // new ground, so entries the descent has stopped visiting have to go or the
+    // map is a leak with a slow fuse.
+    uint64_t vis_pruned_at_ = 0;
+    // True while a subtree's visibility says "cap this". Reads the ledger; the
+    // only two consumers are `descend` and `next_request`.
+    bool occluded_subtree(int level, int64_t tx, int64_t ty, int64_t tz) const;
 
     // Key: (uint64_t(uint32_t(int32_t(tx))) << 32) | uint32_t(int32_t(tz))
     // Sectors beyond ±2^31 in either axis are out of scope.

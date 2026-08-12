@@ -1351,6 +1351,18 @@ struct WorldSession::Impl {
         // record, and neither does a sector staged off disk instead of from
         // its bake. The welder treats absence as "no weld here".
         std::shared_ptr<const seam::SectorBoundary> boundary;
+        // ---- occlusion feedback (M4 Phase A) --------------------------------
+        // The renderer instance tokens this sector's publication put into
+        // `visible_by_token`, kept so eviction can take them out again.
+        //
+        // Kept rather than recomputed for the same reason `pending_instance`
+        // is: recomputing means reproducing temporal_instance_id's exact
+        // ordinal convention at a second site, and a token that fails to be
+        // removed is a stale map entry that stamps the WRONG sector visible
+        // once its 32-bit fold is reused.
+        //
+        // Empty unless occlusion feedback is on -- see the publish site.
+        std::vector<uint32_t> visible_tokens;
     };
     // `ty` is the vertical tile index (volumetric-sectors M1). It is always 0
     // today -- the streamer's descent is still the XZ quadtree -- and it is
@@ -6735,6 +6747,14 @@ bool WorldSession::Impl::apply_sector_evictions(
             // Its slot in the count goes with it, or the counter leaks and the
             // sweep runs forever on entries that no longer exist.
             if (found->second.parked && parked_sectors > 0) --parked_sectors;
+            // Occlusion feedback (M4 Phase A): take this sector's tokens back
+            // out. Without this the map is append-only across a session and a
+            // token whose 32-bit fold later collides with a live instance would
+            // stamp a sector that no longer exists -- harmless for coverage, but
+            // it makes the mapping-yield diagnostic unreadable, which is the one
+            // instrument this feature has.
+            for (uint32_t token : found->second.visible_tokens)
+                visible_by_token.erase(token);
             sector_map.erase(found);
             tile_index_remove(key);
             weld_dirty.push_back(key);
@@ -7886,19 +7906,65 @@ void WorldSession::Impl::bake_and_stage_sector(
                     instance.module = "WorldSector";
                     // Remember which sector this instance names, so the cull
                     // pass's emitted tokens can be mapped back (M4 Phase A).
-                    // Minted here because this is where the id is.
+                    // Minted here because this is where both the id and the
+                    // expansion are.
+                    //
+                    // THE TOKEN IS NOT vulkan_history_token(instance_id). That
+                    // was the first attempt and it mapped 0 of 105 harvested
+                    // tokens, because a manifest entry is not what the renderer
+                    // draws: resolve_vulkan_instances expands each entry into
+                    // one VkSceneInstance per drawable node and re-keys every
+                    // one through temporal_instance_id(stable_id, part_hash,
+                    // ordinal) -- an FNV fold whose whole purpose is to give
+                    // two children of one source distinct reprojection history.
+                    // vulkan_history_token then folds THAT. So the chain the
+                    // renderer emits is
+                    //     instance_id -> temporal_instance_id -> history_token
+                    // and reproducing it means reproducing all of it. The two
+                    // sites must stay in step; the ordinal convention (0 for a
+                    // leaf, node_index + 1 for an expansion node) is
+                    // resolve_vulkan_instances', not this one's.
+                    //
+                    // Every node gets an entry, including ones a draw override
+                    // is currently hiding: a hidden node simply never appears in
+                    // a harvest, and an unused entry costs a map slot, while a
+                    // MISSING one would read as "this sector was never drawn"
+                    // and quietly demote a tile the user is looking at.
                     //
                     // Guarded because `vulkan_history_token` lives behind the
                     // renderer header, which a HEADLESS MatterEngine3 build
                     // does not include -- and correctly so: with no renderer
                     // there are no emitted instances to map, so the map would
                     // be built and never read.
+                    //
+                    // Built only when the feature is armed. The map is
+                    // O(expansion) per sector, and an expansion is one node for
+                    // bare terrain but one per scatter placement for a
+                    // vegetated world -- so a world that will never read this
+                    // map should not pay to fill it.
 #ifdef MATTER_VULKAN_VIEWER
-                    visible_by_token[viewer::vulkan_history_token(
-                        published.instance_id)] =
-                        matter_stream::SectorRequest{
+                    if (occlusion_feedback_enabled) {
+                        const matter_stream::SectorRequest owner{
                             request.sector.tx, request.sector.ty,
                             request.sector.tz, request.sector.rung};
+                        const uint64_t stable_id = published.instance_id;
+                        auto remember = [&](uint64_t part, uint32_t ordinal) {
+                            const uint32_t token =
+                                viewer::vulkan_history_token(
+                                    viewer::temporal_instance_id(
+                                        stable_id, part, ordinal));
+                            visible_by_token[token] = owner;
+                            published.visible_tokens.push_back(token);
+                        };
+                        if (loaded->expansion.empty()) {
+                            remember(sector_hash, 0);
+                        } else {
+                            for (size_t node = 0;
+                                 node < loaded->expansion.size(); ++node)
+                                remember(loaded->expansion[node].part_hash,
+                                         static_cast<uint32_t>(node + 1));
+                        }
+                    }
 #endif
                     std::memset(
                         instance.transform, 0, sizeof(instance.transform));
@@ -11105,10 +11171,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             if (impl_->visibility_frame % 300 == 0) {
                 std::fprintf(stderr,
                              "[occlusion] frame %llu: %zu tokens harvested, "
-                             "%zu mapped to sectors, map holds %zu\n",
+                             "%zu mapped to sectors, map holds %zu "
+                             "(%zu sectors resident)\n",
                              (unsigned long long)impl_->visibility_frame,
                              impl_->visible_token_scratch.size(), drawn.size(),
-                             impl_->visible_by_token.size());
+                             impl_->visible_by_token.size(),
+                             impl_->sector_map.size());
             }
             impl_->ecs_runtime.streaming_coordinator().submit_visible(
                 impl_->ecs_runtime.streaming_coordinator().intended_owner(),
