@@ -139,6 +139,24 @@ class StreamMountain extends World {
     // forcing splits.
     nestedSectors: true,
 
+    // VOLUMETRIC SECTORS (volumetric-sectors M3). Tiles are cubes on an octree
+    // rather than columns on a quadtree, and yMin/yMax above stop bounding a
+    // mesh slab and start bounding the tree: -96..704 is 800 m, so a column at
+    // level 0 becomes a stack of up to 13 cubes.
+    //
+    // MEASURED COST, so it is a choice and not an accident. On the 3D churn
+    // soak this world holds ~1900-2850 resident tiles against ~390-520 on
+    // columns, and the selection tick goes 0.19 ms -> 1.57 ms. Per-tile cost is
+    // only ~1.5x; the rest is tile COUNT, because a heightfield's vertical
+    // stack is mostly empty air and solid rock that a column never had to
+    // represent as separate tiles. StreamCaverns wins from cubes because its
+    // yMin is -1024 and the column path pays ~590 density rows to reach it;
+    // this world's 800 m of extent is a much weaker case for them.
+    //
+    // MATTER_VOLUMETRIC_SECTORS=0 runs the column path without editing this
+    // file, which is the A/B and the rollback.
+    volumetricSectors: true,
+
     // THE RINGS BOUND RESIDENCY, not just scatter density. A sector past the
     // OUTERMOST ring gets desired_rung -1 from desired_rung_for_dist, and
     // sector_streamer skips it entirely -- it is never requested, never baked,
