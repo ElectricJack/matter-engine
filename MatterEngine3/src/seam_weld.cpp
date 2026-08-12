@@ -251,8 +251,25 @@ bool weld_face(int face_axis,
                 if (!t_a && !t_b) { ++stats.degenerate; continue; }
 
                 WeldBucket& bucket = bucket_for(out, material);
-                if (t_a) push_tri(out, bucket, *q[0], *q[1], *q[2]);
-                if (t_b) push_tri(out, bucket, *q[0], *q[2], *q[3]);
+                // Diagnosis side-channel; null in production (seam_weld.h).
+                const uint8_t prov =
+                    uint8_t((along_a ? WeldProvenance::kAlongA : 0) |
+                            (s0 == 1 ? WeldProvenance::kSolidLo : 0) |
+                            (capped  ? WeldProvenance::kCapped  : 0) |
+                            (flip    ? WeldProvenance::kFlip    : 0));
+                if (t_a) {
+                    if (out.provenance)
+                        out.provenance->add(prov, material,
+                                            bucket.positions.size() / 9);
+                    push_tri(out, bucket, *q[0], *q[1], *q[2]);
+                }
+                if (t_b) {
+                    if (out.provenance)
+                        out.provenance->add(
+                            uint8_t(prov | WeldProvenance::kSecond), material,
+                            bucket.positions.size() / 9);
+                    push_tri(out, bucket, *q[0], *q[2], *q[3]);
+                }
                 if (t_a && t_b) {
                     ++stats.quads;      // unreachable when `capped` -- a cap always
                                         // duplicates a corner, killing one triangle

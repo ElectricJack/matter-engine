@@ -1,6 +1,9 @@
 #include "sector_streaming_coordinator.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <new>
@@ -10,6 +13,43 @@
 namespace matter::streaming::detail {
 
 namespace {
+
+// SELECTION TICK TIMING (MATTER_STREAM_TICK_TRACE=1).
+//
+// `SectorStreamer::update` is the whole selection pass -- the descent, the
+// restriction fixpoint and the eviction sweep -- and until now nothing timed
+// it. The nested-sector work quotes 0.367 ms on StreamMountain as the number to
+// beat, but that figure came from an external profile capture; there was no
+// counter in the tree that would tell you whether the octree's 8-child descent
+// and 6-face probes had cost anything at all.
+//
+// Deliberately its OWN env rather than riding MATTER_SEAM_TRACE: the seam soak
+// prints a line per frame already, and a tick histogram interleaved into that
+// is unreadable. Deliberately a SUMMARY rather than per-tick lines, because a
+// per-tick printf on this path would itself be a meaningful share of the thing
+// being measured -- the mistake the per-sector bake logging already made once
+// (docs/sector-bake-time-findings-2026-07-30.md: logging halved throughput).
+bool stream_tick_trace() {
+    static const bool value = [] {
+        const char* env = std::getenv("MATTER_STREAM_TICK_TRACE");
+        return env != nullptr && env[0] == '1';
+    }();
+    return value;
+}
+
+struct TickStats {
+    long long calls = 0;
+    double    total_us = 0.0;
+    double    max_us = 0.0;
+    // Reported every `kReportEvery` ticks so a long soak yields a series rather
+    // than one number at exit -- fill and steady state cost different amounts,
+    // and a single average hides which one you are looking at.
+    static constexpr long long kReportEvery = 600;
+};
+TickStats& tick_stats() {
+    static TickStats s;
+    return s;
+}
 
 bool same_request(const TaggedRequest& lhs, const TaggedRequest& rhs) {
     return lhs.owner == rhs.owner && lhs.generation == rhs.generation &&
@@ -513,8 +553,28 @@ void Coordinator::worker_step(
             streamer_ = std::make_unique<matter_stream::SectorStreamer>(*profile);
             worker_generation_ = allocate_generation();
         }
-        streamer_->update(worker_anchor_->x, worker_anchor_->y,
-                          worker_anchor_->z);
+        if (stream_tick_trace()) {
+            const auto t0 = std::chrono::steady_clock::now();
+            streamer_->update(worker_anchor_->x, worker_anchor_->y,
+                              worker_anchor_->z);
+            const double us =
+                std::chrono::duration<double, std::micro>(
+                    std::chrono::steady_clock::now() - t0).count();
+            TickStats& s = tick_stats();
+            ++s.calls;
+            s.total_us += us;
+            s.max_us = s.max_us > us ? s.max_us : us;
+            if (s.calls % TickStats::kReportEvery == 0) {
+                std::fprintf(stderr,
+                             "[stream-tick] %lld ticks | mean %.3f ms | max "
+                             "%.3f ms | resident %zu\n",
+                             s.calls, s.total_us / double(s.calls) / 1000.0,
+                             s.max_us / 1000.0, streamer_->resident_count());
+            }
+        } else {
+            streamer_->update(worker_anchor_->x, worker_anchor_->y,
+                              worker_anchor_->z);
+        }
     }
 
     for (const auto& acknowledgement : acknowledgements) {

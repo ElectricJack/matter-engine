@@ -283,9 +283,48 @@ struct WeldBucket {
 // positions precisely so the welder can rebase once, here, instead of inheriting
 // the tile-local float cancellation that bites at 10 km out; a weld spans two
 // tiles with two different origins, so it needs its own.
+// Per-triangle PROVENANCE, for diagnosis only (null in production).
+//
+// The winding gate (seam_integration [8]) can see that a triangle came out
+// reversed and nothing about WHY. Every hypothesis about the y-normal residue
+// -- the frame table, caps, the 2:1 collapse -- had to be tested by perturbing
+// the welder and re-running, which answers "is this the cause" but never "what
+// distinguishes the failures". These four bits make the failures GROUPABLE, so
+// a correlation is one run rather than one run per guess.
+//
+// Deliberately a side-channel rather than a field on WeldBucket: production
+// never allocates it, and the geometry arrays stay exactly what they were.
+struct WeldProvenance {
+    static constexpr uint8_t kAlongA = 1u << 0;  // edge runs along the a axis
+    static constexpr uint8_t kSolidLo = 1u << 1; // s0 == 1 (solid at the low end)
+    static constexpr uint8_t kCapped = 1u << 2;  // one coarse corner duplicated
+    static constexpr uint8_t kFlip   = 1u << 3;  // q1/q3 were swapped
+    static constexpr uint8_t kSecond = 1u << 4;  // the (0,2,3) half of the quad
+    // One entry per emitted FAN triangle. Band triangles are not recorded --
+    // they are the mesher's own output, copied verbatim, with no fan decisions
+    // behind them.
+    //
+    // ADDRESSED BY (material, index within that material's bucket), not by
+    // emission order. Emission interleaves materials while a reader walks the
+    // mesh bucket-major, so an emission-ordered vector would line up only for a
+    // single-material weld -- and would then silently mis-attribute on exactly
+    // the multi-material seams most worth inspecting.
+    std::vector<uint8_t>  flags;
+    std::vector<uint32_t> material;
+    std::vector<uint32_t> index_in_bucket;
+
+    void add(uint8_t f, uint32_t mat, size_t idx) {
+        flags.push_back(f);
+        material.push_back(mat);
+        index_in_bucket.push_back(uint32_t(idx));
+    }
+};
+
 struct WeldMesh {
     double origin_x = 0, origin_y = 0, origin_z = 0;
     std::vector<WeldBucket> buckets;
+    // Optional and unowned. Set by tests; nothing in the engine writes it.
+    WeldProvenance* provenance = nullptr;
 
     size_t triangle_count() const {
         size_t n = 0;
