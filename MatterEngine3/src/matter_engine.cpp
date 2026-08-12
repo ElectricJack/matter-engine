@@ -338,13 +338,24 @@ public:
 //   idbuffer   a sector counts as drawn when it OWNS A PIXEL of the G-buffer
 //              identity attachment, i.e. it survived the DEPTH test.
 //
+// IdBuffer IS THE DEFAULT, and `emitted` is the rollback. Measured on
+// StreamCaverns from one pose, everything else equal:
+//
+//   emitted   310 resident sectors,  95 batches,  530,852 triangles
+//   idbuffer  192 resident sectors,  57 batches,  285,835 triangles
+//
+// -38% residency and -46% triangles for a screenshot you cannot tell apart,
+// which is the doctrine working exactly as stated: coverage survived, only
+// detail moved. It costs one compute reduction over the G-buffer, and only in
+// worlds that have already opted into the cap at all (grace > 0).
+//
 // Read once into a function-local static: it is a launch-time choice, and the
 // drain that consults it runs per frame.
 bool occlusion_source_is_id_buffer() {
     static const bool value = []() {
         const char* source = std::getenv("MATTER_OCCLUSION_SOURCE");
         const bool id_buffer =
-            source != nullptr && std::strcmp(source, "idbuffer") == 0;
+            source == nullptr || std::strcmp(source, "emitted") != 0;
         if (source != nullptr) {
             std::fprintf(stderr,
                          "[stream] MATTER_OCCLUSION_SOURCE=%s: a sector counts "
