@@ -192,6 +192,10 @@ public:
     // longer grace than the one the config names, arrived at by accident.
     void submit_visible(flecs::entity_t owner, uint64_t frame,
                         std::vector<matter_stream::SectorRequest> drawn);
+    // Retune the occlusion cap live (SectorStreamer::set_occlusion). Queued
+    // like every other input for the same reason: the streamer belongs to the
+    // worker and is touched only by worker_step.
+    void submit_occlusion(int grace_ticks, int cap_levels);
     void clear_anchor(flecs::entity_t owner);
     void detach(flecs::entity_t owner);
     void restart_if_attached();
@@ -232,6 +236,12 @@ private:
     std::vector<matter_stream::SectorRequest> intended_visible_;
     uint64_t intended_visible_frame_ = 0;
     bool     intended_visible_pending_ = false;
+    // Live cap retune. -1 grace means "nobody has asked", which is distinct
+    // from 0 ("asked for it off") -- the profile's own value must survive until
+    // something actually overrides it.
+    int  intended_occlusion_grace_ = -1;
+    int  intended_occlusion_levels_ = 1;
+    bool intended_occlusion_pending_ = false;
     uint64_t anchor_reset_revision_ = 0;
     uint64_t restart_revision_ = 0;
     std::vector<Acknowledgement> acknowledgement_inbox_;

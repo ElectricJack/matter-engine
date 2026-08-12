@@ -1071,6 +1071,18 @@ int main() {
     float min_projected_size = 0.0f;
     apply_world_resolver_defaults(worlds[initial_world].world_name,
                                   min_projected_size, stats);
+    // Seed the occlusion cap from MATTER_OCCLUSION_GRACE (M4). Load-bearing,
+    // not a convenience: the editor now pushes this value into RenderOptions
+    // every frame, so without seeding it the UI's zero would silently override
+    // the env var on the first frame and the switch would appear to do nothing
+    // -- which is the same class of failure as the env-var-only control this
+    // slider replaced. The engine still reads the env var itself for headless
+    // runs; this is the editor's copy of the same answer.
+    if (const char* grace = std::getenv("MATTER_OCCLUSION_GRACE")) {
+        stats.occlusion_grace_ticks = std::max(0, std::atoi(grace));
+        std::printf("MATTER_OCCLUSION_GRACE=%s: occlusion cap slider seeded "
+                    "to %d ticks\n", grace, stats.occlusion_grace_ticks);
+    }
 
     // Property registry (property-system design S3/S4). Bound BEFORE anything
     // writes the tunable structs, so bind() captures the compiled defaults;
@@ -3293,6 +3305,8 @@ int main() {
                 ? matter::GeometryDebugView::LodTint
                 : matter::GeometryDebugView::None;
         options.hiz_occlusion = stats.hiz_occlusion;
+        options.occlusion_grace_ticks = stats.occlusion_grace_ticks;
+        options.occlusion_cap_levels = 1;
         // Frozen cull camera (M4). The renderer takes its own snapshot of the
         // planes and the eye on the rising edge; this side captures the POSE at
         // the same moment, purely so the viewport can outline that frustum.

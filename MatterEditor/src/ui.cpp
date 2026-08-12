@@ -1596,6 +1596,44 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
             "part of what there is to inspect.\n\n"
             "Pair with \"Freeze terrain streaming\" above. That one holds which "
             "tiles exist and at what rung; this one holds which are drawn.");
+    // ---- occlusion-aware streaming -----------------------------------------
+    // A TOGGLE, first of the occlusion controls, because it is the one that
+    // turns the feature on. It used to be MATTER_OCCLUSION_GRACE and nothing
+    // else, and a report arrived reading "not enough is being occluded" from a
+    // session that had found and switched on both freeze toggles below while
+    // this sat at zero -- the UI was discoverable and the switch was not.
+    //
+    // The checkbox writes the tick count (kDefault on, 0 off) rather than
+    // shadowing it in a second bool, so there is exactly one value and the
+    // slider, the property, and MATTER_OCCLUSION_GRACE cannot disagree about
+    // whether the feature is running.
+    constexpr int kDefaultOcclusionGrace = 60;
+    bool occlusion_on = s.occlusion_grace_ticks > 0;
+    if (ImGui::Checkbox("Occlusion streaming", &occlusion_on))
+        s.occlusion_grace_ticks = occlusion_on ? kDefaultOcclusionGrace : 0;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Stream tiles nothing has DRAWN one level coarser.\n\n"
+            "Visibility is read off the G-buffer identity attachment, so a "
+            "tile buried in rock counts as undrawn even though it is straight "
+            "in front of the camera -- which underground is most of the "
+            "world.\n\n"
+            "On StreamCaverns this takes 741 instances / 601k triangles down "
+            "to 204 / 286k for a frame you cannot tell apart.\n\n"
+            "Never opens a hole: a capped tile is still resident and still "
+            "drawn, just coarser. Takes effect immediately -- no reload.");
+    if (occlusion_on) {
+        ImGui::Indent();
+        ImGui::SliderInt("Grace (ticks)", &s.occlusion_grace_ticks, 1, 300);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "How long a tile may go undrawn before it is demoted, in "
+                "visibility ticks (about frames).\n\n"
+                "Too short and the world churns every time you glance away; "
+                "too long and it never demotes. 60 -- about a second -- is "
+                "where the measurements above were taken.");
+        ImGui::Unindent();
+    }
     ImGui::Checkbox("HZB occlusion cull", &s.hiz_occlusion);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(

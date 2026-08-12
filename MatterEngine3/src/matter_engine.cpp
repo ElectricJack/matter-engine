@@ -10342,6 +10342,17 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_impostor_parallax(opts.impostor_parallax);
     impl_->vk_scene->set_cull_camera_frozen(opts.freeze_cull_camera);
     impl_->vk_scene->set_hzb_occlusion(opts.hiz_occlusion);
+    // Live occlusion cap (M4). Forwarded every frame because it is cheap and
+    // idempotent, and because the alternative -- tracking "did it change" here
+    // -- puts a second opinion about the current value in front of the one the
+    // worker actually holds. `occlusion_feedback_enabled` mirrors it so the
+    // renderer's readback arms and disarms with the cap rather than staying
+    // wherever the world's profile left it at load.
+    if (opts.occlusion_grace_ticks >= 0) {
+        impl_->ecs_runtime.streaming_coordinator().submit_occlusion(
+            opts.occlusion_grace_ticks, opts.occlusion_cap_levels);
+        impl_->occlusion_feedback_enabled = opts.occlusion_grace_ticks > 0;
+    }
     // Stage value-owned presentation observations now, but expose them to
     // animation only after this submission is reported presented. This makes
     // LOD consume prior completed scene state and prevents a failed render

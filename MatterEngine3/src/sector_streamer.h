@@ -405,6 +405,33 @@ public:
     // that owns the readback; `mark_visible` stamps this value.
     void set_visibility_frame(uint64_t frame) noexcept { vis_frame_ = frame; }
 
+    // Retune the cap WITHOUT rebuilding the streamer. Safe to mutate live, and
+    // the reason is worth stating because almost nothing else in Config is:
+    // these three are pure SELECTION POLICY. They change which level `descend`
+    // stops at, and nothing else -- not the key format, not a tile's identity,
+    // not what a bake produces. Nothing resident has to be re-requested and no
+    // artifact is re-keyed, so the next tick simply decides differently.
+    //
+    // This exists because the cap was launch-time-only (MATTER_OCCLUSION_GRACE)
+    // and that made it effectively undiscoverable: an issue report arrived with
+    // the freeze controls both switched on -- so the UI had been found -- and
+    // the cap silently at zero, because the one control that turns the feature
+    // on was an env var you had to know about and relaunch for.
+    //
+    // Turning it OFF clears the ledger: `first_visit` stamps are measured
+    // against a clock that stops advancing while the feature is off, so keeping
+    // them would make every tile instantly eligible for the cap the moment it
+    // came back on, and the world would demote in one tick.
+    void set_occlusion(int grace_ticks, int cap_levels) {
+        const bool was_on = cfg_.occlusion_grace_ticks > 0;
+        cfg_.occlusion_grace_ticks = grace_ticks > 0 ? grace_ticks : 0;
+        cfg_.occlusion_cap_levels = cap_levels > 0 ? cap_levels : 1;
+        if (was_on && cfg_.occlusion_grace_ticks == 0) {
+            vis_.clear();
+            vis_pruned_at_ = 0;
+        }
+    }
+
     // The RESOLVED config, which is not the one you passed in. The constructor
     // rewrites it: `terrain_lod_enabled` is forced on by nesting, defaults are
     // filled into an empty band table, and both `nested_sectors` and

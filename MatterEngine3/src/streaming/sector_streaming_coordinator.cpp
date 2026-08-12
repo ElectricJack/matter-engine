@@ -324,6 +324,16 @@ void Coordinator::submit_visible(flecs::entity_t owner, uint64_t frame,
     intended_visible_pending_ = true;
 }
 
+void Coordinator::submit_occlusion(int grace_ticks, int cap_levels) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // NOT owner-checked, unlike submit_visible: this is a policy dial rather
+    // than a statement about a particular world's tiles, so it stays valid
+    // across a reattach and there is no key here to mean the wrong thing.
+    intended_occlusion_grace_ = grace_ticks;
+    intended_occlusion_levels_ = cap_levels;
+    intended_occlusion_pending_ = true;
+}
+
 bool Coordinator::attach(flecs::entity_t owner) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (owner == 0 || intended_owner_ != 0) return false;
@@ -570,6 +580,14 @@ void Coordinator::worker_step(
         // so a frame's report affects the very next selection rather than the
         // one after -- one tick of avoidable lag on an input that is already
         // several frames stale by construction.
+        // Live cap retune, applied BEFORE the visible batch and the tick that
+        // consumes it, so switching the cap off and on cannot be observed by a
+        // half-updated tick.
+        if (intended_occlusion_pending_ && intended_occlusion_grace_ >= 0) {
+            streamer_->set_occlusion(intended_occlusion_grace_,
+                                     intended_occlusion_levels_);
+            intended_occlusion_pending_ = false;
+        }
         if (intended_visible_pending_) {
             streamer_->set_visibility_frame(intended_visible_frame_);
             for (const auto& tile : intended_visible_)

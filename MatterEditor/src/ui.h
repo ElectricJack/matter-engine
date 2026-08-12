@@ -289,6 +289,15 @@ struct ViewerStats {
     // Exact whenever the cull camera is still, which is why this and
     // freeze_cull_camera above are the pair you turn on together to look at it.
     bool  hiz_occlusion         = false;
+    // OCCLUSION DETAIL CAP (RenderOptions::occlusion_grace_ticks, M4). A tile
+    // nothing has drawn for this many ticks is desired one level coarser. 0 is
+    // off, and off is the default so a session that does not ask for it behaves
+    // exactly as it did before the feature existed.
+    //
+    // Ticks rather than a bool because the number is the interesting part: too
+    // short and the world churns on every glance away, too long and it never
+    // demotes. 60 (about a second) is where the measurements were taken.
+    int   occlusion_grace_ticks = 0;
     // The camera pose captured when freeze_cull_camera last went on, kept so
     // the viewport overlay can draw that frustum. Reconstructed by the editor
     // rather than read back from the renderer: the overlay is a sketch of where

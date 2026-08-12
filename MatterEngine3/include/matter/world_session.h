@@ -120,6 +120,21 @@ struct RenderOptions {
     // the same eye. That is wanted here (the frozen view's detail is what you
     // came to inspect) and is the reason this is not called "freeze frustum".
     bool  freeze_cull_camera = false;
+    // OCCLUSION DETAIL CAP (M4). Ticks a tile may go undrawn before it is
+    // desired one level coarser; 0 disables the whole feature.
+    //
+    // LIVE, and it had to become live. It was launch-time only
+    // (MATTER_OCCLUSION_GRACE) and that made it undiscoverable: an issue
+    // report arrived reading "not enough is being occluded", captured with
+    // both freeze toggles switched on -- so the UI had been found -- and the
+    // cap silently at zero, because the one control that turns the feature on
+    // was an env var. Nothing about the cap needs a restart: it changes which
+    // level the descent stops at and nothing else.
+    //
+    // -1 means "do not override", which is how the env var and a world's own
+    // profile survive a session that never touches the editor control.
+    int   occlusion_grace_ticks = -1;
+    int   occlusion_cap_levels  = 1;
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
     // (No active_radius. It is DERIVED from the world's outermost terrain LOD
     // band -- the distance past which the streamer keeps nothing resident

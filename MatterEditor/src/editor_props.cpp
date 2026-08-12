@@ -693,6 +693,18 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "selection with it (same eye). Pair with \"Freeze terrain "
              "streaming\", which holds which tiles exist rather than which "
              "are drawn."),
+    prop(&ViewerStats::occlusion_grace_ticks, "occlusion_grace_ticks")
+        .label("Occlusion cap (ticks)").range(0, 300)
+        .doc("Tiles nothing has DRAWN for this many ticks are streamed one "
+             "level coarser. 0 = off, and this is the switch for "
+             "occlusion-aware streaming as a whole.\n\n"
+             "Visibility is read off the G-buffer identity attachment, so a "
+             "tile buried in rock counts as undrawn even though it is in front "
+             "of the camera -- which underground is most of the world.\n\n"
+             "60 (about a second) is where the measurements were taken: on "
+             "StreamCaverns it takes 741 instances / 601k triangles down to "
+             "204 / 286k for an indistinguishable frame. Never opens a hole -- "
+             "a capped tile is still resident and still drawn, just coarser."),
     prop(&ViewerStats::hiz_occlusion, "hiz_occlusion")
         .label("HZB occlusion cull")
         .doc("Reject clusters hidden behind what the previous frame drew, by "
