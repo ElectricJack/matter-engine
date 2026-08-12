@@ -171,6 +171,27 @@ public:
         SectorStreamingErrorCode profile_error =
             SectorStreamingErrorCode::None);
     void submit_anchor(flecs::entity_t owner, float x, float y, float z);
+
+    // ---- OCCLUSION FEEDBACK (M4 Phase A, design §5.2) ----------------------
+    //
+    // Report the tiles the renderer actually drew this frame. The streamer
+    // folds them into request priority and a coarser detail cap, and into
+    // nothing else -- it can never remove coverage, which is what makes a
+    // fenced, several-frames-stale readback a safe input (see
+    // SectorStreamer::mark_visible).
+    //
+    // QUEUED, not applied inline, for the reason every other input here is:
+    // the streamer lives on the worker and is touched only by worker_step.
+    // The render thread calls this; the worker drains it. A direct call would
+    // be a data race on the sector map in the one subsystem whose bugs are
+    // hardest to reproduce.
+    //
+    // The batch REPLACES rather than accumulates: a frame's visible set is a
+    // complete answer, and merging two frames' answers would make a tile look
+    // visible for as long as any frame in the window saw it -- which is a
+    // longer grace than the one the config names, arrived at by accident.
+    void submit_visible(flecs::entity_t owner, uint64_t frame,
+                        std::vector<matter_stream::SectorRequest> drawn);
     void clear_anchor(flecs::entity_t owner);
     void detach(flecs::entity_t owner);
     void restart_if_attached();
@@ -205,6 +226,12 @@ private:
         SectorStreamingErrorCode::None;
     uint64_t profile_revision_ = 0;
     std::optional<AnchorSample> intended_anchor_;
+    // The pending visible batch (M4 Phase A). Guarded by mutex_ like every
+    // other intended_* input; worker_step drains it under the same lock it
+    // already takes for the anchor, so this adds no new synchronisation.
+    std::vector<matter_stream::SectorRequest> intended_visible_;
+    uint64_t intended_visible_frame_ = 0;
+    bool     intended_visible_pending_ = false;
     uint64_t anchor_reset_revision_ = 0;
     uint64_t restart_revision_ = 0;
     std::vector<Acknowledgement> acknowledgement_inbox_;

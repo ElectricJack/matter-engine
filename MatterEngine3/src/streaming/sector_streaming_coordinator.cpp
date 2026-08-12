@@ -311,6 +311,19 @@ bool PublicationTransaction::active() const noexcept {
     return active_;
 }
 
+void Coordinator::submit_visible(flecs::entity_t owner, uint64_t frame,
+                                 std::vector<matter_stream::SectorRequest> drawn) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Dropped outright if it is not for the attached owner. A visibility batch
+    // from a detached or superseded owner describes a world the streamer is no
+    // longer serving, and applying it would stamp keys that mean something else
+    // now -- the same reason submit_anchor checks.
+    if (owner == 0 || owner != intended_owner_) return;
+    intended_visible_ = std::move(drawn);
+    intended_visible_frame_ = frame;
+    intended_visible_pending_ = true;
+}
+
 bool Coordinator::attach(flecs::entity_t owner) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (owner == 0 || intended_owner_ != 0) return false;
@@ -552,6 +565,17 @@ void Coordinator::worker_step(
         if (!streamer_) {
             streamer_ = std::make_unique<matter_stream::SectorStreamer>(*profile);
             worker_generation_ = allocate_generation();
+        }
+        // Apply the pending visible batch BEFORE the tick that will read it,
+        // so a frame's report affects the very next selection rather than the
+        // one after -- one tick of avoidable lag on an input that is already
+        // several frames stale by construction.
+        if (intended_visible_pending_) {
+            streamer_->set_visibility_frame(intended_visible_frame_);
+            for (const auto& tile : intended_visible_)
+                streamer_->mark_visible(tile.tx, tile.ty, tile.tz, tile.rung);
+            intended_visible_.clear();
+            intended_visible_pending_ = false;
         }
         if (stream_tick_trace()) {
             const auto t0 = std::chrono::steady_clock::now();
