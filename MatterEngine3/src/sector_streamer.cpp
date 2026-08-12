@@ -715,20 +715,39 @@ void SectorStreamer::descend(
         VisState& v = vis_[nested_key(level, tx, ty, tz)];
         if (v.first_visit == 0) v.first_visit = vis_frame_;
         v.last_visit = vis_frame_;
-    }
-    if (split && cfg_.occlusion_grace_ticks > 0 && level > 0 &&
-        occluded_subtree(level, tx, ty, tz)) {
-        // The level the bands alone would have put here. The cap is
-        // relative to that rather than absolute, so it demotes by a fixed
-        // amount of detail wherever the camera is, instead of pinning
-        // distant tiles that were already coarse.
-        int banded = 0;
-        for (int L = 0; L <= max_level(); ++L) {
-            banded = L;
-            if (nd <= level_radius_[L]) break;
+        const bool occluded =
+            split && level > 0 && occluded_subtree(level, tx, ty, tz);
+        if (!occluded) {
+            v.capped = false;
+        } else {
+            // The level the bands alone would have put here. The cap is
+            // relative to that rather than absolute, so it demotes by a fixed
+            // amount of detail wherever the camera is, instead of pinning
+            // distant tiles that were already coarse.
+            int banded = 0;
+            for (int L = 0; L <= max_level(); ++L) {
+                banded = L;
+                if (nd <= level_radius_[L]) break;
+            }
+            if (level <= banded + cfg_.occlusion_cap_levels) {
+                // The rate limit (Config::occlusion_cap_per_tick). Holding a
+                // node capped is free; BECOMING capped is charged, because that
+                // is the transition that retires a subtree and hands the
+                // blocking eviction job its work. A node refused the budget
+                // this tick simply splits as usual and is offered the budget
+                // again on the next one, so the coarsening front advances
+                // rather than stalling.
+                if (v.capped) {
+                    split = false;
+                } else if (caps_this_tick_ < cfg_.occlusion_cap_per_tick) {
+                    ++caps_this_tick_;
+                    v.capped = true;
+                    split = false;
+                }
+            } else {
+                v.capped = false;
+            }
         }
-        const int floor_level = banded + cfg_.occlusion_cap_levels;
-        if (level <= floor_level) split = false;
     }
 
     if (split) {
@@ -979,6 +998,8 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_y,
     last_anchor_x_ = anchor_x;
     last_anchor_y_ = anchor_y;   // stored, never read in M1 (see the header)
     last_anchor_z_ = anchor_z;
+
+    caps_this_tick_ = 0;
 
     // Prune the occlusion ledger (M4 Phase A). The descent visits a bounded
     // node set per tick, but flying across a world walks that set over new

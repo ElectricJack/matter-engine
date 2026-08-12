@@ -231,6 +231,20 @@ struct Config {
     // afterwards, so a cap that would break the +-1 invariant against a visible
     // neighbour is undone by restrict_levels rather than drawn.
     int occlusion_cap_levels = 1;
+    // How many tiles may NEWLY cap per tick. A rate limit, not a quality dial:
+    // a node that is already capped costs nothing to keep capped, so this
+    // bounds only the transition.
+    //
+    // It exists because capping is an eviction in disguise, and evictions are
+    // applied in one blocking main-thread job. Measured on a COLD StreamCaverns
+    // fill, where the cap fires hardest (nothing has been drawn yet, so the
+    // whole world is eligible at once): stream.apply_evictions jobs of 2520,
+    // 2190 and 1551 ms, against none at all on the same world warm. Capping one
+    // node at level L can still retire its whole subtree, so this is a bound on
+    // the burst rather than a promise about its size -- but four an update at
+    // 60 Hz is a coarsening front that moves fast enough to be invisible and
+    // slow enough not to hand the eviction path a thousand tiles in one go.
+    int occlusion_cap_per_tick = 4;
 
     // The OCTREE'S VERTICAL EXTENT, and only that (volumetric_sectors only).
     // The selector will not descend outside [y_min, y_max] and no tile is
@@ -452,8 +466,14 @@ private:
         // behind the camera at world load was immune forever.
         uint64_t first_visit = 0;
         uint64_t last_visit = 0;
+        // Whether the cap is CURRENTLY applied to this node. Kept so the
+        // per-tick rate limit can charge only the transition: holding a node
+        // capped is free, becoming capped is what costs.
+        bool capped = false;
     };
     std::unordered_map<uint64_t, VisState> vis_;
+    // Newly-capped nodes this tick, against Config::occlusion_cap_per_tick.
+    int caps_this_tick_ = 0;
     // Prune horizon for the ledger, in visibility ticks. The descent visits a
     // bounded node set each tick, but flying across a world walks that set over
     // new ground, so entries the descent has stopped visiting have to go or the
