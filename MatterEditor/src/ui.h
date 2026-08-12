@@ -270,6 +270,26 @@ struct ViewerStats {
     // from projected size. Force that separately with the draw.overrides
     // per-module LOD if a part's own ladder is what you are chasing.
     bool  freeze_stream_anchor  = false;
+    // Freeze the CULL camera (RenderOptions::freeze_cull_camera). The frame
+    // keeps being drawn from the live camera; only the frustum planes and the
+    // eye the cull dispatch tests against are pinned. Fly out afterwards and
+    // what is left on screen is exactly what the cull pass kept for the frozen
+    // view -- which is the only way to look at a culling decision, since an
+    // over-aggressive cull and a correct one are identical from inside the
+    // frustum until something pops.
+    //
+    // Distinct from freeze_stream_anchor above, and usually wanted with it: the
+    // anchor freeze holds which tiles EXIST and at what rung, this holds which
+    // of them are DRAWN. Freezing only the cull leaves the streamer refining
+    // the world around a camera the cull cannot see.
+    bool  freeze_cull_camera    = false;
+    // The camera pose captured when freeze_cull_camera last went on, kept so
+    // the viewport overlay can draw that frustum. Reconstructed by the editor
+    // rather than read back from the renderer: the overlay is a sketch of where
+    // the frozen eye was, and a debug line that needs the renderer's exact
+    // jittered projection to be worth drawing would be a worse debug line.
+    matter::CameraDesc frozen_cull_camera{};
+    bool  frozen_cull_camera_valid = false;
     // Sub-pixel floor cull (RenderOptions::min_projected_size). A part whose
     // projected size falls below this is floor-culled at RESOLVE time, so its
     // instances are never created -- they never reach cull.instances, the

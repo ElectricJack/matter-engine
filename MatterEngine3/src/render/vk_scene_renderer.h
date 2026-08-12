@@ -987,6 +987,20 @@ public:
         visible_tokens_valid_ = false;
         return true;
     }
+
+    // ---- frozen cull camera (M4 inspection aid) ---------------------------
+    // See RenderOptions::freeze_cull_camera for what this is for. The snapshot
+    // is taken on the RISING EDGE inside upload_frame_constants -- the one
+    // place that writes both pinned fields -- so there is no second copy of
+    // "what the cull camera is" to drift.
+    void set_cull_camera_frozen(bool on) noexcept {
+        cull_camera_freeze_requested_ = on;
+        if (!on) cull_camera_frozen_ = false;
+    }
+    bool cull_camera_frozen() const noexcept { return cull_camera_frozen_; }
+    matter::Float3 frozen_cull_eye() const noexcept {
+        return frozen_cull_eye_;
+    }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
@@ -2643,6 +2657,13 @@ private:
     bool visibility_capture_ = false;
     bool visible_tokens_valid_ = false;
     std::vector<uint32_t> visible_tokens_;
+    // Frozen cull camera. `requested` is the caller's switch; `frozen` says a
+    // snapshot has actually been taken, which cannot happen until a frame
+    // uploads its constants.
+    bool cull_camera_freeze_requested_ = false;
+    bool cull_camera_frozen_ = false;
+    float frozen_cull_planes_[6][4]{};
+    matter::Float3 frozen_cull_eye_{};
     // GPU timestamp support. Cached at init time from device properties.
     bool gpu_timers_supported_ = false;
     float timestamp_period_ns_ = 0.0f;

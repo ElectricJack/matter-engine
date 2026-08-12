@@ -96,6 +96,20 @@ struct RenderOptions {
     // depicts and is a correctness term, not an appearance one.
     bool  impostor_parallax = true;
     bool  hiz_occlusion   = false;    // default OFF (known false-positive issue)
+    // FREEZE THE CULL CAMERA (M4, an inspection aid rather than a feature).
+    //
+    // Pins the frustum planes and the eye position the cull dispatch tests
+    // against, and leaves world_to_clip following the live camera. That split
+    // is the entire point: the frame is DRAWN from wherever you have flown to,
+    // and CULLED as though you were still where you froze -- so flying out and
+    // looking back shows you exactly the set the cull pass kept, from outside
+    // it. There is no other way to see a culling decision; on-screen, a correct
+    // cull and a broken one look the same until something pops.
+    //
+    // LOD selection is pinned with it, because cull.comp picks the rung from
+    // the same eye. That is wanted here (the frozen view's detail is what you
+    // came to inspect) and is the reason this is not called "freeze frustum".
+    bool  freeze_cull_camera = false;
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
     // (No active_radius. It is DERIVED from the world's outermost terrain LOD
     // band -- the distance past which the streamer keeps nothing resident

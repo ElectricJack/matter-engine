@@ -136,4 +136,94 @@ void draw_selection_outlines(const SelectionSet& selection,
     }
 }
 
+// The frozen cull frustum (M4 inspection aid). Same projection helpers as the
+// selection outlines above, and the same caveat: this is a SKETCH of where the
+// cull camera was, rebuilt from the pose the editor captured, not a readback of
+// the planes the shader is testing. It ignores the temporal jitter and any
+// reversed-Z detail in the renderer's own projection, which move the outline by
+// well under a pixel at any distance you would be inspecting from. A debug line
+// that needed those to be worth drawing would be a worse debug line.
+//
+// Drawn to a depth of `depth_limit` rather than the camera's far plane: a 5 km
+// far plane projects to a shape whose far face is off-screen and whose sides
+// are two nearly-parallel lines, which reads as nothing at all. The near face
+// and a truncated far face read as a frustum.
+void draw_frozen_cull_frustum(const matter::CameraDesc& frozen,
+                              const matter::CameraDesc& live,
+                              int fb_width, int fb_height,
+                              float depth_limit,
+                              float offset_x, float offset_y) {
+    if (fb_width <= 0 || fb_height <= 0) return;
+
+    float eye[3] = {live.position.x, live.position.y, live.position.z};
+    float tgt[3] = {live.target.x, live.target.y, live.target.z};
+    float up[3] = {live.up.x, live.up.y, live.up.z};
+    float dx = tgt[0]-eye[0], dy = tgt[1]-eye[1], dz = tgt[2]-eye[2];
+    if (dx*dx + dy*dy + dz*dz < 1e-12f) return;
+
+    const float aspect = static_cast<float>(fb_width) /
+                         static_cast<float>(fb_height);
+    const Mat4 vp = multiply(
+        perspective(live.vertical_fov_radians, aspect, live.near_plane,
+                    live.far_plane),
+        look_at(eye, tgt, up));
+
+    // The frozen camera's basis, and the half-extents of its near and far
+    // faces. Straight from the pinhole model: half_height = tan(fov/2) * depth.
+    float f[3] = {frozen.target.x - frozen.position.x,
+                  frozen.target.y - frozen.position.y,
+                  frozen.target.z - frozen.position.z};
+    const float fl = std::sqrt(f[0]*f[0] + f[1]*f[1] + f[2]*f[2]);
+    if (fl < 1e-6f) return;
+    f[0]/=fl; f[1]/=fl; f[2]/=fl;
+    float fu[3] = {frozen.up.x, frozen.up.y, frozen.up.z};
+    float r[3] = {f[1]*fu[2] - f[2]*fu[1], f[2]*fu[0] - f[0]*fu[2],
+                  f[0]*fu[1] - f[1]*fu[0]};
+    const float rl = std::sqrt(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
+    if (rl < 1e-6f) return;
+    r[0]/=rl; r[1]/=rl; r[2]/=rl;
+    float u[3] = {r[1]*f[2] - r[2]*f[1], r[2]*f[0] - r[0]*f[2],
+                  r[0]*f[1] - r[1]*f[0]};
+
+    const float tan_half = std::tan(frozen.vertical_fov_radians * 0.5f);
+    const float depths[2] = {frozen.near_plane, depth_limit};
+    float corners[8][3];
+    for (int face = 0; face < 2; ++face) {
+        const float d = depths[face];
+        const float hh = tan_half * d;
+        const float hw = hh * aspect;
+        for (int c = 0; c < 4; ++c) {
+            const float sx = (c == 1 || c == 2) ? hw : -hw;
+            const float sy = (c >= 2) ? hh : -hh;
+            float* out = corners[face * 4 + c];
+            out[0] = frozen.position.x + f[0]*d + r[0]*sx + u[0]*sy;
+            out[1] = frozen.position.y + f[1]*d + r[1]*sx + u[1]*sy;
+            out[2] = frozen.position.z + f[2]*d + r[2]*sx + u[2]*sy;
+        }
+    }
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImVec2 screen[8];
+    bool visible[8];
+    for (int i = 0; i < 8; ++i)
+        visible[i] = project(vp, fb_width, fb_height, offset_x, offset_y,
+                             corners[i], screen[i]);
+    static constexpr int edges[12][2] = {
+        {0,1},{1,2},{2,3},{3,0},          // near face
+        {4,5},{5,6},{6,7},{7,4},          // truncated far face
+        {0,4},{1,5},{2,6},{3,7},          // the four rays
+    };
+    const ImU32 color = IM_COL32(255, 96, 32, 220);
+    for (const auto& e : edges)
+        if (visible[e[0]] && visible[e[1]])
+            dl->AddLine(screen[e[0]], screen[e[1]], color, 2.0f);
+    // A dot at the frozen eye, so a frustum seen end-on still says where it is.
+    ImVec2 eye_screen;
+    float frozen_eye[3] = {frozen.position.x, frozen.position.y,
+                           frozen.position.z};
+    if (project(vp, fb_width, fb_height, offset_x, offset_y, frozen_eye,
+                eye_screen))
+        dl->AddCircleFilled(eye_screen, 5.0f, color);
+}
+
 } // namespace viewer

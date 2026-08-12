@@ -10449,11 +10449,36 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
         temporal_frame_.attempt_token != 0
             ? temporal_frame_.previous_jittered.world_to_clip
             : matrices.world_to_clip);
-    std::memcpy(constants.frustum_planes, matrices.frustum_planes,
+    // FROZEN CULL CAMERA (M4 inspection aid, RenderOptions::freeze_cull_camera).
+    //
+    // Exactly two fields are pinned, and the split is the whole feature:
+    // `world_to_clip` above stays LIVE, so the frame is drawn from wherever the
+    // camera has flown to, while `frustum_planes` and `camera_eye` -- the only
+    // two things cull.comp tests against -- keep the values they had when the
+    // freeze went on. Fly out, turn around, and the geometry still on screen is
+    // precisely the set the cull pass kept for the frozen view.
+    //
+    // Snapshotted HERE, on the rising edge, because this is the single site
+    // that writes both. Taking it anywhere else would mean a second opinion
+    // about what the cull camera is.
+    //
+    // camera_eye also drives LOD selection, so the frozen view's rungs freeze
+    // with it. Intended: the detail the frozen camera chose is a large part of
+    // what there is to look at.
+    if (cull_camera_freeze_requested_ && !cull_camera_frozen_) {
+        std::memcpy(frozen_cull_planes_, matrices.frustum_planes,
+                    sizeof(frozen_cull_planes_));
+        frozen_cull_eye_ = camera_eye;
+        cull_camera_frozen_ = true;
+    }
+    const bool frozen = cull_camera_frozen_ && cull_camera_freeze_requested_;
+    std::memcpy(constants.frustum_planes,
+                frozen ? frozen_cull_planes_ : matrices.frustum_planes,
                 sizeof(constants.frustum_planes));
-    constants.camera_eye_pixel_budget[0] = camera_eye.x;
-    constants.camera_eye_pixel_budget[1] = camera_eye.y;
-    constants.camera_eye_pixel_budget[2] = camera_eye.z;
+    const matter::Float3 cull_eye = frozen ? frozen_cull_eye_ : camera_eye;
+    constants.camera_eye_pixel_budget[0] = cull_eye.x;
+    constants.camera_eye_pixel_budget[1] = cull_eye.y;
+    constants.camera_eye_pixel_budget[2] = cull_eye.z;
     constants.camera_eye_pixel_budget[3] = pixel_budget;
     constants.counts[0] = static_cast<uint32_t>(instance_staging_.size());
     constants.counts[1] = max_clusters_per_instance_;

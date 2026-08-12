@@ -1576,6 +1576,26 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
             "closely is the point) and the GPU cull's per-cluster rung. Force "
             "that separately with a draw.overrides per-module LOD.\n\n"
             "Unfreezing snaps the anchor to wherever the camera now is.");
+    // Freeze the cull camera. Same raw-widget convention as the anchor freeze
+    // above: main.cpp reads ViewerStats::freeze_cull_camera straight into
+    // RenderOptions, so this checkbox IS the backing value. The pose snapshot
+    // for the overlay is taken there, on the same rising edge.
+    ImGui::Checkbox("Freeze cull camera", &s.freeze_cull_camera);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Pins the frustum and eye the GPU cull tests against, and keeps "
+            "DRAWING from the live camera.\n\n"
+            "So: freeze, then fly out and turn around. Everything still on "
+            "screen is exactly what the cull pass kept for the frozen view, "
+            "seen from outside it -- the only way to look at a culling "
+            "decision, because from inside the frustum a correct cull and an "
+            "over-aggressive one are identical until something pops.\n\n"
+            "The frozen frustum is outlined in the viewport.\n\n"
+            "Pins LOD selection too (cull.comp picks the rung from the same "
+            "eye), which is usually what you want: the frozen view's detail is "
+            "part of what there is to inspect.\n\n"
+            "Pair with \"Freeze terrain streaming\" above. That one holds which "
+            "tiles exist and at what rung; this one holds which are drawn.");
     ImGui::Checkbox("Impostor parallax", &s.impostor_parallax);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(

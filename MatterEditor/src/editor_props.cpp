@@ -682,7 +682,17 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "they are. Fly in to inspect the geometry that was chosen from a "
              "distance instead of watching it refine as you approach. The "
              "virtual texture still follows the real camera, and so does the "
-             "GPU cull's per-cluster rung."));
+             "GPU cull's per-cluster rung."),
+    prop(&ViewerStats::freeze_cull_camera, "freeze_cull_camera")
+        .label("Freeze cull camera")
+        .doc("Pin the frustum and eye the GPU cull tests against while the "
+             "frame keeps being drawn from the live camera. Freeze, then fly "
+             "out and turn around: what is still on screen is exactly the set "
+             "the cull pass kept for the frozen view, seen from outside it. "
+             "The frozen frustum is outlined in the viewport. Pins LOD "
+             "selection with it (same eye). Pair with \"Freeze terrain "
+             "streaming\", which holds which tiles exist rather than which "
+             "are drawn."));
 
 // ---- render.gpu ----------------------------------------------------------
 //

@@ -3284,6 +3284,20 @@ int main() {
                 ? matter::GeometryDebugView::LodTint
                 : matter::GeometryDebugView::None;
         options.hiz_occlusion = false;
+        // Frozen cull camera (M4). The renderer takes its own snapshot of the
+        // planes and the eye on the rising edge; this side captures the POSE at
+        // the same moment, purely so the viewport can outline that frustum.
+        // Two snapshots of the same instant rather than one shared one, because
+        // the renderer's is of values in its own space (planes, already
+        // jittered) and reconstructing a drawable frustum from those would be
+        // more machinery than redrawing the pinhole.
+        if (stats.freeze_cull_camera && !stats.frozen_cull_camera_valid) {
+            stats.frozen_cull_camera = frame_camera;
+            stats.frozen_cull_camera_valid = true;
+        } else if (!stats.freeze_cull_camera) {
+            stats.frozen_cull_camera_valid = false;
+        }
+        options.freeze_cull_camera = stats.freeze_cull_camera;
         options.pixel_budget = stats.pixel_budget;
         options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
@@ -3426,6 +3440,20 @@ int main() {
                                                 static_cast<int>(render_frame.extent.width),
                                                 static_cast<int>(render_frame.extent.height),
                                                 *session, sel_vp.x, sel_vp.y);
+                // The frozen cull frustum (M4). Same guard and same rect: it
+                // is drawn in the production session's world space.
+                if (stats.freeze_cull_camera &&
+                    stats.frozen_cull_camera_valid) {
+                    viewer::draw_frozen_cull_frustum(
+                        stats.frozen_cull_camera, frame_camera,
+                        static_cast<int>(render_frame.extent.width),
+                        static_cast<int>(render_frame.extent.height),
+                        // Truncation depth: far enough to enclose the near
+                        // bands of a streamed world, near enough that the shape
+                        // still reads as a frustum rather than as two parallel
+                        // lines running off the screen.
+                        1000.0f, sel_vp.x, sel_vp.y);
+                }
                 // The overlay reads that same production session and viewport
                 // rect, so it lives under the isolation guard too.
                 if (stats.animation_overlay.enabled) {
