@@ -556,6 +556,17 @@ void main() {
     // question into a target a fraction of the size -- the fine mesh would
     // cost vertex work to produce the same answer.
     if (frame.vis_params.y != 0u) {
+        // COARSEST, and it is measured rather than assumed. The selected
+        // rung rejects about 10% more clusters -- inside a cavern, 83 against
+        // 74 -- because a decimated proxy is a slightly leakier occluder. It
+        // also costs the ID pass the full vertex work of the un-culled set,
+        // and that wipes out the entire win: same camera, same process,
+        //
+        //   coarsest   8.69 ms -> 7.36 ms   (-15%)
+        //   selected   8.63 ms -> 8.62 ms   (nothing)
+        //
+        // A cheap approximate occluder beats an exact expensive one here,
+        // which is the whole reason this pass can afford to run every frame.
         const uint vis_lod = cluster.lod_count - 1u;
         if (cluster_index <= (0xffffffffu - vis_lod) / MAX_LOD) {
             const uint vis_bucket = cluster_index * MAX_LOD + vis_lod;
