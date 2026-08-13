@@ -695,13 +695,13 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "are drawn."),
     prop(&ViewerStats::occlusion_draw_cull, "occlusion_draw_cull")
         .label("Occlusion culling")
-        .doc("Do not rasterise sectors that owned no pixel last frame.\n\n"
+        .doc("Do not rasterise sectors that owned no pixel THIS frame.\n\n"
              "The visible set comes from a small ID-only pass that renders "
              "EVERY in-frustum sector every frame at its coarsest rung, so a "
              "culled sector is still tested and returns the moment it is "
              "visible. It cannot get stuck hidden.\n\n"
-             "Costs one frame of latency: within a frame the ID pass cannot "
-             "run before the cull it feeds."));
+             "No latency: the cull runs in two passes with the ID pass "
+             "between them, so the mask describes the camera being drawn."));
 
 // ---- render.gpu ----------------------------------------------------------
 //

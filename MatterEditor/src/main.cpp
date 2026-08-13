@@ -4130,9 +4130,14 @@ int main() {
             // APPEND-ONLY format (scripts parse by position). The established
             // row ends at vol_resource_generation. Task 14 appends five timing
             // lanes (ms) and cloud_shadow_memory_MiB after that stable prefix.
+            // M4 appends three GPU-TIMESTAMP lanes (total, cull, gbuffer).
+            // frame_ms is pinned to the refresh by VK_PRESENT_MODE_FIFO_KHR, so
+            // it cannot see a sub-millisecond change on the GPU: an A/B that
+            // reads it is measuring the display, not the renderer.
             std::printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d"
                         ",%u,%u,%u,%.1f,%.1f,%u,%u,%u,%.2f,%llu"
-                        ",%.3f,%.3f,%.3f,%.3f,%.3f,%.2f\n",
+                        ",%.3f,%.3f,%.3f,%.3f,%.3f,%.2f"
+                        ",%.3f,%.3f,%.3f\n",
                         stats_label.c_str(), stats.frame_ms, stats.resolve_ms,
                         stats.build_ms, stats.draw_ms, stats.instances_active,
                         stats.raster_batches, stats.raster_tris,
@@ -4157,7 +4162,9 @@ int main() {
                         frame_stats.gpu_vol_scatter_ms,
                         frame_stats.gpu_vol_integrate_ms,
                         static_cast<double>(frame_stats.cloud_shadow_memory_bytes) /
-                            (1024.0 * 1024.0));
+                            (1024.0 * 1024.0),
+                        frame_stats.gpu_total_ms, frame_stats.gpu_cull_ms,
+                        frame_stats.gpu_gbuffer_ms);
             std::fflush(stdout);
             // The VT census goes to STDERR, next to the rest of the [vk]/[vt]
             // diagnostics, and unbuffered: a streamed-world capture that dies

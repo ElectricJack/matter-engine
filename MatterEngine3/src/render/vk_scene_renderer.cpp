@@ -1766,6 +1766,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, skin_set_layout_, nullptr);
     if (pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, pipeline_, nullptr);
+    if (vis_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, vis_pipeline_, nullptr);
     if (pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device, pipeline_layout_, nullptr);
     if (descriptor_pool_ != VK_NULL_HANDLE)
@@ -1776,6 +1778,7 @@ void VkSceneRenderer::destroy_pipeline() {
         layout = VK_NULL_HANDLE;
     }
     pipeline_ = VK_NULL_HANDLE;
+    vis_pipeline_ = VK_NULL_HANDLE;
     raster_pipeline_ = VK_NULL_HANDLE;
     skinned_raster_pipeline_ = VK_NULL_HANDLE;
     wireframe_raster_pipeline_ = VK_NULL_HANDLE;
@@ -2050,15 +2053,40 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = shader;
     stage.pName = "main";
-    VkComputePipelineCreateInfo pipeline_create{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    pipeline_create.stage = stage;
-    pipeline_create.layout = pipeline_layout_;
-    result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
-                                      &pipeline_create, nullptr, &pipeline_);
+    // TWO pipelines from the one module, told apart by specialization constant
+    // 0 (cull.comp's kCullPass): 0 builds the ID pass's unfiltered list, 1
+    // builds the real draw list and tests the mask. The pass runs between them,
+    // which is what makes the mask same-frame; a single dispatch writing both
+    // lists could only ever test the previous frame's answer.
+    const uint32_t cull_pass_values[2] = {0u, 1u};
+    VkSpecializationMapEntry pass_entry{};
+    pass_entry.constantID = 0;
+    pass_entry.offset = 0;
+    pass_entry.size = sizeof(uint32_t);
+    VkPipeline* const cull_targets[2] = {&vis_pipeline_, &pipeline_};
+    for (int pass = 0; pass < 2; ++pass) {
+        VkSpecializationInfo spec{};
+        spec.mapEntryCount = 1;
+        spec.pMapEntries = &pass_entry;
+        spec.dataSize = sizeof(uint32_t);
+        spec.pData = &cull_pass_values[pass];
+        VkPipelineShaderStageCreateInfo pass_stage = stage;
+        pass_stage.pSpecializationInfo = &spec;
+        VkComputePipelineCreateInfo pipeline_create{
+            VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipeline_create.stage = pass_stage;
+        pipeline_create.layout = pipeline_layout_;
+        result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
+                                          &pipeline_create, nullptr,
+                                          cull_targets[pass]);
+        if (result != VK_SUCCESS) {
+            vkDestroyShaderModule(device, shader, nullptr);
+            return fail_vk(pass == 0 ? "vkCreateComputePipelines(cull vis)"
+                                     : "vkCreateComputePipelines(cull)",
+                           result, error);
+        }
+    }
     vkDestroyShaderModule(device, shader, nullptr);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkCreateComputePipelines(cull)", result, error);
 
     if (!create_raster_pipelines(error) || !create_display_pipeline(error) ||
         !create_gi_temporal_pipeline(error) ||
@@ -2954,9 +2982,8 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
                                   matter::ImmediateSubmitPhase::image_transition)) {
         return false;
     }
-    // The M4 draw mask: every frame's scene set
-    // names it at binding 19, so it has to exist before the first one is
-    // written. Zeroed on creation and then only ever written by the reduce --
+    // The M4 draw mask: every frame's scene set names it at binding 18, so it
+    // has to exist before the first one is written. Zeroed on creation and then only ever written by the reduce --
     // and an all-zero mask reads as "nothing is visible", which is why
     // vis_params gates the test rather than relying on the buffer's contents.
     if (!ensure_buffer(visibility_mask_,
@@ -5561,9 +5588,9 @@ bool VkSceneRenderer::ensure_visibility_pipelines(std::string& error) {
         id_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         id_write.pImageInfo = &id_image;
         vkUpdateDescriptorSets(vulkan_->device(), 1, &id_write, 0, nullptr);
-        // Writes THE shared mask, not a per-slot copy: this is the buffer the
-        // next frame's cull reads at binding 19, so the hand-off is across
-        // frames and a per-slot copy would give each slot its own history.
+        // Writes THE shared mask, not a per-slot copy: this is the buffer pass
+        // 1 of the cull reads at binding 18, a few commands after this reduce
+        // runs. One buffer because the hand-off is now inside a single frame.
         matter::write_storage_buffer_descriptor(
             frame.visibility_id_reduce, 1, visibility_mask_, 0,
             viewer::kVisibleIdWords * sizeof(uint32_t));
@@ -5578,10 +5605,10 @@ void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer
         frame.visibility_id_reduce.pipeline == VK_NULL_HANDLE ||
         visibility_id_extent_.width == 0)
         return;
-    // Zero on the GPU, HERE, and not on the CPU as the per-slot masks are.
-    // The shared mask is read by THIS frame's cull dispatch, which has already
-    // run by the time control reaches this point -- clearing it any earlier
-    // would hand the cull an empty mask and cull the entire world.
+    // Zero on the GPU, immediately before the reduce that refills it. The
+    // reader is pass 1 of the cull, which has NOT run yet -- the clear, the
+    // reduce and that dispatch are three consecutive steps of this frame -- so
+    // the window where the mask reads empty is closed by the barrier below.
     vkCmdFillBuffer(command_buffer, visibility_mask_.buffer, 0,
                     viewer::kVisibleIdWords * sizeof(uint32_t), 0u);
     VkMemoryBarrier2 cleared{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -5603,10 +5630,10 @@ void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer
                             nullptr);
     vkCmdDispatch(command_buffer, (visibility_id_extent_.width + 15u) / 16u,
                   (visibility_id_extent_.height + 15u) / 16u, 1);
-    // Make the writes visible to the NEXT frame's cull, which reads this same
-    // buffer at binding 19. Submission order gives execution order on one
-    // queue; it does not give memory visibility, and that distinction is the
-    // class of bug that works until it does not.
+    // Make the writes visible to pass 1 of THIS frame's cull, which reads this
+    // same buffer at binding 18 a few commands later. Submission order gives
+    // execution order on one queue; it does not give memory visibility, and
+    // that distinction is the class of bug that works until it does not.
     VkMemoryBarrier2 written{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     written.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     written.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
@@ -12730,6 +12757,42 @@ bool VkSceneRenderer::record_cull_and_render(
         return false;
     }
     if (group_count != 0) {
+        // OCCLUSION, SAME FRAME (M4). Pass 0 builds the unfiltered list, the ID
+        // pass rasterises it, the reduce turns it into the mask, and only then
+        // does pass 1 build the draw list that tests that mask. Every step is
+        // in this command buffer, in this order, so the mask pass 1 reads
+        // describes THIS frame's camera.
+        //
+        // It used to be one dispatch writing both lists, which forced the mask
+        // to be the previous frame's -- correct while still, a beat late under
+        // a fast pan, which is what this ordering fixes. The cost is that the
+        // gbuffer can no longer start the moment the cull ends: it now waits on
+        // the ID raster and the reduce. That pass is a third of the resolution
+        // at the coarsest rung, which is what keeps the trade worth making.
+        if (visibility_reduce_ && vis_pipeline_ != VK_NULL_HANDLE) {
+            PROFILE_SCOPE("cull.vis_dispatch");
+            const CullDispatchRecord vis_dispatch{
+                vis_pipeline_, pipeline_layout_,
+                {selected.descriptor_sets[0], selected.descriptor_sets[1]},
+                group_count};
+            // The barrier inside this helper already publishes the writes to
+            // DRAW_INDIRECT and VERTEX_SHADER, which is exactly what the ID
+            // pass reads them as.
+            record_cull_dispatch_commands(frame.command_buffer, vis_dispatch);
+            const RasterRecordView id_view{
+                pipeline_layout_,
+                {selected.descriptor_sets[0], selected.descriptor_sets[1]},
+                vertices_.buffer,
+                indices_.buffer,
+                // The UNFILTERED list. Drawing the main `commands` here would
+                // make the ID pass rasterise a set the mask has already
+                // filtered, which is the one thing this design exists to avoid.
+                selected.vis_commands.buffer,
+                uploaded_command_count_,
+                limits_.max_draw_indirect_count};
+            record_visibility_id_pass(frame.command_buffer, id_view);
+            record_visibility_id_reduce(frame.command_buffer, selected);
+        }
         PROFILE_SCOPE("cull.dispatch");
         write_gpu_timestamp(frame.command_buffer, kGpuZoneCull, false, selected);
         const CullDispatchRecord dispatch{
@@ -12907,33 +12970,6 @@ bool VkSceneRenderer::record_cull_and_render(
     }
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
-    // Identity-buffer visibility (M4). Here because this is the first point in
-    // the frame where a complete G-buffer exists.
-    //
-    // Gated on the switch rather than built unconditionally: the mask is zeroed
-    // before every use and is complete after its own
-    // dispatch.
-    if (visibility_reduce_) {
-        // The ID pass, then both reduces. Recorded here rather than before the
-        // gbuffer only because this step is still PROVING the ID pass against
-        // the G-buffer's answer, and that comparison wants both to describe the
-        // same frame. Once the mask feeds the cull it has to move to the top of
-        // the frame, before the cull dispatch that consumes it.
-        PROFILE_SCOPE("cull.visible_ids");
-        const RasterRecordView id_view{
-            pipeline_layout_,
-            {selected.descriptor_sets[0], selected.descriptor_sets[1]},
-            vertices_.buffer,
-            indices_.buffer,
-            // The UNFILTERED list. Drawing the main `commands` here would make
-            // the ID pass rasterise a set the mask has already filtered, which
-            // is the one thing this design exists to avoid.
-            selected.vis_commands.buffer,
-            uploaded_command_count_,
-            limits_.max_draw_indirect_count};
-        record_visibility_id_pass(frame.command_buffer, id_view);
-        record_visibility_id_reduce(frame.command_buffer, selected);
-    }
     selected.stats_valid = true;
     // M1d: same publication contract as stats_valid — a slot only carries a
     // readable cull result once the frame that dispatched culling recorded

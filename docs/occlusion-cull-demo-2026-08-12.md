@@ -8,19 +8,53 @@ The design is `docs/volumetric-sectors-design-2026-08-10.md` §5.2, but the
 implementation that survived is not the one it sketches — see "What was removed"
 at the bottom. The one that shipped is a **low-resolution ID pass**:
 
-1. Every in-frustum sector is rasterised, at its coarsest rung, into a small
-   `R32G32_UINT` target — no lighting, no instances, ID only, depth test on
+1. `cull.comp` runs as **pass 0** (specialization constant `kCullPass`): frustum
+   only, no mask, emitting the unfiltered draw list.
+2. That list is rasterised at its coarsest rung into a small `R32G32_UINT`
+   target — no lighting, no instances, ID only, depth test on
    (`shaders_vk/visibility_id.vert` / `.frag`).
-2. `visible_ids.comp` reduces that target to a hashed bitmask of the tokens that
+3. `visible_ids.comp` reduces the target to a hashed bitmask of the tokens that
    own at least one pixel.
-3. The next frame's `cull.comp` drops any draw whose token is not in the mask.
+4. `cull.comp` runs as **pass 1**: the same frustum work, then the mask, then
+   the real draw list.
 
-The circularity that killed the earlier attempts is broken by step 1 drawing an
-**unfiltered** list: the cull dispatch writes two draw lists, one filtered by the
-mask (the real frame) and one not (the ID pass). A culled sector is still tested
-every frame and returns the moment it owns a pixel, so it cannot get stuck
-hidden. The cost is one frame of latency — within a frame the ID pass cannot run
-before the cull it feeds.
+All four are recorded into one command buffer in that order, so the mask
+describes the camera the frame is being drawn from.
+
+The circularity that killed the earlier attempts is broken by pass 0 being
+**unfiltered**: what the ID pass rasterises is never filtered by the answer it
+is about to produce. A culled sector is tested every frame and returns the
+moment it owns a pixel, so it cannot get stuck hidden.
+
+### The one-frame version, and why it went
+
+The first landing wrote both lists from a single dispatch, which forced the mask
+to be the PREVIOUS frame's — a list feeding the ID pass cannot be built after
+the pass that consumes its answer. Correct while the camera is still, wrong
+while it moves, and the error is not small. A 180° whip pan over four frames,
+eye fixed, LOD trace keyed by pose index (`MATTER_CAM_PATH` drives one pose per
+rendered frame, so the counts are directly comparable):
+
+| pose | 39 (before) | 40 | 41 | 42 | 43 | 44 (after) |
+|------|-------------|----|----|----|----|------------|
+| one frame  | 30 | **15** | **13** | **12** | **18** | 31 |
+| same frame | 30 | 28 | 24 | 35 | 31 | 31 |
+
+Instance draws per frame. The stale mask dropped roughly half the visible world
+for the whole pan and only recovered the frame after the camera stopped — that
+is the popping. Both settle at 31, so nothing about a still camera changed.
+
+It costs nothing measurable. Same pose, GPU timestamps, `MATTER_VSYNC=0` so the
+numbers are not pinned to the refresh:
+
+| | cull off | cull on |
+|---|---|---|
+| one frame  | 5.138 ms | 4.788 ms |
+| same frame | 5.075 ms | 4.789 ms |
+
+The serialization the split introduces — the G-buffer now waits on the ID raster
+and the reduce — did not show up, because that pass was never overlapping
+anything to begin with.
 
 ## 1. The cull — turn it on and watch the world halve
 

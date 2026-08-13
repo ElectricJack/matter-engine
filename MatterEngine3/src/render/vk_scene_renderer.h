@@ -2175,6 +2175,9 @@ private:
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout skin_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    // cull.comp specialized to kCullPass = 0: the ID pass's unfiltered list.
+    // Same module, same layout, same descriptor sets as pipeline_ above.
+    VkPipeline vis_pipeline_ = VK_NULL_HANDLE;
     VkPipeline skin_pipeline_ = VK_NULL_HANDLE;
     VkPipeline raster_pipeline_ = VK_NULL_HANDLE;
     // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte

@@ -1485,7 +1485,31 @@ struct VulkanDevice::Impl {
                 break;
             }
         }
+        // FIFO unless MATTER_VSYNC=0, which asks for MAILBOX and falls back to
+        // IMMEDIATE, then to FIFO if the device offers neither.
+        //
+        // This exists for MEASUREMENT. Under FIFO a frame that finishes early
+        // waits, the GPU downclocks, and its own timestamps read whatever clock
+        // state the wait left behind: two runs of one binary at one pose
+        // reported 6.0 ms and 22.9 ms of GPU time for the identical 78-batch
+        // frame. Nothing sub-millisecond can be A/B'd through that. Uncapped,
+        // the GPU stays at a working clock and the timestamps mean something.
         create.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        if (const char* vsync = std::getenv("MATTER_VSYNC")) {
+            if (vsync[0] == '0' && vsync[1] == '\0') {
+                const auto offers = [&support](VkPresentModeKHR mode) {
+                    return std::find(support.present_modes.begin(),
+                                     support.present_modes.end(),
+                                     mode) != support.present_modes.end();
+                };
+                if (offers(VK_PRESENT_MODE_MAILBOX_KHR))
+                    create.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                else if (offers(VK_PRESENT_MODE_IMMEDIATE_KHR))
+                    create.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+                std::printf("MATTER_VSYNC=0: present mode %d\n",
+                            static_cast<int>(create.presentMode));
+            }
+        }
         create.clipped = VK_TRUE;
         create.oldSwapchain = old_swapchain;
 

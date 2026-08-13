@@ -2,6 +2,22 @@
 
 layout(local_size_x = 64) in;
 
+// WHICH OF THE TWO CULL PASSES THIS PIPELINE IS (M4, same-frame occlusion).
+//
+//   0 = the ID pass's list. Frustum only, no mask, emit the coarsest rung into
+//       vis_commands/vis_draw_transforms, then stop. No stats: pass 1 walks the
+//       same clusters and is the only counter, so both writing would double
+//       every number the HUD shows.
+//   1 = the real draw list. Frustum, then the mask the ID pass just produced.
+//
+// Two pipelines from one module (a specialization constant, so each folds to a
+// straight line and neither pays for the branch). They were ONE dispatch that
+// wrote both lists, which forced the mask to be the PREVIOUS frame's -- the
+// list feeding the ID pass cannot be built after the pass that consumes its
+// answer. Splitting the dispatch is what lets the ID pass sit between them and
+// makes the mask same-frame.
+layout(constant_id = 0) const uint kCullPass = 1u;
+
 const uint MAX_LOD = 9u;
 const uint ANIMATION_BOUND_SKIN_RASTER = 2u;
 
@@ -81,8 +97,10 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 temporal;
     // ---- occlusion ID pass (M4) -------------------------------------------
     // x = cull DRAWS against the visibility mask (0 = the mask is written and
-    //     read by nobody, which is the default and the pre-M4 behaviour),
-    // y = emit the unfiltered ID-pass list at all. yzw otherwise unused.
+    //     read by nobody, which is the default and the pre-M4 behaviour).
+    // yzw unused. y was "emit the ID list at all" back when one dispatch wrote
+    // both lists; which list a dispatch writes is now kCullPass, and the
+    // renderer simply does not dispatch pass 0 when the cull is off.
     uvec4 vis_params;
 } frame;
 
@@ -97,8 +115,8 @@ layout(set = 1, binding = 16, std430) buffer VisDrawCommands {
 layout(set = 1, binding = 17, std430) writeonly buffer VisDrawTransforms {
     DrawTransform vis_draw_transforms[];
 };
-// Last frame's answer: which instance tokens owned a pixel. Written by
-// visible_ids.comp, read here, never written here.
+// Which instance tokens owned a pixel of the ID target THIS frame. Written by
+// visible_ids.comp between pass 0 and pass 1, read here, never written here.
 layout(set = 1, binding = 18, std430) readonly buffer VisibleMask {
     uint visible_mask[];
 };
@@ -340,7 +358,7 @@ void main() {
         const PartDrawOverride ov = part_draw_overrides[cluster.part_slot];
         if (ov.max_draw_distance > 0.0 &&
             distance_to_eye > ov.max_draw_distance) {
-            atomicAdd(frustum_culled, 1u);
+            if (kCullPass == 1u) atomicAdd(frustum_culled, 1u);
             return;
         }
         override_lod_bias = ov.lod_bias;
@@ -389,23 +407,22 @@ void main() {
             }
         }
         if (all_outside) {
-            atomicAdd(frustum_culled, 1u);
+            if (kCullPass == 1u) atomicAdd(frustum_culled, 1u);
             return;
         }
     }
 
-    // ---- the ID pass's list (M4) -------------------------------------------
+    // ---- pass 0: the ID pass's list (M4) -----------------------------------
     //
-    // BEFORE the mask test below, and that order is the whole design. This
-    // list is what the ID pass rasterises to decide who is visible; filtering
-    // it by the previous answer would mean a sector culled once is never
-    // tested again and never comes back. Everything that survives the frustum
-    // lands here, whatever the mask says.
+    // NEVER mask-tested, which is the whole design. This list is what the ID
+    // pass rasterises to decide who is visible; filtering it by the previous
+    // answer would mean a sector culled once is never tested again and never
+    // comes back. Everything that survives the frustum lands here.
     //
     // At the COARSEST rung, because this list exists to answer a yes/no
     // question into a target a fraction of the size -- the fine mesh would
     // cost vertex work to produce the same answer.
-    if (frame.vis_params.y != 0u) {
+    if (kCullPass == 0u) {
         // COARSEST, and it is measured rather than assumed. The selected
         // rung rejects about 10% more clusters -- inside a cavern, 83 against
         // 74 -- because a decimated proxy is a slightly leakier occluder. It
@@ -437,15 +454,18 @@ void main() {
                 }
             }
         }
+        // Pass 0 emits nothing else. The main list is pass 1's, and it runs
+        // after the ID pass has turned this list into a mask.
+        return;
     }
 
     // ---- the mask (M4) -----------------------------------------------------
     //
-    // Last frame's answer about this instance. One frame stale by
-    // construction: within a frame the ID pass cannot run before the cull that
-    // feeds it. So a newly disoccluded sector appears one frame late, which is
-    // the entire cost of this design and is bounded -- unlike a cull that
-    // filtered its own evidence, which would never recover at all.
+    // THIS frame's answer about this instance: pass 0, the ID raster and the
+    // reduce all ran earlier in this command buffer, and the barrier before
+    // this dispatch makes their writes visible here. It used to be the
+    // previous frame's, which showed up as sectors popping in a beat late
+    // under fast camera motion.
     if (frame.vis_params.x != 0u) {
         const uint bit = visible_id_hash(instance.instance_token);
         if ((visible_mask[bit >> 5u] & (1u << (bit & 31u))) == 0u) {

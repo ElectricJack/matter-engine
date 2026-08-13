@@ -1612,13 +1612,13 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     ImGui::Checkbox("Occlusion culling", &s.occlusion_draw_cull);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
-            "Do not rasterise sectors that owned no pixel last frame.\n\n"
+            "Do not rasterise sectors that owned no pixel this frame.\n\n"
             "Underground most of what is in front of the camera is behind "
             "rock: on StreamCaverns this is -58% of draw batches and -49% of "
             "triangles for an identical picture.\n\n"
-            "Costs one frame of latency -- something newly revealed appears "
-            "next frame -- because within a frame the ID pass cannot run "
-            "before the cull it feeds.");
+            "Same-frame: the cull runs in two passes with the ID pass between "
+            "them, so a fast pan reveals geometry on the frame it turns "
+            "rather than the frame after.");
     if (s.occlusion_draw_cull) {
         ImGui::Indent();
         ImGui::Text("drawn %d batches   %d clusters occluded",
