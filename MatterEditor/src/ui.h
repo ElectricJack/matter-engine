@@ -178,6 +178,13 @@ struct ViewerStats {
     int      gpu_emitted = 0;   // clusters that passed the cull this frame
     int      gpu_culled  = 0;   // clusters rejected by the frustum cull this frame
     int      gpu_culled_hiz = 0;   // clusters rejected by HiZ occlusion this frame
+    // Occlusion streaming (M4), mirrored from WorldSession frame stats. Shown
+    // under the "Occlusion streaming" toggle because the VIEWPORT does not
+    // change when the cap engages -- it demotes tiles, it never hides them --
+    // so these are the only numbers that say the feature is running.
+    uint32_t resident_sectors = 0;
+    uint32_t occlusion_visible_sectors = 0;
+    uint32_t occlusion_capped_tiles = 0;
     // Writable: HiZ occlusion toggle (Task 10). Default OFF: the previous-frame
     // pyramid causes false-positive occlusion culls at freehand camera angles
     // (terrain / tree segments disappear). Correct fix needs a same-frame

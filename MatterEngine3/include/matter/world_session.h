@@ -260,6 +260,22 @@ struct FrameStats {
     uint32_t cache_hits  = 0;         // cache hits last bake
     // Phase C Task 9: world-kind sessions only; 0 for closed-world sessions.
     uint32_t resident_sectors = 0;
+    // ---- occlusion streaming (M4) -----------------------------------------
+    // What the cap is doing RIGHT NOW, surfaced because the feature is
+    // otherwise invisible by design: it never hides a tile, it streams the
+    // unseen ones coarser, so the frame looks identical whether it is on or
+    // off. An issue report ("doesn't appear to hide sectors, it looks the same
+    // when toggled") arrived from a session where it was working correctly and
+    // had cut residency from 703 to 242 -- with nothing on screen to say so.
+    //
+    // occlusion_visible_sectors: sectors that owned a pixel in the last
+    //                            harvested frame.
+    // occlusion_capped_tiles:    octree nodes the cap is currently refusing to
+    //                            split. This is the number that moves the
+    //                            instant the toggle flips.
+    uint32_t occlusion_visible_sectors = 0;
+    uint32_t occlusion_capped_tiles = 0;
+    bool     occlusion_active = false;
     // Vulkan GPU-driven path diagnostics (cumulative CPU-side counters).
     uint64_t vk_instance_cache_expansions = 0;
     uint64_t vk_vertex_uploads = 0;

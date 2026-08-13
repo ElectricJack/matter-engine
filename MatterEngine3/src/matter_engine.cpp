@@ -7262,6 +7262,7 @@ void WorldSession::Impl::publish_streaming_snapshot() {
         std::lock_guard<std::mutex> lock(streaming_status_mutex);
         streaming_status_copy = snapshot.status;
         stats.resident_sectors = snapshot.status.resident_sectors;
+        stats.occlusion_capped_tiles = snapshot.status.capped_tiles;
     }
     // Residency, in the trace rather than only in the status line. Paired with
     // stream.evictions_applied this separates the two ways instance count can
@@ -11272,6 +11273,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 if (word & (1u << (bit & 31u))) drawn.push_back(sector);
             }
             ++impl_->visibility_frame;
+            // Surfaced to the editor: the frame does not change when the cap
+            // engages (it never hides a tile, it demotes one), so these two
+            // counters are the only thing that says the feature is running.
+            impl_->stats.occlusion_visible_sectors =
+                static_cast<uint32_t>(drawn.size());
+            impl_->stats.occlusion_active = true;
             if (impl_->visibility_frame % 300 == 0) {
                 // bits_set is the COLLISION INSTRUMENT. It counts distinct
                 // hash slots the GPU lit, so `bits_set` well above the number
@@ -11302,6 +11309,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     drawn.push_back(it->second);
             }
             ++impl_->visibility_frame;
+            impl_->stats.occlusion_visible_sectors =
+                static_cast<uint32_t>(drawn.size());
+            impl_->stats.occlusion_active = true;
             // Report the mapping yield periodically. Three numbers, because
             // three different things break here and they look identical from
             // the outside: tokens harvested (renderer), tokens that mapped

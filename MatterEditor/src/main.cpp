@@ -3647,6 +3647,13 @@ int main() {
         stats.gpu_emitted = static_cast<int>(frame_stats.instances_drawn);
         stats.gpu_culled = static_cast<int>(frame_stats.clusters_culled);
         stats.gpu_culled_hiz = static_cast<int>(frame_stats.hiz_culled);
+        // Occlusion streaming readout (M4). See the panel block that draws it:
+        // the frame is identical with the cap on or off, so this is the only
+        // feedback the toggle has.
+        stats.resident_sectors = frame_stats.resident_sectors;
+        stats.occlusion_visible_sectors =
+            frame_stats.occlusion_visible_sectors;
+        stats.occlusion_capped_tiles = frame_stats.occlusion_capped_tiles;
         stats.culled_clusters = stats.gpu_culled;
         stats.raster_tris = static_cast<int>(frame_stats.triangles);
         stats.raster_batches = static_cast<int>(frame_stats.draw_batches);

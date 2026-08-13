@@ -1624,6 +1624,30 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
             "drawn, just coarser. Takes effect immediately -- no reload.");
     if (occlusion_on) {
         ImGui::Indent();
+        // THE READOUT, and it is the point of this block rather than a
+        // decoration. The cap never hides a tile -- it streams the unseen ones
+        // coarser -- so the viewport is IDENTICAL whether the checkbox above is
+        // on or off. A report arrived saying the toggle "doesn't appear to hide
+        // sectors, it looks the same", from a session where it was working and
+        // had taken residency from 703 to 242. These three numbers are the only
+        // thing on screen that moves when it engages.
+        ImGui::Text("resident %u   drawn %u   capped %u",
+                    s.resident_sectors, s.occlusion_visible_sectors,
+                    s.occlusion_capped_tiles);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "resident - sectors the streamer is holding.\n"
+                "drawn    - sectors that owned a pixel last frame. Far below "
+                "resident underground: most of what is in front of the camera "
+                "is behind rock.\n"
+                "capped   - octree nodes being held un-split right now. This "
+                "is what the toggle changes.\n\n"
+                "The VIEWPORT will not change -- a capped tile is still "
+                "resident and still drawn, one level coarser, which is what "
+                "makes a stale visibility bit unable to open a hole. To SEE "
+                "the demotion, set Debug View to \"LOD levels\": the capped "
+                "region tints coarser while what you are looking at stays "
+                "fine.");
         ImGui::SliderInt("Grace (ticks)", &s.occlusion_grace_ticks, 1, 300);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(

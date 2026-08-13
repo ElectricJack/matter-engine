@@ -520,6 +520,7 @@ void Coordinator::publish_snapshot(
         next.status.generation = worker_generation_;
         next.status.resident_sectors = snapshot_count(streamer_->resident_count());
         next.status.inflight_sectors = snapshot_count(streamer_->inflight_count());
+        next.status.capped_tiles = snapshot_count(streamer_->capped_tile_count());
     }
 
     std::lock_guard<std::mutex> lock(mutex_);

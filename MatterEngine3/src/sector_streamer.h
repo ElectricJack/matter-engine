@@ -501,6 +501,19 @@ private:
     std::unordered_map<uint64_t, VisState> vis_;
     // Newly-capped nodes this tick, against Config::occlusion_cap_per_tick.
     int caps_this_tick_ = 0;
+
+public:
+    // How many octree nodes the cap is currently holding un-split. Reported to
+    // the editor because it is the only number that moves visibly when the
+    // toggle flips -- the frame itself does not, by design.
+    size_t capped_tile_count() const noexcept {
+        size_t n = 0;
+        for (const auto& [key, state] : vis_)
+            if (state.capped) ++n;
+        return n;
+    }
+
+private:
     // Prune horizon for the ledger, in visibility ticks. The descent visits a
     // bounded node set each tick, but flying across a world walks that set over
     // new ground, so entries the descent has stopped visiting have to go or the
