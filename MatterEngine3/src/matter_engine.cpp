@@ -11260,8 +11260,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const bool id_buffer = occlusion_source_is_id_buffer();
     impl_->vk_scene->set_visibility_capture(
         impl_->occlusion_feedback_enabled && !id_buffer);
+    // The ID pass runs for EITHER consumer, not just the streaming cap.
+    //
+    // It was `occlusion_feedback_enabled && id_buffer`, which silently made the
+    // draw cull depend on a different feature: with the cap off there was no
+    // mask, so ticking "Cull occluded draws" did nothing and looked like the
+    // cull was broken. That is the third time in this milestone a switch has
+    // been wired behind something unrelated to it -- the cap behind an env var,
+    // the draw cull behind an unregistered property, and now behind the cap --
+    // so the rule this encodes is: whoever needs the mask turns the mask on.
     impl_->vk_scene->set_visibility_reduce(
-        impl_->occlusion_feedback_enabled && id_buffer);
+        (impl_->occlusion_feedback_enabled && id_buffer) ||
+        impl_->vk_scene->visibility_draw_cull());
     if (impl_->vk_scene->visibility_reduce()) {
         if (impl_->vk_scene->take_visible_bits(impl_->visible_bit_scratch)) {
             std::vector<matter_stream::SectorRequest> drawn;

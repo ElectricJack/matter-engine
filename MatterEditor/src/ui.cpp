@@ -1596,96 +1596,83 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
             "part of what there is to inspect.\n\n"
             "Pair with \"Freeze terrain streaming\" above. That one holds which "
             "tiles exist and at what rung; this one holds which are drawn.");
-    // ---- occlusion-aware streaming -----------------------------------------
-    // A TOGGLE, first of the occlusion controls, because it is the one that
-    // turns the feature on. It used to be MATTER_OCCLUSION_GRACE and nothing
-    // else, and a report arrived reading "not enough is being occluded" from a
-    // session that had found and switched on both freeze toggles below while
-    // this sat at zero -- the UI was discoverable and the switch was not.
+    // ---- OCCLUSION CULLING --------------------------------------------------
     //
-    // The checkbox writes the tick count (kDefault on, 0 off) rather than
-    // shadowing it in a second bool, so there is exactly one value and the
-    // slider, the property, and MATTER_OCCLUSION_GRACE cannot disagree about
-    // whether the feature is running.
+    // One switch, and it is the whole feature: sectors that owned no pixel last
+    // frame are not rasterised. The visible set comes from a small ID-only pass
+    // that renders EVERY in-frustum sector every frame at its coarsest rung, so
+    // a culled sector is still TESTED and returns the moment it is visible. It
+    // cannot get stuck hidden, which is what makes this safe without a depth
+    // pyramid, a re-admission rota, or any history.
+    //
+    // FIRST and top-level on purpose. Twice now this milestone has shipped a
+    // feature whose switch was somewhere nobody would look -- an env var, then
+    // nested under an unrelated toggle -- and both times the report came back
+    // as "it does not work".
+    ImGui::Checkbox("Occlusion culling", &s.occlusion_draw_cull);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Do not rasterise sectors that owned no pixel last frame.\n\n"
+            "Underground most of what is in front of the camera is behind "
+            "rock: on StreamCaverns this is -58% of draw batches and -49% of "
+            "triangles for an identical picture.\n\n"
+            "Costs one frame of latency -- something newly revealed appears "
+            "next frame -- because within a frame the ID pass cannot run "
+            "before the cull it feeds.");
+    if (s.occlusion_draw_cull) {
+        ImGui::Indent();
+        ImGui::Text("drawn %d batches   %d clusters occluded",
+                    s.raster_batches, s.gpu_culled_hiz);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Toggle the box and watch both move. `occluded` is what the "
+                "ID pass rejected this frame; `batches` is what survived to be "
+                "drawn.");
+        ImGui::Unindent();
+    }
+
+    // ---- the two earlier attempts, kept and off ----------------------------
+    // Neither is the occlusion cull above and neither is needed by it. They are
+    // still here because they work and are measured, not because anything
+    // depends on them.
+    //
+    //   Streaming cap - makes unseen sectors COARSER rather than absent. Never
+    //                   changes the picture, which is why it reads as doing
+    //                   nothing; the win is residency and bake cost.
+    //   HZB           - screen-AABB depth-pyramid rejection. Structurally weak
+    //                   on terrain, where a sector is one cluster the size of a
+    //                   whole tile: 4 rejections out of ~900.
     constexpr int kDefaultOcclusionGrace = 60;
     bool occlusion_on = s.occlusion_grace_ticks > 0;
-    if (ImGui::Checkbox("Occlusion streaming", &occlusion_on))
+    if (ImGui::Checkbox("Streaming detail cap (unrelated)", &occlusion_on))
         s.occlusion_grace_ticks = occlusion_on ? kDefaultOcclusionGrace : 0;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
-            "Stream tiles nothing has DRAWN one level coarser.\n\n"
-            "Visibility is read off the G-buffer identity attachment, so a "
-            "tile buried in rock counts as undrawn even though it is straight "
-            "in front of the camera -- which underground is most of the "
-            "world.\n\n"
-            "On StreamCaverns this takes 741 instances / 601k triangles down "
-            "to 204 / 286k for a frame you cannot tell apart.\n\n"
-            "Never opens a hole: a capped tile is still resident and still "
-            "drawn, just coarser. Takes effect immediately -- no reload.");
+            "Stream tiles nothing has drawn one level COARSER. It never hides "
+            "anything, so the viewport does not change -- the win is residency "
+            "and bake cost, not pixels. Independent of the occlusion cull "
+            "above.");
     if (occlusion_on) {
         ImGui::Indent();
-        // THE READOUT, and it is the point of this block rather than a
-        // decoration. The cap never hides a tile -- it streams the unseen ones
-        // coarser -- so the viewport is IDENTICAL whether the checkbox above is
-        // on or off. A report arrived saying the toggle "doesn't appear to hide
-        // sectors, it looks the same", from a session where it was working and
-        // had taken residency from 703 to 242. These three numbers are the only
-        // thing on screen that moves when it engages.
         ImGui::Text("resident %u   drawn %u   capped %u",
                     s.resident_sectors, s.occlusion_visible_sectors,
                     s.occlusion_capped_tiles);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "resident - sectors the streamer is holding.\n"
-                "drawn    - sectors that owned a pixel last frame. Far below "
-                "resident underground: most of what is in front of the camera "
-                "is behind rock.\n"
-                "capped   - octree nodes being held un-split right now. This "
-                "is what the toggle changes.\n\n"
-                "The VIEWPORT will not change -- a capped tile is still "
-                "resident and still drawn, one level coarser, which is what "
-                "makes a stale visibility bit unable to open a hole. To SEE "
-                "the demotion, set Debug View to \"LOD levels\": the capped "
-                "region tints coarser while what you are looking at stays "
-                "fine.");
-        // THE ONE THAT STOPS OCCLUDED SECTORS BEING DRAWN. The cap above only
-        // makes them cheaper; this rejects them in the cull.
-        ImGui::Checkbox("Cull occluded draws", &s.occlusion_draw_cull);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "Reject sectors that owned no pixel last frame, so they are "
-                "not rasterised at all.\n\n"
-                "The visible set comes from a small ID-only pass that renders "
-                "EVERY in-frustum sector every frame at its coarsest rung. "
-                "That is what makes this safe to iterate: a culled sector is "
-                "still tested, so it comes back the moment it is visible "
-                "again. It cannot get stuck hidden.\n\n"
-                "Costs one frame of latency -- something newly revealed "
-                "appears next frame -- which is why it is separate from the "
-                "cap above and off by default. Watch 'drawn' against "
-                "'resident': this is the control that moves the first one.");
         ImGui::SliderInt("Grace (ticks)", &s.occlusion_grace_ticks, 1, 300);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
                 "How long a tile may go undrawn before it is demoted, in "
-                "visibility ticks (about frames).\n\n"
-                "Too short and the world churns every time you glance away; "
-                "too long and it never demotes. 60 -- about a second -- is "
-                "where the measurements above were taken.");
+                "visibility ticks (about frames). 60 is where the "
+                "measurements were taken.");
         ImGui::Unindent();
     }
-    ImGui::Checkbox("HZB occlusion cull", &s.hiz_occlusion);
+    ImGui::Checkbox("HZB occlusion cull (superseded)", &s.hiz_occlusion);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
-            "Reject clusters hidden behind what the previous frame drew, by "
-            "testing each one's screen AABB against a min-reduced depth "
-            "pyramid. This is what makes the cull's \"culled\" count mean "
-            "occluded rather than merely off-screen, and what gives the hiz "
-            "counter below a non-zero value.\n\n"
-            "Off by default: the pyramid is one frame old, so while the camera "
-            "moves something just revealed can be rejected for a frame. Exact "
-            "whenever the cull camera is still -- turn it on together with "
-            "\"Freeze cull camera\" and fly out to see what it rejected.");
+            "The earlier draw-side attempt: reject clusters whose screen AABB "
+            "is behind a min-reduced depth pyramid. Superseded by the "
+            "occlusion cull above, which needs no pyramid and no bounding box. "
+            "Kept because it is measured and may earn its keep once clusters "
+            "are finer than a whole tile.");
     ImGui::Checkbox("Impostor parallax", &s.impostor_parallax);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
