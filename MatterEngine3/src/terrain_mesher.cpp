@@ -2,10 +2,13 @@
 // Pure CPU; no JS, no GL.
 
 #include "terrain_mesher.h"
+#include "bake_mode.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 namespace terrain_mesher {
 
@@ -72,6 +75,236 @@ const int kEdges[12][6] = {
     {0,0,0,0,1,0},{1,0,0,1,1,0},{0,0,1,0,1,1},{1,0,1,1,1,1},
     {0,0,0,0,0,1},{1,0,0,1,0,1},{0,1,0,0,1,1},{1,1,0,1,1,1},
 };
+
+// ===========================================================================
+// THE CANONICAL SHARED CONTOUR  (docs/contour-seam-design-2026-08-13.md)
+// ===========================================================================
+//
+// WHAT PROBLEM THIS SOLVES, in one paragraph. Surface nets put a tile's vertex
+// at the centroid of its cell's edge crossings, which is a point strictly
+// INSIDE the cell -- so where two tiles at different rungs meet, neither can
+// name the other's vertices without knowing the other's lattice, and that is
+// what forced every previous seam mechanism to be a stitch between two
+// different curves. A stitch either gaps or overlaps, and coplanar overlap is
+// ruled out (issue 736f92da: the texturing artefacts it causes). The way out is
+// to give the SHARED PLANE a curve of its own that is a function of (plane,
+// field) and nothing else, so both tiles compute it independently and get the
+// same doubles. Each tile then terminates its own surface ON that curve, and
+// the two meet there exactly -- no stitch, nothing drawn twice.
+//
+// WHY THE RESOLUTION IS THE FINEST RUNG AND NOT THE PAIR'S. A rule f that both
+// sides of every legal pair can evaluate without knowing the other's level must
+// satisfy f(L) = f(L+1) for every L, which forces f constant; and the constant
+// has to serve the finest tile that can ever touch a plane, or that tile's own
+// lattice would out-resolve the boundary it must land on. Hence
+// `kCanonicalVoxel` -- rung 0, 2 m, the finest the octree's level-0 tile uses.
+// It is a real cost on coarse tiles (their border geometry scales with contour
+// LENGTH at 2 m, not with their own cell count) and the design doc's table
+// measures it at ~+40% world triangles. That cost was accepted deliberately.
+//
+// WHY A CONTOUR VERTEX IS SHAREABLE WHEN A SURFACE-NETS VERTEX IS NOT. This is
+// a PRIMAL construction: a vertex is the interpolation along a NAMED lattice
+// edge -- from canonical lattice point (ia, ib) toward (ia+1, ib) or
+// (ia, ib+1) -- and the lattice is anchored to the WORLD ORIGIN, never to a
+// tile. Two tiles of any sizes asking about the same plane therefore walk the
+// same lattice points, evaluate the field at bitwise-identical coordinates
+// (the dyadic-double argument derived at `oy` in mesh_sector_impl), and get
+// bitwise-identical crossings. The impossibility argument in
+// volumetric-sectors-design-2026-08-10.md is about centroids inside cells and
+// does not reach this; the same paragraph concedes a named-edge interpolation
+// can be shared.
+//
+// The foundation gates are contour_seam_tests.cpp (`run-contourseam`): the
+// agreement is bitwise, a tile-anchored lattice is tested and must FAIL, and
+// tracing finds the same vertex set as exhaustive sampling.
+
+// Rung 0. See "WHY THE RESOLUTION IS THE FINEST RUNG" above.
+//
+// LIMIT, stated rather than guarded: a tile whose own voxel is FINER than this
+// (rung > 0) would out-resolve the canonical lattice, and its boundary would be
+// coarser than its interior. No world does that -- the octree pairs level L
+// with rung -L, so level 0 is rung 0 and nothing is finer -- and the fix if one
+// ever does is to lower this constant for the whole world, not per tile: two
+// tiles that disagree about it agree about nothing.
+constexpr double kCanonicalVoxel = 2.0;
+
+// Tangential axis order, fixed so both sides of a plane agree without
+// negotiating: normal x -> (y, z), normal y -> (x, z), normal z -> (x, y).
+// Identical to seam::face_tangent_axes; kept local so the contour construction
+// depends on nothing but the field.
+void contour_tangent_axes(int axis, int& a_axis, int& b_axis) {
+    if (axis == 0)      { a_axis = 1; b_axis = 2; }
+    else if (axis == 1) { a_axis = 0; b_axis = 2; }
+    else                { a_axis = 0; b_axis = 1; }
+}
+
+struct ContourVert {
+    int64_t ia = 0, ib = 0;   // the lattice point the crossed edge starts at
+    int     dir = 0;          // 0 = a-edge, 1 = b-edge
+    double  pa = 0, pb = 0;   // interpolated world position, tangential coords
+};
+
+struct Contour {
+    std::vector<ContourVert> verts;
+    std::vector<std::pair<int, int>> segs;   // indices into verts
+};
+
+// World coordinate of canonical lattice index i. A product, never an
+// accumulation: the whole point is that two callers starting from different
+// indices land on the same bits, and vc is a power of two so this is exact.
+inline double contour_lat(int64_t i, double vc) { return double(i) * vc; }
+
+// Build the contour on one face square, by TRACING from seeds rather than
+// sampling the square.
+//
+// Sampling would be O(area) at the canonical voxel, which is ruinous exactly
+// where tiles are cheapest today: a level-5 face is 1024 m across, so 512x512
+// canonical points, a quarter of a million field evaluations per face and one
+// and a half million per tile. Tracing is O(curve): follow each component cell
+// by cell from a point known to be on it. `run-contourseam` gate [3] pins that
+// the two find the SAME vertex set, which is what makes this an optimisation
+// rather than a second, sloppier contour.
+//
+// SEEDS are this tile's own border cells that produced a dual vertex, in
+// own-rung cell coordinates local to the square. That set is exactly right and
+// the reasoning is worth keeping: the fan below needs contour segments only in
+// the footprint of a border cell that HAS a vertex to fan from, and a cell with
+// a sign change anywhere on its face square necessarily has one (the square is
+// a face of the cell, so a sign change on it is a sign change in it). So
+// seeding from dual-vertex cells is a superset of seeding from face-mixed
+// cells, and it is a superset by the cases that matter -- a cell whose surface
+// enters it without touching this face contributes a seed that finds nothing,
+// which costs one sign test.
+//
+// A component NO seed reaches is skipped, and that is correct rather than a
+// gap: if this tile's lattice sees no surface there, it owes no geometry there.
+// The finer neighbour that does see it terminates on its own contour, and this
+// tile's plane is simply empty at that spot -- which is what "the coarse LOD
+// does not have this tunnel" looks like when it is stated honestly.
+Contour trace_contour(const terrain_field::FieldRuntime& field, int axis,
+                      double plane, double a0, double a1, double b0, double b1,
+                      double vc, int64_t own_steps,
+                      const std::vector<std::pair<int, int>>& seeds) {
+    Contour c;
+    if (seeds.empty()) return c;
+
+    const int64_t ia0 = int64_t(std::llround(a0 / vc));
+    const int64_t ia1 = int64_t(std::llround(a1 / vc));
+    const int64_t ib0 = int64_t(std::llround(b0 / vc));
+    const int64_t ib1 = int64_t(std::llround(b1 / vc));
+    if (ia1 <= ia0 || ib1 <= ib0) return c;
+
+    int aa = 0, bb = 0;
+    contour_tangent_axes(axis, aa, bb);
+
+    // One density per lattice point, memoised, so both edge directions read the
+    // SAME value. Evaluating a point twice would be correct in exact arithmetic
+    // and is a bit-level hazard in floating point.
+    const int64_t stride = ib1 - ib0 + 2;
+    std::unordered_map<int64_t, float> samples;
+    auto pack = [&](int64_t i, int64_t j) -> int64_t {
+        return (i - ia0) * stride + (j - ib0);
+    };
+    auto sample = [&](int64_t i, int64_t j) -> float {
+        const int64_t k = pack(i, j);
+        auto it = samples.find(k);
+        if (it != samples.end()) return it->second;
+        float p[3];
+        p[axis] = float(plane);
+        p[aa]   = float(contour_lat(i, vc));
+        p[bb]   = float(contour_lat(j, vc));
+        const float d = field.density_at(p[0], p[1], p[2]);
+        samples.emplace(k, d);
+        return d;
+    };
+
+    std::unordered_map<int64_t, int> vindex;
+    auto vert = [&](int64_t i, int64_t j, int dir) -> int {
+        const int64_t k = pack(i, j) * 2 + dir;
+        auto it = vindex.find(k);
+        if (it != vindex.end()) return it->second;
+        const float da = sample(i, j);
+        const float db = dir == 0 ? sample(i + 1, j) : sample(i, j + 1);
+        // Fixed operand order, so both sides of the plane compute this from
+        // identical inputs in identical order. Reversing it would not be
+        // bitwise reproducible.
+        const double t = double(da) / (double(da) - double(db));
+        ContourVert v;
+        v.ia = i; v.ib = j; v.dir = dir;
+        v.pa = contour_lat(i, vc) + (dir == 0 ? t * vc : 0.0);
+        v.pb = contour_lat(j, vc) + (dir == 1 ? t * vc : 0.0);
+        const int id = int(c.verts.size());
+        c.verts.push_back(v);
+        vindex.emplace(k, id);
+        return id;
+    };
+
+    std::vector<std::pair<int64_t, int64_t>> stack;
+    for (const auto& s : seeds) {
+        const int64_t i0 = ia0 + int64_t(s.first) * own_steps;
+        const int64_t j0 = ib0 + int64_t(s.second) * own_steps;
+        // The own-rung cell is mixed somewhere, so SOME canonical cell inside it
+        // is; push them all and let the visited set collapse the duplicate work.
+        for (int64_t jj = j0; jj < j0 + own_steps; ++jj)
+            for (int64_t ii = i0; ii < i0 + own_steps; ++ii)
+                stack.push_back({ii, jj});
+    }
+
+    std::unordered_set<int64_t> seen;
+    while (!stack.empty()) {
+        const auto cell = stack.back();
+        stack.pop_back();
+        const int64_t i = cell.first, j = cell.second;
+        if (i < ia0 || j < ib0 || i + 1 > ia1 || j + 1 > ib1) continue;
+        if (!seen.insert(pack(i, j)).second) continue;
+
+        const float c00 = sample(i, j),     c10 = sample(i + 1, j);
+        const float c01 = sample(i, j + 1), c11 = sample(i + 1, j + 1);
+        const bool s00 = c00 > 0, s10 = c10 > 0;
+        const bool s01 = c01 > 0, s11 = c11 > 0;
+        const int code = (s00 ? 1 : 0) | (s10 ? 2 : 0) | (s01 ? 4 : 0) |
+                         (s11 ? 8 : 0);
+        if (code == 0 || code == 15) continue;
+
+        // Marching squares. Edge ids: B = bottom a-edge (i, j, 0), T = top
+        // a-edge (i, j+1, 0), L = left b-edge (i, j, 1), R = right b-edge
+        // (i+1, j, 1).
+        //
+        // The SADDLE (two diagonal corners solid) is resolved by a FIXED rule
+        // rather than by a centre sample. Both sides of a plane must resolve it
+        // identically, and a fixed rule is identical by construction where a
+        // sampled one is merely usually identical -- and "usually" is a hole
+        // that appears once per world and cannot be reproduced.
+        auto B = [&] { return vert(i, j, 0); };
+        auto T = [&] { return vert(i, j + 1, 0); };
+        auto L = [&] { return vert(i, j, 1); };
+        auto R = [&] { return vert(i + 1, j, 1); };
+        switch (code) {
+            case 1: case 14: c.segs.push_back({B(), L()}); break;
+            case 2: case 13: c.segs.push_back({B(), R()}); break;
+            case 4: case 11: c.segs.push_back({T(), L()}); break;
+            case 8: case 7:  c.segs.push_back({T(), R()}); break;
+            case 3: case 12: c.segs.push_back({L(), R()}); break;
+            case 5: case 10: c.segs.push_back({B(), T()}); break;
+            case 6:
+                c.segs.push_back({B(), L()});
+                c.segs.push_back({T(), R()});
+                break;
+            case 9:
+                c.segs.push_back({B(), R()});
+                c.segs.push_back({T(), L()});
+                break;
+            default: break;
+        }
+
+        // Follow the curve: any neighbour sharing a crossed edge is on it.
+        stack.push_back({i + 1, j});
+        stack.push_back({i - 1, j});
+        stack.push_back({i, j + 1});
+        stack.push_back({i, j - 1});
+    }
+    return c;
+}
 
 } // namespace
 
@@ -292,7 +525,32 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
     // This was never nested-specific. The uniform ladder has the same hole
     // wherever a coarse tile sits west or south of a fine one; nesting only
     // made those borders common and put them near the camera.
-    const int kBandCells = 2;
+    //
+    // ---- ...AND WHAT REPLACES ALL OF IT (the contour mesher) -----------------
+    //
+    // Everything above -- the direction-asymmetric bridge, the two runtime
+    // layers, the overlap band -- exists because a tile's surface stops at a
+    // position that depends on the tile's own lattice, so two tiles at
+    // different rungs cannot meet exactly and something has to cover the
+    // difference. `bake_mode::contour_seams()` removes the premise instead:
+    // the tile terminates exactly ON its six face planes, against a curve that
+    // every tile touching that plane computes identically (see THE CANONICAL
+    // SHARED CONTOUR above). Then there is no strip to cover, no band, no
+    // welder, and no asymmetry -- a tile reaches neither past its - faces nor
+    // short of its + ones.
+    //
+    // Y-TILED ONLY, and that is not a stopgap. The column path's output is
+    // pinned BITWISE over six configurations (terrain_mesher_tests), a column
+    // has no ±y neighbour to share a plane with, and the uniform-grid worlds
+    // that still run it have no level ladder and therefore no cross-rung seam
+    // to close. Nothing there is asking for this.
+    const bool contour_seams = y_tiled && bake_mode::contour_seams();
+
+    // No band when the contour rule is on: the band IS the overlap the ruling
+    // forbids, and with the seam closed at the plane there is nothing for it to
+    // cover. Dropping it to zero also takes back the ~11% of sampling cost the
+    // extra columns carry, which is most of what the border contour then spends.
+    const int kBandCells = contour_seams ? 0 : 2;
 
     // VOLUMETRIC = the world's density is not `height(x, z) - y`: tunnels,
     // caverns, overhangs. Two things below still specialise on it, and each of
@@ -638,6 +896,51 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                (!y_tiled || (j >= 1 && j <= n));
     };
 
+    // ---- OWNERSHIP UNDER THE CONTOUR RULE -----------------------------------
+    //
+    // The bridge above is the thing the contour rule removes, so the predicate
+    // has to change with it -- and the change is precisely "emit a quad only
+    // when ALL FOUR cells sharing the edge are the tile's own", which is the
+    // rule a mesh that terminates on its own boundary has. That is
+    // direction-dependent, because which four cells share an edge depends on
+    // the edge's direction, so `owned` (one predicate for all three) splits
+    // into three. Read the call sites below for the cell sets:
+    //
+    //   +y edge at (i,j,k)  cells  (i-1..i,  j,      k-1..k)
+    //   +x edge at (i,j,k)  cells  (i,       j-1..j, k-1..k)
+    //   +z edge at (i,j,k)  cells  (i-1..i,  j-1..j, k)
+    //
+    // and owned cells are [1..n] on every axis, so each cell range's lower end
+    // must be >= 1 and its upper end <= n.
+    //
+    // WHAT THIS ACTUALLY SUPPRESSES, which is less than it looks. An edge
+    // DIRECTION's quad joins four cells that differ in the other two axes, so
+    // on the -x face it is the y- and z-direction quads at lattice i = 1 that
+    // go (they reached into ghost cell layer 0, which is the bridge); the
+    // x-direction quads at i = 1 join four cells all in layer 1 and stay, so
+    // the border layer is still stitched to itself and to layer 2. On the +x
+    // face nothing is suppressed at all -- the old rule already stopped at
+    // i = n. So the tile loses exactly its reach past the - faces, and the fan
+    // below adds the reach up to the + ones. Together: the mesh ends on the
+    // plane, from both sides.
+    //
+    // Off, all three are `owned` verbatim, so the emitted bytes cannot move.
+    auto owned_y_edge = [&](int i, int j, int k) -> bool {
+        return contour_seams ? (i >= 2 && i <= n && j >= 1 && j <= n &&
+                                k >= 2 && k <= n)
+                             : owned(i, j, k);
+    };
+    auto owned_x_edge = [&](int i, int j, int k) -> bool {
+        return contour_seams ? (i >= 1 && i <= n && j >= 2 && j <= n &&
+                                k >= 2 && k <= n)
+                             : owned(i, j, k);
+    };
+    auto owned_z_edge = [&](int i, int j, int k) -> bool {
+        return contour_seams ? (i >= 2 && i <= n && j >= 2 && j <= n &&
+                                k >= 1 && k <= n)
+                             : owned(i, j, k);
+    };
+
     // ---- Band emission (M0-WP7) ---------------------------------------------
     //
     // `emit_band_quad` is `emit_quad` against an OverlapBand: same four cells,
@@ -701,9 +1004,11 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
     for (int k = k_lo; k <= k_hi; ++k)
         for (int j = j_lo; j <= j_hi; ++j)
             for (int i = i_lo; i <= i_hi; ++i) {
-                const bool own   = owned(i, j, k);
+                const bool own_y = owned_y_edge(i, j, k);
+                const bool own_x = owned_x_edge(i, j, k);
+                const bool own_z = owned_z_edge(i, j, k);
                 const bool extra = want_band && band_extra(i, j, k);
-                if (!own && !extra) continue;
+                if (!own_x && !own_y && !own_z && !extra) continue;
                 float a = at(i, j, k);
                 // World coords of this sample (for material query midpoint).
                 float wxs = float(ox) + float(i - 1) * voxel;
@@ -717,7 +1022,7 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                         const CellVert* q1 = get_vert(i,     j, k - 1);
                         const CellVert* q2 = get_vert(i,     j, k);
                         const CellVert* q3 = get_vert(i - 1, j, k);
-                        if (own)
+                        if (own_y)
                             emit_quad(q0, q1, q2, q3, /*flip=*/a > 0, wxs, wzs);
                         if (extra && i <= 0)
                             emit_band_quad(band_neg_x, q0, q1, q2, q3, a > 0, wxs, wzs);
@@ -736,7 +1041,7 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                         const CellVert* q2 = get_vert(i, j,     k);
                         const CellVert* q3 = get_vert(i, j - 1, k);
                         const float mx = wxs + 0.5f * voxel;
-                        if (own)
+                        if (own_x)
                             emit_quad(q0, q1, q2, q3, /*flip=*/a <= 0, mx, wzs);
                         if (extra && i <= 0)
                             emit_band_quad(band_neg_x, q0, q1, q2, q3, a <= 0, mx, wzs);
@@ -755,7 +1060,7 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                         const CellVert* q2 = get_vert(i,     j,     k);
                         const CellVert* q3 = get_vert(i - 1, j,     k);
                         const float mz = wzs + 0.5f * voxel;
-                        if (own)
+                        if (own_z)
                             emit_quad(q0, q1, q2, q3, /*flip=*/a <= 0, wxs, mz);
                         if (extra && i <= 0)
                             emit_band_quad(band_neg_x, q0, q1, q2, q3, a <= 0, wxs, mz);
@@ -766,6 +1071,264 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                     }
                 }
             }
+
+    // ---- THE CONSTRAINED BORDER, once per face ------------------------------
+    //
+    // With the bridge gone (see OWNERSHIP UNDER THE CONTOUR RULE), the tile's
+    // surface stops at its border CELL layer and the six face planes are bare.
+    // This closes each one onto the canonical contour, with two kinds of
+    // triangle:
+    //
+    //   FAN     each contour segment gets one triangle joining it to the dual
+    //           vertex of the border cell whose face footprint contains the
+    //           segment's midpoint. This is what tents the tile's surface down
+    //           onto the shared curve.
+    //   BRIDGE  a contour vertex sitting exactly on the line between two
+    //           adjacent border cells is shared by both of their fans, and
+    //           without a triangle spanning the two dual vertices the surface
+    //           has a slit there. Measured, not assumed: removing the bridge
+    //           made the prototype's non-manifold count 3-6x WORSE.
+    //
+    // THIS IS A ZIPPER, AND THAT IS NOT A CONTRADICTION. The ruling that killed
+    // the previous designs was about a zipper between two TILES' curves --
+    // where the two curves cross you get coplanar bowties, which is the
+    // texturing artefact. This zipper runs between ONE tile's own dual boundary
+    // and the shared curve. It is invisible to the neighbour, which meets this
+    // tile only ON the curve, where the two tent over it from opposite sides
+    // and share every vertex exactly.
+    //
+    // A border cell with no dual vertex contributes nothing and its segments
+    // are dropped. The design once proposed a flat in-plane cap for that case;
+    // it was implemented and the triangle count did not move by one, because
+    // the case cannot arise -- a sign change on a cell's face IS a sign change
+    // in the cell, so a cell with contour in its footprint has a vertex. The
+    // cap is not here because it was measured to be dead code, not because it
+    // was forgotten.
+    if (contour_seams) {
+        const double S   = double(sector_size);
+        const double v   = double(voxel);
+        const double vc  = kCanonicalVoxel;
+        const double org[3] = {ox, oy, oz};
+        // Canonical cells spanning one of this tile's own cells: 2^L at level L.
+        const int64_t own_steps =
+            std::max<int64_t>(1, int64_t(std::llround(v / vc)));
+
+        for (int face = 0; face < 6; ++face) {
+            const int    ax       = face / 2;
+            const bool   positive = (face & 1) != 0;
+            const double plane    = positive ? org[ax] + S : org[ax];
+            int aa = 0, bb = 0;
+            contour_tangent_axes(ax, aa, bb);
+
+            // The border CELL layer, in the tile's own [1..n] cell indices.
+            const int layer = positive ? n : 1;
+            auto dual_at = [&](int ca, int cb) -> const CellVert* {
+                int c3[3];
+                c3[ax] = layer; c3[aa] = ca; c3[bb] = cb;
+                return get_vert(c3[0], c3[1], c3[2]);
+            };
+
+            // Seeds for the trace: every border cell that produced a vertex,
+            // in own-rung cell coordinates local to the face square. See the
+            // long note on trace_contour for why this set is exactly right.
+            std::vector<std::pair<int, int>> seeds;
+            for (int ca = 1; ca <= n; ++ca)
+                for (int cb = 1; cb <= n; ++cb)
+                    if (dual_at(ca, cb)) seeds.push_back({ca - 1, cb - 1});
+            if (seeds.empty()) continue;
+
+            const Contour c =
+                trace_contour(field, ax, plane, org[aa], org[aa] + S,
+                              org[bb], org[bb] + S, vc, own_steps, seeds);
+            if (c.segs.empty()) continue;
+
+            // Contour vertices as mesh vertices, once each.
+            //
+            // POSITION is tile-local, like every other vertex here, so the two
+            // tiles sharing this curve store DIFFERENT floats for the same
+            // world point (each is `world - its own origin`). That is the
+            // existing contract, not a new compromise: the ownership rule has
+            // always had two tiles reference one geometric vertex from two
+            // frames, and the divergence is the rounding of one subtraction --
+            // sub-millimetre, and it scales with distance exactly as the pixel
+            // does, so it stays sub-pixel at every level.
+            //
+            // NORMAL uses the CANONICAL voxel as its central-difference
+            // epsilon, not the tile's own. This is the one place that matters
+            // visibly: with each side probing at its own scale, a shared vertex
+            // would carry two different normals and the seam would print as a
+            // shading crease -- which is what the seam hairlines of issue
+            // ec2829d6 turned out to be, and the whole point of this design is
+            // that the boundary is not visible. The cost is that a coarse
+            // tile's border row carries finer-grained normals than its
+            // interior; that is a gradient across one row of triangles, where
+            // the alternative is a discontinuity along the whole seam.
+            std::vector<CellVert> cw(c.verts.size());
+            for (size_t vi = 0; vi < c.verts.size(); ++vi) {
+                const ContourVert& cv = c.verts[vi];
+                double w[3];
+                w[ax] = plane; w[aa] = cv.pa; w[bb] = cv.pb;
+                CellVert o;
+                o.p = {float(w[0] - ox), float(w[1] - oy), float(w[2] - oz)};
+                const float e  = float(vc);
+                const float wx = float(w[0]), wy = float(w[1]), wz = float(w[2]);
+                const float gx = field.density_at(wx + e, wy, wz) -
+                                 field.density_at(wx - e, wy, wz);
+                // Same analytic shortcut as get_vert: for a heightfield the
+                // height term cancels out of the y-difference exactly.
+                const float gy = volumetric
+                    ? field.density_at(wx, wy + e, wz) -
+                      field.density_at(wx, wy - e, wz)
+                    : -2.0f * e;
+                const float gz = field.density_at(wx, wy, wz + e) -
+                                 field.density_at(wx, wy, wz - e);
+                const float len = std::sqrt(gx * gx + gy * gy + gz * gz);
+                o.n = len > 1e-12f ? V3{-gx / len, -gy / len, -gz / len}
+                                   : V3{0, 1, 0};
+                cw[vi] = o;
+            }
+
+            // Which owned cell a tangential world coordinate falls in. Cell ci
+            // spans world [o + (ci-1)v, o + ci*v], so the +1 undoes the same
+            // ghost-ring offset the lattice map uses.
+            auto cell_of = [&](int tax, double w) -> int {
+                int idx = int(std::floor((w - org[tax]) / v)) + 1;
+                if (idx < 1) idx = 1;
+                if (idx > n) idx = n;
+                return idx;
+            };
+
+            // WINDING is derived, not guessed. Reading emit_quad's +y case: the
+            // unflipped order runs (x-,z-) -> (x+,z-) -> (x+,z+), whose
+            // right-hand normal is -y, and unflipped is the case with air below
+            // and solid above, whose outward normal is also -y. So this mesh's
+            // convention is "right-hand normal == outward surface normal", and
+            // orienting against the vertex normals reproduces it for any
+            // triangle without re-deriving a sign rule per case.
+            auto push_oriented = [&](const CellVert& A, const CellVert& B,
+                                     const CellVert& C, int ca, int cb) {
+                const float ux = B.p.x - A.p.x, uy = B.p.y - A.p.y,
+                            uz = B.p.z - A.p.z;
+                const float vx = C.p.x - A.p.x, vy = C.p.y - A.p.y,
+                            vz = C.p.z - A.p.z;
+                const float cx = uy * vz - uz * vy;
+                const float cy = uz * vx - ux * vz;
+                const float cz = ux * vy - uy * vx;
+                // Degenerate triangles are never emitted -- a collapsed sliver
+                // on the seam is a crack that no coverage test can see.
+                if (!(cx * cx + cy * cy + cz * cz > 0.0f)) return;
+                int c3[3];
+                c3[ax] = layer; c3[aa] = ca; c3[bb] = cb;
+                // Material at the border cell's centre, the same convention the
+                // boundary record uses -- so the border strip lands in the same
+                // bucket as the interior it continues, rather than printing a
+                // one-triangle material stripe along every seam.
+                MaterialBucket& bkt = bucket_for(out, uint32_t(field.material_at(
+                    float(ox + (double(c3[0]) - 0.5) * v),
+                    float(oz + (double(c3[2]) - 0.5) * v))));
+                const float nx = A.n.x + B.n.x + C.n.x;
+                const float ny = A.n.y + B.n.y + C.n.y;
+                const float nz = A.n.z + B.n.z + C.n.z;
+                if (cx * nx + cy * ny + cz * nz >= 0.0f) push_tri(bkt, A, B, C);
+                else                                     push_tri(bkt, A, C, B);
+            };
+
+            // THE ANCHOR, and why it is not simply `dual_at(ca, cb)`.
+            //
+            // A border cell can carry contour in its face footprint and have NO
+            // vertex of its own: the canonical lattice is finer than this
+            // tile's, so a feature between two of its own lattice points is
+            // invisible to it while the contour sees it perfectly. Dropping the
+            // segment there is what the prototype did, on the strength of a
+            // measurement that said the case never arises -- and that
+            // measurement was taken on a smooth rolling field with no structure
+            // below a voxel. A CAVE field has it constantly.
+            //
+            // Dropping is not survivable, because the two sides of a plane are
+            // DIFFERENT cells: one can see the feature and the other not, so one
+            // side tents the segment and the other does not, and the result is a
+            // one-triangle edge -- a hole you can see through. Measured on the
+            // equal-level 2x2x2 block: 4 of them.
+            //
+            // So the fan reaches instead. The anchor is the nearest border cell
+            // that does have a vertex, searched in a fixed ring order out to two
+            // cells, which is where this tile's surface actually is. The
+            // triangle is stretched rather than absent, and the two sides still
+            // meet exactly on the contour -- which is the only place they are
+            // required to meet.
+            auto anchor_at = [&](int& ca, int& cb) -> const CellVert* {
+                if (const CellVert* v = dual_at(ca, cb)) return v;
+                for (int rad = 1; rad <= 2; ++rad)
+                    for (int da = -rad; da <= rad; ++da)
+                        for (int db = -rad; db <= rad; ++db) {
+                            if (std::max(std::abs(da), std::abs(db)) != rad)
+                                continue;
+                            const int na = ca + da, nb = cb + db;
+                            if (na < 1 || na > n || nb < 1 || nb > n) continue;
+                            if (const CellVert* v = dual_at(na, nb)) {
+                                ca = na; cb = nb;
+                                return v;
+                            }
+                        }
+                return nullptr;
+            };
+
+            // Each segment's anchor, resolved once. `get_vert` inserts into an
+            // unordered_map, whose element pointers are stable across rehash,
+            // so these stay valid as later cells are built.
+            struct Anchor { const CellVert* v; int ca, cb; };
+            std::vector<Anchor> seg_anchor(c.segs.size(), Anchor{nullptr, 0, 0});
+            for (size_t si = 0; si < c.segs.size(); ++si) {
+                const ContourVert& p = c.verts[c.segs[si].first];
+                const ContourVert& q = c.verts[c.segs[si].second];
+                int ca = cell_of(aa, 0.5 * (p.pa + q.pa));
+                int cb = cell_of(bb, 0.5 * (p.pb + q.pb));
+                seg_anchor[si] = Anchor{anchor_at(ca, cb), ca, cb};
+            }
+
+            // FAN: one triangle per segment, tenting the tile's surface down
+            // onto the shared curve.
+            for (size_t si = 0; si < c.segs.size(); ++si) {
+                const Anchor& a = seg_anchor[si];
+                if (!a.v) continue;
+                push_oriented(*a.v, cw[c.segs[si].first], cw[c.segs[si].second],
+                              a.ca, a.cb);
+            }
+
+            // BRIDGE: where two segments MEET AT A CONTOUR VERTEX with different
+            // anchors, the two fans share that vertex and leave a slit between
+            // their anchor vertices. One triangle closes it.
+            //
+            // THE CONDITION IS "DIFFERENT ANCHORS", NOT "ON A CELL LINE", and
+            // the difference is the whole bug. The first version tested whether
+            // the contour vertex sat exactly on the line between two adjacent
+            // border cells -- which is the case that arises when every segment
+            // anchors to the cell containing it, and stops being the case the
+            // moment `anchor_at` has to reach. It then left one-triangle edges
+            // wherever the reach changed anchor mid-curve: closing the 4
+            // measured holes by reaching MOVED them rather than removing them,
+            // which is what said the test was on the anchor and not the
+            // geometry. Stated as "join consecutive fans that disagree", the
+            // cell-line case is just the instance where they disagree because
+            // the curve crossed a cell boundary, and every other instance is
+            // covered by the same triangle.
+            std::vector<std::vector<int>> at_vert(c.verts.size());
+            for (size_t si = 0; si < c.segs.size(); ++si) {
+                at_vert[c.segs[si].first].push_back(int(si));
+                at_vert[c.segs[si].second].push_back(int(si));
+            }
+            for (size_t vi = 0; vi < at_vert.size(); ++vi) {
+                const std::vector<int>& inc = at_vert[vi];
+                for (size_t p = 0; p < inc.size(); ++p)
+                    for (size_t q = p + 1; q < inc.size(); ++q) {
+                        const Anchor& a0 = seg_anchor[inc[p]];
+                        const Anchor& a1 = seg_anchor[inc[q]];
+                        if (!a0.v || !a1.v || a0.v == a1.v) continue;
+                        push_oriented(*a0.v, *a1.v, cw[vi], a0.ca, a0.cb);
+                    }
+            }
+        }
+    }
 
     // ---- Boundary record export (M0-WP2) ------------------------------------
     //
@@ -822,7 +1385,33 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
     // spans the whole authored slab, and there is no neighbour above or below to
     // weld against. The Y-TILED path builds all six, by the same code -- see the
     // axis-generic rewrite below.
-    if (boundary_out) {
+    if (boundary_out && contour_seams) {
+        // THE WELDER HAS NOTHING LEFT TO DO, so it is handed nothing to do it
+        // with: an EMPTY record, with only the header identifying the tile.
+        //
+        // This is the point of the whole design. The seam is closed at BAKE, by
+        // both tiles independently, for every pair including equal-level ones
+        // -- so there is no runtime pair to rebuild, no fan to enumerate, no
+        // band to draw, and no `missing_coarse_pair` residue to account for.
+        // `rebuild_weld_pair` reads a record with no verts and no band, emits
+        // nothing, and drops the pair; the welder is already dead code here in
+        // everything but name.
+        //
+        // Deleting it outright (rebuild_weld_pair, the pair pool, seam_weld.*,
+        // the FaceRecord export, the weld parts and their TLAS/tracer
+        // exclusions) is the follow-up, and it is deliberately NOT bundled with
+        // this change: while the mode flag exists both paths have to work, and
+        // the welder is the rollback.
+        seam::SectorBoundary& sb = *boundary_out;
+        sb = seam::SectorBoundary{};
+        sb.rung    = rung;
+        sb.cells   = n;
+        sb.tx      = tx;
+        sb.tz      = tz;
+        sb.ty      = ty;
+        sb.y_tiled = y_tiled;
+        for (int f = 0; f < 6; ++f) sb.faces[f].face = f;
+    } else if (boundary_out) {
         seam::SectorBoundary& sb = *boundary_out;
         sb = seam::SectorBoundary{};
         sb.rung    = rung;

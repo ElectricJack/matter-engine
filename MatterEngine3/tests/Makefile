@@ -887,6 +887,22 @@ CONTOURMESH_TARGET = build/contour_mesh_tests
 CONTOURMESH_CPP    = contour_mesh_tests.cpp
 CONTOURMESH_HEADERS = check.h
 
+# Contour seams, increment 3: the port, gated against the REAL mesher. The two
+# suites above run their own surface nets over an analytic field on purpose --
+# so they cannot pass by agreeing with the code they justify replacing -- and
+# both share one blind spot: a two-tile fixture cannot judge a cube EDGE, where
+# the tiles that would supply the other incident triangles are absent. This one
+# meshes closed 2x2x2 blocks through mesh_sector_tiled and gates their INTERIOR,
+# where every neighbour is present and nothing has to be excluded.
+#
+# Sets MATTER_CONTOUR_SEAMS itself, which is why it is a separate binary:
+# terrain_mesher_tests pins the WELDER path's bytes bitwise and a process cannot
+# be in both modes.
+CONTOURENGINE_TARGET = build/contour_engine_tests
+CONTOURENGINE_CPP    = contour_engine_tests.cpp ../src/terrain_field.cpp \
+                       ../src/terrain_mesher.cpp
+CONTOURENGINE_HEADERS = check.h ../src/terrain_mesher.h ../src/bake_mode.h
+
 # Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
 TERRAINVERB_TARGET = build/terrain_verb_tests
 TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
@@ -1427,6 +1443,7 @@ def_CPP_SRCS := $(sort \
     $(SEAMWELD_CPP) \
     $(CONTOURSEAM_CPP) \
     $(CONTOURMESH_CPP) \
+    $(CONTOURENGINE_CPP) \
     $(SEAMINTEGRATION_CPP) \
     $(PARTSTORE_CPP))
 
@@ -1609,6 +1626,7 @@ TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
 SEAMWELD_OBJS     = $(call obj_list,def,$(SEAMWELD_CPP))
 CONTOURSEAM_OBJS  = $(call obj_list,def,$(CONTOURSEAM_CPP))
 CONTOURMESH_OBJS  = $(call obj_list,def,$(CONTOURMESH_CPP))
+CONTOURENGINE_OBJS = $(call obj_list,def,$(CONTOURENGINE_CPP))
 SEAMINTEGRATION_OBJS = $(call obj_list,def,$(SEAMINTEGRATION_CPP))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
@@ -1655,7 +1673,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2011,6 +2029,12 @@ $(CONTOURMESH_TARGET): $(CONTOURMESH_OBJS) $(CONTOURMESH_HEADERS)
 
 run-contourmesh: $(CONTOURMESH_TARGET)
 	./$(CONTOURMESH_TARGET)
+
+$(CONTOURENGINE_TARGET): $(CONTOURENGINE_OBJS) $(CONTOURENGINE_HEADERS)
+	$(CC) $(CONTOURENGINE_OBJS) -o $@ $(CFLAGS) -I../src -lm -lpthread
+
+run-contourengine: $(CONTOURENGINE_TARGET)
+	./$(CONTOURENGINE_TARGET)
 
 # M0-WP6 — mesh + weld together. Same minimal link line as the welder suite:
 # the mesher and the field interpreter are pure CPU too, so no raylib, no GL,
