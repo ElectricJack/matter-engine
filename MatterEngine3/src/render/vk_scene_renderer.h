@@ -1803,6 +1803,16 @@ private:
         matter::VkBufferResource visibility_bits;
         matter::VkComputePipelineResource visibility_pipeline;
         bool visibility_bits_valid = false;
+        // The same again for the ID pass's own target. TWO masks on purpose
+        // and only for now: step one of this feature is to prove the ID pass
+        // and the G-buffer agree about who is visible, and that comparison is
+        // only meaningful if both are produced by the same reduce shader from
+        // different inputs. Once it holds, the G-buffer copy is redundant --
+        // the ID pass answers about the whole candidate set, not just what was
+        // drawn, which is the entire reason it exists.
+        matter::VkBufferResource visibility_id_bits;
+        matter::VkComputePipelineResource visibility_id_reduce;
+        bool visibility_id_bits_valid = false;
         matter::VkBufferResource animation_bounds;
         matter::VkBufferResource material_upload;
         matter::VkBufferResource materials;
@@ -2330,8 +2340,26 @@ private:
     void write_impostor_descriptor_for_frame(VkDescriptorSet set);
     // Identity-buffer visibility (M4). See the block comment at the definitions.
     bool ensure_visibility_pipelines(std::string& error);
+    bool ensure_visibility_id_targets(VkExtent2D raster_extent,
+                                      std::string& error);
+    // The subset of RasterRecord the ID pass needs. A view rather than the
+    // whole record because that struct is forty fields of lighting, RT, VT and
+    // volumetrics state, none of which this pass has any business seeing.
+    struct RasterRecordView {
+        VkPipelineLayout layout;
+        VkDescriptorSet sets[2];
+        VkBuffer vertex_buffer;
+        VkBuffer index_buffer;
+        VkBuffer indirect_buffer;
+        uint32_t static_command_count;
+        uint32_t max_draw_indirect_count;
+    };
+    void record_visibility_id_pass(VkCommandBuffer command_buffer,
+                                   const RasterRecordView& record);
     void record_visibility_reduce(VkCommandBuffer command_buffer,
                                   FrameResources& frame, VkExtent2D extent);
+    void record_visibility_id_reduce(VkCommandBuffer command_buffer,
+                                     FrameResources& frame);
     void capture_visible_bits(FrameResources& frame);
     // HZB occlusion (M4 Phase B). See the block comment at the definitions.
     bool create_hzb_pyramid(std::string& error);
@@ -2745,8 +2773,39 @@ private:
     // written against the CURRENT identity attachment, which a resize replaces.
     bool visibility_reduce_ = false;
     bool visibility_descriptors_valid_ = false;
+    // ---- the occlusion ID pass (M4) ---------------------------------------
+    // A small colour+depth pair the candidate set is rasterised into carrying
+    // nothing but instance tokens, and the pipeline that does it.
+    //
+    // The DIVISOR, not a fixed size: the pass reuses the frame's world_to_clip,
+    // so its aspect ratio has to match the real target or the projection is
+    // skewed and the visibility answer is about a scene nobody is looking at.
+    // 6 puts a 1920x1080 frame at 320x180 -- 57k pixels, which is where the
+    // cost goes.
+    static constexpr uint32_t kVisibilityIdDivisor = 3;
+    matter::VkImageResource visibility_id_color_;
+    matter::VkImageResource visibility_id_depth_;
+    VkExtent2D visibility_id_extent_{};
+    VkPipeline visibility_id_pipeline_ = VK_NULL_HANDLE;
     bool visible_bits_valid_ = false;
     std::vector<uint32_t> visible_bits_;
+    bool visible_id_bits_valid_ = false;
+    std::vector<uint32_t> visible_id_bits_;
+
+public:
+    // The ID pass's mask, alongside take_visible_bits above. Separate accessor
+    // rather than a replacement while the two are being compared: the caller
+    // reports their agreement, and a single accessor that silently switched
+    // sources would make that report meaningless.
+    bool take_visible_id_bits(std::vector<uint32_t>& out) noexcept {
+        if (!visible_id_bits_valid_) return false;
+        out = std::move(visible_id_bits_);
+        visible_id_bits_.clear();
+        visible_id_bits_valid_ = false;
+        return true;
+    }
+
+private:
     // Frozen cull camera. `requested` is the caller's switch; `frozen` says a
     // snapshot has actually been taken, which cannot happen until a frame
     // uploads its constants.

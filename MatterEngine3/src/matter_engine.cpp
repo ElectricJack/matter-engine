@@ -11279,6 +11279,42 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->stats.occlusion_visible_sectors =
                 static_cast<uint32_t>(drawn.size());
             impl_->stats.occlusion_active = true;
+            // ---- ID-PASS AGREEMENT (M4, step 1) ------------------------
+            // The ID pass is not trusted yet, so it is measured against the
+            // G-buffer answer rather than consumed. Both masks come from the
+            // SAME reduce shader over different inputs, so a disagreement is
+            // about the inputs and not about two implementations.
+            //
+            // They are not expected to be equal, and the direction is the
+            // whole point: the ID pass renders the full in-frustum candidate
+            // set, so it can only ever report a SUPERSET of what the G-buffer
+            // -- which only ever contains what was actually drawn -- reports.
+            // `only_gbuffer` is therefore the number that must be ZERO. Any
+            // sector the real frame drew that the ID pass missed is a sector
+            // this feature would later delete from the picture, and the two
+            // ways that happens are the low-res target losing a sliver and the
+            // coarse proxy sealing a crack.
+            std::vector<uint32_t> id_bits;
+            if (impl_->vk_scene->take_visible_id_bits(id_bits) &&
+                id_bits.size() == impl_->visible_bit_scratch.size()) {
+                size_t both = 0, only_id = 0, only_gbuffer = 0;
+                for (const auto& [token, sector] : impl_->visible_by_token) {
+                    const uint32_t bit = viewer::visible_id_hash(token);
+                    const uint32_t mask = 1u << (bit & 31u);
+                    const bool in_g =
+                        (impl_->visible_bit_scratch[bit >> 5] & mask) != 0;
+                    const bool in_id = (id_bits[bit >> 5] & mask) != 0;
+                    if (in_g && in_id) ++both;
+                    else if (in_id) ++only_id;
+                    else if (in_g) ++only_gbuffer;
+                }
+                if (impl_->visibility_frame % 300 == 0) {
+                    std::fprintf(stderr,
+                                 "[occlusion] id-pass agreement: %zu both, "
+                                 "%zu id-only, %zu GBUFFER-ONLY (must be 0)\n",
+                                 both, only_id, only_gbuffer);
+                }
+            }
             if (impl_->visibility_frame % 300 == 0) {
                 // bits_set is the COLLISION INSTRUMENT. It counts distinct
                 // hash slots the GPU lit, so `bits_set` well above the number

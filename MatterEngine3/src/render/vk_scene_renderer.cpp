@@ -1629,8 +1629,22 @@ void VkSceneRenderer::destroy_pipeline() {
     hzb_descriptors_valid_ = false;
     // Identity-buffer visibility (M4): the per-slot pipelines name the identity
     // attachment and this slot's buffer, both of which are going away.
-    for (FrameResources& frame : frames_) frame.visibility_pipeline.reset();
+    for (FrameResources& frame : frames_) {
+        frame.visibility_pipeline.reset();
+        frame.visibility_id_reduce.reset();
+    }
     visibility_descriptors_valid_ = false;
+    // The ID pass's own pipeline and targets. A raw VkPipeline rather than a
+    // VkComputePipelineResource, so unlike everything around it this one does
+    // not free itself -- which is exactly how it was left leaking until
+    // validation reported it at device teardown.
+    if (visibility_id_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, visibility_id_pipeline_, nullptr);
+        visibility_id_pipeline_ = VK_NULL_HANDLE;
+    }
+    visibility_id_color_.reset();
+    visibility_id_depth_.reset();
+    visibility_id_extent_ = {};
     raw_diffuse_.reset();
     raw_specular_.reset();
     raw_specular_aux_.reset();
@@ -2592,6 +2606,87 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         vkDestroyShaderModule(device, raster_fragment, nullptr);
         vkDestroyShaderModule(device, raster_vertex, nullptr);
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
+    }
+
+    // ---- the occlusion ID pipeline (M4) ----------------------------------
+    //
+    // Same vertex buffer, same indirect commands, same DrawTransform records
+    // and the same pipeline layout as the gbuffer pipeline above -- so it draws
+    // the identical set with the identical transforms, which is the property
+    // that makes its answer mean anything about the real pass. What differs is
+    // everything downstream: one uint2 attachment instead of five, a fragment
+    // shader that stores a token and nothing else, and a target a fraction of
+    // the size.
+    //
+    // Depth test AND write, because the whole mechanism is the depth test
+    // deciding which instance owns each pixel. Cull mode, front face and the
+    // reversed-Z compare are inherited from the state above rather than
+    // restated: an ID pass that culled differently from the gbuffer would
+    // answer a question about a scene that is not the one being drawn.
+    {
+        VkShaderModule id_vertex = VK_NULL_HANDLE;
+        VkShaderModule id_fragment = VK_NULL_HANDLE;
+        if (!create_shader_module(device, "visibility_id.vert.spv", id_vertex,
+                                  error) ||
+            !create_shader_module(device, "visibility_id.frag.spv",
+                                  id_fragment, error)) {
+            if (id_vertex != VK_NULL_HANDLE)
+                vkDestroyShaderModule(device, id_vertex, nullptr);
+            vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+            vkDestroyShaderModule(device, raster_fragment, nullptr);
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+            return false;
+        }
+        VkPipelineShaderStageCreateInfo id_stages[2]{};
+        id_stages[0].sType =
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        id_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        id_stages[0].module = id_vertex;
+        id_stages[0].pName = "main";
+        id_stages[1].sType =
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        id_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        id_stages[1].module = id_fragment;
+        id_stages[1].pName = "main";
+        VkPipelineColorBlendAttachmentState id_blend{};
+        id_blend.colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+        VkPipelineColorBlendStateCreateInfo id_color_blend{
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        id_color_blend.attachmentCount = 1;
+        id_color_blend.pAttachments = &id_blend;
+        const VkFormat id_format = VK_FORMAT_R32G32_UINT;
+        VkPipelineRenderingCreateInfo id_rendering{
+            VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        id_rendering.colorAttachmentCount = 1;
+        id_rendering.pColorAttachmentFormats = &id_format;
+        id_rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+        VkGraphicsPipelineCreateInfo id_create{
+            VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        id_create.pNext = &id_rendering;
+        id_create.stageCount = 2;
+        id_create.pStages = id_stages;
+        id_create.pVertexInputState = &vertex_input;
+        id_create.pInputAssemblyState = &input_assembly;
+        id_create.pViewportState = &viewport_state;
+        id_create.pRasterizationState = &rasterization;
+        id_create.pMultisampleState = &multisample;
+        id_create.pDepthStencilState = &depth_stencil;
+        id_create.pColorBlendState = &id_color_blend;
+        id_create.pDynamicState = &dynamic;
+        id_create.layout = pipeline_layout_;
+        const VkResult id_result = vkCreateGraphicsPipelines(
+            device, VK_NULL_HANDLE, 1, &id_create, nullptr,
+            &visibility_id_pipeline_);
+        vkDestroyShaderModule(device, id_fragment, nullptr);
+        vkDestroyShaderModule(device, id_vertex, nullptr);
+        if (id_result != VK_SUCCESS) {
+            vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+            vkDestroyShaderModule(device, raster_fragment, nullptr);
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+            return fail_vk("vkCreateGraphicsPipelines(visibility id)",
+                           id_result, error);
+        }
     }
 
     // The skinned shader is a distinct SPIR-V specialization: it consumes
@@ -5291,9 +5386,142 @@ void VkSceneRenderer::write_impostor_descriptor_for_frame(VkDescriptorSet set) {
 // collision, stale frame, missed frame -- degrades toward "more resident
 // detail", which is the doctrine this whole feature is built on.
 
+// The ID pass's own targets. Sized from the raster extent by a fixed divisor
+// rather than pinned, because the pass reuses the frame's world_to_clip and a
+// mismatched aspect ratio would skew the projection -- the answer would then be
+// about a scene nobody is looking at, which is the kind of wrong that still
+// produces plausible numbers.
+bool VkSceneRenderer::ensure_visibility_id_targets(VkExtent2D raster_extent,
+                                                   std::string& error) {
+    const VkExtent2D wanted{
+        std::max(1u, raster_extent.width / kVisibilityIdDivisor),
+        std::max(1u, raster_extent.height / kVisibilityIdDivisor)};
+    if (visibility_id_color_.image != VK_NULL_HANDLE &&
+        visibility_id_extent_.width == wanted.width &&
+        visibility_id_extent_.height == wanted.height)
+        return true;
+    matter::VkImageResource color;
+    matter::VkImageResource depth;
+    if (!matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R32G32_UINT,
+            {wanted.width, wanted.height, 1},
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            color, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_D32_SFLOAT,
+            {wanted.width, wanted.height, 1},
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            VK_IMAGE_ASPECT_DEPTH_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            depth, error))
+        return false;
+    visibility_id_color_ = std::move(color);
+    visibility_id_depth_ = std::move(depth);
+    visibility_id_extent_ = wanted;
+    // The reduce descriptors name the old image.
+    visibility_descriptors_valid_ = false;
+    return true;
+}
+
+// Rasterise the candidate set into the ID target. Recorded from the same
+// indirect commands and DrawTransform records the gbuffer pass uses, so it
+// draws the identical set -- see the pipeline's comment for why that identity
+// is the point rather than a convenience.
+void VkSceneRenderer::record_visibility_id_pass(
+    VkCommandBuffer command_buffer, const RasterRecordView& record) {
+    if (visibility_id_pipeline_ == VK_NULL_HANDLE ||
+        visibility_id_color_.view == VK_NULL_HANDLE ||
+        record.static_command_count == 0)
+        return;
+
+    matter::record_image_transition(
+        command_buffer, visibility_id_color_,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    matter::record_image_transition(
+        command_buffer, visibility_id_depth_,
+        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    VkRenderingAttachmentInfo color{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    color.imageView = visibility_id_color_.view;
+    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    // UINT32_MAX is "no token here", matching the G-buffer identity
+    // attachment's clear so visible_ids.comp's skip works on both without a
+    // second sentinel to keep in step.
+    color.clearValue.color.uint32[0] = UINT32_MAX;
+    color.clearValue.color.uint32[1] = UINT32_MAX;
+    VkRenderingAttachmentInfo depth{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth.imageView = visibility_id_depth_.view;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.clearValue.depthStencil = {0.0f, 0};   // reversed-Z: 0 is far
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = visibility_id_extent_;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &color;
+    rendering.pDepthAttachment = &depth;
+    vkCmdBeginRendering(command_buffer, &rendering);
+    // The SAME negative-height viewport the gbuffer pass uses. Not cosmetic:
+    // it decides the winding seen in framebuffer space, and a pass that culled
+    // the opposite faces would answer about inside surfaces.
+    const VkViewport viewport{
+        0.0f, static_cast<float>(visibility_id_extent_.height),
+        static_cast<float>(visibility_id_extent_.width),
+        -static_cast<float>(visibility_id_extent_.height), 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, visibility_id_extent_};
+    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      visibility_id_pipeline_);
+    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            record.layout, 0, 2, record.sets, 0, nullptr);
+    const VkDeviceSize vertex_offset = 0;
+    vkCmdBindVertexBuffers(command_buffer, 0, 1, &record.vertex_buffer,
+                           &vertex_offset);
+    vkCmdBindIndexBuffer(command_buffer, record.index_buffer, 0,
+                         VK_INDEX_TYPE_UINT32);
+    // One multi-draw over the whole command range. The gbuffer pass coalesces
+    // into runs because it has to respect maxDrawIndirectCount per call and
+    // record its ranges for the smoke suite; this pass has neither obligation,
+    // so it issues the simplest thing the cap allows.
+    const uint32_t max_per_call = std::max(1u, record.max_draw_indirect_count);
+    for (uint32_t first = 0; first < record.static_command_count;
+         first += max_per_call) {
+        const uint32_t count =
+            std::min(max_per_call, record.static_command_count - first);
+        vkCmdDrawIndexedIndirect(
+            command_buffer, record.indirect_buffer,
+            static_cast<VkDeviceSize>(first) * sizeof(DrawCommand), count,
+            sizeof(DrawCommand));
+    }
+    vkCmdEndRendering(command_buffer);
+
+    matter::record_image_transition(
+        command_buffer, visibility_id_color_,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
 bool VkSceneRenderer::ensure_visibility_pipelines(std::string& error) {
     if (visibility_descriptors_valid_) return true;
     if (material_instance_.view == VK_NULL_HANDLE) return true;
+    if (visibility_id_color_.view == VK_NULL_HANDLE) return true;
 
     std::vector<VkDescriptorSetLayoutBinding> bindings(2);
     bindings[0] = descriptor_binding(0,
@@ -5329,6 +5557,33 @@ bool VkSceneRenderer::ensure_visibility_pipelines(std::string& error) {
         matter::write_storage_buffer_descriptor(
             frame.visibility_pipeline, 1, frame.visibility_bits, 0,
             viewer::kVisibleIdWords * sizeof(uint32_t));
+
+        // The ID pass's twin: same shader, same layout, different source
+        // image and a different mask. Two of them exist so the two answers can
+        // be compared while the ID pass is being trusted -- see the note on
+        // FrameResources::visibility_id_bits.
+        if (!ensure_buffer(frame.visibility_id_bits,
+                           viewer::kVisibleIdWords * sizeof(uint32_t),
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error))
+            return false;
+        frame.visibility_id_reduce.reset();
+        if (!matter::create_compute_pipeline(*vulkan_, "visible_ids.comp.spv",
+                                             bindings,
+                                             frame.visibility_id_reduce, error))
+            return false;
+        const VkDescriptorImageInfo id_image{
+            composite_sampler_, visibility_id_color_.view,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet id_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        id_write.dstSet = frame.visibility_id_reduce.descriptor_set;
+        id_write.dstBinding = 0;
+        id_write.descriptorCount = 1;
+        id_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        id_write.pImageInfo = &id_image;
+        vkUpdateDescriptorSets(vulkan_->device(), 1, &id_write, 0, nullptr);
+        matter::write_storage_buffer_descriptor(
+            frame.visibility_id_reduce, 1, frame.visibility_id_bits, 0,
+            viewer::kVisibleIdWords * sizeof(uint32_t));
     }
     visibility_descriptors_valid_ = true;
     return true;
@@ -5358,6 +5613,23 @@ void VkSceneRenderer::record_visibility_reduce(VkCommandBuffer command_buffer,
     frame.visibility_bits_valid = true;
 }
 
+void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer,
+                                                  FrameResources& frame) {
+    if (!visibility_descriptors_valid_ ||
+        frame.visibility_id_reduce.pipeline == VK_NULL_HANDLE ||
+        visibility_id_extent_.width == 0)
+        return;
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      frame.visibility_id_reduce.pipeline);
+    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            frame.visibility_id_reduce.pipeline_layout, 0, 1,
+                            &frame.visibility_id_reduce.descriptor_set, 0,
+                            nullptr);
+    vkCmdDispatch(command_buffer, (visibility_id_extent_.width + 15u) / 16u,
+                  (visibility_id_extent_.height + 15u) / 16u, 1);
+    frame.visibility_id_bits_valid = true;
+}
+
 void VkSceneRenderer::capture_visible_bits(FrameResources& frame) {
     const bool had_result = frame.visibility_bits_valid;
     frame.visibility_bits_valid = false;
@@ -5376,6 +5648,20 @@ void VkSceneRenderer::capture_visible_bits(FrameResources& frame) {
     // barrier to say the same thing.
     const std::vector<uint32_t> zeros(viewer::kVisibleIdWords, 0u);
     (void)matter::upload_buffer(*vulkan_, frame.visibility_bits, zeros.data(),
+                                zeros.size() * sizeof(uint32_t), 0, error);
+
+    // The ID pass's mask, read the same way and at the same moment.
+    if (!frame.visibility_id_bits_valid) return;
+    frame.visibility_id_bits_valid = false;
+    std::vector<uint32_t> id_bits(viewer::kVisibleIdWords, 0u);
+    if (!matter::readback_buffer(*vulkan_, frame.visibility_id_bits,
+                                 id_bits.data(),
+                                 id_bits.size() * sizeof(uint32_t), 0, error))
+        return;
+    visible_id_bits_ = std::move(id_bits);
+    visible_id_bits_valid_ = true;
+    (void)matter::upload_buffer(*vulkan_, frame.visibility_id_bits,
+                                zeros.data(),
                                 zeros.size() * sizeof(uint32_t), 0, error);
 }
 
@@ -12557,7 +12843,10 @@ bool VkSceneRenderer::record_cull_and_render(
     if (!ensure_hzb_pipelines(error)) return false;
     write_hzb_descriptor_for_frame(frames_[frame.frame_slot].descriptor_sets[1]);
     // Identity-buffer visibility (M4): same story, same trigger. Its level-0
-    // source is the identity ATTACHMENT, which a resize replaces.
+    // source is the identity ATTACHMENT, which a resize replaces. The ID pass's
+    // targets come first -- the reduce descriptors name them, so building the
+    // pipelines before the images exist would leave the whole path inert.
+    if (!ensure_visibility_id_targets(raster_extent_, error)) return false;
     if (!ensure_visibility_pipelines(error)) return false;
     if (atmosphere_) {
         const matter::Float3 to_sun{-lighting_.sun_direction.x,
@@ -12934,9 +13223,24 @@ bool VkSceneRenderer::record_cull_and_render(
     // the mask is zeroed before every use and is complete after its own
     // dispatch.
     if (visibility_reduce_) {
+        // The ID pass, then both reduces. Recorded here rather than before the
+        // gbuffer only because this step is still PROVING the ID pass against
+        // the G-buffer's answer, and that comparison wants both to describe the
+        // same frame. Once the mask feeds the cull it has to move to the top of
+        // the frame, before the cull dispatch that consumes it.
         PROFILE_SCOPE("cull.visible_ids");
+        const RasterRecordView id_view{
+            pipeline_layout_,
+            {selected.descriptor_sets[0], selected.descriptor_sets[1]},
+            vertices_.buffer,
+            indices_.buffer,
+            selected.commands.buffer,
+            uploaded_command_count_,
+            limits_.max_draw_indirect_count};
+        record_visibility_id_pass(frame.command_buffer, id_view);
         record_visibility_reduce(frame.command_buffer, selected,
                                  raster_extent_);
+        record_visibility_id_reduce(frame.command_buffer, selected);
     }
     selected.stats_valid = true;
     // M1d: same publication contract as stats_valid — a slot only carries a

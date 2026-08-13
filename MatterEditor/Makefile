@@ -556,6 +556,8 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/hzb_build.comp.spv \
          build/shaders_vk/visible_ids.comp.spv \
+         build/shaders_vk/visibility_id.vert.spv \
+         build/shaders_vk/visibility_id.frag.spv \
          build/shaders_vk/raster.vert.spv \
          build/shaders_vk/raster_skin.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
