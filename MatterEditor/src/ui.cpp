@@ -1648,6 +1648,22 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
                 "the demotion, set Debug View to \"LOD levels\": the capped "
                 "region tints coarser while what you are looking at stays "
                 "fine.");
+        // THE ONE THAT STOPS OCCLUDED SECTORS BEING DRAWN. The cap above only
+        // makes them cheaper; this rejects them in the cull.
+        ImGui::Checkbox("Cull occluded draws", &s.occlusion_draw_cull);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Reject sectors that owned no pixel last frame, so they are "
+                "not rasterised at all.\n\n"
+                "The visible set comes from a small ID-only pass that renders "
+                "EVERY in-frustum sector every frame at its coarsest rung. "
+                "That is what makes this safe to iterate: a culled sector is "
+                "still tested, so it comes back the moment it is visible "
+                "again. It cannot get stuck hidden.\n\n"
+                "Costs one frame of latency -- something newly revealed "
+                "appears next frame -- which is why it is separate from the "
+                "cap above and off by default. Watch 'drawn' against "
+                "'resident': this is the control that moves the first one.");
         ImGui::SliderInt("Grace (ticks)", &s.occlusion_grace_ticks, 1, 300);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(

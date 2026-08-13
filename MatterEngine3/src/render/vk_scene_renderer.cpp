@@ -106,9 +106,15 @@ struct alignas(16) FrameConstants {
     // they use and never see these.
     GpuMat4 hzb_world_to_clip;
     uint32_t hzb_params[4];   // enabled, level-0 size, level count, unused
+    // Occlusion ID pass (M4). x = cull draws against the mask, y = emit the
+    // unfiltered ID-pass list. Two switches rather than one because the list
+    // has to be produced for a frame before the mask it yields can be trusted,
+    // and because emitting it is how the streaming signal is fed even when
+    // nothing is being culled.
+    uint32_t vis_params[4];
 };
 
-static_assert(sizeof(FrameConstants) == 288 + 64 + 16,
+static_assert(sizeof(FrameConstants) == 288 + 64 + 16 + 16,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 24,
               "VkCullStats must match the std430 stats block");
@@ -1895,7 +1901,12 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // Four levels, always bound -- cull.comp samples them statically, so they
     // must be valid descriptors even in the frames and the worlds where
     // hzb_params.x is 0 and nothing is read.
-    std::array<VkDescriptorSetLayoutBinding, 17> scene_bindings{};
+    // Bindings 17-19 (M4 occlusion ID pass): the unfiltered draw list the ID
+    // pass rasterises, and the visibility mask the cull filters the MAIN list
+    // by. 18 is the one binding here read by two stages -- COMPUTE writes it
+    // and visibility_id.vert reads it -- which is what lets the ID pass reuse
+    // this set instead of needing one of its own.
+    std::array<VkDescriptorSetLayoutBinding, 20> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1936,6 +1947,13 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_COMPUTE_BIT);
     scene_bindings[16].descriptorCount = kHzbLevels;
+    scene_bindings[17] = descriptor_binding(
+        17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    scene_bindings[18] = descriptor_binding(
+        18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT);
+    scene_bindings[19] = descriptor_binding(
+        19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -2949,6 +2967,21 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     // frame's scene descriptor names it, so it must exist and be in GENERAL
     // before the first cull dispatch ever binds set 1.
     if (!create_hzb_pyramid(error)) return false;
+    // The M4 draw mask, for the same reason again: every frame's scene set
+    // names it at binding 19, so it has to exist before the first one is
+    // written. Zeroed on creation and then only ever written by the reduce --
+    // and an all-zero mask reads as "nothing is visible", which is why
+    // vis_params gates the test rather than relying on the buffer's contents.
+    if (!ensure_buffer(visibility_mask_,
+                       viewer::kVisibleIdWords * sizeof(uint32_t),
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error))
+        return false;
+    {
+        const std::vector<uint32_t> zeros(viewer::kVisibleIdWords, 0u);
+        if (!matter::upload_buffer(*vulkan_, visibility_mask_, zeros.data(),
+                                   zeros.size() * sizeof(uint32_t), 0, error))
+            return false;
+    }
     return true;
 }
 
@@ -3216,8 +3249,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 3},
         // 27 for the scene/VT buffers above, +1 for the per-module
-        // draw-override table at binding 14.
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 28},
+        // draw-override table at binding 14, +3 for the M4 ID pass's
+        // unfiltered command/transform lists and the visibility mask (17-19).
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 31},
         // +1 for the M2.5 impostor atlas at scene binding 15, and +kHzbLevels
         // for the M4 occlusion pyramid at binding 16.
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -3308,6 +3342,18 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.draw_transforms, sizeof(GpuDrawTransform),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            // The ID pass's pair, seeded HERE for the same reason the two
+            // above are: the descriptor write a few lines below names them, and
+            // a binding written with a null buffer is a validation error on the
+            // very first frame -- observed, before upload_scene_buffers had run
+            // once to size them.
+            !ensure_candidate_buffer(
+                frame.vis_commands, sizeof(DrawCommand),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.vis_draw_transforms,
+                                     sizeof(GpuDrawTransform),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.stats, sizeof(VkCullStats),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
@@ -3497,6 +3543,13 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_current_output);
     update_descriptor(frame.skin_descriptor_set, 6,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_previous_output);
+    update_descriptor(frame.descriptor_sets[1], 17,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.vis_commands);
+    update_descriptor(frame.descriptor_sets[1], 18,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                      frame.vis_draw_transforms);
+    update_descriptor(frame.descriptor_sets[1], 19,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, visibility_mask_);
     write_impostor_descriptor_for_frame(frame.descriptor_sets[1]);
     write_hzb_descriptor_for_frame(frame.descriptor_sets[1]);
     update_descriptor(frame.descriptor_sets[1], 9,
@@ -5581,8 +5634,11 @@ bool VkSceneRenderer::ensure_visibility_pipelines(std::string& error) {
         id_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         id_write.pImageInfo = &id_image;
         vkUpdateDescriptorSets(vulkan_->device(), 1, &id_write, 0, nullptr);
+        // Writes THE shared mask, not a per-slot copy: this is the buffer the
+        // next frame's cull reads at binding 19, so the hand-off is across
+        // frames and a per-slot copy would give each slot its own history.
         matter::write_storage_buffer_descriptor(
-            frame.visibility_id_reduce, 1, frame.visibility_id_bits, 0,
+            frame.visibility_id_reduce, 1, visibility_mask_, 0,
             viewer::kVisibleIdWords * sizeof(uint32_t));
     }
     visibility_descriptors_valid_ = true;
@@ -5619,6 +5675,23 @@ void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer
         frame.visibility_id_reduce.pipeline == VK_NULL_HANDLE ||
         visibility_id_extent_.width == 0)
         return;
+    // Zero on the GPU, HERE, and not on the CPU as the per-slot masks are.
+    // The shared mask is read by THIS frame's cull dispatch, which has already
+    // run by the time control reaches this point -- clearing it any earlier
+    // would hand the cull an empty mask and cull the entire world.
+    vkCmdFillBuffer(command_buffer, visibility_mask_.buffer, 0,
+                    viewer::kVisibleIdWords * sizeof(uint32_t), 0u);
+    VkMemoryBarrier2 cleared{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    cleared.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    cleared.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    cleared.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    cleared.dstAccessMask =
+        VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+    VkDependencyInfo clear_dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    clear_dependency.memoryBarrierCount = 1;
+    clear_dependency.pMemoryBarriers = &cleared;
+    vkCmdPipelineBarrier2(command_buffer, &clear_dependency);
+
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       frame.visibility_id_reduce.pipeline);
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -5627,6 +5700,19 @@ void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer
                             nullptr);
     vkCmdDispatch(command_buffer, (visibility_id_extent_.width + 15u) / 16u,
                   (visibility_id_extent_.height + 15u) / 16u, 1);
+    // Make the writes visible to the NEXT frame's cull, which reads this same
+    // buffer at binding 19. Submission order gives execution order on one
+    // queue; it does not give memory visibility, and that distinction is the
+    // class of bug that works until it does not.
+    VkMemoryBarrier2 written{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    written.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    written.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    written.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    written.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    VkDependencyInfo write_dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    write_dependency.memoryBarrierCount = 1;
+    write_dependency.pMemoryBarriers = &written;
+    vkCmdPipelineBarrier2(command_buffer, &write_dependency);
     frame.visibility_id_bits_valid = true;
 }
 
@@ -5653,16 +5739,15 @@ void VkSceneRenderer::capture_visible_bits(FrameResources& frame) {
     // The ID pass's mask, read the same way and at the same moment.
     if (!frame.visibility_id_bits_valid) return;
     frame.visibility_id_bits_valid = false;
+    // The shared mask. Read, never zeroed here -- the GPU clears it at the top
+    // of each reduce, because the cull needs the previous frame's contents
+    // right up to the moment the new ones are written.
     std::vector<uint32_t> id_bits(viewer::kVisibleIdWords, 0u);
-    if (!matter::readback_buffer(*vulkan_, frame.visibility_id_bits,
-                                 id_bits.data(),
+    if (!matter::readback_buffer(*vulkan_, visibility_mask_, id_bits.data(),
                                  id_bits.size() * sizeof(uint32_t), 0, error))
         return;
     visible_id_bits_ = std::move(id_bits);
     visible_id_bits_valid_ = true;
-    (void)matter::upload_buffer(*vulkan_, frame.visibility_id_bits,
-                                zeros.data(),
-                                zeros.size() * sizeof(uint32_t), 0, error);
 }
 
 bool VkSceneRenderer::create_hzb_pyramid(std::string& error) {
@@ -10918,6 +11003,22 @@ bool VkSceneRenderer::upload_scene_buffers(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
         return poison(error);
     descriptors_changed |= replaced;
+    // The ID pass's own draw list (M4). Same shapes as the pair above because
+    // it is the same cull dispatch filling both -- what differs is that this
+    // one is NEVER filtered by the visibility mask, which is the entire reason
+    // it exists: if the ID pass rendered the filtered list, a sector culled
+    // once would be absent from the pass that decides visibility and could
+    // never report itself visible again.
+    if (!ensure_buffer(frame.vis_commands, command_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                       error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
+    if (!ensure_buffer(frame.vis_draw_transforms, transform_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
     if (!ensure_buffer(frame.stats, sizeof(VkCullStats),
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
         return poison(error);
@@ -11050,6 +11151,10 @@ bool VkSceneRenderer::upload_scene_buffers(
     // records on the GPU, so the CPU template has to be restored every frame.
     if (!upload(frame.commands, command_template_.data(), command_bytes))
         return false;
+    // The ID pass's list gets the same restore for the same reason: cull.comp
+    // writes instance_count into it too.
+    if (!upload(frame.vis_commands, command_template_.data(), command_bytes))
+        return false;
     if (command_bytes != 0) ++upload_counters_.command_uploads;
     if (reset_stats) {
         const VkCullStats zero_stats{};
@@ -11160,6 +11265,16 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.hzb_params[1] = hzb_level_size(0);
     constants.hzb_params[2] = kHzbLevels;
     constants.hzb_params[3] = 0;
+    // Occlusion ID pass (M4). The list is emitted whenever the reduce is
+    // running, because that is what feeds it; the draw cull is a separate,
+    // stricter switch. Its guard includes `visibility_reduce_` on purpose --
+    // culling draws against a mask nothing is refreshing would freeze the
+    // world at whichever frame last wrote one.
+    constants.vis_params[0] =
+        (visibility_draw_cull_ && visibility_reduce_) ? 1u : 0u;
+    constants.vis_params[1] = visibility_reduce_ ? 1u : 0u;
+    constants.vis_params[2] = 0;
+    constants.vis_params[3] = 0;
     // Remember the matrix this frame's depth will be written with, so the
     // build at the end of it can publish the pair together. Staged rather than
     // assigned, because a frame that uploads constants and then does NOT reach
@@ -13234,7 +13349,10 @@ bool VkSceneRenderer::record_cull_and_render(
             {selected.descriptor_sets[0], selected.descriptor_sets[1]},
             vertices_.buffer,
             indices_.buffer,
-            selected.commands.buffer,
+            // The UNFILTERED list. Drawing the main `commands` here would make
+            // the ID pass rasterise a set the mask has already filtered, which
+            // is the one thing this design exists to avoid.
+            selected.vis_commands.buffer,
             uploaded_command_count_,
             limits_.max_draw_indirect_count};
         record_visibility_id_pass(frame.command_buffer, id_view);

@@ -3305,6 +3305,7 @@ int main() {
                 ? matter::GeometryDebugView::LodTint
                 : matter::GeometryDebugView::None;
         options.hiz_occlusion = stats.hiz_occlusion;
+        options.occlusion_draw_cull = stats.occlusion_draw_cull;
         options.occlusion_grace_ticks = stats.occlusion_grace_ticks;
         options.occlusion_cap_levels = 1;
         // Frozen cull camera (M4). The renderer takes its own snapshot of the

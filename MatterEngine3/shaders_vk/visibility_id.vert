@@ -41,11 +41,18 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 temporal;
     mat4 hzb_world_to_clip;
     uvec4 hzb_params;
+    uvec4 vis_params;
 } frame;
 
-// The same DrawTransform records cull.comp wrote and raster.vert reads, at the
-// same set-1 binding. This pass consumes the cull's output rather than a list
-// of its own, which is what keeps it in step with the draw it is predicting.
+// Binding 18, NOT the 3 that raster.vert reads. That is the whole point: 3
+// holds the list the mask has already filtered, and rasterising it would mean
+// deciding visibility from evidence visibility itself produced -- cull one
+// sector and it is absent from the pass that could bring it back. 18 is the
+// unfiltered list, written by the same cull invocation before it consults the
+// mask.
+//
+// Reusing scene set 1 rather than a set of its own is what this binding buys:
+// the ID pass binds exactly what the gbuffer pass binds.
 struct DrawTransform {
     mat4 current;
     mat4 previous;
@@ -54,7 +61,7 @@ struct DrawTransform {
     uint vt_slot;
     uint selected_lod;
 };
-layout(set = 1, binding = 3, std430) readonly buffer DrawTransforms {
+layout(set = 1, binding = 18, std430) readonly buffer VisDrawTransforms {
     DrawTransform transforms[];
 };
 

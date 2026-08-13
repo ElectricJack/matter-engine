@@ -1000,6 +1000,14 @@ public:
     // A BITMASK, not a list, and the asymmetry is the point: the GPU can only
     // afford to record membership over two million pixels, and the CPU only
     // ever asks about tokens it already holds. See render/visibility_hash.h.
+    // Cull DRAWS against the mask, not just streaming detail. OFF by default
+    // and deliberately a separate switch from set_visibility_reduce: a wrong
+    // bit in the streaming cap costs detail, a wrong bit here removes geometry
+    // from the picture.
+    void set_visibility_draw_cull(bool on) noexcept {
+        visibility_draw_cull_ = on;
+    }
+    bool visibility_draw_cull() const noexcept { return visibility_draw_cull_; }
     void set_visibility_reduce(bool on) noexcept { visibility_reduce_ = on; }
     bool visibility_reduce() const noexcept { return visibility_reduce_; }
     bool take_visible_bits(std::vector<uint32_t>& out) noexcept {
@@ -1800,6 +1808,10 @@ private:
         // to point somewhere else. One pipeline object with one set, rewritten
         // each frame, is the version of this that works until the frame rate
         // drops and two frames are in flight at once.
+        // The ID pass's draw list: the same cull dispatch's UNFILTERED output.
+        // See the sizing site for why it must never be mask-filtered.
+        matter::VkBufferResource vis_commands;
+        matter::VkBufferResource vis_draw_transforms;
         matter::VkBufferResource visibility_bits;
         matter::VkComputePipelineResource visibility_pipeline;
         bool visibility_bits_valid = false;
@@ -2787,6 +2799,17 @@ private:
     matter::VkImageResource visibility_id_depth_;
     VkExtent2D visibility_id_extent_{};
     VkPipeline visibility_id_pipeline_ = VK_NULL_HANDLE;
+    // THE DRAW MASK, and the one buffer in this feature that is not per frame
+    // slot. The reduce writes it at the end of a frame and the NEXT frame's
+    // cull reads it, so it is a hand-off across frames by construction and a
+    // per-slot copy would hand each slot its own stale history instead.
+    //
+    // That one-frame hand-off is the whole cost of this design: a sector that
+    // becomes visible this frame is drawn next frame. It is bounded and it
+    // never deadlocks, because the list the ID pass rasterises is NEVER
+    // filtered by this mask -- a culled sector is still tested every frame.
+    matter::VkBufferResource visibility_mask_;
+    bool visibility_draw_cull_ = false;
     bool visible_bits_valid_ = false;
     std::vector<uint32_t> visible_bits_;
     bool visible_id_bits_valid_ = false;

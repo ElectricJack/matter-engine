@@ -296,6 +296,10 @@ struct ViewerStats {
     // Exact whenever the cull camera is still, which is why this and
     // freeze_cull_camera above are the pair you turn on together to look at it.
     bool  hiz_occlusion         = false;
+    // Cull draws against the ID pass's mask (RenderOptions::
+    // occlusion_draw_cull). The cap makes hidden sectors cheaper; this one
+    // stops them being drawn.
+    bool  occlusion_draw_cull   = false;
     // OCCLUSION DETAIL CAP (RenderOptions::occlusion_grace_ticks, M4). A tile
     // nothing has drawn for this many ticks is desired one level coarser. 0 is
     // off, and off is the default so a session that does not ask for it behaves

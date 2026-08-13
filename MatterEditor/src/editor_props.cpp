@@ -705,6 +705,16 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "StreamCaverns it takes 741 instances / 601k triangles down to "
              "204 / 286k for an indistinguishable frame. Never opens a hole -- "
              "a capped tile is still resident and still drawn, just coarser."),
+    prop(&ViewerStats::occlusion_draw_cull, "occlusion_draw_cull")
+        .label("Cull occluded draws")
+        .doc("Reject sectors that owned no pixel last frame so they are not "
+             "rasterised at all. The cap above only makes hidden sectors "
+             "cheaper; this is the one that stops them being drawn.\n\n"
+             "The visible set comes from a small ID-only pass that renders "
+             "EVERY in-frustum sector every frame at its coarsest rung, which "
+             "is what makes this safe to iterate: a culled sector is still "
+             "tested and returns the moment it is visible. Costs one frame of "
+             "latency, so it is off by default."),
     prop(&ViewerStats::hiz_occlusion, "hiz_occlusion")
         .label("HZB occlusion cull")
         .doc("Reject clusters hidden behind what the previous frame drew, by "

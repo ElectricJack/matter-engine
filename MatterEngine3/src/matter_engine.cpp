@@ -10343,6 +10343,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_impostor_parallax(opts.impostor_parallax);
     impl_->vk_scene->set_cull_camera_frozen(opts.freeze_cull_camera);
     impl_->vk_scene->set_hzb_occlusion(opts.hiz_occlusion);
+    impl_->vk_scene->set_visibility_draw_cull(opts.occlusion_draw_cull);
     // Live occlusion cap (M4). Forwarded every frame because it is cheap and
     // idempotent, and because the alternative -- tracking "did it change" here
     // -- puts a second opinion about the current value in front of the one the

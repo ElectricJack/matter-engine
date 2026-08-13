@@ -97,7 +97,37 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 hzb_world_to_clip;
     // x = enabled, y = level 0 size in texels, z = level count, w unused.
     uvec4 hzb_params;
+    // ---- occlusion ID pass (M4) -------------------------------------------
+    // x = cull DRAWS against the visibility mask (0 = the mask is written and
+    //     read by nobody, which is the default and the pre-M4 behaviour),
+    // y = emit the unfiltered ID-pass list at all. yzw otherwise unused.
+    uvec4 vis_params;
 } frame;
+
+// The ID pass's UNFILTERED draw list, written here and rasterised by
+// visibility_id.vert. Deliberately not the same buffers as `commands` and
+// `draw_transforms` below: those are filtered by the mask, and a pass that
+// decides visibility from a list already filtered by visibility can never
+// let a culled instance back in.
+layout(set = 1, binding = 17, std430) buffer VisDrawCommands {
+    DrawCommand vis_commands[];
+};
+layout(set = 1, binding = 18, std430) writeonly buffer VisDrawTransforms {
+    DrawTransform vis_draw_transforms[];
+};
+// Last frame's answer: which instance tokens owned a pixel. Written by
+// visible_ids.comp, read here, never written here.
+layout(set = 1, binding = 19, std430) readonly buffer VisibleMask {
+    uint visible_mask[];
+};
+
+// render/visibility_hash.h's twin. Keep the expression textually identical:
+// uint32 multiplication wraps the same in both, so "the same text" is also
+// "the same bits", and a divergence here is a cull that deletes the wrong
+// geometry with nothing to report it.
+uint visible_id_hash(uint token) {
+    return (token * 2654435761u) >> (32u - 19u);
+}
 
 // The pyramid, coarsest-last. Separate images rather than mips of one, because
 // the engine's create_image has no mip parameter and a per-mip view array is
@@ -343,6 +373,29 @@ bool hzb_occluded(const vec3 world_corners[8]) {
     return hi.z < nearest_occluder;
 }
 
+// The same reservation against the ID pass's list. A copy rather than a
+// parameterised version because GLSL has no buffer references here and the
+// alternative is threading a flag through the hot path of the cull to pick
+// between two arrays; the bodies are short and identical, and they are
+// identical for a reason (the two lists share a command template, so a
+// bucket's capacity means the same thing in both).
+bool reserve_vis_slot(uint bucket, out uint slot) {
+    const uint first = vis_commands[bucket].first_instance;
+    if (first > frame.capacities.w) return false;
+    const uint end = bucket + 1u < frame.capacities.z
+                         ? vis_commands[bucket + 1u].first_instance
+                         : frame.capacities.w;
+    if (end < first || end > frame.capacities.w) return false;
+    const uint available = end - first;
+    const uint reserved = atomicAdd(vis_commands[bucket].instance_count, 1u);
+    if (reserved >= available) {
+        atomicAdd(vis_commands[bucket].instance_count, 0xffffffffu);
+        return false;
+    }
+    slot = reserved;
+    return true;
+}
+
 bool reserve_transform_slot(uint bucket, out uint slot) {
     const uint first = commands[bucket].first_instance;
     if (first > frame.capacities.w) return false;
@@ -489,6 +542,55 @@ void main() {
         hzb_occluded(world_corners)) {
         atomicAdd(hiz_culled, 1u);
         return;
+    }
+
+    // ---- the ID pass's list (M4) -------------------------------------------
+    //
+    // BEFORE the mask test below, and that order is the whole design. This
+    // list is what the ID pass rasterises to decide who is visible; filtering
+    // it by the previous answer would mean a sector culled once is never
+    // tested again and never comes back. Everything that survives the frustum
+    // lands here, whatever the mask says.
+    //
+    // At the COARSEST rung, because this list exists to answer a yes/no
+    // question into a target a fraction of the size -- the fine mesh would
+    // cost vertex work to produce the same answer.
+    if (frame.vis_params.y != 0u) {
+        const uint vis_lod = cluster.lod_count - 1u;
+        if (cluster_index <= (0xffffffffu - vis_lod) / MAX_LOD) {
+            const uint vis_bucket = cluster_index * MAX_LOD + vis_lod;
+            uint vis_slot = 0u;
+            if (vis_bucket < frame.capacities.z &&
+                reserve_vis_slot(vis_bucket, vis_slot)) {
+                const uint vis_first = vis_commands[vis_bucket].first_instance;
+                if (vis_first < frame.capacities.w &&
+                    vis_slot < frame.capacities.w - vis_first) {
+                    // Only the two fields visibility_id.vert reads. The rest of
+                    // the record is left alone: it is never sampled, and
+                    // writing it would be bandwidth spent on a pass whose
+                    // entire point is being cheap.
+                    vis_draw_transforms[vis_first + vis_slot].current =
+                        instance.transform;
+                    vis_draw_transforms[vis_first + vis_slot].instance_token =
+                        instance.instance_token;
+                }
+            }
+        }
+    }
+
+    // ---- the mask (M4) -----------------------------------------------------
+    //
+    // Last frame's answer about this instance. One frame stale by
+    // construction: within a frame the ID pass cannot run before the cull that
+    // feeds it. So a newly disoccluded sector appears one frame late, which is
+    // the entire cost of this design and is bounded -- unlike a cull that
+    // filtered its own evidence, which would never recover at all.
+    if (frame.vis_params.x != 0u) {
+        const uint bit = visible_id_hash(instance.instance_token);
+        if ((visible_mask[bit >> 5u] & (1u << (bit & 31u))) == 0u) {
+            atomicAdd(hiz_culled, 1u);
+            return;
+        }
     }
 
     // The explicit skin raster draw owns only this generational instance.

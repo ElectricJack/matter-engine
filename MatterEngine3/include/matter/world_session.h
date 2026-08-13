@@ -106,6 +106,14 @@ struct RenderOptions {
     // It is exact whenever the cull camera is not moving, which includes the
     // frozen-cull-camera inspection mode this was checked with.
     bool  hiz_occlusion   = false;
+    // CULL DRAWS against the occlusion ID pass's mask (M4). This is the
+    // one that stops occluded sectors being rasterised at all, as opposed
+    // to the streaming cap, which only makes them coarser.
+    //
+    // Off by default and a separate switch from the cap for a reason that
+    // is not caution for its own sake: a wrong bit in the cap costs detail,
+    // a wrong bit here removes geometry from the picture.
+    bool  occlusion_draw_cull = false;
     // FREEZE THE CULL CAMERA (M4, an inspection aid rather than a feature).
     //
     // Pins the frustum planes and the eye position the cull dispatch tests
