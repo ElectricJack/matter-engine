@@ -55,6 +55,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -409,7 +410,8 @@ void mesh_tile(const Field& f, const Tile& t, double vc, Mesh& m) {
 // touch the seam plane band (the rest of the block has legitimately open faces,
 // because the tiles around it are not meshed).
 int non_manifold_edges(const Mesh& m, int axis, double plane, double band,
-                       std::vector<std::array<double, 3>>* where = nullptr) {
+                       std::vector<std::array<double, 3>>* where = nullptr,
+                       std::vector<std::pair<int, int>>* edges = nullptr) {
     auto touches = [&](int t3) {
         for (int c = 0; c < 3; ++c) {
             const int vi = m.tri[t3 * 3 + c];
@@ -437,6 +439,7 @@ int non_manifold_edges(const Mesh& m, int axis, double plane, double band,
             if (kv.second == 1 && std::fabs(pa) > 1e-9 && std::fabs(pb) > 1e-9)
                 continue;
             ++bad;
+            if (edges) edges->push_back(kv.first);
             if (where) {
                 std::array<double, 3> mid{};
                 for (int c = 0; c < 3; ++c)
@@ -498,6 +501,45 @@ int coplanar_overlaps(const Mesh& m, int axis, double plane) {
     return overlaps;
 }
 
+// Write the pair as a Wavefront OBJ so the construction can be LOOKED AT
+// rather than only measured. Three groups, so a viewer can isolate them:
+//
+//   g coarse_tile / g fine_tile   the two meshes, sharing vertices where they
+//                                 meet -- if the design holds, the seam is
+//                                 invisible in the geometry because there is
+//                                 nothing there but shared vertices
+//   g seam_defects                the non-manifold edges, as OBJ line elements
+//
+// Vertices are written once for the merged mesh, so a viewer that colours by
+// group shows the two tiles sharing the contour exactly.
+void write_obj(const char* path, const Mesh& m, size_t split_tri,
+               const std::vector<std::pair<int, int>>& bad) {
+    FILE* f = std::fopen(path, "w");
+    if (!f) {
+        printf("      (could not open %s)\n", path);
+        return;
+    }
+    std::fprintf(f, "# contour-seam prototype, docs/contour-seam-design-2026-08-13.md\n");
+    std::fprintf(f, "# %zu vertices, %zu triangles, %zu non-manifold edges\n",
+                 m.pos.size() / 3, m.tri.size() / 3, bad.size());
+    for (size_t i = 0; i + 2 < m.pos.size(); i += 3)
+        std::fprintf(f, "v %.9g %.9g %.9g\n", m.pos[i], m.pos[i + 1], m.pos[i + 2]);
+    std::fprintf(f, "g coarse_tile\n");
+    for (size_t t = 0; t < m.tri.size() / 3; ++t) {
+        if (t == split_tri) std::fprintf(f, "g fine_tile\n");
+        std::fprintf(f, "f %d %d %d\n", m.tri[t * 3] + 1, m.tri[t * 3 + 1] + 1,
+                     m.tri[t * 3 + 2] + 1);
+    }
+    if (!bad.empty()) {
+        std::fprintf(f, "g seam_defects\n");
+        for (const auto& e : bad)
+            std::fprintf(f, "l %d %d\n", e.first + 1, e.second + 1);
+    }
+    std::fclose(f);
+    printf("      wrote %s (%zu tris, %zu marked edges)\n", path,
+           m.tri.size() / 3, bad.size());
+}
+
 }  // namespace
 
 int main() {
@@ -553,7 +595,9 @@ int main() {
         const size_t total = m.tri.size() / 3;
 
         std::vector<std::array<double, 3>> bad_at;
-        const int nm = non_manifold_edges(m, seam_axis, plane, 1e-9, &bad_at);
+        std::vector<std::pair<int, int>> bad_edges;
+        const int nm =
+            non_manifold_edges(m, seam_axis, plane, 1e-9, &bad_at, &bad_edges);
         // Classify: does the offending edge sit on a TILE EDGE -- the line where
         // two faces of the same cube meet? That tier is not implemented in this
         // prototype (a face contour terminates on the face square's boundary and
@@ -583,6 +627,20 @@ int main() {
         printf("      non-manifold edges on the seam %d (%d of them on a tile "
                "EDGE line), coplanar overlaps %d\n",
                nm, on_tile_edge, ov);
+
+        // CONTOUR_OBJ_DIR=<dir> dumps each case for viewing. Off by default so
+        // the suite stays a pure gate.
+        if (const char* dir = std::getenv("CONTOUR_OBJ_DIR")) {
+            char path[512];
+            char slug[64];
+            size_t w = 0;
+            for (const char* c = cs.name; *c && w + 1 < sizeof slug; ++c)
+                if ((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9'))
+                    slug[w++] = *c;
+            slug[w] = 0;
+            std::snprintf(path, sizeof path, "%s/%s.obj", dir, slug);
+            write_obj(path, m, after_left, bad_edges);
+        }
 
         char msg[224];
         snprintf(msg, sizeof msg,
