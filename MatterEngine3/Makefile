@@ -342,7 +342,6 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
-         build/shaders_vk/hzb_build.comp.spv \
          build/shaders_vk/visible_ids.comp.spv \
          build/shaders_vk/visibility_id.vert.spv \
          build/shaders_vk/visibility_id.frag.spv \
@@ -554,8 +553,8 @@ $(LIB_FLAGS_STAMP): FORCE | build
 # embed. A renderer that binds a descriptor its embedded shader never declared
 # is not a build error, it is a validation error at run time -- or, when the
 # shader is missing outright, a FATAL several minutes into a world load.
-# Measured: hzb_build.comp compiled at 14:29, the header regenerated at 14:55,
-# and the shipped binary still could not find hzb_build.comp.spv.
+# Measured on a since-deleted compute shader: it compiled at 14:29, the header
+# regenerated at 14:55, and the shipped binary still could not find its .spv.
 $(ME3_OBJ): shaders_gen/embedded_shaders.h shaders_gen/embedded_spirv.h
 $(ME3_OBJ) $(MSL_OBJ): $(LIB_FLAGS_STAMP)
 $(OBJDIR)/%.o: %.cpp | $(OBJDIR)

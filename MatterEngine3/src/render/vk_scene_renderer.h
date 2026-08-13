@@ -531,7 +531,7 @@ struct VkSceneInstance {
 
 struct VkCullStats {
     uint32_t frustum_culled = 0;
-    uint32_t hiz_culled = 0;
+    uint32_t occlusion_culled = 0;
     uint32_t emitted = 0;
     uint32_t overflowed = 0;
     uint32_t triangles = 0;
@@ -973,63 +973,25 @@ public:
     }
     VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
 
-    // ---- visibility harvest (M4 Phase A, design 5.2) ----------------------
-    // Enable the per-frame readback of which instances the cull pass emitted.
-    void set_visibility_capture(bool on) noexcept { visibility_capture_ = on; }
-    bool visibility_capture() const noexcept { return visibility_capture_; }
-    // The tokens from the most recently harvested frame, and whether there was
-    // one. MOVED OUT rather than copied: the caller maps and forwards them and
-    // has no reason to keep them, and a frame with no capture must be
-    // distinguishable from a frame that drew nothing -- the first means "no
-    // information", which the streamer must not read as "nothing is visible".
-    bool take_visible_tokens(std::vector<uint32_t>& out) noexcept {
-        if (!visible_tokens_valid_) return false;
-        out = std::move(visible_tokens_);
-        visible_tokens_.clear();
-        visible_tokens_valid_ = false;
-        return true;
-    }
-
-    // ---- identity-buffer visibility (M4) ----------------------------------
-    // The other answer to "what did the renderer draw", and a strictly better
-    // one: `take_visible_tokens` above reports what the CULL PASS EMITTED, so a
-    // sector buried in solid rock is in-frustum and reads as visible. This
-    // reports which tokens own a pixel that SURVIVED THE DEPTH TEST, read off
-    // the G-buffer identity attachment the raster pass already writes.
-    //
-    // A BITMASK, not a list, and the asymmetry is the point: the GPU can only
-    // afford to record membership over two million pixels, and the CPU only
-    // ever asks about tokens it already holds. See render/visibility_hash.h.
-    // Cull DRAWS against the mask, not just streaming detail. OFF by default
-    // and deliberately a separate switch from set_visibility_reduce: a wrong
-    // bit in the streaming cap costs detail, a wrong bit here removes geometry
-    // from the picture.
+    // ---- occlusion culling (M4) -------------------------------------------
+    // Two switches, and both are needed because the ID pass must be RUNNING
+    // before its mask means anything: `reduce` produces the mask, `draw_cull`
+    // consumes it. The engine turns both on together; they are separate so a
+    // frame that has just enabled the feature emits a list before it filters
+    // by one.
+    void set_visibility_reduce(bool on) noexcept { visibility_reduce_ = on; }
+    bool visibility_reduce() const noexcept { return visibility_reduce_; }
     void set_visibility_draw_cull(bool on) noexcept {
         visibility_draw_cull_ = on;
     }
     bool visibility_draw_cull() const noexcept { return visibility_draw_cull_; }
-    void set_visibility_reduce(bool on) noexcept { visibility_reduce_ = on; }
-    bool visibility_reduce() const noexcept { return visibility_reduce_; }
-    bool take_visible_bits(std::vector<uint32_t>& out) noexcept {
-        if (!visible_bits_valid_) return false;
-        out = std::move(visible_bits_);
-        visible_bits_.clear();
-        visible_bits_valid_ = false;
-        return true;
-    }
+
 
     // ---- frozen cull camera (M4 inspection aid) ---------------------------
     // See RenderOptions::freeze_cull_camera for what this is for. The snapshot
     // is taken on the RISING EDGE inside upload_frame_constants -- the one
     // place that writes both pinned fields -- so there is no second copy of
     // "what the cull camera is" to drift.
-    // HZB occlusion culling (M4 Phase B). Off by default: the pyramid is one
-    // frame old, so while the camera moves it can reject something that was
-    // just revealed. Exact whenever the cull camera is not moving, which
-    // includes the frozen-cull-camera inspection mode.
-    void set_hzb_occlusion(bool on) noexcept { hzb_enabled_ = on; }
-    bool hzb_occlusion() const noexcept { return hzb_enabled_; }
-
     void set_cull_camera_frozen(bool on) noexcept {
         cull_camera_freeze_requested_ = on;
         if (!on) cull_camera_frozen_ = false;
@@ -1812,19 +1774,9 @@ private:
         // See the sizing site for why it must never be mask-filtered.
         matter::VkBufferResource vis_commands;
         matter::VkBufferResource vis_draw_transforms;
-        matter::VkBufferResource visibility_bits;
-        matter::VkComputePipelineResource visibility_pipeline;
-        bool visibility_bits_valid = false;
-        // The same again for the ID pass's own target. TWO masks on purpose
-        // and only for now: step one of this feature is to prove the ID pass
-        // and the G-buffer agree about who is visible, and that comparison is
-        // only meaningful if both are produced by the same reduce shader from
-        // different inputs. Once it holds, the G-buffer copy is redundant --
-        // the ID pass answers about the whole candidate set, not just what was
-        // drawn, which is the entire reason it exists.
-        matter::VkBufferResource visibility_id_bits;
+        // The ID target's reduce: one dispatch per slot, all of them writing
+        // the single shared visibility_mask_ the next frame's cull reads.
         matter::VkComputePipelineResource visibility_id_reduce;
-        bool visibility_id_bits_valid = false;
         matter::VkBufferResource animation_bounds;
         matter::VkBufferResource material_upload;
         matter::VkBufferResource materials;
@@ -2052,7 +2004,6 @@ private:
     // yet been overwritten by upload_scene_buffers' unconditional restore of
     // command_template_. Inert unless MATTER_LOD_TRACE is set.
     void capture_lod_trace(FrameResources& frame);
-    void capture_visible_instances(FrameResources& frame);
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool apply_dynamic_command_layout(std::string& error);
@@ -2273,37 +2224,6 @@ private:
     matter::VkImageResource velocity_;
     matter::VkImageResource material_instance_;
     matter::VkImageResource depth_;
-    // ---- HZB occlusion pyramid (M4 Phase B, design §5.1) -------------------
-    // Four levels at 256, 64, 16 and 4 texels square. Separate images rather
-    // than mips of one: matter::create_image has no mip parameter, and four
-    // small images cost less machinery than a per-mip view array. cull.comp
-    // declares `sampler2D hzb[4]` to match.
-    //
-    // Held in VK_IMAGE_LAYOUT_GENERAL for their whole life -- written as a
-    // storage image by hzb_build.comp and read through a sampler by cull.comp,
-    // and GENERAL is legal for both. The alternative is a layout transition per
-    // level per frame to buy nothing.
-    static constexpr uint32_t kHzbLevels = 4;
-    static constexpr uint32_t hzb_level_size(uint32_t level) {
-        return 256u >> (2u * level);   // 256, 64, 16, 4
-    }
-    std::array<matter::VkImageResource, kHzbLevels> hzb_;
-    std::array<matter::VkComputePipelineResource, kHzbLevels> hzb_build_;
-    // Whether a frame has reduced real depth into the pyramid yet. Until one
-    // has, the images hold whatever the allocation left there, so the test must
-    // not run -- see the note where this is cleared.
-    bool hzb_primed_ = false;
-    bool hzb_descriptors_valid_ = false;
-    // The clip matrix of the frame whose depth the pyramid currently holds.
-    // Recorded at build time and handed to the NEXT frame's cull dispatch,
-    // because a screen-space test is only meaningful against the projection
-    // that produced the screen it is testing.
-    viewer::GpuMat4 hzb_world_to_clip_{};
-    // This frame's clip matrix, staged at constant-upload time and promoted to
-    // hzb_world_to_clip_ only when the build actually records. See the note at
-    // the staging site for why the two are separate.
-    viewer::GpuMat4 hzb_pending_world_to_clip_{};
-    bool hzb_enabled_ = false;
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;
     matter::VkImageResource raw_diffuse_;
@@ -2368,16 +2288,8 @@ private:
     };
     void record_visibility_id_pass(VkCommandBuffer command_buffer,
                                    const RasterRecordView& record);
-    void record_visibility_reduce(VkCommandBuffer command_buffer,
-                                  FrameResources& frame, VkExtent2D extent);
     void record_visibility_id_reduce(VkCommandBuffer command_buffer,
                                      FrameResources& frame);
-    void capture_visible_bits(FrameResources& frame);
-    // HZB occlusion (M4 Phase B). See the block comment at the definitions.
-    bool create_hzb_pyramid(std::string& error);
-    void write_hzb_descriptor_for_frame(VkDescriptorSet set);
-    bool ensure_hzb_pipelines(std::string& error);
-    void record_hzb_build(VkCommandBuffer command_buffer);
     // Assigns atlas slots for `part`, uploads its atlases, and patches the
     // billboard vertices already staged at `vertex_base`. Failure is reported
     // and the part still registers -- with its impostor rungs drawing as
@@ -2772,14 +2684,6 @@ private:
     }
     VkSceneUploadCounters upload_counters_{};
     VkCullStats cached_stats_{};
-    // ---- visibility harvest (M4 Phase A) ----------------------------------
-    // Off unless something asks for it, because it costs two buffer readbacks
-    // per frame. `visible_tokens_` holds the instance tokens the cull pass
-    // emitted on the most recently retired frame; the engine drains it and
-    // maps tokens to sectors.
-    bool visibility_capture_ = false;
-    bool visible_tokens_valid_ = false;
-    std::vector<uint32_t> visible_tokens_;
     // Identity-buffer visibility (M4). `visibility_reduce_` is the caller's
     // switch; `visibility_descriptors_valid_` says the per-slot sets have been
     // written against the CURRENT identity attachment, which a resize replaces.
@@ -2792,8 +2696,9 @@ private:
     // The DIVISOR, not a fixed size: the pass reuses the frame's world_to_clip,
     // so its aspect ratio has to match the real target or the projection is
     // skewed and the visibility answer is about a scene nobody is looking at.
-    // 6 puts a 1920x1080 frame at 320x180 -- 57k pixels, which is where the
-    // cost goes.
+    // 3 puts a 1920x1080 frame at 640x360. Measured against 6: at 6 a sector
+    // the real frame drew could own no pixel here and be wrongly culled; at 3
+    // that disagreement went to zero at the cameras tested.
     static constexpr uint32_t kVisibilityIdDivisor = 3;
     matter::VkImageResource visibility_id_color_;
     matter::VkImageResource visibility_id_depth_;
@@ -2810,25 +2715,9 @@ private:
     // filtered by this mask -- a culled sector is still tested every frame.
     matter::VkBufferResource visibility_mask_;
     bool visibility_draw_cull_ = false;
-    bool visible_bits_valid_ = false;
-    std::vector<uint32_t> visible_bits_;
-    bool visible_id_bits_valid_ = false;
-    std::vector<uint32_t> visible_id_bits_;
-
-public:
-    // The ID pass's mask, alongside take_visible_bits above. Separate accessor
-    // rather than a replacement while the two are being compared: the caller
-    // reports their agreement, and a single accessor that silently switched
-    // sources would make that report meaningless.
-    bool take_visible_id_bits(std::vector<uint32_t>& out) noexcept {
-        if (!visible_id_bits_valid_) return false;
-        out = std::move(visible_id_bits_);
-        visible_id_bits_.clear();
-        visible_id_bits_valid_ = false;
-        return true;
-    }
-
-private:
+    // No CPU-side copy of the mask. It is written by the reduce and read by
+    // the cull, both on the GPU, so there is nothing to read back -- which is
+    // also why this feature costs no readback stall.
     // Frozen cull camera. `requested` is the caller's switch; `frozen` says a
     // snapshot has actually been taken, which cannot happen until a frame
     // uploads its constants.

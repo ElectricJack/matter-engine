@@ -314,7 +314,7 @@ bool write_state_json(const std::filesystem::path& path,
         << ", \"instances_drawn\": " << frame_stats.instances_drawn
         << ", \"instances_total\": " << frame_stats.instances_total
         << ", \"clusters_culled\": " << frame_stats.clusters_culled
-        << ", \"hiz_culled\": " << frame_stats.hiz_culled
+        << ", \"occlusion_culled\": " << frame_stats.occlusion_culled
         << ", \"triangles\": " << frame_stats.triangles
         << ", \"draw_batches\": " << frame_stats.draw_batches
         << ", \"resident_sectors\": " << frame_stats.resident_sectors
@@ -343,7 +343,8 @@ bool write_state_json(const std::filesystem::path& path,
     out << "    \"view\": {\"pixel_budget\": " << stats.pixel_budget
         << ", \"debug_view_mode\": " << stats.debug_view_mode
         << ", \"vol_debug_view\": " << stats.vol_debug_view
-        << ", \"hiz_enabled\": " << (stats.hiz_enabled ? "true" : "false")
+        << ", \"occlusion_draw_cull\": "
+        << (stats.occlusion_draw_cull ? "true" : "false")
         << ", \"gpu_cull_active\": "
         << (stats.gpu_cull_active ? "true" : "false") << "},\n";
     out << "    \"uploads\": {\"vertex\": " << frame_stats.vk_vertex_uploads

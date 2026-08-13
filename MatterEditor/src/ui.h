@@ -177,20 +177,8 @@ struct ViewerStats {
     bool     gpu_cull_active = false;
     int      gpu_emitted = 0;   // clusters that passed the cull this frame
     int      gpu_culled  = 0;   // clusters rejected by the frustum cull this frame
-    int      gpu_culled_hiz = 0;   // clusters rejected by HiZ occlusion this frame
-    // Occlusion streaming (M4), mirrored from WorldSession frame stats. Shown
-    // under the "Occlusion streaming" toggle because the VIEWPORT does not
-    // change when the cap engages -- it demotes tiles, it never hides them --
-    // so these are the only numbers that say the feature is running.
+    int      gpu_occlusion_culled = 0;   // clusters the occlusion cull rejected
     uint32_t resident_sectors = 0;
-    uint32_t occlusion_visible_sectors = 0;
-    uint32_t occlusion_capped_tiles = 0;
-    // Writable: HiZ occlusion toggle (Task 10). Default OFF: the previous-frame
-    // pyramid causes false-positive occlusion culls at freehand camera angles
-    // (terrain / tree segments disappear). Correct fix needs a same-frame
-    // conservative depth or scissor-refined redraw — filed as ROADMAP follow-up.
-    // HUD checkbox / FIFO `hiz on|off` / MATTER_HIZ=1 opt in.
-    bool     hiz_enabled = false;
     // Writable: runtime LOD quality/speed dial. main propagates it to the
     // resolver + composer each frame; also settable via FIFO `budget <f>`.
     // 2026-07-30 tuning pass (3.64 -> 2.01, itself up from 1.0 on 2026-07-29):
@@ -290,25 +278,10 @@ struct ViewerStats {
     // of them are DRAWN. Freezing only the cull leaves the streamer refining
     // the world around a camera the cull cannot see.
     bool  freeze_cull_camera    = false;
-    // HZB occlusion culling (RenderOptions::hiz_occlusion, M4 Phase B). Off by
-    // default because the depth pyramid is one frame old: while the camera
-    // moves, geometry that has just been revealed can be rejected for a frame.
-    // Exact whenever the cull camera is still, which is why this and
-    // freeze_cull_camera above are the pair you turn on together to look at it.
-    bool  hiz_occlusion         = false;
     // Cull draws against the ID pass's mask (RenderOptions::
-    // occlusion_draw_cull). The cap makes hidden sectors cheaper; this one
-    // stops them being drawn.
+    // occlusion_draw_cull): a sector that owned no pixel last frame is not
+    // rasterised at all this frame.
     bool  occlusion_draw_cull   = false;
-    // OCCLUSION DETAIL CAP (RenderOptions::occlusion_grace_ticks, M4). A tile
-    // nothing has drawn for this many ticks is desired one level coarser. 0 is
-    // off, and off is the default so a session that does not ask for it behaves
-    // exactly as it did before the feature existed.
-    //
-    // Ticks rather than a bool because the number is the interesting part: too
-    // short and the world churns on every glance away, too long and it never
-    // demotes. 60 (about a second) is where the measurements were taken.
-    int   occlusion_grace_ticks = 0;
     // The camera pose captured when freeze_cull_camera last went on, kept so
     // the viewport overlay can draw that frustum. Reconstructed by the editor
     // rather than read back from the renderer: the overlay is a sketch of where

@@ -1776,7 +1776,11 @@ void run_vulkan_temporal_tests() {
           "instance returning after a presented clear frame starts fresh "
           "without a global reset");
 
-    CHECK(viewer::vk_scene_detail::frame_constants_size_for_test() == 288,
+    // 288 is the historical block; + 16 (vis_params) + 64 (cull_world_to_clip)
+    // is the M4 occlusion ID pass's appendix. Appended, never inserted, so the
+    // shaders that declare only the prefix keep every std140 offset they had.
+    CHECK(viewer::vk_scene_detail::frame_constants_size_for_test() ==
+              288 + 16 + 64,
           "C++ FrameConstants matches final std140 uvec4 padding and size");
 }
 
@@ -10549,7 +10553,7 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
           "Native frame composites HDR directly instead of stale DLSS output");
     const viewer::VkCullStats stats_after = renderer.cached_cull_stats();
     CHECK(stats_after.emitted == 4 && stats_after.frustum_culled == 0 &&
-              stats_after.hiz_culled == 0 && stats_after.overflowed == 0,
+              stats_after.occlusion_culled == 0 && stats_after.overflowed == 0,
           "completed frame publishes the known deferred culling statistics");
     CHECK(matter::immediate_submit_count() == immediate_before,
           "deferred cull stats publication remains asynchronous");
@@ -10575,7 +10579,7 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
             const viewer::VkCullStats after_failed = renderer.cached_cull_stats();
             CHECK(after_failed.emitted == 4 &&
                       after_failed.frustum_culled == 0 &&
-                      after_failed.hiz_culled == 0 &&
+                      after_failed.occlusion_culled == 0 &&
                       after_failed.overflowed == 0,
                   "failed recording does not publish zeroed culling statistics");
         }
@@ -10624,7 +10628,7 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     renderer.reset();
     const viewer::VkCullStats reset_stats = renderer.cached_cull_stats();
     CHECK(reset_stats.emitted == 0 && reset_stats.frustum_culled == 0 &&
-              reset_stats.hiz_culled == 0 && reset_stats.overflowed == 0,
+              reset_stats.occlusion_culled == 0 && reset_stats.overflowed == 0,
           "renderer reset clears cached culling statistics");
 }
 

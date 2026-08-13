@@ -1471,7 +1471,7 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
             "stdout, once per part.");
     if (s.gpu_cull_active) {
         ImGui::Text("GPU cull: emitted %d  frustum %d  hiz %d",
-                    s.gpu_emitted, s.gpu_culled, s.gpu_culled_hiz);
+                    s.gpu_emitted, s.gpu_culled, s.gpu_occlusion_culled);
         ImGui::TextDisabled("HiZ occlusion: not available in Vulkan milestone");
         ImGui::TextDisabled("Render path: Vulkan raster only");
     }
@@ -1622,7 +1622,7 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     if (s.occlusion_draw_cull) {
         ImGui::Indent();
         ImGui::Text("drawn %d batches   %d clusters occluded",
-                    s.raster_batches, s.gpu_culled_hiz);
+                    s.raster_batches, s.gpu_occlusion_culled);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
                 "Toggle the box and watch both move. `occluded` is what the "
@@ -1631,48 +1631,6 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
         ImGui::Unindent();
     }
 
-    // ---- the two earlier attempts, kept and off ----------------------------
-    // Neither is the occlusion cull above and neither is needed by it. They are
-    // still here because they work and are measured, not because anything
-    // depends on them.
-    //
-    //   Streaming cap - makes unseen sectors COARSER rather than absent. Never
-    //                   changes the picture, which is why it reads as doing
-    //                   nothing; the win is residency and bake cost.
-    //   HZB           - screen-AABB depth-pyramid rejection. Structurally weak
-    //                   on terrain, where a sector is one cluster the size of a
-    //                   whole tile: 4 rejections out of ~900.
-    constexpr int kDefaultOcclusionGrace = 60;
-    bool occlusion_on = s.occlusion_grace_ticks > 0;
-    if (ImGui::Checkbox("Streaming detail cap (unrelated)", &occlusion_on))
-        s.occlusion_grace_ticks = occlusion_on ? kDefaultOcclusionGrace : 0;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(
-            "Stream tiles nothing has drawn one level COARSER. It never hides "
-            "anything, so the viewport does not change -- the win is residency "
-            "and bake cost, not pixels. Independent of the occlusion cull "
-            "above.");
-    if (occlusion_on) {
-        ImGui::Indent();
-        ImGui::Text("resident %u   drawn %u   capped %u",
-                    s.resident_sectors, s.occlusion_visible_sectors,
-                    s.occlusion_capped_tiles);
-        ImGui::SliderInt("Grace (ticks)", &s.occlusion_grace_ticks, 1, 300);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "How long a tile may go undrawn before it is demoted, in "
-                "visibility ticks (about frames). 60 is where the "
-                "measurements were taken.");
-        ImGui::Unindent();
-    }
-    ImGui::Checkbox("HZB occlusion cull (superseded)", &s.hiz_occlusion);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(
-            "The earlier draw-side attempt: reject clusters whose screen AABB "
-            "is behind a min-reduced depth pyramid. Superseded by the "
-            "occlusion cull above, which needs no pyramid and no bounding box. "
-            "Kept because it is measured and may earn its keep once clusters "
-            "are finer than a whole tile.");
     ImGui::Checkbox("Impostor parallax", &s.impostor_parallax);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(

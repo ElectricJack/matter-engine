@@ -1071,19 +1071,6 @@ int main() {
     float min_projected_size = 0.0f;
     apply_world_resolver_defaults(worlds[initial_world].world_name,
                                   min_projected_size, stats);
-    // Seed the occlusion cap from MATTER_OCCLUSION_GRACE (M4). Load-bearing,
-    // not a convenience: the editor now pushes this value into RenderOptions
-    // every frame, so without seeding it the UI's zero would silently override
-    // the env var on the first frame and the switch would appear to do nothing
-    // -- which is the same class of failure as the env-var-only control this
-    // slider replaced. The engine still reads the env var itself for headless
-    // runs; this is the editor's copy of the same answer.
-    if (const char* grace = std::getenv("MATTER_OCCLUSION_GRACE")) {
-        stats.occlusion_grace_ticks = std::max(0, std::atoi(grace));
-        std::printf("MATTER_OCCLUSION_GRACE=%s: occlusion cap slider seeded "
-                    "to %d ticks\n", grace, stats.occlusion_grace_ticks);
-    }
-
     // Property registry (property-system design S3/S4). Bound BEFORE anything
     // writes the tunable structs, so bind() captures the compiled defaults;
     // the World-scope baseline is re-captured at the connect seam below, once
@@ -2505,16 +2492,12 @@ int main() {
                     viewer::FifoGetProp cmd; cmd.path = word;
                     registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "hiz %255s", word) == 1) {
-                    // M4 Phase B gave this command something to do again. It
-                    // predates the Vulkan port and had been answering "not
-                    // available" since; the property path below is the general
-                    // form and this is kept because scripts already use it.
-                    stats.hiz_occlusion =
-                        std::strcmp(word, "on") == 0 ||
-                        std::strcmp(word, "1") == 0 ||
-                        std::strcmp(word, "true") == 0;
-                    std::printf("hiz: %s\n",
-                                stats.hiz_occlusion ? "on" : "off");
+                    // The HZB is gone (it could not work on tile-sized
+                    // clusters). Kept as a recognised command so old scripts
+                    // get an answer rather than "unrecognized", and pointed at
+                    // the occlusion cull that replaced it.
+                    std::printf("hiz: removed -- use "
+                                "`set viewer.debug.occlusion_draw_cull true`\n");
                 } else if (std::sscanf(line.c_str(), "dlss %255s", word) == 1) {
                     viewer::FifoDlss cmd; cmd.mode = word;
                     registry.dispatch(cmd);
@@ -3304,10 +3287,7 @@ int main() {
             (stats.debug_view_mode == 5 || force_lod_tint)
                 ? matter::GeometryDebugView::LodTint
                 : matter::GeometryDebugView::None;
-        options.hiz_occlusion = stats.hiz_occlusion;
         options.occlusion_draw_cull = stats.occlusion_draw_cull;
-        options.occlusion_grace_ticks = stats.occlusion_grace_ticks;
-        options.occlusion_cap_levels = 1;
         // Frozen cull camera (M4). The renderer takes its own snapshot of the
         // planes and the eye on the rising edge; this side captures the POSE at
         // the same moment, purely so the viewport can outline that frustum.
@@ -3647,14 +3627,8 @@ int main() {
         stats.instances_active = static_cast<int>(frame_stats.instances_resolved);
         stats.gpu_emitted = static_cast<int>(frame_stats.instances_drawn);
         stats.gpu_culled = static_cast<int>(frame_stats.clusters_culled);
-        stats.gpu_culled_hiz = static_cast<int>(frame_stats.hiz_culled);
-        // Occlusion streaming readout (M4). See the panel block that draws it:
-        // the frame is identical with the cap on or off, so this is the only
-        // feedback the toggle has.
+        stats.gpu_occlusion_culled = static_cast<int>(frame_stats.occlusion_culled);
         stats.resident_sectors = frame_stats.resident_sectors;
-        stats.occlusion_visible_sectors =
-            frame_stats.occlusion_visible_sectors;
-        stats.occlusion_capped_tiles = frame_stats.occlusion_capped_tiles;
         stats.culled_clusters = stats.gpu_culled;
         stats.raster_tris = static_cast<int>(frame_stats.triangles);
         stats.raster_batches = static_cast<int>(frame_stats.draw_batches);
@@ -4162,7 +4136,7 @@ int main() {
                         stats_label.c_str(), stats.frame_ms, stats.resolve_ms,
                         stats.build_ms, stats.draw_ms, stats.instances_active,
                         stats.raster_batches, stats.raster_tris,
-                        stats.culled_clusters, stats.gpu_culled_hiz,
+                        stats.culled_clusters, stats.gpu_occlusion_culled,
                         frame_stats.vt_variants,
                         frame_stats.vt_rejected_variants,
                         frame_stats.vt_max_variants,

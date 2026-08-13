@@ -220,32 +220,6 @@ struct Config {
     // Forced off when `nested_sectors` is off -- see the note there.
     bool volumetric_sectors = false;
 
-    // ---- occlusion detail cap (M4 Phase A, design 5.2) --------------------
-    // Ticks a tile may go unseen before its desired level is capped coarser.
-    // Zero DISABLES the cap outright, which is the default and the rollback
-    // position -- an engine that never calls mark_visible must behave exactly
-    // as it did before this existed.
-    int occlusion_grace_ticks = 0;
-    // How many levels coarser an unseen tile is allowed to fall. One is the
-    // design's conservative suggestion; the 2:1 restriction pass still runs
-    // afterwards, so a cap that would break the +-1 invariant against a visible
-    // neighbour is undone by restrict_levels rather than drawn.
-    int occlusion_cap_levels = 1;
-    // How many tiles may NEWLY cap per tick. A rate limit, not a quality dial:
-    // a node that is already capped costs nothing to keep capped, so this
-    // bounds only the transition.
-    //
-    // It exists because capping is an eviction in disguise, and evictions are
-    // applied in one blocking main-thread job. Measured on a COLD StreamCaverns
-    // fill, where the cap fires hardest (nothing has been drawn yet, so the
-    // whole world is eligible at once): stream.apply_evictions jobs of 2520,
-    // 2190 and 1551 ms, against none at all on the same world warm. Capping one
-    // node at level L can still retire its whole subtree, so this is a bound on
-    // the burst rather than a promise about its size -- but four an update at
-    // 60 Hz is a coarsening front that moves fast enough to be invisible and
-    // slow enough not to hand the eviction path a thousand tiles in one go.
-    int occlusion_cap_per_tick = 4;
-
     // The OCTREE'S VERTICAL EXTENT, and only that (volumetric_sectors only).
     // The selector will not descend outside [y_min, y_max] and no tile is
     // requested there, which is what stops an octree over an unbounded axis.
@@ -375,63 +349,6 @@ public:
     size_t resident_count() const;
     size_t inflight_count() const;
 
-    // ---- OCCLUSION FEEDBACK (M4 Phase A, design §5.2) ----------------------
-    //
-    // Report which tiles the renderer actually drew, and how long ago. The
-    // streamer folds that into TWO things and never into a third:
-    //
-    //   * PRIORITY -- a visible hole outranks an offscreen one (next_request);
-    //   * a DETAIL CAP -- a tile unseen for longer than `occlusion_grace_ticks`
-    //     is desired one or more levels COARSER than its band asks.
-    //
-    // IT NEVER GATES EXISTENCE. The desired set still covers everything the
-    // bands reach, so a wrong or stale visibility bit costs a few seconds of
-    // detail and can never open a hole. That asymmetry is the whole safety
-    // argument: the readback is fenced and a few frames old by construction,
-    // and a signal that could remove coverage would turn that staleness into
-    // the exact class of bug M0 spent itself closing.
-    //
-    // ABSENT BY DEFAULT, which is what keeps headless streaming deterministic:
-    // both consumers are gated on `occlusion_grace_ticks > 0`, which no world
-    // sets unless it asks for the feature, so a test that does not know about
-    // occlusion gets the pre-M4 desired map, byte for byte.
-    //
-    // Stamps the tile AND EVERY ANCESTOR of it. A parent's question is "is
-    // anything under me on screen", so a drawn leaf is evidence about its whole
-    // chain -- see VisState for why judging a parent by its own draws could
-    // never work.
-    void mark_visible(int64_t tx, int64_t ty, int64_t tz, int rung);
-    // Advance the visibility clock. One call per streamer tick, by the caller
-    // that owns the readback; `mark_visible` stamps this value.
-    void set_visibility_frame(uint64_t frame) noexcept { vis_frame_ = frame; }
-
-    // Retune the cap WITHOUT rebuilding the streamer. Safe to mutate live, and
-    // the reason is worth stating because almost nothing else in Config is:
-    // these three are pure SELECTION POLICY. They change which level `descend`
-    // stops at, and nothing else -- not the key format, not a tile's identity,
-    // not what a bake produces. Nothing resident has to be re-requested and no
-    // artifact is re-keyed, so the next tick simply decides differently.
-    //
-    // This exists because the cap was launch-time-only (MATTER_OCCLUSION_GRACE)
-    // and that made it effectively undiscoverable: an issue report arrived with
-    // the freeze controls both switched on -- so the UI had been found -- and
-    // the cap silently at zero, because the one control that turns the feature
-    // on was an env var you had to know about and relaunch for.
-    //
-    // Turning it OFF clears the ledger: `first_visit` stamps are measured
-    // against a clock that stops advancing while the feature is off, so keeping
-    // them would make every tile instantly eligible for the cap the moment it
-    // came back on, and the world would demote in one tick.
-    void set_occlusion(int grace_ticks, int cap_levels) {
-        const bool was_on = cfg_.occlusion_grace_ticks > 0;
-        cfg_.occlusion_grace_ticks = grace_ticks > 0 ? grace_ticks : 0;
-        cfg_.occlusion_cap_levels = cap_levels > 0 ? cap_levels : 1;
-        if (was_on && cfg_.occlusion_grace_ticks == 0) {
-            vis_.clear();
-            vis_pruned_at_ = 0;
-        }
-    }
-
     // The RESOLVED config, which is not the one you passed in. The constructor
     // rewrites it: `terrain_lod_enabled` is forced on by nesting, defaults are
     // filled into an empty band table, and both `nested_sectors` and
@@ -453,75 +370,6 @@ private:
         float dist          = 0.0f; // anchor distance at last update
         int   cooldown      = 0;    // updates remaining before re-request allowed
     };
-
-    // ---- the occlusion visibility ledger (M4 Phase A) ----------------------
-    //
-    // A SEPARATE MAP from `sectors_`, and that is the design rather than an
-    // accident. Three reasons, in order of how much trouble each one saved:
-    //
-    // 1. It has to hold INTERIOR nodes. The cap's question is asked in
-    //    `descend` about the tile it is deciding whether to split, and a tile
-    //    that is being split is by construction not resident and never drawn.
-    //    Judging it by its own draws (which was the first implementation) means
-    //    judging it by a bit that is structurally always zero -- the cap read
-    //    "never seen", treated that as visible, and never fired once. So
-    //    visibility PROPAGATES UP: a node is visible if anything in its subtree
-    //    was drawn. `sectors_` holds only tiles that were desired, so it cannot
-    //    carry that, and adding interior entries to it would put rows with no
-    //    desired and no resident rung in front of the eviction sweep.
-    //
-    // 2. It keeps the feature removable. Nothing outside the two guarded call
-    //    sites touches this map, and both are behind `occlusion_grace_ticks > 0`
-    //    -- so a headless streamer produces the pre-M4 desired set byte for
-    //    byte, which is what the existing suites assert.
-    //
-    // 3. Its lifetime is not a sector's. A stale readback naming an evicted
-    //    tile may create an entry here; that costs a map slot and a little
-    //    conservatism, where the same write into `sectors_` would resurrect a
-    //    tile the eviction sweep has already reasoned about.
-    struct VisState {
-        // Visibility clock at the last frame anything in this node's SUBTREE
-        // was reported drawn. 0 = never.
-        uint64_t last_visible = 0;
-        // Visibility clock when the descent first reached this node, and when
-        // it last did. `first_visit` is what makes "never seen" decidable: a
-        // node is judged occluded once the clock has passed
-        // max(last_visible, first_visit) + grace, so a node that has never been
-        // drawn still has to have been ELIGIBLE to be drawn for a full grace
-        // period before the cap touches it. Without that term, never-seen had
-        // to be read as visible (there is no other safe reading), and a tile
-        // behind the camera at world load was immune forever.
-        uint64_t first_visit = 0;
-        uint64_t last_visit = 0;
-        // Whether the cap is CURRENTLY applied to this node. Kept so the
-        // per-tick rate limit can charge only the transition: holding a node
-        // capped is free, becoming capped is what costs.
-        bool capped = false;
-    };
-    std::unordered_map<uint64_t, VisState> vis_;
-    // Newly-capped nodes this tick, against Config::occlusion_cap_per_tick.
-    int caps_this_tick_ = 0;
-
-public:
-    // How many octree nodes the cap is currently holding un-split. Reported to
-    // the editor because it is the only number that moves visibly when the
-    // toggle flips -- the frame itself does not, by design.
-    size_t capped_tile_count() const noexcept {
-        size_t n = 0;
-        for (const auto& [key, state] : vis_)
-            if (state.capped) ++n;
-        return n;
-    }
-
-private:
-    // Prune horizon for the ledger, in visibility ticks. The descent visits a
-    // bounded node set each tick, but flying across a world walks that set over
-    // new ground, so entries the descent has stopped visiting have to go or the
-    // map is a leak with a slow fuse.
-    uint64_t vis_pruned_at_ = 0;
-    // True while a subtree's visibility says "cap this". Reads the ledger; the
-    // only two consumers are `descend` and `next_request`.
-    bool occluded_subtree(int level, int64_t tx, int64_t ty, int64_t tz) const;
 
     // Key: (uint64_t(uint32_t(int32_t(tx))) << 32) | uint32_t(int32_t(tz))
     // Sectors beyond ±2^31 in either axis are out of scope.
@@ -579,8 +427,6 @@ private:
     // submit_anchor -> AnchorSample -> here -- was proven end to end before a
     // selection rule depended on it. A wrong altitude and a wrong octree would
     // otherwise have been indistinguishable.
-    // Visibility clock, advanced by the caller that owns the readback.
-    uint64_t vis_frame_ = 0;
     float last_anchor_y_ = 0.0f;
     float last_anchor_z_ = 0.0f;
 

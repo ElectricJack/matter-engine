@@ -19,10 +19,6 @@ struct SectorStreamingStatus {
     uint64_t generation = 0;
     uint32_t resident_sectors = 0;
     uint32_t inflight_sectors = 0;
-    // Octree nodes the occlusion cap is currently holding un-split (M4). Rides
-    // the status snapshot because it is worker-owned state and this is the one
-    // channel that already crosses that boundary safely.
-    uint32_t capped_tiles = 0;
 };
 struct StreamingUpdate {};
 struct StreamingModule { explicit StreamingModule(flecs::world& world); };

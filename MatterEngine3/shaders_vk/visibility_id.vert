@@ -39,8 +39,6 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 counts;
     uvec4 capacities;
     uvec4 temporal;
-    mat4 hzb_world_to_clip;
-    uvec4 hzb_params;
     uvec4 vis_params;
     // The CULL camera's projection -- equal to world_to_clip normally, pinned
     // when the cull camera is frozen. This pass must use it and not
@@ -70,7 +68,7 @@ struct DrawTransform {
     uint vt_slot;
     uint selected_lod;
 };
-layout(set = 1, binding = 18, std430) readonly buffer VisDrawTransforms {
+layout(set = 1, binding = 17, std430) readonly buffer VisDrawTransforms {
     DrawTransform transforms[];
 };
 

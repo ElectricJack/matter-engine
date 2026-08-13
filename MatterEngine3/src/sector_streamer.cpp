@@ -363,68 +363,6 @@ int SectorStreamer::desired_level_at(float wx, float wy, float wz) const {
     return -1;
 }
 
-// ---------------------------------------------------------------------------
-// Nested mode: the desired set
-// ---------------------------------------------------------------------------
-
-void SectorStreamer::mark_visible(int64_t tx, int64_t ty, int64_t tz,
-                                  int rung) {
-    if (cfg_.occlusion_grace_ticks <= 0) return;
-    if (!cfg_.nested_sectors) {
-        // Unnested worlds have no tree to propagate through and no cap to
-        // apply (the cap refuses splits, and there are none). The ledger would
-        // be written and never read.
-        return;
-    }
-    // Stamp this tile and every ancestor of it. A drawn leaf proves its whole
-    // chain of parents has visible content, which is precisely the question
-    // `descend` asks before splitting one of them -- and the parent can never
-    // answer it from its own draws, because a node being split is not resident.
-    //
-    // The walk is over LEVELS, not over a stored tree: an ancestor's tile index
-    // is the child's shifted right once per level, so this is a handful of
-    // shifts and hash inserts, bounded by max_level() (6 in the deepest world
-    // here). Y participates only under the octree; a column world's ancestors
-    // share its ty.
-    int level = matter_stream::variant_level(rung);
-    int64_t ax = tx;
-    int64_t ay = cfg_.volumetric_sectors ? ty : kFlatTy;
-    int64_t az = tz;
-    for (; level <= max_level(); ++level) {
-        VisState& v = vis_[nested_key(level, ax, ay, az)];
-        v.last_visible = vis_frame_;
-        // A tile the readback names before the descent has ever visited it
-        // (possible: the readback is several frames stale) gets its eligibility
-        // clock opened here rather than left at 0, so it is not instantly
-        // eligible for the cap on the descent's next pass.
-        if (v.first_visit == 0) v.first_visit = vis_frame_;
-        ax >>= 1;
-        if (cfg_.volumetric_sectors) ay >>= 1;
-        az >>= 1;
-    }
-}
-
-// Has nothing in this node's subtree been drawn for longer than the grace?
-//
-// TWO clocks, and the second one is what makes the answer decidable. A node
-// that has never been drawn has `last_visible == 0`, and "never drawn" alone
-// cannot be read as occluded -- during a cold fill nothing has been drawn yet,
-// and demoting the whole world at the moment it is trying to become visible for
-// the first time is the one failure this cap must not have. So the node also
-// has to have been ELIGIBLE: `first_visit` is when the descent first reached
-// it, and the grace is measured from whichever of the two is later.
-//
-// A node the descent has never reached has neither clock and is not occluded.
-bool SectorStreamer::occluded_subtree(int level, int64_t tx, int64_t ty,
-                                      int64_t tz) const {
-    const auto it = vis_.find(nested_key(level, tx, ty, tz));
-    if (it == vis_.end()) return false;
-    const uint64_t eligible_since =
-        std::max(it->second.last_visible, it->second.first_visit);
-    if (eligible_since == 0) return false;
-    return vis_frame_ > eligible_since + uint64_t(cfg_.occlusion_grace_ticks);
-}
-
 void SectorStreamer::mark_desired(int level, int64_t tx, int64_t ty,
                                   int64_t tz) {
     auto& st = sectors_[nested_key(level, tx, ty, tz)];
@@ -688,68 +626,6 @@ void SectorStreamer::descend(
             split = false;
     }
 
-    // ---- OCCLUSION DETAIL CAP (M4 Phase A, design §5.2) --------------------
-    //
-    // A tile nobody has drawn for `occlusion_grace_ticks` is desired
-    // `occlusion_cap_levels` COARSER than its band asks, by refusing the last
-    // splits rather than by rewriting a level afterwards. Expressing it as a
-    // refusal is what keeps it safe: the desired set still COVERS this
-    // footprint at every moment, so a wrong or stale visibility bit costs
-    // detail and can never open a hole. Nothing here can make a region
-    // undesired.
-    //
-    // A tile is judged by its SUBTREE, via the visibility ledger -- see
-    // VisState and occluded_subtree(). Judging it by its own draws was the
-    // first implementation and could not work: the tile under this question is
-    // the one about to be split, so it is not resident and is never drawn.
-    //
-    // The eligibility clock is opened HERE, on the descent's first visit, which
-    // is what makes "this has never been drawn" a usable signal instead of an
-    // ambiguous one. It is the descent that decides what could be drawn, so the
-    // descent is where the stopwatch starts.
-    //
-    // NOT gated on `level > 0` any more than the ledger is, but the split
-    // decision itself already is: `descend` only reaches here with a splittable
-    // level.
-    if (cfg_.occlusion_grace_ticks > 0) {
-        VisState& v = vis_[nested_key(level, tx, ty, tz)];
-        if (v.first_visit == 0) v.first_visit = vis_frame_;
-        v.last_visit = vis_frame_;
-        const bool occluded =
-            split && level > 0 && occluded_subtree(level, tx, ty, tz);
-        if (!occluded) {
-            v.capped = false;
-        } else {
-            // The level the bands alone would have put here. The cap is
-            // relative to that rather than absolute, so it demotes by a fixed
-            // amount of detail wherever the camera is, instead of pinning
-            // distant tiles that were already coarse.
-            int banded = 0;
-            for (int L = 0; L <= max_level(); ++L) {
-                banded = L;
-                if (nd <= level_radius_[L]) break;
-            }
-            if (level <= banded + cfg_.occlusion_cap_levels) {
-                // The rate limit (Config::occlusion_cap_per_tick). Holding a
-                // node capped is free; BECOMING capped is charged, because that
-                // is the transition that retires a subtree and hands the
-                // blocking eviction job its work. A node refused the budget
-                // this tick simply splits as usual and is offered the budget
-                // again on the next one, so the coarsening front advances
-                // rather than stalling.
-                if (v.capped) {
-                    split = false;
-                } else if (caps_this_tick_ < cfg_.occlusion_cap_per_tick) {
-                    ++caps_this_tick_;
-                    v.capped = true;
-                    split = false;
-                }
-            } else {
-                v.capped = false;
-            }
-        }
-    }
-
     if (split) {
         // Hysteresis acts on the whole SIBLING GROUP, never on one child: a
         // tile cannot be half-merged, so the children are decided together.
@@ -998,28 +874,6 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_y,
     last_anchor_x_ = anchor_x;
     last_anchor_y_ = anchor_y;   // stored, never read in M1 (see the header)
     last_anchor_z_ = anchor_z;
-
-    caps_this_tick_ = 0;
-
-    // Prune the occlusion ledger (M4 Phase A). The descent visits a bounded
-    // node set per tick, but flying across a world walks that set over new
-    // ground, so entries it has stopped visiting accumulate. Swept rarely and
-    // with a horizon several graces deep, because the cost of keeping a stale
-    // entry one sweep too long is nothing and the cost of dropping a live one
-    // is a tile's eligibility clock restarting from zero.
-    if (cfg_.occlusion_grace_ticks > 0) {
-        const uint64_t horizon =
-            std::max<uint64_t>(600, uint64_t(cfg_.occlusion_grace_ticks) * 8);
-        if (vis_frame_ > vis_pruned_at_ + horizon) {
-            vis_pruned_at_ = vis_frame_;
-            for (auto it = vis_.begin(); it != vis_.end();) {
-                const uint64_t touched =
-                    std::max(it->second.last_visit, it->second.last_visible);
-                if (touched + horizon < vis_frame_) it = vis_.erase(it);
-                else ++it;
-            }
-        }
-    }
 
     // "Is anything finer than level L resident under this tile?" -- answered by
     // walking each resident tile's ancestors once (O(resident x levels)) rather
@@ -1301,24 +1155,6 @@ bool SectorStreamer::next_request(SectorRequest& out) {
             ? level_size(st.desired_level < 0 ? 0 : st.desired_level)
             : cfg_.sector_size;
         float score = is_hole ? st.dist - width : st.dist;
-        // OCCLUSION PRIORITY (M4 Phase A, §5.2): "visible holes, then offscreen
-        // holes", expressed as a distance penalty rather than as a separate
-        // class so it composes with the hole bonus above instead of overriding
-        // it. A tile that has gone unseen past the grace ranks as if it were
-        // one further tile-width away -- deliberately the SAME magnitude as the
-        // hole bonus, so being unseen exactly cancels being a hole and no more.
-        // A stronger penalty would let a large occluded region starve
-        // indefinitely behind a trickle of visible upgrades.
-        //
-        //
-        // Same ledger and same two-clock test the cap uses, so priority and
-        // detail can never disagree about whether a tile is occluded.
-        if (cfg_.occlusion_grace_ticks > 0 && cfg_.nested_sectors) {
-            int64_t px, py, pz;
-            int plevel;
-            nested_unkey(k, plevel, px, py, pz);
-            if (occluded_subtree(plevel, px, py, pz)) score += width;
-        }
         if (score < best_score) {
             best_score = score;
             best_k = k;

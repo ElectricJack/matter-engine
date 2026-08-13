@@ -413,7 +413,12 @@ Standard two-phase GPU occlusion culling, slotted into the existing cull pass:
   remove shadow casters or reflection geometry. The TLAS path keeps its existing
   distance/billboard early-outs only.
 
-### 5.2 Streaming-side: visibility-informed priority and detail cap
+### 5.2 Streaming-side: visibility-informed priority and detail cap (BUILT, MEASURED, DELETED)
+
+> The cap below shipped and was removed. It streams unseen tiles coarser
+> and never hides one, so the frame is identical with it on or off --
+> which is how every person who tried it read it. The occlusion that
+> survived culls DRAWS: `docs/occlusion-cull-demo-2026-08-12.md`.
 
 The streamer's priority today is holes-then-upgrades, nearest-first
 (`sector_streamer.h:118-120`), and its detail choice is distance bands. Add one input:
@@ -483,11 +488,17 @@ column baseline (expect the ~590-sample slab term gone), part/instance counts, t
 seam soak re-run in 3D (this is the scene that exercises vertical seams hard), tick-time
 budget vs the nested baseline (0.367 ms on StreamMountain today).
 
-**M4 — Occlusion.**
-Phase A: frustum-visibility readback → streaming priority + detail cap (no HZB yet).
+**M4 — Occlusion.** SHIPPED, but not as either phase below. Both were built,
+measured and deleted: the detail cap never hid anything (§5.2), and the HZB
+rejected 4 clusters out of ~900 because a sector is one cluster the size of a
+whole tile (§5.1). What shipped is a low-resolution ID pass that rasterises every
+in-frustum sector at its coarsest rung and culls draws against the tokens that
+own a pixel -- see `docs/occlusion-cull-demo-2026-08-12.md`. The two phases below
+are kept as the record of what was tried.
+~~Phase A: frustum-visibility readback → streaming priority + detail cap (no HZB yet).
 Phase B: HZB build + two-phase cull, `hiz_culled` finally written, smoke-test
 assertions updated from `== 0` to invariants (`hiz_culled + emitted + frustum_culled`
-conservation).
+conservation).~~
 *Acceptance:* StreamCaverns underground: measure resident fine-tile count and GPU
 frame time with the cap on/off; StreamMountain regression: no visible popping on ridge
 disocclusion; RT output byte-identical with occlusion on/off (doctrine check).

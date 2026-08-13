@@ -100,14 +100,12 @@ struct alignas(16) FrameConstants {
     uint32_t counts[4];
     uint32_t capacities[4];
     uint32_t temporal[4];
-    // HZB occlusion (M4 Phase B). Appended, and appending is what makes this
-    // safe for the shaders that do not read it: every existing member keeps its
+    // Occlusion ID pass (M4). Appended, and appending is what makes this safe
+    // for the shaders that do not read it: every existing member keeps its
     // std140 offset, so raster.vert and gbuffer.frag go on declaring the prefix
     // they use and never see these.
-    GpuMat4 hzb_world_to_clip;
-    uint32_t hzb_params[4];   // enabled, level-0 size, level count, unused
-    // Occlusion ID pass (M4). x = cull draws against the mask, y = emit the
-    // unfiltered ID-pass list. Two switches rather than one because the list
+    // vis_params: x = cull draws against the mask, y = emit the unfiltered
+    // ID-pass list. Two switches rather than one because the list
     // has to be produced for a frame before the mask it yields can be trusted,
     // and because emitting it is how the streaming signal is fed even when
     // nothing is being culled.
@@ -122,7 +120,7 @@ struct alignas(16) FrameConstants {
     GpuMat4 cull_world_to_clip;
 };
 
-static_assert(sizeof(FrameConstants) == 288 + 64 + 16 + 16 + 64,
+static_assert(sizeof(FrameConstants) == 288 + 16 + 64,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 24,
               "VkCullStats must match the std430 stats block");
@@ -1633,20 +1631,9 @@ void VkSceneRenderer::destroy_pipeline() {
     }
     const VkDevice device = vulkan_->device();
     rt_sbt_.reset();
-    visibility_.reset();
-    // HZB pyramid (M4 Phase B): init()-created, so torn down with the rest of
-    // init()'s images. The build pipelines go with it -- their descriptors
-    // point INTO these images.
-    for (auto& pipeline : hzb_build_) pipeline.reset();
-    for (auto& image : hzb_) image.reset();
-    hzb_primed_ = false;
-    hzb_descriptors_valid_ = false;
     // Identity-buffer visibility (M4): the per-slot pipelines name the identity
     // attachment and this slot's buffer, both of which are going away.
-    for (FrameResources& frame : frames_) {
-        frame.visibility_pipeline.reset();
-        frame.visibility_id_reduce.reset();
-    }
+    for (FrameResources& frame : frames_) frame.visibility_id_reduce.reset();
     visibility_descriptors_valid_ = false;
     // The ID pass's own pipeline and targets. A raw VkPipeline rather than a
     // VkComputePipelineResource, so unlike everything around it this one does
@@ -1905,16 +1892,17 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // {max_draw_distance, lod_bias} table, COMPUTE-only (cull.comp). Always
     // bound; a one-entry neutral table in the default state.
     // Binding 15 (M2.5): the terminal-impostor view atlas, FRAGMENT-only.
-    // Binding 16 (M4 Phase B): the HZB pyramid, COMPUTE-only (cull.comp).
-    // Four levels, always bound -- cull.comp samples them statically, so they
-    // must be valid descriptors even in the frames and the worlds where
-    // hzb_params.x is 0 and nothing is read.
-    // Bindings 17-19 (M4 occlusion ID pass): the unfiltered draw list the ID
+    // Bindings 16-18 (M4 occlusion ID pass): the unfiltered draw list the ID
     // pass rasterises, and the visibility mask the cull filters the MAIN list
-    // by. 18 is the one binding here read by two stages -- COMPUTE writes it
+    // by. 17 is the one binding here read by two stages -- COMPUTE writes it
     // and visibility_id.vert reads it -- which is what lets the ID pass reuse
     // this set instead of needing one of its own.
-    std::array<VkDescriptorSetLayoutBinding, 20> scene_bindings{};
+    //
+    // These sat at 17-19 while the HZB pyramid held 16. It went, and the hole
+    // it left was not free: a default-constructed VkDescriptorSetLayoutBinding
+    // has binding 0, so the array carried a DUPLICATE of binding 0 and layout
+    // creation failed -- taking every cull smoke mode with it.
+    std::array<VkDescriptorSetLayoutBinding, 19> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1952,16 +1940,12 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
     scene_bindings[16] = descriptor_binding(
-        16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        VK_SHADER_STAGE_COMPUTE_BIT);
-    scene_bindings[16].descriptorCount = kHzbLevels;
+        16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     scene_bindings[17] = descriptor_binding(
-        17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
-    scene_bindings[18] = descriptor_binding(
-        18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT);
-    scene_bindings[19] = descriptor_binding(
-        19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    scene_bindings[18] = descriptor_binding(
+        18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -2970,12 +2954,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
                                   matter::ImmediateSubmitPhase::image_transition)) {
         return false;
     }
-    // The HZB occlusion pyramid (M4 Phase B), created once here for the same
-    // reason the dummy volume above is: it is extent-independent and every
-    // frame's scene descriptor names it, so it must exist and be in GENERAL
-    // before the first cull dispatch ever binds set 1.
-    if (!create_hzb_pyramid(error)) return false;
-    // The M4 draw mask, for the same reason again: every frame's scene set
+    // The M4 draw mask: every frame's scene set
     // names it at binding 19, so it has to exist before the first one is
     // written. Zeroed on creation and then only ever written by the reduce --
     // and an all-zero mask reads as "nothing is visible", which is why
@@ -3260,12 +3239,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // draw-override table at binding 14, +3 for the M4 ID pass's
         // unfiltered command/transform lists and the visibility mask (17-19).
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 31},
-        // +1 for the M2.5 impostor atlas at scene binding 15, and +kHzbLevels
-        // for the M4 occlusion pyramid at binding 16.
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
-             (120 + kHzbLevels +
-              tileset::kMaxTilesetSlots * kTilesetChannelCount +
+             (120 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
               vt::kVtChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
@@ -3551,15 +3527,14 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_current_output);
     update_descriptor(frame.skin_descriptor_set, 6,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_previous_output);
-    update_descriptor(frame.descriptor_sets[1], 17,
+    update_descriptor(frame.descriptor_sets[1], 16,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.vis_commands);
-    update_descriptor(frame.descriptor_sets[1], 18,
+    update_descriptor(frame.descriptor_sets[1], 17,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                       frame.vis_draw_transforms);
-    update_descriptor(frame.descriptor_sets[1], 19,
+    update_descriptor(frame.descriptor_sets[1], 18,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, visibility_mask_);
     write_impostor_descriptor_for_frame(frame.descriptor_sets[1]);
-    write_hzb_descriptor_for_frame(frame.descriptor_sets[1]);
     update_descriptor(frame.descriptor_sets[1], 9,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.vt_draw_slots);
     update_descriptor(frame.descriptor_sets[1], 14,
@@ -5403,26 +5378,6 @@ void VkSceneRenderer::write_impostor_descriptor_for_frame(VkDescriptorSet set) {
     vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
 }
 
-// ---- HZB occlusion pyramid (M4 Phase B, design §5.1) ----------------------
-//
-// The pyramid is built from the depth the frame just finished, and consumed by
-// the NEXT frame's cull dispatch. That is not the two-phase scheme the design
-// sketches, and the difference is deliberate: two-phase needs the gbuffer pass
-// split in half around an HZB build, and record_raster is one function that
-// records the entire gbuffer, volumetrics and composite chain. Cutting it in
-// two is a large change to the hottest path in the renderer for a benefit --
-// no one-frame latency -- that this feature does not need, because
-//
-//   * its consumer is streaming priority, where the design already states
-//     latency is harmless, and
-//   * it is OFF by default and the mode it exists to be inspected in freezes
-//     the cull camera, where a one-frame-old pyramid is not stale at all: the
-//     matrix that produced it is the matrix being tested against.
-//
-// While the camera moves, a one-frame-old pyramid can occlude something that
-// has just been revealed. That is the known cost, it is what keeps the feature
-// opt-in, and it is why every uncertain case in hzb_occluded fails open.
-
 // ---- identity-buffer visibility (M4) ---------------------------------------
 //
 // "Which sectors own a pixel?" answered off the G-buffer identity attachment
@@ -5591,42 +5546,6 @@ bool VkSceneRenderer::ensure_visibility_pipelines(std::string& error) {
     bindings[1] = descriptor_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      VK_SHADER_STAGE_COMPUTE_BIT);
     for (FrameResources& frame : frames_) {
-        // HOST_VISIBLE, because the CPU both zeroes it (before the frame that
-        // fills it) and reads it back (after that frame retires) -- the same
-        // shape as `commands`/`draw_transforms`, which capture_lod_trace reads
-        // with no submit and no wait because begin_frame already waited this
-        // slot's fence.
-        if (!ensure_buffer(frame.visibility_bits,
-                           viewer::kVisibleIdWords * sizeof(uint32_t),
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error))
-            return false;
-        frame.visibility_pipeline.reset();
-        if (!matter::create_compute_pipeline(*vulkan_, "visible_ids.comp.spv",
-                                             bindings,
-                                             frame.visibility_pipeline, error))
-            return false;
-        const VkDescriptorImageInfo identity{
-            composite_sampler_, material_instance_.view,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = frame.visibility_pipeline.descriptor_set;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &identity;
-        vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
-        matter::write_storage_buffer_descriptor(
-            frame.visibility_pipeline, 1, frame.visibility_bits, 0,
-            viewer::kVisibleIdWords * sizeof(uint32_t));
-
-        // The ID pass's twin: same shader, same layout, different source
-        // image and a different mask. Two of them exist so the two answers can
-        // be compared while the ID pass is being trusted -- see the note on
-        // FrameResources::visibility_id_bits.
-        if (!ensure_buffer(frame.visibility_id_bits,
-                           viewer::kVisibleIdWords * sizeof(uint32_t),
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error))
-            return false;
         frame.visibility_id_reduce.reset();
         if (!matter::create_compute_pipeline(*vulkan_, "visible_ids.comp.spv",
                                              bindings,
@@ -5651,30 +5570,6 @@ bool VkSceneRenderer::ensure_visibility_pipelines(std::string& error) {
     }
     visibility_descriptors_valid_ = true;
     return true;
-}
-
-void VkSceneRenderer::record_visibility_reduce(VkCommandBuffer command_buffer,
-                                               FrameResources& frame,
-                                               VkExtent2D extent) {
-    if (!visibility_descriptors_valid_ ||
-        frame.visibility_pipeline.pipeline == VK_NULL_HANDLE)
-        return;
-    // NO IMAGE BARRIER. The gbuffer pass already transitions attachment 4 to
-    // SHADER_READ_ONLY_OPTIMAL on the way out with a destination scope of
-    // COMPUTE_SHADER -- see gbuffer_sampled_stages(), whose index-4 branch
-    // names exactly that stage because GI temporal samples this attachment from
-    // compute. Adding one here would be a second opinion about a dependency
-    // that is already expressed, and would hide it if that transition ever
-    // moved.
-    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      frame.visibility_pipeline.pipeline);
-    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            frame.visibility_pipeline.pipeline_layout, 0, 1,
-                            &frame.visibility_pipeline.descriptor_set, 0,
-                            nullptr);
-    vkCmdDispatch(command_buffer, (extent.width + 15u) / 16u,
-                  (extent.height + 15u) / 16u, 1);
-    frame.visibility_bits_valid = true;
 }
 
 void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer,
@@ -5721,241 +5616,6 @@ void VkSceneRenderer::record_visibility_id_reduce(VkCommandBuffer command_buffer
     write_dependency.memoryBarrierCount = 1;
     write_dependency.pMemoryBarriers = &written;
     vkCmdPipelineBarrier2(command_buffer, &write_dependency);
-    frame.visibility_id_bits_valid = true;
-}
-
-void VkSceneRenderer::capture_visible_bits(FrameResources& frame) {
-    const bool had_result = frame.visibility_bits_valid;
-    frame.visibility_bits_valid = false;
-    if (!had_result || !visibility_reduce_) return;
-    std::string error;
-    std::vector<uint32_t> bits(viewer::kVisibleIdWords, 0u);
-    if (!matter::readback_buffer(*vulkan_, frame.visibility_bits, bits.data(),
-                                 bits.size() * sizeof(uint32_t), 0, error))
-        return;   // silent: a hint, and a missed frame costs nothing
-    visible_bits_ = std::move(bits);
-    visible_bits_valid_ = true;
-    // Zero it for its next use. HERE rather than on the GPU, because this is
-    // the one moment the slot is provably idle (begin_frame waited its fence),
-    // so the host write needs no barrier of its own -- the submit that follows
-    // makes it visible. A vkCmdFillBuffer would need a transfer->compute
-    // barrier to say the same thing.
-    const std::vector<uint32_t> zeros(viewer::kVisibleIdWords, 0u);
-    (void)matter::upload_buffer(*vulkan_, frame.visibility_bits, zeros.data(),
-                                zeros.size() * sizeof(uint32_t), 0, error);
-
-    // The ID pass's mask, read the same way and at the same moment.
-    if (!frame.visibility_id_bits_valid) return;
-    frame.visibility_id_bits_valid = false;
-    // The shared mask. Read, never zeroed here -- the GPU clears it at the top
-    // of each reduce, because the cull needs the previous frame's contents
-    // right up to the moment the new ones are written.
-    std::vector<uint32_t> id_bits(viewer::kVisibleIdWords, 0u);
-    if (!matter::readback_buffer(*vulkan_, visibility_mask_, id_bits.data(),
-                                 id_bits.size() * sizeof(uint32_t), 0, error))
-        return;
-    visible_id_bits_ = std::move(id_bits);
-    visible_id_bits_valid_ = true;
-}
-
-bool VkSceneRenderer::create_hzb_pyramid(std::string& error) {
-    // Fixed sizes, not derived from the extent: the occlusion test is about
-    // "is this footprint covered", and a fixed resolution makes what the test
-    // can resolve a property of the feature rather than of the window.
-    // 256/64/16/4 costs 280 KB in total, so there is nothing to save by sizing
-    // it down -- and a fixed pyramid is why this runs ONCE, from init(), while
-    // a resize only invalidates the build pipelines (their level-0 source is
-    // the recreated depth attachment).
-    //
-    // TRANSFER_DST is for the one clear below and nothing else; the steady
-    // state is STORAGE writes from hzb_build.comp and SAMPLED reads from
-    // cull.comp.
-    std::array<matter::VkImageResource, kHzbLevels> hzb;
-    for (uint32_t level = 0; level < kHzbLevels; ++level) {
-        const uint32_t size = hzb_level_size(level);
-        if (!matter::create_image(
-                *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R32_SFLOAT,
-                {size, size, 1},
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                    VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, hzb[level], error))
-            return false;
-    }
-    for (uint32_t level = 0; level < kHzbLevels; ++level)
-        hzb_[level] = std::move(hzb[level]);
-    // Put the pyramid into GENERAL and clear it, NOW rather than on first use.
-    //
-    // Both halves are load-bearing and the first one is a validation error if
-    // skipped: the scene descriptor names these images as GENERAL, and the
-    // cull dispatch that reads that descriptor runs BEFORE the first build
-    // records -- so on frame 0 the descriptor would claim GENERAL for images
-    // still in UNDEFINED (VUID-vkCmdDraw-None-09600, observed).
-    //
-    // The clear value is 0.0, which under reversed-Z is the far plane: "the
-    // nearest thing here is infinitely far", so nothing is ever occluded by an
-    // unbuilt pyramid. `hzb_primed_` already gates the test, and this makes the
-    // gate belt-and-braces rather than the only thing between a fresh
-    // allocation's contents and a cull decision.
-    struct HzbInit {
-        std::array<matter::VkImageResource*, kHzbLevels> images;
-    } init_record{};
-    for (uint32_t level = 0; level < kHzbLevels; ++level)
-        init_record.images[level] = &hzb_[level];
-    const auto init_callback = [](VkCommandBuffer cmd, void* opaque) {
-        auto& rec = *static_cast<HzbInit*>(opaque);
-        const VkClearColorValue far_plane{{0.0f, 0.0f, 0.0f, 0.0f}};
-        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
-                                            1};
-        for (matter::VkImageResource* image : rec.images) {
-            matter::record_image_transition(
-                cmd, *image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-            vkCmdClearColorImage(cmd, image->image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                 &far_plane, 1, &range);
-            matter::record_image_transition(
-                cmd, *image, VK_IMAGE_LAYOUT_GENERAL,
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT);
-        }
-    };
-    std::vector<std::shared_ptr<void>> hzb_lifetimes;
-    for (uint32_t level = 0; level < kHzbLevels; ++level)
-        hzb_lifetimes.push_back(hzb_[level].lifetime);
-    if (!matter::submit_immediate(*vulkan_, init_callback, &init_record, error,
-                                  matter::ImmediateSubmitPhase::image_transition,
-                                  std::move(hzb_lifetimes)))
-        return false;
-    hzb_primed_ = false;
-    hzb_descriptors_valid_ = false;
-    return true;
-}
-
-void VkSceneRenderer::write_hzb_descriptor_for_frame(VkDescriptorSet set) {
-    if (set == VK_NULL_HANDLE) return;
-    std::array<VkDescriptorImageInfo, kHzbLevels> infos{};
-    for (uint32_t level = 0; level < kHzbLevels; ++level) {
-        if (hzb_[level].view == VK_NULL_HANDLE) return;
-        infos[level] = {composite_sampler_, hzb_[level].view,
-                        VK_IMAGE_LAYOUT_GENERAL};
-    }
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = set;
-    write.dstBinding = 16;
-    write.descriptorCount = kHzbLevels;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = infos.data();
-    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
-}
-
-bool VkSceneRenderer::ensure_hzb_pipelines(std::string& error) {
-    if (hzb_descriptors_valid_) return true;
-    if (depth_.view == VK_NULL_HANDLE) return true;   // no attachments yet
-    for (uint32_t level = 0; level < kHzbLevels; ++level)
-        if (hzb_[level].view == VK_NULL_HANDLE) return true;
-
-    // One pipeline object per level rather than one pipeline and four
-    // descriptor sets, because create_compute_pipeline allocates exactly one
-    // set per resource. Four copies of a nine-instruction shader is a rounding
-    // error against writing a second allocator for this.
-    std::vector<VkDescriptorSetLayoutBinding> bindings(2);
-    bindings[0] = descriptor_binding(0,
-                                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                     VK_SHADER_STAGE_COMPUTE_BIT);
-    bindings[1] = descriptor_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                     VK_SHADER_STAGE_COMPUTE_BIT);
-    for (uint32_t level = 0; level < kHzbLevels; ++level) {
-        hzb_build_[level].reset();
-        if (!matter::create_compute_pipeline(*vulkan_, "hzb_build.comp.spv",
-                                             bindings, hzb_build_[level],
-                                             error))
-            return false;
-        // Level 0 reduces the depth attachment; every later level reduces the
-        // one before it. Both are read through composite_sampler_, and both
-        // are read with texelFetch, which ignores the filter -- the sampler is
-        // here because GLSL wants a combined image sampler, not because any
-        // filtering happens.
-        const VkDescriptorImageInfo source{
-            composite_sampler_,
-            level == 0 ? depth_.view : hzb_[level - 1].view,
-            level == 0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                       : VK_IMAGE_LAYOUT_GENERAL};
-        const VkDescriptorImageInfo destination{
-            VK_NULL_HANDLE, hzb_[level].view, VK_IMAGE_LAYOUT_GENERAL};
-        VkWriteDescriptorSet writes[2]{
-            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
-        writes[0].dstSet = hzb_build_[level].descriptor_set;
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &source;
-        writes[1].dstSet = hzb_build_[level].descriptor_set;
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[1].pImageInfo = &destination;
-        vkUpdateDescriptorSets(vulkan_->device(), 2, writes, 0, nullptr);
-    }
-    hzb_descriptors_valid_ = true;
-    return true;
-}
-
-void VkSceneRenderer::record_hzb_build(VkCommandBuffer command_buffer) {
-    if (!hzb_descriptors_valid_) return;
-    // Depth arrives here in SHADER_READ_ONLY_OPTIMAL -- the composite pass
-    // reads it as a texture and left it there. Asserting rather than
-    // transitioning: a transition here would silently paper over a reordering
-    // of the frame that this pass would then be reading garbage from.
-    if (depth_.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return;
-
-    for (uint32_t level = 0; level < kHzbLevels; ++level) {
-        const uint32_t size = hzb_level_size(level);
-        // Two hazards per level, and an earlier version covered only one of
-        // them. The DESTINATION is write-after-read against the cull dispatch
-        // that sampled it (this frame's, earlier in this command buffer). The
-        // SOURCE -- level - 1, written by the dispatch immediately before this
-        // one -- is read-after-write, and a barrier naming only the
-        // destination image does not make those writes visible. Submission
-        // order gives an execution dependency but never a memory one, which is
-        // the class of bug that works on the machine it was written on.
-        //
-        // A plain memory barrier covers both: the pyramid lives in GENERAL for
-        // its whole life (storage write, sampled read), so there is no layout
-        // transition to scope per image, and shader-write -> shader-read across
-        // the whole compute stage is exactly the dependency wanted.
-        VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT |
-                                VK_ACCESS_2_SHADER_WRITE_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT |
-                                VK_ACCESS_2_SHADER_WRITE_BIT;
-        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dependency.memoryBarrierCount = 1;
-        dependency.pMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(command_buffer, &dependency);
-
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          hzb_build_[level].pipeline);
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                hzb_build_[level].pipeline_layout, 0, 1,
-                                &hzb_build_[level].descriptor_set, 0, nullptr);
-        // No push constants: hzb_build.comp reads both extents off the bound
-        // images, which is why create_compute_pipeline's layout (which declares
-        // no push range) is sufficient.
-        const uint32_t groups = (size + 7u) / 8u;
-        vkCmdDispatch(command_buffer, groups, groups, 1);
-    }
-    // The pyramid and the matrix that describes it become current together.
-    hzb_world_to_clip_ = hzb_pending_world_to_clip_;
-    hzb_primed_ = true;
 }
 
 void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
@@ -7341,6 +7001,16 @@ bool VkSceneRenderer::init(std::string& error) {
     if (initialized_) return true;
     if (pipeline_ != VK_NULL_HANDLE) destroy_pipeline();
     if (!load_device_limits(error)) return false;
+    // BEFORE anything is created, because this is a check on a compile-time
+    // size against a device limit and there is nothing to unwind if it fails.
+    // It used to sit after the pipelines were built, where a device too small
+    // for the frame block was also too small for the buffers created on the way
+    // there -- so the failure surfaced as whichever allocation ran out first.
+    if (sizeof(FrameConstants) >
+        std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
+        error = "uniform buffer range exceeds Vulkan device limit";
+        return false;
+    }
     // Cache timestamp support from device properties.
     {
         VkPhysicalDeviceProperties props{};
@@ -7428,12 +7098,6 @@ bool VkSceneRenderer::init(std::string& error) {
         cloud_shadows_ = std::move(cloud_shadows);
     }
     if (!create_environment_resources(error)) {
-        destroy_pipeline();
-        return false;
-    }
-    if (sizeof(FrameConstants) >
-        std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
-        error = "uniform buffer range exceeds Vulkan device limit";
         destroy_pipeline();
         return false;
     }
@@ -11269,17 +10933,6 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.temporal[1] = temporal_frame_.reset ? 1u : 0u;
     constants.temporal[2] = temporal_frame_.internal_extent.width;
     constants.temporal[3] = temporal_frame_.internal_extent.height;
-    // HZB occlusion (M4 Phase B). Armed only once a frame has actually reduced
-    // depth into the pyramid: before that the images hold undefined allocation
-    // contents, and an undefined "nearest occluder" is the one input that can
-    // delete the whole world.
-    const bool hzb_ready =
-        hzb_enabled_ && hzb_primed_ && hzb_descriptors_valid_;
-    constants.hzb_world_to_clip = hzb_world_to_clip_;
-    constants.hzb_params[0] = hzb_ready ? 1u : 0u;
-    constants.hzb_params[1] = hzb_level_size(0);
-    constants.hzb_params[2] = kHzbLevels;
-    constants.hzb_params[3] = 0;
     // Occlusion ID pass (M4). The list is emitted whenever the reduce is
     // running, because that is what feeds it; the draw cull is a separate,
     // stricter switch. Its guard includes `visibility_reduce_` on purpose --
@@ -11291,18 +10944,6 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.vis_params[2] = 0;
     constants.vis_params[3] = 0;
     // Remember the matrix this frame's depth will be written with, so the
-    // build at the end of it can publish the pair together. Staged rather than
-    // assigned, because a frame that uploads constants and then does NOT reach
-    // the build (an early-out, a device error, a raster path that never ran)
-    // must leave the pyramid and its matrix agreeing with each other. Advancing
-    // the matrix here would pair last frame's depth with this frame's
-    // projection, and a screen-space test against the wrong screen fails in the
-    // direction that deletes geometry.
-    //
-    // Taken from `matrices` rather than from the frozen cull snapshot on
-    // purpose: the pyramid describes what was RASTERISED, and raster always
-    // uses the live camera.
-    hzb_pending_world_to_clip_ = constants.world_to_clip;
     return matter::upload_buffer(*vulkan_, frame.frame_constants, &constants,
                                  sizeof(constants), 0, error);
 }
@@ -11336,8 +10977,6 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     // upload_scene_buffers below restores command_template_ unconditionally,
     // which is why the capture cannot live any later in this function.
     capture_lod_trace(selected);
-    capture_visible_instances(selected);
-    capture_visible_bits(selected);
     // Advance the range recycler's notion of time: a freed range becomes
     // reusable once every frame that could read its old bytes has retired.
     if (frame.serial > static_frame_serial_)
@@ -11557,63 +11196,6 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         command_template_.size());
     PROFILE_FRAME();
     return retained;
-}
-
-// VISIBILITY HARVEST (M4 Phase A, design §5.2).
-//
-// An instance that appears in the retired frame's command buffer is one
-// `cull.comp` EMITTED -- it survived the frustum test and, once the HZB lands,
-// the occlusion test too. So "what did the renderer actually draw" needs no new
-// GPU work at all: it is the same two host-visible buffers capture_lod_trace
-// reads, at the same point in the frame and for the same reason (this slot's
-// fence has retired and upload_scene_buffers has not yet overwritten them).
-//
-// A SEPARATE FUNCTION FROM capture_lod_trace, deliberately, though they read
-// the same bytes. lod_trace is a diagnostic with its own enable, its own frame
-// labelling and its own determinism contract for a differ; this is a control
-// input a shipping feature depends on. Folding them would mean occlusion
-// streaming silently stops the moment somebody turns tracing off -- and it
-// would tie a production loop to a facility whose output format exists to be
-// diffed, so any change to one becomes a change to both.
-//
-// Only the TOKEN is taken. Mapping it back to a sector is the engine's job
-// (it owns the publish side that knows what a token names); the renderer has
-// no business knowing what a sector is.
-void VkSceneRenderer::capture_visible_instances(FrameResources& frame) {
-    const bool had_result = frame.cull_result_valid;
-    if (!had_result || !visibility_capture_) return;
-    const uint32_t command_count = frame.lod_trace_command_count;
-    const uint32_t slot_count = frame.lod_trace_transform_slots;
-    if (command_count == 0 || slot_count == 0) return;
-
-    std::string error;
-    std::vector<DrawCommand> commands(command_count);
-    if (!matter::readback_buffer(
-            *vulkan_, frame.commands, commands.data(),
-            commands.size() * sizeof(DrawCommand), 0, error))
-        return;   // silent: this is a hint, and a missed frame costs nothing
-    std::vector<GpuDrawTransform> transforms(slot_count);
-    if (!matter::readback_buffer(
-            *vulkan_, frame.draw_transforms, transforms.data(),
-            transforms.size() * sizeof(GpuDrawTransform), 0, error))
-        return;
-
-    // Same bucket inversion capture_lod_trace documents: a command's occupied
-    // slot range names exactly the instances that selected it. The cluster and
-    // rung it selected are irrelevant here -- visibility is per INSTANCE.
-    visible_tokens_.clear();
-    for (uint32_t bucket = 0; bucket < command_count; ++bucket) {
-        const uint32_t drawn = commands[bucket].instance_count;
-        if (drawn == 0) continue;
-        const uint32_t first = commands[bucket].first_instance;
-        for (uint32_t offset = 0; offset < drawn; ++offset) {
-            const uint64_t index = static_cast<uint64_t>(first) + offset;
-            if (index >= transforms.size()) break;
-            visible_tokens_.push_back(
-                transforms[static_cast<size_t>(index)].instance_token);
-        }
-    }
-    visible_tokens_valid_ = true;
 }
 
 void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
@@ -12962,22 +12544,6 @@ bool VkSceneRenderer::record_cull_and_render(
         error = "record_cull_and_render requires prepared acquired frame resources";
         return false;
     }
-    // HZB (M4 Phase B). Built here rather than at frame-resource creation
-    // because the pyramid's level-0 source is the depth ATTACHMENT, which is
-    // recreated on every resize -- a descriptor written once at startup would
-    // point at a destroyed image the first time the window changed size. Both
-    // calls are no-ops after the first frame of a given extent
-    // (hzb_descriptors_valid_), and rewriting this slot's set is safe for the
-    // same reason vt_begin_frame's rewrite of it is: begin_frame has already
-    // waited on this slot's fence.
-    if (!ensure_hzb_pipelines(error)) return false;
-    write_hzb_descriptor_for_frame(frames_[frame.frame_slot].descriptor_sets[1]);
-    // Identity-buffer visibility (M4): same story, same trigger. Its level-0
-    // source is the identity ATTACHMENT, which a resize replaces. The ID pass's
-    // targets come first -- the reduce descriptors name them, so building the
-    // pipelines before the images exist would leave the whole path inert.
-    if (!ensure_visibility_id_targets(raster_extent_, error)) return false;
-    if (!ensure_visibility_pipelines(error)) return false;
     if (atmosphere_) {
         const matter::Float3 to_sun{-lighting_.sun_direction.x,
                                     -lighting_.sun_direction.y,
@@ -13017,6 +12583,18 @@ bool VkSceneRenderer::record_cull_and_render(
         if (!ensure_raster_targets(internal_extent.width,
                                    internal_extent.height, error))
             return false;
+    }
+    // Occlusion ID pass targets (M4). AFTER ensure_raster_targets, because they
+    // are sized from raster_extent_ and this is where raster_extent_ is
+    // published -- called before it, as they were, a resize sized the ID target
+    // from the PREVIOUS frame's extent and the mask described the wrong
+    // viewport for one frame.
+    //
+    // Gated, so a session with the cull switched off allocates no ID target,
+    // builds no reduce pipeline, and never destroys either.
+    if (visibility_reduce_ || visibility_draw_cull_) {
+        if (!ensure_visibility_id_targets(raster_extent_, error)) return false;
+        if (!ensure_visibility_pipelines(error)) return false;
     }
 
     FrameResources& selected = frames_[frame.frame_slot];
@@ -13329,28 +12907,11 @@ bool VkSceneRenderer::record_cull_and_render(
     }
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
-    // HZB build (M4 Phase B). HERE, after record_raster, because that is the
-    // first point in the frame where a complete depth buffer exists -- and
-    // because the pyramid is for the NEXT frame's cull dispatch, which has
-    // already run for this one. See the block comment at record_hzb_build for
-    // why this is not the design's two-phase scheme.
+    // Identity-buffer visibility (M4). Here because this is the first point in
+    // the frame where a complete G-buffer exists.
     //
-    // Built whether or not the test is enabled. Two reasons: a pyramid that is
-    // only maintained while the feature is on is one frame of garbage every
-    // time the feature is switched on, and the build is ~70k invocations
-    // against a frame that just rasterised a million triangles.
-    if (hzb_descriptors_valid_) {
-        PROFILE_SCOPE("cull.hzb_build");
-        record_hzb_build(frame.command_buffer);
-    }
-    // Identity-buffer visibility (M4). Same place and the same reason as the
-    // HZB build above -- this is the first point in the frame where a complete
-    // G-buffer exists -- but unlike the pyramid this one is for THIS frame, not
-    // the next: the readback happens when this slot comes round again.
-    //
-    // Gated on the switch, not built unconditionally, because unlike the
-    // pyramid there is no "one frame of garbage when you turn it on" to avoid:
-    // the mask is zeroed before every use and is complete after its own
+    // Gated on the switch rather than built unconditionally: the mask is zeroed
+    // before every use and is complete after its own
     // dispatch.
     if (visibility_reduce_) {
         // The ID pass, then both reduces. Recorded here rather than before the
@@ -13371,8 +12932,6 @@ bool VkSceneRenderer::record_cull_and_render(
             uploaded_command_count_,
             limits_.max_draw_indirect_count};
         record_visibility_id_pass(frame.command_buffer, id_view);
-        record_visibility_reduce(frame.command_buffer, selected,
-                                 raster_extent_);
         record_visibility_id_reduce(frame.command_buffer, selected);
     }
     selected.stats_valid = true;
@@ -13723,14 +13282,8 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     velocity_ = std::move(velocity);
     material_instance_ = std::move(material_instance);
     depth_ = std::move(depth);
-    // The HZB pyramid is NOT recreated here: it is a fixed 256/64/16/4 and
-    // lives from init() to teardown (create_hzb_pyramid). Only its level-0
-    // SOURCE descriptor depends on the extent -- that source is the depth
-    // attachment just replaced above -- so the build pipelines are
-    // invalidated here and rebuilt against the new depth view.
-    hzb_descriptors_valid_ = false;
-    // Same for the identity-buffer reduction, whose source is the
-    // material_instance_ attachment replaced just below.
+    // The identity-buffer reduction's source is the material_instance_
+    // attachment replaced just below, so its descriptors have to be rewritten.
     visibility_descriptors_valid_ = false;
     hdr_ = std::move(hdr);
     visibility_ = std::move(visibility);

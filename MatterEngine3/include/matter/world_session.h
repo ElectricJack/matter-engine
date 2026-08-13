@@ -95,17 +95,6 @@ struct RenderOptions {
     // push-back is NOT affected -- that places the card at the depth it
     // depicts and is a correctness term, not an appearance one.
     bool  impostor_parallax = true;
-    // HZB OCCLUSION CULLING (M4 Phase B, design §5.1). Tests each cluster's
-    // screen AABB against a min-reduced depth pyramid, so geometry behind a
-    // wall is rejected before it is drawn and `hiz_culled` finally has a
-    // non-zero meaning.
-    //
-    // Default OFF, and the reason is latency rather than doubt about the test:
-    // the pyramid is built from the depth the PREVIOUS frame finished, so while
-    // the camera moves something just revealed can be rejected for one frame.
-    // It is exact whenever the cull camera is not moving, which includes the
-    // frozen-cull-camera inspection mode this was checked with.
-    bool  hiz_occlusion   = false;
     // CULL DRAWS against the occlusion ID pass's mask (M4). This is the
     // one that stops occluded sectors being rasterised at all, as opposed
     // to the streaming cap, which only makes them coarser.
@@ -128,21 +117,6 @@ struct RenderOptions {
     // the same eye. That is wanted here (the frozen view's detail is what you
     // came to inspect) and is the reason this is not called "freeze frustum".
     bool  freeze_cull_camera = false;
-    // OCCLUSION DETAIL CAP (M4). Ticks a tile may go undrawn before it is
-    // desired one level coarser; 0 disables the whole feature.
-    //
-    // LIVE, and it had to become live. It was launch-time only
-    // (MATTER_OCCLUSION_GRACE) and that made it undiscoverable: an issue
-    // report arrived reading "not enough is being occluded", captured with
-    // both freeze toggles switched on -- so the UI had been found -- and the
-    // cap silently at zero, because the one control that turns the feature on
-    // was an env var. Nothing about the cap needs a restart: it changes which
-    // level the descent stops at and nothing else.
-    //
-    // -1 means "do not override", which is how the env var and a world's own
-    // profile survive a session that never touches the editor control.
-    int   occlusion_grace_ticks = -1;
-    int   occlusion_cap_levels  = 1;
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
     // (No active_radius. It is DERIVED from the world's outermost terrain LOD
     // band -- the distance past which the streamer keeps nothing resident
@@ -254,7 +228,7 @@ struct FrameStats {
     uint32_t instances_resolved = 0;  // resolver output count
     uint32_t instances_drawn   = 0;   // clusters emitted by the GPU cull
     uint32_t clusters_culled   = 0;   // frustum-culled clusters
-    uint32_t hiz_culled        = 0;   // HiZ-occlusion-culled clusters
+    uint32_t occlusion_culled  = 0;   // clusters the occlusion ID mask rejected
     uint32_t triangles         = 0;   // rasterized triangle count
     uint32_t draw_batches      = 0;   // indirect draw buckets with >=1 instance
     // M2.5: terminal impostors holding an atlas slot right now. On the stats
@@ -268,22 +242,6 @@ struct FrameStats {
     uint32_t cache_hits  = 0;         // cache hits last bake
     // Phase C Task 9: world-kind sessions only; 0 for closed-world sessions.
     uint32_t resident_sectors = 0;
-    // ---- occlusion streaming (M4) -----------------------------------------
-    // What the cap is doing RIGHT NOW, surfaced because the feature is
-    // otherwise invisible by design: it never hides a tile, it streams the
-    // unseen ones coarser, so the frame looks identical whether it is on or
-    // off. An issue report ("doesn't appear to hide sectors, it looks the same
-    // when toggled") arrived from a session where it was working correctly and
-    // had cut residency from 703 to 242 -- with nothing on screen to say so.
-    //
-    // occlusion_visible_sectors: sectors that owned a pixel in the last
-    //                            harvested frame.
-    // occlusion_capped_tiles:    octree nodes the cap is currently refusing to
-    //                            split. This is the number that moves the
-    //                            instant the toggle flips.
-    uint32_t occlusion_visible_sectors = 0;
-    uint32_t occlusion_capped_tiles = 0;
-    bool     occlusion_active = false;
     // Vulkan GPU-driven path diagnostics (cumulative CPU-side counters).
     uint64_t vk_instance_cache_expansions = 0;
     uint64_t vk_vertex_uploads = 0;

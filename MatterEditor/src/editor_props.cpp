@@ -693,39 +693,15 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "selection with it (same eye). Pair with \"Freeze terrain "
              "streaming\", which holds which tiles exist rather than which "
              "are drawn."),
-    prop(&ViewerStats::occlusion_grace_ticks, "occlusion_grace_ticks")
-        .label("Occlusion cap (ticks)").range(0, 300)
-        .doc("Tiles nothing has DRAWN for this many ticks are streamed one "
-             "level coarser. 0 = off, and this is the switch for "
-             "occlusion-aware streaming as a whole.\n\n"
-             "Visibility is read off the G-buffer identity attachment, so a "
-             "tile buried in rock counts as undrawn even though it is in front "
-             "of the camera -- which underground is most of the world.\n\n"
-             "60 (about a second) is where the measurements were taken: on "
-             "StreamCaverns it takes 741 instances / 601k triangles down to "
-             "204 / 286k for an indistinguishable frame. Never opens a hole -- "
-             "a capped tile is still resident and still drawn, just coarser."),
     prop(&ViewerStats::occlusion_draw_cull, "occlusion_draw_cull")
-        .label("Cull occluded draws")
-        .doc("Reject sectors that owned no pixel last frame so they are not "
-             "rasterised at all. The cap above only makes hidden sectors "
-             "cheaper; this is the one that stops them being drawn.\n\n"
+        .label("Occlusion culling")
+        .doc("Do not rasterise sectors that owned no pixel last frame.\n\n"
              "The visible set comes from a small ID-only pass that renders "
-             "EVERY in-frustum sector every frame at its coarsest rung, which "
-             "is what makes this safe to iterate: a culled sector is still "
-             "tested and returns the moment it is visible. Costs one frame of "
-             "latency, so it is off by default."),
-    prop(&ViewerStats::hiz_occlusion, "hiz_occlusion")
-        .label("HZB occlusion cull")
-        .doc("Reject clusters hidden behind what the previous frame drew, by "
-             "testing each one's screen AABB against a min-reduced depth "
-             "pyramid. This is what makes \"culled\" mean occluded rather than "
-             "merely off-screen, and what gives the hiz counter a non-zero "
-             "value.\n\n"
-             "OFF by default because the pyramid is one frame old: while the "
-             "camera moves, something just revealed can be rejected for a "
-             "frame. It is exact whenever the cull camera is still -- so turn "
-             "it on together with \"Freeze cull camera\" to look at it."));
+             "EVERY in-frustum sector every frame at its coarsest rung, so a "
+             "culled sector is still tested and returns the moment it is "
+             "visible. It cannot get stuck hidden.\n\n"
+             "Costs one frame of latency: within a frame the ID pass cannot "
+             "run before the cull it feeds."));
 
 // ---- render.gpu ----------------------------------------------------------
 //

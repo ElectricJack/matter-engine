@@ -47,13 +47,6 @@ struct DynamicAnimationBound {
     uint flags;
     uint pad;
 };
-// `flags & 1` is the serialized permission for an HZB occlusion test. Both a
-// valid dynamic box and a fail-open conservative box participate in the
-// frustum/LOD tests; the HZB path (M4 Phase B) consults this flag via
-// dynamic_occlusion_allowed() below and never occludes a record with the bit
-// clear -- a conservative fallback box is safe to frustum-test (it only errs
-// larger) but NOT to occlusion-test, because a box that is too large can sit
-// entirely behind an occluder its real geometry pokes past.
 
 struct DrawTransform {
     mat4 current;
@@ -86,17 +79,6 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 counts;
     uvec4 capacities;
     uvec4 temporal;
-    // ---- HZB occlusion (M4 Phase B) ---------------------------------------
-    // The clip matrix that produced the depth the pyramid was built from --
-    // LAST frame's, since this dispatch runs before this frame's depth exists.
-    // Kept separate from world_to_clip (this frame's, live) and from
-    // previous_world_to_clip (the temporal reprojection matrix, which is
-    // jittered and belongs to velocity): three different questions that happen
-    // to be near each other, and sharing a field between two of them is how a
-    // cull ends up testing against a matrix nobody chose.
-    mat4 hzb_world_to_clip;
-    // x = enabled, y = level 0 size in texels, z = level count, w unused.
-    uvec4 hzb_params;
     // ---- occlusion ID pass (M4) -------------------------------------------
     // x = cull DRAWS against the visibility mask (0 = the mask is written and
     //     read by nobody, which is the default and the pre-M4 behaviour),
@@ -109,15 +91,15 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
 // `draw_transforms` below: those are filtered by the mask, and a pass that
 // decides visibility from a list already filtered by visibility can never
 // let a culled instance back in.
-layout(set = 1, binding = 17, std430) buffer VisDrawCommands {
+layout(set = 1, binding = 16, std430) buffer VisDrawCommands {
     DrawCommand vis_commands[];
 };
-layout(set = 1, binding = 18, std430) writeonly buffer VisDrawTransforms {
+layout(set = 1, binding = 17, std430) writeonly buffer VisDrawTransforms {
     DrawTransform vis_draw_transforms[];
 };
 // Last frame's answer: which instance tokens owned a pixel. Written by
 // visible_ids.comp, read here, never written here.
-layout(set = 1, binding = 19, std430) readonly buffer VisibleMask {
+layout(set = 1, binding = 18, std430) readonly buffer VisibleMask {
     uint visible_mask[];
 };
 
@@ -128,12 +110,6 @@ layout(set = 1, binding = 19, std430) readonly buffer VisibleMask {
 uint visible_id_hash(uint token) {
     return (token * 2654435761u) >> (32u - 19u);
 }
-
-// The pyramid, coarsest-last. Separate images rather than mips of one, because
-// the engine's create_image has no mip parameter and a per-mip view array is
-// more machinery than four small images. Always bound (cull.comp uses them
-// statically), even when hzb_params.x is 0.
-layout(set = 1, binding = 16) uniform sampler2D hzb[4];
 
 layout(set = 1, binding = 0, std430) readonly buffer ClusterMetas {
     ClusterMeta clusters[];
@@ -149,7 +125,7 @@ layout(set = 1, binding = 3, std430) writeonly buffer DrawTransforms {
 };
 layout(set = 1, binding = 4, std430) buffer Stats {
     uint frustum_culled;
-    uint hiz_culled;
+    uint occlusion_culled;
     uint emitted;
     uint overflowed;
     uint triangles;
@@ -243,28 +219,6 @@ bool dynamic_cluster_lod(const GpuInstance instance, const ClusterMeta cluster,
     return false;
 }
 
-// May this (instance, cluster, lod) be HZB-occlusion-tested?
-//
-// Static instances: always -- their cluster AABB is exact by construction.
-// Dynamic instances: only when their bound record for this exact (cluster,
-// lod) exists AND carries the occlusion-enabled bit (see the flags contract at
-// the DynamicAnimationBound declaration). No record found means the frustum
-// path used the conservative fallback box, and "no record" fails open here for
-// the reason documented there.
-bool dynamic_occlusion_allowed(const GpuInstance instance,
-                               const ClusterMeta cluster, uint lod) {
-    if (instance.animation_instance_slot == 0xffffffffu) return true;
-    for (uint i = 0u; i < frame.counts.w; ++i) {
-        const DynamicAnimationBound value = dynamic_animation_bounds[i];
-        if (value.instance_slot == instance.animation_instance_slot &&
-            value.instance_generation == instance.animation_instance_generation &&
-            value.cluster_index == cluster.cluster_index && value.lod == lod) {
-            return (value.flags & 1u) != 0u;
-        }
-    }
-    return false;
-}
-
 bool uses_skin_raster(const GpuInstance instance, const ClusterMeta cluster,
                       uint lod) {
     if (instance.animation_instance_slot == 0xffffffffu) return false;
@@ -281,99 +235,7 @@ bool uses_skin_raster(const GpuInstance instance, const ClusterMeta cluster,
     return false;
 }
 
-// One texel of the pyramid, by level. Unrolled rather than `hzb[level]`
-// because `level` varies per invocation and a dynamically non-uniform index
-// into a sampler array needs a device feature this renderer does not require.
-float hzb_texel(int level, ivec2 coord) {
-    if (level <= 0) return texelFetch(hzb[0], coord, 0).r;
-    if (level == 1) return texelFetch(hzb[1], coord, 0).r;
-    if (level == 2) return texelFetch(hzb[2], coord, 0).r;
-    return texelFetch(hzb[3], coord, 0).r;
-}
-
-// Is this world-space box hidden behind what the previous frame drew?
-//
-// FAILS OPEN EVERYWHERE. Every uncertainty below returns false ("not
-// occluded"), because the two errors are not symmetric: a false negative draws
-// something that was hidden and costs a few triangles, while a false positive
-// deletes visible geometry. The cases that fail open are a box crossing the
-// near plane (its projection is not a rectangle), a box reaching outside the
-// screen (an occluder off-screen was never rasterised, so the pyramid has
-// nothing to say about it), and a footprint too large for the coarsest level.
-//
-// Latency: the pyramid is LAST frame's depth, tested with last frame's matrix.
-// That is exact whenever the cull camera has not moved -- which includes the
-// frozen-cull-camera inspection mode this was built to be checked with -- and
-// one frame stale while it is moving, which is why this is opt-in.
-bool hzb_occluded(const vec3 world_corners[8]) {
-    if (frame.hzb_params.x == 0u) return false;
-
-    vec3 lo = vec3(1e30);
-    vec3 hi = vec3(-1e30);
-    for (int i = 0; i < 8; ++i) {
-        const vec4 clip = frame.hzb_world_to_clip * vec4(world_corners[i], 1.0);
-        if (clip.w <= 1e-5) return false;          // crosses the near plane
-        const vec3 ndc = clip.xyz / clip.w;
-        lo = min(lo, ndc);
-        hi = max(hi, ndc);
-    }
-    // Anything reaching past the screen edge: the pyramid only knows about
-    // what was rasterised, so a box half off-screen has no occluder recorded
-    // for the half that is outside.
-    if (lo.x < -1.0 || lo.y < -1.0 || hi.x > 1.0 || hi.y > 1.0) return false;
-
-    // NDC xy [-1,1] -> uv [0,1], AND Y IS FLIPPED. That flip is not a Vulkan
-    // convention, it is this engine's: record_raster binds a NEGATIVE-HEIGHT
-    // viewport (origin at y = height, height = -height) to keep a top-left
-    // framebuffer convention without flipping the projection. So
-    //
-    //     framebuffer_y = height + (ndc.y * 0.5 + 0.5) * (-height)
-    //                   = height * (0.5 - ndc.y * 0.5)
-    //
-    // and the depth image's rows run OPPOSITE to NDC y. Getting this wrong
-    // does not fail loudly: it mirrors every cluster's lookup rectangle about
-    // the horizontal centreline, so the test reads depth belonging to
-    // unrelated geometry. Observed symptom, which is worth recording because
-    // it looks nothing like an inverted mapping -- almost nothing was culled
-    // (the mirrored rectangle usually lands on sky, whose reversed-Z clear of
-    // 0.0 occludes nothing), and the few clusters that were culled were
-    // plainly visible ones (the mirrored rectangle happened to land on near
-    // ground).
-    //
-    // Flipping y swaps which NDC bound is the smaller uv, hence hi/lo crossing
-    // over on the second component.
-    const vec2 uv_lo = vec2(lo.x * 0.5 + 0.5, 0.5 - hi.y * 0.5);
-    const vec2 uv_hi = vec2(hi.x * 0.5 + 0.5, 0.5 - lo.y * 0.5);
-
-    // Pick the level whose texels make this footprint at most two wide, so the
-    // 2x2 fetch below covers it completely. Level sizes fall by 4 each step.
-    int level = 0;
-    int size = int(frame.hzb_params.y);
-    const int levels = int(frame.hzb_params.z);
-    for (; level < levels; ++level) {
-        const vec2 span = (uv_hi - uv_lo) * float(size);
-        if (max(span.x, span.y) <= 2.0) break;
-        size = max(size / 4, 1);
-    }
-    if (level >= levels) return false;             // bigger than the coarsest
-
-    const ivec2 texel_lo = ivec2(clamp(uv_lo * float(size), 0.0,
-                                       float(size - 1)));
-    const ivec2 texel_hi = ivec2(clamp(uv_hi * float(size), 0.0,
-                                       float(size - 1)));
-    float nearest_occluder = 1.0;
-    for (int y = texel_lo.y; y <= texel_hi.y; ++y)
-        for (int x = texel_lo.x; x <= texel_hi.x; ++x)
-            nearest_occluder = min(nearest_occluder,
-                                   hzb_texel(level, ivec2(x, y)));
-
-    // Reversed-Z: the box's own nearest point is its LARGEST depth. Occluded
-    // when even that is further than the closest thing already drawn over the
-    // whole footprint. Strict `<`, so a coplanar surface is drawn.
-    return hi.z < nearest_occluder;
-}
-
-// The same reservation against the ID pass's list. A copy rather than a
+// The same reservation against the ID pass's list.// The same reservation against the ID pass's list. A copy rather than a
 // parameterised version because GLSL has no buffer references here and the
 // alternative is threading a flag through the hot path of the cull to pick
 // between two arrays; the bodies are short and identical, and they are
@@ -532,18 +394,6 @@ void main() {
         }
     }
 
-    // HZB occlusion (M4 Phase B), after the frustum test and after the LOD
-    // choice tightened the box, so it tests the geometry that would actually
-    // be drawn. Counted separately from frustum_culled: the two numbers plus
-    // `emitted` are the conservation the smoke suite asserts, and folding them
-    // would make "the HZB is doing nothing" and "the HZB is eating the world"
-    // the same reading.
-    if (dynamic_occlusion_allowed(instance, cluster, lod) &&
-        hzb_occluded(world_corners)) {
-        atomicAdd(hiz_culled, 1u);
-        return;
-    }
-
     // ---- the ID pass's list (M4) -------------------------------------------
     //
     // BEFORE the mask test below, and that order is the whole design. This
@@ -599,7 +449,7 @@ void main() {
     if (frame.vis_params.x != 0u) {
         const uint bit = visible_id_hash(instance.instance_token);
         if ((visible_mask[bit >> 5u] & (1u << (bit & 31u))) == 0u) {
-            atomicAdd(hiz_culled, 1u);
+            atomicAdd(occlusion_culled, 1u);
             return;
         }
     }
