@@ -10527,6 +10527,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     source.stable_id, source.part_hash, 0);
                 std::memcpy(instance.object_to_world.m, source.transform,
                             sizeof(instance.object_to_world.m));
+                // NOT RAY TRACED, for the same reason it is not in the CPU
+                // tracer (ensure_tracer, above): a weld is coincident with the
+                // two tiles it joins -- the fan interpolates between their own
+                // boundary vertices and the band is the fine tile's surface
+                // laid over the coarse tile's, within centimetres of it. It can
+                // therefore occlude nothing the tiles do not already occlude,
+                // while every shadow ray cast FROM it hits its own coincident
+                // twin at t ~= 0. That is not a subtle bias artefact: it read
+                // as sun visibility 0.1/255 on the band against 164.5 beside
+                // it, at identical depth, albedo and normals -- the black
+                // hairlines reported as "seams" in ec2829d6 and da52492c.
+                instance.ray_traced = false;
                 expanded.push_back(instance);
                 rebuilt.insert(rebuilt.end(), expanded.begin(), expanded.end());
                 impl_->vk_instance_cache.store_source(source, expanded);

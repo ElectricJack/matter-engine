@@ -527,6 +527,16 @@ struct VkSceneInstance {
     // C3: dynamic animation bounds are keyed by the generational dynamic
     // instance slot. UINT32_MAX retains the immutable/static culling path.
     uint32_t animation_instance_slot = UINT32_MAX;
+    // Put this instance in the ray-tracing TLAS. False for geometry that is
+    // COINCIDENT with something already in it, where an extra occluder can only
+    // shadow itself: the seam welds (matter_engine.cpp sets it) are the fine
+    // tile's own surface laid over the coarse tile's, within centimetres of it
+    // by construction, so every shadow ray they add is a self-hit at t ~= 0.
+    // Measured before this existed: a weld band's sun visibility read 0.1/255
+    // against its neighbours' 164.5 at identical depth, identical raw albedo
+    // and identical normals -- a black strip painted over terrain that was
+    // already correct (docs/seam-suite-2026-08-13.md, finding 2).
+    bool ray_traced = true;
 };
 
 struct VkCullStats {

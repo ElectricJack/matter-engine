@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "Committed expectations for seam_suite.sh. A metric ABOVE its entry fails;",
+    "a missing entry means zero, which is where holes, flicker and the",
+    "shading-dark count all sit.",
+    "",
+    "`cracks` is the only metric with a non-zero entry, and it is not a",
+    "tolerance for a known defect -- it is the resolution of the instrument.",
+    "hole_scan is exact: a background pixel enclosed by terrain either is or is",
+    "not there, and it reads 0 at every pose. crack_scan INFERS 'the eye went",
+    "through the shell' from a depth profile, and a 3-6 px component on an",
+    "ordinary terrain crease presents the same way. Every surviving component",
+    "was located (seam_locate.py) and most are 1.5-11 m from the nearest tile",
+    "border of any level, i.e. not on a seam at all.",
+    "",
+    "The numbers are the 2026-08-13 measurement rounded up by about half, so a",
+    "few pixels of run-to-run LOD variation does not read as a regression while",
+    "a real reopening still does. Re-measure and re-commit them when the",
+    "instrument or the world changes, and say which in the commit message."
+  ],
+  "poses": {
+    "down":    { "cracks": 5 },
+    "down_lo": { "cracks": 5 },
+    "r1":      { "cracks": 15 },
+    "r2":      { "cracks": 18 },
+    "r3":      { "cracks": 5 },
+    "graze":   { "cracks": 14, "dark": 3 },
+    "obliq":   { "cracks": 40 }
+  }
+}

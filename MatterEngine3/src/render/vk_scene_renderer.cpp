@@ -9944,10 +9944,18 @@ bool VkSceneRenderer::update_instances(
         candidate_slots.push_back(instance.part_slot);
         candidate_max_clusters =
             std::max(candidate_max_clusters, part.cluster_count);
-        RtInstance rt{};
-        rt.part_hash = source.part_hash;
-        std::memcpy(rt.transform, source.object_to_world.m, sizeof(rt.transform));
-        candidate_rt.push_back(rt);
+        // `ray_traced` false means the instance is coincident with geometry
+        // already in the TLAS and can only shadow itself -- see VkSceneInstance.
+        // rt_instances_ is not index-aligned with instance_staging_ (it is
+        // filtered by part hash on release and carries its own count), so
+        // skipping an entry here is safe.
+        if (source.ray_traced) {
+            RtInstance rt{};
+            rt.part_hash = source.part_hash;
+            std::memcpy(rt.transform, source.object_to_world.m,
+                        sizeof(rt.transform));
+            candidate_rt.push_back(rt);
+        }
     }
     build_scope.stop();
     matter::profile::Scope compare_scope(engine_prof::id(engine_prof::kUiCompare));
