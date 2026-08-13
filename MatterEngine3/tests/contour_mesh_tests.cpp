@@ -575,8 +575,10 @@ int main() {
         Tile right;
         right.S = Sf; right.n = n;
         right.o[0] = plane;
-        right.o[1] = std::floor((cs.mode == 1 ? plane : 72.0) / Sf) * Sf;
-        right.o[2] = 0.0;
+        // Anchored to the COARSE tile's face corner: the 2x2 of fine siblings
+        // then covers that face exactly, which is the real configuration.
+        right.o[1] = left.o[1];
+        right.o[2] = left.o[2];
 
         // For the grazing case the shared plane is HORIZONTAL, which is the
         // orientation the defect actually appeared in.
@@ -584,14 +586,38 @@ int main() {
             left = Tile{};  left.S = Sc; left.n = n;
             left.o[0] = -Sc * 0.5; left.o[1] = plane - Sc; left.o[2] = -Sc * 0.5;
             right = Tile{}; right.S = Sf; right.n = n;
-            right.o[0] = -Sf * 0.5; right.o[1] = plane; right.o[2] = -Sf * 0.5;
+            right.o[0] = left.o[0]; right.o[1] = plane; right.o[2] = left.o[2];
         }
         const int seam_axis = cs.mode == 1 ? 1 : 0;
 
         Mesh m;
         mesh_tile(f, left, vc, m);
         const size_t after_left = m.tri.size() / 3;
-        mesh_tile(f, right, vc, m);
+        // ALL FOUR FINE SIBLINGS, not one.
+        //
+        // A 2:1 face is covered by 2x2 finer tiles, and meshing only one of them
+        // leaves three quarters of the coarse tile's face with no partner. Every
+        // contour edge over that three quarters then has exactly one incident
+        // triangle -- CORRECTLY, because the tile that would supply the second
+        // one was never meshed -- and the rim exclusion in non_manifold_edges
+        // cannot filter them, because a contour vertex lies IN the plane by
+        // construction and the exclusion only skips edges with both endpoints
+        // off it. That fixture gap, not the border rule, is what reported 21
+        // interior failures at 2:1 and 4 at equal level, where the two faces
+        // coincide exactly and the gap does not exist.
+        //
+        // Read that as the general warning it is: a seam gate whose fixture is
+        // missing a tile measures the missing tile.
+        int aa_f, bb_f;
+        tangent_axes(seam_axis, aa_f, bb_f);
+        for (int q = 0; q < 2; ++q)
+            for (int r = 0; r < 2; ++r) {
+                Tile sib = right;
+                if (right.S == left.S && (q || r)) continue;   // equal level: one
+                sib.o[aa_f] = right.o[aa_f] + double(q) * right.S;
+                sib.o[bb_f] = right.o[bb_f] + double(r) * right.S;
+                mesh_tile(f, sib, vc, m);
+            }
         const size_t total = m.tri.size() / 3;
 
         std::vector<std::array<double, 3>> bad_at;
