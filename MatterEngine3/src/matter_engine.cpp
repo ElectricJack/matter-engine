@@ -5705,7 +5705,22 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
 
     const int cface = pair.face;
     const int axis  = seam::face_axis(cface);
-    if (axis == 1) { drop(); return; }          // +-y untiled in M0
+    // NO AXIS IS SPECIAL. This used to read `if (axis == 1) { drop(); return; }
+    // // +-y untiled in M0`, which was true when it was written and stopped
+    // being true when M3 made every tile a cube: a horizontal plane between two
+    // tiles at different levels is then an ordinary cross-level seam, and every
+    // piece of machinery it needs was built for it -- kSeamFaces enumerates
+    // +-y under `seam_face_count()`, `face_neighbour_span` spans a y-normal
+    // face, the mesher builds the +-y FaceRecords and the -y overlap band, and
+    // `side_at` resolves a y-normal face's two horizontal tangents. Only this
+    // line stood between them, so every horizontal cross-level seam in every
+    // octree world went unwelded and open. Issue da52492c: SeamLab's holes were
+    // ALL on one y-plane (docs/seam-suite-2026-08-13.md).
+    //
+    // The column path is still excluded, and by the right mechanism rather than
+    // by this one: `face_neighbour_span` returns false for a y-normal face when
+    // `world_volumetric_sectors` is off, because the tile above a column IS
+    // that column, and the pair is dropped below.
 
     // ---- coarse side --------------------------------------------------------
     //
