@@ -86,6 +86,7 @@
 #include "part_asset.h"    // fnv1a64
 #include "part_asset_v2.h" // replace_file_atomic (Windows-safe publish)
 #include "version_vector.h"  // M4: the single version-vector fold
+#include "bake_mode.h"       // runtime A/B bake modes; this payload holds part hashes
 
 #include <algorithm>
 #include <cassert>
@@ -314,7 +315,27 @@ uint64_t compute_key(const std::string& world_path,
         }
     }
 
-    // 4. M4: the version vector, through the ONE fold site. This used to fold
+    // 4. Runtime BAKE MODES (bake_mode.h), for the same reason they reach the
+    //    part resolved hash -- and here it is not a nicety.
+    //
+    //    THIS PAYLOAD CONTAINS PART HASHES. `root_hashes` and the `bake_plan`
+    //    keys are resolved part identities, computed under whatever mode was
+    //    active when they were written, and a hit restores them verbatim while
+    //    skipping script evaluation entirely (that is the point of the file).
+    //    So without this fold, flipping a mode against a warm .resolve hands
+    //    back the OTHER mode's part hashes, the engine loads the other mode's
+    //    geometry, and the flag looks like it does nothing -- with no error and
+    //    nothing in the log. Salting the part hash alone does not help, because
+    //    on a hit nothing recomputes it.
+    //
+    //    Folded only when non-zero, so with every mode at its default the key
+    //    is bit-identical to what it was.
+    if (const uint64_t mode = bake_mode::salt(); mode != 0ull) {
+        h ^= mode;
+        h *= 0x00000100000001B3ull;
+    }
+
+    // 5. M4: the version vector, through the ONE fold site. This used to fold
     //    kEngineBakeVersion alone -- one component of one artifact kind, which
     //    is exactly how a version could reach this key and not the part hash.
     return matter_version::fold(h);
