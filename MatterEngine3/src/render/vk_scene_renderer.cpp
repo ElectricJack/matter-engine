@@ -112,9 +112,17 @@ struct alignas(16) FrameConstants {
     // and because emitting it is how the streaming signal is fed even when
     // nothing is being culled.
     uint32_t vis_params[4];
+    // The matrix the CULL camera projects with (M4). Equal to world_to_clip
+    // normally, and PINNED with the frustum planes when the cull camera is
+    // frozen -- which is the whole point: the ID pass has to rasterise the
+    // frozen view, or flying out to inspect the result re-renders it from
+    // wherever you flew to, everything is visible from there, and the mask
+    // reports the world visible. Inspecting the feature destroyed the thing
+    // being inspected.
+    GpuMat4 cull_world_to_clip;
 };
 
-static_assert(sizeof(FrameConstants) == 288 + 64 + 16 + 16,
+static_assert(sizeof(FrameConstants) == 288 + 64 + 16 + 16 + 64,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 24,
               "VkCullStats must match the std430 stats block");
@@ -11226,6 +11234,11 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
         std::memcpy(frozen_cull_planes_, matrices.frustum_planes,
                     sizeof(frozen_cull_planes_));
         frozen_cull_eye_ = camera_eye;
+        // The projection too, not just the planes. Without it the ID pass
+        // rasterises the LIVE view while the cull tests the frozen frustum,
+        // so flying out to look at the result makes everything visible from
+        // where you are standing and the cull stops rejecting anything.
+        frozen_cull_world_to_clip_ = pack_glsl_mat4(matrices.world_to_clip);
         cull_camera_frozen_ = true;
     }
     const bool frozen = cull_camera_frozen_ && cull_camera_freeze_requested_;
@@ -11237,6 +11250,8 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.camera_eye_pixel_budget[1] = cull_eye.y;
     constants.camera_eye_pixel_budget[2] = cull_eye.z;
     constants.camera_eye_pixel_budget[3] = pixel_budget;
+    constants.cull_world_to_clip =
+        frozen ? frozen_cull_world_to_clip_ : constants.world_to_clip;
     constants.counts[0] = static_cast<uint32_t>(instance_staging_.size());
     constants.counts[1] = max_clusters_per_instance_;
     constants.counts[2] = static_cast<uint32_t>(material_staging_.size());

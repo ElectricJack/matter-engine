@@ -42,6 +42,15 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 hzb_world_to_clip;
     uvec4 hzb_params;
     uvec4 vis_params;
+    // The CULL camera's projection -- equal to world_to_clip normally, pinned
+    // when the cull camera is frozen. This pass must use it and not
+    // world_to_clip, which follows the live camera so the frame can be drawn
+    // from wherever you fly. Rasterising the live view would mean the mask
+    // describes what is visible from the INSPECTION viewpoint, so freezing the
+    // cull and flying out to look at the result made everything visible again
+    // and the cull stopped rejecting anything -- reported as "culling doesn't
+    // hide anything", and correctly so.
+    mat4 cull_world_to_clip;
 } frame;
 
 // Binding 18, NOT the 3 that raster.vert reads. That is the whole point: 3
@@ -70,5 +79,6 @@ void main() {
     // exactly as raster.vert documents at its own lookup.
     const DrawTransform draw = transforms[gl_InstanceIndex];
     out_instance_token = draw.instance_token;
-    gl_Position = frame.world_to_clip * (draw.current * vec4(in_position, 1.0));
+    gl_Position =
+        frame.cull_world_to_clip * (draw.current * vec4(in_position, 1.0));
 }

@@ -2835,6 +2835,7 @@ private:
     bool cull_camera_freeze_requested_ = false;
     bool cull_camera_frozen_ = false;
     float frozen_cull_planes_[6][4]{};
+    viewer::GpuMat4 frozen_cull_world_to_clip_{};
     matter::Float3 frozen_cull_eye_{};
     // GPU timestamp support. Cached at init time from device properties.
     bool gpu_timers_supported_ = false;
