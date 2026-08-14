@@ -11563,6 +11563,24 @@ bool WorldSession::instance_info(uint32_t idx, InstanceInfo& out) {
     return true;
 }
 
+bool WorldSession::instance_info_by_hash(uint64_t hash, InstanceInfo& out) {
+    if (!impl_->connected) return false;
+    if (!impl_->ensure_tracer()) return false;
+
+    uint64_t part_hash = 0;
+    if (!impl_->tracer->expanded_instance_by_hash(hash, part_hash, out.transform))
+        return false;
+
+    out.part_hash = part_hash;
+
+    out.module_name = nullptr;
+    auto it = impl_->module_by_hash.find(part_hash);
+    if (it != impl_->module_by_hash.end() && !it->second.empty())
+        out.module_name = it->second.c_str();
+
+    return true;
+}
+
 bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
     if (!impl_->store) return false;
     const auto* lp = impl_->store->find(part_hash);

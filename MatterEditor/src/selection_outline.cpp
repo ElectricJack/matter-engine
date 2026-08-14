@@ -2,6 +2,8 @@
 #include "selection_bounds.h"
 
 #include "imgui.h"
+#include "matter/query.h"
+#include "matter/world_session.h"
 
 #include <cmath>
 
@@ -70,17 +72,19 @@ void transform_point(const float mat[16], const float in[3], float out[3]) {
 
 void draw_obb_wireframe(ImDrawList* dl, const Mat4& vp, int fb_w, int fb_h,
                         float off_x, float off_y,
-                        const float world_corners[8][3], ImU32 color) {
+                        const float world_corners[8][3],
+                        const bool corner_visible[8], ImU32 color) {
     ImVec2 screen[8];
-    bool visible[8];
+    bool on_screen[8];
     for (int i = 0; i < 8; ++i)
-        visible[i] = project(vp, fb_w, fb_h, off_x, off_y, world_corners[i], screen[i]);
+        on_screen[i] = project(vp, fb_w, fb_h, off_x, off_y, world_corners[i], screen[i]);
     static constexpr int edges[12][2] = {
         {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
     };
     for (const auto& e : edges) {
-        if (visible[e[0]] && visible[e[1]])
-            dl->AddLine(screen[e[0]], screen[e[1]], color, 2.0f);
+        if (!on_screen[e[0]] || !on_screen[e[1]]) continue;
+        if (!corner_visible[e[0]] && !corner_visible[e[1]]) continue;
+        dl->AddLine(screen[e[0]], screen[e[1]], color, 2.0f);
     }
 }
 
@@ -94,6 +98,24 @@ void make_obb_corners(const float mn[3], const float mx[3],
     };
     for (int i = 0; i < 8; ++i)
         transform_point(mat, local[i], out[i]);
+}
+
+bool test_corner_visible(matter::WorldSession& session,
+                         const float eye[3], const float corner[3],
+                         uint64_t selected_hash) {
+    float dx = corner[0] - eye[0];
+    float dy = corner[1] - eye[1];
+    float dz = corner[2] - eye[2];
+    float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+    if (dist < 1e-4f) return true;
+    float inv = 1.0f / dist;
+    float dir[3] = { dx * inv, dy * inv, dz * inv };
+    float margin = dist * 0.02f;
+    if (margin < 0.1f) margin = 0.1f;
+    matter::RayHit hit;
+    if (!session.raycast(eye, dir, dist - margin, hit)) return true;
+    if (hit.part_hash == selected_hash) return true;
+    return false;
 }
 
 } // namespace
@@ -131,7 +153,14 @@ void draw_selection_outlines(const SelectionSet& selection,
         if (bounds_for_object(obj, session, sb)) {
             float corners[8][3];
             make_obb_corners(sb.local_min, sb.local_max, sb.world_matrix, corners);
-            draw_obb_wireframe(dl, vp, fb_width, fb_height, offset_x, offset_y, corners, color);
+
+            bool corner_visible[8];
+            uint64_t sel_hash = (obj.kind == SelectedObject::BakedRoot) ? obj.id : 0;
+            for (int i = 0; i < 8; ++i)
+                corner_visible[i] = test_corner_visible(session, eye, corners[i], sel_hash);
+
+            draw_obb_wireframe(dl, vp, fb_width, fb_height, offset_x, offset_y,
+                               corners, corner_visible, color);
         }
     }
 }

@@ -92,6 +92,7 @@ public:
     // fallback get their own entries). Valid after build().
     size_t expanded_instance_count() const;
     bool expanded_instance(size_t idx, uint64_t& part_hash, float transform[16]) const;
+    bool expanded_instance_by_hash(uint64_t hash, uint64_t& part_hash, float transform[16]) const;
 
 private:
     struct Impl;

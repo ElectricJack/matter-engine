@@ -793,6 +793,7 @@ public:
     bool raycast(const float origin[3], const float dir[3], float max_t, RayHit& out);
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
+    bool instance_info_by_hash(uint64_t part_hash, InstanceInfo& out);
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
 
     // Bake Lab W4: LOD Inspector grid data source (part-workbench.md SS-I.5).

@@ -3063,13 +3063,8 @@ int main() {
 
         selection_set.validate([&](const viewer::SelectedObject& obj) {
             if (obj.kind == viewer::SelectedObject::BakedRoot) {
-                const uint32_t count = session->instance_count();
-                for (uint32_t i = 0; i < count; ++i) {
-                    matter::InstanceInfo info;
-                    if (session->instance_info(i, info) && info.part_hash == obj.id)
-                        return true;
-                }
-                return false;
+                matter::InstanceInfo info;
+                return session->instance_info_by_hash(obj.id, info);
             }
             // Entity selections are keyed by SceneEntityId (the stable
             // authored-id hash), not by flecs entity id — resolve through the
