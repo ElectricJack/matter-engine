@@ -56,6 +56,7 @@ layout(set = 0, binding = 11) uniform usampler2D identity_texture;
 //
 // Only .w is read here: gbuffer.frag's baked-horizon SUN visibility for the
 // parallaxed ground, computed in the frame the ground is addressed in.
+layout(set = 0, binding = 9) uniform sampler2D normal_texture;
 layout(set = 0, binding = 10) uniform sampler2D orm_texture;
 
 layout(push_constant) uniform ShadowConstants {
@@ -103,8 +104,12 @@ void main() {
                    vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
     vec3 world = world_h.xyz / world_h.w;
     vec3 sun = normalize(constants.to_sun);
-    // Ground-POM roof escape: lift ALONG the sun ray (not along the surface
-    // normal, which rt_shadow does not have here) so the lift only ever
+    vec3 normal_sample = texelFetch(normal_texture, pixel, 0).xyz;
+    float normal_len_sq = dot(normal_sample, normal_sample);
+    vec3 normal = normal_len_sq > 1e-6
+                      ? normal_sample * inversesqrt(normal_len_sq)
+                      : sun;
+    // Ground-POM roof escape: lift ALONG the sun ray so the lift only ever
     // skips the [0, t] segment directly behind the origin -- it cannot
     // introduce a sideways leak. Clamping sun.y bounds the lift at grazing
     // sun angles instead of blowing up toward the horizon.
@@ -126,6 +131,15 @@ void main() {
     // free, and it comes back correct rather than approximated by a constant.
     const bool is_impostor_card = impostor_identity_is_card(identity.x);
     const float ray_start = constants.bias;
+    // Shadow terminator fix: the rasterised surface follows barycentric-
+    // interpolated vertex positions (smooth) while the TLAS triangle is a
+    // flat plane. On convex terrain the smooth surface sags below the plane
+    // at mid-face, and a 1 mm bias cannot clear that gap on triangles that
+    // span metres. Scale the normal offset by the clip-space depth so it
+    // grows with distance (coarser LOD = larger triangles = more sag).
+    // Reversed-Z: depth ≈ 1 near, ≈ 0 far, so 1/depth ∝ linear distance.
+    float depth_scale = clamp(0.002 / max(depth, 1e-4), ray_start, 0.5);
+    world += normal * depth_scale;
     // Every use of identity.x from here down is a MATERIAL INDEX and must have
     // the impostor bit masked off. It cannot be set on this path (the early
     // return above took it), so the mask is defence against a future edit that
@@ -222,12 +236,12 @@ void main() {
         payload.layers = 0u;
         traceRayEXT(scene, gl_RayFlagsTerminateOnFirstHitEXT |
                             gl_RayFlagsOpaqueEXT,
-                    0x01, 0, 0, 0, world + sun * ray_start,
+                    0x01, 0, 0, 0, world,
                     ray_start, direction, constants.max_distance, 0);
         if (max(payload.visibility.r,
                 max(payload.visibility.g, payload.visibility.b)) >= 0.01) {
             traceRayEXT(scene, gl_RayFlagsNoneEXT, 0x02, 0, 0, 0,
-                        world + sun * ray_start, ray_start,
+                        world, ray_start,
                         direction, constants.max_distance, 0);
         }
         sum += payload.visibility;
