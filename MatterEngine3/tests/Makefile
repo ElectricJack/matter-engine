@@ -46,7 +46,7 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 # Compiler settings
-CC = g++
+CC = $(CCACHE) g++
 CFLAGS = -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -D$(PLATFORM) -D$(GRAPHICS)
 
 ifeq ($(UNAME_S),Darwin)

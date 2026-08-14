@@ -39,6 +39,20 @@ WIN_LOCALAPPDATA := C:/Users/webde/AppData/Local
 endif
 export TMP  := $(WIN_LOCALAPPDATA)/Temp
 export TEMP := $(WIN_LOCALAPPDATA)/Temp
+# 2026-08-14: ccache (wired into the compile lines of each Makefile that
+# includes this file) needs LOCALAPPDATA and/or USERPROFILE to locate its
+# config/cache directory on Windows and fails outright ("the USERPROFILE
+# environment variable must be set", or "could not find configuration file
+# and the LOCALAPPDATA environment variable is not set") when it can't find
+# either. Empirically
+# confirmed same root cause as TMP/TEMP above: a plain recipe shell here sees
+# both as unset even though `make` itself was launched with them present --
+# re-export them from the same WIN_LOCALAPPDATA derivation. USERPROFILE is
+# the parent of AppData/Local, so derive it from WIN_LOCALAPPDATA rather than
+# reading $(USERPROFILE) (which is exactly as unreliable here as $(LOCALAPPDATA)
+# was, per the fallback above).
+export LOCALAPPDATA := $(WIN_LOCALAPPDATA)
+export USERPROFILE  := $(patsubst %/AppData/Local,%,$(WIN_LOCALAPPDATA))
 endif
 
 # ---- (b) glslc ----------------------------------------------------------

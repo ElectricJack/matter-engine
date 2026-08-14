@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export PATH=*)",
+      "Bash(make:*)",
+      "Bash(ccache:*)",
+      "Bash(python MatterEngine3/tools/*)",
+      "Bash(python3 MatterEngine3/tools/*)",
+      "Bash(bash MatterEngine3/tools/*)",
+      "Bash(bash docs/baselines/*)",
+      "Bash(MatterEngine3/tools/seam_suite.sh:*)",
+      "Bash(node --experimental-default-type=module projects/world_demo/tests/*)",
+      "Bash(powershell.exe -NoProfile -ExecutionPolicy Bypass -File MatterEditor/tools/*)",
+      "Bash(python MatterEngine3/tools/drive.py:*)",
+      "Bash(MatterEngine3/tools/drive.py:*)"
+    ]
+  }
+}
