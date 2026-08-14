@@ -42,6 +42,9 @@
 # set EXTRA_RETOPO_CPP to point at MatterSurfaceLib/src/mesh_retopo.cpp so the
 # retopo implementation object is included in the archive.
 
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../platform.mk
+
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 

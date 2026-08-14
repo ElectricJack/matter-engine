@@ -13,6 +13,10 @@
 # BUILD_DIR/CXXFLAGS; LDFLAGS/LDLIBS/raylib-build plumbing are now unused
 # by anything in this file but left in place rather than risk breaking the
 # platform-detection ifs for a variable that costs nothing idle.
+
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 CC = gcc
 CXX = g++
 RAYLIB_PATH = ../../third_party/raylib

@@ -28,6 +28,9 @@
 # Per-object parallel build: each TU compiles to its own .o under build/<platform>/
 # so `make -j` fans them across cores; header changes are tracked via -MMD -MP
 # generated .d files (so incremental rebuilds are correct, not silently stale).
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../platform.mk
+
 JOBS ?= $(shell nproc)
 MAKEFLAGS += -j$(JOBS)
 

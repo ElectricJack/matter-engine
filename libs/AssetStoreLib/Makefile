@@ -9,6 +9,9 @@
 # otherwise get duplicate symbols. Consumers link this .a and keep compiling
 # MemoryLib themselves; tests/Makefile does exactly that.
 
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 CXX = g++
 AR = ar
 

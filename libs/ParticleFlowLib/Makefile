@@ -1,6 +1,10 @@
 # ParticleFlowLib: generic agent-particle kernel + path recording.
 # Standalone build for dev/tests; MatterEngine3 compiles src/ directly
 # into libmatter_engine3.a (MatterSurfaceLib direct-source pattern).
+
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -g -O2 -I./include
 OBJ_DIR = build/obj

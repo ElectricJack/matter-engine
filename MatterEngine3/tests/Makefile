@@ -16,6 +16,9 @@
 # binaries ever collide on an object path. Per-recipe `rm -f *.o` cleanups
 # are gone; `clean` removes $(OBJDIR) wholesale.
 
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 # Detect platform
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)

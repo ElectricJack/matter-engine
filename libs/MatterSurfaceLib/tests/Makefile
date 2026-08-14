@@ -1,5 +1,8 @@
 # Makefile for MatterSurfaceLib tests
 
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../../platform.mk
+
 # Detect platform
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
