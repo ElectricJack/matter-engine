@@ -338,11 +338,17 @@ shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	python3 tools/embed_shaders.py $@ $(MSL_DIR) $(SHADER_LOGICAL)
 
 GLSLC ?= glslc
-# MIRRORED IN MatterEditor/Makefile, which has its own copy of this list and
-# regenerates THE SAME shaders_gen/embedded_spirv.h from it. A shader added
-# here and not there is dropped by the next editor build, and the failure is a
-# FATAL minutes into a world load rather than anything the build says. See the
-# longer note at that copy. ADD NEW SHADERS TO BOTH.
+# 2026-08-14: this is now the SINGLE SOURCE OF TRUTH for the VK_SPV list and
+# every .glsl dependency edge below. MatterEditor/Makefile used to keep an
+# independently-maintained second copy that regenerated the SAME
+# shaders_gen/embedded_spirv.h -- a shader added to only one of the two lists
+# was silently dropped by whichever build ran last, failing minutes into a
+# world load with "FATAL: render: embedded SPIR-V not found: <name>.spv"
+# rather than anything the build itself said. MatterEditor now delegates here
+# via its `embedded-spirv` target (`$(MAKE) -C ../MatterEngine3
+# vulkan-spirv`, the same pattern `embedded-shaders` already used for
+# shaders_gen/embedded_shaders.h) instead of keeping its own copy, so there
+# is only ever one list to update when a shader is added.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/atmosphere_transmittance.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \

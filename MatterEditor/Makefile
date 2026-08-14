@@ -525,150 +525,40 @@ $(W_OBJ_DIR)/glfw/glfw_vulkan_only_context.o: src/glfw_vulkan_only_context.c
 $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
 
-# A SECOND COPY of MatterEngine3/Makefile's VK_SPV list, and it generates THE
-# SAME header ($(VK_EMBEDDED_HEADER) below is $(ME3_DIR)/shaders_gen/
-# embedded_spirv.h). So a shader added to only one of the two lists is silently
-# DROPPED by whichever build runs last: `make -C MatterEngine3 vulkan-spirv`
-# writes a header containing it, then `make -C MatterEditor windows` rewrites
-# the same header from this list without it, the link succeeds, and the binary
-# dies at world load with
+# 2026-08-14: this used to be a SECOND COPY of MatterEngine3/Makefile's whole
+# VK_SPV list + glslc rules + .glsl dependency edges, independently
+# regenerating THE SAME header ($(VK_EMBEDDED_HEADER) below is
+# $(ME3_DIR)/shaders_gen/embedded_spirv.h). A shader added to only one of the
+# two lists was silently DROPPED by whichever build ran last: `make -C
+# MatterEngine3 vulkan-spirv` wrote a header containing it, then `make -C
+# MatterEditor windows` rewrote the same header from this list without it,
+# the link succeeded, and the binary died at world load with
 #
 #     FATAL: render: embedded SPIR-V not found: <name>.comp.spv
 #
-# minutes after start. That has now happened twice. ADD NEW SHADERS TO BOTH
-# LISTS. (The right fix is for this list to be the other one -- include it, or
-# have the editor delegate the header to MatterEngine3 the way it already
-# delegates embedded_shaders.h at the `$(MAKE) -C $(ME3_DIR)` rule above -- but
-# that is a build refactor, and this comment is the guard until then.)
-VK_SPV = build/shaders_vk/transform_probe.comp.spv \
-         build/shaders_vk/atmosphere_transmittance.comp.spv \
-         build/shaders_vk/atmosphere_multiscatter.comp.spv \
-         build/shaders_vk/atmosphere_sky_view.comp.spv \
-         build/shaders_vk/atmosphere_irradiance.comp.spv \
-         build/shaders_vk/environment_sampling_test.comp.spv \
-         build/shaders_vk/animation_skin.comp.spv \
-         build/shaders_vk/cull.comp.spv \
-         build/shaders_vk/visible_ids.comp.spv \
-         build/shaders_vk/visibility_id.vert.spv \
-         build/shaders_vk/visibility_id.frag.spv \
-         build/shaders_vk/raster.vert.spv \
-         build/shaders_vk/raster_skin.vert.spv \
-         build/shaders_vk/gbuffer.frag.spv \
-         build/shaders_vk/composite.vert.spv \
-         build/shaders_vk/composite.frag.spv \
-         build/shaders_vk/display_transform.frag.spv \
-         build/shaders_vk/rt_shadow.rgen.spv \
-         build/shaders_vk/rt_shadow.rmiss.spv \
-         build/shaders_vk/rt_shadow.rchit.spv \
-         build/shaders_vk/rt_visibility.rmiss.spv \
-         build/shaders_vk/rt_visibility.rchit.spv \
-         build/shaders_vk/rt_visibility.rahit.spv \
-         build/shaders_vk/rt_radiance.rmiss.spv \
-         build/shaders_vk/rt_lighting.rgen.spv \
-         build/shaders_vk/gi_temporal.comp.spv \
-         build/shaders_vk/gi_atrous.comp.spv \
-         build/shaders_vk/rt_surface.rchit.spv \
-         build/shaders_vk/rt_surface.rahit.spv \
-         build/shaders_vk/rt_surface_test.rgen.spv \
-         build/shaders_vk/vol_density.comp.spv \
-         build/shaders_vk/vol_scatter.comp.spv \
-         build/shaders_vk/vol_integrate.comp.spv \
-         build/shaders_vk/cloud_shadow_reproject.comp.spv \
-         build/shaders_vk/cloud_shadow_density.comp.spv \
-         build/shaders_vk/cloud_shadow_integrate.comp.spv \
-         build/shaders_vk/tileset_bake_primary.comp.spv \
-         build/shaders_vk/tileset_bake_ao.comp.spv \
-         build/shaders_vk/vt_composite.comp.spv \
-         build/shaders_vk/vt_bc_encode.comp.spv \
-         build/shaders_vk/vt_enrich_ao.comp.spv \
-         build/shaders_vk/selection_line.vert.spv \
-         build/shaders_vk/selection_line.frag.spv
+# minutes after start. That happened twice. MatterEngine3/Makefile is now the
+# single source of truth (its VK_SPV list is the verified union of what both
+# copies had -- the editor's copy was missing four edges ME3's had:
+# rt_shadow.rgen<-tileset_common.glsl, the vol_density/vol_scatter/
+# vol_integrate/composite.frag<-vol_common.glsl group, vol_density<-
+# cloud_density.glsl+vt_noise.glsl, and the impostor_common.glsl group);
+# this delegates to it the same way `embedded-shaders` already delegates
+# embedded_shaders.h below, so there is no second list left to drift.
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
-build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
-	@mkdir -p $(dir $@)
-	$(GLSLC) --target-env=vulkan1.3 -O -I$(ME3_DIR)/shaders_vk $< -o $@
+.PHONY: embedded-spirv
+embedded-spirv:
+	$(MAKE) -C $(ME3_DIR) vulkan-spirv
 
-build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
-    $(ME3_DIR)/shaders_vk/material_common.glsl
-
-build/shaders_vk/atmosphere_transmittance.comp.spv \
-    build/shaders_vk/atmosphere_multiscatter.comp.spv \
-    build/shaders_vk/atmosphere_sky_view.comp.spv \
-    build/shaders_vk/atmosphere_irradiance.comp.spv: \
-    $(ME3_DIR)/shaders_vk/atmosphere_common.glsl
-
-build/shaders_vk/environment_sampling_test.comp.spv: \
-    $(ME3_DIR)/shaders_vk/environment_common.glsl \
-    $(ME3_DIR)/shaders_vk/cloud_shadow_common.glsl
-
-# C2 uses the same source and descriptor ABI as raster.vert; a compile-time
-# specialization adds location 5 for the previous skinned position.
-build/shaders_vk/raster_skin.vert.spv: $(ME3_DIR)/shaders_vk/raster.vert \
-    $(ME3_DIR)/shaders_vk/material_common.glsl
-	@mkdir -p $(dir $@)
-	$(GLSLC) --target-env=vulkan1.3 -O -I$(ME3_DIR)/shaders_vk \
-	    -DMATTER_SKINNED_VERTEX_INPUT $< -o $@
-
-build/shaders_vk/gbuffer.frag.spv: $(ME3_DIR)/shaders_vk/tileset_common.glsl
-
-build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
-    build/shaders_vk/rt_visibility.rahit.spv \
-    build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
-    build/shaders_vk/rt_surface_test.rgen.spv: \
-    $(ME3_DIR)/shaders_vk/rt_surface_common.glsl \
-    $(ME3_DIR)/shaders_vk/tileset_common.glsl
-
-build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
-    $(ME3_DIR)/shaders_vk/environment_common.glsl $(ME3_DIR)/shaders_vk/cloud_shadow_common.glsl
-
-build/shaders_vk/vol_scatter.comp.spv: $(ME3_DIR)/shaders_vk/environment_common.glsl $(ME3_DIR)/shaders_vk/cloud_shadow_common.glsl
-
-build/shaders_vk/cloud_shadow_density.comp.spv: \
-    $(ME3_DIR)/shaders_vk/cloud_density.glsl \
-    $(ME3_DIR)/shaders_vk/vol_common.glsl \
-    $(ME3_DIR)/shaders_vk/vt_noise.glsl
-
-build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
-    $(ME3_DIR)/shaders_vk/gi_common.glsl
-
-# WP-D (chart VT): tileset_common.glsl includes wang_common.glsl; every
-# tileset_common consumer depends on it, and vt_composite includes it directly.
-build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
-    build/shaders_vk/rt_surface.rchit.spv \
-    build/shaders_vk/rt_surface.rahit.spv \
-    build/shaders_vk/rt_visibility.rahit.spv \
-    build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
-    build/shaders_vk/rt_surface_test.rgen.spv \
-    build/shaders_vk/vt_composite.comp.spv: \
-    $(ME3_DIR)/shaders_vk/wang_common.glsl
-
-# WP-H (chart VT): the shared chart-resolve includes the page passes consume.
-build/shaders_vk/vt_composite.comp.spv \
-    build/shaders_vk/vt_enrich_ao.comp.spv: \
-    $(ME3_DIR)/shaders_vk/vt_chart_types.glsl \
-    $(ME3_DIR)/shaders_vk/vt_chart_resolve.glsl
-
-# P2 (texel-rate tape): the GLSL noise twin + tape interpreter include.
-build/shaders_vk/vt_composite.comp.spv: \
-    $(ME3_DIR)/shaders_vk/vt_surface_tape.glsl
-
-# WP-E (chart VT): vt_common.glsl is the shared VT sampling helper (an include,
-# not a stage), so it has no .spv -- but its consumers must rebuild when it
-# changes. WP-G added the RT stages: rt_surface_common.glsl now includes
-# vt_common.glsl, so every shader that includes IT is a consumer too.
-build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
-    build/shaders_vk/rt_surface.rahit.spv \
-    build/shaders_vk/rt_visibility.rahit.spv \
-    build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
-    build/shaders_vk/rt_surface_test.rgen.spv: \
-    $(ME3_DIR)/shaders_vk/vt_common.glsl
-
-$(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
-	python3 $(ME3_DIR)/tools/embed_spirv.py $@ $(VK_SPV)
+# Order-only, same reasoning as embedded-shaders below: the delegated recipe
+# above must run before anything that reads $(VK_EMBEDDED_HEADER), but must
+# not make the file look unconditionally "just rebuilt" to ITS OWN real
+# prerequisite listings further down (windows/linux/the smoke-test exes) --
+# MatterEngine3's own rule only touches the file's mtime when the embedded
+# bytes actually change (tools/embed_spirv.py compares content before
+# writing), so those real prerequisites still correctly skip a relink when
+# nothing did.
+$(VK_EMBEDDED_HEADER): | embedded-spirv
 
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
@@ -871,9 +761,10 @@ $(W_OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(W_OBJ_DIR)
 $(W_FLECS_OBJ): $(W_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_OBJ_DIR)
 	$(WIN_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
 
-# Order-only: the header must exist before shader_source.cpp compiles, but its
-# regeneration must not force object rebuilds (embedded-shaders is phony).
-$(W_CPP_OBJ): | embedded-shaders
+# Order-only: the headers must exist before shader_source.cpp / the vt_*/vk_*
+# TUs that #include embedded_spirv.h compile, but their regeneration must not
+# force object rebuilds (embedded-shaders/embedded-spirv are both phony).
+$(W_CPP_OBJ): | embedded-shaders embedded-spirv
 
 # MATTER_HAVE_STREAMLINE is a compile-time gate, but make only tracks source
 # timestamps, so flipping HAVE_STREAMLINE between invocations used to reuse the
@@ -972,16 +863,21 @@ LINUX_AR  ?= ar
 # (streamline_bridge.cpp's own #if MATTER_HAVE_STREAMLINE guard around
 # `#include <windows.h>` is the belt to this suspenders -- see that file.)
 #
-# VULKAN_INCLUDE / VULKAN_LIB_DIR / GLSLC are the SAME shared variables the
-# `windows` target uses (default /ucrt64/... paths, defined near WIN_CXX
-# above) -- deliberately NOT given fresh Linux-flavored defaults here, because
-# any guessed default (/usr/include vs /usr/include/vulkan, distro-dependent
-# multiarch lib dirs, glslc vs glslc-14, ...) would be silently wrong on some
-# distros and there is no way to verify a guess on this machine. A real Linux
-# build MUST override them explicitly, e.g.:
+# VULKAN_INCLUDE / VULKAN_LIB_DIR are the SAME shared variables the `windows`
+# target uses (default /ucrt64/... paths, defined near WIN_CXX above) --
+# deliberately NOT given fresh Linux-flavored defaults here, because any
+# guessed default (/usr/include vs /usr/include/vulkan, distro-dependent
+# multiarch lib dirs, ...) would be silently wrong on some distros and there
+# is no way to verify a guess on this machine. A real Linux build MUST
+# override them explicitly, e.g.:
 #   make -C MatterEditor linux \
-#        VULKAN_INCLUDE=/usr/include VULKAN_LIB_DIR=/usr/lib/x86_64-linux-gnu \
-#        GLSLC=/usr/bin/glslc
+#        VULKAN_INCLUDE=/usr/include VULKAN_LIB_DIR=/usr/lib/x86_64-linux-gnu
+# (GLSLC is no longer one of these: this Makefile doesn't invoke glslc
+# directly any more -- see the embedded-spirv delegation to MatterEngine3
+# above -- so a non-ucrt64 glslc is an ME3-side override:
+#   make -C MatterEngine3 vulkan-spirv GLSLC=/usr/bin/glslc
+# before running `make -C MatterEditor linux`, or export GLSLC in the shell
+# so the sub-make in embedded-spirv's recipe inherits it.)
 # Leaving the ucrt64 defaults in place when this reuses $(WIN_INCLUDE_PATHS)
 # below is harmless either way: gcc/g++ silently ignore a -I directory that
 # does not exist, so an un-overridden /ucrt64/include on a real Linux box just
@@ -1070,10 +966,11 @@ $(L_OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(L_OBJ_DIR)
 $(L_FLECS_OBJ): $(L_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(L_OBJ_DIR)
 	$(LINUX_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
 
-# Order-only, same reasoning as the Windows equivalent: the embedded-shaders
-# header must exist before shader_source.cpp compiles, but its regeneration
-# (a phony target) must not force object rebuilds every invocation.
-$(L_CPP_OBJ): | embedded-shaders
+# Order-only, same reasoning as the Windows equivalent: the embedded-shaders/
+# embedded-spirv headers must exist before shader_source.cpp / the vt_*/vk_*
+# TUs compile, but their regeneration (both phony targets) must not force
+# object rebuilds every invocation.
+$(L_CPP_OBJ): | embedded-shaders embedded-spirv
 
 # linux-shaders-gpu was the Linux twin of win-shaders-gpu and went with it; see
 # the note there.
@@ -1097,11 +994,13 @@ $(L_CPP_OBJ): | embedded-shaders
 # raylib-dependency analysis did for Windows.
 LINUX_SYSTEM_LIBS = -lX11 -ldl -lpthread -lm -lrt
 
-# Not a hard requirement of `linux` (VK_EMBEDDED_HEADER/VK_SPV are listed as a
+# Not a hard requirement of `linux` (VK_EMBEDDED_HEADER is listed as a
 # prerequisite below anyway), but documented since it trips up a first build:
-# $(VK_EMBEDDED_HEADER)'s recipe (defined above, shared with `windows`) invokes
-# $(GLSLC) -- override that too (see the VULKAN_INCLUDE/VULKAN_LIB_DIR/GLSLC
-# note earlier in this section) if it is not already an X11/Linux glslc.
+# $(VK_EMBEDDED_HEADER) is produced by the embedded-spirv delegation to
+# MatterEngine3's `vulkan-spirv` target (defined above, shared with
+# `windows`), which invokes ITS OWN $(GLSLC) -- override that on the
+# MatterEngine3 sub-make (see the VULKAN_INCLUDE/VULKAN_LIB_DIR note earlier
+# in this section) if it is not already an X11/Linux glslc.
 linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_DEP) $(L_ALL_OBJ)
 	$(LINUX_CXX) $(L_ALL_OBJ) -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
 	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(AR_CORE_LDFLAGS) $(LINUX_SYSTEM_LIBS) \
@@ -1319,7 +1218,7 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 run-test-issue-reporter: build/test_issue_reporter.exe
 	./build/test_issue_reporter.exe
 
-.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf linux check-animation-production-sources
+.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders embedded-spirv build-engine-lib vulkan-instancing-perf linux check-animation-production-sources
 
 # The direct-source builds (windows/linux) are production. Keep their TU list
 # aligned with the archive's runtime implementation units without dragging in

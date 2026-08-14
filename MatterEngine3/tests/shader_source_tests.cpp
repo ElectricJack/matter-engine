@@ -240,7 +240,18 @@ int main() {
     const std::string editor_make = read_shader("../../MatterEditor/Makefile");
     assert(engine_make.find("build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl") !=
            std::string::npos);
-    assert(editor_make.find("build/shaders_vk/vol_scatter.comp.spv: $(ME3_DIR)/shaders_vk/environment_common.glsl") !=
+    // 2026-08-14: MatterEditor/Makefile used to keep a second, independently
+    // maintained copy of the VK_SPV list and every .glsl dependency edge,
+    // regenerating the SAME shaders_gen/embedded_spirv.h -- the two drifted,
+    // and this test used to guard the drift directly by asserting both
+    // copies had this one edge. MatterEngine3/Makefile is now the single
+    // source of truth and MatterEditor delegates to its `vulkan-spirv`
+    // target instead, so the guard now is that the delegation exists and
+    // the old duplicate edge is gone (a duplicate reappearing here is
+    // exactly the drift hazard this test exists to catch).
+    assert(editor_make.find("embedded-spirv") != std::string::npos &&
+           editor_make.find("$(MAKE) -C $(ME3_DIR) vulkan-spirv") != std::string::npos);
+    assert(editor_make.find("build/shaders_vk/vol_scatter.comp.spv: $(ME3_DIR)/shaders_vk/environment_common.glsl") ==
            std::string::npos);
     printf("shader_source_tests: all passed\n");
     return 0;
