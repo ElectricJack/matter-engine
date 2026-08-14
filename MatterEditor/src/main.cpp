@@ -41,6 +41,11 @@
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
 #include "matter/event/property.h"
+// QA timeline `wait_event`: subscribes directly against session->events()
+// (bake./stream.) and app_hub (cmd.*) by name, so the typed event structs
+// must be visible here (world_session.h only pulls in the legacy events.h).
+#include "matter/events/bake_events.h"
+#include "matter/events/stream_events.h"
 #include "viewport_pick.h"
 
 #include "imgui.h"
@@ -51,17 +56,20 @@
 #include "external/stb_image_write.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <memory>
 #include <new>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <unordered_set>
@@ -1878,6 +1886,52 @@ int main() {
     std::string stats_label;
     int shot_settle = 0;
     viewer::FifoPresentSequencer fifo_present;
+
+    // ---- QA timeline state (event-system.md-style FIFO blocking waits) ------
+    // Lines already split out of cmd_buffer but not yet dispatched. Blocking
+    // waits (wait_frames / wait_idle / wait_event) pause POPPING this queue --
+    // reading more bytes/lines off the file above is always fine -- which is
+    // what turns a pre-written command file into a timeline script instead of
+    // "every buffered line lands in one frame" (the old drain-loop behavior).
+    // One-command-at-a-time external writers (tools/viewer_shots.sh) see
+    // identical behavior: nothing here holds a line back unless it, or one
+    // before it, is itself a blocking wait.
+    std::deque<std::string> fifo_pending_lines;
+    enum class FifoBlockKind { None, WaitFrames, WaitIdle, WaitEvent };
+    FifoBlockKind fifo_block = FifoBlockKind::None;
+    // wait_idle <seconds>: released once resident_sectors has held steady for
+    // `seconds` of wall-clock time AND the bake is ready. Mirrors the
+    // MATTER_CAM_PATH_SETTLE plateau logic above (wall time, not frame count,
+    // for the same reason: bake progress is rate-limited in wall time, not
+    // frames).
+    double fifo_wait_idle_seconds = 0.0;
+    std::chrono::steady_clock::time_point fifo_wait_idle_start{};
+    std::chrono::steady_clock::time_point fifo_wait_idle_last_change{};
+    uint32_t fifo_wait_idle_last_resident = UINT32_MAX;
+    // wait_event <name> [timeout_seconds]: `fired` is set from whatever
+    // thread emits the event (bake.*/stream.* fire on the bake worker thread;
+    // cmd.* always on the app thread, see command.cpp finalize_common) -- the
+    // main-thread release check only ever touches it through the atomic.
+    std::atomic<bool> fifo_wait_event_fired{false};
+    matter::evt::Subscription fifo_wait_event_sub;
+    std::string fifo_wait_event_name;
+    double fifo_wait_event_timeout_s = 0.0;
+    std::chrono::steady_clock::time_point fifo_wait_event_start{};
+    // bake./stream. events are session-scoped: if the world switches while
+    // we're waiting, the subscribed hub is about to die and the event we
+    // asked for will never come. cmd.* lives on app_hub, which outlives
+    // world switches, so it is never session-scoped.
+    bool fifo_wait_event_session_scoped = false;
+    uint64_t fifo_wait_event_session_id = 0;
+    uint64_t fifo_wait_event_generation = 0;
+    // Hub subscriber names must be unique per event type FOREVER (an
+    // unsubscribed record stays in the registry, just inactive), so repeated
+    // wait_event calls for the same name need a fresh name each time.
+    uint64_t fifo_wait_event_seq = 0;
+    // `quit` is deferred until no FIFO screenshot capture is still in flight
+    // -- see the fifo_quit_pending resolution after end_frame below.
+    bool fifo_quit_pending = false;
+
     matter::RenderPath fifo_render_path = matter::RenderPath::GpuDriven;
     bool fifo_render_path_override = false;
     stats.session_status.native_rt_available =
@@ -2139,7 +2193,13 @@ int main() {
         });
     auto reg_fifo_quit = registry.must_register_handler<viewer::FifoQuit>(
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoQuit&) {
-            quit_requested = true;
+            // Deferred, not immediate: a `shot <path>` settles over a few
+            // frame iterations (shot_settle) and `shot_now` drains through
+            // fifo_present, so a timeline's `quit` line right after its last
+            // `shot` (no intervening wait) must not truncate that capture.
+            // Resolved once per frame after end_frame below, once nothing is
+            // still in flight.
+            fifo_quit_pending = true;
             return viewer::FifoQuit::Result::succeeded(true);
         });
     // Same SimulationControl calls the toolbar buttons make, so a FIFO-driven
@@ -2288,6 +2348,78 @@ int main() {
         registry.execute(viewer::ViewerReload{});
     });
 
+    // `wait_event <name>` name -> subscription table (S I.11-style FIFO dev
+    // convenience, not a registered viewer::Fifo* command: it must NOT itself
+    // go through the registry, or its own cmd.completed would immediately
+    // satisfy a `wait_event cmd.completed` before any LATER command's
+    // completion could). bake./stream. subscribe on the session hub
+    // (immediate -- these fire on the bake worker thread, see
+    // matter_engine.cpp's execute_bake); cmd.* subscribe on app_hub (always
+    // the app thread, command.cpp finalize_common). Returns false for an
+    // unrecognized name; the caller does not block in that case.
+    auto fifo_begin_wait_event = [&](const std::string& name, double timeout_s) -> bool {
+        fifo_wait_event_fired.store(false, std::memory_order_relaxed);
+        fifo_wait_event_name = name;
+        fifo_wait_event_timeout_s = timeout_s;
+        fifo_wait_event_start = std::chrono::steady_clock::now();
+        fifo_wait_event_session_scoped = false;
+        std::atomic<bool>* fired = &fifo_wait_event_fired;
+        const std::string sub_name =
+            "qa.wait_event." + std::to_string(fifo_wait_event_seq++) + "." + name;
+        if (name == "bake.started") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakeStarted>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired](const matter::events::BakeStarted&) {
+                    fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "bake.finished") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakeFinished>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired](const matter::events::BakeFinished&) {
+                    fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "bake.part_done") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakePartDone>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired](const matter::events::BakePartDone&) {
+                    fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "bake.error") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakeError>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired](const matter::events::BakeError&) {
+                    fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "stream.refine_tile") {
+            fifo_wait_event_sub =
+                session->events().must_subscribe<matter::events::RefineTileDone>(
+                    sub_name.c_str(), matter::evt::immediate,
+                    [fired](const matter::events::RefineTileDone&) {
+                        fired->store(true, std::memory_order_release);
+                    });
+        } else if (name == "cmd.completed") {
+            fifo_wait_event_sub = app_hub.must_subscribe<matter::evt::CommandCompleted>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired](const matter::evt::CommandCompleted&) {
+                    fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "cmd.failed") {
+            fifo_wait_event_sub = app_hub.must_subscribe<matter::evt::CommandFailed>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired](const matter::evt::CommandFailed&) {
+                    fired->store(true, std::memory_order_release);
+                });
+        } else {
+            return false;
+        }
+        if (name.rfind("bake.", 0) == 0 || name.rfind("stream.", 0) == 0) {
+            fifo_wait_event_session_scoped = true;
+            fifo_wait_event_session_id = binding.current_session_id();
+            fifo_wait_event_generation = binding.current_generation();
+        }
+        return true;
+    };
+
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
         // swapchain acquire are part of the user-visible frame cadence.
@@ -2427,6 +2559,21 @@ int main() {
                 std::string line = cmd_buffer.substr(0, newline);
                 cmd_buffer.erase(0, newline + 1);
                 if (!line.empty() && line.back() == '\r') line.pop_back();
+                fifo_pending_lines.push_back(std::move(line));
+            }
+        }
+        // Timeline semantics (QA timeline feature): a blocking wait
+        // (wait_frames / wait_idle / wait_event) pauses POPPING fifo_pending_lines
+        // until it releases, so a `set`/`shot`/etc. line written after a
+        // `wait_frames` in the file cannot dispatch before the wait completes.
+        // Reading more bytes into cmd_buffer above still happens every frame
+        // regardless -- only dispatch is gated. This loop can still drain
+        // several non-blocking lines in one frame (unchanged from before) --
+        // it only stops early when a blocking wait is (re)armed.
+        while (fifo_block == FifoBlockKind::None && !fifo_pending_lines.empty()) {
+            std::string line = std::move(fifo_pending_lines.front());
+            fifo_pending_lines.pop_front();
+            {
                 // MATTER_CMD_FIFO is a cross-thread command source (S II.3.4):
                 // parse each line into its typed command and dispatch() it so
                 // every external submission is named/traced/journaled and gets
@@ -2451,6 +2598,11 @@ int main() {
                                    std::get_if<viewer::FifoWaitFrames>(
                                        &presentation_command.command)) {
                         registry.dispatch(*command);
+                        // Semantics upgrade: wait_frames now blocks every
+                        // later line, not just screenshots (the present-count
+                        // itself is still FifoPresentSequencer's, released
+                        // below in the completed_waits loop after advance()).
+                        fifo_block = FifoBlockKind::WaitFrames;
                     } else if (const auto* command =
                                    std::get_if<viewer::FifoScreenshotNow>(
                                        &presentation_command.command)) {
@@ -2575,6 +2727,97 @@ int main() {
                                : line == "step"  ? Action::Step
                                                  : Action::Stop;
                     registry.dispatch(cmd);
+                } else if (line.compare(0, 10, "wait_idle ") == 0 ||
+                           line == "wait_idle") {
+                    // wait_idle <seconds>: blocks until resident_sectors has
+                    // held steady for <seconds> of wall-clock time AND the
+                    // bake is ready. Released in the frame_stats-driven check
+                    // below (mirrors MATTER_CAM_PATH_SETTLE's plateau logic).
+                    std::istringstream input(line);
+                    std::string verb, seconds_text, extra;
+                    input >> verb >> seconds_text;
+                    double seconds = 0.0;
+                    bool parse_ok = !seconds_text.empty();
+                    if (parse_ok) {
+                        try {
+                            size_t consumed = 0;
+                            seconds = std::stod(seconds_text, &consumed);
+                            parse_ok = consumed == seconds_text.size();
+                        } catch (...) {
+                            parse_ok = false;
+                        }
+                    }
+                    if (input >> extra) parse_ok = false;
+                    if (!parse_ok) {
+                        std::printf("wait_idle: expected `wait_idle <seconds>`\n");
+                    } else if (seconds <= 0.0) {
+                        std::printf("wait_idle: <seconds> must be > 0\n");
+                    } else {
+                        fifo_wait_idle_seconds = seconds;
+                        fifo_wait_idle_start = std::chrono::steady_clock::now();
+                        fifo_wait_idle_last_change = fifo_wait_idle_start;
+                        fifo_wait_idle_last_resident = UINT32_MAX;  // force resync below
+                        fifo_block = FifoBlockKind::WaitIdle;
+                    }
+                } else if (line.compare(0, 11, "wait_event ") == 0 ||
+                           line == "wait_event") {
+                    // wait_event <name> [timeout_seconds]: blocks until the
+                    // named engine event fires (or the optional timeout
+                    // expires -- the script then continues, it does not
+                    // quit). Released in the check below.
+                    std::istringstream input(line);
+                    std::string verb, name, timeout_text, extra;
+                    input >> verb >> name >> timeout_text;
+                    bool has_timeout = !timeout_text.empty();
+                    double timeout_s = 0.0;
+                    bool parse_ok = true;
+                    if (has_timeout) {
+                        try {
+                            size_t consumed = 0;
+                            timeout_s = std::stod(timeout_text, &consumed);
+                            parse_ok = consumed == timeout_text.size() && timeout_s > 0.0;
+                        } catch (...) {
+                            parse_ok = false;
+                        }
+                    }
+                    if (input >> extra) parse_ok = false;
+                    if (name.empty() || !parse_ok) {
+                        std::printf(
+                            "wait_event: expected `wait_event <name> "
+                            "[timeout_seconds]`\n");
+                    } else if (!fifo_begin_wait_event(name, has_timeout ? timeout_s : 0.0)) {
+                        std::printf("wait_event: unknown event '%s'\n", name.c_str());
+                    } else {
+                        fifo_block = FifoBlockKind::WaitEvent;
+                    }
+                } else if (std::sscanf(line.c_str(), "world %255s", word) == 1) {
+                    // Same case-insensitive resolution as MATTER_WORLD, and
+                    // the same intent-recording path `reload` uses: the
+                    // actual session destroy/recreate runs at the post-frame
+                    // seam (SessionBinding::replace), never mid-parse. Not
+                    // itself a blocking wait -- pair it with wait_idle for a
+                    // multi-world sweep.
+                    std::string wanted(word);
+                    std::transform(wanted.begin(), wanted.end(), wanted.begin(),
+                                   [](unsigned char ch) { return std::tolower(ch); });
+                    int world_index = -1;
+                    for (size_t i = 0; i < worlds.size(); ++i) {
+                        std::string candidate = worlds[i].world_name;
+                        std::transform(candidate.begin(), candidate.end(),
+                                       candidate.begin(),
+                                       [](unsigned char ch) { return std::tolower(ch); });
+                        if (candidate == wanted) {
+                            world_index = static_cast<int>(i);
+                            break;
+                        }
+                    }
+                    if (world_index < 0) {
+                        std::printf("world: unknown '%s'\n", word);
+                    } else {
+                        viewer::ViewerSwitchWorld cmd;
+                        cmd.index = world_index;
+                        registry.dispatch(cmd);
+                    }
                 } else if (!line.empty()) {
                     std::printf("cmd: unrecognized '%s'\n", line.c_str());
                 }
@@ -3479,6 +3722,53 @@ int main() {
             }
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
+        // QA timeline: wait_idle / wait_event release checks. Here (frame_stats
+        // just refreshed, and bake_ready reflects this frame's poll_event
+        // drain above) so both waits observe up-to-date state once per frame;
+        // wait_frames' own release is symmetric, after present, below.
+        if (fifo_block == FifoBlockKind::WaitIdle) {
+            const uint32_t resident = frame_stats.resident_sectors;
+            const auto now = std::chrono::steady_clock::now();
+            if (resident != fifo_wait_idle_last_resident) {
+                fifo_wait_idle_last_resident = resident;
+                fifo_wait_idle_last_change = now;
+            }
+            const double settled_for =
+                std::chrono::duration<double>(now - fifo_wait_idle_last_change).count();
+            if (bake_ready && settled_for >= fifo_wait_idle_seconds) {
+                const double elapsed =
+                    std::chrono::duration<double>(now - fifo_wait_idle_start).count();
+                std::printf("idle: settled after %.1fs\n", elapsed);
+                fifo_block = FifoBlockKind::None;
+            }
+        } else if (fifo_block == FifoBlockKind::WaitEvent) {
+            if (fifo_wait_event_fired.load(std::memory_order_acquire)) {
+                std::printf("event: %s\n", fifo_wait_event_name.c_str());
+                fifo_wait_event_sub.reset();
+                fifo_block = FifoBlockKind::None;
+            } else if (fifo_wait_event_session_scoped &&
+                       (binding.current_session_id() != fifo_wait_event_session_id ||
+                        binding.current_generation() != fifo_wait_event_generation)) {
+                // The session (and its hub) this subscription targeted is
+                // gone -- study SessionBinding's epoch sequence: quiesce_bridge
+                // only clears ITS OWN subs, not ours, and the old Hub is
+                // destroyed with the old session, so the event we're waiting
+                // for can never arrive. reset() is always safe (Subscription
+                // holds no pointer back into Hub) even though the hub is dead.
+                std::printf("event: %s aborted (session changed)\n",
+                            fifo_wait_event_name.c_str());
+                fifo_wait_event_sub.reset();
+                fifo_block = FifoBlockKind::None;
+            } else if (fifo_wait_event_timeout_s > 0.0 &&
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                      fifo_wait_event_start)
+                               .count() >= fifo_wait_event_timeout_s) {
+                std::printf("event: %s timeout after %.1fs\n",
+                            fifo_wait_event_name.c_str(), fifo_wait_event_timeout_s);
+                fifo_wait_event_sub.reset();
+                fifo_block = FifoBlockKind::None;
+            }
+        }
         // MATTER_SEAM_TRACE (declared above): app-thread poll of the seam
         // welder, change-only, stamped with the cam-path pose clock.
         if (seam_trace && bake_ready) {
@@ -3764,6 +4054,11 @@ int main() {
                         completed.count,
                         static_cast<unsigned long long>(
                             completed.frame_serial));
+            // QA timeline: release consumption gated by this wait_frames.
+            // Under the gated drain above at most one wait is ever in flight
+            // here, so any completion observed while blocked is this one.
+            if (fifo_block == FifoBlockKind::WaitFrames)
+                fifo_block = FifoBlockKind::None;
         }
         // end_frame() records the queue submit and present boundary. The
         // smoothed cadence below also feeds the HUD frame time on the next frame.
@@ -4072,6 +4367,16 @@ int main() {
                     if (capture_path == screenshot_path) quit_requested = true;
                 }
             }
+        }
+
+        // QA timeline: resolve a deferred `quit` only once no FIFO screenshot
+        // capture is still in flight (see reg_fifo_quit above). shot_settle
+        // was decremented earlier this frame (before end_frame) and any
+        // capture it triggered has now been written above, so both checks
+        // reflect this frame's true state.
+        if (fifo_quit_pending && shot_settle == 0 &&
+            fifo_present.pending_screenshot_path().empty()) {
+            quit_requested = true;
         }
 
         if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error) {
