@@ -1,0 +1,297 @@
+# Editor/Engine Control Surface
+
+The complete external control surface of `MatterEditor/build/windows/editor.exe`
+(and the Linux build) for driving it from scripts/agents rather than a mouse.
+
+## a) How control works
+
+`main()` in `MatterEditor/src/main.cpp` takes **no arguments** — there is no
+argv-based CLI. Every startup and runtime behavior is driven by:
+
+- **Environment variables**, read once at startup (camera, world, screenshot,
+  replay, streaming/bake/VT tuning — see §c), or polled per-frame (`editor_props`
+  `.env()` bindings for lighting/atmosphere/DLSS).
+- **One command file**, `MATTER_CMD_FIFO` (§b), polled every frame for new lines
+  after startup.
+
+Output is `stdout`/`stderr` text (one line per event/ack/error — see the verb
+table in §b for exact wording) plus PNG sidecars: any screenshot write also
+writes `<path>.done` once the PNG is on disk, so a script can poll for the
+sidecar instead of racing the file write.
+
+Two readiness lines matter for scripting:
+
+- `MATTER_CMD_FIFO: polling command file <path>` (Windows) or
+  `MATTER_CMD_FIFO: listening on <path>` (Linux/POSIX `mkfifo`) — printed once
+  the FIFO is open, immediately after startup. Printing happens before the bake
+  is ready; it only means the command channel is live.
+- `viewer: bake ready` — printed once the initial world bake completes and the
+  viewer is actually drawing something. This is the line every scripted harness
+  polls the log for (`MatterEngine3/tools/viewer_shots.sh`,
+  `MatterEngine3/tools/seam_suite.sh`) before sending any commands.
+
+When `MATTER_CMD_FIFO` is set, stdout is switched to fully unbuffered
+(`std::setvbuf(stdout, nullptr, _IONBF, 0)`) specifically because native Windows
+stdout is otherwise fully buffered under a redirecting harness and FIFO
+automation depends on acknowledgements arriving promptly.
+
+## b) The command FIFO
+
+`MATTER_CMD_FIFO=<path>` names an **append-only polled file** on Windows
+(`CreateFileA` + periodic `ReadFile` from a tracked offset — there is no POSIX
+FIFO on Windows) or a real `mkfifo`'d named pipe on Linux. A script/agent
+appends newline-terminated command lines to this file; the editor tails new
+bytes once per frame, splits on `\n`, and dispatches each recognized line.
+
+Implementation: `MatterEditor/src/viewer_commands.h` declares the typed command
+structs and the FIFO line parser (`parse_fifo_line` + the inline `sscanf`/prefix
+dispatch in `main.cpp`); `MatterEditor/src/main.cpp`'s frame loop reads the file,
+converts each line to a typed command, and calls
+`matter::evt::CommandRegistry::dispatch()` (cross-thread-safe, ticketed) rather
+than handling most verbs inline. The registry is pumped once per frame
+(`registry.pump(app_lane, 5.0)`) **before** `begin_frame()`/the camera snapshot,
+so a `cam`/`budget` command sent this "frame" (FIFO line) affects the render
+that same engine frame. UI-triggered actions (buttons) reach the same command
+handlers via `registry.execute()` (synchronous) — FIFO and UI are two front
+ends onto one command registry.
+
+### Verb table
+
+| Verb | Grammar | Effect |
+|---|---|---|
+| `cam` | `cam ex ey ez tx ty tz` (6 floats) | Sets camera eye/target immediately. |
+| `shot` | `shot <path>` | Settles 3 frames (`instances_drawn > 0` gated), writes the PNG, then writes `<path>.done`. |
+| `shot_now` | `shot_now <abs .png>` | Queued via `FifoPresentSequencer`; captured on the next **presented** frame with no settle wait. Path must be an absolute, filesystem-safe `.png` path (`fifo_safe_absolute_png_path` rejects reserved Windows names, `..`, control chars, etc). Also writes `<path>.done`. |
+| `wait_frames` | `wait_frames <n>` (positive uint32) | Completes once `n` more frames have **presented successfully** (`FifoPresentSequencer::advance` only advances on `presented == true`). |
+| `render_path` | `render_path raster\|native_rt` | Switches the render path. `native_rt` fails loudly (`render_path: native_rt unavailable`, command result `failed`) if the device has no ray tracing. |
+| `history_reset` | `history_reset` (no args) | Calls `session->request_atmosphere_history_reset()`. |
+| `stats` | `stats <label>` | Arms one `STATS,<label>,...` row (see below), emitted on the next frame. |
+| `budget` | `budget <float>` | Sets `stats.pixel_budget`, clamped to `[0.05, 4.0]`. Shorthand for `set viewer.budget.pixel_budget <f>`. |
+| `set` | `set <group.path>.<field> <value>` | Generic property setter over `editor_props.registry()`. `value` is the rest of the line, unquoted, so it may contain spaces/commas. The path splits on the **last** `.` — everything before is the group path (itself dotted), everything after is the field name. Draft-only groups (`RequiresReload`) write to a draft copy and report `(draft; \`reload\` to apply)`. Env-forced fields (bound via `.env()`, see §c) refuse with `set: <path> is forced by <ENV_VAR>; ignored`. Unknown paths and unparsable values also report, never fail silently. |
+| `get` | `get <path>` | Prints `get: <path> = <value>`, or `get: unknown property '<path>'`. |
+| `dlss` | `dlss native\|quality\|balanced\|performance` | Resolves against the same label table the DLSS combo box uses, then writes through `EditorProps::set_dlss_mode` — identical effect to `set render.gpu.dlss_mode <mode>`. |
+| `workbench` | `workbench <module>` | Opens `<module>` in the Bake Lab's Workbench isolation session (same as the Asset Browser's "Open in Workbench" button); finds the owning project by probing `objects/<module>.js`. |
+| `reveal` | `reveal <module>` | Selects + focuses the camera on `<module>`'s baked root in the **active** production world (Asset Browser "Reveal"). Reports (not an error) when the module isn't loaded in the current world. |
+| `reload` | `reload` (no args) | Reloads the active world in place. |
+| `wireframe` | `wireframe` \| `wireframe toggle` \| `wireframe on` \| `wireframe off` | Toggles/sets the debug wireframe flag. Fails closed (`wireframe: unavailable (...)`) on devices without `VK_POLYGON_MODE_LINE`. |
+| `hiz` | `hiz <anything>` | **Deprecated stub.** Always prints `hiz: removed -- use \`set viewer.debug.occlusion_draw_cull true\`` and does nothing; kept only so old scripts get an answer instead of "unrecognized". |
+| `quit` | `quit` (no args) | Sets the quit flag; the main loop exits after the current frame. |
+| `timescale` | `timescale <f>` | Sets simulation time scale, clamped to `[0.05, 2.0]` (`kToolbarMinTimeScale`/`kToolbarMaxTimeScale` in `toolbar_panel.h`); out-of-range values are rejected with the bounds printed. |
+| `play` / `pause` / `step` / `sim stop` | exact tokens | Drives `SimulationControl` — the same transport the toolbar buttons call. `sim stop` also clears selection. |
+
+Any unrecognized line prints `cmd: unrecognized '<line>'`. **Every failure mode
+of `set`/`get`/`render_path`/`dlss`/etc. is printed to stdout, never silent** —
+this is intentional (see the `set`/`get` design note in `viewer_commands.h`: a
+near-miss like a mistyped group path used to read as "group not in registry"
+and sent an investigation down the wrong path).
+
+The `stats` command arms an append-only CSV-ish line printed the next frame:
+
+```
+STATS,<label>,frame_ms,resolve_ms,build_ms,draw_ms,instances_active,raster_batches,raster_tris,culled_clusters,gpu_occlusion_culled,vt_variants,vt_rejected_variants,vt_max_variants,vt_mesh_MiB,...,vk_gpu_total_ms,vk_gpu_cull_ms,vk_gpu_gbuffer_ms
+```
+
+New fields are only ever **appended** to the end (scripts parse by position) —
+see the comment at the `STATS,` `printf` in `main.cpp` for the exact current
+field list, which has grown twice (task 14's timing lanes, M4's GPU-timestamp
+lanes) without breaking older parsers.
+
+## c) Environment variables
+
+Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
+`editor_props` `.env()` binding (§ note at the end).
+
+### Editor/QA (startup + capture control)
+
+- `MATTER_CMD_FIFO` — command file path (§b).
+- `MATTER_WORLD` — world/scene name to open at startup.
+- `MATTER_CAM` — `"ex,ey,ez,tx,ty,tz"`, one-shot initial camera pose.
+- `MATTER_CAM_PATH` — path to a scripted fly-through file, one pose per line
+  (`eye_x eye_y eye_z target_x target_y target_z`; `#`-comments and blanks
+  ignored), consumed **one pose per rendered frame** (frame-indexed, not
+  wall-clock — this is what makes M1d-style determinism gates possible).
+  - `MATTER_CAM_PATH_EXIT=1` — quit once the path (plus its FIFO drain tail) ends.
+  - `MATTER_CAM_PATH_WARMUP=<n>` — frames to hold at the first pose after the
+    world is drawable; default **30**.
+  - `MATTER_CAM_PATH_SETTLE=<seconds>` — wall-clock seconds of unchanged
+    `resident_sectors` required before the path starts (0 = off, frame-warmup
+    only). Deliberately wall-clock, not a frame count, so it means the same
+    thing at any framerate.
+- `MATTER_SCREENSHOT=<path>` — capture-then-quit: writes one PNG after settling
+  and exits.
+  - `MATTER_SCREENSHOT_SETTLE=<n>` — frames to hold before capture; default **3**.
+    A streamed world needs far more than 3 to fill in — this exists because an
+    un-tuned streamed screenshot photographs an empty horizon.
+- `MATTER_REPLAY=<state.json path>` — replay a single recorded issue shot
+  headlessly (see `docs/agent/issue-system.md`).
+  - `MATTER_REPLAY_SHOT=<n>` — 1-based shot index, default 1.
+  - `MATTER_REPLAY_OUT=<path>` — output PNG path, default `replay.png`.
+  - `MATTER_REPLAY_SETTLE=<n>` — frames to hold before capture; default **90**
+    (RT worlds accumulate through a temporal denoiser, so replays default much
+    higher than a live screenshot so two replays are comparable to each other).
+  - `MATTER_REPLAY_STRICT=1` — turn any framebuffer/layout mismatch into exit 1,
+    for use in automated diff gates.
+- `MATTER_ISSUE_DIR` — overrides where issue reports are written/read (see
+  `docs/agent/issue-system.md`).
+- `MATTER_HIDE_UI` — hides all ImGui panels at startup.
+- `MATTER_CAPTURE_LIGHTING_UI` — capture-only aid: focuses the Lighting panel
+  for automated verification screenshots; inert outside a capture.
+- `MATTER_TIME_SCALE` — initial simulation time scale.
+- `MATTER_CACHE_ROOT` — overrides the bake cache root.
+- `MATTER_LIVE_EDIT` — enables live-edit (hot script reload) file watching.
+  **The functional backend is Linux-only** (`InotifyWatcher`); the Windows
+  backend (`WinDirWatcher`, `MatterEngine3/src/file_watcher.h`) is a stub.
+- `MATTER_VK_VALIDATION=1` — opt in to Vulkan validation layers (off by default
+  so machines without the Vulkan SDK aren't broken by default).
+- `MATTER_TEST_RESIZE` — exercises a forced window resize once baked, for resize
+  regression testing.
+- `MATTER_FORCE_LOD_TINT` — forces the LOD-rung debug tint view on.
+- `MATTER_SEAM_TRACE=1` — turns on the terrain seam welder's in-app accounting
+  trace (level gaps, drawn-level violations, build errors, sign conflicts);
+  zero-cost to collect, used by `seam_suite.sh` check 3.
+- `MATTER_PROFILE_TRACE=<path>` — on exit, dumps the profiler's FrameRecord tail
+  as a Chrome trace (`chrome://tracing`-loadable) — the same data every issue
+  report embeds as `profile_tail.json`.
+- `MATTER_PERF_OUTPUT`, `MATTER_PERF_WARMUP_SECONDS`, `MATTER_PERF_SAMPLE_SECONDS`
+  — headless perf run (§ recipe 8 in the QA cookbook). **Must be set together**;
+  setting any subset is a fatal startup error
+  (`read_perf_run_config` in `main.cpp`).
+- `MATTER_HIZ` — dead. Legacy env var, retained only to print
+  `MATTER_HIZ: not available in Vulkan milestone; ignored` instead of silently
+  doing nothing.
+
+### Lighting/sky (property-registry `.env()` bindings)
+
+These are bound through `matter::props` `.env()`/`.env_negated()` — an `editor_props.cpp`
+mechanism distinct from a raw `getenv()` call (see the note at the end of this
+section). A FIFO `set` on one of these fields refuses with "forced by <VAR>".
+
+`MATTER_SUN_AZIMUTH_DEG`, `MATTER_SUN_ELEVATION_DEG`, `MATTER_SUN_SIZE_DEG`,
+`MATTER_SUN_SHADOW_SAMPLES`, `MATTER_ATMOSPHERE_SEA_LEVEL_Y`,
+`MATTER_ATMOSPHERE_RAYLEIGH_SCALE`, `MATTER_ATMOSPHERE_MIE_SCALE`,
+`MATTER_ATMOSPHERE_MIE_ANISOTROPY`, `MATTER_ATMOSPHERE_OZONE_SCALE`,
+`MATTER_ATMOSPHERE_GROUND_ALBEDO`, `MATTER_DAY_AMBIENT_MULTIPLIER`,
+`MATTER_TWILIGHT_AMBIENT_MULTIPLIER`, `MATTER_SKY_IRRADIANCE_MULTIPLIER`,
+`MATTER_SUNSET_DIRECT_RATIO`, `MATTER_VOLUMETRICS`, `MATTER_FROXEL_XY_SCALE`,
+`MATTER_FROXEL_DEPTH_SLICES`, `MATTER_CLOUD_SCATTER_ORDERS`,
+`MATTER_DLSS_MODE`, `MATTER_DISABLE_VK_RT` (negated — `=1` clears
+`render.gpu.ray_tracing`).
+
+### Streaming
+
+`MATTER_STREAM_RINGS`, `MATTER_STREAM_INFLIGHT`, `MATTER_STREAM_HYSTERESIS`,
+`MATTER_STREAM_FAIL_COOLDOWN`, `MATTER_STREAM_FIRST_RUNG`,
+`MATTER_STREAM_NO_EVICT`, `MATTER_STREAM_NO_STAGING`, `MATTER_STREAM_NO_LATERAL`,
+`MATTER_STREAM_SKIP_PART_WRITE`, `MATTER_STREAM_STAGE_FROM_MEMORY`,
+`MATTER_STREAM_STAGE_VERIFY`, `MATTER_STREAM_FILL_PROFILE`,
+`MATTER_STREAM_PARK_PROFILE`, `MATTER_STREAM_BAKE_PROFILE`,
+`MATTER_STREAM_PUBLISH_PROFILE`, `MATTER_STREAM_PREBUILD_VERIFY`,
+`MATTER_STREAM_TICK_TRACE`, `MATTER_NO_MERGE_DEFER` (`matter_engine.cpp`,
+`MatterEngine3/src/streaming/sector_streaming_coordinator.cpp`,
+`MatterEngine3/src/sector_streamer.cpp`) — sector streaming tuning/profiling/
+fault-injection knobs, mostly off by default.
+
+`MATTER_TERRAIN_LOD`, `MATTER_NESTED_SECTORS`, `MATTER_VOLUMETRIC_SECTORS` —
+select the streaming/LOD scheme. `MATTER_NO_SEAM_WELD`, `MATTER_NO_SEAM_WELD_DRAW`
+(disable the runtime seam welder / just its draw pass — the latter is
+`seam_suite.sh`'s check-5 knob), `MATTER_SEAM_VERIFY`, `MATTER_SEAM_CHURN`.
+
+### Virtual Texture (VT)
+
+Budget/sizing fields are property-registry `.env()` bindings, declared together
+in `MatterEngine3/include/matter/vt_budgets.h`: `MATTER_VT_MAX_VARIANTS`
+(read-only after launch), `MATTER_VT_FILLS_PER_FRAME`,
+`MATTER_VT_TAIL_FILLS_PER_FRAME`, `MATTER_VT_ENRICH_PER_FRAME`,
+`MATTER_VT_MESH_BUDGET_MB`, `MATTER_VT_INDIRECTION_MB` (read-only),
+`MATTER_VT_POOL_PAGES` (read-only — pool is allocated once at renderer init),
+`MATTER_VT_EVICT_PROTECT_FRAMES`, `MATTER_VT_LINGER_FRAMES`,
+`MATTER_VT_REQUESTS_PER_FRAME`, `MATTER_VT_REQUEST_BUDGET_MS`,
+`MATTER_VT_QUEUE_CAP`, plus six Tier-2 hemisphere-AO enrichment settings
+(`MATTER_VT_ENRICH_SAMPLES`, `_STRENGTH`, `_CAP_TEXELS`, `_CAP_METERS`,
+`_MIN_AO`, `_AS_CACHE` — the last read-only).
+
+Raw `getenv()` VT toggles (not registry-bound): `MATTER_VT_UNIFY`,
+`MATTER_VT_CHART_LOG`, `MATTER_VT_EAGER`, `MATTER_VT_DISABLE`, `MATTER_VT_WARP`,
+`MATTER_VT_MEM_LOG`, `MATTER_VT_TAPE_GPU`, `MATTER_VT_DEBUG_GENERATIONS`
+(`vt_residency.cpp` — arms per-page-release reuse-discipline assertions).
+
+### Bake/LOD
+
+`MATTER_BAKE_PROFILE`, `MATTER_LOD_BAKE_PROFILE`. `MATTER_CONTOUR_SEAMS` — the
+contour mesher's own-vs-welder mode; **default ON since 2026-08-13**
+(`MatterEngine3/src/bake_mode.h`); `MATTER_CONTOUR_SEAMS=0` is the documented
+rollback to the old overlap+welder path, kept supported while the welder still
+exists. `MATTER_FLATTEN_LADDER`, `MATTER_FLATTEN_PEAK`, `MATTER_FLATTEN_RETAIN_MB`,
+`MATTER_LOD_CASCADE`, `MATTER_LOD_MAX_MESH_RUNGS`, `MATTER_LOD_TRACE`,
+`MATTER_IMPOSTOR`, `MATTER_IMPOSTOR_CELL_PX`, `MATTER_IMPOSTOR_DEBUG`,
+`MATTER_IMPOSTOR_DISTANCE`, `MATTER_GPU_JOB_SLOW_MS`.
+
+### Vulkan
+
+`MATTER_VSYNC`, `MATTER_VK_ROBUSTNESS`, `MATTER_VK_SMOKE_MODE` (§ QA cookbook
+recipe 6), `MATTER_VK_STATIC_RESERVE_CLUSTER_MB` / `_VERTEX_MB` / `_INDEX_MB`
+(static-buffer reservation sizing, `vk_scene_renderer.cpp`), `MATTER_RASTER_CULL`,
+`MATTER_RT_WALK_ALPHA_TEST`. Fault-injection family (test builds only):
+`MATTER_VK_TEST_FORCE_RT_UNAVAILABLE`, `MATTER_VK_TEST_END_FRAME_FAULT`,
+`MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN`,
+`MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS`,
+`MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE`. A longer tail of dev-only
+diagnostic/tuning vars exists beyond this list (temporal buffer recycling,
+diagnostic materials, vector growth logging) — grep `vk_context.cpp`,
+`vk_resources.cpp`, `vk_perf.h`, `vk_scene_renderer.cpp` for the current set.
+
+### Misc
+
+`MATTER_SHADER_DIR` (override the embedded-shader search path),
+`MATTER_TILESET_DUMP_PNG` (dump `.gtex` bake intermediates as PNG — see the QA
+cookbook's `.gtex` determinism recipe), `MATTER_SCRIPT_PROFILE` (JS DSL
+profiling), `MATTER_PROFILE` (ProfileLib master enable, on unless `=0`),
+`MATTER_PROFILE_LOG=1` (periodic aggregate stderr profiler report, 2 s interval).
+
+**Two distinct mechanisms** back all of the above: most engine-internal vars
+(streaming, VT toggles, bake, most Vulkan ones) are a plain `std::getenv()` call
+at the point of use — no registry entry, no FIFO visibility, read once or
+polled directly. The lighting/sky/DLSS group is instead a `matter::props`
+`.env()`/`.env_negated()` **binding**: the property is visible to FIFO `get`,
+and a FIFO `set` on it is refused with an explicit "forced by" message rather
+than silently losing to the env value on the next frame.
+
+## d) Events (for context)
+
+`matter::evt::Hub` (`MatterEngine3/include/matter/event/event_hub.h`) is the
+in-process pub-sub core; `matter::evt::CommandRegistry`
+(`MatterEngine3/include/matter/event/command.h`) is the deliver-once command
+layer the FIFO and UI both dispatch/execute through (§b). Declared event types
+today: `bake.started`, `bake.part_done`, `bake.finished`, `bake.error`
+(`MatterEngine3/include/matter/events/bake_events.h`), `stream.refine_tile`
+(`.../events/stream_events.h`), `cmd.completed`/`cmd.failed`
+(`.../event/command.h`), `scene.rows_upserted`/`scene.rows_removed`
+(`.../scene/scene_events.h`), `error.live_edit`/`error.part_instance`/
+`error.part_instance_clear` (`.../events/error_events.h`), and `phys.step`
+(`.../events/physics_events.h`). **There is no external subscribe channel
+today** — these are consumed in-process (editor panels, tests); nothing in the
+FIFO grammar above lets a script subscribe to them directly.
+
+### Timeline extension (2026-08-14)
+
+A `wait_event` / `wait_idle` / world-state extension to the command FIFO is
+reported in progress on a parallel branch as of this writing. If merged, it may
+supersede parts of §b's `wait_frames`/polling-based synchronization idiom with
+an explicit event-wait verb. This document was not updated against that branch
+— re-verify §b against `viewer_commands.h` and `main.cpp` after it merges.
+
+## e) The three launch rules
+
+Repeated in every harness in this repo; violating any one produces confusing,
+hard-to-diagnose failures:
+
+1. **Pass `TMP`/`TEMP` as the command's own env prefix**, from a shell that has
+   NOT exported the MSYS2 UCRT64 `PATH`. A native Windows exe does not inherit
+   MSYS2's TEMP otherwise, `fs::temp_directory_path()` falls back to
+   `C:\WINDOWS`, and fixtures fail with confusing "coherent load failed"-style
+   errors.
+2. **Launch from the `MatterEditor/` working directory.** Asset/shader/project
+   lookup, the default `../issues` resolution, and relative script paths are
+   all cwd-relative to `MatterEditor/`.
+3. **Never build while `editor.exe` is running** — it holds a file lock on its
+   own binary; a build started while it's up fails or silently no-ops.
