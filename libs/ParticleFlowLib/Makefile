@@ -21,6 +21,12 @@ $(OBJ_DIR)/%.o: src/%.cpp $(HEADERS)
 	@mkdir -p $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
+# -MMD -MP above already writes a .d file per object; nothing ever included
+# them, so this Makefile relied solely on the coarse $(HEADERS) prerequisite
+# above (any header change recompiles every .o, not just objects that use
+# it). Pick up the generated .d files too for precise tracking.
+-include $(wildcard $(OBJ_DIR)/*.d)
+
 TEST_FLAGS = -std=c++17 -Wall -Wextra -g -I./include -fsanitize=address,undefined
 
 test: tests/pf_tests.cpp $(SRCS) $(HEADERS) | build

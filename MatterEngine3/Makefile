@@ -511,48 +511,59 @@ vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
 $(FLECS_OBJ): $(FLECS_C) | $(OBJDIR)
-	gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR)
+	gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -MMD -MP
 
 # QuickJS C sources (gcc, extern "C" safe).
 $(OBJDIR)/%.o: $(QJS_DIR)/%.c | $(OBJDIR)
-	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR)
+	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR) -MMD -MP
 
 # MSL C sources (gcc, extern "C" safe).
 $(OBJDIR)/%.o: $(MSL_DIR)/src/%.c | $(OBJDIR)
-	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 # Shared library C sources, compiled from their source-of-truth directories.
 # These are explicit (not pattern) rules and the source dirs are deliberately
 # kept off vpath: SpatialQueryLib/src/bvh.c would otherwise shadow
 # SpatialQueryLib/src/bvh.cpp when make resolves bvh.o.
 $(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
-	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 $(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
-	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 $(OBJDIR)/profile.o: $(PROFILE_DIR)/src/profile.cpp | $(OBJDIR)
-	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -MMD -MP
 
 # Vendored BC encoders. Always -O2 (an -O0 bc7enc is ~30x slower, which would
 # show up directly as world-connect stall time) and -w: these are unmodified
 # upstream sources, so their warnings are not this project's to fix or to read
 # past. Explicit rules, and $(BC7ENC_DIR) is deliberately off vpath.
 $(OBJDIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(OBJDIR)
-	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR)
+	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR) -MMD -MP
 
 $(OBJDIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(OBJDIR)
-	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR)
+	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR) -MMD -MP
 
 # EXTRA_CFLAGS changes are invisible to make's dependency graph (objects look
 # up-to-date even though they were compiled with different defines, e.g.
 # MATTER_HAVE_AUTOREMESHER). Every C++ object depends on this stamp file,
 # which is rewritten only when the flag set differs — so a flag change forces
 # a full recompile while same-flag builds stay incremental.
+#
+# 2026-08-14: the original one-line guard (`[ "$(cat $@)" = '$(EXTRA_CFLAGS)' ]
+# || printf ... > $@`) never actually created $@ on a fresh checkout: with the
+# common EXTRA_CFLAGS="" and no stamp file yet, `cat $@ 2>/dev/null` prints
+# nothing, "" = '' is true, and the printf is skipped entirely -- so the file
+# is never written. $(ME3_OBJ)/$(MSL_OBJ) depend on this file as a real
+# prerequisite, and a prerequisite that never exists makes every dependent
+# target perpetually out of date, which forced a full ~150-file rebuild on
+# EVERY invocation regardless of what actually changed (confirmed: a
+# no-touch `make -C MatterEngine3` re-ran 130 compiles). Also require the
+# file to already exist before trusting the content comparison.
 .PHONY: FORCE
 FORCE:
 $(LIB_FLAGS_STAMP): FORCE | build
-	@[ "`cat $@ 2>/dev/null`" = '$(EXTRA_CFLAGS)' ] || printf '%s' '$(EXTRA_CFLAGS)' > $@
+	@[ -f $@ ] && [ "`cat $@ 2>/dev/null`" = '$(EXTRA_CFLAGS)' ] || printf '%s' '$(EXTRA_CFLAGS)' > $@
 
 # ME3 + MSL C++ sources (each source file gets its own .o via pattern rule).
 # ME3 objects depend on the generated shader headers -- BOTH of them.
@@ -569,7 +580,13 @@ $(LIB_FLAGS_STAMP): FORCE | build
 $(ME3_OBJ): shaders_gen/embedded_shaders.h shaders_gen/embedded_spirv.h
 $(ME3_OBJ) $(MSL_OBJ): $(LIB_FLAGS_STAMP)
 $(OBJDIR)/%.o: %.cpp | $(OBJDIR)
-	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -MMD -MP
+
+# Header dependency tracking: every object above is compiled with -MMD -MP
+# into a same-named .d file in this same flat build/obj/ dir, so a single
+# wildcard include picks all of them up. Missing .d files (a clean build's
+# first pass) are silently skipped by -include, not an error.
+-include $(wildcard $(OBJDIR)/*.d)
 
 $(BOX3D_LIB):
 	$(MAKE) -C $(BOX3D_DIR)
