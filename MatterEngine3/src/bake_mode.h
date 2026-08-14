@@ -44,12 +44,15 @@ namespace bake_mode {
 // Off, the tile bridges its -x/-z/-y borders by half a voxel and exports the
 // boundary records and overlap bands the welder joins at run time.
 //
-// Default OFF while the mesher's tile-edge handover is unproven: the prototype
-// gate (contour_mesh_tests.cpp) excludes cube-EDGE lines explicitly, so the one
-// structural claim still unmeasured is what happens where three of a tile's
-// faces meet. `terrain_mesher_tests` "contour: a 2x2x2 block" is that
-// measurement; the default flips when it is green on the real mesher rather
-// than on the prototype's two-tile fixture.
+// DEFAULT ON since 2026-08-13. It shipped off for exactly one reason -- the
+// tile-edge handover was unproven, because a two-tile fixture cannot judge a
+// cube edge -- and `run-contourengine` settled it on closed 2x2x2 blocks
+// through the real mesher: ZERO see-through holes at equal level and at 2:1,
+// against the welder path's 59 seam defects on the same block.
+//
+// `MATTER_CONTOUR_SEAMS=0` is the rollback, and stays supported while the
+// welder exists.
+
 // TESTS ONLY. -1 means "ask the environment"; 0/1 force the mode.
 //
 // This exists so ONE process can mesh the same fixture both ways, which is the
@@ -72,7 +75,7 @@ inline bool contour_seams() {
     if (forced_contour_seams() >= 0) return forced_contour_seams() != 0;
     static const bool on = [] {
         const char* e = std::getenv("MATTER_CONTOUR_SEAMS");
-        return e && *e && e[0] != '0';
+        return !(e && *e && e[0] == '0');
     }();
     return on;
 }
@@ -83,7 +86,13 @@ inline uint64_t salt() {
     uint64_t s = 0;
     // One odd 64-bit constant per mode, XORed, so modes compose without
     // aliasing and adding one cannot disturb the others' keys.
-    if (contour_seams()) s ^= 0xC047'0552'EA3D'0001ull;
+    //
+    // NOTE THE SENSE: the constant marks the NON-DEFAULT mode, so it flipped
+    // with the default. What separates the new default's artifacts from the old
+    // default's is not this -- both salt to zero -- it is the kEngineBake bump
+    // that went with the flip. A salt distinguishes a mode from its own
+    // default; a version distinguishes one default from the last.
+    if (!contour_seams()) s ^= 0xC047'0552'EA3D'0001ull;
     return s;
 }
 

@@ -2,6 +2,7 @@
 #include "check.h"
 #include "../src/terrain_field.h"
 #include "../src/terrain_mesher.h"
+#include "../src/bake_mode.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -33,6 +34,22 @@ static size_t count_tris(const SectorMesh& m, P pred) {
 }
 
 int main() {
+    // THIS SUITE PINS THE WELDER PATH, so it names that path rather than
+    // inheriting whichever is default.
+    //
+    // The bitwise pins below ("M0-WP7 mesh identity", "M2 determinism") are
+    // hashes of bytes the bridging-and-boundary-record rule emits: a tile that
+    // reaches half a voxel past its - borders, exports FaceRecords and overlap
+    // bands, and leaves the cross-level seam to the runtime welder. The contour
+    // rule emits different bytes on purpose -- ~21-25% more triangles, ending
+    // exactly on the tile's own planes -- so under it every one of these pins
+    // fails, correctly and uselessly.
+    //
+    // The contour path has its own suite, `run-contourengine`, which measures
+    // what it is actually for (holes and folds across a closed block) rather
+    // than re-pinning a second set of bytes.
+    bake_mode::forced_contour_seams() = 0;
+
     // --- flat field, rung 0: counts, height, orientation -------------------
     {
         FieldRuntime f = make(kFlat5);

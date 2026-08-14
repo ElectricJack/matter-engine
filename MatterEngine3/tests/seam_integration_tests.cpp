@@ -106,6 +106,7 @@
 #include "../src/seam_weld.h"
 #include "../src/terrain_field.h"
 #include "../src/terrain_mesher.h"
+#include "../src/bake_mode.h"
 
 #include <algorithm>
 #include <array>
@@ -1681,6 +1682,13 @@ static void run_x_plane_split_in_y(const FieldRuntime& f, const char* field_name
 }
 
 int main() {
+    // THIS SUITE IS ABOUT THE WELDER, so it names the welder path rather than
+    // inheriting whichever rule is default. Every case here meshes two tiles
+    // and then welds them, and the contour rule exports an EMPTY boundary
+    // record precisely so there is nothing left to weld -- under it this whole
+    // suite would be measuring a welder correctly doing nothing.
+    bake_mode::forced_contour_seams() = 0;
+
     printf("=== seam integration: mesh + weld (M0-WP6) ===\n");
 
     // =======================================================================

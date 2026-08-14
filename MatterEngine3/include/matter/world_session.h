@@ -99,10 +99,19 @@ struct RenderOptions {
     // one that stops occluded sectors being rasterised at all, as opposed
     // to the streaming cap, which only makes them coarser.
     //
-    // Off by default and a separate switch from the cap for a reason that
-    // is not caution for its own sake: a wrong bit in the cap costs detail,
-    // a wrong bit here removes geometry from the picture.
-    bool  occlusion_draw_cull = false;
+    // ON by default since 2026-08-13. It shipped off because a wrong bit
+    // here removes geometry from the picture where a wrong bit in the old
+    // streaming cap only cost detail -- and that caution was right to have,
+    // but it was caution about a feature that has since been measured: the
+    // ID pass rasterises the CULL camera at a divisor of 3 (not 6, where a
+    // sector the real frame drew could own no pixel and be wrongly culled),
+    // the mask is same-frame rather than last frame's, and a weld can no
+    // longer occlude itself. The cap and the HZB it used to sit beside were
+    // both measured and deleted (63a271a1); this is the only occlusion the
+    // engine has, so leaving it off left the engine with none.
+    //
+    // `set viewer.debug.occlusion_draw_cull false` turns it off at run time.
+    bool  occlusion_draw_cull = true;
     // FREEZE THE CULL CAMERA (M4, an inspection aid rather than a feature).
     //
     // Pins the frustum planes and the eye position the cull dispatch tests
