@@ -547,18 +547,19 @@ $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 .PHONY: embedded-spirv
-embedded-spirv:
-	$(MAKE) -C $(ME3_DIR) vulkan-spirv
+embedded-spirv: $(VK_EMBEDDED_HEADER)
 
-# Order-only, same reasoning as embedded-shaders below: the delegated recipe
-# above must run before anything that reads $(VK_EMBEDDED_HEADER), but must
-# not make the file look unconditionally "just rebuilt" to ITS OWN real
-# prerequisite listings further down (windows/linux/the smoke-test exes) --
-# MatterEngine3's own rule only touches the file's mtime when the embedded
-# bytes actually change (tools/embed_spirv.py compares content before
-# writing), so those real prerequisites still correctly skip a relink when
-# nothing did.
-$(VK_EMBEDDED_HEADER): | embedded-spirv
+# The header target needs a REAL recipe (via FORCE), not an order-only hop
+# through the phony: make only re-stats a file target after ITS OWN recipe
+# runs, so with `$(VK_EMBEDDED_HEADER): | embedded-spirv` a shader edit
+# regenerated the header as a side effect but every .d-declared consumer
+# compared against the pre-submake stat and skipped -- editor.exe relinked
+# with stale SPIR-V and a green exit code. FORCE re-runs the delegation each
+# invocation; tools/embed_spirv.py content-compares before writing, so the
+# mtime only moves when the embedded bytes actually change and no-op builds
+# still skip the relink.
+$(VK_EMBEDDED_HEADER): FORCE
+	$(MAKE) -C $(ME3_DIR) vulkan-spirv
 
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \

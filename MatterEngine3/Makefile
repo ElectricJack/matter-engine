@@ -107,7 +107,7 @@ QJS_DIR       = ../third_party/quickjs-ng
 BC7ENC_DIR    = ../third_party/bc7enc
 BOX3D_DIR     = ../third_party/box3d
 BOX3D_LIB     = $(BOX3D_DIR)/libbox3d.a
-INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
+INCLUDE_PATHS = -I. -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
@@ -583,7 +583,12 @@ $(LIB_FLAGS_STAMP): FORCE | build
 # shader is missing outright, a FATAL several minutes into a world load.
 # Measured on a since-deleted compute shader: it compiled at 14:29, the header
 # regenerated at 14:55, and the shipped binary still could not find its .spv.
-$(ME3_OBJ): shaders_gen/embedded_shaders.h shaders_gen/embedded_spirv.h
+# Order-only since -MMD landed (2026-08-14): the .d files carry the real
+# header->object edges, so a shader edit recompiles only the TUs that
+# actually #include the regenerated header instead of all of ME3_OBJ. The
+# order-only bar still guarantees both headers exist before the first
+# compile on a fresh tree, where no .d files exist yet.
+$(ME3_OBJ): | shaders_gen/embedded_shaders.h shaders_gen/embedded_spirv.h
 $(ME3_OBJ) $(MSL_OBJ): $(LIB_FLAGS_STAMP)
 $(OBJDIR)/%.o: %.cpp | $(OBJDIR)
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -MMD -MP

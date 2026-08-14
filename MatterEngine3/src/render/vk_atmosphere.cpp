@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "matter/vulkan_device.h"
-#include "../../shaders_gen/embedded_spirv.h"
+#include "shaders_gen/embedded_spirv.h"
 #include "vk_resources.h"
 
 namespace viewer {

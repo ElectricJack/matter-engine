@@ -55,7 +55,7 @@ GLSLC ?= glslc
 # "-jN" token in MAKEFLAGS).
 ifeq ($(MAKELEVEL),0)
 ifeq ($(findstring -j,$(MAKEFLAGS)),)
-MAKEFLAGS += -j$(shell nproc)
+MAKEFLAGS += -j$(or $(shell nproc 2>/dev/null),4)
 endif
 endif
 

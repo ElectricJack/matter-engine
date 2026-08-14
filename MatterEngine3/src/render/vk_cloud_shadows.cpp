@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "matter/world_definition.h"
-#include "../../shaders_gen/embedded_spirv.h"
+#include "shaders_gen/embedded_spirv.h"
 
 namespace viewer {
 namespace {
