@@ -90,7 +90,6 @@ libs/SpatialQueryLib/linux
 *.png.done
 MatterEngine3/tools/shots_task6/
 shots/
-# (no trailing slash: shaders is a symlink in fresh checkouts, a dir otherwise)
 
 # Local backups / imposter test outputs / world bake data
 *.bak
@@ -142,19 +141,6 @@ cache/
 # delete. Deliberately NOT ignored by pattern: any glob broad enough to catch a
 # random 8-char name also silently swallows legitimate files, and a stray file
 # visible in `git status` is a better failure than a real file silently ignored.
-
-# Junction guard (Windows). MatterEngine3/shaders, MatterEditor/shaders and
-# MatterEditor/shaders_gpu are tracked SYMLINKS (mode 120000). With
-# core.symlinks=false they exist in the working tree as NTFS junctions, so a
-# `git add <parent-dir>` descends INTO them and stages the target's files as new
-# blobs -- silently replacing each symlink with a directory of duplicates. The
-# skip-worktree bit does not prevent this (the new paths differ from the flagged
-# one). These trailing-slash rules match the DIRECTORY only, so git stops
-# descending; the already-tracked symlink entries are unaffected because ignore
-# rules never apply to tracked paths.
-/MatterEngine3/shaders/
-/MatterEditor/shaders/
-/MatterEditor/shaders_gpu/
 
 # Built in place by build-all.sh; not vendored (unlike box3d, negated above).
 /third_party/autoremesher_core/libautoremesher_core.a

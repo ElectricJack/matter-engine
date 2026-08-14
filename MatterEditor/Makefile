@@ -435,23 +435,14 @@ check-animation-archive-link: $(ANIMATION_ARCHIVE_LINK_TARGET)
 embedded-shaders:
 	$(MAKE) -C $(ME3_DIR) shaders_gen/embedded_shaders.h
 
-# Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
-# The viewer loads the include-flattened raytrace_tlas_blas_processed.fs, so it
-# MUST be regenerated from MSL's .glsl sources first — a stale processed file
-# silently mismatches the C++ TLAS texture layout (tiled reads vs single-row).
-shaders: regen-processed-shader
-	@[ -e shaders ] || ln -s $(MSL_DIR)/shaders shaders
-	@missing=""; \
-	 for f in shaders/raster.vs shaders/raster.fs shaders/raytrace_tlas_blas_processed.fs; do \
-	     [ -e "$$f" ] || missing="$$missing $$f"; \
-	 done; \
-	 if [ -n "$$missing" ]; then \
-	     echo "ERROR: required shader files missing:$$missing"; \
-	     exit 1; \
-	 fi
-
 # Rebuild MSL's shader preprocessor and re-flatten the processed fragment shader
 # so edits to bvh_tlas_common.glsl / materials.glsl / lighting.glsl take effect.
+# 2026-08-14: this used to be a prerequisite of a `shaders:` target that also
+# symlinked MSL's shaders/ dir into MatterEditor/ (that symlink is gone -- see
+# CLAUDE.md "Code Sharing Between Projects" -- and nothing reads shaders/
+# relative to the binary any more; embedded_shaders.h/embedded_spirv.h cover
+# every load). `regen-processed-shader` itself still operates directly on
+# MSL_DIR and stays as a manual target for editing the .glsl includes.
 MSL_SHADERS = $(MSL_DIR)/shaders
 regen-processed-shader:
 	@g++ -O2 -std=c++14 -o /tmp/me3_shader_preprocessor \
@@ -1123,9 +1114,9 @@ linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_DEP) $(L_A
 -include $(L_ALL_OBJ:.o=.d)
 
 # clean: remove build artifacts and generated binaries.
-# shaders/ is a committed git symlink — do NOT remove it here,
-# or `git status` will show them as deleted. The build recreates them via the
-# shaders rule anyway.
+# (2026-08-14: this used to warn against removing the committed shaders/
+# symlink -- that symlink is gone, and build/ no longer holds anything
+# derived from it. See CLAUDE.md "Code Sharing Between Projects".)
 clean:
 	rm -rf build
 
@@ -1325,7 +1316,7 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 run-test-issue-reporter: build/test_issue_reporter.exe
 	./build/test_issue_reporter.exe
 
-.PHONY: editor windows clean dist shaders  regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf linux check-animation-production-sources
+.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf linux check-animation-production-sources
 
 # The direct-source builds (windows/linux) are production. Keep their TU list
 # aligned with the archive's runtime implementation units without dragging in

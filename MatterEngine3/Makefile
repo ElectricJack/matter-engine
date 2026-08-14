@@ -272,12 +272,18 @@ LIB_FLAGS_STAMP = build/.lib_flags
 # below (VK_SPV) is a compiled Vulkan SPIR-V binary built from the LIVE
 # shaders_vk/cull.comp source. That is the shipping culler and must not be
 # confused with the retired GL shaders_gpu/cull.comp it was named after.
+# 2026-08-14: MatterEngine3/shaders (a symlink -> ../libs/MatterSurfaceLib/shaders)
+# is gone -- see CLAUDE.md "Code Sharing Between Projects". MSL_SHADER_DIR
+# names the real directory directly; SHADER_LOGICAL stays "shaders/<name>"
+# because those exact strings are the embedded lookup keys shader_text()
+# callers pass (see MatterEngine3/src/shader_source.cpp), not filesystem paths.
+MSL_SHADER_DIR := $(MSL_DIR)/shaders
 SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl \
     shaders/raytrace_tlas_blas_processed.fs \
     shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl
-# SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
-# shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders.
-SHADER_FILES := $(SHADER_LOGICAL)
+# SHADER_FILES resolves each logical "shaders/<name>" key to its real location
+# under MatterSurfaceLib, for make's dependency tracking.
+SHADER_FILES := $(patsubst shaders/%,$(MSL_SHADER_DIR)/%,$(SHADER_LOGICAL))
 
 .PHONY: all clean test vulkan-spirv check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
 
@@ -326,7 +332,7 @@ check-animation-runtime-boundary: $(OBJDIR)/ozz_adapter.o
 
 shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	mkdir -p shaders_gen
-	python3 tools/embed_shaders.py $@ . $(SHADER_LOGICAL)
+	python3 tools/embed_shaders.py $@ $(MSL_DIR) $(SHADER_LOGICAL)
 
 GLSLC ?= glslc
 # MIRRORED IN MatterEditor/Makefile, which has its own copy of this list and
