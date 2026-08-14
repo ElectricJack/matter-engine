@@ -32,15 +32,18 @@ clamped at 8192, so it needs no separate rule.
 WHAT IT DOES NOT SEE. A seam that is closed but SHADED wrong -- the class that
 produced the report this tool was written for -- has continuous depth and is
 invisible here by construction. Diff two lit frames for that (the weld draw
-kill-switch MATTER_NO_SEAM_WELD_DRAW=1 gives the reference), and see
-docs/baselines/crack-soak.sh, which captures both.
+kill-switch MATTER_NO_SEAM_WELD_DRAW=1 gives the reference); check 4 of
+MatterEngine3/tools/seam_suite.sh runs exactly that diff alongside this
+script's check 2, and docs/baselines/seam-soak.sh runs the longer LOD-churn
+acceptance soak over the same welder.
 
 Usage:
     crack_scan.py <depth.png> [--lit lit.png] [--out overlay.png] [--json f]
                   [--max-width N] [--ratio R] [--side-tol T] [--min-size N]
 
 Exit status is 0 when it ran, whatever it found; the caller decides what count
-is a failure (crack-soak.sh compares against a committed baseline).
+is a failure -- MatterEngine3/tools/seam_suite.sh is that caller for routine
+gating.
 """
 import argparse
 import json
