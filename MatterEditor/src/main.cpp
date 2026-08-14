@@ -548,8 +548,10 @@ static std::string resolve_asset_root(const char* name) {
 std::string examples_root() { return resolve_asset_root("projects"); }
 
 // Repo-root issues/ directory, resolved the same way as the asset roots above.
-// issues/ is committed (it carries README.md), so the direct lookup normally
-// wins; the MatterEditor/ fallback covers a tree where it has been deleted.
+// issues/ has been gitignored since 0cbb5e92 (untracked, not committed), so
+// the direct lookup wins only because the directory exists on disk for
+// developers who have generated reports into it; the MatterEditor/ fallback
+// covers a tree where it is absent.
 std::string issues_root() {
     if (std::string hit = resolve_asset_root("issues"); hit != "issues")
         return hit;
