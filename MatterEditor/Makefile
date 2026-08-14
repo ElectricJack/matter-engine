@@ -34,7 +34,7 @@ include ../platform.mk
 JOBS ?= $(shell nproc)
 MAKEFLAGS += -j$(JOBS)
 
-CC = g++
+CC = $(CCACHE) g++
 CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
          -DPLATFORM_DESKTOP
 
@@ -472,8 +472,8 @@ mingw-box3d:
 # Mirrors MatterSurfaceLib's windows-native target: MinGW toolchain, the
 # prebuilt windows-native raylib, and Win32 GL/GDI libs, statically linked so
 # the .exe is self-contained.
-WIN_CXX     ?= /ucrt64/bin/g++
-WIN_CC      = x86_64-w64-mingw32-gcc
+WIN_CXX     ?= $(CCACHE) /ucrt64/bin/g++
+WIN_CC      = $(CCACHE) x86_64-w64-mingw32-gcc
 WIN_AR      ?= /ucrt64/bin/ar
 GLSLC ?= /ucrt64/bin/glslc
 VULKAN_INCLUDE ?= /ucrt64/include

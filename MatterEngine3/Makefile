@@ -59,7 +59,7 @@ ifeq ($(UNAME_S),Darwin)
     endif
 endif
 
-CC      = g++
+CC      = $(CCACHE) g++
 NM      = nm
 # MATTER_VULKAN_ONLY (Phase 5a, GL-path deletion): matter_engine.cpp's facade has
 # carried #ifndef MATTER_VULKAN_ONLY / #ifdef MATTER_VULKAN_VIEWER branches since
@@ -517,25 +517,25 @@ vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
 $(FLECS_OBJ): $(FLECS_C) | $(OBJDIR)
-	gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -MMD -MP
+	$(CCACHE) gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -MMD -MP
 
 # QuickJS C sources (gcc, extern "C" safe).
 $(OBJDIR)/%.o: $(QJS_DIR)/%.c | $(OBJDIR)
-	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR) -MMD -MP
+	$(CCACHE) gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR) -MMD -MP
 
 # MSL C sources (gcc, extern "C" safe).
 $(OBJDIR)/%.o: $(MSL_DIR)/src/%.c | $(OBJDIR)
-	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 # Shared library C sources, compiled from their source-of-truth directories.
 # These are explicit (not pattern) rules and the source dirs are deliberately
 # kept off vpath: SpatialQueryLib/src/bvh.c would otherwise shadow
 # SpatialQueryLib/src/bvh.cpp when make resolves bvh.o.
 $(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
-	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 $(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
-	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 $(OBJDIR)/profile.o: $(PROFILE_DIR)/src/profile.cpp | $(OBJDIR)
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -MMD -MP
