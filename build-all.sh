@@ -84,8 +84,17 @@ clean_one() {
     ( cd "$proj" && make clean >/dev/null 2>&1 || true )
 }
 
-# raylib's intermediate .o files can be stale from a different OS; make
-# sure the static lib gets rebuilt for the current platform.
+# raylib's intermediate .o files can be stale from a different OS, so this
+# used to unconditionally clean+rebuild the static lib for the current
+# platform on every single invocation -- expensive, and pointless once
+# third_party/raylib/build/$PLATFORM/libraylib.a already exists and nothing
+# raylib-side has changed. Skip the rebuild when that platform-specific
+# artifact is already present (it's the unambiguous "built for THIS
+# platform" signal -- unlike third_party/raylib/src/libraylib.a, which has
+# no platform suffix and is exactly the file that could be stale from a
+# different OS). Set FORCE_RAYLIB=1 to force the clean+rebuild anyway (e.g.
+# after changing RAYLIB_CUSTOM_CFLAGS or updating the vendored raylib copy).
+#
 # The raytrace shader samples several textures at once (4 core BVH + 2 voxel
 # imposter volumes), which can exceed raylib's default
 # RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS of 8. Bump
@@ -93,6 +102,16 @@ clean_one() {
 # bind. Must be defined when raylib itself is compiled (it lives in rlgl).
 RAYLIB_CUSTOM_CFLAGS="-DRL_DEFAULT_BATCH_MAX_TEXTURE_UNITS=16"
 prep_raylib() {
+    local platform_lib="third_party/raylib/build/$PLATFORM/libraylib.a"
+    if [ -f "$platform_lib" ] && [ "${FORCE_RAYLIB:-0}" != "1" ]; then
+        echo "raylib already built for $PLATFORM ($platform_lib exists) -- skipping. Set FORCE_RAYLIB=1 to force a rebuild."
+        # Some projects link third_party/raylib/src/libraylib.a directly (no
+        # platform suffix) rather than the build/$PLATFORM mirror -- keep it
+        # in sync with the confirmed-correct-platform artifact rather than
+        # trusting whatever (possibly stale, possibly absent) copy is there.
+        cp "$platform_lib" third_party/raylib/src/libraylib.a
+        return
+    fi
     echo "Rebuilding raylib for $PLATFORM..."
     ( cd third_party/raylib/src && make clean PLATFORM=PLATFORM_DESKTOP >/dev/null 2>&1 || true
       make PLATFORM=PLATFORM_DESKTOP CUSTOM_CFLAGS="$RAYLIB_CUSTOM_CFLAGS" >/dev/null 2>&1 )
@@ -255,9 +274,16 @@ if [ "$MODE" = "test" ]; then
         # bake is Vulkan-only now; its CPU-side gates run headless above
         # (run-tilesetvkrepack / run-tilesetvkao / run-tilesetvkhorizon) and the
         # device-side gate is run-vk-scene-renderer.
-        echo
-        echo "--- MatterEngine3/tests (tileset-provider-tests) ---"
-        make -C MatterEngine3/tests run-tilesetprovider || RESULT[MatterEngine3]="FAIL (run-tilesetprovider)"
+        #
+        # 2026-08-14: this block used to also invoke `make -C MatterEngine3/tests
+        # run-tilesetprovider` here, but no such target (or any tileset-provider-
+        # tests successor) exists in MatterEngine3/tests/Makefile any more --
+        # confirmed by grep, it is retired along with the targets named above and
+        # this specific invocation was simply missed. Removed rather than pointed
+        # at run-vk-scene-renderer: that target links Vulkan objects and needs a
+        # real Vulkan device, which $can_gpu above does not check for (it only
+        # probes GL 4.6 availability), so swapping it in here would be a new,
+        # unverified gating assumption rather than a like-for-like fix.
 
         echo
         echo "--- MatterEngine3/tests (api-tests) ---"

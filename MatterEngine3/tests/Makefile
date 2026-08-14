@@ -1676,7 +1676,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2867,12 +2867,24 @@ SCENETRACKER_CPP    = scene_tracker_tests.cpp \
 SCENETRACKER_C      = $(FLECS_C)
 SCENETRACKER_OBJS   = $(call obj_list,def,$(SCENETRACKER_CPP)) $(call obj_list,flecsc,$(SCENETRACKER_C))
 
-# Generate the per-source compile rules for these sources (they are not in the
-# line-833 def_CPP_SRCS union, so without this the generic $(OBJDIR)/% mkdir
-# rule would wrongly create the .o paths as directories). flecs.c already has
-# its rule via flecsc_C_SRCS. Append-only; none of these sources collide with
-# def_CPP_SRCS entries.
-$(foreach s,$(SCENETRACKER_CPP),$(eval $(call objrule_cpp,def,$(s))))
+# Generate the per-source compile rules for these sources (they are not all in
+# the def_CPP_SRCS union, so without this the generic $(OBJDIR)/% mkdir rule
+# would wrongly create the .o paths as directories). flecs.c already has its
+# rule via flecsc_C_SRCS.
+#
+# 2026-08-14: this used to be unconditionally "Append-only; none of these
+# sources collide with def_CPP_SRCS entries" -- that stopped being true once
+# ../src/event/subscription.cpp and ../src/event/dispatch_context.cpp joined
+# def_CPP_SRCS elsewhere (both are genuinely also compiled under the "def"
+# flavor for other targets now), so this foreach was re-emitting the exact
+# same objrule_cpp rule for those two sources a second time. objrule_cpp is a
+# pure (flavor, source) -> recipe template with no other state, so the two
+# emissions were byte-identical -- harmless in practice, but "overriding
+# recipe for target .../subscription.cpp.o" / "ignoring old recipe" on every
+# build was still noise, and a future case where the two definitions actually
+# diverged would have silently picked whichever one make evaluates last.
+# filter-out keeps this append-only for anything that is genuinely new.
+$(foreach s,$(filter-out $(def_CPP_SRCS),$(SCENETRACKER_CPP)),$(eval $(call objrule_cpp,def,$(s))))
 
 $(SCENETRACKER_TARGET): $(SCENETRACKER_OBJS)
 	$(CC) $(SCENETRACKER_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread -lws2_32 -ldbghelp -lwinmm
