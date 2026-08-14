@@ -14,26 +14,23 @@ issue-report/replay recipes (5).
 
 ```bash
 export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
-make -C MatterEngine3 \
-  TMP="C:/Users/webde/AppData/Local/Temp" \
-  TEMP="C:/Users/webde/AppData/Local/Temp"
+make -C MatterEngine3
 ```
 
-Expect `build/libmatter_engine3.a` plus a regenerated embedded-shader header on
+`platform.mk` (included by every Makefile here) now exports `TMP`/`TEMP`
+automatically — no need to pass them on the command line. Expect
+`build/libmatter_engine3.a` plus a regenerated embedded-shader/SPIR-V header on
 exit code 0. **Check the exit code, not the output for the string "error"** —
 see the Traps section.
 
 ## 2. Build the Windows editor
 
 ```bash
-make -C MatterEditor windows \
-  TMP="C:/Users/webde/AppData/Local/Temp" \
-  TEMP="C:/Users/webde/AppData/Local/Temp"
+make -C MatterEditor windows
 ```
 
-Expect `build/windows/editor.exe`. Requires the shader junctions from
-`setup-worktree.sh` to already exist (see the Traps section) and requires
-`editor.exe` not to already be running (file lock).
+Expect `build/windows/editor.exe`. Requires `editor.exe` not to already be
+running (file lock).
 
 ## 3. One-shot screenshot of a world
 
@@ -222,10 +219,7 @@ run-props
 Run one directly, e.g.:
 
 ```bash
-make -C MatterEngine3/tests run-world-definition \
-  TMP="C:/Users/webde/AppData/Local/Temp" \
-  TEMP="C:/Users/webde/AppData/Local/Temp" \
-  GRAPHICS=GRAPHICS_API_OPENGL_43
+make -C MatterEngine3/tests run-world-definition GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 `vulkan-smoke` and `run-vt-compositor` are special-cased: they delegate to
@@ -248,27 +242,38 @@ flag (or `--experimental-detect-module` on Node ≥ 20.10) is required every tim
 
 ## Traps
 
-- **The TEMP incantation.** MSYS2's `make` clobbers the Windows `TEMP` env var,
-  so GCC fails with "Cannot create temporary file in C:\WINDOWS\" unless you
-  pass `TMP=`/`TEMP=` explicitly on every `make` invocation (see recipes 1–2).
-  **This is reported to be getting fixed by a `platform.mk` on a parallel
-  branch as of this writing** — if that has merged, check whether the explicit
-  `TMP`/`TEMP` passing above is still required before copying it verbatim.
+- **The TEMP incantation — now automatic for `make`.** MSYS2's `make` used to
+  clobber the Windows `TEMP` env var, so GCC failed with "Cannot create
+  temporary file in C:\WINDOWS\" unless you passed `TMP=`/`TEMP=` explicitly on
+  every `make` invocation. `platform.mk` (included by every Makefile in this
+  repo) now exports both automatically, so recipes 1, 2, and 10 need no env
+  prefix. **This does not cover launching `editor.exe` directly** (recipes 3,
+  8, and the FIFO session in recipe 4 still need `TMP=`/`TEMP=` on the exe
+  invocation itself — see launch rule 1 in `control-surface.md` §e) — a native
+  Windows exe doesn't inherit MSYS2's TEMP the way a `make`-driven compile now
+  does. If a `make` invocation ever hits the old error anyway, `platform.mk`'s
+  Windows detection didn't fire for that path (see its own top comment); fall
+  back to passing `TMP`/`TEMP` explicitly as before.
 - **Exit code, not grep.** Never decide a build passed by grepping stdout for
   the string "error" — check the actual exit code. Log lines containing
   "error" appear in passing builds (warnings, expected-failure test output).
 - **The editor exe file lock.** `editor.exe` holds a lock on its own binary
   while running; a build started while it's up fails or silently no-ops. Kill
   it first.
-- **Junction rules.** Git worktrees on Windows materialize tracked symlinks as
-  plain text files, which breaks the build in a confusing way. Run
-  `bash setup-worktree.sh` from repo root after creating a worktree — it
-  recreates `MatterEngine3/shaders` and `MatterEditor/shaders` as NTFS
-  junctions pointing at `libs/MatterSurfaceLib/shaders`. **Symlink removal for
-  other directories is reported in progress on a parallel branch** — if merged,
-  re-check `setup-worktree.sh` and `CLAUDE.md` before assuming this junction
-  list is still current. Also: never `git stash` in a worktree — it destroys
-  these junctions and every later build silently no-ops without an error.
+- **Symlinks removed, not junctioned.** The two directory symlinks the build
+  used to require (`MatterEngine3/shaders`, `MatterEditor/shaders`) were
+  removed outright on 2026-08-14 — every Makefile now references
+  `libs/MatterSurfaceLib/shaders` directly, so there is nothing left to
+  junction. `setup-worktree.sh` is a deprecated stub (prints an explanation,
+  exits 0) rather than deleted, so the old `bash setup-worktree.sh` habit after
+  `git worktree add` fails loudly-but-kindly instead of silently no-op'ing.
+  Still true either way: never `git stash` in a worktree.
+- **RETOPO.** `MatterEditor/Makefile` defaults to `RETOPO=1`. The vendored-TBB
+  link failure that used to force `RETOPO=0` on Windows was fixed by replacing
+  it with a header-only shim, so the default build does not currently need
+  `RETOPO=0` — re-check `MatterEditor/Makefile`'s `RETOPO ?=` line (same
+  verify-before-trusting rule as `CLAUDE.md`'s toolchain section) before
+  assuming that's still true.
 - **`.gtex` bake determinism.** The smoke suite stubs the bake out, so it
   cannot catch a `.gtex` (tileset texture bake) non-determinism regression.
   Drive the real bake instead: launch the editor with

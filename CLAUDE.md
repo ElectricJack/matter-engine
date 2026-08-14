@@ -11,7 +11,7 @@ The entire codebase lives in **one git repo at the root**. Each sub-project is a
 MatterEngine2 follows a modular architecture where:
 
 1. Each project is a standalone application that can be built and run independently from its own subdirectory
-2. Projects build on each other by referencing sibling project headers via `-I../OtherProject/include` in their Makefiles (or, where convenient, via filesystem symlinks)
+2. Projects build on each other by referencing sibling project headers via `-I../OtherProject/include` in their Makefiles
 3. Compilation is fast because only the necessary code is compiled for each project
 4. Testing is simplified with self-contained examples
 
@@ -19,11 +19,14 @@ MatterEngine2 follows a modular architecture where:
 
 The root directory contains:
 
-- `third_party/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, Vulkan-Headers)
-- `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`, `AssetStoreLib`
-- `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs headless test suites
+- `third_party/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, ozz-animation, flecs, Vulkan-Headers)
+- `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `MathLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`, `AssetStoreLib`, `ProfileLib`
+- `platform.mk` - Shared build config every project's Makefile includes: TMP/TEMP export, GLSLC default, top-level `-j` parallelism, ccache detection (see "Toolchain" below)
+- `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs the headless test suites
 - `create_project.sh` - Bootstrap a new sub-project skeleton
-- Individual sub-project directories (e.g., `MatterEngine3`, `MatterEditor`, `BasicWindowApp`)
+- Individual sub-project directories (e.g., `MatterEngine3`, `MatterEditor`)
+- `Prototypes/` - Retired experiments, excluded from `build-all.sh` (see the note at the end of "Project Relationships")
+- `docs/` - Design docs, findings, and `docs/agent/` (agent-facing control-surface/QA/issue-system reference — see the "QA quick reference" section below)
 - This documentation file and `ROADMAP.md`
 
 Each project follows this general structure:
@@ -43,7 +46,7 @@ ProjectName/
 
 To share code between projects while maintaining independence:
 
-1. Library projects (`MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`) organize reusable code in `include/` and `src/` directories
+1. Library projects (`MemoryLib`, `SpatialQueryLib`, `MathLib`, `ParticleFlowLib`) organize reusable code in `include/` and `src/` directories
 2. Consumer projects add `-I../OtherProject/include` to their CFLAGS **and compile the sibling's `.c`/`.cpp` directly from its source directory**. See `MatterEngine3/Makefile`, which compiles `$(SQL_DIR)/src/spatial_hash.c` and `$(MEMLIB_DIR)/src/mem_pool.c` from their source-of-truth libraries. This is the only mechanism actually in use.
 
 **Do not copy a sibling's sources into your project.** Every duplicate in this
@@ -53,12 +56,14 @@ MatterSurfaceLib in 2025-06 and drifted for a year, so the 2026-07 review sweep
 had to land near-identical fixes in each copy. If you need a sibling's code,
 compile it from where it lives.
 
-Symlinks to sibling sources were tried three times (MatterSurfaceLib and
-GPURayTraceExample both symlinked into OpenParticleSurfaceLib / SpatialQueryLib)
-and survive nowhere: git worktrees on Windows materialise tracked symlinks as
-plain text files, which breaks the build in a confusing way. Prefer the `-I` +
-compile-from-source approach above. Directory symlinks that the build genuinely
-requires are recreated as NTFS junctions by `setup-worktree.sh`.
+**Do not symlink sibling sources either.** It was tried three times
+(MatterSurfaceLib and GPURayTraceExample both symlinked into
+OpenParticleSurfaceLib / SpatialQueryLib) and survives nowhere: git worktrees
+on Windows materialise tracked symlinks as plain text files, which breaks the
+build in a confusing way. The two directory symlinks the build itself used to
+require were removed outright on 2026-08-14 — every Makefile now references
+`libs/MatterSurfaceLib/shaders` directly (see "Worktree setup" below). Prefer
+`-I` + compile-from-source for any new sharing need.
 
 ### Benefits of this approach:
 
@@ -74,7 +79,7 @@ To create a new project that builds on existing ones:
 
 1. Create a new directory with the project name
 2. Copy the basic structure (Makefile, main.c, etc.) from a similar project
-3. Create symlinks to code from other projects you want to reuse
+3. Reference code from other projects via `-I` + compiling from its source directory (see "Code Sharing Between Projects" above) — never copy or symlink
 4. Update the Makefile to include the necessary dependencies
 5. Build and test your new project independently
 
@@ -85,28 +90,34 @@ To create a new project that builds on existing ones:
 The project builds with GCC from MSYS2's UCRT64 environment. The compiler lives at
 `C:\msys64\ucrt64\bin\g++.exe`. MSYS2's `/usr/bin/make` is used as the build driver.
 
-**Critical: TEMP variable fix.** MSYS2's make clobbers the Windows TEMP env var,
-causing GCC to fail with "Cannot create temporary file in C:\WINDOWS\". Always pass
-TEMP explicitly:
+Every project's Makefile (and every `tests/` sub-Makefile) starts with
+`include ../platform.mk` (or `../../platform.mk` one level deeper). That file
+now handles two things that used to be the caller's job:
+
+- **TMP/TEMP.** MSYS2's make clobbers the Windows `TEMP` env var, which used to
+  make GCC fail with "Cannot create temporary file in C:\WINDOWS\" unless you
+  passed `TMP=`/`TEMP=` explicitly on every invocation. `platform.mk` detects
+  Windows and exports both from `LOCALAPPDATA` automatically, so plain build
+  commands work with no env var prefix (see below). **If you ever see that
+  error again**, the auto-detection didn't fire for that invocation path (a
+  nested shell that drops inherited env vars — see the comment at the top of
+  `platform.mk`) — fall back to passing `TMP`/`TEMP` explicitly as before.
+- **Parallelism.** The top-level invocation picks `-j$(nproc)` automatically;
+  recursive submakes (`MatterEditor` → `MatterEngine3`, `MatterEngine3` →
+  `tests`) inherit the jobserver rather than forcing a second `-j`. A caller
+  that already passed its own `-jN` is left alone.
 
 ```bash
 export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
 
 # Build kernel library
-make -C MatterEngine3 \
-  TMP="C:/Users/webde/AppData/Local/Temp" \
-  TEMP="C:/Users/webde/AppData/Local/Temp"
+make -C MatterEngine3
 
 # Build editor (Windows target)
-make -C MatterEditor windows \
-  TMP="C:/Users/webde/AppData/Local/Temp" \
-  TEMP="C:/Users/webde/AppData/Local/Temp"
+make -C MatterEditor windows
 
 # Run tests (pass GRAPHICS= on Windows since it's unset)
-make -C MatterEngine3/tests run-world-definition \
-  TMP="C:/Users/webde/AppData/Local/Temp" \
-  TEMP="C:/Users/webde/AppData/Local/Temp" \
-  GRAPHICS=GRAPHICS_API_OPENGL_43
+make -C MatterEngine3/tests run-world-definition GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 **Note:** Test link targets that use `-lGL -lX11 -ldl -lrt` (Linux-only libs) will
@@ -114,23 +125,45 @@ fail at link time on Windows. Compilation still succeeds — the syntax/semantic
 is the important gate. Tests that don't depend on raylib or GL (like
 `run-world-definition`, `run-script`, `run-evalworld`) link and run fully on Windows.
 
-### Worktree setup (symlinks)
+**RETOPO.** `MatterEditor/Makefile` defaults to `RETOPO=1` (autoremesher-backed
+retopology). It used to require a real TBB shared library that only built on
+Linux, forcing `RETOPO=0` on Windows; that was replaced with a header-only TBB
+shim (`third_party/autoremesher_core/thirdparty/tbb_shim/`), so the archive is
+self-contained now and the default `make -C MatterEditor windows` build does
+**not** currently need `RETOPO=0`. Pass `RETOPO=0` only to skip retopo
+deliberately (opting-in schemas then hit the warn-and-continue path in
+`MatterEngine3/src/modifier_apply.cpp`) — re-check the Makefile's `RETOPO ?=`
+line before trusting this if retopo linking has regressed since.
 
-Git worktrees on Windows render tracked symlinks as small text files. Run the setup
-script from repo root after creating a worktree:
+### Worktree setup
 
-```bash
-bash setup-worktree.sh
-```
+Git worktrees on Windows render tracked symlinks as small text files, which is
+why the shader symlinks existed and then were removed (2026-08-14) rather than
+kept. `setup-worktree.sh` still exists at repo root but is now a **deprecated
+stub** that prints an explanation and exits 0, so the old `bash
+setup-worktree.sh` habit after `git worktree add` fails loudly-but-kindly
+instead of silently doing nothing.
 
-This creates NTFS junctions for the two directory symlinks the build requires:
-- `MatterEngine3/shaders` → `libs/MatterSurfaceLib/shaders`
-- `MatterEditor/shaders` → `libs/MatterSurfaceLib/shaders`
+The one remaining per-worktree step is animation-only: `*.a` files are
+gitignored except a couple of named exceptions, and ozz only builds via its
+own CMake/PowerShell flow, not this repo's Makefiles. If you're building an
+animation target, copy the prebuilt archives from a checkout that already has
+them: `third_party/ozz-animation/build/matter/**/*.a` (mirror the same
+subpaths into the new worktree).
 
-(There used to be a third, `MatterEditor/shaders_gpu` → `MatterEngine3/shaders_gpu`. Both
-the junction and its target were retired once the GL path was deleted; Vulkan shader
-sources live in `MatterEngine3/shaders_vk/` and are compiled to SPIR-V and embedded, not
-symlinked.)
+### Shaders
+
+Vulkan shader sources live in `MatterEngine3/shaders_vk/` and compile to
+embedded SPIR-V (`MatterEngine3/shaders_gen/embedded_spirv.h`) as an ordinary
+build prerequisite: every object in `libmatter_engine3.a` depends on that
+header, which depends on the compiled `.spv` files, which depend on their
+`.comp`/`.vert`/`.frag`/`.rgen`/`.glsl` sources via explicit dependency edges.
+**`make -C MatterEngine3` (the default target) rebuilds SPIR-V whenever a
+shader source changes** — there is no separate `vulkan-spirv` target to
+remember, so a green build can't silently keep stale SPIR-V. `MatterEditor/Makefile`
+delegates to the same rule (`$(MAKE) -C ../MatterEngine3 vulkan-spirv`) rather
+than keeping an independent shader list, so the two builds can never embed
+different SPIR-V for the same source tree.
 
 ### Sandbox note for Claude Desktop App
 
@@ -169,6 +202,39 @@ node --experimental-default-type=module projects/world_demo/tests/alpine_ecology
 by adding a `package.json` — the same `.js` files are loaded by the engine's
 QuickJS host, which has its own module resolution and would not see it.
 
+## QA quick reference
+
+Driving the editor headlessly. Full reference: `docs/agent/`.
+
+One-shot screenshot (capture-then-quit, no FIFO needed):
+
+```bash
+cd MatterEditor
+MATTER_WORLD=StreamMountain MATTER_SCREENSHOT="C:/tmp/shot.png" \
+MATTER_SCREENSHOT_SETTLE=90 ./build/windows/editor.exe
+```
+
+Multi-step timeline via `MatterEngine3/tools/drive.py` (launches the editor
+against a `MATTER_CMD_FIFO` file, verifies every `shot`/`shot_now` it promised
+actually landed): `python MatterEngine3/tools/drive.py --world StreamMountain
+--timeline shots.txt --out-dir out/ --hide-ui`, where `shots.txt` is one verb
+per line:
+
+```
+wait_idle 5
+set viewer.debug.lod_tint true
+shot C:/tmp/out/shot1.png
+wait_event bake.finished 30
+quit
+```
+
+Issue replay + diff: `bash docs/baselines/capture-replay-baseline.sh
+issues/<guid> /tmp/before.png` (see `docs/agent/issue-system.md`).
+
+Full docs: `docs/agent/control-surface.md` (env vars, FIFO grammar, events),
+`docs/agent/qa-cookbook.md` (copy-paste recipes), `docs/agent/issue-system.md`
+(capture/file/replay), `docs/README.md` (everything else).
+
 ## Project Relationships
 
 Current projects and their relationships. Dependencies run one way only:
@@ -184,17 +250,24 @@ Current projects and their relationships. Dependencies run one way only:
    - Note: the name predates its contents — it now owns the engine's core
      geometry types, not just queries
 
-3. **libs/ParticleFlowLib** - Particle-flow simulation, fields, path recording (C++)
+3. **libs/MathLib** - The engine's canonical math library (C++)
+   - No dependencies. One documented `Vec2`/`Vec3`/`Vec4`/`Mat4`/`Quat`
+     (`mm::` namespace) plus layout-compatible C-ABI mirrors in
+     `matter_math_c.h`, replacing the raylib math types the engine used for
+     everyday vector/matrix work — distinct from SpatialQueryLib's `precomp.h`
+     SIMD types, which remain the BVH/Tri interchange format
+
+4. **libs/ParticleFlowLib** - Particle-flow simulation, fields, path recording (C++)
    - Compiled directly into MatterEngine3 and MatterEditor
 
-4. **libs/MatterSurfaceLib** - Meshing/surfacing backend + GPU resource management
+5. **libs/MatterSurfaceLib** - Meshing/surfacing backend + GPU resource management
    - Dependencies: SpatialQueryLib, MemoryLib, raylib
    - Provides: marching-cubes/CSG surfacing (`surface.c`), cluster/cell meshing,
      mesh simplification, and the BLAS/TLAS *GPU* managers (`blas_manager`,
      `tlas_manager`, `bvh_visualizer` — these own `Texture2D`/`Shader` and are
      the GL upload path, distinct from the structures in SpatialQueryLib)
 
-5. **MatterEngine3** - Kernel library (`libmatter_engine3.a`) for the procedural engine
+6. **MatterEngine3** - Kernel library (`libmatter_engine3.a`) for the procedural engine
    - Provides: script host (QuickJS-ng DSL), bake pipeline (world_flatten/lod_bake/sector_grid),
      render subsystem (part_store/world_state/vk_scene_renderer + the Vulkan compute cull in
      `shaders_vk/cull.comp`), provider subsystem (local_provider/resolvers), facade
@@ -204,24 +277,26 @@ Current projects and their relationships. Dependencies run one way only:
      header carries the equivalence proof; `make -C MatterEngine3/tests run-lod-distance`
      asserts it. Do not add a second projected-size comparison — that duplication is what
      the Representation migration exists to remove (docs/lod-vt-redesign-2026-08-04.md)
-   - Build: `make -C MatterEngine3` → `build/libmatter_engine3.a` + embedded shader header
+   - Build: `make -C MatterEngine3` → `build/libmatter_engine3.a` + embedded shader/SPIR-V headers
    - Tests: `make -C MatterEngine3/tests run-*` (headless) and GPU suites with `GALLIUM_DRIVER=d3d12`
 
-6. **MatterEditor** - Interactive editor application linking the kernel library
-   - Dependencies: MatterEngine3 (libmatter_engine3.a), MatterSurfaceLib, raylib, Dear ImGui,
-     QuickJS-ng, Box3d, optionally autoremesher_core + TBB
+7. **MatterEditor** - Interactive editor application linking the kernel library
+   - Dependencies: MatterEngine3 (libmatter_engine3.a), MatterSurfaceLib, raylib (headers
+     only — see below), Dear ImGui, QuickJS-ng, Box3d, optionally autoremesher_core
+   - **Vulkan-only.** The GL/raylib rendering and windowing path was deleted
+     outright (Phase 5a); `windows`/`linux` are Vulkan+GLFW targets and the
+     link step asserts no OpenGL import survives in the binary. `raylib`
+     headers remain an include-path dependency only (POD BLAS/Tri types)
    - Build: `make -C MatterEditor` → `build/linux/editor` (or `make -C MatterEditor windows` →
      `build/windows/editor.exe`); always launched from the MatterEditor/ working directory
    - Packaging: `make -C MatterEditor dist` (optionally `PROJECT=<name>`, default `world_demo`)
      → `build/dist/<PROJECT>/` — the exe plus `projects/<PROJECT>/` (minus `.cache`/`backup`),
      ready to zip and hand off; shaders are embedded in the exe, not copied
-   - Shader symlink: `MatterEditor/shaders` → libs/MatterSurfaceLib/shaders
-     (the former `shaders_gpu` junction went with the GL path)
 
-7. **libs/MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
+8. **libs/MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
    - No consumers today; kept for the voxel-box-imposter work
 
-8. **libs/AssetStoreLib** - MatterStore: content-addressed blobs in append-only packs
+9. **libs/AssetStoreLib** - MatterStore: content-addressed blobs in append-only packs
    - Dependencies: MemoryLib only. No engine headers, no raylib, no Vulkan
    - Provides: `BlobStore` (packs + an atomically-swapped index + per-blob CRC),
      `RefTable` (opaque semantic keys, LRU against a disk budget, compaction),
@@ -234,6 +309,12 @@ Current projects and their relationships. Dependencies run one way only:
    - **No consumers yet.** Adopting it as the engine's cache is M5's second half
      (docs/superpowers/plans/2026-08-04-lod-vt-migration.md), deliberately not
      done alongside the library's first appearance
+
+10. **libs/ProfileLib** - Always-on lightweight profiler (C++)
+    - No dependencies. Compiled into MatterEngine3 and MatterEditor. Provides
+      frame-record capture, Chrome-trace export (`MATTER_PROFILE_TRACE`), and
+      the in-editor Performance/Memory panels; `MATTER_PROFILE=0` compiles the
+      instrumentation out
 
 `Prototypes/` holds retired experiments (`BasicWindowApp`, `GPURayTraceExample`).
 They are excluded from `build-all.sh` and their sources are frozen snapshots —
