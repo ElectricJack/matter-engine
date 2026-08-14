@@ -57,6 +57,28 @@ uint64_t g_dropped_device_address_records = 0;
 // before the fault?" -- are answered in frames, not milliseconds.
 std::atomic<uint64_t> g_device_address_frame{0};
 
+// GPU memory accounting: every vkAllocateMemory increments, every vkFreeMemory
+// decrements. Separated by memory property so the UI can show VRAM vs staging.
+std::atomic<uint64_t> g_gpu_device_local_bytes{0};
+std::atomic<uint64_t> g_gpu_host_visible_bytes{0};
+std::atomic<uint64_t> g_gpu_allocation_count{0};
+
+void track_gpu_alloc(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
+    if (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        g_gpu_device_local_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    else
+        g_gpu_host_visible_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    g_gpu_allocation_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void track_gpu_free(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
+    if (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        g_gpu_device_local_bytes.fetch_sub(bytes, std::memory_order_relaxed);
+    else
+        g_gpu_host_visible_bytes.fetch_sub(bytes, std::memory_order_relaxed);
+    g_gpu_allocation_count.fetch_sub(1, std::memory_order_relaxed);
+}
+
 void register_device_address(uint64_t base, uint64_t size, const char* kind,
                              const void* site) {
     if (base == 0 || size == 0) return;
@@ -92,6 +114,8 @@ void release_device_address(uint64_t base) {
 // few thousand macros into a header-light translation unit.
 extern "C" __declspec(dllimport) void* __stdcall GetModuleHandleW(
     const wchar_t*);
+extern "C" __declspec(dllimport) void* __stdcall GetProcAddress(
+    void* hModule, const char* lpProcName);
 #endif
 
 // The allocation site as a module-relative offset: absolute addresses move with
@@ -110,6 +134,65 @@ uint64_t site_rva(const void* site) {
 
 void debug_advance_device_address_frame() {
     g_device_address_frame.fetch_add(1, std::memory_order_relaxed);
+}
+
+GpuMemoryStats gpu_memory_stats() noexcept {
+    GpuMemoryStats s;
+    s.device_local_bytes = g_gpu_device_local_bytes.load(std::memory_order_relaxed);
+    s.host_visible_bytes = g_gpu_host_visible_bytes.load(std::memory_order_relaxed);
+    s.total_bytes = s.device_local_bytes + s.host_visible_bytes;
+    s.allocation_count = g_gpu_allocation_count.load(std::memory_order_relaxed);
+    return s;
+}
+
+void gpu_memory_track_alloc(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
+    track_gpu_alloc(bytes, props);
+}
+void gpu_memory_track_free(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
+    track_gpu_free(bytes, props);
+}
+
+ProcessMemoryStats process_memory_stats() noexcept {
+    ProcessMemoryStats s;
+#ifdef _WIN32
+    struct PMC {
+        uint32_t cb;
+        uint32_t PageFaultCount;
+        size_t PeakWorkingSetSize;
+        size_t WorkingSetSize;
+        size_t QuotaPeakPagedPoolUsage;
+        size_t QuotaPagedPoolUsage;
+        size_t QuotaPeakNonPagedPoolUsage;
+        size_t QuotaNonPagedPoolUsage;
+        size_t PagefileUsage;
+        size_t PeakPagefileUsage;
+    };
+    using Fn = int(__stdcall*)(void*, PMC*, uint32_t);
+    static const Fn fn = [] {
+        void* k32 = GetModuleHandleW(L"kernel32.dll");
+        return k32 ? reinterpret_cast<Fn>(GetProcAddress(k32,
+                         "K32GetProcessMemoryInfo"))
+                   : nullptr;
+    }();
+    if (fn) {
+        PMC pmc{};
+        pmc.cb = sizeof(pmc);
+        void* self = reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+        if (fn(self, &pmc, sizeof(pmc))) {
+            s.working_set_bytes = pmc.WorkingSetSize;
+            s.peak_working_set_bytes = pmc.PeakWorkingSetSize;
+        }
+    }
+#else
+    FILE* f = fopen("/proc/self/statm", "r");
+    if (f) {
+        long pages = 0;
+        if (fscanf(f, "%*ld %ld", &pages) == 1)
+            s.working_set_bytes = static_cast<uint64_t>(pages) * 4096;
+        fclose(f);
+    }
+#endif
+    return s;
 }
 
 std::string debug_describe_device_address(uint64_t address, uint64_t span) {
@@ -189,6 +272,8 @@ struct VkBufferAllocation final : DeviceLifetimeControl {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
     uint64_t device_address = 0;
+    VkDeviceSize tracked_alloc_size = 0;
+    VkMemoryPropertyFlags tracked_mem_props = 0;
 
     ~VkBufferAllocation() override { release_device_objects(); }
 
@@ -199,13 +284,17 @@ protected:
             vkUnmapMemory(device, memory);
         if (device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE)
             vkDestroyBuffer(device, buffer, nullptr);
-        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE) {
             vkFreeMemory(device, memory, nullptr);
+            if (tracked_alloc_size > 0)
+                track_gpu_free(tracked_alloc_size, tracked_mem_props);
+        }
         release_device_address(device_address);
         device_address = 0;
         buffer = VK_NULL_HANDLE;
         memory = VK_NULL_HANDLE;
         mapped = nullptr;
+        tracked_alloc_size = 0;
     }
 };
 
@@ -216,6 +305,8 @@ struct VkImageAllocation final : DeviceLifetimeControl {
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize tracked_alloc_size = 0;
+    VkMemoryPropertyFlags tracked_mem_props = 0;
 
     ~VkImageAllocation() override { release_device_objects(); }
 
@@ -226,11 +317,15 @@ protected:
             vkDestroyImageView(device, view, nullptr);
         if (device != VK_NULL_HANDLE && image != VK_NULL_HANDLE)
             vkDestroyImage(device, image, nullptr);
-        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE) {
             vkFreeMemory(device, memory, nullptr);
+            if (tracked_alloc_size > 0)
+                track_gpu_free(tracked_alloc_size, tracked_mem_props);
+        }
         image = VK_NULL_HANDLE;
         view = VK_NULL_HANDLE;
         memory = VK_NULL_HANDLE;
+        tracked_alloc_size = 0;
     }
 };
 
@@ -624,11 +719,14 @@ bool create_buffer(VulkanDevice& vulkan, VkDeviceSize size,
             return false;
         }
     }
+    track_gpu_alloc(requirements.size, candidate.memory_properties);
     candidate.lifetime = std::make_shared<detail::VkBufferAllocation>(
         detail::DeviceLifetimeAccess::token(vulkan));
     candidate.lifetime->buffer = candidate.buffer;
     candidate.lifetime->memory = candidate.memory;
     candidate.lifetime->mapped = candidate.mapped;
+    candidate.lifetime->tracked_alloc_size = requirements.size;
+    candidate.lifetime->tracked_mem_props = candidate.memory_properties;
     if (candidate.address != 0) {
         candidate.lifetime->device_address = candidate.address;
         register_device_address(candidate.address, candidate.allocation_size,
@@ -936,11 +1034,14 @@ bool create_image(VulkanDevice& vulkan, VkImageType type, VkFormat format,
     view.subresourceRange.layerCount = 1;
     result = vkCreateImageView(candidate.device, &view, nullptr, &candidate.view);
     if (result != VK_SUCCESS) return fail_result("vkCreateImageView", result, error);
+    track_gpu_alloc(requirements.size, selected);
     candidate.lifetime = std::make_shared<detail::VkImageAllocation>(
         detail::DeviceLifetimeAccess::token(vulkan));
     candidate.lifetime->image = candidate.image;
     candidate.lifetime->view = candidate.view;
     candidate.lifetime->memory = candidate.memory;
+    candidate.lifetime->tracked_alloc_size = requirements.size;
+    candidate.lifetime->tracked_mem_props = selected;
     output = std::move(candidate);
     return true;
 }

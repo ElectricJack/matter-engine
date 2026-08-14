@@ -148,6 +148,9 @@ bool VtResidency::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
         destroy_buffer(out);
         return false;
     }
+    matter::gpu_memory_track_alloc(requirements.size, selected);
+    out.tracked_alloc_size = requirements.size;
+    out.tracked_mem_props = selected;
     if (vkBindBufferMemory(device, out.buffer, out.memory, 0) != VK_SUCCESS) {
         error = "vt: vkBindBufferMemory failed";
         destroy_buffer(out);
@@ -173,7 +176,11 @@ void VtResidency::destroy_buffer(Buffer& b) {
     const VkDevice device = vulkan_->device();
     if (b.mapped) vkUnmapMemory(device, b.memory);
     if (b.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, b.buffer, nullptr);
-    if (b.memory != VK_NULL_HANDLE) vkFreeMemory(device, b.memory, nullptr);
+    if (b.memory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, b.memory, nullptr);
+        if (b.tracked_alloc_size > 0)
+            matter::gpu_memory_track_free(b.tracked_alloc_size, b.tracked_mem_props);
+    }
     b = Buffer{};
 }
 
@@ -184,7 +191,8 @@ bool create_array_image(matter::VulkanDevice& vulkan, VkFormat format,
                         VkImageView& view, VkDeviceMemory& memory,
                         std::string& error,
                         VkImageViewType view_type =
-                            VK_IMAGE_VIEW_TYPE_2D_ARRAY) {
+                            VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+                        VkDeviceSize* out_alloc_size = nullptr) {
     const VkDevice device = vulkan.device();
     VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     create.imageType = VK_IMAGE_TYPE_2D;
@@ -223,8 +231,11 @@ bool create_array_image(matter::VulkanDevice& vulkan, VkFormat format,
         image = VK_NULL_HANDLE;
         return false;
     }
+    matter::gpu_memory_track_alloc(requirements.size, selected);
+    if (out_alloc_size) *out_alloc_size = requirements.size;
     if (vkBindImageMemory(device, image, memory, 0) != VK_SUCCESS) {
         error = "vt: vkBindImageMemory failed";
+        matter::gpu_memory_track_free(requirements.size, selected);
         vkFreeMemory(device, memory, nullptr);
         vkDestroyImage(device, image, nullptr);
         image = VK_NULL_HANDLE;
@@ -238,6 +249,7 @@ bool create_array_image(matter::VulkanDevice& vulkan, VkFormat format,
     view_create.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
     if (vkCreateImageView(device, &view_create, nullptr, &view) != VK_SUCCESS) {
         error = "vt: vkCreateImageView failed";
+        matter::gpu_memory_track_free(requirements.size, selected);
         vkFreeMemory(device, memory, nullptr);
         vkDestroyImage(device, image, nullptr);
         image = VK_NULL_HANDLE;
@@ -252,17 +264,20 @@ bool VtResidency::create_pool_image(uint32_t channel, VkFormat format,
                                     uint32_t layers, std::string& error) {
     PoolImage& out = pool_[channel];
     destroy_pool_image(out);
+    VkDeviceSize alloc_size = 0;
     if (!create_array_image(*vulkan_, format, kVtPoolLayerEdgeTexels,
                             kVtPoolLayerEdgeTexels, layers,
                             VK_IMAGE_USAGE_SAMPLED_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                            out.image, out.view, out.memory, error)) {
+                            out.image, out.view, out.memory, error,
+                            VK_IMAGE_VIEW_TYPE_2D_ARRAY, &alloc_size)) {
         return false;
     }
     out.format = format;
     out.layers = layers;
     out.edge = kVtPoolLayerEdgeTexels;
     out.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    out.tracked_alloc_size = alloc_size;
     return true;
 }
 
@@ -274,7 +289,12 @@ void VtResidency::destroy_pool_image(PoolImage& image) {
     const VkDevice device = vulkan_->device();
     if (image.view != VK_NULL_HANDLE) vkDestroyImageView(device, image.view, nullptr);
     if (image.image != VK_NULL_HANDLE) vkDestroyImage(device, image.image, nullptr);
-    if (image.memory != VK_NULL_HANDLE) vkFreeMemory(device, image.memory, nullptr);
+    if (image.memory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, image.memory, nullptr);
+        if (image.tracked_alloc_size > 0)
+            matter::gpu_memory_track_free(image.tracked_alloc_size,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    }
     image = PoolImage{};
 }
 
@@ -292,8 +312,31 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     // above the pool sizing because pool_pages is now one of these.
     matter::ensure_vt_residency_env_applied();
     const matter::VtResidencyBudgets& budgets = matter::vt_residency_budgets();
-    pool_pages_ = clamp_u32(budgets.pool_pages, kVtPagesPerLayer,
-                            kVtPagesPerLayer * 256u);
+
+    // Derive pool page count. When pool_mb > 0 (the default), compute pages
+    // from the VRAM budget; otherwise fall back to the explicit page count.
+    // Per-page byte cost: BC7(1) + BC5(1) + BC7(1) + RGBA8(4) = 7 bytes/texel.
+    constexpr uint64_t kBytesPerPageTexel = 1 + 1 + 1 + 4;  // 7
+    constexpr uint64_t kPageTexels =
+        static_cast<uint64_t>(kVtPageStride) * kVtPageStride;  // 136^2
+    constexpr uint64_t kBytesPerPage = kPageTexels * kBytesPerPageTexel;
+    if (budgets.pool_mb > 0) {
+        const uint64_t budget_bytes =
+            static_cast<uint64_t>(budgets.pool_mb) * 1024u * 1024u;
+        // Pages that fit inside the layer grid (each layer holds 256 pages of
+        // kVtPoolLayerEdgeTexels^2 texels, not kPageTexels*256 — the grid has
+        // no gaps, so the per-layer cost is layer_texels * bytes_per_texel).
+        constexpr uint64_t kBytesPerLayer =
+            static_cast<uint64_t>(kVtPoolLayerEdgeTexels) *
+            kVtPoolLayerEdgeTexels * kBytesPerPageTexel;
+        uint32_t layers_from_mb = static_cast<uint32_t>(
+            std::min<uint64_t>(budget_bytes / kBytesPerLayer, 256u));
+        if (layers_from_mb < 1u) layers_from_mb = 1u;
+        pool_pages_ = layers_from_mb * kVtPagesPerLayer;
+    } else {
+        pool_pages_ = clamp_u32(budgets.pool_pages, kVtPagesPerLayer,
+                                kVtPagesPerLayer * 256u);
+    }
     // Round up to whole layers.
     const uint32_t pool_layers =
         (pool_pages_ + kVtPagesPerLayer - 1u) / kVtPagesPerLayer;
@@ -488,14 +531,14 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         filler_ = std::move(stub);
     }
 
-    // Pool bytes: BC7 + BC5 + BC7 are 1 byte/texel, aux is 4.
+    // Pool bytes: BC7(1) + BC5(1) + BC7(1) + RGBA8(4) = 7 bytes/texel.
     const uint64_t layer_texels = static_cast<uint64_t>(kVtPoolLayerEdgeTexels) *
                                   kVtPoolLayerEdgeTexels;
     stats_ = Stats{};
     stats_.pool_capacity = pool_pages_;
     stats_.max_variants = max_variants_;
     stats_.mesh_budget_bytes = mesh_budget_bytes_;
-    stats_.pool_bytes = layer_texels * pool_layers * (1 + 1 + 1 + 4 + 1);
+    stats_.pool_bytes = layer_texels * pool_layers * kBytesPerPageTexel;
     stats_.indirection_capacity_bytes =
         static_cast<uint64_t>(indirection_words) * 4u;
     stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;

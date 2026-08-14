@@ -18,6 +18,27 @@ struct VkImageAllocation;
 struct VkAccelerationStructureAllocation;
 }  // namespace detail
 
+// Process-wide GPU memory accounting. Every vkAllocateMemory in create_buffer
+// and create_image is tracked; the corresponding vkFreeMemory decrements.
+// Thread-safe (atomic). The breakdown separates device-local (VRAM) from
+// host-visible (system RAM mapped for staging).
+struct GpuMemoryStats {
+    uint64_t device_local_bytes = 0;   // VRAM: DEVICE_LOCAL allocations
+    uint64_t host_visible_bytes = 0;   // staging: HOST_VISIBLE allocations
+    uint64_t total_bytes = 0;          // sum of the two
+    uint64_t allocation_count = 0;
+};
+GpuMemoryStats gpu_memory_stats() noexcept;
+void gpu_memory_track_alloc(VkDeviceSize bytes, VkMemoryPropertyFlags props);
+void gpu_memory_track_free(VkDeviceSize bytes, VkMemoryPropertyFlags props);
+
+// Process memory snapshot (working set on Windows, RSS on Linux).
+struct ProcessMemoryStats {
+    uint64_t working_set_bytes = 0;
+    uint64_t peak_working_set_bytes = 0;
+};
+ProcessMemoryStats process_memory_stats() noexcept;
+
 // Device-fault forensics: matches a faulting GPU VA (from VK_EXT_device_fault)
 // against every tracked device-addressable range — buffers created with
 // SHADER_DEVICE_ADDRESS usage and acceleration structures — both live and

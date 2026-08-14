@@ -11060,6 +11060,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->stats.vt_indirection_capacity_bytes =
             vt_stats.indirection_capacity_bytes;
     }
+    impl_->stats.impostor_atlas_bytes =
+        impl_->vk_scene->impostor_atlas_total_bytes();
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
     impl_->stats.dlss_active_mode = impl_->vk_scene->active_dlss_mode();
     impl_->stats.dlss_internal_width = internal_extent.width;
