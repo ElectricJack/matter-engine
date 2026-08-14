@@ -1241,6 +1241,9 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
     const FrameMatrices& matrices, matter::Float3 camera_eye,
     float pixel_budget,
     const std::vector<VkAnimationBoundsInstance>& rejected_bounds) {
+    // The LOD pick below predicts what cull.comp will RASTER-select, and
+    // cull.comp selects with the cull eye -- frozen while the freeze is on.
+    camera_eye = lod_selection_eye(camera_eye);
     // The bridge can reject before it has a VkSkinSubmission.  Its explicit
     // full generational scope is consumed before the empty queue is
     // published, so culling cannot retain a prior animated record.
@@ -1901,11 +1904,14 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // and visibility_id.vert reads it -- which is what lets the ID pass reuse
     // this set instead of needing one of its own.
     //
+    // Binding 19: the per-part_slot occlusion class (1 = may occlude / be
+    // occlusion-tested, 0 = excluded), COMPUTE-only (cull.comp).
+    //
     // These sat at 17-19 while the HZB pyramid held 16. It went, and the hole
     // it left was not free: a default-constructed VkDescriptorSetLayoutBinding
     // has binding 0, so the array carried a DUPLICATE of binding 0 and layout
     // creation failed -- taking every cull smoke mode with it.
-    std::array<VkDescriptorSetLayoutBinding, 19> scene_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 20> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1949,6 +1955,8 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT);
     scene_bindings[18] = descriptor_binding(
         18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    scene_bindings[19] = descriptor_binding(
+        19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -3264,8 +3272,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 3},
         // 27 for the scene/VT buffers above, +1 for the per-module
         // draw-override table at binding 14, +3 for the M4 ID pass's
-        // unfiltered command/transform lists and the visibility mask (17-19).
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 31},
+        // unfiltered command/transform lists and the visibility mask (17-19),
+        // +1 for the per-part occlusion-class table at binding 19.
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 32},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
              (120 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
@@ -3424,7 +3433,10 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(
                 frame.part_draw_overrides,
                 sizeof(matter::PartDrawOverrideGpu),
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.part_occluder_class,
+                                     sizeof(uint32_t),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
@@ -3567,6 +3579,9 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
     update_descriptor(frame.descriptor_sets[1], 14,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                       frame.part_draw_overrides);
+    update_descriptor(frame.descriptor_sets[1], 19,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                      frame.part_occluder_class);
     write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
     write_vt_descriptors_for_frame(frame);
 }
@@ -4692,6 +4707,11 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
 void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
                                        float pixel_budget) {
     if (vt_deferred_parts_ == 0) return;
+    // This is the CPU mirror of cull.comp's rung pick, stamping wanted VT
+    // rungs for the draws that pick will emit -- so it has to select with
+    // the same (possibly frozen) eye, or the pages wanted stop matching the
+    // rungs drawn while the cull camera is frozen.
+    camera_eye = lod_selection_eye(camera_eye);
     // Re-read every pass rather than latched on the first one: both knobs live
     // in matter::VtResidencyBudgets now, and the demand pass is exactly the
     // per-frame consumer that makes them live-editable from Tunables. The
@@ -5034,6 +5054,40 @@ void VkSceneRenderer::rebuild_part_draw_overrides() {
     // A world with zero registered parts still needs a bindable buffer.
     if (part_draw_override_table_.empty())
         part_draw_override_table_.assign(1, matter::PartDrawOverrideGpu{});
+}
+
+void VkSceneRenderer::rebuild_part_occluder_table() {
+    part_occluder_dirty_ = false;
+    // Default 1 everywhere: an unknown class occludes, which is the
+    // pre-exclusion behaviour. Covers dead slots (never dispatched), parts
+    // registered before the first material upload, and out-of-range ids.
+    part_occluder_table_.assign(std::max<size_t>(parts_.size(), 1), 1u);
+    if (material_staging_.empty()) return;
+    for (size_t slot = 0; slot < parts_.size(); ++slot) {
+        const PartRecord& record = parts_[slot];
+        if (!record.live) continue;
+        bool alpha_tested = false;
+        for (const RtLodRecord& lod : record.rt_lods) {
+            // Billboard rungs are already outside the ID pass through
+            // GpuCluster::vis_mesh_lods; only the mesh rungs it can
+            // rasterise decide the class.
+            const uint32_t mesh_lods =
+                lod.cluster_index < record.rt_cluster_mesh_lods.size()
+                    ? record.rt_cluster_mesh_lods[lod.cluster_index]
+                    : 0u;
+            if (lod.lod_index >= mesh_lods) continue;
+            for (const uint32_t material_id : lod.material_ids) {
+                if (material_id < material_staging_.size() &&
+                    (material_staging_[material_id].flags_misc[0] &
+                     MATERIAL_ALPHA_TESTED) != 0u) {
+                    alpha_tested = true;
+                    break;
+                }
+            }
+            if (alpha_tested) break;
+        }
+        if (alpha_tested) part_occluder_table_[slot] = 0u;
+    }
 }
 
 void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
@@ -7453,6 +7507,11 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         cluster.lod_count = static_cast<uint32_t>(source.lods.size());
         cluster.part_slot = static_cast<uint32_t>(slot);
         cluster.cluster_index = static_cast<uint32_t>(i);
+        // The ID pass's rung ceiling: same trailing-billboard peel the RT
+        // lane uses, computed above from the same VkScenePart. A billboard
+        // proxy in the ID pass would rasterise in its baked orientation,
+        // solid -- see ClusterMeta.vis_mesh_lods in cull.comp.
+        cluster.vis_mesh_lods = record.rt_cluster_mesh_lods[i];
         for (uint32_t lod = 0; lod < kVkMaxLod; ++lod) {
             // M1: the GPU selects on switch DISTANCE, not projected size. The
             // stored value is normalized (unit radius, scale and dial); cull.comp
@@ -7489,6 +7548,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // A new slot lengthens the per-slot override table (and may itself carry
     // an override); no-op work when nothing is overridden.
     part_draw_overrides_dirty_ = true;
+    // Likewise for the occlusion-class table -- and the new part's own class
+    // has to be resolved against the current material table.
+    part_occluder_dirty_ = true;
     // Record the written ranges (interior when a freed range was reused, tail
     // otherwise) for the ranged upload path.
     if (record.cluster_count != 0)
@@ -7615,6 +7677,9 @@ bool VkSceneRenderer::update_materials(
     material_shading_revision_ = shading_revision;
     material_geometry_revision_ = geometry_revision;
     ++material_generation_;
+    // MATERIAL_ALPHA_TESTED is an input to the occlusion-class table; any
+    // accepted table change re-resolves it (cheap: deduped id lists per rung).
+    part_occluder_dirty_ = true;
     // WP-D/E: the compositor bakes albedo/ORM and the detail-slot binding into
     // pages, so a material table change has to reach it too. Deferred to the
     // next vt_begin_frame (the setter wants the device idle w.r.t. fills).
@@ -9602,6 +9667,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
                                             vt_invalidate_retire_serial());
     vt_draw_slots_dirty_ = true;
     part_draw_overrides_dirty_ = true;
+    part_occluder_dirty_ = true;
     if (record.vt_rung_mask != 0u && vt_deferred_parts_ != 0u)
         --vt_deferred_parts_;
     // The slot itself is never reused (cluster.part_slot values and rt_lods
@@ -10754,6 +10820,16 @@ bool VkSceneRenderer::upload_scene_buffers(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
         return poison(error);
     descriptors_changed |= replaced;
+    // The occlusion-class table: same shape, same unconditional upload, and
+    // the same capacity-padding contract as the two tables above.
+    if (part_occluder_dirty_) rebuild_part_occluder_table();
+    const VkDeviceSize part_occluder_bytes =
+        static_cast<VkDeviceSize>(part_occluder_table_.size()) *
+        sizeof(uint32_t);
+    if (!ensure_buffer(frame.part_occluder_class, part_occluder_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
     if (descriptors_changed) update_frame_descriptors(frame);
     // Both of these tables are read in cull.comp under a `slot <
     // buffer.length()` bound, and length() is the BUFFER's element count, not
@@ -10800,6 +10876,16 @@ bool VkSceneRenderer::upload_scene_buffers(
         frame.part_draw_overrides.size,
         static_cast<VkDeviceSize>(part_draw_override_table_.size()) *
             sizeof(matter::PartDrawOverrideGpu));
+    // Padded with 1 (occluder), the neutral class -- same reasoning as the
+    // neutral override entry above.
+    const size_t part_occluder_capacity =
+        static_cast<size_t>(frame.part_occluder_class.size) / sizeof(uint32_t);
+    if (part_occluder_capacity > part_occluder_table_.size())
+        part_occluder_table_.resize(part_occluder_capacity, 1u);
+    const VkDeviceSize part_occluder_upload_bytes = std::min<VkDeviceSize>(
+        frame.part_occluder_class.size,
+        static_cast<VkDeviceSize>(part_occluder_table_.size()) *
+            sizeof(uint32_t));
     if (vt_slot_upload_bytes != 0 &&
         !upload(frame.vt_draw_slots, vt_draw_slot_table_.data(),
                 vt_slot_upload_bytes))
@@ -10807,6 +10893,10 @@ bool VkSceneRenderer::upload_scene_buffers(
     if (part_override_upload_bytes != 0 &&
         !upload(frame.part_draw_overrides, part_draw_override_table_.data(),
                 part_override_upload_bytes))
+        return false;
+    if (part_occluder_upload_bytes != 0 &&
+        !upload(frame.part_occluder_class, part_occluder_table_.data(),
+                part_occluder_upload_bytes))
         return false;
     vt_slots_scope.stop();
 
@@ -11384,8 +11474,15 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                .min_acceleration_structure_scratch_offset_alignment);
     {
         PROFILE_SCOPE("rt.geometry");
-        if (!build_ray_geometry(frame, camera_eye, pixel_budget,
-                                get_sizes, cmd_build,
+        // The CULL eye, not the live one: this selection must land on the
+        // same rung cull.comp draws, or the TLAS holds a different surface
+        // than the G-buffer the shadow rays start from. With the cull camera
+        // frozen the two eyes part company, terrain gets traced coarse while
+        // drawn fine (or vice versa), and every region where the traced rung
+        // sits proud of the drawn one goes black in sun visibility -- the
+        // scattered coarse-triangle splotches of issue eb0b1070.
+        if (!build_ray_geometry(frame, lod_selection_eye(camera_eye),
+                                pixel_budget, get_sizes, cmd_build,
                                 selected_geometry, pending, error))
             return false;
     }

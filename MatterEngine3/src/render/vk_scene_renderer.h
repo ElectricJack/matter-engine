@@ -1010,6 +1010,19 @@ public:
     matter::Float3 frozen_cull_eye() const noexcept {
         return frozen_cull_eye_;
     }
+    // The eye every raster-matching CPU LOD mirror must select with: the
+    // frozen cull eye while the freeze is on, the live eye otherwise.
+    // cull.comp receives exactly this through FrameConstants::camera_eye, so
+    // a mirror that takes the live eye directly diverges from the drawn rung
+    // whenever the freeze is engaged. The RT geometry selection did, and the
+    // result was issue eb0b1070: terrain traced at one rung while drawn at
+    // another, so sun-visibility rays started under the traced surface and
+    // whole coarse triangles read black.
+    matter::Float3 lod_selection_eye(matter::Float3 live_eye) const noexcept {
+        return cull_camera_frozen_ && cull_camera_freeze_requested_
+                   ? frozen_cull_eye_
+                   : live_eye;
+    }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
@@ -1474,7 +1487,12 @@ private:
         uint32_t lod_count;
         uint32_t part_slot;
         uint32_t cluster_index;
-        uint32_t pad1[3];
+        // Leading mesh-rung count (trailing rungs are impostor billboards);
+        // 0 = billboard-only. Gates the occlusion ID pass, which cannot
+        // rasterise a billboard honestly. Mirrors ClusterMeta.vis_mesh_lods
+        // in shaders_vk/cull.comp.
+        uint32_t vis_mesh_lods;
+        uint32_t pad1[2];
     };
     struct GpuInstance {
         GpuMat4 object_to_world;
@@ -1814,6 +1832,11 @@ private:
         // Per-part_slot draw overrides (max distance / LOD bias), read by
         // cull.comp. One neutral entry unless a module carries an override.
         matter::VkBufferResource part_draw_overrides;
+        // Per-part_slot occlusion class, read by cull.comp: 1 = the part's
+        // mesh rungs are alpha-test-free, so the no-discard ID pass can use
+        // them as occluders (and the mask may cull them); 0 = excluded from
+        // occlusion on both sides.
+        matter::VkBufferResource part_occluder_class;
         std::vector<VkSkinRasterDraw> ready_skin_raster_draws;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
@@ -2067,6 +2090,12 @@ private:
     // otherwise (a zero-length storage buffer is not bindable, and a neutral
     // slot-0 entry costs the shader nothing).
     void rebuild_part_draw_overrides();
+    // Rebuilds the per-part_slot occlusion-class table cull.comp reads: 0 for
+    // a part whose mesh rungs carry any alpha-tested material (the ID pass
+    // has no discard, so rasterising such a part overstates occlusion and
+    // hides the sectors visible through its cutouts), 1 otherwise. Unknown
+    // stays 1 -- the pre-exclusion behaviour.
+    void rebuild_part_occluder_table();
     // Feeds the tier-1 compositor the two inputs only the renderer knows: the
     // bound detail tileset slots and the materialId -> (detail slot, fallback
     // albedo/ORM) table. vt_compositor.h requires the device to be idle with
@@ -2343,6 +2372,11 @@ private:
     std::vector<matter::PartDrawOverrideEntry> part_draw_override_entries_;
     std::vector<matter::PartDrawOverrideGpu> part_draw_override_table_;
     bool part_draw_overrides_dirty_ = true;
+    // Per-part_slot occlusion class for the ID pass (see
+    // rebuild_part_occluder_table). Dirtied by part registration/release and
+    // by material-table changes, since MATERIAL_ALPHA_TESTED is what it reads.
+    std::vector<uint32_t> part_occluder_table_;
+    bool part_occluder_dirty_ = true;
     // Borrowed: the residency layer owns the filler. Null when the compositor
     // could not be created and the WP-E stub filler is standing in.
     vt::VtCompositor* vt_compositor_ = nullptr;
