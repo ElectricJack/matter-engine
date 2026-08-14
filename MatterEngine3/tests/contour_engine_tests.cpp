@@ -104,15 +104,26 @@ static const char* kCave0 =
 // a doubled surface -- are metres wide, not microns.
 constexpr double kTol = 1e-4;
 
+// NORMAL DISAGREEMENT AT A SHARED VERTEX. When two tiles both reference one
+// world point, they each store a normal for it, and if those differ the surface
+// creases along the seam however watertight the geometry is. `nx/ny/nz` holds
+// the FIRST normal seen at a merged vertex and `worst_cos`/`from_tile` let the
+// second one be compared against it, so a shared vertex reports the angle
+// between the two tiles' answers rather than one of them.
 struct Soup {
     std::vector<double> px, py, pz;
+    std::vector<float> nx, ny, nz;
+    std::vector<int> owner;          // which tile first wrote this vertex
+    std::vector<float> worst_dot;    // min dot against a later tile's normal
     std::vector<int> tri;
     std::unordered_map<int64_t, std::vector<int>> grid;
 
     static int64_t cellkey(int64_t a, int64_t b, int64_t c) {
         return (a * 73856093LL) ^ (b * 19349663LL) ^ (c * 83492791LL);
     }
-    int add(double x, double y, double z) {
+    int add(double x, double y, double z,
+            float vnx = 0.0f, float vny = 0.0f, float vnz = 0.0f,
+            int tile = -1) {
         const double inv = 1.0 / (2.0 * kTol);
         const int64_t ci = int64_t(std::floor(x * inv));
         const int64_t cj = int64_t(std::floor(y * inv));
@@ -127,11 +138,23 @@ struct Soup {
                     for (int id : it->second)
                         if (std::fabs(px[id] - x) <= kTol &&
                             std::fabs(py[id] - y) <= kTol &&
-                            std::fabs(pz[id] - z) <= kTol)
+                            std::fabs(pz[id] - z) <= kTol) {
+                            // Only a DIFFERENT tile's answer is a disagreement.
+                            // Two triangles of one tile sharing a vertex store
+                            // the same normal by construction.
+                            if (tile >= 0 && owner[id] >= 0 && owner[id] != tile) {
+                                const float d = nx[id] * vnx + ny[id] * vny +
+                                                nz[id] * vnz;
+                                if (d < worst_dot[id]) worst_dot[id] = d;
+                            }
                             return id;
+                        }
                 }
         const int id = int(px.size());
         px.push_back(x); py.push_back(y); pz.push_back(z);
+        nx.push_back(vnx); ny.push_back(vny); nz.push_back(vnz);
+        owner.push_back(tile);
+        worst_dot.push_back(1.0f);
         grid[cellkey(ci, cj, ck)].push_back(id);
         return id;
     }
@@ -144,7 +167,7 @@ struct Soup {
 // Mesh one tile and fold it into the soup. Y-tiled positions are tile-local on
 // all three axes, so the origin goes back on here.
 size_t add_tile(Soup& s, const FieldRuntime& f, int64_t tx, int64_t ty,
-                int64_t tz, int rung, float sector_size) {
+                int64_t tz, int rung, float sector_size, int tile_id = -1) {
     SectorMesh m;
     seam::SectorBoundary sb;
     std::string err;
@@ -163,7 +186,10 @@ size_t add_tile(Soup& s, const FieldRuntime& f, int64_t tx, int64_t ty,
             for (int v = 0; v < 3; ++v)
                 id[v] = s.add(ox + double(b.positions[t * 9 + v * 3 + 0]),
                               oy + double(b.positions[t * 9 + v * 3 + 1]),
-                              oz + double(b.positions[t * 9 + v * 3 + 2]));
+                              oz + double(b.positions[t * 9 + v * 3 + 2]),
+                              b.normals[t * 9 + v * 3 + 0],
+                              b.normals[t * 9 + v * 3 + 1],
+                              b.normals[t * 9 + v * 3 + 2], tile_id);
             s.add_tri(id[0], id[1], id[2]);
             ++tris;
         }
@@ -338,18 +364,39 @@ int main() {
         bake_mode::forced_contour_seams() = contour ? 1 : 0;
         Soup s;
         tris = 0;
+        int tile_id = 0;
         for (int64_t tx = 0; tx <= 1; ++tx)
             for (int64_t ty = -1; ty <= 0; ++ty)
                 for (int64_t tz = 0; tz <= 1; ++tz) {
                     if (split && tx == 1 && ty == 0 && tz == 1) continue;
-                    tris += add_tile(s, f, tx, ty, tz, rung, S);
+                    tris += add_tile(s, f, tx, ty, tz, rung, S, tile_id++);
                 }
         if (split)
             for (int64_t tx = 2; tx <= 3; ++tx)
                 for (int64_t ty = 0; ty <= 1; ++ty)
                     for (int64_t tz = 2; tz <= 3; ++tz)
-                        tris += add_tile(s, f, tx, ty, tz, 0, 32.0f);
+                        tris += add_tile(s, f, tx, ty, tz, 0, 32.0f, tile_id++);
         return s;
+    };
+
+    // SHADING CONTINUITY ACROSS THE SEAM. Watertight geometry with two normals
+    // at a shared vertex still prints a hard edge, so this is measured
+    // separately from the manifold gates: over every vertex two different tiles
+    // both wrote, the angle between their two answers.
+    auto normal_split = [](const Soup& s, int& shared, double& worst_deg,
+                           double& mean_deg) {
+        shared = 0;
+        worst_deg = 0.0;
+        double sum = 0.0;
+        for (size_t i = 0; i < s.worst_dot.size(); ++i) {
+            if (s.worst_dot[i] >= 1.0f) continue;   // never seen twice
+            ++shared;
+            const double d = std::max(-1.0, std::min(1.0, double(s.worst_dot[i])));
+            const double deg = std::acos(d) * 180.0 / 3.14159265358979323846;
+            worst_deg = std::max(worst_deg, deg);
+            sum += deg;
+        }
+        mean_deg = shared ? sum / double(shared) : 0.0;
     };
 
     // `band` is one COARSEST voxel: 4 m at rung -1, which is exactly how far in
@@ -376,6 +423,35 @@ int main() {
                "(surface nets pinches, not the seam)\n", c.interior, w.interior);
         printf("      SEAM non-manifold:     contour %d (%d holes, %d folds), "
                "welder %d\n", c.seam, c.holes, c.folds, w.seam);
+        {
+            int nsh = 0, wsh = 0;
+            double nworst = 0, nmean = 0, wworst = 0, wmean = 0;
+            normal_split(sc, nsh, nworst, nmean);
+            normal_split(sw, wsh, wworst, wmean);
+            printf("      SHARED-VERTEX NORMAL SPLIT: contour %d verts, worst "
+                   "%.1f deg, mean %.1f | welder %d verts, worst %.1f, mean %.1f\n",
+                   nsh, nworst, nmean, wsh, wworst, wmean);
+            // WATERTIGHT IS NOT ENOUGH. Two tiles can share a vertex exactly
+            // and still store two different normals for it, and the seam then
+            // prints as a hard shading edge however perfect the geometry is --
+            // which is what the hairlines of issue ec2829d6 turned out to be.
+            //
+            // This is the gate on the one decision that buys it: a contour
+            // vertex takes its normal from a CANONICAL central difference, not
+            // the tile's own voxel. Nothing guarded that until the owner asked
+            // why sector boundaries had hard edges, and the alternative is not
+            // marginal -- probing at each tile's own scale measures, on this
+            // fixture, a WORST SPLIT OF 85.3 DEGREES and a mean of 8.2 across
+            // every 2:1 seam, against 0.0 here. Equal-level seams are 0.0
+            // either way, because both sides have the same voxel, so a test
+            // that only ever meshed one level would have missed it entirely.
+            char nmsg[224];
+            snprintf(nmsg, sizeof nmsg,
+                     "%s: shared vertices carry normals %.1f deg apart (mean "
+                     "%.1f over %d) -- the seam is watertight but will shade "
+                     "as a hard edge", cs.name, nworst, nmean, nsh);
+            CHECK(nworst < 0.05, nmsg);
+        }
         for (const auto& p : c.seam_where)
             printf("          contour at (%.3f, %.3f, %.3f)  %d incident tris\n",
                    p[0], p[1], p[2], int(p[3]));
