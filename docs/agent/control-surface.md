@@ -62,7 +62,10 @@ ends onto one command registry.
 | `cam` | `cam ex ey ez tx ty tz` (6 floats) | Sets camera eye/target immediately. |
 | `shot` | `shot <path>` | Settles 3 frames (`instances_drawn > 0` gated), writes the PNG, then writes `<path>.done`. |
 | `shot_now` | `shot_now <abs .png>` | Queued via `FifoPresentSequencer`; captured on the next **presented** frame with no settle wait. Path must be an absolute, filesystem-safe `.png` path (`fifo_safe_absolute_png_path` rejects reserved Windows names, `..`, control chars, etc). Also writes `<path>.done`. |
-| `wait_frames` | `wait_frames <n>` (positive uint32) | Completes once `n` more frames have **presented successfully** (`FifoPresentSequencer::advance` only advances on `presented == true`). |
+| `wait_frames` | `wait_frames <n>` (positive uint32) | Completes once `n` more frames have **presented successfully** (`FifoPresentSequencer::advance` only advances on `presented == true`). A **blocking wait**: no later FIFO line dispatches until it releases (§ Timeline semantics below). |
+| `wait_idle` | `wait_idle <seconds>` (float > 0) | **Blocking.** Releases once `resident_sectors` has held steady for `<seconds>` of wall-clock time AND the bake is ready; prints `idle: settled after N.Ns`. |
+| `wait_event` | `wait_event <name> [timeout_seconds]` | **Blocking.** Releases when the named engine event fires (prints `event: <name>`) or the optional timeout expires (prints `event: <name> timeout after Xs` and continues — a timeout is not a failure). See the event-name table below. |
+| `world` | `world <name>` | Switches the active world (same case-insensitive resolution as `MATTER_WORLD`). **Not** itself a blocking wait — pair it with `wait_idle` to sequence a multi-world sweep. Prints `world: unknown '<name>'` for an unrecognized name. |
 | `render_path` | `render_path raster\|native_rt` | Switches the render path. `native_rt` fails loudly (`render_path: native_rt unavailable`, command result `failed`) if the device has no ray tracing. |
 | `history_reset` | `history_reset` (no args) | Calls `session->request_atmosphere_history_reset()`. |
 | `stats` | `stats <label>` | Arms one `STATS,<label>,...` row (see below), emitted on the next frame. |
@@ -75,7 +78,7 @@ ends onto one command registry.
 | `reload` | `reload` (no args) | Reloads the active world in place. |
 | `wireframe` | `wireframe` \| `wireframe toggle` \| `wireframe on` \| `wireframe off` | Toggles/sets the debug wireframe flag. Fails closed (`wireframe: unavailable (...)`) on devices without `VK_POLYGON_MODE_LINE`. |
 | `hiz` | `hiz <anything>` | **Deprecated stub.** Always prints `hiz: removed -- use \`set viewer.debug.occlusion_draw_cull true\`` and does nothing; kept only so old scripts get an answer instead of "unrecognized". |
-| `quit` | `quit` (no args) | Sets the quit flag; the main loop exits after the current frame. |
+| `quit` | `quit` (no args) | Sets the quit flag. **Deferred**, not immediate: the process exits once no FIFO screenshot capture is still in flight, so a `quit` right after a `shot` (no intervening wait) never truncates that capture. |
 | `timescale` | `timescale <f>` | Sets simulation time scale, clamped to `[0.05, 2.0]` (`kToolbarMinTimeScale`/`kToolbarMaxTimeScale` in `toolbar_panel.h`); out-of-range values are rejected with the bounds printed. |
 | `play` / `pause` / `step` / `sim stop` | exact tokens | Drives `SimulationControl` — the same transport the toolbar buttons call. `sim stop` also clears selection. |
 
@@ -272,13 +275,96 @@ today: `bake.started`, `bake.part_done`, `bake.finished`, `bake.error`
 today** — these are consumed in-process (editor panels, tests); nothing in the
 FIFO grammar above lets a script subscribe to them directly.
 
-### Timeline extension (2026-08-14)
+### Timeline semantics: blocking waits (landed 2026-08-14)
 
-A `wait_event` / `wait_idle` / world-state extension to the command FIFO is
-reported in progress on a parallel branch as of this writing. If merged, it may
-supersede parts of §b's `wait_frames`/polling-based synchronization idiom with
-an explicit event-wait verb. This document was not updated against that branch
-— re-verify §b against `viewer_commands.h` and `main.cpp` after it merges.
+`wait_frames`, `wait_idle`, and `wait_event` are **blocking waits**: while one
+is armed, `main.cpp` stops popping lines off `fifo_pending_lines` (the queue
+already split out of the raw FIFO bytes) until it releases. Reading more bytes
+off the command file/pipe still happens every frame regardless — only
+*dispatch* is gated — so a pre-written multi-line command file behaves as a
+timeline script rather than "every buffered line lands in one frame" (the
+pre-2026-08-14 drain-loop behavior). At most one blocking wait is ever in
+flight at a time. Concretely:
+
+- **`wait_frames <n>`** now blocks every later line in the file, not just
+  screenshot captures — a `set`/`cam`/`shot` line written after a
+  `wait_frames` cannot dispatch before it completes. The frame-count release
+  itself is still `FifoPresentSequencer`'s (unchanged): it advances only on a
+  successfully presented frame, and prints
+  `wait_frames: complete <n> frame_serial=<serial>` on release.
+- **`wait_idle <seconds>`** releases once `frame_stats.resident_sectors` has
+  held the same value for `<seconds>` of wall-clock time *and* the bake is
+  ready (mirrors `MATTER_CAM_PATH_SETTLE`'s plateau logic — wall time, not a
+  frame count, because bake progress is itself wall-time rate-limited). On
+  release it prints `idle: settled after N.Ns` (the elapsed time since the
+  `wait_idle` line was parsed, not the settle duration itself).
+- **`wait_event <name> [timeout_seconds]`** subscribes to one named event and
+  releases when it fires, when an optional timeout expires, or — for a
+  session-scoped name — when the session changes out from under it. The
+  supported names, and which hub they subscribe on
+  (`main.cpp`'s `fifo_begin_wait_event`):
+
+  | Name | Hub | Session-scoped |
+  |---|---|---|
+  | `bake.started` | session (`session->events()`) | yes |
+  | `bake.finished` | session | yes |
+  | `bake.part_done` | session | yes |
+  | `bake.error` | session | yes |
+  | `stream.refine_tile` | session | yes |
+  | `cmd.completed` | `app_hub` | no |
+  | `cmd.failed` | `app_hub` | no |
+
+  `cmd.*` lives on `app_hub`, which outlives world switches, so it is never
+  session-scoped. `bake.*`/`stream.*` subscribe on the session's own hub,
+  which is destroyed on a world switch/reload — if the session or generation
+  changes while one of those is pending, the wait releases early rather than
+  hanging forever, printing `event: <name> aborted (session changed)`. An
+  unrecognized name prints `wait_event: unknown event '<name>'` and does not
+  block. Release prints `event: <name>` (fired) or
+  `event: <name> timeout after Xs` (timed out — this is a normal, non-error
+  release; the script continues). A `wait_event` is not itself the same as
+  `wait_idle` — pair the two (`wait_event bake.finished` then `wait_idle
+  <settle>`) when a script needs both "the bake started/finished" and "nothing
+  is still moving" as separate checkpoints.
+- **`world <name>`** switches the active world (case-insensitive, same
+  resolution as `MATTER_WORLD`) via the same intent-recording path `reload`
+  uses — the actual session destroy/recreate runs at the post-frame seam, not
+  mid-parse. It is deliberately **not** itself a blocking wait; sequence a
+  multi-world sweep as `world X` → `wait_idle <n>` → `shot ...` → `world Y` →
+  ...
+- **`quit`** is deferred, not immediate, for the same reason `wait_frames` was
+  extended to block everything: a `quit` line right after a `shot` (with no
+  intervening wait) must not truncate that capture. The main loop sets a
+  pending-quit flag and only actually exits once `shot_settle == 0` and no
+  `shot_now` capture is still queued in `FifoPresentSequencer`.
+
+### `drive.py`: scripted timeline runs
+
+`MatterEngine3/tools/drive.py` launches the editor against a pre-written
+timeline file and verifies the screenshots it promised, so a CI-style caller
+doesn't have to reimplement the poll-the-log/append-to-FIFO idiom from
+recipe 4 of the QA cookbook by hand:
+
+```bash
+python MatterEngine3/tools/drive.py --world CornellBox --timeline shots.txt \
+    --out-dir out/ [--timeout 600] [--editor <path>] [--hide-ui] [--env K=V ...]
+```
+
+It copies `--timeline` to `<out-dir>/cmd.txt`, launches
+`MatterEditor/build/windows/editor.exe` (override with `--editor`) with
+`cwd=MatterEditor/`, `MATTER_WORLD=<world>`, `MATTER_CMD_FIFO=<abs path to
+cmd.txt>`, `TMP`/`TEMP` pointed at the OS temp dir, `MATTER_HIDE_UI=1` if
+`--hide-ui` was passed, and any `--env K=V` overrides applied last (repeatable;
+each can override any of the defaults above). It tees stdout+stderr to
+`<out-dir>/log.txt` while waiting up to `--timeout` seconds (default 600); on
+timeout it kills the process tree and exits 2. On a normal exit it scans the
+timeline for every `shot`/`shot_now` line and checks both the PNG and its
+`.done` sidecar exist — any missing file, or a nonzero editor exit code even
+with every screenshot present (a crash mid-script must never read as a pass),
+is exit 1. Otherwise exit 0 with a one-line summary. `shot`/`shot_now` paths in
+a timeline resolve relative to `MatterEditor/` (the editor's own cwd), not
+`--out-dir` or wherever `drive.py` was invoked from — prefer absolute paths
+into `--out-dir` in timelines to avoid the ambiguity.
 
 ## e) The three launch rules
 
