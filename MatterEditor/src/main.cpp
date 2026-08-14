@@ -21,10 +21,9 @@
 #include "issue_reporter.h"
 #include "profile.h"
 #include "shot_replay.h"
-// M1d fly-through determinism trace. Deliberately the only engine render header
-// main.cpp reaches for: it is Vulkan-free, so the editor gates the trace without
-// pulling VkSceneRenderer's surface into the app translation unit.
+// M1d fly-through determinism trace.
 #include "render/lod_trace.h"
+#include "render/vk_resources.h"
 #include "properties_panel.h"
 #include "properties_registry.h"
 #include "reveal_part.h"
@@ -3701,6 +3700,23 @@ int main() {
         stats.vt_pool_pinned         = frame_stats.vt_pool_pinned;
         stats.vt_mesh_bytes          = frame_stats.vt_mesh_bytes;
         stats.vt_mesh_budget_bytes   = frame_stats.vt_mesh_budget_bytes;
+        stats.vt_pool_bytes          = frame_stats.vt_pool_bytes;
+        stats.vt_indirection_bytes   = frame_stats.vt_indirection_bytes;
+        stats.vt_indirection_capacity_bytes =
+            frame_stats.vt_indirection_capacity_bytes;
+        stats.impostor_atlas_bytes   = frame_stats.impostor_atlas_bytes;
+        {
+            const auto gpu = matter::gpu_memory_stats();
+            stats.gpu_device_local_bytes = gpu.device_local_bytes;
+            stats.gpu_host_visible_bytes = gpu.host_visible_bytes;
+            stats.gpu_total_alloc_bytes  = gpu.total_bytes;
+            stats.gpu_allocation_count   = gpu.allocation_count;
+        }
+        {
+            const auto proc = matter::process_memory_stats();
+            stats.process_working_set_bytes = proc.working_set_bytes;
+            stats.process_peak_working_set_bytes = proc.peak_working_set_bytes;
+        }
 
         bool ui_frame_completed = false;
         if (ui_frame_ready) {

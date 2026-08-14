@@ -52,12 +52,16 @@ struct VtResidencyBudgets {
     uint32_t indirection_mb = 64;
 
     // ---- Workstream-2 additions -------------------------------------------
-    // Physical page pool, in pages. Rounded up to whole array layers by
-    // VtResidency::init, which then fails the init when the layer count exceeds
-    // the device's maxImageArrayLayers. That DEVICE check is why this used to
-    // be described as inexpressible in a schema — but the value's own bounds
-    // are static (one layer .. 256 layers) and the device check stays exactly
-    // where it was, so it describes fine. Init-consumed: ReadOnly.
+    // VRAM budget for the physical page pool, in MiB. VtResidency::init
+    // derives pool_pages from this (pool_mb / per-page byte cost, rounded to
+    // whole array layers) and then fails when the layer count exceeds the
+    // device's maxImageArrayLayers. 0 means "derive from pool_pages instead"
+    // — the legacy path. Init-consumed: ReadOnly.
+    uint32_t pool_mb = 4096;
+    // Physical page pool, in pages. When pool_mb is non-zero this is IGNORED
+    // (init derives the page count from the MiB budget). When pool_mb is 0
+    // this is the direct page count, rounded up to whole array layers.
+    // Kept for backwards compatibility with MATTER_VT_POOL_PAGES overrides.
     uint32_t pool_pages = 8192;
     // Frames a physical slot is protected from eviction after its last use.
     // One frame is not enough: DLSS jitter shifts which feedback blocks sample
@@ -154,15 +158,18 @@ inline const props::Group& vt_residency_budgets_group() {
             .env("MATTER_VT_INDIRECTION_MB").read_only()
             .doc("Consumed once at renderer init — set "
                  "MATTER_VT_INDIRECTION_MB before launch to change it."),
-        // 64 pages per array layer .. 256 layers — the same static bounds the
-        // local env_u32 read enforced. The device's maxImageArrayLayers check
-        // stays in VtResidency::init where the device is in scope.
+        prop(&VtResidencyBudgets::pool_mb, "pool_mb")
+            .label("Pool VRAM").range(0.0f, 16384.0f).units("MB")
+            .env("MATTER_VT_POOL_MB").read_only()
+            .doc("VRAM budget for the physical page pool. Init derives pool "
+                 "page count from this. 0 = use pool_pages directly (legacy). "
+                 "Set MATTER_VT_POOL_MB before launch to change it."),
         prop(&VtResidencyBudgets::pool_pages, "pool_pages")
-            .label("Page pool").range(64.0f, 16384.0f)
+            .label("Page pool").range(64.0f, 65536.0f)
             .env("MATTER_VT_POOL_PAGES").read_only()
-            .doc("Physical page slots, rounded up to whole array layers. "
-                 "Allocated once at renderer init — set MATTER_VT_POOL_PAGES "
-                 "before launch to change it."),
+            .doc("Physical page slots (ignored when pool_mb > 0). Rounded up "
+                 "to whole array layers. Set MATTER_VT_POOL_PAGES before "
+                 "launch to change it."),
         prop(&VtResidencyBudgets::evict_protect_frames, "evict_protect_frames")
             .label("Evict protect").range(1.0f, 1024.0f).units("frames")
             .env("MATTER_VT_EVICT_PROTECT_FRAMES")

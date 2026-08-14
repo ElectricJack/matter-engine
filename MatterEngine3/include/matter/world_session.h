@@ -289,6 +289,8 @@ struct FrameStats {
     // 2048-layer-capped image array).
     uint64_t vt_indirection_bytes = 0;          // live table blocks
     uint64_t vt_indirection_capacity_bytes = 0; // MATTER_VT_INDIRECTION_MB
+    // Impostor atlas VRAM (per-slot * max slots). 0 when impostors are off.
+    uint64_t impostor_atlas_bytes = 0;
     DlssMode dlss_selected_mode = DlssMode::Native;
     DlssMode dlss_active_mode = DlssMode::Native;
     uint32_t dlss_internal_width = 0;

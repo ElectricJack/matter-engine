@@ -1141,6 +1141,9 @@ public:
     void clear_cloud_shadow_density_override_for_test(bool invalidate_history);
     bool cloud_shadows_active() const;
     uint64_t cloud_shadow_persistent_bytes() const;
+    uint64_t impostor_atlas_total_bytes() const {
+        return impostor_atlas_bytes_ * kImpostorMaxSlots;
+    }
     matter::CloudShadowLevelDesc cloud_shadow_level_desc(uint32_t level) const;
     VkFormat cloud_shadow_density_format(uint32_t level) const;
     VkExtent3D cloud_shadow_density_extent(uint32_t level) const;

@@ -346,6 +346,17 @@ struct ViewerStats {
     uint32_t vt_pool_pinned = 0;
     uint64_t vt_mesh_bytes = 0;
     uint64_t vt_mesh_budget_bytes = 0;
+    // Memory tab fields.
+    uint64_t vt_pool_bytes = 0;
+    uint64_t vt_indirection_bytes = 0;
+    uint64_t vt_indirection_capacity_bytes = 0;
+    uint64_t impostor_atlas_bytes = 0;
+    uint64_t gpu_device_local_bytes = 0;
+    uint64_t gpu_host_visible_bytes = 0;
+    uint64_t gpu_total_alloc_bytes = 0;
+    uint64_t gpu_allocation_count = 0;
+    uint64_t process_working_set_bytes = 0;
+    uint64_t process_peak_working_set_bytes = 0;
 };
 
 // StreamingLodPrefs (the persisted, schema-described override) -> the engine
