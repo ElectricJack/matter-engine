@@ -35,7 +35,12 @@ struct ClusterMeta {
     uint lod_count;
     uint part_slot;
     uint cluster_index;
-    uint pad1a;
+    // The leading MESH-rung count of this cluster's ladder (trailing rungs are
+    // impostor billboards; part_flatten appends them after the mesh ladder
+    // bottoms out). 0 = billboard-only. The ID pass may only rasterise mesh
+    // rungs: visibility_id.vert has no billboard branch, so a card would land
+    // in its BAKED object-space orientation, solid -- a wrong-shape occluder.
+    uint vis_mesh_lods;
     uint pad1b;
     uint pad1c;
 };
@@ -119,6 +124,17 @@ layout(set = 1, binding = 17, std430) writeonly buffer VisDrawTransforms {
 // visible_ids.comp between pass 0 and pass 1, read here, never written here.
 layout(set = 1, binding = 18, std430) readonly buffer VisibleMask {
     uint visible_mask[];
+};
+// Per part slot: 1 = this part's mesh rungs are free of alpha-tested
+// materials, so the ID pass's no-discard raster of them cannot overstate what
+// the G-buffer will draw. 0 = it can (foliage cutouts), so the part neither
+// occludes nor is occlusion-tested -- the ID pass stamping an alpha-tested
+// mesh SOLID is exactly how enabling conifers hid the terrain sectors behind
+// their see-through canopies. Rebuilt CPU-side with the material table; out of
+// range fails toward 1 (the pre-exclusion behaviour), and the CPU pads the
+// buffer's capacity tail with 1s because length() is capacity, not payload.
+layout(set = 1, binding = 19, std430) readonly buffer PartOccluderClass {
+    uint part_occluder[];
 };
 
 // render/visibility_hash.h's twin. Keep the expression textually identical:
@@ -412,6 +428,24 @@ void main() {
         }
     }
 
+    // ---- occlusion eligibility (M4 follow-up) ------------------------------
+    //
+    // A cluster takes part in occlusion -- both sides of it -- only when the
+    // ID pass can rasterise it HONESTLY. Two ways it cannot: a billboard rung
+    // (visibility_id.vert has no impostor branch, so the card lands in its
+    // baked orientation, solid), and alpha-tested materials (the ID pass has
+    // no discard by design, so a cutout mesh stamps its full silhouette while
+    // the G-buffer draw shows through it). Either one turns "occluder" into
+    // "wall", and the sectors behind a conifer hillside read occluded while
+    // the real draw is see-through. Such clusters are excluded from the ID
+    // list AND exempted from the mask test below: they can never register
+    // their token, so testing them would cull them unconditionally.
+    const bool occlusion_eligible =
+        cluster.vis_mesh_lods > 0u &&
+        (cluster.part_slot < part_occluder.length()
+             ? part_occluder[cluster.part_slot] != 0u
+             : true);
+
     // ---- pass 0: the ID pass's list (M4) -----------------------------------
     //
     // NEVER mask-tested, which is the whole design. This list is what the ID
@@ -423,18 +457,22 @@ void main() {
     // question into a target a fraction of the size -- the fine mesh would
     // cost vertex work to produce the same answer.
     if (kCullPass == 0u) {
-        // COARSEST, and it is measured rather than assumed. The selected
-        // rung rejects about 10% more clusters -- inside a cavern, 83 against
-        // 74 -- because a decimated proxy is a slightly leakier occluder. It
-        // also costs the ID pass the full vertex work of the un-culled set,
-        // and that wipes out the entire win: same camera, same process,
+        if (!occlusion_eligible) return;
+        // COARSEST *mesh* rung, and "coarsest" is measured rather than
+        // assumed. The selected rung rejects about 10% more clusters --
+        // inside a cavern, 83 against 74 -- because a decimated proxy is a
+        // slightly leakier occluder. It also costs the ID pass the full
+        // vertex work of the un-culled set, and that wipes out the entire
+        // win: same camera, same process,
         //
         //   coarsest   8.69 ms -> 7.36 ms   (-15%)
         //   selected   8.63 ms -> 8.62 ms   (nothing)
         //
         // A cheap approximate occluder beats an exact expensive one here,
         // which is the whole reason this pass can afford to run every frame.
-        const uint vis_lod = cluster.lod_count - 1u;
+        // Clamped under vis_mesh_lods so a trailing billboard rung is never
+        // the proxy (see occlusion_eligible above).
+        const uint vis_lod = min(cluster.vis_mesh_lods, cluster.lod_count) - 1u;
         if (cluster_index <= (0xffffffffu - vis_lod) / MAX_LOD) {
             const uint vis_bucket = cluster_index * MAX_LOD + vis_lod;
             uint vis_slot = 0u;
@@ -466,7 +504,12 @@ void main() {
     // this dispatch makes their writes visible here. It used to be the
     // previous frame's, which showed up as sectors popping in a beat late
     // under fast camera motion.
-    if (frame.vis_params.x != 0u) {
+    //
+    // Only for clusters the ID pass could have rasterised. An excluded
+    // cluster (billboard terminal, alpha-tested foliage) falls open to
+    // frustum-only visibility -- the failure direction that costs draw work,
+    // never coverage.
+    if (occlusion_eligible && frame.vis_params.x != 0u) {
         const uint bit = visible_id_hash(instance.instance_token);
         if ((visible_mask[bit >> 5u] & (1u << (bit & 31u))) == 0u) {
             atomicAdd(occlusion_culled, 1u);
