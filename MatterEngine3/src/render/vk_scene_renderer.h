@@ -1198,6 +1198,15 @@ public:
     // setter above -- separate call because the two are now separate
     // policies; see matter::VtNearBandSettings for why they were split.
     void set_vt_near_band_settings(const matter::VtNearBandSettings& s);
+    // Draw world-space overlay lines into hdr_ with depth testing against
+    // depth_ (reversed-Z, no depth write). Call between record_cull_and_render
+    // and record_composite_to_swapchain. vertex_data is interleaved
+    // {x,y,z, r,g,b,a} × vertex_count; topology is LINE_LIST.
+    bool record_overlay_lines(VkCommandBuffer cb,
+                              const float* vertex_data,
+                              uint32_t vertex_count,
+                              const matter::Mat4f& world_to_clip,
+                              std::string& error);
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -1347,7 +1356,18 @@ public:
         return part.rt_lods[rt_lod_index].first_index;
     }
 #endif
+
+    // GPU pick: read the identity attachment at a single pixel.
+    // Returns the instance_token written by gbuffer.frag (.y of the
+    // R32G32_UINT material_instance_ attachment). UINT32_MAX on background.
+    bool readback_pick_identity(uint32_t x, uint32_t y,
+                                uint32_t& instance_token,
+                                std::string& error);
+
     int fill_rt_instances(std::vector<RtInstance>& output) const;
+
+    uint32_t raster_width() const { return raster_extent_.width; }
+    uint32_t raster_height() const { return raster_extent_.height; }
 
     // GPU timer results (ms, EMA-smoothed). Zones are non-overlapping;
     // each begin is recorded after the previous zone's end.
@@ -1970,6 +1990,7 @@ private:
     bool create_environment_resources(std::string& error);
     bool create_raster_pipelines(std::string& error);
     bool create_display_pipeline(std::string& error);
+    bool create_overlay_line_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
     bool create_gi_temporal_pipeline(std::string& error);
     bool create_gi_atrous_pipeline(std::string& error);
@@ -2242,6 +2263,9 @@ private:
     VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline display_pipeline_ = VK_NULL_HANDLE;
     VkFormat display_pipeline_format_ = VK_FORMAT_UNDEFINED;
+    VkPipelineLayout overlay_line_layout_ = VK_NULL_HANDLE;
+    VkPipeline overlay_line_pipeline_ = VK_NULL_HANDLE;
+    matter::VkBufferResource overlay_line_vertices_;
     VkDescriptorSetLayout gi_temporal_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout gi_temporal_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline gi_temporal_pipeline_ = VK_NULL_HANDLE;

@@ -366,6 +366,13 @@ public:
     bool render(const CameraDesc& cam, const VulkanFrame& frame,
                 const RenderOptions& opts, std::string& err);
 
+    // Submit world-space overlay lines for this frame. vertex_data is
+    // interleaved {x,y,z, r,g,b,a} × vertex_count, drawn as LINE_LIST
+    // with depth testing (reversed-Z) against the scene depth buffer.
+    // Call before render(); the lines are drawn after the composite pass
+    // and before the display transform.
+    void submit_overlay_lines(const float* vertex_data, uint32_t vertex_count);
+
     // Apply an optional camera spawn authored by the active World JavaScript.
     // Returns false when the world did not provide static camera settings.
     bool apply_authored_camera(CameraDesc& camera) const;
@@ -796,7 +803,21 @@ public:
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
     bool instance_info_by_hash(uint64_t part_hash, InstanceInfo& out);
+
+    // Lightweight root-entry iteration — reads directly from world state
+    // without building the CPU tracer. Safe to call while streaming.
+    uint32_t root_instance_count() const;
+    bool root_instance_info(uint32_t idx, InstanceInfo& out) const;
+
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
+
+    // GPU pick: read the identity buffer at a viewport pixel and resolve
+    // it to a static instance (part_hash) or dynamic entity. Coordinates
+    // are in viewport space (same as cursor_x/cursor_y in the editor);
+    // fb_width/fb_height are the viewport dimensions. Returns false on
+    // background or if the renderer has not completed a frame yet.
+    bool pick_at_pixel(float cursor_x, float cursor_y,
+                       int fb_width, int fb_height, PickIdentity& out);
 
     // Bake Lab W4: LOD Inspector grid data source (part-workbench.md SS-I.5).
     // Pure PartStore reads, no bake/render side effects — mirrors

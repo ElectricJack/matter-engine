@@ -1010,6 +1010,33 @@ struct WorldSession::Impl {
     // hash -> module name for expanded_instance info (filled from manifest)
     mutable std::unordered_map<uint64_t, std::string> module_by_hash;
 
+    // part_hash -> index into state.entries() for O(1) lookup without
+    // rebuilding the tracer. Keyed on state.version() so it rebuilds only
+    // when the world actually changes (every apply), not on every query.
+    mutable std::unordered_map<uint64_t, size_t> state_hash_to_entry;
+    mutable uint64_t state_hash_version = 0;
+
+    void ensure_state_hash_map() const {
+        if (state_hash_version == state.version() && !state_hash_to_entry.empty())
+            return;
+        const auto& entries = state.entries();
+        state_hash_to_entry.clear();
+        state_hash_to_entry.reserve(entries.size());
+        for (size_t i = 0; i < entries.size(); ++i)
+            state_hash_to_entry.emplace(entries[i].part_hash, i);
+        state_hash_version = state.version();
+    }
+
+#ifdef MATTER_VULKAN_VIEWER
+    // GPU pick: instance_token (32-bit) → part_hash reverse map. Built from
+    // the renderer's expanded instance list after update_instances.
+    std::unordered_map<uint32_t, uint64_t> pick_token_to_part_hash;
+    // Overlay lines submitted by the editor for this frame. Interleaved
+    // {x,y,z,r,g,b,a} × N, drawn as LINE_LIST with depth testing.
+    std::vector<float> overlay_line_data;
+    uint32_t overlay_line_vertex_count = 0;
+#endif
+
     // Bake Lab W4 (part-workbench.md SS-I.5): hash -> module name for
     // part_child_summary(), rebuilt from graph_snapshot() (which, unlike
     // module_by_hash above, covers COMPOSITIONAL children, not just world
@@ -10678,6 +10705,19 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             return false;
         }
     }
+    // GPU pick reverse map: token → part_hash for the expanded instance set.
+    // Gated on the expansion counter so it only rebuilds when instances change.
+    if (impl_->vk_temporal_instances_expansion == expansion) {
+        impl_->pick_token_to_part_hash.clear();
+        impl_->pick_token_to_part_hash.reserve(instances.size());
+        for (const auto& inst : instances) {
+            const uint32_t token = inst.instance_id != 0
+                ? viewer::vulkan_history_token(inst.instance_id)
+                : 0u;
+            if (token != 0)
+                impl_->pick_token_to_part_hash.emplace(token, inst.part_hash);
+        }
+    }
     // Dynamic entity bridge: reconcile ECS entities with renderer slots.
     // Drop Bind changes whose part can't be loaded yet (next frame retries).
     {
@@ -10971,6 +11011,17 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     const uint64_t zone_skin_us = zone_split();
     impl_->draw_skin_seal.add(zone_skin_us);
+    if (impl_->overlay_line_vertex_count >= 2) {
+        if (!impl_->vk_scene->record_overlay_lines(
+                frame.command_buffer, impl_->overlay_line_data.data(),
+                impl_->overlay_line_vertex_count, matrices.world_to_clip,
+                err)) {
+            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+            return false;
+        }
+        impl_->overlay_line_vertex_count = 0;
+        impl_->overlay_line_data.clear();
+    }
     {
         PROFILE_SCOPE("draw.composite");
         if (!impl_->vk_scene->record_composite_to_swapchain(frame, err)) {
@@ -11567,21 +11618,100 @@ bool WorldSession::instance_info(uint32_t idx, InstanceInfo& out) {
 
 bool WorldSession::instance_info_by_hash(uint64_t hash, InstanceInfo& out) {
     if (!impl_->connected) return false;
-    if (!impl_->ensure_tracer()) return false;
 
-    uint64_t part_hash = 0;
-    if (!impl_->tracer->expanded_instance_by_hash(hash, part_hash, out.transform))
-        return false;
+    impl_->ensure_state_hash_map();
+    auto it = impl_->state_hash_to_entry.find(hash);
+    if (it == impl_->state_hash_to_entry.end()) return false;
 
-    out.part_hash = part_hash;
+    const auto& entry = impl_->state.entries()[it->second];
+    out.part_hash = entry.part_hash;
+    std::memcpy(out.transform, entry.transform, sizeof(out.transform));
 
     out.module_name = nullptr;
-    auto it = impl_->module_by_hash.find(part_hash);
-    if (it != impl_->module_by_hash.end() && !it->second.empty())
-        out.module_name = it->second.c_str();
+    if (!entry.module.empty())
+        out.module_name = entry.module.c_str();
 
     return true;
 }
+
+uint32_t WorldSession::root_instance_count() const {
+    if (!impl_->connected) return 0;
+    return static_cast<uint32_t>(impl_->state.entries().size());
+}
+
+bool WorldSession::root_instance_info(uint32_t idx, InstanceInfo& out) const {
+    if (!impl_->connected) return false;
+    const auto& entries = impl_->state.entries();
+    if (idx >= entries.size()) return false;
+    const auto& entry = entries[idx];
+    out.part_hash = entry.part_hash;
+    std::memcpy(out.transform, entry.transform, sizeof(out.transform));
+    out.module_name = nullptr;
+    if (!entry.module.empty())
+        out.module_name = entry.module.c_str();
+    return true;
+}
+
+#ifdef MATTER_VULKAN_VIEWER
+bool WorldSession::pick_at_pixel(float cursor_x, float cursor_y,
+                                 int fb_width, int fb_height,
+                                 PickIdentity& out) {
+    out = {};
+    if (!impl_->connected || !impl_->vk_scene) return false;
+    if (fb_width <= 0 || fb_height <= 0) return false;
+
+    const uint32_t rw = impl_->vk_scene->raster_width();
+    const uint32_t rh = impl_->vk_scene->raster_height();
+    if (rw == 0 || rh == 0) return false;
+
+    const uint32_t rx = std::min(
+        static_cast<uint32_t>(cursor_x * rw / fb_width), rw - 1);
+    const uint32_t ry = std::min(
+        static_cast<uint32_t>(cursor_y * rh / fb_height), rh - 1);
+
+    uint32_t token = UINT32_MAX;
+    std::string err;
+    if (!impl_->vk_scene->readback_pick_identity(rx, ry, token, err))
+        return false;
+    if (token == UINT32_MAX || token == 0)
+        return false;
+
+    auto scene_pick = impl_->dynamic_bridge.resolve_pick(token);
+    if (scene_pick.kind == matter::scene::ScenePickKind::DynamicEntity) {
+        out.kind = PickKind::DynamicEntity;
+        out.entity_id = scene_pick.scene_entity_id.value;
+        return true;
+    }
+
+    auto it = impl_->pick_token_to_part_hash.find(token);
+    if (it == impl_->pick_token_to_part_hash.end())
+        return false;
+    out.kind = PickKind::StaticInstance;
+    out.part_hash = it->second;
+    return true;
+}
+#else
+bool WorldSession::pick_at_pixel(float, float, int, int, PickIdentity& out) {
+    out = {};
+    return false;
+}
+#endif
+
+#ifdef MATTER_VULKAN_VIEWER
+void WorldSession::submit_overlay_lines(const float* vertex_data,
+                                        uint32_t vertex_count) {
+    if (!vertex_data || vertex_count < 2) {
+        impl_->overlay_line_data.clear();
+        impl_->overlay_line_vertex_count = 0;
+        return;
+    }
+    const size_t floats = vertex_count * 7u;
+    impl_->overlay_line_data.assign(vertex_data, vertex_data + floats);
+    impl_->overlay_line_vertex_count = vertex_count;
+}
+#else
+void WorldSession::submit_overlay_lines(const float*, uint32_t) {}
+#endif
 
 bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
     if (!impl_->store) return false;

@@ -2,10 +2,10 @@
 #include "selection_bounds.h"
 
 #include "imgui.h"
-#include "matter/query.h"
 #include "matter/world_session.h"
 
 #include <cmath>
+#include <vector>
 
 namespace viewer {
 namespace {
@@ -70,21 +70,33 @@ void transform_point(const float mat[16], const float in[3], float out[3]) {
     out[2] = mat[8]*in[0] + mat[9]*in[1] + mat[10]*in[2] + mat[11];
 }
 
-void draw_obb_wireframe(ImDrawList* dl, const Mat4& vp, int fb_w, int fb_h,
-                        float off_x, float off_y,
-                        const float world_corners[8][3],
-                        const bool corner_visible[8], ImU32 color) {
-    ImVec2 screen[8];
-    bool on_screen[8];
-    for (int i = 0; i < 8; ++i)
-        on_screen[i] = project(vp, fb_w, fb_h, off_x, off_y, world_corners[i], screen[i]);
+void emit_obb_edges(std::vector<float>& out,
+                    const float world_corners[8][3],
+                    float r, float g, float b, float a) {
     static constexpr int edges[12][2] = {
         {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
     };
     for (const auto& e : edges) {
-        if (!on_screen[e[0]] || !on_screen[e[1]]) continue;
-        if (!corner_visible[e[0]] && !corner_visible[e[1]]) continue;
-        dl->AddLine(screen[e[0]], screen[e[1]], color, 2.0f);
+        const float* p0 = world_corners[e[0]];
+        const float* p1 = world_corners[e[1]];
+        out.insert(out.end(), {p0[0], p0[1], p0[2], r, g, b, a});
+        out.insert(out.end(), {p1[0], p1[1], p1[2], r, g, b, a});
+    }
+}
+
+void draw_obb_wireframe(ImDrawList* dl, const Mat4& vp, int fb_w, int fb_h,
+                        float off_x, float off_y,
+                        const float world_corners[8][3], ImU32 color) {
+    ImVec2 screen[8];
+    bool visible[8];
+    for (int i = 0; i < 8; ++i)
+        visible[i] = project(vp, fb_w, fb_h, off_x, off_y, world_corners[i], screen[i]);
+    static constexpr int edges[12][2] = {
+        {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
+    };
+    for (const auto& e : edges) {
+        if (visible[e[0]] && visible[e[1]])
+            dl->AddLine(screen[e[0]], screen[e[1]], color, 2.0f);
     }
 }
 
@@ -100,69 +112,46 @@ void make_obb_corners(const float mn[3], const float mx[3],
         transform_point(mat, local[i], out[i]);
 }
 
-bool test_corner_visible(matter::WorldSession& session,
-                         const float eye[3], const float corner[3],
-                         uint64_t selected_hash) {
-    float dx = corner[0] - eye[0];
-    float dy = corner[1] - eye[1];
-    float dz = corner[2] - eye[2];
-    float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
-    if (dist < 1e-4f) return true;
-    float inv = 1.0f / dist;
-    float dir[3] = { dx * inv, dy * inv, dz * inv };
-    float margin = dist * 0.02f;
-    if (margin < 0.1f) margin = 0.1f;
-    matter::RayHit hit;
-    if (!session.raycast(eye, dir, dist - margin, hit)) return true;
-    if (hit.part_hash == selected_hash) return true;
-    return false;
-}
-
 } // namespace
+
+void submit_selection_overlay_lines(const SelectionSet& selection,
+                                    matter::WorldSession& session) {
+    if (selection.empty()) {
+        session.submit_overlay_lines(nullptr, 0);
+        return;
+    }
+
+    std::vector<float> vertices;
+    const SelectedObject* primary = selection.primary();
+
+    for (const auto& obj : selection.items()) {
+        const bool is_primary = primary && *primary == obj;
+        const float r = is_primary ? 1.0f : 0.392f;
+        const float g = is_primary ? 0.784f : 0.706f;
+        const float b = is_primary ? 0.0f : 1.0f;
+        const float a = is_primary ? 1.0f : 0.784f;
+
+        SelectionBounds sb;
+        if (bounds_for_object(obj, session, sb)) {
+            float corners[8][3];
+            make_obb_corners(sb.local_min, sb.local_max, sb.world_matrix, corners);
+            emit_obb_edges(vertices, corners, r, g, b, a);
+        }
+    }
+
+    const uint32_t vertex_count =
+        static_cast<uint32_t>(vertices.size() / 7);
+    session.submit_overlay_lines(
+        vertices.empty() ? nullptr : vertices.data(), vertex_count);
+}
 
 void draw_selection_outlines(const SelectionSet& selection,
                              const matter::CameraDesc& camera,
                              int fb_width, int fb_height,
                              matter::WorldSession& session,
                              float offset_x, float offset_y) {
-    if (selection.empty() || fb_width <= 0 || fb_height <= 0) return;
-
-    float eye[3] = {camera.position.x, camera.position.y, camera.position.z};
-    float tgt[3] = {camera.target.x, camera.target.y, camera.target.z};
-    float up[3] = {camera.up.x, camera.up.y, camera.up.z};
-
-    float dx = tgt[0]-eye[0], dy = tgt[1]-eye[1], dz = tgt[2]-eye[2];
-    if (dx*dx + dy*dy + dz*dz < 1e-12f) return;
-
-    float aspect = static_cast<float>(fb_width) / static_cast<float>(fb_height);
-
-    Mat4 view = look_at(eye, tgt, up);
-    Mat4 proj = perspective(camera.vertical_fov_radians, aspect,
-                           camera.near_plane, camera.far_plane);
-    Mat4 vp = multiply(proj, view);
-
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    const SelectedObject* primary = selection.primary();
-
-    for (const auto& obj : selection.items()) {
-        const bool is_primary = primary && *primary == obj;
-        const ImU32 color = is_primary ? IM_COL32(255, 200, 0, 255)
-                                       : IM_COL32(100, 180, 255, 200);
-
-        SelectionBounds sb;
-        if (bounds_for_object(obj, session, sb)) {
-            float corners[8][3];
-            make_obb_corners(sb.local_min, sb.local_max, sb.world_matrix, corners);
-
-            bool corner_visible[8];
-            uint64_t sel_hash = (obj.kind == SelectedObject::BakedRoot) ? obj.id : 0;
-            for (int i = 0; i < 8; ++i)
-                corner_visible[i] = test_corner_visible(session, eye, corners[i], sel_hash);
-
-            draw_obb_wireframe(dl, vp, fb_width, fb_height, offset_x, offset_y,
-                               corners, corner_visible, color);
-        }
-    }
+    (void)selection; (void)camera; (void)fb_width; (void)fb_height;
+    (void)session; (void)offset_x; (void)offset_y;
 }
 
 // The frozen cull frustum (M4 inspection aid). Same projection helpers as the

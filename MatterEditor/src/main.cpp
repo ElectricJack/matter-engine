@@ -3386,6 +3386,10 @@ int main() {
         }
         // Bake Lab/Workbench per-frame work plus the session event drain.
         phase.lab = phase_split();
+        if (!show_isolation)
+            viewer::submit_selection_overlay_lines(selection_set, *session);
+        else
+            render_session->submit_overlay_lines(nullptr, 0);
         if (!render_session->render(render_camera, render_frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;

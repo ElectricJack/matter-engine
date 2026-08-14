@@ -1739,6 +1739,10 @@ void VkSceneRenderer::destroy_pipeline() {
     part_draw_override_entries_.clear();
     part_draw_override_table_.clear();
     part_draw_overrides_dirty_ = true;
+    if (overlay_line_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, overlay_line_pipeline_, nullptr);
+    if (overlay_line_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, overlay_line_layout_, nullptr);
     if (display_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, display_pipeline_, nullptr);
     if (display_pipeline_layout_ != VK_NULL_HANDLE)
@@ -2097,6 +2101,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     vkDestroyShaderModule(device, shader, nullptr);
 
     if (!create_raster_pipelines(error) || !create_display_pipeline(error) ||
+        !create_overlay_line_pipeline(error) ||
         !create_gi_temporal_pipeline(error) ||
         !create_gi_atrous_pipeline(error))
         return false;
@@ -3112,6 +3117,180 @@ bool VkSceneRenderer::create_display_pipeline(std::string& error) {
     vkDestroyShaderModule(device, vertex, nullptr);
     return result == VK_SUCCESS ||
            fail_vk("vkCreateGraphicsPipelines(display)", result, error);
+}
+
+bool VkSceneRenderer::create_overlay_line_pipeline(std::string& error) {
+    const VkDevice device = vulkan_->device();
+    VkPushConstantRange push{};
+    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push.size = sizeof(float) * 16;
+    VkPipelineLayoutCreateInfo layout_ci{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_ci.pushConstantRangeCount = 1;
+    layout_ci.pPushConstantRanges = &push;
+    VkResult result = vkCreatePipelineLayout(device, &layout_ci, nullptr,
+                                             &overlay_line_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(overlay_line)", result, error);
+    VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "selection_line.vert.spv", vert, error) ||
+        !create_shader_module(device, "selection_line.frag.spv", frag, error)) {
+        if (vert != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, vert, nullptr);
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag;
+    stages[1].pName = "main";
+    VkVertexInputBindingDescription binding_desc{};
+    binding_desc.stride = sizeof(float) * 7;
+    binding_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attrs[2]{};
+    attrs[0].location = 0;
+    attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[0].offset = 0;
+    attrs[1].location = 1;
+    attrs[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attrs[1].offset = sizeof(float) * 3;
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &binding_desc;
+    vertex_input.vertexAttributeDescriptionCount = 2;
+    vertex_input.pVertexAttributeDescriptions = attrs;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_FALSE;
+    depth_stencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.blendEnable = VK_TRUE;
+    blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.colorBlendOp = VK_BLEND_OP_ADD;
+    blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                           VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT |
+                           VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo color_blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    color_blend.attachmentCount = 1;
+    color_blend.pAttachments = &blend;
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                             VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    const VkFormat color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkPipelineRenderingCreateInfo rendering{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &color_format;
+    rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    VkGraphicsPipelineCreateInfo create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    create.pNext = &rendering;
+    create.stageCount = 2;
+    create.pStages = stages;
+    create.pVertexInputState = &vertex_input;
+    create.pInputAssemblyState = &input_assembly;
+    create.pViewportState = &viewport_state;
+    create.pRasterizationState = &rasterization;
+    create.pMultisampleState = &multisample;
+    create.pDepthStencilState = &depth_stencil;
+    create.pColorBlendState = &color_blend;
+    create.pDynamicState = &dynamic;
+    create.layout = overlay_line_layout_;
+    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
+                                       nullptr, &overlay_line_pipeline_);
+    vkDestroyShaderModule(device, frag, nullptr);
+    vkDestroyShaderModule(device, vert, nullptr);
+    return result == VK_SUCCESS ||
+           fail_vk("vkCreateGraphicsPipelines(overlay_line)", result, error);
+}
+
+bool VkSceneRenderer::record_overlay_lines(
+    VkCommandBuffer cb, const float* vertex_data, uint32_t vertex_count,
+    const matter::Mat4f& world_to_clip, std::string& error) {
+    if (vertex_count < 2 || !vertex_data) return true;
+    if (overlay_line_pipeline_ == VK_NULL_HANDLE) return true;
+    if (!raster_attachments_ready_) return true;
+    const VkDeviceSize bytes = vertex_count * sizeof(float) * 7;
+    if (!ensure_buffer(overlay_line_vertices_, bytes,
+                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, error) ||
+        !matter::map_buffer(overlay_line_vertices_, error))
+        return false;
+    std::memcpy(overlay_line_vertices_.mapped, vertex_data, bytes);
+    transition_for_use(cb, hdr_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    transition_for_use(cb, depth_, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT);
+    VkRenderingAttachmentInfo color_att{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    color_att.imageView = hdr_.view;
+    color_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    color_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo depth_att{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth_att.imageView = depth_.view;
+    depth_att.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+    depth_att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depth_att.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = raster_extent_;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &color_att;
+    rendering.pDepthAttachment = &depth_att;
+    vkCmdBeginRendering(cb, &rendering);
+    const VkViewport viewport{
+        0.0f, static_cast<float>(raster_extent_.height),
+        static_cast<float>(raster_extent_.width),
+        -static_cast<float>(raster_extent_.height), 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, raster_extent_};
+    vkCmdSetViewport(cb, 0, 1, &viewport);
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      overlay_line_pipeline_);
+    const GpuMat4 gpu_mat = pack_glsl_mat4(world_to_clip);
+    vkCmdPushConstants(cb, overlay_line_layout_, VK_SHADER_STAGE_VERTEX_BIT,
+                       0, sizeof(gpu_mat), gpu_mat.elements);
+    const VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cb, 0, 1, &overlay_line_vertices_.buffer, &offset);
+    vkCmdDraw(cb, vertex_count, 1, 0, 0);
+    vkCmdEndRendering(cb);
+    return true;
 }
 
 void VkSceneRenderer::update_descriptor(
@@ -14292,6 +14471,87 @@ VkRasterAttachments VkSceneRenderer::raster_attachments() const {
             {depth_.image, depth_.format},
             {hdr_.image, hdr_.format},
             raster_extent_};
+}
+
+// ---------------------------------------------------------------------------
+// GPU pick: single-pixel readback of the identity attachment.
+// ---------------------------------------------------------------------------
+namespace {
+struct PickReadbackRecord {
+    matter::VkImageResource* image;
+    VkBuffer destination;
+    uint32_t x, y;
+};
+
+void record_pick_readback(VkCommandBuffer cb, void* user_data) {
+    const auto& r = *static_cast<PickReadbackRecord*>(user_data);
+    transition_for_use(cb, *r.image,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    VkBufferImageCopy copy{};
+    copy.bufferOffset = 0;
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageOffset = {static_cast<int32_t>(r.x),
+                        static_cast<int32_t>(r.y), 0};
+    copy.imageExtent = {1, 1, 1};
+    vkCmdCopyImageToBuffer(cb, r.image->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           r.destination, 1, &copy);
+    VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(cb, &dep);
+}
+}  // namespace
+
+bool VkSceneRenderer::readback_pick_identity(uint32_t x, uint32_t y,
+                                             uint32_t& instance_token,
+                                             std::string& error) {
+    error.clear();
+    instance_token = UINT32_MAX;
+    if (!raster_attachments_ready_) {
+        error = "raster attachments unavailable";
+        return false;
+    }
+    if (x >= raster_extent_.width || y >= raster_extent_.height ||
+        material_instance_.image == VK_NULL_HANDLE) {
+        error = "pick pixel outside rendered extent";
+        return false;
+    }
+    matter::VkBufferResource staging;
+    constexpr VkDeviceSize kIdentityBytes = 8;
+    if (!matter::create_buffer(
+            *vulkan_, kIdentityBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            staging, error)) {
+        return false;
+    }
+    PickReadbackRecord record{&material_instance_, staging.buffer, x, y};
+    std::vector<std::shared_ptr<void>> deps{
+        material_instance_.lifetime, staging.lifetime};
+    if (!matter::submit_immediate(
+            *vulkan_, record_pick_readback, &record, error,
+            matter::ImmediateSubmitPhase::compute_dispatch,
+            std::move(deps))) {
+        return false;
+    }
+    uint32_t identity[2]{};
+    if (!matter::readback_buffer(*vulkan_, staging,
+                                 identity, sizeof(identity), 0, error)) {
+        return false;
+    }
+    instance_token = identity[1];
+    return true;
 }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION

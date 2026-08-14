@@ -586,7 +586,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
          build/shaders_vk/vt_bc_encode.comp.spv \
-         build/shaders_vk/vt_enrich_ao.comp.spv
+         build/shaders_vk/vt_enrich_ao.comp.spv \
+         build/shaders_vk/selection_line.vert.spv \
+         build/shaders_vk/selection_line.frag.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%

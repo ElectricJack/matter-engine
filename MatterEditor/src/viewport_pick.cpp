@@ -113,9 +113,21 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
     PickResult result;
     if (fb_width <= 0 || fb_height <= 0) return result;
 
-    const float ndc_x = (2.0f * cursor_x / static_cast<float>(fb_width)) - 1.0f;
-    const float ndc_y = 1.0f - (2.0f * cursor_y / static_cast<float>(fb_height));
+    // GPU identity-buffer pick: pixel-exact, no CPU geometry needed.
+    matter::PickIdentity gpu_pick;
+    if (session.pick_at_pixel(cursor_x, cursor_y, fb_width, fb_height, gpu_pick)) {
+        result.hit = true;
+        if (gpu_pick.kind == matter::PickKind::StaticInstance) {
+            result.object.kind = SelectedObject::BakedRoot;
+            result.object.id = gpu_pick.part_hash;
+        } else if (gpu_pick.kind == matter::PickKind::DynamicEntity) {
+            result.object.kind = SelectedObject::Entity;
+            result.object.id = gpu_pick.entity_id;
+        }
+        return result;
+    }
 
+    // Fallback: ray-AABB test for ECS entities not yet in the raster pipeline.
     const Vec3 position{camera.position.x, camera.position.y, camera.position.z};
     const Vec3 target{camera.target.x, camera.target.y, camera.target.z};
     const Vec3 up{camera.up.x, camera.up.y, camera.up.z};
@@ -128,6 +140,9 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
     const float half_height = std::tan(camera.vertical_fov_radians * 0.5f);
     const float half_width = half_height * aspect;
 
+    const float ndc_x = (2.0f * cursor_x / static_cast<float>(fb_width)) - 1.0f;
+    const float ndc_y = 1.0f - (2.0f * cursor_y / static_cast<float>(fb_height));
+
     const Vec3 dir = normalize(add(
         add(forward, scale(right, ndc_x * half_width)),
         scale(cam_up, ndc_y * half_height)));
@@ -138,24 +153,6 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
     float best_t = 1e30f;
     bool found = false;
     SelectedObject best_object;
-
-    const uint32_t instance_count = session.instance_count();
-    for (uint32_t i = 0; i < instance_count; ++i) {
-        matter::InstanceInfo info;
-        if (!session.instance_info(i, info)) continue;
-
-        float local_min[3], local_max[3];
-        local_aabb_for_part(session, info.part_hash, 2.0f, local_min, local_max);
-
-        float t = 0.0f;
-        if (ray_obb(origin, ray_dir, info.transform, local_min, local_max, t) &&
-            t < best_t) {
-            best_t = t;
-            found = true;
-            best_object.kind = SelectedObject::BakedRoot;
-            best_object.id = info.part_hash;
-        }
-    }
 
     session.ecs().each(
         [&](flecs::entity e, const matter::scene::SceneEntityId& sid,
