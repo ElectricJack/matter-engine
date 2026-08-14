@@ -67,6 +67,20 @@ CXX_ONLY_FLAGS :=
 # parameterizer uses anyway.
 GEOGRAM_DEFINES := -DGEOGRAM_WITH_PDEL
 
+# AUTOREMESHER_FORCE_SHIM: force src/autoremesher.cpp and src/remesh.cpp to
+# include the header-only shim under thirdparty/tbb_shim/include/ instead of
+# a real TBB that may happen to be on the system include path (their
+# __has_include(<oneapi/tbb/...>) probes prefer a real install when one is
+# present, which happened on 2026-08-14 when a pacman transaction pulled in
+# mingw-w64-ucrt-x86_64-tbb as a dependency of ccache). This library is
+# deliberately TBB-runtime-free -- see the design note above -- so the
+# object files must never reference tbb::detail::r1::* symbols. Without this
+# define the compile still succeeds (the shim's tbb::* names shadow nothing;
+# the real headers just get pulled in instead) but the link of whatever
+# consumes libautoremesher_core.a fails much later with undefined
+# tbb::detail::r1::* references.
+TBB_SHIM_DEFINES := -DAUTOREMESHER_FORCE_SHIM
+
 # compat_include MUST precede geogram/src/lib -- it shadows the
 # <geogram/version.h> symlink, which does not survive checkouts without
 # symlink support. See thirdparty/compat_include/geogram/version.h.
@@ -87,7 +101,7 @@ INCLUDES := -Iinclude \
 # a build-flag workaround (not a source edit).
 FORCE_INCLUDES := -include cstdint
 
-CXXFLAGS := -std=c++17 $(COMMON_FLAGS) $(CXX_ONLY_FLAGS) $(GEOGRAM_DEFINES) $(INCLUDES) $(FORCE_INCLUDES)
+CXXFLAGS := -std=c++17 $(COMMON_FLAGS) $(CXX_ONLY_FLAGS) $(GEOGRAM_DEFINES) $(TBB_SHIM_DEFINES) $(INCLUDES) $(FORCE_INCLUDES)
 CFLAGS   := -std=gnu11 $(COMMON_FLAGS) $(GEOGRAM_DEFINES) $(INCLUDES)
 
 # ---------------------------------------------------------------------
