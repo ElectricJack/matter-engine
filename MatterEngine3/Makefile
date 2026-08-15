@@ -288,7 +288,7 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # under MatterSurfaceLib, for make's dependency tracking.
 SHADER_FILES := $(patsubst shaders/%,$(MSL_SHADER_DIR)/%,$(SHADER_LOGICAL))
 
-.PHONY: all clean test vulkan-spirv check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
+.PHONY: all clean test vulkan-spirv viewer-lib check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
 
 # all MUST be the first target so it is the default goal.
 all: $(LIB)
@@ -303,14 +303,32 @@ $(OBJDIR) build:
 # uniqueness the derivation assumes rather than leaving it to review.
 # $(LIB) depends on this order-only (it is phony; a normal prerequisite would
 # leave the archive perpetually out of date and re-run `ar` every build).
+#
+# 2026-08-14: widened twice over. (1) From ME3_CPP alone to the FULL flat-object
+# namespace -- the MSL/QuickJS/flecs/bc7enc/profile objects land in the same flat
+# directory and collide the same way, and since a .c and a .cpp both map to
+# <stem>.o, the comparison is on STEMS, not on file names. (2) From one archive
+# to both: viewer-lib (below) compiles a SUPERSET of ME3_CPP into its own flat
+# dir, so a collision can now be introduced by a source that this list never
+# mentions. Checking only the archive's half would leave exactly the silent drop
+# this guard exists to prevent.
+ME3_GUARD_EXTRA  = $(BC7ENC_DIR)/bc7enc.cpp $(BC7ENC_DIR)/rgbcx.cpp \
+                   $(PROFILE_DIR)/src/profile.cpp
+ME3_ALL_STEMS    = $(basename $(notdir $(ME3_CPP) $(MSL_CPP) $(MSL_C) \
+                     $(QJS_C) $(FLECS_C) $(ME3_GUARD_EXTRA)))
+VIEWER_ALL_STEMS = $(basename $(notdir $(VIEWER_CPP) $(MSL_CPP) $(MSL_C) \
+                     $(QJS_C) $(FLECS_C) $(ME3_GUARD_EXTRA)))
 check-me3-source-basenames:
-	@dups=`printf '%s\n' $(notdir $(ME3_CPP)) | sort | uniq -d`; \
-	if [ -n "$$dups" ]; then \
-		echo "ERROR: ME3_CPP sources share a basename, so they collide on one .o:"; \
-		printf '  %s\n' $$dups; \
-		echo "       rename one, or the archive silently ships only the other."; \
-		exit 1; \
-	fi
+	@for set in "archive:$(ME3_ALL_STEMS)" "viewer-lib:$(VIEWER_ALL_STEMS)"; do \
+		which=$${set%%:*}; stems=$${set#*:}; \
+		dups=`printf '%s\n' $$stems | sort | uniq -d`; \
+		if [ -n "$$dups" ]; then \
+			echo "ERROR: $$which sources share a basename, so they collide on one .o:"; \
+			printf '  %s\n' $$dups; \
+			echo "       rename one, or the archive silently ships only the other."; \
+			exit 1; \
+		fi; \
+	done
 
 # Keep the archive's explicit object list in sync with the animation sources
 # consumed by the bake/runtime boundary.  The archive is flat, so a source
@@ -611,6 +629,182 @@ $(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ)
 # M0's world_composer.o / tileset_provider.o). Rebuild the archive from scratch.
 	rm -f $(LIB)
 	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(PROFILE_OBJ)
+
+# =============================================================================
+# ---- viewer-lib: the engine archive MatterEditor links ----------------------
+# =============================================================================
+# $(LIB) above is the HEADLESS archive: it does not define MATTER_VULKAN_VIEWER,
+# so none of the vk_*/vt_* render sources are in it (see the ME3_CPP comment).
+# MatterEditor needs those. It used to get them by keeping a SECOND COPY of this
+# Makefile's whole source list -- WIN_ME3_CPP/WIN_MSL_CPP/WIN_PIPELINE_C/QJS_C/
+# FLECS_C -- and compiling ~154 engine, library and third-party TUs under its own
+# rules. That is the same two-lists-one-artifact shape that shipped stale SPIR-V
+# twice (see the VK_SPV comment above): a source added here and not there was
+# silently absent from the editor, and a source added there and not here left the
+# archive unlinkable. This target is now the single place the editor's engine
+# object set is decided; MatterEditor delegates here and links the result.
+#
+# WHY A SEPARATE OBJECT DIR rather than reusing build/obj: the two archives do
+# not agree on flags, and an object built for one is wrong in the other.
+#   $(LIB)        : -DGRAPHICS_API_OPENGL_43 -DTILESET_GTEX_USE_RAYLIB_STB,
+#                   no -DNDEBUG, no -DMATTER_VULKAN_VIEWER
+#   $(VIEWER_LIB) : -DNDEBUG -DMATTER_VULKAN_VIEWER -DMATTER_HAVE_STREAMLINE=N
+#                   -ffunction-sections -fdata-sections, and NEITHER of the two
+#                   defines above
+# -DNDEBUG alone (assert() compiled in or out, plus flecs' entire assertion
+# layer) makes sharing an object between them a correctness bug rather than an
+# optimization. Disk is cheaper than a silently mixed-flag archive.
+
+# Toolchain. MatterEditor passes its own (the /ucrt64/bin/... paths, with the
+# ccache prefix) so the archive is built by exactly the toolchain that links it;
+# these defaults keep a standalone `make -C MatterEngine3 viewer-lib` working.
+VIEWER_CXX ?= $(CC)
+VIEWER_CC  ?= $(CCACHE) gcc
+VIEWER_AR  ?= ar
+
+# MSYS2's Vulkan headers must win over the vendored ../third_party/Vulkan-Headers
+# copy -- exactly as they do in MatterEditor's WIN_INCLUDE_PATHS, which is why
+# this goes FIRST in VIEWER_INCLUDE_PATHS below. A non-ucrt64 build overrides it.
+VULKAN_INCLUDE ?= /ucrt64/include
+
+# MATTER_HAVE_STREAMLINE is a compile-time gate read by
+# src/render/streamline_bridge.cpp. MatterEditor owns the switch (its `dist`
+# target flips it) and passes it down; the flag stamp below tracks changes.
+HAVE_STREAMLINE ?= 0
+STREAMLINE_PATH ?=
+
+# VIEWER_TAG namespaces the object dir, the archive and the flag stamp so one
+# checkout can hold viewer builds for more than one toolchain at a time without
+# them overwriting each other's objects. MatterEditor's `windows` target leaves
+# it empty; its `linux` target passes _linux.
+VIEWER_TAG ?=
+VIEWER_OBJDIR = build/obj_viewer$(VIEWER_TAG)
+VIEWER_LIB    = build/libmatter_engine3_viewer$(VIEWER_TAG).a
+VIEWER_LIB_FLAGS_STAMP = build/.viewer_lib_flags$(VIEWER_TAG)
+
+# src/render/vk_context.cpp includes <GLFW/glfw3.h> (surface creation + the
+# native Win32 handle) and is the ONLY source here that needs a window-library
+# header -- hence one -I rather than MatterEditor's whole UI include set.
+# Deliberately NOT adding imgui/ImGuizmo: nothing in ME3_CPP or VIEWER_ONLY_CPP
+# includes them (verified by grep over both lists), and leaving those paths out
+# keeps "the engine does not depend on the editor's UI toolkit" enforced by the
+# build rather than by convention.
+VIEWER_GLFW_INCLUDE = $(RAYLIB_PATH)/external/glfw/include
+
+VIEWER_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) $(INCLUDE_PATHS) -I$(VIEWER_GLFW_INCLUDE) \
+                       $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include")
+
+# Mirrors MatterEditor's CXX_FLAGS_BUILD_WIN_COMMON exactly, minus the include
+# paths (those are this Makefile's to state, because they are relative to it).
+# Keep the two in step: any divergence changes editor.exe's binary behavior, and
+# the compiler will not tell you.
+VIEWER_CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
+                -DPLATFORM_DESKTOP -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST \
+                -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY \
+                -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE) \
+                -ffunction-sections -fdata-sections $(EXTRA_CFLAGS)
+
+# The ONLY list that distinguishes the two archives: sources gated on
+# MATTER_VULKAN_VIEWER, which $(LIB) deliberately omits. $(VIEWER_CPP) is
+# otherwise $(ME3_CPP) verbatim -- so adding an engine source to ME3_CPP is
+# still the single action that puts it in both.
+VIEWER_ONLY_CPP = src/render/vk_context.cpp src/render/vk_resources.cpp \
+                  src/render/vk_pipeline.cpp src/render/vk_scene_renderer.cpp \
+                  src/render/vk_volumetrics.cpp src/render/vk_emitter_gather.cpp \
+                  src/render/vk_instance_cache.cpp \
+                  src/render/vulkan_only_compat.cpp \
+                  src/render/streamline_bridge.cpp \
+                  src/render/tileset_bake_vk.cpp \
+                  src/render/dynamic_instance_slots.cpp \
+                  src/render/vt_compositor.cpp src/render/vt_enrich.cpp \
+                  src/render/vt_residency.cpp src/render/vt_stub_filler.cpp \
+                  src/ecs/scene_registry.cpp src/ecs/dynamic_scene_bridge.cpp
+
+VIEWER_CPP = $(ME3_CPP) $(VIEWER_ONLY_CPP)
+
+# Every object list here is DERIVED, for the reason spelled out above ME3_OBJ: a
+# hand-maintained parallel list is exactly how sources silently stopped being
+# compiled. check-me3-source-basenames covers this dir's flat namespace too.
+VIEWER_ME3_OBJ     = $(addprefix $(VIEWER_OBJDIR)/,$(notdir $(VIEWER_CPP:.cpp=.o)))
+VIEWER_MSL_OBJ     = $(addprefix $(VIEWER_OBJDIR)/,$(notdir $(MSL_CPP:.cpp=.o)))
+VIEWER_MSL_C_OBJ   = $(addprefix $(VIEWER_OBJDIR)/,$(notdir $(MSL_C:.c=.o)))
+VIEWER_QJS_OBJ     = $(addprefix $(VIEWER_OBJDIR)/,$(notdir $(QJS_C:.c=.o)))
+VIEWER_FLECS_OBJ   = $(addprefix $(VIEWER_OBJDIR)/,$(notdir $(FLECS_C:.c=.o)))
+VIEWER_BC7ENC_OBJ  = $(addprefix $(VIEWER_OBJDIR)/,bc7enc.o rgbcx.o)
+VIEWER_PROFILE_OBJ = $(VIEWER_OBJDIR)/profile.o
+VIEWER_ALL_OBJ = $(VIEWER_QJS_OBJ) $(VIEWER_ME3_OBJ) $(VIEWER_MSL_OBJ) \
+                 $(VIEWER_MSL_C_OBJ) $(VIEWER_FLECS_OBJ) $(VIEWER_BC7ENC_OBJ) \
+                 $(VIEWER_PROFILE_OBJ)
+
+$(VIEWER_OBJDIR):
+	@mkdir -p $@
+
+# Same stamp mechanism as $(LIB_FLAGS_STAMP), widened: the viewer flag set is
+# also parameterized by HAVE_STREAMLINE (and the SDK path it resolves to), and
+# those are as invisible to make's dependency graph as EXTRA_CFLAGS is. Flipping
+# RETOPO or HAVE_STREAMLINE now forces a full viewer recompile instead of
+# silently reusing objects built with the other define. That is strictly better
+# than the direct-source editor build this replaces, where a change to
+# AR_CORE_CFLAGS was tracked by nothing at all.
+$(VIEWER_LIB_FLAGS_STAMP): FORCE | build
+	@[ -f $@ ] && [ "`cat $@ 2>/dev/null`" = '$(EXTRA_CFLAGS)|$(HAVE_STREAMLINE)|$(STREAMLINE_PATH)' ] \
+	    || printf '%s' '$(EXTRA_CFLAGS)|$(HAVE_STREAMLINE)|$(STREAMLINE_PATH)' > $@
+
+# Order-only shader-header bar + real flag-stamp prerequisite: the same split,
+# for the same reasons, as the $(ME3_OBJ) pair above. The .d files carry the
+# real header->object edges once they exist, so a shader edit recompiles only
+# the TUs that actually #include the regenerated header.
+$(VIEWER_ME3_OBJ): | shaders_gen/embedded_shaders.h shaders_gen/embedded_spirv.h
+$(VIEWER_ME3_OBJ) $(VIEWER_MSL_OBJ) $(VIEWER_BC7ENC_OBJ) $(VIEWER_PROFILE_OBJ): $(VIEWER_LIB_FLAGS_STAMP)
+
+$(VIEWER_OBJDIR)/%.o: %.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+
+# Sources deliberately kept off vpath (see the $(OBJDIR) twins above for why)
+# need explicit rules. bc7enc/rgbcx get a trailing -w for the same reason the
+# $(OBJDIR) rules do -- unmodified upstream sources whose warnings are not this
+# project's to read past. -w only silences diagnostics, so the object is
+# identical to the one MatterEditor used to produce under its -Wall flags.
+$(VIEWER_OBJDIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) -I$(BC7ENC_DIR) -w -MMD -MP
+$(VIEWER_OBJDIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) -I$(BC7ENC_DIR) -w -MMD -MP
+$(VIEWER_OBJDIR)/profile.o: $(PROFILE_DIR)/src/profile.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+
+# C sources. -DNDEBUG and the section flags match what MatterEditor passed these
+# same files; the C compiler is separate so extern "C" symbols stay unmangled.
+VIEWER_C_COMMON = -O2 -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
+
+$(VIEWER_QJS_OBJ): $(VIEWER_OBJDIR)/%.o: $(QJS_DIR)/%.c | $(VIEWER_OBJDIR)
+	$(VIEWER_CC) -c $< -o $@ -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR) $(VIEWER_C_COMMON)
+
+$(VIEWER_FLECS_OBJ): $(VIEWER_OBJDIR)/%.o: $(FLECS_DIR)/%.c | $(VIEWER_OBJDIR)
+	$(VIEWER_CC) -c $< -o $@ -std=c17 -I$(FLECS_DIR) $(VIEWER_C_COMMON)
+
+# spatial_hash and mem_pool come from their source-of-truth libraries, so they
+# cannot share the MSL static pattern rule -- same split as the $(OBJDIR) rules.
+VIEWER_PIPC_COMPILE = $(VIEWER_CC) -c $< -o $@ -DPLATFORM_DESKTOP $(VIEWER_INCLUDE_PATHS) $(VIEWER_C_COMMON)
+VIEWER_MSL_C_ONLY_OBJ = $(filter-out $(VIEWER_OBJDIR)/spatial_hash.o $(VIEWER_OBJDIR)/mem_pool.o,$(VIEWER_MSL_C_OBJ))
+$(VIEWER_MSL_C_ONLY_OBJ): $(VIEWER_OBJDIR)/%.o: $(MSL_DIR)/src/%.c | $(VIEWER_OBJDIR)
+	$(VIEWER_PIPC_COMPILE)
+$(VIEWER_OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(VIEWER_OBJDIR)
+	$(VIEWER_PIPC_COMPILE)
+$(VIEWER_OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(VIEWER_OBJDIR)
+	$(VIEWER_PIPC_COMPILE)
+
+# Header dependency tracking for the viewer objects, same flat-dir wildcard as
+# the $(OBJDIR) include above.
+-include $(wildcard $(VIEWER_OBJDIR)/*.d)
+
+# Same rm-then-ar as $(LIB), and for the same reason: `ar rcs` only REPLACES the
+# members it is named, so an object whose source was deleted keeps being served
+# out of a stale archive forever with no build error to notice.
+$(VIEWER_LIB): $(VIEWER_ALL_OBJ) | check-me3-source-basenames
+	rm -f $@
+	$(VIEWER_AR) rcs $@ $(VIEWER_ALL_OBJ)
+
+viewer-lib: $(VIEWER_LIB)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:

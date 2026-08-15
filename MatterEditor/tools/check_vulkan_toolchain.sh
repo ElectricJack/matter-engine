@@ -16,24 +16,6 @@ require_command() {
         missing=1
     fi
 }
-# WIN_CXX can be a ccache-wrapped compiler line ("ccache g++"), not a single
-# executable -- platform.mk's CCACHE detection feeds straight into the
-# Makefile's `WIN_CXX ?= $(CCACHE) /ucrt64/bin/g++". Quoting the whole thing
-# for `command -v` (as require_command does) looks up one literal filename
-# containing a space, which never exists, so the preflight always failed once
-# ccache was on PATH -- deliberately unquoted below so it word-splits, and
-# every word must resolve.
-require_command_line() {
-    line=$2
-    ok=1
-    for word in $line; do
-        command -v "$word" >/dev/null 2>&1 || ok=0
-    done
-    if [ "$ok" -ne 1 ]; then
-        printf 'ERROR: missing %s: %s\n' "$1" "$line" >&2
-        missing=1
-    fi
-}
 require_file() {
     if ! test -f "$2"; then
         printf 'ERROR: missing %s: %s\n' "$1" "$2" >&2
@@ -41,7 +23,24 @@ require_file() {
     fi
 }
 
-require_command_line 'Windows C++ compiler' "$WIN_CXX"
+# WIN_CXX is a command LINE, not necessarily a single executable path: since
+# ccache was wired into platform.mk, MatterEditor/Makefile passes
+# WIN_CXX="/ucrt64/bin/ccache /ucrt64/bin/g++". `command -v "$WIN_CXX"` then
+# looks up one executable literally named "/ucrt64/bin/ccache /ucrt64/bin/g++",
+# never finds it, and vulkan-preflight fails with
+#   ERROR: missing Windows C++ compiler: /ucrt64/bin/ccache /ucrt64/bin/g++
+# on a machine where both halves are perfectly present -- which blocks the
+# whole `windows` target ($(WIN_FEATURES) depends on this script). Probe by
+# RUNNING the compiler instead, with $WIN_CXX deliberately unquoted so the
+# shell word-splits it into argv the way the Makefile recipes do. This also
+# checks more than `command -v` did: a present-but-broken compiler now fails
+# here rather than at the first compile.
+# shellcheck disable=SC2086
+if ! $WIN_CXX --version >/dev/null 2>&1; then
+    printf 'ERROR: missing or non-functional Windows C++ compiler: %s\n' \
+        "$WIN_CXX" >&2
+    missing=1
+fi
 require_command 'Vulkan shader compiler' "$GLSLC"
 require_file 'Vulkan header' "$VULKAN_INCLUDE/vulkan/vulkan.h"
 require_file 'Vulkan import library' "$VULKAN_LIB_DIR/libvulkan-1.dll.a"
@@ -80,8 +79,8 @@ trap 'rm -f "$src" "$exe"' EXIT HUP INT TERM
 src="$(mktemp --suffix=.cpp)"
 exe="$(mktemp --suffix=.exe)"
 printf '#include <vulkan/vulkan.h>\nint main(){return vkEnumerateInstanceVersion(0);}\n' > "$src"
-# Deliberately unquoted (see require_command_line above): WIN_CXX may be a
-# multi-word ccache-wrapped compiler line and must word-split into argv0 +
-# argv1, not a single (nonexistent) "ccache g++"-named executable.
+# Unquoted for the same reason as the --version probe above: WIN_CXX may be
+# "ccache g++", which must word-split into two argv entries.
+# shellcheck disable=SC2086
 $WIN_CXX "$src" -I"$VULKAN_INCLUDE" -L"$VULKAN_LIB_DIR" -lvulkan-1 -o "$exe"
 printf 'vulkan-preflight: OK\n'

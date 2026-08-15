@@ -7,18 +7,24 @@
 # deletion) -- see docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md.
 #
 # Windows: MinGW-hosted native compile (WIN_CXX runs ON Windows via MSYS2
-#   UCRT64, it is not a Linux->Windows cross-compiler) that does direct-source
-#   compilation of all engine+MSL+QJS units with updated ../MatterEngine3/src/...
-#   paths. (Pragmatic: no mingw .a packaging this phase. Private ME3 src/
-#   includes are scoped to the Windows variable set below.) This is the only
-#   target verified in this repository's normal Windows dev environment.
+#   UCRT64, it is not a Linux->Windows cross-compiler). It compiles the EDITOR's
+#   own sources -- APP_SRC, ImGui/ImGuizmo, GLFW -- and links the engine as
+#   MatterEngine3's libmatter_engine3_viewer.a, built by that project's
+#   `viewer-lib` target with this build's flag set. This is the only target
+#   verified in this repository's normal Windows dev environment.
+#
+#   It did NOT used to work that way: this Makefile carried its own copy of
+#   MatterEngine3's source lists (WIN_ME3_CPP/WIN_MSL_CPP/WIN_PIPELINE_C/QJS_C)
+#   and direct-source-compiled ~154 engine, library and third-party TUs. See the
+#   "Engine sources: NOT compiled here any more" note below for what replaced
+#   them and why.
 #
 # Linux (Phase 5b, ADDED, UNVERIFIED): the `linux` target below mirrors the
-# Windows target's shape almost exactly -- same APP_SRC/WIN_ME3_CPP/WIN_MSL_CPP/
-# WIN_PIPELINE_C/IMGUI_SRC_WIN direct-source-compile lists (they were never
-# actually Windows-specific, just never built anywhere else), a Vulkan-only
-# GLFW build against the X11 backend instead of Win32, and
-# -DMATTER_HAVE_STREAMLINE=0 hardcoded (Streamline/DLSS is Windows-only).
+# Windows target's shape almost exactly -- same APP_SRC/IMGUI_SRC_WIN compile
+# set and the same viewer-lib delegation (under VIEWER_TAG=_linux, so the two
+# platforms' objects and archives do not collide), a Vulkan-only GLFW build
+# against the X11 backend instead of Win32, and -DMATTER_HAVE_STREAMLINE=0
+# hardcoded (Streamline/DLSS is Windows-only).
 # There is no Linux machine, toolchain, or Vulkan loader anywhere in the
 # environment this was written in, so this target has never been compiled or
 # run. See MatterEditor/README.md for the full list of what is and is not
@@ -190,138 +196,24 @@ ar-core:
 # available where it was written).
 APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/part_workbench_iso.cpp src/reveal_part.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/camera_orbit.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/property_editor.cpp src/editor_props.cpp src/gizmo.cpp src/os_open.cpp
 
-# Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
-# These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
-WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
-              $(ME3_DIR)/src/animation/ozz_adapter.cpp \
-              $(ME3_DIR)/src/animation/ozz_bake.cpp \
-              $(ME3_DIR)/src/animation/animation_ir.cpp \
-              $(ME3_DIR)/src/animation/animation_validate.cpp \
-              $(ME3_DIR)/src/animation/animation_binding_bake.cpp \
-              $(ME3_DIR)/src/animation/animation_runtime_asset.cpp \
-              $(ME3_DIR)/src/animation/anim_asset.cpp \
-              $(ME3_DIR)/src/animation/anim_bundle.cpp \
-              $(ME3_DIR)/src/animation/animation_asset_store.cpp \
-              $(ME3_DIR)/src/animation/animation_store.cpp \
-              $(ME3_DIR)/src/animation/animation_budget.cpp \
-              $(ME3_DIR)/src/animation/animation_evaluator.cpp \
-              $(ME3_DIR)/src/animation/animation_systems.cpp \
-              $(ME3_DIR)/src/animation/animation_world_queries.cpp \
-              $(ME3_DIR)/src/animation/animation_controllers.cpp \
-              $(ME3_DIR)/src/animation/animation_targets.cpp \
-              $(ME3_DIR)/src/script_host.cpp $(ME3_DIR)/src/dsl_state.cpp \
-              $(ME3_DIR)/src/dsl_triangle.cpp $(ME3_DIR)/src/dsl_bindings.cpp \
-              $(ME3_DIR)/src/dsl_animation.cpp \
-              $(ME3_DIR)/src/csg_lowering.cpp $(ME3_DIR)/src/module_resolver.cpp \
-              $(ME3_DIR)/src/script/world_definition_loader.cpp \
-              $(ME3_DIR)/src/script_rng_binding.cpp \
-              $(ME3_DIR)/src/polygon_triangulate.cpp \
-              $(ME3_DIR)/src/part_asset_v2.cpp $(ME3_DIR)/src/lod_bake.cpp \
-              $(ME3_DIR)/src/warp_field.cpp \
-              $(ME3_DIR)/src/world_flatten.cpp $(ME3_DIR)/src/part_flatten.cpp \
-              $(ME3_DIR)/src/impostor_bake.cpp \
-              $(ME3_DIR)/src/triangle_emit.cpp \
-              $(ME3_DIR)/src/part_cluster.cpp \
-              $(ME3_DIR)/src/tileset_placement.cpp $(ME3_DIR)/src/tileset_layout.cpp \
-              $(ME3_DIR)/src/tileset_torus_bvh.cpp \
-              $(ME3_DIR)/src/tileset_gtex.cpp \
-              $(ME3_DIR)/src/sector_grid.cpp $(ME3_DIR)/src/lod_select.cpp \
-              $(ME3_DIR)/src/world_lights.cpp \
-              $(ME3_DIR)/src/world_tracer.cpp \
-              $(ME3_DIR)/src/shader_source.cpp \
-              $(ME3_DIR)/src/tileset_phase.cpp \
-              $(ME3_DIR)/src/tileset_bake.cpp $(ME3_DIR)/src/tileset_settle.cpp \
-              $(ME3_DIR)/src/tileset_collider.cpp $(ME3_DIR)/src/tileset_part_collider.cpp \
-              \
-              $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp $(ME3_DIR)/src/render/part_store.cpp \
-              $(ME3_DIR)/src/render/world_state.cpp \
-              $(ME3_DIR)/src/render/lod_trace.cpp \
-              $(ME3_DIR)/src/render/streamline_bridge.cpp \
-              $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
-              $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
-              $(ME3_DIR)/src/render/vk_animation_skinning.cpp $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
-              $(ME3_DIR)/src/render/animation_skin_bridge.cpp \
-              $(ME3_DIR)/src/render/tileset_slicer.cpp \
-              $(ME3_DIR)/src/render/bc_encode.cpp \
-              $(ME3_DIR)/src/render/vt_compositor.cpp \
-              $(ME3_DIR)/src/render/vt_enrich.cpp \
-              $(ME3_DIR)/src/render/vt_residency.cpp \
-              $(ME3_DIR)/src/render/vt_stub_filler.cpp \
-              $(BC7ENC_DIR)/bc7enc.cpp $(BC7ENC_DIR)/rgbcx.cpp \
-              $(ME3_DIR)/src/render/tileset_bake_vk.cpp \
-              $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_atmosphere.cpp $(ME3_DIR)/src/render/vk_cloud_shadows.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
-              $(ME3_DIR)/src/render/vk_instance_cache.cpp \
-              $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
-              $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
-              $(ME3_DIR)/src/render/vk_temporal.cpp $(ME3_DIR)/src/render/vk_gi_math.cpp \
-              $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
-              $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
-              $(ME3_DIR)/src/modifier_apply.cpp $(ME3_DIR)/src/retopo_blacklist.cpp \
-              $(ME3_DIR)/src/async_bake.cpp \
-              $(ME3_DIR)/src/live_edit.cpp \
-              $(ME3_DIR)/src/live_edit_prod.cpp \
-              $(ME3_DIR)/src/inotify_watcher.cpp \
-              $(ME3_DIR)/src/part_graph_snapshot.cpp \
-              $(ME3_DIR)/src/refine_controller.cpp \
-              $(ME3_DIR)/src/resolve_cache.cpp \
-              $(ME3_DIR)/src/terrain_field.cpp \
-              $(ME3_DIR)/src/terrain_mesher.cpp \
-              $(ME3_DIR)/src/seam_weld.cpp \
-              $(ME3_DIR)/src/sector_streamer.cpp \
-              $(ME3_DIR)/src/ecs/ecs_runtime.cpp \
-              $(ME3_DIR)/src/ecs/physics_context.cpp \
-              $(ME3_DIR)/src/ecs/physics_shapes.cpp \
-              $(ME3_DIR)/src/ecs/physics_systems.cpp \
-              $(ME3_DIR)/src/ecs/streaming_systems.cpp \
-              $(ME3_DIR)/src/ecs/transform_system.cpp \
-              $(ME3_DIR)/src/ecs/scene_registry.cpp \
-              $(ME3_DIR)/src/ecs/simulation_control.cpp \
-              $(ME3_DIR)/src/ecs/dynamic_scene_bridge.cpp \
-              $(ME3_DIR)/src/render/animation_rigid_bridge.cpp \
-              $(ME3_DIR)/src/render/dynamic_instance_slots.cpp \
-              $(ME3_DIR)/src/streaming/sector_streaming_coordinator.cpp \
-              $(ME3_DIR)/src/matter_engine.cpp \
-              $(ME3_DIR)/src/event/event_hub.cpp \
-              $(ME3_DIR)/src/event/subscription.cpp \
-              $(ME3_DIR)/src/event/dispatch_context.cpp \
-              $(ME3_DIR)/src/event/command.cpp \
-              $(ME3_DIR)/src/event/property.cpp \
-              $(ME3_DIR)/src/util/json_doc.cpp \
-              $(ME3_DIR)/src/props/props.cpp \
-              $(ME3_DIR)/src/props/props_file.cpp \
-              $(ME3_DIR)/src/props/draw_overrides.cpp \
-              $(ME3_DIR)/src/scene/scene_service.cpp \
-              $(ME3_DIR)/src/scene/scene_change_tracker.cpp \
-              $(ME3_DIR)/src/bake_trace.cpp \
-              $(ME3_DIR)/src/pf_bindings.cpp \
-              ../libs/ParticleFlowLib/src/pf_math.cpp \
-              ../libs/ParticleFlowLib/src/pf_sim.cpp \
-              ../libs/ParticleFlowLib/src/pf_fields.cpp \
-              ../libs/ParticleFlowLib/src/pf_path_recorder.cpp
-
-WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
-              $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
-              $(MSL_DIR)/src/mesh_smooth.cpp $(MSL_DIR)/src/mesh_transform.cpp \
-              $(MSL_DIR)/src/blas_manager.cpp $(SQL_DIR)/src/bvh.cpp \
-              $(SQL_DIR)/src/bvh_analyzer.cpp \
-              $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \
-              $(MSL_DIR)/src/meshing_algorithm.cpp \
-              $(MSL_DIR)/src/marching_cubes_algorithm.cpp \
-              $(MSL_DIR)/src/oriented_cube_algorithm.cpp \
-              $(MSL_DIR)/src/vertex_ao.cpp \
-              $(MSL_DIR)/src/occupancy.cpp $(MSL_DIR)/src/tlas_manager.cpp \
-              $(MSL_DIR)/src/part_asset.cpp \
-              $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp \
-              ../libs/MeshChartingLib/src/mesh_charting.cpp \
-              $(AR_CORE_MSL_CPP)
-
-WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c \
-                 $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
-                 $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
-
-QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
-          $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
-
+# ---- Engine sources: NOT compiled here any more --------------------------
+# WIN_ME3_CPP (~127 MatterEngine3 sources), WIN_MSL_CPP (~22 MatterSurfaceLib /
+# SpatialQueryLib / MeshChartingLib sources), WIN_PIPELINE_C (5 C sources) and
+# QJS_C (5 QuickJS sources) used to live here: a second, hand-maintained copy of
+# MatterEngine3/Makefile's own source lists, compiled by this Makefile's rules
+# into build/windows/obj/. That is ~154 TUs of engine, library and third-party
+# code that MatterEngine3/Makefile also knows how to build, and the two lists
+# had to be edited in lockstep forever -- the same two-lists-one-artifact shape
+# that shipped stale SPIR-V twice (see the VK_EMBEDDED_HEADER note below) and
+# that CLAUDE.md's "Code Sharing Between Projects" section exists to forbid.
+#
+# They are gone. MatterEngine3/Makefile grew a `viewer-lib` target that builds
+# libmatter_engine3_viewer.a from ITS list (ME3_CPP + the vk_*/vt_* sources this
+# copy used to add) with THIS build's flag set, and the `windows` link below
+# pulls that archive in. Adding an engine source is now one edit, in ME3_CPP.
+#
+# What is still compiled here is what is genuinely the editor's: APP_SRC, the
+# ImGui/ImGuizmo/GLFW UI layer, and the standalone test exes further down.
 FLECS_C = $(FLECS_DIR)/flecs.c
 
 IMGUI_CORE_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
@@ -340,30 +232,35 @@ IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
 # so flattening with $(notdir ...) is collision-free. vpath (below) lets the
 # pattern rules find each source by basename.
 #
-# Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
-# Windows is the release build path for now: -DNDEBUG disables assert().
+# Windows: editor-own sources only (APP_SRC + IMGUI_SRC_WIN); the engine comes
+# in as $(VIEWER_LIB). Windows is the release build path for now: -DNDEBUG
+# disables assert().
+#
+# This flag set is MIRRORED by MatterEngine3/Makefile's VIEWER_CFLAGS, which is
+# what the archive's engine objects are compiled with. The two must agree on
+# -DNDEBUG / -DMATTER_VULKAN_VIEWER / -DMATTER_VULKAN_ONLY / -DMATTER_HAVE_
+# SCRIPT_HOST / -DMATTER_HAVE_STREAMLINE / the section flags, because they used
+# to be one flag set applied to one pile of objects. Change one, change both.
 CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(AR_CORE_CFLAGS) -ffunction-sections -fdata-sections -MMD -MP
 CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE)
 ifeq ($(HAVE_STREAMLINE),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -I"$(STREAMLINE_PATH)/include"
 endif
 
-# Windows object set: full direct-source compile.
-WIN_ALL_CPP_SRC = $(APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP) $(IMGUI_SRC_WIN) $(PROFILE_DIR)/src/profile.cpp
+# Windows object set: editor-own TUs only.
+WIN_ALL_CPP_SRC = $(APP_SRC) $(IMGUI_SRC_WIN)
 CPP_NAMES_WIN_ALL = $(notdir $(WIN_ALL_CPP_SRC))
-QJS_NAMES = $(notdir $(QJS_C))
-PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 FLECS_NAME = $(notdir $(FLECS_C))
 
-vpath %.cpp src $(PROFILE_DIR)/src $(ME3_DIR)/src $(ME3_DIR)/src/animation $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
-             $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script $(ME3_DIR)/src/event \
-             $(ME3_DIR)/src/scene $(ME3_DIR)/src/util $(ME3_DIR)/src/props \
-             $(MSL_DIR)/src $(SQL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
-             $(IMGUIZMO_PATH) \
-             ../libs/ParticleFlowLib/src \
-             ../libs/MeshChartingLib/src \
-             $(BC7ENC_DIR)
-vpath %.c $(MSL_DIR)/src $(SQL_DIR)/src $(MEMLIB_DIR)/src $(QJS_DIR) $(FLECS_DIR)
+# vpath now covers only what this Makefile still compiles: the editor's own
+# src/, the ImGui/ImGuizmo trees, and (for the test-exe support objects) flecs
+# and bc7enc. The MatterEngine3/MatterSurfaceLib/SpatialQueryLib/ParticleFlowLib/
+# MeshChartingLib entries went with the source lists above -- leaving them would
+# let a future editor source silently resolve to an engine file of the same
+# basename, which is precisely the shadowing hazard MatterEngine3/Makefile
+# documents around its own bvh.c/bvh.cpp pair.
+vpath %.cpp src $(IMGUI_PATH) $(IMGUI_PATH)/backends $(IMGUIZMO_PATH)
+vpath %.c $(FLECS_DIR)
 
 # `windows` is the only build target until Phase 5b adds a Linux Vulkan one
 # (see the Linux-viewer comment near APP_SRC above).
@@ -374,33 +271,33 @@ vpath %.c $(MSL_DIR)/src $(SQL_DIR)/src $(MEMLIB_DIR)/src $(QJS_DIR) $(FLECS_DIR
 # builds anything into it right now -- see Phase 5b note above.
 L_DIR = build/linux
 
-# Windows object sets: full direct-source compile including engine+MSL.
-# Objects/.d files live under an obj/ subdir so build/windows/ only ever holds
-# editor.exe (+ the non-object build artifacts below).
+# Windows object sets: editor-own TUs only. Objects/.d files live under an obj/
+# subdir so build/windows/ only ever holds editor.exe (+ the non-object build
+# artifacts below).
 W_DIR = build/windows
 W_OBJ_DIR = $(W_DIR)/obj
 W_CPP_OBJ  = $(addprefix $(W_OBJ_DIR)/,$(CPP_NAMES_WIN_ALL:.cpp=.o))
-W_QJS_OBJ  = $(addprefix $(W_OBJ_DIR)/,$(QJS_NAMES:.c=.o))
-W_PIPC_OBJ = $(addprefix $(W_OBJ_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
+# flecs and the vendored BC encoders are in $(VIEWER_LIB) for editor.exe's
+# purposes. These objects exist ONLY for the standalone test exes below, which
+# each compile their own TU list in one -Wall -Wextra -Werror g++ call:
+# unmodified upstream sources do not survive -Werror -Wextra, and patching them
+# would break the "vendored verbatim" contract in third_party/bc7enc/README.md,
+# so those recipes LINK these instead of compiling them. They are deliberately
+# NOT in $(W_ALL_OBJ) -- a `make windows` has no reason to build them.
 W_FLECS_OBJ = $(W_OBJ_DIR)/$(FLECS_NAME:.c=.o)
-# Vendored BC encoders as PREBUILT objects (they are already in $(W_CPP_OBJ)
-# via WIN_ME3_CPP; this name exists so the vulkan_smoke_tests.exe recipe --
-# which compiles its whole source list in one -Wall -Wextra -Werror g++ call
-# -- can LINK them instead of compiling them. Unmodified upstream sources do
-# not survive -Werror -Wextra, and patching them would break the "vendored
-# verbatim" contract in third_party/bc7enc/README.md.)
 W_BC7ENC_OBJ = $(W_OBJ_DIR)/bc7enc.o $(W_OBJ_DIR)/rgbcx.o
-W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ) $(W_FLECS_OBJ)
+W_ALL_OBJ  = $(W_CPP_OBJ)
 
 $(W_DIR) $(W_OBJ_DIR):
 	mkdir -p $@
 
-# ---- Library prerequisite: build libmatter_engine3.a. Only the (retired)
-# Linux target ever linked this archive directly -- the Windows target
-# recompiles ME3/MSL sources itself (WIN_ME3_CPP/WIN_MSL_CPP above) -- but
-# build-engine-lib is kept as the one place that knows how to invoke the
-# library sub-make with the right autoremesher flags, for whatever Phase 5b's
-# Linux Vulkan target ends up needing.
+# ---- Library prerequisite: build libmatter_engine3.a, the HEADLESS archive.
+# Not what editor.exe links -- that is libmatter_engine3_viewer.a, built by the
+# viewer-lib delegation below (the headless archive has no vk_*/vt_* sources in
+# it at all). The only consumer left here is
+# $(ANIMATION_ARCHIVE_LINK_TARGET) below, which exists specifically to test the
+# headless archive's boundary. Kept as the one place that knows how to invoke
+# the library sub-make with the right autoremesher flags.
 # When retopo is enabled, pass the flag + AR include path so that
 # modifier_apply.cpp and mesh_retopo.cpp inside the library see the right
 # defines. EXTRA_RETOPO_CPP tells the library Makefile to also compile
@@ -417,6 +314,51 @@ ifneq ($(HAVE_AUTOREMESHER),)
 else
 	$(MAKE) -C $(ME3_DIR)
 endif
+
+# ---- viewer-lib: the engine archive editor.exe actually links --------------
+# MatterEngine3's `viewer-lib` target builds libmatter_engine3_viewer.a from
+# ME3_CPP + the vk_*/vt_* sources, with THIS build's flag set, into its own
+# object dir. See the long comment over that target for why it is a second
+# archive and not $(LIB), and the "Engine sources: NOT compiled here any more"
+# note near the top of this file for what it replaced.
+#
+# EXTRA_CFLAGS/EXTRA_INCLUDE/EXTRA_RETOPO_CPP are the same injection points
+# build-engine-lib above already used for retopo, so RETOPO rides the
+# delegation rather than needing anything new. The relative paths inside
+# AR_CORE_CFLAGS ("../third_party/autoremesher_core/include") survive the trip
+# because MatterEditor/ and MatterEngine3/ sit at the same depth.
+#
+# Toolchain and the Vulkan include dir are passed explicitly so the archive is
+# built by exactly the compiler that links it, and so a caller who overrode
+# VULKAN_INCLUDE for this build gets it honored inside the archive too.
+VIEWER_LIB = $(ME3_DIR)/build/libmatter_engine3_viewer.a
+
+VIEWER_LIB_MAKE_ARGS = \
+    VIEWER_CXX="$(WIN_CXX)" VIEWER_CC="$(WIN_CC)" VIEWER_AR="$(WIN_AR)" \
+    VULKAN_INCLUDE="$(VULKAN_INCLUDE)" \
+    HAVE_STREAMLINE="$(HAVE_STREAMLINE)" STREAMLINE_PATH="$(STREAMLINE_PATH)" \
+    $(if $(HAVE_AUTOREMESHER),EXTRA_CFLAGS="$(AR_CORE_CFLAGS)" \
+        EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
+        EXTRA_RETOPO_CPP="$(MSL_DIR)/src/mesh_retopo.cpp")
+
+.PHONY: viewer-lib
+viewer-lib: $(VIEWER_LIB)
+
+# Same FORCE-recipe shape as $(VK_EMBEDDED_HEADER) below, and for the same
+# reason: make only re-stats a file target after ITS OWN recipe runs, so
+# reaching the sub-make through an order-only hop to a phony would let the
+# archive be rebuilt as a side effect while the link compared against the
+# pre-submake stat and skipped -- a green build with a stale editor.exe. The
+# real recipe lives on the archive path; `viewer-lib` above is just an alias.
+# The sub-make is incremental (and `ar` only reruns when an object changed), so
+# a no-op build costs one recursive make that stats its objects.
+#
+# The order-only bars matter under -j: both embedded-shaders and embedded-spirv
+# are ALSO recursive makes into MatterEngine3, and two concurrent sub-makes in
+# one directory would race on build/shaders_vk/*.spv and shaders_gen/*.h.
+# Requiring them first serializes the three into one order.
+$(VIEWER_LIB): FORCE | embedded-shaders embedded-spirv
+	$(MAKE) -C $(ME3_DIR) viewer-lib $(VIEWER_LIB_MAKE_ARGS)
 
 # The editor links the engine archive, so test the actual archive boundary
 # rather than only direct-compiled adapter sources: a real clip must compile
@@ -745,22 +687,16 @@ vt-compositor-tests: vulkan-preflight $(GLFW_WIN_LIB) \
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_OBJ_DIR)/%.o: %.cpp | $(W_OBJ_DIR)
 	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_WIN_COMMON)
-$(W_QJS_OBJ): $(W_OBJ_DIR)/%.o: $(QJS_DIR)/%.c | $(W_OBJ_DIR)
-	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
-# Pipeline C objects. Most come from MatterSurfaceLib, but spatial_hash and
-# mem_pool are compiled from their source-of-truth libraries, so they cannot
-# share the MSL static pattern rule and get their own explicit rules below.
-WIN_PIPC_COMPILE = $(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
-W_PIPC_MSL_OBJ = $(filter-out $(W_OBJ_DIR)/spatial_hash.o $(W_OBJ_DIR)/mem_pool.o,$(W_PIPC_OBJ))
-
-$(W_PIPC_MSL_OBJ): $(W_OBJ_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_OBJ_DIR)
-	$(WIN_PIPC_COMPILE)
-$(W_OBJ_DIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(W_OBJ_DIR)
-	$(WIN_PIPC_COMPILE)
-$(W_OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(W_OBJ_DIR)
-	$(WIN_PIPC_COMPILE)
+# Test-exe support objects only (see $(W_FLECS_OBJ)/$(W_BC7ENC_OBJ) above); the
+# engine's own copies of these live in $(VIEWER_LIB). bc7enc/rgbcx used to ride
+# along in $(W_CPP_OBJ) via WIN_ME3_CPP and so needed no rule of their own.
 $(W_FLECS_OBJ): $(W_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_OBJ_DIR)
 	$(WIN_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
+WIN_BC7ENC_COMPILE = $(WIN_CXX) -c $< -o $@ -std=c++17 -O2 -DNDEBUG -w -I$(BC7ENC_DIR) -ffunction-sections -fdata-sections -MMD -MP
+$(W_OBJ_DIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(W_OBJ_DIR)
+	$(WIN_BC7ENC_COMPILE)
+$(W_OBJ_DIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(W_OBJ_DIR)
+	$(WIN_BC7ENC_COMPILE)
 
 # Order-only: the headers must exist before shader_source.cpp / the vt_*/vk_*
 # TUs that #include embedded_spirv.h compile, but their regeneration must not
@@ -768,19 +704,40 @@ $(W_FLECS_OBJ): $(W_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_OBJ_DIR)
 $(W_CPP_OBJ): | embedded-shaders embedded-spirv
 
 # MATTER_HAVE_STREAMLINE is a compile-time gate, but make only tracks source
-# timestamps, so flipping HAVE_STREAMLINE between invocations used to reuse the
-# stale streamline_bridge.o and silently ship the wrong branch. The stamp below
-# records the last-built value and is rewritten (bumping its mtime) only when
-# the value differs, forcing exactly the TU that reads the define to recompile.
-W_STREAMLINE_STAMP = $(W_OBJ_DIR)/.streamline_flag
+# timestamps, so flipping HAVE_STREAMLINE between invocations used to reuse a
+# stale streamline_bridge.o and silently ship the wrong branch. A
+# $(W_OBJ_DIR)/.streamline_flag stamp used to guard exactly that one object
+# here. streamline_bridge.cpp now compiles inside $(VIEWER_LIB), so the guard
+# moved with it: MatterEngine3's $(VIEWER_LIB_FLAGS_STAMP) records
+# HAVE_STREAMLINE (and STREAMLINE_PATH, and EXTRA_CFLAGS) and forces a viewer
+# recompile when any of them change. That covers strictly more than the stamp
+# it replaces -- every engine TU, not just the one that reads the define.
+#
+# FORCE stays: $(VIEWER_LIB) and $(VK_EMBEDDED_HEADER) both hang their
+# re-run-every-invocation delegation off it.
 .PHONY: FORCE
 FORCE:
-$(W_STREAMLINE_STAMP): FORCE | $(W_OBJ_DIR)
-	@[ "$$(cat $@ 2>/dev/null)" = "$(HAVE_STREAMLINE)" ] || echo "$(HAVE_STREAMLINE)" > $@
-$(W_OBJ_DIR)/streamline_bridge.o: $(W_STREAMLINE_STAMP)
 
-windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(AR_CORE_DEP) $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+# --whole-archive around $(VIEWER_LIB) is deliberate and load-bearing.
+#
+# Until this refactor, every engine object was named directly on this link line,
+# so all of them were linked unconditionally. Ordinary archive semantics are
+# different: ld pulls only the members that resolve a still-undefined symbol.
+# For anything reached by a normal call that is the same outcome, but for a TU
+# whose contribution is a side effect at load time -- a namespace-scope object
+# whose constructor registers something -- it is NOT: the member is silently
+# left out, the link still succeeds, and the behavior change only shows up at
+# run time. --whole-archive makes the archive exactly equivalent to the object
+# list it replaced, so this stays a build refactor rather than a link-semantics
+# change. --gc-sections still prunes genuinely unreachable code afterwards
+# (every TU is compiled -ffunction-sections -fdata-sections), which is why the
+# resulting exe is the same size it was.
+#
+# Position: after $(W_ALL_OBJ) (the editor objects reference the engine, not the
+# other way round) and before $(WIN_LIBS)/$(GLFW_WIN_LIB)/$(AR_CORE_LDFLAGS),
+# which the archive itself draws on -- box3d, Ozz, GLFW and autoremesher_core.
+windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(AR_CORE_DEP) $(VIEWER_LIB) $(W_ALL_OBJ)
+	$(WIN_CXX) $(W_ALL_OBJ) -Wl,--whole-archive $(VIEWER_LIB) -Wl,--no-whole-archive -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(W_DIR)/; fi
 	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p $(W_DIR)/editor.exe)"; \
 	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL nvcuda cuDevice; do \
@@ -827,19 +784,19 @@ endif
 # in this section is referenced by any `windows`-target rule above, and
 # nothing above this point was changed to make room for it.
 #
-# Shape: identical TU list to the Windows target (APP_SRC + WIN_ME3_CPP +
-# WIN_MSL_CPP + WIN_PIPELINE_C + QJS_C + FLECS_C + IMGUI_SRC_WIN), direct-
-# source compiled exactly like Windows does -- NOT linked against
-# libmatter_engine3.a the way the old (Phase-5a-deleted) GL Linux target was.
-# That old shape doesn't fit any more: MatterEngine3/Makefile's own ME3_CPP
-# list does not compile the vk_*.cpp render sources at all (see the comment
-# above CFLAGS in that Makefile) -- they only exist as direct-compile lists
-# here, in WIN_ME3_CPP. The "WIN_" prefix on those shared variables is
-# historical, not a statement that the sources are Windows-specific; per the
-# plan (docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md
-# Phase 5 table) only vk_context.cpp has meaningful platform gating, and this
-# landing fixed the one spot in it that would not even compile on Linux (see
-# the Phase 5b comments in MatterEngine3/src/render/vk_context.cpp).
+# Shape: identical to the Windows target -- the same APP_SRC + IMGUI_SRC_WIN
+# compiled here, and the engine linked as a viewer archive built by
+# MatterEngine3's viewer-lib target (see $(LINUX_VIEWER_LIB) below).
+#
+# This section used to explain at length why Linux could NOT link an archive:
+# MatterEngine3's ME3_CPP does not compile the vk_*.cpp render sources, so they
+# existed only as direct-compile lists here, in WIN_ME3_CPP. viewer-lib is
+# exactly the archive that objection called for, so both platforms link one now
+# and neither keeps a source list. Per the plan
+# (docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md Phase 5
+# table) only vk_context.cpp has meaningful platform gating, and Phase 5b fixed
+# the one spot in it that would not even compile on Linux (see the Phase 5b
+# comments in MatterEngine3/src/render/vk_context.cpp).
 #
 # Deliberately X11-only, not Wayland: matches the dependency set the old
 # (Phase-5a-deleted) GL Linux target already had (LDFLAGS there was
@@ -889,19 +846,46 @@ CXX_FLAGS_BUILD_LINUX_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST \
     $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(AR_CORE_CFLAGS) \
     -ffunction-sections -fdata-sections -MMD -MP
 
-# Reusing $(WIN_ALL_CPP_SRC) verbatim rather than re-listing APP_SRC/WIN_ME3_CPP/
-# WIN_MSL_CPP/IMGUI_SRC_WIN a second time: it is already exactly the TU set
-# this target needs (see the module-header comment above), and referencing it
-# here cannot change what the `windows` target does with it.
+# Reusing $(WIN_ALL_CPP_SRC) verbatim rather than re-listing APP_SRC/
+# IMGUI_SRC_WIN a second time: it is already exactly the TU set this target
+# needs (see the module-header comment above), and referencing it here cannot
+# change what the `windows` target does with it. Since the engine sources left
+# this Makefile, that set is APP_SRC + the ImGui layer -- the engine reaches
+# this target the same way it reaches `windows`, as $(LINUX_VIEWER_LIB) below.
 LINUX_ALL_CPP_SRC = $(WIN_ALL_CPP_SRC)
 CPP_NAMES_LINUX_ALL = $(notdir $(LINUX_ALL_CPP_SRC))
 
 L_OBJ_DIR = $(L_DIR)/obj
 L_CPP_OBJ   = $(addprefix $(L_OBJ_DIR)/,$(CPP_NAMES_LINUX_ALL:.cpp=.o))
-L_QJS_OBJ   = $(addprefix $(L_OBJ_DIR)/,$(QJS_NAMES:.c=.o))
-L_PIPC_OBJ  = $(addprefix $(L_OBJ_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
-L_FLECS_OBJ = $(L_OBJ_DIR)/$(FLECS_NAME:.c=.o)
-L_ALL_OBJ   = $(L_CPP_OBJ) $(L_QJS_OBJ) $(L_PIPC_OBJ) $(L_FLECS_OBJ)
+L_ALL_OBJ   = $(L_CPP_OBJ)
+
+# ---- Linux viewer archive -------------------------------------------------
+# Same delegation as the `windows` target's $(VIEWER_LIB), with two changes it
+# cannot share:
+#   * VIEWER_TAG=_linux gives MatterEngine3 a distinct object dir and archive
+#     name. One checkout can hold a Windows and a Linux build tree at once (the
+#     editor already splits build/windows vs build/linux), and objects compiled
+#     by two different toolchains must not land on the same paths.
+#   * HAVE_STREAMLINE is pinned to 0 rather than threaded through, exactly as
+#     CXX_FLAGS_BUILD_LINUX_COMMON pins -DMATTER_HAVE_STREAMLINE=0 above, so
+#     "accidentally build Linux with Streamline on" stays unreachable.
+# UNVERIFIED, like everything else in this section: never compiled anywhere.
+LINUX_VIEWER_LIB = $(ME3_DIR)/build/libmatter_engine3_viewer_linux.a
+
+LINUX_VIEWER_LIB_MAKE_ARGS = \
+    VIEWER_TAG=_linux \
+    VIEWER_CXX="$(LINUX_CXX)" VIEWER_CC="$(LINUX_CC)" VIEWER_AR="$(LINUX_AR)" \
+    VULKAN_INCLUDE="$(VULKAN_INCLUDE)" \
+    HAVE_STREAMLINE=0 \
+    $(if $(HAVE_AUTOREMESHER),EXTRA_CFLAGS="$(AR_CORE_CFLAGS)" \
+        EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
+        EXTRA_RETOPO_CPP="$(MSL_DIR)/src/mesh_retopo.cpp")
+
+.PHONY: linux-viewer-lib
+linux-viewer-lib: $(LINUX_VIEWER_LIB)
+
+$(LINUX_VIEWER_LIB): FORCE | embedded-shaders embedded-spirv
+	$(MAKE) -C $(ME3_DIR) viewer-lib $(LINUX_VIEWER_LIB_MAKE_ARGS)
 
 $(L_DIR) $(L_OBJ_DIR):
 	mkdir -p $@
@@ -952,20 +936,10 @@ $(GLFW_LINUX_LIB): $(GLFW_LINUX_OBJ)
 	$(LINUX_AR) rcs $@ $^
 
 # ---- Linux compile rules (mirrors the Windows "compile rules" section) ---
+# The QuickJS / pipeline-C / flecs rules that used to sit here went with their
+# Windows twins: those sources are in $(LINUX_VIEWER_LIB) now.
 $(L_CPP_OBJ): $(L_OBJ_DIR)/%.o: %.cpp | $(L_OBJ_DIR)
 	$(LINUX_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_LINUX_COMMON)
-$(L_QJS_OBJ): $(L_OBJ_DIR)/%.o: $(QJS_DIR)/%.c | $(L_OBJ_DIR)
-	$(LINUX_CC) -c $< -o $@ -O2 -DNDEBUG -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
-LINUX_PIPC_COMPILE = $(LINUX_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
-L_PIPC_MSL_OBJ = $(filter-out $(L_OBJ_DIR)/spatial_hash.o $(L_OBJ_DIR)/mem_pool.o,$(L_PIPC_OBJ))
-$(L_PIPC_MSL_OBJ): $(L_OBJ_DIR)/%.o: $(MSL_DIR)/src/%.c | $(L_OBJ_DIR)
-	$(LINUX_PIPC_COMPILE)
-$(L_OBJ_DIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(L_OBJ_DIR)
-	$(LINUX_PIPC_COMPILE)
-$(L_OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(L_OBJ_DIR)
-	$(LINUX_PIPC_COMPILE)
-$(L_FLECS_OBJ): $(L_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(L_OBJ_DIR)
-	$(LINUX_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
 
 # Order-only, same reasoning as the Windows equivalent: the embedded-shaders/
 # embedded-spirv headers must exist before shader_source.cpp / the vt_*/vk_*
@@ -1002,10 +976,15 @@ LINUX_SYSTEM_LIBS = -lX11 -ldl -lpthread -lm -lrt
 # `windows`), which invokes ITS OWN $(GLSLC) -- override that on the
 # MatterEngine3 sub-make (see the VULKAN_INCLUDE/VULKAN_LIB_DIR note earlier
 # in this section) if it is not already an X11/Linux glslc.
-linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_DEP) $(L_ALL_OBJ)
-	$(LINUX_CXX) $(L_ALL_OBJ) -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
-	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(AR_CORE_LDFLAGS) $(LINUX_SYSTEM_LIBS) \
-	    -L$(VULKAN_LIB_DIR) -lvulkan
+# --whole-archive: see the long note over the `windows` link for why the engine
+# archive is pulled in whole rather than on demand.
+linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_DEP) \
+       $(LINUX_VIEWER_LIB) $(L_ALL_OBJ)
+	$(LINUX_CXX) $(L_ALL_OBJ) \
+	    -Wl,--whole-archive $(LINUX_VIEWER_LIB) -Wl,--no-whole-archive \
+	    -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
+	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(AR_CORE_LDFLAGS) $(OZZ_OFFLINE_LIBS) \
+	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
 
 # Linux .d files use plain Unix paths, not the D:/-style paths that make the
 # Windows .d include conditional on MSYSTEM above -- safe to include
@@ -1219,18 +1198,18 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 run-test-issue-reporter: build/test_issue_reporter.exe
 	./build/test_issue_reporter.exe
 
-.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders embedded-spirv build-engine-lib vulkan-instancing-perf linux check-animation-production-sources
+.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders embedded-spirv build-engine-lib viewer-lib linux-viewer-lib vulkan-instancing-perf linux check-animation-production-sources
 
-# The direct-source builds (windows/linux) are production. Keep their TU list
-# aligned with the archive's runtime implementation units without dragging in
-# Ozz's bake-only compiler: animation schema verbs are present, while raw-clip
-# compilation is routed to the bake host rather than the editor runtime.
+# The editor's engine TU list moved into MatterEngine3's viewer-lib, so the
+# source half of this check moved with it: MatterEngine3's own
+# check-animation-production-sources asserts the same set (plus ozz_bake.o) is
+# in the archive both it and this build link. Duplicating the list here is what
+# this whole refactor exists to stop doing -- delegate instead.
+#
+# What stays here is the half that is genuinely this Makefile's: the editor
+# bakes as well as runs, so it must link Ozz's OFFLINE archive and not only the
+# runtime one. That is a property of this link line, invisible from ME3.
 check-animation-production-sources:
-	@for source in dsl_animation.cpp animation_ir.cpp animation_validate.cpp animation_binding_bake.cpp animation_runtime_asset.cpp anim_asset.cpp anim_bundle.cpp animation_asset_store.cpp animation_store.cpp animation_evaluator.cpp animation_systems.cpp animation_world_queries.cpp animation_controllers.cpp animation_targets.cpp animation_rigid_bridge.cpp animation_skin_bridge.cpp; do \
-		case " $(WIN_ME3_CPP) " in *"/$$source "*) ;; *) \
-			echo "ERROR: production build omits $$source"; exit 1 ;; esac; \
-	done
-	@case " $(WIN_ME3_CPP) " in *"/ozz_bake.cpp "*) ;; *) \
-		echo "ERROR: editor must compile ozz_bake.cpp -- it bakes as well as runs"; exit 1 ;; esac
+	@$(MAKE) -C $(ME3_DIR) check-animation-production-sources
 	@case " $(WIN_LIBS) " in *"$(OZZ_OFFLINE_LIB) "*) ;; *) \
 		echo "ERROR: editor must link the Ozz offline archive"; exit 1 ;; esac
