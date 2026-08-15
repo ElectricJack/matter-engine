@@ -790,6 +790,11 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
 } // namespace
 
 int main() {
+    // Stamped before anything else so the device-fault auto-filer (see the
+    // post-loop seam near the end of main) can tell a vulkan_device_fault.log
+    // that THIS run just wrote from a stale one left by an earlier crash.
+    const std::filesystem::file_time_type process_start_time =
+        std::filesystem::file_time_type::clock::now();
     // Native Windows stdout is fully buffered when the harness redirects it;
     // MSYS `stdbuf` cannot alter the MSVCRT stream. FIFO automation consumes
     // exact acknowledgements as synchronization, so publish them immediately.
@@ -1899,6 +1904,26 @@ int main() {
     // slow bake.
     constexpr double kFifoShotTimeoutSeconds = 30.0;
     std::chrono::steady_clock::time_point fifo_shot_wait_start{};
+    // Same deadman shape for FIFO `issue capture` (see the dispatch-loop
+    // handler and the AwaitingCapture deadman check beside the shot one,
+    // both below): a world where readback never succeeds would otherwise
+    // leave issue_state stuck in AwaitingCapture and hang the timeline.
+    constexpr double kFifoIssueCaptureTimeoutSeconds = 30.0;
+    std::chrono::steady_clock::time_point fifo_issue_capture_wait_start{};
+    // True only while the CURRENT AwaitingCapture readback was armed by the
+    // FIFO `issue capture` verb (as opposed to an interactive F10 press) --
+    // gates the `issue: captured`/`issue: capture failed` prints below so
+    // interactive F10 use keeps its existing (unprefixed) log lines.
+    bool fifo_issue_capture_active = false;
+    // FIFO `issue file <note>`: parsed in the dispatch loop (which runs
+    // before begin_frame, too early for write_issue_report's IssueContext --
+    // frame.extent, camera, etc. are only settled later), so the parse just
+    // stages the note into issue_state.note and sets this flag; the actual
+    // write_issue_report call happens at the flag's consumption site further
+    // down (deliberately NOT nested in the `!hide_ui` block the "File
+    // report" button lives in -- a headless/MATTER_HIDE_UI run must be able
+    // to file too).
+    bool fifo_issue_file_pending = false;
 
     // ---- QA timeline state (event-system.md-style FIFO blocking waits) ------
     // Lines already split out of cmd_buffer but not yet dispatched. Blocking
@@ -1914,7 +1939,9 @@ int main() {
     // a queued fifo_present screenshot IS the in-flight condition, so this
     // arm carries no extra state of its own (see the release check beside
     // fifo_quit_pending's, after end_frame).
-    enum class FifoBlockKind { None, WaitFrames, WaitIdle, WaitEvent, Shot };
+    enum class FifoBlockKind {
+        None, WaitFrames, WaitIdle, WaitEvent, Shot, IssueCapture
+    };
     FifoBlockKind fifo_block = FifoBlockKind::None;
     // wait_idle <seconds> [timeout_seconds]: released once resident_sectors
     // has held steady for `seconds` of wall-clock time AND the bake is
@@ -1968,6 +1995,18 @@ int main() {
         vulkan->ray_tracing_available();
     bool quit_requested = false;
     bool fatal_error = false;
+    // Captured only at the Vulkan/device-surfacing fatal sites (render(),
+    // end_frame(), the ImGui Vulkan backend prepare/end_frame calls, and
+    // exhausted screenshot-readback retries) -- see mark_device_fatal below.
+    // Left empty by non-device fatal exits (MATTER_REPLAY_STRICT mismatch,
+    // perf validation-error count), which is how the post-loop auto-filer
+    // (near the end of main) tells "a device fault" apart from "some other
+    // fatal condition" without string-matching error text.
+    std::string fatal_error_reason;
+    auto mark_device_fatal = [&](const std::string& reason) {
+        fatal_error = true;
+        if (fatal_error_reason.empty()) fatal_error_reason = reason;
+    };
     enum class PerfPhase { WaitingForBake, Warming, Sampling, Complete };
     PerfPhase perf_phase = PerfPhase::WaitingForBake;
     std::chrono::steady_clock::time_point perf_phase_start{};
@@ -2927,6 +2966,38 @@ int main() {
                         cmd.index = world_index;
                         registry.dispatch(cmd);
                     }
+                } else if (line == "issue capture") {
+                    // FIFO `issue capture`: reuses F10's viewport-capture
+                    // handshake (begin_viewport_capture + the AwaitingCapture
+                    // readback resolved after end_frame below), but blocking
+                    // -- FifoBlockKind::IssueCapture holds every later
+                    // timeline line until record_shot has actually run (see
+                    // the release check beside fifo_quit_pending's). Draft
+                    // shots accumulate exactly as F9/F10 do: this does not
+                    // reset issue_state, it only adds to whatever draft is
+                    // already open.
+                    viewer::begin_viewport_capture(issue_state);
+                    fifo_issue_capture_active = true;
+                    fifo_issue_capture_wait_start = std::chrono::steady_clock::now();
+                    fifo_block = FifoBlockKind::IssueCapture;
+                } else if (line.compare(0, 11, "issue file ") == 0 ||
+                           line == "issue file") {
+                    // `issue file <note>` -- the rest of the line, verbatim
+                    // (same idiom as `set`'s value), so the note can contain
+                    // spaces/punctuation. May be empty only when the draft
+                    // already has a shot -- issue_reporter_panel.cpp's
+                    // "File report" button enforces the identical rule
+                    // (can_file) in the UI layer; write_issue_report itself
+                    // has no such guard, so the FIFO path enforces it here.
+                    const std::string note =
+                        line.size() > 11 ? line.substr(11) : std::string();
+                    if (note.empty() && issue_state.shots.empty()) {
+                        std::printf("issue: file failed (empty draft)\n");
+                    } else {
+                        std::snprintf(issue_state.note, sizeof(issue_state.note),
+                                      "%s", note.c_str());
+                        fifo_issue_file_pending = true;
+                    }
                 } else if (!line.empty()) {
                     std::printf("cmd: unrecognized '%s'\n", line.c_str());
                 }
@@ -2955,6 +3026,24 @@ int main() {
             shot_settle = 0;
             fifo_present.cancel_pending_screenshot();
             if (fifo_block == FifoBlockKind::Shot) fifo_block = FifoBlockKind::None;
+        }
+
+        // Same deadman shape for FIFO `issue capture`: a world where the
+        // AwaitingCapture readback (below, after end_frame) never resolves
+        // -- readback keeps failing and re-arming capture_settle -- would
+        // otherwise hang the timeline (and any `quit` after it) forever.
+        // Checked every iteration for the same reason the shot deadman is.
+        if (fifo_block == FifoBlockKind::IssueCapture &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          fifo_issue_capture_wait_start)
+                    .count() >= kFifoIssueCaptureTimeoutSeconds) {
+            std::printf("issue: capture timeout, abandoned\n");
+            // Abandon the stuck attempt so it cannot wedge a later F9/F10 or
+            // `issue capture` behind an AwaitingCapture that will never
+            // resolve on its own.
+            issue_state.phase = viewer::ReporterPhase::Idle;
+            fifo_issue_capture_active = false;
+            fifo_block = FifoBlockKind::None;
         }
 
         if (test_resize && bake_ready && !resize_exercised) {
@@ -3011,7 +3100,7 @@ int main() {
         if (!ui_frame_ready) {
             std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
                          error.c_str());
-            fatal_error = true;
+            mark_device_fatal(error);
         } else {
             camera_input_order.begin_ui();
             // E5c: no per-frame editor_model.refresh() — the scene tree is
@@ -3248,6 +3337,41 @@ int main() {
             }
             camera_input_order.build_ui();
             camera_input_order.decide_capture(ui.camera_input_allowed());
+        }
+
+        // FIFO `issue file <note>`: same filing path the "File report"
+        // button uses (write_issue_report with the full IssueContext), but
+        // deliberately NOT nested inside the `if (!hide_ui)` block above --
+        // draw_issue_reporter() and its `file_issue` trigger only run in
+        // there, so a MATTER_HIDE_UI run would never reach the button path
+        // at all. Field-for-field the same IssueContext construction as the
+        // button's call site.
+        if (ui_frame_ready && fifo_issue_file_pending) {
+            fifo_issue_file_pending = false;
+            viewer::IssueContext context;
+            context.world = worlds[stats.world_current].world_name;
+            context.project_dir = worlds[stats.world_current].project_dir;
+            context.camera = camera;
+            context.sim_mode = sim_control.mode();
+            context.time_scale = ui.sim_time_scale();
+            context.frame_width = frame.extent.width;
+            context.frame_height = frame.extent.height;
+            context.props = &editor_props.registry();
+            const std::string filed = viewer::write_issue_report(
+                issue_state, context, stats, session->frame_stats(),
+                console_log);
+            if (filed.empty()) {
+                std::printf("issue: file failed (%s)\n",
+                            issue_state.status.c_str());
+                console_log.push(viewer::LogSeverity::Error,
+                                 "Issue report: " + issue_state.status);
+            } else {
+                std::printf("issue: filed %s\n", filed.c_str());
+                console_log.push(viewer::LogSeverity::Info,
+                                 "Issue report written to " + filed);
+                // Reset for the next one, same as the button flow.
+                reset_issue_state();
+            }
         }
 
         // MATTER_CAM_PATH: one pose per rendered frame. This sits immediately
@@ -3764,7 +3888,7 @@ int main() {
             render_session->submit_overlay_lines(nullptr, 0);
         if (!render_session->render(render_camera, render_frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
-            fatal_error = true;
+            mark_device_fatal(error);
         } else if (!show_isolation) {
             camera_input_order.render_scene();
             matter::ResolvedAtmospherePresentationStatus committed{};
@@ -4150,7 +4274,7 @@ int main() {
             if (!ui_frame_completed) {
                 std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n",
                              error.c_str());
-                fatal_error = true;
+                mark_device_fatal(error);
             }
         }
 
@@ -4186,7 +4310,11 @@ int main() {
             else if (!fifo_immediate_capture) shot_settle = 2;
             if (screenshot_failures >= 5) {
                 std::fprintf(stderr, "FATAL: screenshot readback exhausted retries\n");
-                fatal_error = true;
+                // `error` still holds the last readback failure's text (the
+                // retry loop above overwrites it each attempt) -- five
+                // consecutive readback failures is a plausible device-loss
+                // symptom, so this counts as a device fatal too.
+                mark_device_fatal(error);
             }
         }
         bool frame_presented = false;
@@ -4290,7 +4418,10 @@ int main() {
         }
         if (!frame_completed) {
             std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
-            fatal_error = true;
+            // The primary device-fault seam: MATTER_VK_TEST_END_FRAME_FAULT
+            // (record/submit) and a real VK_ERROR_DEVICE_LOST from
+            // vkQueueSubmit2 both surface here.
+            mark_device_fatal(error);
         } else {
             if (ui_frame_completed && !fatal_error) {
                 camera_input_order.end_frame();
@@ -4355,6 +4486,9 @@ int main() {
                         issue_state.status_is_error = true;
                         console_log.push(viewer::LogSeverity::Error,
                                          "Issue shot: " + issue_state.status);
+                        if (fifo_issue_capture_active)
+                            std::printf("issue: capture failed (%s)\n",
+                                        issue_state.status.c_str());
                     } else {
                         viewer::IssueShot shot;
                         shot.file = path.substr(path.find_last_of('/') + 1);
@@ -4378,12 +4512,17 @@ int main() {
                         attach_preview(shot, cropped, shot.width, shot.height);
                         viewer::record_shot(issue_state, shot);
                         std::printf("issue shot written to %s\n", path.c_str());
+                        if (fifo_issue_capture_active)
+                            std::printf("issue: captured %s\n", path.c_str());
                     }
                     issue_state.phase = viewer::ReporterPhase::Editing;
                     issue_state.window_open = true;
                 } else {
                     console_log.push(viewer::LogSeverity::Error,
                                      "Issue shot: " + issue_state.status);
+                    if (fifo_issue_capture_active)
+                        std::printf("issue: capture failed (%s)\n",
+                                    issue_state.status.c_str());
                     issue_state.phase = viewer::ReporterPhase::Editing;
                     issue_state.window_open = true;
                 }
@@ -4535,6 +4674,19 @@ int main() {
         if (fifo_block == FifoBlockKind::Shot && fifo_shot_settled)
             fifo_block = FifoBlockKind::None;
         if (fifo_quit_pending && fifo_shot_settled) quit_requested = true;
+
+        // FIFO `issue capture` release: the AwaitingCapture readback handshake
+        // above (F10-shaped: ensure_report_dir + crop + write + record_shot,
+        // or a failure branch) always resolves the phase away from
+        // AwaitingCapture by the end of the frame it fires in -- either to
+        // Editing (success or a logged failure) or, via the deadman above, to
+        // Idle. Checked here (same seam as the shot/quit release above) so a
+        // capture armed and settled within one frame iteration cannot race.
+        if (fifo_block == FifoBlockKind::IssueCapture &&
+            issue_state.phase != viewer::ReporterPhase::AwaitingCapture) {
+            fifo_block = FifoBlockKind::None;
+            fifo_issue_capture_active = false;
+        }
 
         if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error) {
             const auto perf_now = std::chrono::steady_clock::now();
@@ -4749,6 +4901,109 @@ int main() {
                 apply_world_resolver_defaults(worlds[selected].world_name,
                                               min_projected_size, stats);
             }
+        }
+    }
+
+    // ---- Auto-file an issue report on a fatal device/Vulkan error ---------
+    // docs/agent/issue-system.md says "there is no automatic filing" -- that
+    // stops being quite true here: a device fault means the user can no
+    // longer press F9/F10 themselves (the process is already on its way
+    // down), so this is the one path that files on its own. Narrowly scoped:
+    // fatal_error_reason is only ever set by mark_device_fatal (see its
+    // definition near `bool fatal_error`), which is wired to the Vulkan/
+    // device-surfacing fatal sites (render(), end_frame(), the ImGui Vulkan
+    // backend prepare/end_frame calls, and exhausted screenshot-readback
+    // retries) and deliberately NOT to the non-device fatal exits
+    // (MATTER_REPLAY_STRICT mismatch, a perf run's validation-error count) --
+    // those keep exiting exactly as before, without a report.
+    //
+    // Single seam, main thread only: this runs after the loop has already
+    // decided to terminate (fatal_error true), before ANY teardown below
+    // (session/vulkan/ui are all still alive), so every field the writer
+    // touches is exactly as valid as it is on every other frame's normal
+    // filing path. A background-thread device loss (e.g. inside a bake
+    // worker's own Vulkan calls, if it ever made any) would NOT reach this
+    // seam -- there is no clean rendezvous for that here, so it is out of
+    // scope; the only fault path this covers is one that surfaces through
+    // the main thread's own render/present calls, which is what
+    // MATTER_VK_TEST_END_FRAME_FAULT and a real VK_ERROR_DEVICE_LOST from
+    // vkQueueSubmit2 both do.
+    //
+    // Best-effort by construction: every filesystem/engine call below is
+    // wrapped in one try/catch, and nothing here can change `fatal_error` or
+    // the exit code decided further down. A failure while trying to record
+    // the original fault is swallowed, never escalated into a second one.
+    if (fatal_error && !fatal_error_reason.empty()) {
+        try {
+            viewer::IssueReporterState auto_state;
+            std::snprintf(auto_state.note, sizeof(auto_state.note),
+                          "auto-filed: device fault (%s)",
+                          fatal_error_reason.c_str());
+            if (viewer::ensure_report_dir(auto_state)) {
+                int fb_w = 0, fb_h = 0;
+                glfwGetFramebufferSize(window, &fb_w, &fb_h);
+                viewer::IssueContext context;
+                const int world_idx = stats.world_current;
+                if (world_idx >= 0 &&
+                    static_cast<size_t>(world_idx) < worlds.size()) {
+                    context.world = worlds[world_idx].world_name;
+                    context.project_dir = worlds[world_idx].project_dir;
+                }
+                context.camera = camera;
+                context.sim_mode = sim_control.mode();
+                context.time_scale = ui.sim_time_scale();
+                context.frame_width =
+                    fb_w > 0 ? static_cast<uint32_t>(fb_w) : 0;
+                context.frame_height =
+                    fb_h > 0 ? static_cast<uint32_t>(fb_h) : 0;
+                context.props = &editor_props.registry();
+                // No shots: a post-loss readback would either hang against a
+                // dead device or hand back garbage, and the whole point of
+                // this path is that nobody is left to press F9/F10.
+                const std::string filed = viewer::write_issue_report(
+                    auto_state, context, stats, session->frame_stats(),
+                    console_log);
+                if (!filed.empty()) {
+                    std::fprintf(
+                        stderr, "issue: auto-filed device fault report to %s\n",
+                        filed.c_str());
+                    // vulkan_device_fault.log: written by vk_context.cpp's
+                    // log_device_fault() only on a REAL VK_ERROR_DEVICE_LOST
+                    // -- the injected end_frame faults
+                    // MATTER_VK_TEST_END_FRAME_FAULT exercises never reach
+                    // that call (see the #ifdef guard around end_frame's
+                    // fault injection: it substitutes a different VkResult
+                    // before submit, it does not put the device itself into
+                    // the lost state vkGetDeviceFaultInfoEXT requires). Copy
+                    // the log in only if it exists AND was written during
+                    // THIS run, so a stale log left by an earlier crash is
+                    // never misattributed to this one.
+                    std::error_code fault_ec;
+                    const std::filesystem::path fault_log(
+                        "vulkan_device_fault.log");
+                    if (std::filesystem::exists(fault_log, fault_ec) &&
+                        !fault_ec) {
+                        const auto mtime = std::filesystem::last_write_time(
+                            fault_log, fault_ec);
+                        if (!fault_ec && mtime >= process_start_time) {
+                            std::filesystem::copy_file(
+                                fault_log,
+                                std::filesystem::path(filed) /
+                                    "vulkan_device_fault.log",
+                                std::filesystem::copy_options::overwrite_existing,
+                                fault_ec);
+                        }
+                    }
+                } else {
+                    std::fprintf(stderr, "issue: auto-file failed (%s)\n",
+                                 auto_state.status.c_str());
+                }
+            }
+        } catch (...) {
+            // Best-effort: the auto-filer must never become a second fatal
+            // error on top of the one it exists to record.
+            std::fprintf(stderr, "issue: auto-file threw while recording a "
+                                 "device fault; ignored\n");
         }
     }
 

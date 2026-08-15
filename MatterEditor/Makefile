@@ -347,6 +347,20 @@ CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE)
 ifeq ($(HAVE_STREAMLINE),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -I"$(STREAMLINE_PATH)/include"
 endif
+# Opt-in only: -DMATTER_VK_TEST_FAULT_INJECTION gates the MATTER_VK_TEST_*
+# env-var fault injectors (control-surface.md §c calls this family "test
+# builds only" for a reason -- a shipped editor.exe should not carry a way to
+# fake VK_ERROR_DEVICE_LOST). vulkan_smoke_tests.exe below always defines it
+# directly in its own recipe; the `windows`/`editor` targets do not, by
+# default, so `make -C MatterEditor windows` with no extra variables is
+# unaffected. Pass FAULT_INJECTION=1 to get a windows-target editor.exe that
+# responds to MATTER_VK_TEST_END_FRAME_FAULT etc -- e.g. to exercise
+# docs/agent/issue-system.md's device-fault auto-filer end to end. Changing
+# this between builds changes every TU's flags, so expect a full rebuild.
+FAULT_INJECTION ?= 0
+ifeq ($(FAULT_INJECTION),1)
+  CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_VK_TEST_FAULT_INJECTION
+endif
 
 # Windows object set: full direct-source compile.
 WIN_ALL_CPP_SRC = $(APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP) $(IMGUI_SRC_WIN) $(PROFILE_DIR)/src/profile.cpp
