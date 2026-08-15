@@ -26,6 +26,18 @@ case "$UNAME_S" in
     *)       PLATFORM=linux ;;  # WSL/MinGW fall through to Linux build
 esac
 
+# D-13: PLATFORM above deliberately folds MSYS/MinGW into the same "linux"
+# bucket real Linux/WSL use, for build-TARGET purposes (nothing else in this
+# script reads $PLATFORM). But the raylib skip-key below is a build-OUTPUT
+# cache key, and a raylib .a compiled under MSYS2 UCRT64 is a Windows PE
+# archive while one compiled on real Linux/WSL is an ELF archive -- reusing
+# either cache slot for the other environment silently links a wrong-arch
+# object into every consumer. RAYLIB_ENV_KEY folds the raw `uname -s` string
+# in (lowercased, non-alnum runs squashed to `_`) so each actual environment
+# gets its own cache slot; $PLATFORM keeps its existing meaning unchanged
+# everywhere else.
+RAYLIB_ENV_KEY="$(echo "$UNAME_S" | tr '[:upper:]' '[:lower:]' | tr -sc 'a-z0-9' '_')"
+
 # Projects that use a flat Makefile (no TARGET= flag).
 # MatterEngine3 is a library sub-project: `make` builds libmatter_engine3.a
 # (no app binary); its headless test targets run in the test section below.
@@ -102,22 +114,26 @@ clean_one() {
 # bind. Must be defined when raylib itself is compiled (it lives in rlgl).
 RAYLIB_CUSTOM_CFLAGS="-DRL_DEFAULT_BATCH_MAX_TEXTURE_UNITS=16"
 prep_raylib() {
-    local platform_lib="third_party/raylib/build/$PLATFORM/libraylib.a"
+    # D-13: keyed by both PLATFORM and RAYLIB_ENV_KEY (see the definitions
+    # above) so MSYS/MinGW and real Linux/WSL -- same $PLATFORM, different
+    # actual archive format -- never share a cache slot.
+    local platform_lib="third_party/raylib/build/$PLATFORM-$RAYLIB_ENV_KEY/libraylib.a"
     if [ -f "$platform_lib" ] && [ "${FORCE_RAYLIB:-0}" != "1" ]; then
-        echo "raylib already built for $PLATFORM ($platform_lib exists) -- skipping. Set FORCE_RAYLIB=1 to force a rebuild."
+        echo "raylib already built for $PLATFORM/$RAYLIB_ENV_KEY ($platform_lib exists) -- skipping. Set FORCE_RAYLIB=1 to force a rebuild."
         # Some projects link third_party/raylib/src/libraylib.a directly (no
-        # platform suffix) rather than the build/$PLATFORM mirror -- keep it
-        # in sync with the confirmed-correct-platform artifact rather than
-        # trusting whatever (possibly stale, possibly absent) copy is there.
+        # platform suffix) rather than the build/$PLATFORM-$RAYLIB_ENV_KEY
+        # mirror -- keep it in sync with the confirmed-correct-environment
+        # artifact rather than trusting whatever (possibly stale, possibly
+        # wrong-arch) copy is there.
         cp "$platform_lib" third_party/raylib/src/libraylib.a
         return
     fi
-    echo "Rebuilding raylib for $PLATFORM..."
+    echo "Rebuilding raylib for $PLATFORM/$RAYLIB_ENV_KEY..."
     ( cd third_party/raylib/src && make clean PLATFORM=PLATFORM_DESKTOP >/dev/null 2>&1 || true
       make PLATFORM=PLATFORM_DESKTOP CUSTOM_CFLAGS="$RAYLIB_CUSTOM_CFLAGS" >/dev/null 2>&1 )
-    # Some projects look in build/<platform>/libraylib.a -- mirror it there too.
-    mkdir -p "third_party/raylib/build/$PLATFORM"
-    cp third_party/raylib/src/libraylib.a "third_party/raylib/build/$PLATFORM/libraylib.a"
+    # Some projects look in build/<platform>-<env>/libraylib.a -- mirror it there too.
+    mkdir -p "third_party/raylib/build/$PLATFORM-$RAYLIB_ENV_KEY"
+    cp third_party/raylib/src/libraylib.a "third_party/raylib/build/$PLATFORM-$RAYLIB_ENV_KEY/libraylib.a"
 }
 
 # autoremesher_core: static library (geogram core + hexdom + isotropicremesher
