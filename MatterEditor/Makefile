@@ -254,11 +254,19 @@ endif
 # default, so `make -C MatterEditor windows` with no extra variables is
 # unaffected. Pass FAULT_INJECTION=1 to get a windows-target editor.exe that
 # responds to MATTER_VK_TEST_END_FRAME_FAULT etc -- e.g. to exercise
-# docs/agent/issue-system.md's device-fault auto-filer end to end. Changing
-# this between builds changes every TU's flags, so expect a full rebuild.
+# docs/agent/issue-system.md's device-fault auto-filer end to end. Toggling
+# it rebuilds the engine side automatically (the viewer-lib flag stamp tracks
+# EXTRA_CFLAGS); the editor-own objects do not track flag changes, so also
+# `touch src/main.cpp` (or clean build/windows/obj) when flipping it.
 FAULT_INJECTION ?= 0
 ifeq ($(FAULT_INJECTION),1)
+  # Editor-own TUs (main.cpp reads the MATTER_VK_TEST_* markers):
   CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_VK_TEST_FAULT_INJECTION
+  # Engine TUs (vk_context.cpp and friends) compile inside viewer-lib, so the
+  # define must also travel through the delegation's EXTRA_CFLAGS. The
+  # viewer-lib flag stamp tracks EXTRA_CFLAGS, so toggling FAULT_INJECTION
+  # rebuilds the engine side automatically -- no manual clean needed there.
+  FAULT_INJECTION_CFLAGS = -DMATTER_VK_TEST_FAULT_INJECTION
 endif
 
 # Windows object set: editor-own TUs only.
@@ -351,8 +359,8 @@ VIEWER_LIB_MAKE_ARGS = \
     VIEWER_CXX="$(WIN_CXX)" VIEWER_CC="$(WIN_CC)" VIEWER_AR="$(WIN_AR)" \
     VULKAN_INCLUDE="$(VULKAN_INCLUDE)" \
     HAVE_STREAMLINE="$(HAVE_STREAMLINE)" STREAMLINE_PATH="$(STREAMLINE_PATH)" \
-    $(if $(HAVE_AUTOREMESHER),EXTRA_CFLAGS="$(AR_CORE_CFLAGS)" \
-        EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
+    EXTRA_CFLAGS="$(if $(HAVE_AUTOREMESHER),$(AR_CORE_CFLAGS) )$(FAULT_INJECTION_CFLAGS)" \
+    $(if $(HAVE_AUTOREMESHER),EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
         EXTRA_RETOPO_CPP="$(MSL_DIR)/src/mesh_retopo.cpp")
 
 .PHONY: viewer-lib
@@ -891,8 +899,8 @@ LINUX_VIEWER_LIB_MAKE_ARGS = \
     VIEWER_CXX="$(LINUX_CXX)" VIEWER_CC="$(LINUX_CC)" VIEWER_AR="$(LINUX_AR)" \
     VULKAN_INCLUDE="$(VULKAN_INCLUDE)" \
     HAVE_STREAMLINE=0 \
-    $(if $(HAVE_AUTOREMESHER),EXTRA_CFLAGS="$(AR_CORE_CFLAGS)" \
-        EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
+    EXTRA_CFLAGS="$(if $(HAVE_AUTOREMESHER),$(AR_CORE_CFLAGS) )$(FAULT_INJECTION_CFLAGS)" \
+    $(if $(HAVE_AUTOREMESHER),EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
         EXTRA_RETOPO_CPP="$(MSL_DIR)/src/mesh_retopo.cpp")
 
 .PHONY: linux-viewer-lib
