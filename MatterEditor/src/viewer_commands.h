@@ -448,6 +448,14 @@ public:
         return screenshots_.empty() ? std::string() : screenshots_.front();
     }
 
+    // D-03: drop the front queued screenshot without capturing it. Used only
+    // by the FIFO shot deadman (main.cpp) to release a `shot_now` that has
+    // sat unresolved past the timeout -- e.g. presents never succeeding, so
+    // advance() below never runs to drain it. A no-op if nothing is queued.
+    void cancel_pending_screenshot() {
+        if (!screenshots_.empty()) screenshots_.pop_front();
+    }
+
     FifoPresentUpdate advance(bool presented,
                               bool screenshot_readback_ready = true) {
         FifoPresentUpdate update;
