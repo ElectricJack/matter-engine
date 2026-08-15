@@ -16,6 +16,24 @@ require_command() {
         missing=1
     fi
 }
+# WIN_CXX can be a ccache-wrapped compiler line ("ccache g++"), not a single
+# executable -- platform.mk's CCACHE detection feeds straight into the
+# Makefile's `WIN_CXX ?= $(CCACHE) /ucrt64/bin/g++". Quoting the whole thing
+# for `command -v` (as require_command does) looks up one literal filename
+# containing a space, which never exists, so the preflight always failed once
+# ccache was on PATH -- deliberately unquoted below so it word-splits, and
+# every word must resolve.
+require_command_line() {
+    line=$2
+    ok=1
+    for word in $line; do
+        command -v "$word" >/dev/null 2>&1 || ok=0
+    done
+    if [ "$ok" -ne 1 ]; then
+        printf 'ERROR: missing %s: %s\n' "$1" "$line" >&2
+        missing=1
+    fi
+}
 require_file() {
     if ! test -f "$2"; then
         printf 'ERROR: missing %s: %s\n' "$1" "$2" >&2
@@ -23,7 +41,7 @@ require_file() {
     fi
 }
 
-require_command 'Windows C++ compiler' "$WIN_CXX"
+require_command_line 'Windows C++ compiler' "$WIN_CXX"
 require_command 'Vulkan shader compiler' "$GLSLC"
 require_file 'Vulkan header' "$VULKAN_INCLUDE/vulkan/vulkan.h"
 require_file 'Vulkan import library' "$VULKAN_LIB_DIR/libvulkan-1.dll.a"
@@ -62,5 +80,8 @@ trap 'rm -f "$src" "$exe"' EXIT HUP INT TERM
 src="$(mktemp --suffix=.cpp)"
 exe="$(mktemp --suffix=.exe)"
 printf '#include <vulkan/vulkan.h>\nint main(){return vkEnumerateInstanceVersion(0);}\n' > "$src"
-"$WIN_CXX" "$src" -I"$VULKAN_INCLUDE" -L"$VULKAN_LIB_DIR" -lvulkan-1 -o "$exe"
+# Deliberately unquoted (see require_command_line above): WIN_CXX may be a
+# multi-word ccache-wrapped compiler line and must word-split into argv0 +
+# argv1, not a single (nonexistent) "ccache g++"-named executable.
+$WIN_CXX "$src" -I"$VULKAN_INCLUDE" -L"$VULKAN_LIB_DIR" -lvulkan-1 -o "$exe"
 printf 'vulkan-preflight: OK\n'
