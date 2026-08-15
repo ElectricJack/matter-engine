@@ -317,15 +317,15 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     // from the VRAM budget; otherwise fall back to the explicit page count.
     // Per-page byte cost: BC7(1) + BC5(1) + BC7(1) + RGBA8(4) = 7 bytes/texel.
     constexpr uint64_t kBytesPerPageTexel = 1 + 1 + 1 + 4;  // 7
-    constexpr uint64_t kPageTexels =
-        static_cast<uint64_t>(kVtPageStride) * kVtPageStride;  // 136^2
-    constexpr uint64_t kBytesPerPage = kPageTexels * kBytesPerPageTexel;
     if (budgets.pool_mb > 0) {
         const uint64_t budget_bytes =
             static_cast<uint64_t>(budgets.pool_mb) * 1024u * 1024u;
-        // Pages that fit inside the layer grid (each layer holds 256 pages of
-        // kVtPoolLayerEdgeTexels^2 texels, not kPageTexels*256 — the grid has
-        // no gaps, so the per-layer cost is layer_texels * bytes_per_texel).
+        // Pages that fit inside the layer grid. Deliberately NOT
+        // (kVtPageStride^2 * bytes_per_texel) * 256: the grid has no gaps, so a
+        // layer costs kVtPoolLayerEdgeTexels^2 * bytes_per_texel, not 256 whole
+        // strided pages. A per-page constant for the naive form used to sit
+        // above this block; it was never read (the superseded calculation) and
+        // tripped -Wunused-variable in the -Werror smoke-test build.
         constexpr uint64_t kBytesPerLayer =
             static_cast<uint64_t>(kVtPoolLayerEdgeTexels) *
             kVtPoolLayerEdgeTexels * kBytesPerPageTexel;
