@@ -81,6 +81,8 @@ ends onto one command registry.
 | `quit` | `quit` (no args) | Sets the quit flag. **Deferred**, not immediate: the process exits once no FIFO screenshot capture is still in flight, so a `quit` right after a `shot` (no intervening wait) never truncates that capture. Waits on the exact same in-flight-shot condition the `shot`/`shot_now` block does, so it too is bounded by the shot deadman (§ shot deadman) rather than hanging forever against a capture that can never complete. |
 | `timescale` | `timescale <f>` | Sets simulation time scale, clamped to `[0.05, 2.0]` (`kToolbarMinTimeScale`/`kToolbarMaxTimeScale` in `toolbar_panel.h`); out-of-range values are rejected with the bounds printed. |
 | `play` / `pause` / `step` / `sim stop` | exact tokens | Drives `SimulationControl` — the same transport the toolbar buttons call. `sim stop` also clears selection. |
+| `issue capture` | `issue capture` (no args) | **Blocking.** Headless equivalent of pressing **F10**: reuses `begin_viewport_capture` + the same `AwaitingCapture` readback handshake, adding a shot to whatever draft report is already open (creating the report directory on the first shot, exactly like the interactive flow). No later FIFO line dispatches until the capture's readback + `record_shot` actually complete — a bounded 30s deadman (mirrors the shot deadman) prevents a world whose readback never succeeds from hanging the timeline forever. See docs/agent/issue-system.md's "Headless filing" section. |
+| `issue file` | `issue file <free text note>` | Sets the draft's note to the rest of the line (unquoted, may contain spaces) and files it through the identical path the "File report" button uses (`write_issue_report` with the full `IssueContext`: props registry, log tail, profile tail). The note may be empty only if the draft already has at least one shot. Resets the draft afterward, same as the button. **Not itself a blocking wait** — because dispatch is already gated by whatever blocking verb precedes it in a timeline (see § Timeline semantics), a `quit` line right after `issue file` still cannot execute before the write starts, and the write finishes within the same frame it starts, well before a deferred `quit`'s post-`end_frame` resolution. |
 
 Any unrecognized line prints `cmd: unrecognized '<line>'`. **Every failure mode
 of `set`/`get`/`render_path`/`dlss`/etc. is printed to stdout, never silent** —
@@ -236,8 +238,16 @@ exists. `MATTER_FLATTEN_LADDER`, `MATTER_FLATTEN_PEAK`, `MATTER_FLATTEN_RETAIN_M
 `MATTER_VSYNC`, `MATTER_VK_ROBUSTNESS`, `MATTER_VK_SMOKE_MODE` (§ QA cookbook
 recipe 6), `MATTER_VK_STATIC_RESERVE_CLUSTER_MB` / `_VERTEX_MB` / `_INDEX_MB`
 (static-buffer reservation sizing, `vk_scene_renderer.cpp`), `MATTER_RASTER_CULL`,
-`MATTER_RT_WALK_ALPHA_TEST`. Fault-injection family (test builds only):
-`MATTER_VK_TEST_FORCE_RT_UNAVAILABLE`, `MATTER_VK_TEST_END_FRAME_FAULT`,
+`MATTER_RT_WALK_ALPHA_TEST`. Fault-injection family (test builds only —
+gated behind `-DMATTER_VK_TEST_FAULT_INJECTION`, which the default
+`make -C MatterEditor windows` does **not** define; build with
+`make -C MatterEditor windows FAULT_INJECTION=1` to get a windows-target
+editor.exe that responds to these, e.g. to exercise
+docs/agent/issue-system.md's device-fault auto-filer — changing
+`FAULT_INJECTION` between builds changes every TU's flags, so expect a full
+rebuild either direction):
+`MATTER_VK_TEST_FORCE_RT_UNAVAILABLE`, `MATTER_VK_TEST_END_FRAME_FAULT`
+(`record` or `submit`, not a boolean — see `vk_context.cpp`'s `end_frame`),
 `MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN`,
 `MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS`,
 `MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE`. A longer tail of dev-only
@@ -396,6 +406,13 @@ authoritative). All go to stdout unless noted.
 | screenshot written | `screenshot written to %s` | Either `shot` or `shot_now`'s PNG was actually written to disk — the reliable "this shot happened" line for either verb (`shot_now: queued` only means it was accepted, not that it completed). |
 | bake ready | `viewer: bake ready` | The world bake finished and the viewer is actually drawing — the line every scripted harness polls the log for before sending commands (§a). |
 | `.done` sidecar | *(no log line)* | Not a printed marker — a **filesystem artifact**: `<path>.done` is created (empty file) immediately after "screenshot written to `<path>`" for both `shot` and `shot_now`. Poll for the file, not a log line, when racing the write from outside the process (this is what `drive.py` does). |
+| issue capture timeout | `issue: capture timeout, abandoned` | The `issue capture` deadman fired — the `AwaitingCapture` readback never resolved within 30s and was abandoned; the block released anyway. |
+| issue capture failed | `issue: capture failed (%s)` | An `issue capture` readback resolved but the shot itself failed (`ensure_report_dir` or the PNG write) — `%s` is `issue_state.status`. The block still released; the draft note/shots are unaffected. |
+| issue captured | `issue: captured %s` | An `issue capture` readback resolved and the shot was written to `%s` — printed alongside (after) the unprefixed `issue shot written to %s` line the interactive F10 path also prints. |
+| issue filed | `issue: filed %s` | `issue file <note>` finished writing the report to directory `%s` (same value `write_issue_report` returns). Printed only for the FIFO verb — the "File report" button logs `issue filed: %s` (no colon after `issue`) instead. |
+| issue file failed | `issue: file failed (%s)` | `issue file` did not produce a report — either `(empty draft)` (note was empty and the draft had no shots, checked before `write_issue_report` is even called) or whatever `issue_state.status` held after a failed `write_issue_report` (e.g. a directory-create failure). |
+| issue auto-filed | `issue: auto-filed device fault report to %s` (stderr) | The device-fault auto-filer (docs/agent/issue-system.md's "Automatic filing on device fault") wrote a report to `%s` right before the process exits with a nonzero code. |
+| issue auto-file failed | `issue: auto-file failed (%s)` / `issue: auto-file threw while recording a device fault; ignored` (stderr) | The auto-filer itself could not produce a report (best-effort — never changes the exit code or masks the original fault). |
 
 ### `drive.py`: scripted timeline runs
 

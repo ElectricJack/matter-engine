@@ -7,7 +7,9 @@ Source files: `MatterEditor/src/issue_reporter.h`/`.cpp` (writer — ImGui-free,
 so the schema and crop math are headlessly testable; see
 `MatterEditor/tests/test_issue_reporter.cpp`), `issue_reporter_panel.cpp` (the
 ImGui dialog), `shot_replay.h`/`.cpp` (reader/replayer), `main.cpp`
-(orchestration: hotkeys, capture readback, `write_issue_report` call site).
+(orchestration: hotkeys, capture readback, and all three `write_issue_report`
+call sites — the button, the FIFO `issue file` verb, and the device-fault
+auto-filer).
 
 ## Capture-first design
 
@@ -30,11 +32,15 @@ Shots accumulate in an open report — keep hitting F9/F10 to add more — until
 you press **"File report"** in the reporter window, which calls
 `write_issue_report`.
 
-**There is no automatic filing.** `write_issue_report` has exactly one call
-site in the codebase (the "File report" button handler in `main.cpp`) — nothing
-files a report automatically on device-lost, a validation error, or a perf
-regression. Those conditions are visible in logs/stats but require a human (or
-an agent watching the log) to press F9/F10 and file.
+**Filing is still manual by default, with two exceptions.** `write_issue_report`
+now has three call sites in `main.cpp`: the "File report" button handler, the
+FIFO `issue file` verb (§ "Headless filing" below — an agent-driven equivalent
+of pressing the button), and a best-effort auto-filer that runs once, right
+before the process exits, when a fatal error traces back to a Vulkan/device
+fault (§ "Automatic filing on device fault" below). Nothing files on a
+validation error or a perf regression — those stay visible only in logs/stats
+and still require a human (or an agent watching the log) to press F9/F10, or
+send `issue capture`/`issue file`, and file.
 
 ## On-disk layout: `issues/<guid>/`
 
@@ -113,6 +119,142 @@ this exception has had no effect since the `issues` line was added, and no
 `.layout.ini` file has actually been trackable. Whether that's intended (the
 exception is simply dead) or a bug worth fixing is unresolved; don't rely on
 layout sidecars being committed.
+
+## Headless filing: `issue capture` / `issue file`
+
+Two FIFO verbs (§b of `docs/agent/control-surface.md` has the full grammar)
+let a script/agent drive the exact same capture-first flow F9/F10 + "File
+report" do, without a mouse:
+
+- **`issue capture`** — the headless F10: reuses `begin_viewport_capture` and
+  the same `AwaitingCapture` readback handshake main.cpp already runs every
+  frame, so the report directory is created on the first shot exactly as the
+  interactive flow does, and repeated captures accumulate into the same
+  draft. **Blocking**: no later FIFO line dispatches until the readback and
+  `record_shot` actually complete, with the same ~30s deadman shape as `shot`/
+  `shot_now` (`issue: capture timeout, abandoned` on expiry — see the log
+  marker table in `control-surface.md`).
+- **`issue file <note>`** — sets the draft's note to the rest of the line
+  (the note may be empty only if the draft already has a shot) and calls
+  `write_issue_report` with the same `IssueContext` the button builds (props
+  registry, camera, sim mode/time scale, frame size). Prints `issue: filed
+  <path>` on success or `issue: file failed (<reason>)` on failure, and
+  resets the draft afterward — same as pressing the button. Unlike `issue
+  capture`, this is not itself a blocking wait; it does not need to be, since
+  a `quit` line after it cannot even be *dispatched* until the write starts
+  (dispatch is already serialized behind any earlier blocking verb), and the
+  write itself finishes within the same frame it starts.
+
+Both verbs work identically whether or not `MATTER_HIDE_UI` is set — neither
+depends on the "File report" button or the ImGui window actually drawing
+(the button's own trigger only exists inside the `!hide_ui` UI pass; `issue
+file`'s FIFO handling deliberately runs outside it).
+
+Example `drive.py` timeline (see `MatterEngine3/tools/drive.py` and the QA
+cookbook) that bakes a world, captures one shot, and files a report — a
+scripted version of "hit F10, type a note, click File report":
+
+```
+wait_event bake.finished 300
+issue capture
+issue file camera clips through the north wall near spawn
+quit
+```
+
+```bash
+python MatterEngine3/tools/drive.py --world CornellBox \
+    --timeline timeline.txt --out-dir out/ \
+    --env MATTER_ISSUE_DIR=/abs/path/to/scratch-issues
+```
+
+Always point `MATTER_ISSUE_DIR` at a scratch directory for a scripted run —
+`drive.py`'s `--env` flag exists for exactly this — so testing the issue
+system does not write into the repo's real `issues/`.
+
+## Automatic filing on device fault
+
+The one exception to "filing needs a person at the keyboard": if a fatal
+error traces back to a Vulkan/device fault, `main.cpp` files a report on its
+own, once, immediately before the process exits.
+
+**What triggers it.** `main.cpp` tracks a `fatal_error_reason` string
+alongside the existing `fatal_error` flag, set only by the fatal sites that
+are Vulkan/device-surfacing: `render()` failing, `end_frame()` failing (the
+seam `MATTER_VK_TEST_END_FRAME_FAULT` and a real `VK_ERROR_DEVICE_LOST` from
+`vkQueueSubmit2` both go through), the ImGui Vulkan backend's prepare/
+end-of-frame calls failing, and five consecutive swapchain-readback
+failures. Non-device fatal exits (`MATTER_REPLAY_STRICT` mismatch, a perf
+run's Vulkan-validation-error count) leave `fatal_error_reason` empty and are
+**not** auto-filed — those behave exactly as before.
+
+**Where it runs.** A single seam, right after the main loop exits and before
+any teardown (`session`/`vulkan`/`ui` are all still alive) — main-thread
+only, so there is no cross-thread rendezvous to get wrong. This covers any
+fault that surfaces through the main thread's own render/present calls, which
+is what every fault-injection env var and a real device loss both do. A
+device fault on a **background thread** (e.g. inside a bake worker, if one
+ever made its own Vulkan calls) would not reach this seam — there is no clean
+main-thread rendezvous for that case, so it is explicitly out of scope.
+
+**What the report contains.** Note only: `auto-filed: device fault
+(<fatal_error_reason>)`. **No shots** — a post-loss readback would either
+hang against a dead device or hand back garbage, and the entire premise of
+this path is that nobody is left to press F9/F10. `state.json`, `log-tail.txt`
+and `profile_tail.json` are written the same as any other report (all
+CPU-side; none of it touches the Vulkan device). If
+`MatterEditor/vulkan_device_fault.log` exists and its mtime is at or after
+process start, it is copied into the report directory too — a **real**
+`VK_ERROR_DEVICE_LOST` reaches `vk_context.cpp`'s `log_device_fault()` (which
+writes that file via `vkGetDeviceFaultInfoEXT`), but the *injected*
+`MATTER_VK_TEST_END_FRAME_FAULT` faults do not (they substitute a different
+`VkResult` before submit; they never put the device itself into the lost
+state `vkGetDeviceFaultInfoEXT` requires) — so an injector-driven test run
+correctly gets a report with no `vulkan_device_fault.log`, while a real
+device loss gets both.
+
+**Guarantees.** Best-effort by construction: every filesystem/engine call in
+the auto-filer is wrapped in one `try`/`catch(...)`, and nothing in it can
+change `fatal_error` or the process's exit code — a failure while trying to
+record the original fault is swallowed (`issue: auto-file failed (<reason>)`
+or `issue: auto-file threw ...`, both to stderr) rather than escalated into a
+second fatal error. It never blocks or delays the exit path beyond the one
+synchronous filing attempt.
+
+**Build note.** The fault-injection env vars this depends on for testing
+(`MATTER_VK_TEST_END_FRAME_FAULT` and the rest of the `MATTER_VK_TEST_*`
+family, see `control-surface.md` §c) only compile in under
+`-DMATTER_VK_TEST_FAULT_INJECTION`, which the default `make -C MatterEditor
+windows` build does **not** define (see the comment above `FAULT_INJECTION`
+in `MatterEditor/Makefile`) — the shipped editor.exe never carries test-only
+fault injection. Build with `make -C MatterEditor windows FAULT_INJECTION=1`
+to get an editor.exe that responds to those env vars; the auto-filer itself
+has no such gate and is always compiled in, since it only depends on
+`fatal_error`/`fatal_error_reason`, not on the injectors.
+
+## Listing reports: `issues_list.py`
+
+`MatterEngine3/tools/issues_list.py` (python3, stdlib only) tabulates
+`issues/<guid>/` report directories without opening the editor — for a quick
+"what's outstanding" check or for another script to consume:
+
+```bash
+python MatterEngine3/tools/issues_list.py [--dir <issues-root>] [--json]
+```
+
+`--dir` resolution mirrors `issues_dir()`'s own precedence as closely as a
+standalone script can: `--dir` if given, else `$MATTER_ISSUE_DIR`, else
+`../issues` relative to the current working directory if that exists, else
+`./issues`. Each row shows a short id (first 8 hex of the frontmatter `id:`,
+falling back to the directory name), the `reported:` timestamp, `world:`,
+`status:`, a shot count (**counted from `shot-*.png` files on disk**, not the
+frontmatter `shots:` field — the two can disagree, e.g. a report whose
+frontmatter still says an earlier, since-superseded count), and the first
+line of the `## Report` section (or `(no note)`). Sorted newest first.
+Malformed or partial reports (missing `issue.md`, no well-formed frontmatter
+block) are still listed, never skipped and never a crash — their
+unparseable fields read `(unparseable)`. `--json` prints a JSON array and
+nothing else on stdout, safe to pipe into
+`python -c "import json,sys; json.load(sys.stdin)"`.
 
 ## Consuming a report: `MATTER_REPLAY`
 
