@@ -107,7 +107,7 @@ dist folder, not `MatterEditor/`), then the literal fallback `"../issues"`
 wins only because the directory exists on disk for developers who have
 already generated reports into it.
 
-`.gitignore` also has a `!/issues/**/*.layout.ini` negation (added to
+`.gitignore` formerly had a `!/issues/**/*.layout.ini` negation (added to
 un-ignore layout sidecars from the blanket `*.ini` rule, with the comment
 "issue-report layout sidecars ... are evidence rather than local config"). **It
 does not work**: verified with `git check-ignore -v`, both `issue.md` and

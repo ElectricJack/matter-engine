@@ -15,9 +15,11 @@ argv-based CLI. Every startup and runtime behavior is driven by:
   after startup.
 
 Output is `stdout`/`stderr` text (one line per event/ack/error — see the verb
-table in §b for exact wording) plus PNG sidecars: any screenshot write also
-writes `<path>.done` once the PNG is on disk, so a script can poll for the
-sidecar instead of racing the file write.
+table in §b for exact wording) plus PNG sidecars: the FIFO `shot` and
+`shot_now` verbs also write `<path>.done` once the PNG is on disk, so a
+script can poll for the sidecar instead of racing the file write.
+(`MATTER_SCREENSHOT`/`MATTER_REPLAY_OUT` captures do NOT write a sidecar —
+those runs quit after writing, so poll for process exit instead.)
 
 Two readiness lines matter for scripting:
 
@@ -93,7 +95,7 @@ and sent an investigation down the wrong path).
 The `stats` command arms an append-only CSV-ish line printed the next frame:
 
 ```
-STATS,<label>,frame_ms,resolve_ms,build_ms,draw_ms,instances_active,raster_batches,raster_tris,culled_clusters,gpu_occlusion_culled,vt_variants,vt_rejected_variants,vt_max_variants,vt_mesh_MiB,...,vk_gpu_total_ms,vk_gpu_cull_ms,vk_gpu_gbuffer_ms
+STATS,<label>,frame_ms,resolve_ms,build_ms,draw_ms,instances_active,raster_batches,raster_tris,culled_clusters,gpu_occlusion_culled,vt_variants,vt_rejected_variants,vt_max_variants,vt_mesh_MiB,...,gpu_total_ms,gpu_cull_ms,gpu_gbuffer_ms
 ```
 
 New fields are only ever **appended** to the end (scripts parse by position) —

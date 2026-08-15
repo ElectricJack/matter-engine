@@ -155,9 +155,11 @@ subpaths into the new worktree).
 
 Vulkan shader sources live in `MatterEngine3/shaders_vk/` and compile to
 embedded SPIR-V (`MatterEngine3/shaders_gen/embedded_spirv.h`) as an ordinary
-build prerequisite: every object in `libmatter_engine3.a` depends on that
-header, which depends on the compiled `.spv` files, which depend on their
-`.comp`/`.vert`/`.frag`/`.rgen`/`.glsl` sources via explicit dependency edges.
+part of the build: the header is generated before the first compile (an
+order-only prerequisite of the archive objects), it depends on the compiled
+`.spv` files, which depend on their `.comp`/`.vert`/`.frag`/`.rgen`/`.glsl`
+sources via explicit dependency edges — and after that first build, the
+`-MMD` dependency files rebuild exactly the objects that `#include` it.
 **`make -C MatterEngine3` (the default target) rebuilds SPIR-V whenever a
 shader source changes** — there is no separate `vulkan-spirv` target to
 remember, so a green build can't silently keep stale SPIR-V. `MatterEditor/Makefile`
@@ -211,22 +213,33 @@ One-shot screenshot (capture-then-quit, no FIFO needed):
 ```bash
 cd MatterEditor
 MATTER_WORLD=StreamMountain MATTER_SCREENSHOT="C:/tmp/shot.png" \
-MATTER_SCREENSHOT_SETTLE=90 ./build/windows/editor.exe
+MATTER_SCREENSHOT_SETTLE=90 \
+TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp" \
+./build/windows/editor.exe
 ```
+
+(`platform.mk`'s TMP/TEMP export only covers `make` recipes — direct exe
+launches still need the prefix, per launch rule 1 in
+`docs/agent/control-surface.md`.)
 
 Multi-step timeline via `MatterEngine3/tools/drive.py` (launches the editor
 against a `MATTER_CMD_FIFO` file, verifies every `shot`/`shot_now` it promised
-actually landed): `python MatterEngine3/tools/drive.py --world StreamMountain
---timeline shots.txt --out-dir out/ --hide-ui`, where `shots.txt` is one verb
-per line:
+actually landed): `py -3 MatterEngine3/tools/drive.py --world StreamMountain
+--timeline shots.txt --out-dir out/ --hide-ui` — use native Windows Python
+(`py -3`); MSYS2's `/usr/bin/python` mishandles `C:/` paths and drive.py
+refuses it. `shots.txt` is one verb per line:
 
 ```
+wait_event bake.finished 300
 wait_idle 5
-set viewer.debug.lod_tint true
+set viewer.budget.pixel_budget 0.8
 shot C:/tmp/out/shot1.png
-wait_event bake.finished 30
 quit
 ```
+
+(Order matters: `wait_event bake.finished` must come *before* `wait_idle` —
+`wait_idle` only releases once the bake is done, so a later `wait_event` on
+it can never fire and burns its whole timeout.)
 
 Issue replay + diff: `bash docs/baselines/capture-replay-baseline.sh
 issues/<guid> /tmp/before.png` (see `docs/agent/issue-system.md`).

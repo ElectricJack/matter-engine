@@ -2433,7 +2433,6 @@ int main() {
     // the app thread, command.cpp finalize_common). Returns false for an
     // unrecognized name; the caller does not block in that case.
     auto fifo_begin_wait_event = [&](const std::string& name, double timeout_s) -> bool {
-        fifo_wait_event_fired.store(false, std::memory_order_relaxed);
         fifo_wait_event_name = name;
         fifo_wait_event_timeout_s = timeout_s;
         fifo_wait_event_start = std::chrono::steady_clock::now();
@@ -2449,6 +2448,11 @@ int main() {
         std::atomic<uint64_t>* live_gen = &fifo_wait_event_live_gen;
         const uint64_t my_gen =
             fifo_wait_event_live_gen.fetch_add(1, std::memory_order_acq_rel) + 1;
+        // Clear `fired` only AFTER the generation bump: a straggler callback
+        // from the previous arm that already passed its generation check can
+        // no longer land a store(true) that this arm would mistake for its
+        // own event.
+        fifo_wait_event_fired.store(false, std::memory_order_release);
         const std::string sub_name =
             "qa.wait_event." + std::to_string(fifo_wait_event_seq++) + "." + name;
         if (name == "bake.started") {

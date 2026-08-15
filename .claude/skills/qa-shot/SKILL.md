@@ -10,7 +10,7 @@ file; verb grammar in `docs/agent/control-surface.md` §b), verifying every
 ## Canonical invocation
 
 ```bash
-python MatterEngine3/tools/drive.py --world <World> --timeline <file.txt> \
+py -3 MatterEngine3/tools/drive.py --world <World> --timeline <file.txt> \
     --out-dir <out-dir> [--timeout 600] [--hide-ui] [--env K=V ...]
 ```
 
@@ -20,13 +20,17 @@ nonzero editor exit. Exit 2 = timeout, or editor.exe/timeline not found.
 ## Example timeline (6 lines)
 
 ```
+wait_event bake.finished 300
 wait_idle 5
-wait_event bake.finished 30
 set viewer.budget.pixel_budget 1.0
 wait_frames 3
 shot C:/tmp/qa/out_01.png
 quit
 ```
+
+(`wait_event bake.finished` must precede `wait_idle`: `wait_idle` only
+releases once the bake is done, so a `wait_event` on it placed after can
+never fire and burns its whole timeout.)
 
 `wait_idle <sec>` blocks until `resident_sectors` holds steady that long AND
 bake is ready. `wait_event <name> [timeout_s]` blocks on a named engine event

@@ -74,6 +74,7 @@ endif
 endif
 
 # ---- (d) ccache -----------------------------------------------------------
-# Detection only for now -- a later phase installs ccache and wires this into
-# the compile lines. Empty when ccache isn't on PATH.
+# Wired into the compile lines of MatterEngine3/MatterEditor/tests Makefiles
+# ($(CCACHE) $(CXX)-style prefix). Empty when ccache isn't on PATH, in which
+# case the prefix expands to nothing and plain compilers run.
 CCACHE := $(shell command -v ccache 2>/dev/null)

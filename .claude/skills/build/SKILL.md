@@ -24,9 +24,11 @@ default (`RETOPO ?= 1`). Pass `RETOPO=0` for a faster build without it.
 ## Shader edits propagate through a plain build (verified 2026-08-14)
 
 A change under `shaders_vk/` rebuilds via a plain `make -C MatterEngine3` /
-`make -C MatterEditor windows`, no extra step: `embedded_spirv.h` is a real
-prerequisite of every archive object, so touching a shader forces the `.spv`
-rebuild, header regen, and recompile (confirmed with `make -n`). The
+`make -C MatterEditor windows`, no extra step: the header is generated before
+the first compile (order-only prerequisite of the archive objects), and the
+`-MMD` dependency files then rebuild exactly the objects that `#include` it —
+touching a shader forces the `.spv` rebuild, header regen, and recompile of
+its consumers (verified empirically with a semantic shader edit). The
 `vulkan-spirv` target regenerates just the header standalone; it is not
 required for propagation — an older belief that plain make leaves stale
 SPIR-V describes a since-fixed bug.

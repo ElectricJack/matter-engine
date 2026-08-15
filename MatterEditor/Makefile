@@ -761,7 +761,8 @@ FORCE:
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(AR_CORE_DEP) $(VIEWER_LIB) $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -Wl,--whole-archive $(VIEWER_LIB) -Wl,--no-whole-archive -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(W_DIR)/; fi
-	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p $(W_DIR)/editor.exe)"; \
+	@objdump="$$($(WIN_CXX) -print-prog-name=objdump)"; \
+	 imports="$$("$$objdump" -p $(W_DIR)/editor.exe)"; \
 	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL nvcuda cuDevice; do \
 	   echo "$$imports" | grep -qi "$$forbidden" && { echo "ERROR: forbidden PE import/symbol $$forbidden"; exit 1; } || true; \
 	 done

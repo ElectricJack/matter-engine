@@ -60,6 +60,16 @@ import threading
 import time
 from pathlib import Path
 
+# MSYS2/Cygwin Python treats 'C:/...' as a RELATIVE path (is_absolute() is
+# False on posix), silently mis-resolving every Windows path this script
+# handles, and its os.name=='posix' skips the taskkill process-tree kill.
+# Refuse it up front rather than fail confusingly later.
+if sys.platform in ("cygwin", "msys"):
+    sys.exit(
+        "drive.py: MSYS2/Cygwin Python cannot handle Windows paths. "
+        "Run with native Windows Python instead, e.g.: py -3 " + __file__
+    )
+
 
 def parse_args(argv):
     ap = argparse.ArgumentParser(
