@@ -23,7 +23,24 @@ require_file() {
     fi
 }
 
-require_command 'Windows C++ compiler' "$WIN_CXX"
+# WIN_CXX is a command LINE, not necessarily a single executable path: since
+# ccache was wired into platform.mk, MatterEditor/Makefile passes
+# WIN_CXX="/ucrt64/bin/ccache /ucrt64/bin/g++". `command -v "$WIN_CXX"` then
+# looks up one executable literally named "/ucrt64/bin/ccache /ucrt64/bin/g++",
+# never finds it, and vulkan-preflight fails with
+#   ERROR: missing Windows C++ compiler: /ucrt64/bin/ccache /ucrt64/bin/g++
+# on a machine where both halves are perfectly present -- which blocks the
+# whole `windows` target ($(WIN_FEATURES) depends on this script). Probe by
+# RUNNING the compiler instead, with $WIN_CXX deliberately unquoted so the
+# shell word-splits it into argv the way the Makefile recipes do. This also
+# checks more than `command -v` did: a present-but-broken compiler now fails
+# here rather than at the first compile.
+# shellcheck disable=SC2086
+if ! $WIN_CXX --version >/dev/null 2>&1; then
+    printf 'ERROR: missing or non-functional Windows C++ compiler: %s\n' \
+        "$WIN_CXX" >&2
+    missing=1
+fi
 require_command 'Vulkan shader compiler' "$GLSLC"
 require_file 'Vulkan header' "$VULKAN_INCLUDE/vulkan/vulkan.h"
 require_file 'Vulkan import library' "$VULKAN_LIB_DIR/libvulkan-1.dll.a"
@@ -62,5 +79,8 @@ trap 'rm -f "$src" "$exe"' EXIT HUP INT TERM
 src="$(mktemp --suffix=.cpp)"
 exe="$(mktemp --suffix=.exe)"
 printf '#include <vulkan/vulkan.h>\nint main(){return vkEnumerateInstanceVersion(0);}\n' > "$src"
-"$WIN_CXX" "$src" -I"$VULKAN_INCLUDE" -L"$VULKAN_LIB_DIR" -lvulkan-1 -o "$exe"
+# Unquoted for the same reason as the --version probe above: WIN_CXX may be
+# "ccache g++", which must word-split into two argv entries.
+# shellcheck disable=SC2086
+$WIN_CXX "$src" -I"$VULKAN_INCLUDE" -L"$VULKAN_LIB_DIR" -lvulkan-1 -o "$exe"
 printf 'vulkan-preflight: OK\n'
