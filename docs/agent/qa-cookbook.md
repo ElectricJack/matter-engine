@@ -52,36 +52,47 @@ capture-then-quit; no `quit` command needed).
 
 ## 4. FIFO-driven multi-shot session
 
-The pattern every scripted capture in this repo follows: launch with a command
-file, poll the log for readiness, append commands, wait for `.done` sidecars,
-`quit`. `MatterEngine3/tools/viewer_shots.sh` is the exemplar — read it before
-writing a new one:
+`MatterEngine3/tools/drive.py` is the current, preferred way to drive a
+multi-shot timeline: write the command lines to a file, hand it to `drive.py`,
+and it launches the editor, tees the log, and verifies every screenshot the
+timeline promised — no hand-rolled `sleep`-polling required. `shot`/`shot_now`
+are **blocking** (§ Timeline semantics, `docs/agent/control-surface.md`): a
+`shot` line does not release the next line in the timeline until its PNG
+*and* `.done` sidecar are actually written, so **no trailing `wait_frames` is
+needed after a `shot`** — that used to be necessary and is not any more.
+`wait_idle <seconds>` replaces the old `sleep <n>` guess for "let LOD/batches
+settle at the new view": it releases on an actual settle signal
+(`resident_sectors` steady + bake ready), not a fixed wall-clock guess.
 
 ```bash
-FIFO=/tmp/matter_shots_$$.fifo
-mkfifo "$FIFO"
-cd MatterEditor
-MATTER_WORLD=meadow MATTER_CMD_FIFO="$FIFO" ./build/windows/editor.exe > viewer.log 2>&1 &
-PID=$!
+cat > /tmp/shots.txt <<'EOF'
+cam 20 760 350 0 420 0
+wait_idle 2
+stats current-cost
+shot C:/tmp/current-cost.png
+quit
+EOF
 
-# poll readiness
-until grep -q 'viewer: bake ready' viewer.log; do sleep 1; done
-
-echo "cam 20 760 350 0 420 0" > "$FIFO"
-sleep 2                          # let LOD/batches settle at the new view
-echo "stats current-cost" > "$FIFO"
-echo "shot C:/tmp/current-cost.png" > "$FIFO"
-until [ -e "C:/tmp/current-cost.png.done" ]; do sleep 1; done
-
-echo "quit" > "$FIFO"
-wait "$PID"
+python MatterEngine3/tools/drive.py --world meadow --timeline /tmp/shots.txt \
+    --out-dir C:/tmp/drive-out
 ```
 
-Expect one PNG + its `.done` sidecar per `shot`, and a `STATS,<label>,...` line
-in `viewer.log` per `stats` command. On Windows, `MATTER_CMD_FIFO` is a polled
-plain file, not a real FIFO — `mkfifo`/blocking-open semantics only apply on
-Linux, but the append-then-poll shell idiom above works on both because the
-editor itself handles the platform difference.
+Expect exit 0, `C:/tmp/current-cost.png` + `current-cost.png.done` on disk,
+and a `STATS,current-cost,...` line in `C:/tmp/drive-out/log.txt` (`drive.py`
+tees the editor's full stdout/stderr there as well as to its own stdout).
+`drive.py` unlinks any stale PNG/`.done` pair left over from a previous run
+into the same `--out-dir` *before* launching, so a crash that fails to
+actually produce a shot cannot false-pass by reading old files, and it warns
+(non-fatally) if a timeline has no `quit` line. See `docs/agent/control-
+surface.md`'s `drive.py` section for the full flag/behavior reference, and
+its FIFO verb table for every other timeline verb (`wait_frames`,
+`wait_event`, `world`, `set`/`get`, ...). `MatterEngine3/tools/viewer_shots.sh`
+is an older, still-supported example of driving the raw FIFO by hand (append
+lines, poll for `.done`) for cases `drive.py` doesn't cover — read it if you
+need something outside a plain timeline. On Windows, `MATTER_CMD_FIFO` is a
+polled plain file, not a real FIFO — `mkfifo`/blocking-open semantics only
+apply on Linux; `drive.py` and `viewer_shots.sh` both handle the platform
+difference for you.
 
 ## 5. Replay an issue shot and diff
 

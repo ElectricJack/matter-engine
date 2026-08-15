@@ -96,9 +96,10 @@ dist folder, not `MatterEditor/`), then the literal fallback `"../issues"`
 
 `issues/` has been **gitignored since commit `0cbb5e92`** ("Add issues to
 .gitignore", 2026-07-30 — it also deleted the committed `issues/README.md`).
-**A stale in-code comment contradicts this**: `main.cpp`'s `issues_root()` still
-says "`issues/` is committed (it carries README.md), so the direct lookup
-normally wins" — that has not been true since `0cbb5e92`.
+`main.cpp`'s `issues_root()` comment has been corrected to match: it now says
+`issues/` is gitignored (untracked, not committed), and that the direct lookup
+wins only because the directory exists on disk for developers who have
+already generated reports into it.
 
 `.gitignore` also has a `!/issues/**/*.layout.ini` negation (added to
 un-ignore layout sidecars from the blanket `*.ini` rule, with the comment
@@ -190,12 +191,9 @@ seconds older than their **telemetry**, because the pixels are stamped at
 drag-commit (when the region selection is finalized) while the frame the crop
 comes from was frozen earlier, at the F9 press.
 
-**Known defect** (as of this writing; reported to have a fix in flight on a
-parallel branch): `state.json`'s `history_columns` lists **13** names —
+`state.json`'s `history_columns` lists **12** names —
 `frame_ms, render_ms, build_ms, gpu_ms, triangles, instances_drawn, resolve_ms,
-draw_ms, zone_vt_ms, zone_cull_ms, zone_skin_ms, zone_comp_ms, zone_casters_ms`
-— but each row in the `history` array has only **12** values (the last column,
-`zone_casters_ms`, is declared but never written). A reader that zips columns
-to values positionally will misalign starting at `zone_comp_ms`/
-`zone_casters_ms`. Verify against `issue_reporter.cpp`'s `write_shot_json`
-before trusting the last two history columns.
+draw_ms, zone_vt_ms, zone_cull_ms, zone_skin_ms, zone_comp_ms` — and each row
+in the `history` array has exactly **12** values in the same order
+(`issue_reporter.cpp`'s `write_shot_json`). A reader that zips columns to
+values positionally is safe.

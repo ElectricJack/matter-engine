@@ -14,11 +14,14 @@ opposed to the design/findings docs below, which are written for human
 engineers reading in context.
 
 - **[agent/control-surface.md](agent/control-surface.md)** — the complete
-  external control surface: env vars, the `MATTER_CMD_FIFO` command grammar,
-  events, and the three launch rules.
+  external control surface: env vars, the `MATTER_CMD_FIFO` command grammar
+  (including the blocking-wait timeline semantics and log-marker table),
+  events, `MatterEngine3/tools/drive.py` (scripted timeline runner), and the
+  three launch rules.
 - **[agent/qa-cookbook.md](agent/qa-cookbook.md)** — copy-paste recipes for
-  builds, screenshots, FIFO sessions, replay/diff, the Vulkan smoke gate, the
-  seam suite, perf runs, fly-through soaks, and headless test targets.
+  builds, screenshots, `drive.py`-driven multi-shot FIFO sessions, replay/diff,
+  the Vulkan smoke gate, the seam suite, perf runs, fly-through soaks, and
+  headless test targets.
 - **[agent/issue-system.md](agent/issue-system.md)** — the in-editor capture/
   file/replay pipeline: `issue.md`/`state.json` schema, GUID scheme, and the
   capture-vs-submit timing gotcha.
