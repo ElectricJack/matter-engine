@@ -11,20 +11,32 @@ What it does:
      file the editor's MATTER_CMD_FIFO poller reads (main.cpp polls it as
      an append-only file on Windows; the whole timeline already being
      present when the editor starts is fine, it is read from offset 0).
-  2. Launches editor.exe with cwd=MatterEditor/, MATTER_WORLD=<world>,
+  2. Scans the timeline for `shot`/`shot_now` lines and UNLINKS each
+     screenshot's PNG and `.done` sidecar if either already exists, before
+     the editor is ever launched. Without this, a run that crashes/hangs
+     before actually producing a shot can false-pass by reading stale
+     files a PREVIOUS run into the same --out-dir left behind -- the
+     post-run check below only ever confirms the files exist, not that
+     THIS run wrote them. Prints how many stale files it removed.
+  3. Warns (to stderr, non-fatal) if the timeline has no `quit` line: such
+     a timeline only ever ends via --timeout (or being closed some other
+     way), which is sometimes intentional but is also the most common way
+     a broken timeline silently burns the whole --timeout instead of
+     failing fast.
+  4. Launches editor.exe with cwd=MatterEditor/, MATTER_WORLD=<world>,
      MATTER_CMD_FIFO=<abs path to cmd.txt>, TMP/TEMP pointed at the OS
      temp dir, MATTER_HIDE_UI=1 if --hide-ui was passed, plus any --env
      K=V overrides applied last (so they can override any of the above).
-  3. Tees the editor's stdout+stderr to <out-dir>/log.txt (and to this
+  5. Tees the editor's stdout+stderr to <out-dir>/log.txt (and to this
      process's own stdout) while waiting for it to exit, up to --timeout
      seconds. On timeout, the process TREE is killed and drive.py exits 2.
-  4. On a normal exit, scans the timeline for `shot`/`shot_now` lines and
-     checks that each screenshot's PNG and its `.done` sidecar both exist.
-     Any missing file -> exit 1, with the missing paths listed. A nonzero
-     editor exit code is also treated as failure (exit 1), even if every
-     screenshot happened to be on disk from an earlier run -- a crash mid
-     -script should never read as a pass. Otherwise: exit 0, with a one-
-     line summary.
+  6. On a normal exit, checks that each shot/shot_now screenshot's PNG and
+     its `.done` sidecar both exist (see step 2 -- these can only be from
+     THIS run). Any missing file -> exit 1, with the missing paths listed.
+     A nonzero editor exit code is also treated as failure (exit 1), even
+     if every screenshot happened to be on disk -- a crash mid-script
+     should never read as a pass. Otherwise: exit 0, with a one-line
+     summary.
 
 IMPORTANT: shot/shot_now paths in a timeline are resolved by the EDITOR
 relative to its own working directory (MatterEditor/), NOT to --out-dir or
@@ -127,6 +139,32 @@ def resolve_shot_path(path_text, editor_dir):
     return p if p.is_absolute() else (editor_dir / p).resolve()
 
 
+def has_quit_line(timeline_path):
+    """True if the timeline contains a bare `quit` line (D-17)."""
+    with open(timeline_path, "r", encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            if raw.strip() == "quit":
+                return True
+    return False
+
+
+def unlink_stale_shot_artifacts(shots, editor_dir):
+    """D-09: remove any PNG/.done pair from a PREVIOUS run before this one
+    launches, so a run that fails to actually produce a shot cannot
+    false-pass on leftovers. Returns the count actually removed."""
+    removed = 0
+    for _verb, path_text in shots:
+        png_path = resolve_shot_path(path_text, editor_dir)
+        done_path = png_path.with_name(png_path.name + ".done")
+        for p in (png_path, done_path):
+            try:
+                p.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+    return removed
+
+
 def main(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
     _, editor_dir = repo_paths()
@@ -146,6 +184,21 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd_txt = (out_dir / "cmd.txt").resolve()
     shutil.copyfile(timeline_path, cmd_txt)
+
+    # D-09: computed once, up front, and reused for both the pre-launch
+    # unlink below and the post-run existence check -- the same list, so
+    # "removed before" and "checked after" can never drift apart.
+    shots = extract_shot_lines(timeline_path)
+    removed = unlink_stale_shot_artifacts(shots, editor_dir)
+    if removed:
+        print(f"drive.py: removed {removed} stale artifact(s) from a previous run "
+              "into this --out-dir")
+
+    # D-17: non-fatal -- --timeout is always the backstop.
+    if not has_quit_line(timeline_path):
+        print("drive.py: WARNING -- timeline has no `quit` line; the editor "
+              f"only stops via --timeout ({args.timeout}s) or being closed "
+              "some other way", file=sys.stderr)
 
     tmp_dir = tempfile.gettempdir()
     env = os.environ.copy()
@@ -205,7 +258,9 @@ def main(argv=None):
     exit_code = proc.returncode
     print(f"drive.py: editor exited with code {exit_code}")
 
-    shots = extract_shot_lines(timeline_path)
+    # Reuse the SAME `shots` list the pre-launch unlink used (D-09) -- not
+    # recomputed -- so what got cleared and what gets checked can never see
+    # a different timeline.
     missing = []
     for _verb, path_text in shots:
         png_path = resolve_shot_path(path_text, editor_dir)
