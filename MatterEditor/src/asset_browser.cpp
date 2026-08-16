@@ -411,9 +411,37 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
         }
 
         if (ImGui::TreeNodeEx("Objects", ImGuiTreeNodeFlags_DefaultOpen)) {
+            // Mirror the on-disk objects/ folder layout: a sub-tree per owning
+            // scene, plus the project-wide shared tier. rescan()/add_objects
+            // append objects contiguously by scene (shared tier first, then
+            // each scene in sorted order), so we open a new group whenever the
+            // scene key changes rather than needing a separate grouping pass.
+            // The per-scene PushID scope also disambiguates modules that exist
+            // in more than one tier (e.g. WorldSector, shared + StreamMountain),
+            // which otherwise collide on draw_object_row's PushID(module).
+            bool have_group = false;
+            bool group_open = false;
+            std::string current_scene;
             for (AssetObject& obj : project.objects) {
                 if (!passes_filter(obj.module)) continue;
-                draw_object_row(project, obj, commands);
+                if (!have_group || obj.scene != current_scene) {
+                    if (have_group) {
+                        if (group_open) ImGui::TreePop();
+                        ImGui::PopID();
+                    }
+                    current_scene = obj.scene;
+                    have_group = true;
+                    const bool shared = current_scene.empty();
+                    ImGui::PushID(shared ? "\x01shared" : current_scene.c_str());
+                    group_open = ImGui::TreeNodeEx(
+                        shared ? "objects/ (shared)" : current_scene.c_str(),
+                        ImGuiTreeNodeFlags_DefaultOpen);
+                }
+                if (group_open) draw_object_row(project, obj, commands);
+            }
+            if (have_group) {
+                if (group_open) ImGui::TreePop();
+                ImGui::PopID();
             }
             if (project.objects.empty()) ImGui::TextDisabled("(none)");
             ImGui::TreePop();
