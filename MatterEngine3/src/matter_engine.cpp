@@ -33,6 +33,8 @@
 #include "scene/scene_change_tracker.h"   // E5b SceneChangeTracker (sequenced deltas)
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
+#include "matter/physics.h"              // terrain collider attach/detach (M1)
+#include "ecs/terrain_collider_build.h"  // build_heightfield_collider (M1)
 #include "animation/animation_binding_bake.h"
 #include "animation/animation_runtime_asset.h"
 #include "render/animation_rigid_bridge.h"
@@ -1364,6 +1366,12 @@ struct WorldSession::Impl {
         // record, and neither does a sector staged off disk instead of from
         // its bake. The welder treats absence as "no weld here".
         std::shared_ptr<const seam::SectorBoundary> boundary;
+        // Static terrain collider attached to the physics world for this tile
+        // (character-controller M1). 0 = none. Detached in release_sector_entry.
+        // Needs no separate key: sector_map already keys this entry by
+        // {tx,ty,tz,rung}, so publish-then-evict of an upgraded rung detaches the
+        // OLD entry's own handle and never the new one's.
+        matter::physics::TerrainColliderHandle collider = 0;
     };
     // `ty` is the vertical tile index (volumetric-sectors M1). It is always 0
     // today -- the streamer's descent is still the XZ quadtree -- and it is
@@ -1386,6 +1394,16 @@ struct WorldSession::Impl {
         }
     };
     std::unordered_map<SectorKey, SectorEntry, SectorKeyHash> sector_map;
+
+    // Live terrain-collider budget (character-controller M1). Colliders attach
+    // only to the finest (level-0) resident heightfield sectors — which nested
+    // LOD keeps near the streaming anchor — so this cap bounds memory if a world
+    // ever streams many level-0 tiles at once. Exceeding it skips the collider
+    // (logged once); a player-follow anchor and the volumetric-mesh path are
+    // follow-ups (docs/superpowers/specs/2026-08-15-character-controller-design.md).
+    size_t terrain_collider_count = 0;
+    bool terrain_collider_cap_warned = false;
+    static constexpr size_t kMaxTerrainColliders = 256;
 
     // ---- Deferred visibility for nested-LOD transitions ---------------------
     //
@@ -4941,6 +4959,16 @@ bool WorldSession::Impl::release_sector_entry(
         return false;
     }
 
+    // Terrain collision (character-controller M1): drop this tile's static
+    // collider first. Independent of the world-state/store release steps below,
+    // and safe to run even if a later step fails and leaves the entry alive.
+    if (entry.collider != 0) {
+        matter::physics::physics_detach_static(
+            ecs_runtime.world(), entry.collider);
+        if (terrain_collider_count > 0) --terrain_collider_count;
+        entry.collider = 0;
+    }
+
     auto release_attempt = [&](bool& attempted, auto&& release) {
         if (!attempted) return;
         try {
@@ -7881,6 +7909,51 @@ void WorldSession::Impl::bake_and_stage_sector(
                     // carries no record) and for any world whose sectors do
                     // not mesh a terrain volume. Both are fail-soft.
                     published.boundary = loaded->boundary;
+
+                    // Terrain collision (character-controller M1): attach a
+                    // static heightfield collider for the finest (level-0) tiles
+                    // of a heightfield world, so a physics character can stand on
+                    // and slide across streamed ground. Sampled analytically from
+                    // the world field (no dependency on the render mesh), with a
+                    // world-shared height range so neighbouring tiles quantize
+                    // identically and line up seamlessly. Rides the existing
+                    // streaming residency — level-0 tiles are the near-anchor
+                    // ones — and is memory-capped. Volumetric (cave) worlds use
+                    // the mesh path and a player-follow anchor lands in M1's
+                    // remaining wiring / M3.
+                    if (world_field && world_field->is_heightfield() &&
+                        !world_volumetric_sectors &&
+                        sector_level_of(key.rung) == 0 &&
+                        published.collider == 0) {
+                        if (terrain_collider_count >= kMaxTerrainColliders) {
+                            if (!terrain_collider_cap_warned) {
+                                terrain_collider_cap_warned = true;
+                                printf("[terrain-collider] hit cap of %zu live "
+                                       "colliders; further level-0 sectors will "
+                                       "have no collision this session\n",
+                                       kMaxTerrainColliders);
+                            }
+                        } else {
+                            const float col_size = sector_size_for(key.rung);
+                            const int samples = std::clamp(
+                                static_cast<int>(std::lround(col_size)) + 1,
+                                9, 33);
+                            auto hf =
+                                matter::terrain_collider::build_heightfield_collider(
+                                    [this](float x, float z) {
+                                        return world_field->height_at(x, z);
+                                    },
+                                    key.tx, key.tz, col_size, samples,
+                                    -1000.0f, 1000.0f, /*friction=*/0.9f);
+                            const matter::physics::TerrainColliderHandle h =
+                                matter::physics::physics_attach_static_heightfield(
+                                    ecs_runtime.world(), hf.collider());
+                            if (h != 0) {
+                                published.collider = h;
+                                ++terrain_collider_count;
+                            }
+                        }
+                    }
 
                     PROFILE_SCOPE_NAMED(pub_apply, "publish.apply");
                     viewer::WorldManifestEntry instance;
