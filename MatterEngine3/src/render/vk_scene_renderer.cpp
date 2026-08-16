@@ -5245,7 +5245,7 @@ void VkSceneRenderer::rebuild_part_occluder_table() {
     for (size_t slot = 0; slot < parts_.size(); ++slot) {
         const PartRecord& record = parts_[slot];
         if (!record.live) continue;
-        bool alpha_tested = false;
+        bool non_occluder = false;
         for (const RtLodRecord& lod : record.rt_lods) {
             // Billboard rungs are already outside the ID pass through
             // GpuCluster::vis_mesh_lods; only the mesh rungs it can
@@ -5256,16 +5256,27 @@ void VkSceneRenderer::rebuild_part_occluder_table() {
                     : 0u;
             if (lod.lod_index >= mesh_lods) continue;
             for (const uint32_t material_id : lod.material_ids) {
+                // Alpha-tested cutouts AND thin-walled foliage are both porous
+                // occluders: their coarse ID-pass proxy is a solid silhouette
+                // where the real surface is full of holes, so stamping it into
+                // the occluder buffer wrongly hides whatever is behind it
+                // (issue 77c79c44 — alpine conifers hiding StreamMountain
+                // sectors). Vegetation canopies are opaque geometry, so the
+                // alpha-test heuristic alone never caught them; THIN_WALLED is
+                // carried only by LEAF (15) and FOLIAGE_THIN (29) in the
+                // builtin palette, i.e. exactly the vegetation materials, and
+                // by nothing terrain-side. Excluded parts fall to frustum-only
+                // culling (cost, never coverage — see cull.comp), never hidden.
                 if (material_id < material_staging_.size() &&
                     (material_staging_[material_id].flags_misc[0] &
-                     MATERIAL_ALPHA_TESTED) != 0u) {
-                    alpha_tested = true;
+                     (MATERIAL_ALPHA_TESTED | MATERIAL_THIN_WALLED)) != 0u) {
+                    non_occluder = true;
                     break;
                 }
             }
-            if (alpha_tested) break;
+            if (non_occluder) break;
         }
-        if (alpha_tested) part_occluder_table_[slot] = 0u;
+        if (non_occluder) part_occluder_table_[slot] = 0u;
     }
 }
 
