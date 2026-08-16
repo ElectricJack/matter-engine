@@ -113,6 +113,10 @@ public:
         const StaticHeightFieldCollider& desc);
     bool detach_static(TerrainColliderHandle handle);
 
+    // Kinematic capsule collide-and-slide against the live world (design §2).
+    bool move_character(
+        const CharacterMoveInput& in, CharacterMoveOutput& out);
+
     uint32_t last_step_substeps() const noexcept;
     const std::vector<PhysicsSystemStage>& fixed_step_trace() const noexcept;
     const std::vector<PhysicsCommandTraceEntry>&

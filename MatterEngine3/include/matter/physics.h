@@ -215,6 +215,35 @@ struct StaticHeightFieldCollider {
     float friction = 0.6f;
 };
 
+// One fixed-step of kinematic capsule movement resolved against the live Box3D
+// world: collide-and-slide (b3World_CollideMover → b3SolvePlanes →
+// b3World_CastMover) with pogo/ground-snap grounding and a slope-limit gate.
+// The character has no Box3D body of its own — it is a query-driven ghost
+// capsule — so there is no self-collision to exclude. See design §2.
+struct CharacterMoveInput {
+    Float3 position{};                     // capsule center, world space
+    Float3 velocity{};                     // current world velocity
+    Float3 desired_horizontal_velocity{};  // move_dir * speed (y ignored)
+    Float3 gravity{0.0f, -9.81f, 0.0f};
+    float radius = 0.4f;
+    float half_segment = 0.5f;   // half the cylinder segment = height/2 - radius
+    float dt = 1.0f / 60.0f;
+    float max_slope_cos = 0.70710678f;  // standable iff dot(ground_normal, up) >= this
+    float step_height = 0.45f;           // tallest ledge the ground-snap climbs
+    uint64_t category_mask = ~0ull;
+};
+struct CharacterMoveOutput {
+    Float3 position{};
+    Float3 velocity{};
+    Float3 ground_normal{0.0f, 1.0f, 0.0f};
+    bool grounded = false;  // standing on a surface within the slope limit
+};
+
+// Advance a kinematic capsule one step. Returns false (and passes input through)
+// only if the physics world is unavailable.
+bool physics_move_character(
+    flecs::world&, const CharacterMoveInput&, CharacterMoveOutput&);
+
 struct PhysicsModule {
     explicit PhysicsModule(flecs::world&);
 };

@@ -2,6 +2,7 @@
 #include "physics_shapes.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -1279,6 +1280,176 @@ bool PhysicsContext::detach_static(TerrainColliderHandle handle) {
     return true;
 }
 
+namespace {
+
+// Gathers the mover's contact planes as rigid, velocity-clipping planes (no soft
+// push, no dynamic-body push — the character is a ghost capsule for M2).
+struct MoverPlaneGather {
+    b3CollisionPlane* planes;
+    int* count;
+    int capacity;
+};
+
+bool mover_plane_cb(b3ShapeId, const b3PlaneResult* results, int n, void* ctx) {
+    auto* gather = static_cast<MoverPlaneGather*>(ctx);
+    for (int i = 0; i < n && *gather->count < gather->capacity; ++i) {
+        gather->planes[*gather->count] =
+            b3CollisionPlane{results[i].plane, FLT_MAX, 0.0f, true};
+        ++*gather->count;
+    }
+    return true;
+}
+
+bool mover_accept_all(b3ShapeId, void*) { return true; }
+
+}  // namespace
+
+bool PhysicsContext::move_character(
+    const CharacterMoveInput& in, CharacterMoveOutput& out) {
+    out.position = in.position;
+    out.velocity = in.velocity;
+    out.ground_normal = {0.0f, 1.0f, 0.0f};
+    out.grounded = false;
+    if (impl_ == nullptr || impl_->stepping || !world_is_valid()) {
+        return false;
+    }
+
+    const b3WorldId world = impl_->world_id;
+    const float radius = in.radius;
+    const float half_seg = std::max(0.0f, in.half_segment);
+    const float dt = in.dt;
+
+    b3Pos p = box_position(in.position);   // double precision
+    b3Vec3 vel = box_vector(in.velocity);  // float
+    const b3Vec3 g = box_vector(in.gravity);
+
+    b3QueryFilter filter = b3DefaultQueryFilter();
+    filter.maskBits = in.category_mask;
+
+    // Probe for ground below the lower sphere; reach covers a step plus a snap
+    // tolerance so we detect ledges to climb and ground to stick to.
+    const float snap_reach = radius + in.step_height + 0.05f;
+    auto probe_ground = [&](const b3Pos& at) -> b3RayResult {
+        b3Pos origin = at;
+        origin.y = at.y - half_seg;
+        const b3Vec3 down{0.0f, -(radius + snap_reach), 0.0f};
+        return b3World_CastRayClosest(world, origin, down, filter);
+    };
+
+    // --- grounding + slope-limit gate ---------------------------------------
+    const bool rising = vel.y > 0.001f;  // leaving the ground (e.g. a jump)
+    const b3RayResult ray = probe_ground(p);
+    const bool touching = ray.hit && !rising;
+    const bool standable = touching && ray.normal.y >= in.max_slope_cos;
+    if (standable) {
+        out.ground_normal = {ray.normal.x, ray.normal.y, ray.normal.z};
+    }
+
+    // --- horizontal control -------------------------------------------------
+    // Instant control on walkable ground; on a too-steep surface or in the air
+    // the horizontal velocity is left to momentum, so gravity + collide-and-
+    // slide carry the character downhill (slide) and it can never walk up.
+    if (standable) {
+        vel.x = in.desired_horizontal_velocity.x;
+        vel.z = in.desired_horizontal_velocity.z;
+        if (vel.y < 0.0f) {
+            vel.y = 0.0f;  // rest; gravity is re-applied just below
+        }
+    }
+
+    vel.x += g.x * dt;
+    vel.y += g.y * dt;
+    vel.z += g.z * dt;
+
+    // --- collide-and-slide (design §2) --------------------------------------
+    // On walkable ground, move horizontally only and let the ground snap set
+    // the height. Feeding gravity's downward component into the solver on a
+    // slope would be reprojected into downhill motion, making a standing
+    // character creep downhill; suppressing it is what keeps walkable slopes
+    // walkable. In the air or on a too-steep surface the full velocity (gravity
+    // included) drives the move, so ballistic fall and downhill slide happen.
+    b3Vec3 move_vel = vel;
+    if (standable) {
+        move_vel.y = 0.0f;
+    }
+    const b3Capsule capsule{
+        {0.0f, -half_seg, 0.0f}, {0.0f, half_seg, 0.0f}, radius};
+    b3Pos target = p;
+    target.x = p.x + move_vel.x * dt;
+    target.y = p.y + move_vel.y * dt;
+    target.z = p.z + move_vel.z * dt;
+
+    constexpr int kPlaneCap = 32;
+    b3CollisionPlane planes[kPlaneCap];
+    int plane_count = 0;
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        plane_count = 0;
+        MoverPlaneGather gather{planes, &plane_count, kPlaneCap};
+        b3World_CollideMover(
+            world, p, &capsule, filter, mover_plane_cb, &gather);
+
+        const b3Vec3 target_delta{
+            static_cast<float>(target.x - p.x),
+            static_cast<float>(target.y - p.y),
+            static_cast<float>(target.z - p.z)};
+        const b3PlaneSolverResult solved =
+            b3SolvePlanes(target_delta, planes, plane_count);
+        b3Vec3 delta = solved.delta;
+        const float fraction = b3World_CastMover(
+            world, p, &capsule, delta, filter, mover_accept_all, nullptr);
+        delta.x *= fraction;
+        delta.y *= fraction;
+        delta.z *= fraction;
+        p.x += delta.x;
+        p.y += delta.y;
+        p.z += delta.z;
+        if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z <
+            1e-4f) {
+            break;
+        }
+    }
+
+    // Clip velocity against the resolved planes so wall contact and
+    // depenetration do not accumulate speed.
+    if (plane_count > 0) {
+        vel = b3ClipVector(vel, planes, plane_count);
+    }
+
+    // --- ground snap --------------------------------------------------------
+    // If we started on walkable ground, snap back onto it (down, or up to
+    // step_height). This gives a stable rest height, slope following, and
+    // free step-up without a separate step trace.
+    if (standable) {
+        const b3RayResult after = probe_ground(p);
+        if (after.hit && after.normal.y >= in.max_slope_cos) {
+            // Rest the lower sphere TANGENT to the surface: the vertical drop
+            // from the sphere center to the point straight below is radius/cosθ,
+            // not radius, on a slope. Add a small hover so the capsule never
+            // penetrates the ground — otherwise each step's depenetration would
+            // push a standing character downhill (slope creep).
+            constexpr float kSkin = 0.02f;
+            const float ncos = std::max(after.normal.y, 0.5f);
+            const float rest_y =
+                after.point.y + radius / ncos + half_seg + kSkin;
+            const float dy = rest_y - static_cast<float>(p.y);
+            if (dy <= in.step_height && dy >= -(radius + snap_reach)) {
+                p.y = rest_y;
+                if (vel.y < 0.0f) {
+                    vel.y = 0.0f;
+                }
+                out.grounded = true;
+                out.ground_normal = {after.normal.x, after.normal.y,
+                                     after.normal.z};
+            }
+        }
+    }
+
+    out.position = {static_cast<float>(p.x), static_cast<float>(p.y),
+                    static_cast<float>(p.z)};
+    out.velocity = {vel.x, vel.y, vel.z};
+    return true;
+}
+
 void PhysicsContext::capture_events(flecs::world& world) {
     PhysicsEvents next;
     const flecs::world_t* owning_world = ecs_get_world(world.c_ptr());
@@ -1875,6 +2046,21 @@ bool physics_detach_static(
     flecs::world& world, TerrainColliderHandle handle) {
     detail::PhysicsContext* context = resolve_context(world);
     return context != nullptr ? context->detach_static(handle) : false;
+}
+
+bool physics_move_character(
+    flecs::world& world,
+    const CharacterMoveInput& in,
+    CharacterMoveOutput& out) {
+    detail::PhysicsContext* context = resolve_context(world);
+    if (context == nullptr) {
+        out.position = in.position;
+        out.velocity = in.velocity;
+        out.ground_normal = {0.0f, 1.0f, 0.0f};
+        out.grounded = false;
+        return false;
+    }
+    return context->move_character(in, out);
 }
 
 } // namespace matter::physics
