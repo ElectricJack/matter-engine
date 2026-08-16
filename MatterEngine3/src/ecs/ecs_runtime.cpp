@@ -10,6 +10,7 @@
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
+#include "matter/log.h"
 
 #include <algorithm>
 #include <cmath>
@@ -543,8 +544,8 @@ void Runtime::drain_world_state_commands() {
                     scene::RecipeError err;
                     if (!scene::bootstrap_transactional(world_, command.entities,
                                                        scene_generation_, resolver, err)) {
-                        std::fprintf(stderr, "bootstrap_transactional failed: %s (entity: %s)\n",
-                                     err.message.c_str(), err.authored_id.c_str());
+                        MATTER_LOGE("ecs", "bootstrap_transactional failed: %s (entity: %s)\n",
+                                    err.message.c_str(), err.authored_id.c_str());
                     }
                 }
                 break;

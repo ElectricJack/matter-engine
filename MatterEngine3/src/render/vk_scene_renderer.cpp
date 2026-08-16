@@ -26,6 +26,7 @@
 #include "matrix_math.h"
 #include "engine_profile_zones.h"
 #include "vk_perf.h"
+#include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "matter/vt_budgets.h"
 #include "matter/world_definition.h"
@@ -1419,7 +1420,7 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
         static std::string last_census;
         if (census != last_census) {
             last_census = census;
-            fprintf(stderr, "[skin-census] in=%zu out=%zu%s\n",
+            MATTER_LOGD("skin-census", "in=%zu out=%zu%s\n",
                     visible.size(), compacted.size(), census.c_str());
         }
     }
@@ -3793,8 +3794,8 @@ void VkSceneRenderer::probe_skin_raster_draws(
                 ++outside;
         }
         if (outside == 0) continue;
-        fprintf(stderr,
-                "[skin-probe] instance=%u gen=%u cluster=%u lod=%u "
+        MATTER_LOGD("skin-probe",
+                "instance=%u gen=%u cluster=%u lod=%u "
                 "outside=%u/%u indices=[%u,%u] window=[%u,%u)\n",
                 draw.instance_slot, draw.instance_generation, draw.cluster,
                 draw.lod, outside, draw.index_count, lowest, highest,
@@ -4475,8 +4476,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
             vt_unavailable_ = true;
             vt_unavailable_reason_ = "MATTER_VT_DISABLE is set";
             error = vt_unavailable_reason_;
-            std::fprintf(stderr,
-                         "[vk] chart-space VT disabled by MATTER_VT_DISABLE\n");
+            MATTER_LOGI("vk",
+                         "chart-space VT disabled by MATTER_VT_DISABLE\n");
             std::fflush(stderr);
             return false;
         }
@@ -4502,8 +4503,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
             vt_inputs_dirty_ = true;
         } else {
             vt_compositor_ = nullptr;
-            std::fprintf(stderr,
-                         "[vk] VT tier-1 compositor unavailable, falling back "
+            MATTER_LOGW("vk",
+                         "VT tier-1 compositor unavailable, falling back "
                          "to the flat stub filler: %s\n",
                          compositor_error.c_str());
             std::fflush(stderr);
@@ -4516,8 +4517,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     // real tier-2 configuration. MATTER_VT_ENRICH_PER_FRAME=0 keeps the
     // enricher loaded but drains nothing.
     if (!vulkan_->ray_tracing_available()) {
-        std::fprintf(stderr,
-                     "[vk] VT tier-2 enrichment off (no hardware ray "
+        MATTER_LOGI("vk",
+                     "VT tier-2 enrichment off (no hardware ray "
                      "tracing): %s\n",
                      vulkan_->ray_tracing_unavailable_reason().c_str());
         std::fflush(stderr);
@@ -4530,8 +4531,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
             runtime->set_enricher(std::move(enricher));
         } else {
             vt_enricher_ = nullptr;
-            std::fprintf(stderr,
-                         "[vk] VT tier-2 enrichment unavailable (tier-1 pages "
+            MATTER_LOGW("vk",
+                         "VT tier-2 enrichment unavailable (tier-1 pages "
                          "retained): %s\n",
                          enrich_error.c_str());
             std::fflush(stderr);
@@ -4544,8 +4545,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
         // the legacy path keeps rendering exactly as before.
         vt_unavailable_ = true;
         vt_unavailable_reason_ = error;
-        std::fprintf(stderr,
-                     "[vk] chart-space VT unavailable (legacy path retained): "
+        MATTER_LOGW("vk",
+                     "chart-space VT unavailable (legacy path retained): "
                      "%s\n",
                      error.c_str());
         std::fflush(stderr);
@@ -4553,8 +4554,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     }
     vt_ = std::move(runtime);
     const vt::VtResidency::Stats& started = vt_->stats();
-    std::fprintf(stderr,
-                 "[vk] chart-space VT online: %u page pool (%.0f MiB), "
+    MATTER_LOGI("vk",
+                 "chart-space VT online: %u page pool (%.0f MiB), "
                  "%u variant slots (MATTER_VT_MAX_VARIANTS, soft bound), "
                  "%.0f MiB indirection arena (MATTER_VT_INDIRECTION_MB, "
                  "exact-sized tables), %.0f MiB mesh budget "
@@ -4608,7 +4609,7 @@ void VkSceneRenderer::push_vt_compositor_inputs() {
     std::string tileset_error;
     if (!vt_compositor_->set_tilesets(slots, tileset::kMaxTilesetSlots,
                                       tileset_error)) {
-        std::fprintf(stderr, "[vk] VT compositor tileset bind failed: %s\n",
+        MATTER_LOGE("vk", "VT compositor tileset bind failed: %s\n",
                      tileset_error.c_str());
         std::fflush(stderr);
     }
@@ -5145,8 +5146,8 @@ void VkSceneRenderer::dump_vt_route_census() const {
     if (total == 0) return;
     static uint64_t dumps = 0;
     if (++dumps % 60 != 1) return;   // ~1 line/second, not 1/frame
-    std::fprintf(stderr,
-                 "[vt-route] draws=%llu ok=%llu | no_slots=%llu cluster_oob=%llu "
+    MATTER_LOGD("vt-route",
+                 "draws=%llu ok=%llu | no_slots=%llu cluster_oob=%llu "
                  "lod_oob=%llu rung_oob=%llu unregistered=%llu tail_gate=%llu\n",
                  (unsigned long long)total,
                  (unsigned long long)vt_route_census_[kVtRouteOk].load(),
@@ -5348,7 +5349,7 @@ void VkSceneRenderer::vt_begin_frame(FrameResources& frame,
                                   error)) {
             // Feedback is an optimization: without it nothing new becomes
             // resident, but every variant still samples its pinned tail.
-            std::fprintf(stderr, "[vk] VT feedback target unavailable: %s\n",
+            MATTER_LOGW("vk", "VT feedback target unavailable: %s\n",
                          error.c_str());
             std::fflush(stderr);
         }
@@ -5363,7 +5364,7 @@ void VkSceneRenderer::vt_record_pre_pass(VkCommandBuffer command_buffer) {
     if (!vt_ || !vt_->available()) return;
     std::string error;
     if (!vt_->record_frame(command_buffer, error)) {
-        std::fprintf(stderr, "[vk] VT frame record failed: %s\n",
+        MATTER_LOGE("vk", "VT frame record failed: %s\n",
                      error.c_str());
         std::fflush(stderr);
     }
@@ -5606,8 +5607,8 @@ bool VkSceneRenderer::create_impostor_atlas(std::string& error) {
     impostor_atlas_bytes_ = impostor::atlas_bytes();
     const double atlas_mib =
         double(impostor_atlas_bytes_) * double(kImpostorMaxSlots) / 1048576.0;
-    std::fprintf(stderr,
-                 "[vk] impostor atlas: %u slots x 2 layers of %ux%u RGBA8 "
+    MATTER_LOGI("vk",
+                 "impostor atlas: %u slots x 2 layers of %ux%u RGBA8 "
                  "(cell %u px) = %.0f MiB\n",
                  kImpostorMaxSlots, impostor_layer_px_, impostor_layer_px_,
                  impostor::cell_px(), atlas_mib);
@@ -5891,8 +5892,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         if (!create_impostor_atlas(create_error)) {
             if (!impostor_slots_exhausted_logged_) {
                 impostor_slots_exhausted_logged_ = true;
-                std::fprintf(stderr,
-                    "[vk] impostor atlas could not be created (%s); part "
+                MATTER_LOGE("vk",
+                    "impostor atlas could not be created (%s); part "
                     "%016llx's %zu impostor(s) will not draw\n",
                     create_error.c_str(),
                     static_cast<unsigned long long>(part.part_hash),
@@ -5908,8 +5909,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         // that such a state announces itself.
         if (!impostor_slots_exhausted_logged_) {
             impostor_slots_exhausted_logged_ = true;
-            std::fprintf(stderr,
-                "[vk] impostor atlas image does not exist; part %016llx's "
+            MATTER_LOGE("vk",
+                "impostor atlas image does not exist; part %016llx's "
                 "%zu impostor(s) will not draw\n",
                 static_cast<unsigned long long>(part.part_hash),
                 part.impostors.size());
@@ -5930,8 +5931,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         // fresh impostor::atlas_bytes(): those differ exactly when the
         // resolution changed after init, which is the case this catches.
         if (imp.atlas.size() != impostor_atlas_bytes_) {
-            std::fprintf(stderr,
-                "[vk] impostor atlas for part %016llx cluster %u is %zu bytes, "
+            MATTER_LOGE("vk",
+                "impostor atlas for part %016llx cluster %u is %zu bytes, "
                 "expected %zu (atlas built for cell %u px) -- this impostor "
                 "will not draw\n",
                 static_cast<unsigned long long>(part.part_hash), imp.cluster,
@@ -5953,8 +5954,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
             // white card, and never silent.
             if (!impostor_slots_exhausted_logged_) {
                 impostor_slots_exhausted_logged_ = true;
-                std::fprintf(stderr,
-                    "[vk] impostor atlas slots exhausted (%u of %u in use) at "
+                MATTER_LOGW("vk",
+                    "impostor atlas slots exhausted (%u of %u in use) at "
                     "part %016llx -- further impostors will not draw\n",
                     impostor_resident_, kImpostorMaxSlots,
                     static_cast<unsigned long long>(part.part_hash));
@@ -6001,8 +6002,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
                                error) ||
         !matter::map_buffer(staging, error)) {
-        std::fprintf(stderr,
-            "[vk] impostor atlas staging failed for part %016llx: %s -- "
+        MATTER_LOGE("vk",
+            "impostor atlas staging failed for part %016llx: %s -- "
             "%zu impostor(s) will not draw\n",
             static_cast<unsigned long long>(part.part_hash), error.c_str(),
             assigned.size());
@@ -6012,8 +6013,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     }
     std::memcpy(staging.mapped, staging_bytes.data(), staging_bytes.size());
     if (!matter::flush_buffer(staging, 0, staging_bytes.size(), error)) {
-        std::fprintf(stderr,
-            "[vk] impostor atlas flush failed for part %016llx: %s\n",
+        MATTER_LOGE("vk",
+            "impostor atlas flush failed for part %016llx: %s\n",
             static_cast<unsigned long long>(part.part_hash), error.c_str());
         std::fflush(stderr);
         for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
@@ -6036,8 +6037,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
                                   error,
                                   matter::ImmediateSubmitPhase::staging_upload,
                                   {staging.lifetime})) {
-        std::fprintf(stderr,
-            "[vk] impostor atlas upload failed for part %016llx: %s -- "
+        MATTER_LOGE("vk",
+            "impostor atlas upload failed for part %016llx: %s -- "
             "%zu impostor(s) will not draw\n",
             static_cast<unsigned long long>(part.part_hash), error.c_str(),
             assigned.size());
@@ -6069,8 +6070,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         // The atlas is resident but nothing references it: the ladder and the
         // vertex stream disagree, which is exactly the class of silent
         // mismatch this milestone exists to make impossible.
-        std::fprintf(stderr,
-            "[vk] part %016llx carries %zu impostor atlas(es) but no billboard "
+        MATTER_LOGE("vk",
+            "part %016llx carries %zu impostor atlas(es) but no billboard "
             "vertices -- the impostor rung is missing from the vertex stream\n",
             static_cast<unsigned long long>(part.part_hash), assigned.size());
         std::fflush(stderr);
@@ -6092,8 +6093,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
                 if (a > max_cov) max_cov = a;
                 if (a > 0) ++covered;
             }
-            std::fprintf(stderr,
-                "[vk] impostor part=%016llx cluster=%u ordinal=%u slot=%u "
+            MATTER_LOGD("vk",
+                "impostor part=%016llx cluster=%u ordinal=%u slot=%u "
                 "layers=%u/%u max_coverage=%u covered_texels=%u patched_verts=%zu\n",
                 static_cast<unsigned long long>(part.part_hash), imp.cluster,
                 imp.ordinal, assigned[k], assigned[k] * 2, assigned[k] * 2 + 1,
@@ -7328,8 +7329,8 @@ bool VkSceneRenderer::init(std::string& error) {
             // Volumetrics are optional, but a failed init must not be silent:
             // every downstream symptom (empty froxel volume, dead debug
             // views) is otherwise indistinguishable from "disabled".
-            std::fprintf(stderr,
-                         "[vk] volumetrics init FAILED (volumetrics disabled): %s\n",
+            MATTER_LOGE("vk",
+                         "volumetrics init FAILED (volumetrics disabled): %s\n",
                          vol_error.c_str());
             std::fflush(stderr);
         }
@@ -10804,8 +10805,8 @@ bool VkSceneRenderer::upload_scene_buffers(
                 live_vertices += p.vertex_count;
                 live_indices += p.index_count;
             }
-            std::fprintf(stderr,
-                "[vk] STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead.\n"
+            MATTER_LOGW("vk",
+                "STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead.\n"
                 "     bytes    clusters %llu/%llu  vertices %llu/%llu  "
                 "indices %llu/%llu\n"
                 "     elements clusters staging %llu live %llu free %llu | "
@@ -11523,7 +11524,7 @@ void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
     if (!matter::readback_buffer(
             *vulkan_, frame.commands, commands.data(),
             commands.size() * sizeof(DrawCommand), 0, error)) {
-        std::fprintf(stderr, "[lod-trace] command readback failed: %s\n",
+        MATTER_LOGE("lod-trace", "command readback failed: %s\n",
                      error.c_str());
         return;
     }
@@ -11531,7 +11532,7 @@ void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
     if (!matter::readback_buffer(
             *vulkan_, frame.draw_transforms, transforms.data(),
             transforms.size() * sizeof(GpuDrawTransform), 0, error)) {
-        std::fprintf(stderr, "[lod-trace] transform readback failed: %s\n",
+        MATTER_LOGE("lod-trace", "transform readback failed: %s\n",
                      error.c_str());
         return;
     }
@@ -12171,8 +12172,8 @@ void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
     rt_invalid_part_records_last_ = invalid;
     if (invalid == 0) return;
     rt_invalid_part_records_total_ += invalid;
-    std::fprintf(stderr,
-                 "[vk] RT rejected %u part record(s) last frame (%llu total) -- "
+    MATTER_LOGW("vk",
+                 "RT rejected %u part record(s) last frame (%llu total) -- "
                  "a rejected record is a stale or unwritten rt_parts slot\n",
                  invalid,
                  static_cast<unsigned long long>(

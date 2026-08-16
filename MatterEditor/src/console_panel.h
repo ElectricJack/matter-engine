@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,12 @@ struct ConsolePanelState {
     char text_filter[256] = {};
     bool auto_scroll = true;
     bool was_at_bottom = true;
+
+    // Line selection (for copy-to-clipboard). Indices are into the most recent
+    // filtered snapshot, oldest->newest. Transient UI state, not persisted:
+    // cleared when the console is cleared or a copy consumes it is optional.
+    std::set<int> selection;
+    int sel_anchor = -1;  // last clicked row, for shift-click range selection
 };
 
 // Draw the console panel contents (call inside Begin/End).

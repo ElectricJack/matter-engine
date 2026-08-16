@@ -14,6 +14,7 @@
 #include "bake_trace.h"        // Bake Lab task 1.3: tileset span split
 #include "bake_trace_names.h"  // kSpanTileset
 #include "material_registry.h"
+#include "matter/log.h"
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
 #include "mesh_retopo.hpp"     // retopo() TBB warm-up (see install_graph() below)
@@ -157,7 +158,7 @@ void tbb_warmup_retopo() {
     RetopoOptions opts;
     opts.threads = 1;
     RetopoResult wr = retopo(warm, opts);
-    printf("LocalProvider: TBB warm-up retopo ok=%d elapsed=%.3fs\n",
+    MATTER_LOGI("local_provider", "LocalProvider: TBB warm-up retopo ok=%d elapsed=%.3fs\n",
            (int)wr.ok, wr.elapsed_seconds);
 }
 #endif
@@ -678,12 +679,12 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
     part_flatten::FlattenResult fr =
         part_flatten::flatten_part(root, part_hash);
     if (fr.ok) {
-        printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs)\n",
+        MATTER_LOGI("local_provider", "LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs)\n",
                (unsigned long long)part_hash, fr.clusters, fr.levels,
                fr.full_tris, fr.coarsest_tris, fr.instance_refs);
         return true;
     } else {
-        printf("LocalProvider: flatten failed for %016llx: %s\n",
+        MATTER_LOGE("local_provider", "LocalProvider: flatten failed for %016llx: %s\n",
                (unsigned long long)part_hash, fr.error.c_str());
         return false;
     }
@@ -897,8 +898,8 @@ bool LocalProvider::run_tileset_deferred(
             MaterialRegistrySetGroundTilesetSlot(material, slot);
         std::string ve;
         if (cfg_.vk_tileset_load && !cfg_.vk_tileset_load(slot, gtex_path, ve)) {
-            fprintf(stderr,
-                    "[local_provider] Vulkan tileset slot %d load "
+            MATTER_LOGE("local_provider",
+                    "Vulkan tileset slot %d load "
                     "failed (ground stays untextured): %s\n",
                     slot, ve.c_str());
             fflush(stderr);
@@ -909,7 +910,7 @@ bool LocalProvider::run_tileset_deferred(
             if (!bound.empty()) bound += ",";
             bound += std::to_string(material);
         }
-        printf("LocalProvider: tileset '%s' -> slot %d, material(s) %s (%s) [%s]\n",
+        MATTER_LOGI("local_provider", "LocalProvider: tileset '%s' -> slot %d, material(s) %s (%s) [%s]\n",
                root_module.c_str(), slot, bound.c_str(), gtex_path.c_str(), tag);
     };
 
@@ -927,8 +928,8 @@ bool LocalProvider::run_tileset_deferred(
                 MaterialRegistrySetGroundTilesetSlot(material, -1);
             if (!tileset_evict_warned_) {
                 tileset_evict_warned_ = true;
-                fprintf(stderr,
-                        "[local_provider] detail-tileset slots exhausted (%d): "
+                MATTER_LOGW("local_provider",
+                        "detail-tileset slots exhausted (%d): "
                         "evicting the least-recently-used atlas for '%s'. The "
                         "displaced materials fall back to their scalar albedo. "
                         "Declare fewer detail tilesets, or share one detail "
@@ -961,7 +962,7 @@ bool LocalProvider::run_tileset_deferred(
         // Settle is required on BOTH arms: pose_hash is half the .gtex cache
         // key, so even a load-only probe has to settle first.
         if (!can_bake) {
-            fprintf(stderr, "[local_provider] headless deferred tileset: '%s'\n",
+            MATTER_LOGI("local_provider", "headless deferred tileset: '%s'\n",
                     root_module.c_str());
             fflush(stderr);
         }
@@ -976,7 +977,7 @@ bool LocalProvider::run_tileset_deferred(
             }
         }
         if (!can_bake)
-            printf("LocalProvider: tileset '%s' settle ok (deferred headless)\n",
+            MATTER_LOGI("local_provider", "LocalProvider: tileset '%s' settle ok (deferred headless)\n",
                    root_module.c_str());
 
         // Script identity — the other half of the .gtex cache key.
@@ -1087,8 +1088,8 @@ bool LocalProvider::run_tileset_deferred(
             std::string le;
             const bool file_readable =
                 tileset::load_gtex(gtex_path, stale_hdr, ta, tn, to_, th, le);
-            fprintf(stderr,
-                    "[local_provider] tileset '%s': no cached .gtex matches "
+            MATTER_LOGE("local_provider",
+                    "tileset '%s': no cached .gtex matches "
                     "(headless build cannot bake; ground stays untextured)\n"
                     "  probed: %s\n  expected content_hash %016llx; %s\n",
                     root_module.c_str(), gtex_path.c_str(),

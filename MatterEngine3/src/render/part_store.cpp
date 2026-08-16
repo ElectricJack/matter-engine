@@ -9,6 +9,7 @@
 #include "warp_field.h"        // VT Phase 2: warped ground coordinate solve
 #include "tlas_manager.hpp"    // TLASManager (load_v2 signature needs one)
 #include "part_flatten.h"      // part_flatten::transform_uniform_scale
+#include "matter/log.h"
 
 #include <algorithm>
 #include <cassert>
@@ -432,8 +433,8 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         std::vector<part_asset::FlatInstanceRef> refs_in;
         if (!part_asset::load_flat_v3(path, part_hash, scratch, scratch_tlas, clusters_in, refs_in) ||
             clusters_in.empty()) {
-            printf("PartStore: v3 flat artifact unusable for %016llx (%s), falling back\n",
-                   (unsigned long long)part_hash, path.c_str());
+            MATTER_LOGW("part-store", "v3 flat artifact unusable for %016llx (%s), falling back\n",
+                        (unsigned long long)part_hash, path.c_str());
             return false;
         }
 
@@ -530,7 +531,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                     if (impostor_rung[ci] != SIZE_MAX && !impostor_data[ci])
                         ++unbacked;
                 if (unbacked > 0 && impostor_load_logged_.insert(part_hash).second) {
-                    printf("PartStore: impostor atlas unusable for part %016llx "
+                    MATTER_LOGW("part-store", "impostor atlas unusable for part %016llx "
                            "(%s): %s -- %zu impostor rung(s) dropped, coarsest "
                            "mesh rung holds\n",
                            (unsigned long long)part_hash,
@@ -541,7 +542,6 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                                       ? impostor::load_failure_text(fail)
                                       : reason.c_str()),
                            unbacked);
-                    fflush(stdout);
                 }
                 // PRUNE, so nothing downstream has to know this happened: an
                 // unbacked billboard rung leaves the ladder entirely and the
@@ -785,7 +785,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             }
         }
 
-        printf("PartStore: loaded v3 FLAT part %016llx (%zu LOD levels, %zu clusters, "
+        MATTER_LOGI("part-store", "loaded v3 FLAT part %016llx (%zu LOD levels, %zu clusters, "
                "%zu refs, %zu impostors)\n",
                (unsigned long long)part_hash, lp.lod_blas.size(), lp.clusters.size(),
                lp.flat_refs.size(), lp.impostors.size());
@@ -800,8 +800,8 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         part_asset::LodLevels lods_in;
         if (!part_asset::load_v2(path, part_hash, scratch, scratch_tlas, children, lods_in) ||
             lods_in.empty()) {
-            printf("PartStore: flat artifact unusable for %016llx (%s), falling back\n",
-                   (unsigned long long)part_hash, path.c_str());
+            MATTER_LOGW("part-store", "flat artifact unusable for %016llx (%s), falling back\n",
+                        (unsigned long long)part_hash, path.c_str());
             return false;
         }
 
@@ -891,13 +891,13 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         // v2 flat is never segmented: all clusters are fine.
         lp.fine_cluster_count = (uint32_t)lp.clusters.size();
 
-        printf("PartStore: loaded v2 FLAT part %016llx (%zu LOD levels, 1 synthetic cluster)\n",
+        MATTER_LOGI("part-store", "loaded v2 FLAT part %016llx (%zu LOD levels, 1 synthetic cluster)\n",
                (unsigned long long)part_hash, lp.lod_blas.size());
         return true;
     }
 
     // Unknown version.
-    printf("PartStore: unrecognized flat artifact version %u for %016llx, falling back\n",
+    MATTER_LOGW("part-store", "unrecognized flat artifact version %u for %016llx, falling back\n",
            ver, (unsigned long long)part_hash);
     return false;
 }
@@ -1541,7 +1541,7 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
     }
     if (staged.lp.lod_blas.empty()) {
         // No geometry (empty part) -> log; lookups will see an empty LOD list.
-        printf("PartStore: part %016llx produced no LOD geometry\n",
+        MATTER_LOGW("part-store", "part %016llx produced no LOD geometry\n",
                (unsigned long long)part_hash);
     }
 
@@ -1597,8 +1597,8 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             canonical_part, part_hash, canonical_fingerprint);
         const bool flat_ok = snap_ok && load_flat(part_hash, selected_root, flat);
         if (flat_gate_log && !flat_ok)
-            std::fprintf(stderr,
-                         "[flatgate] %016llx REJECT snapshot=%d load_flat=%d\n",
+            MATTER_LOGD("flatgate",
+                         "%016llx REJECT snapshot=%d load_flat=%d\n",
                          (unsigned long long)part_hash, snap_ok ? 1 : 0,
                          snap_ok ? (flat_ok ? 1 : 0) : -1);
         // Same question as MATTER_FLAT_GATE_LOG, as a counter rather than a
@@ -1675,8 +1675,8 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                     const auto ms = [](auto a, auto b) {
                         return std::chrono::duration<double, std::milli>(b - a).count();
                     };
-                    std::fprintf(stderr,
-                        "[partstore] %016llx refs=%zu children=%.1f "
+                    MATTER_LOGI("partstore",
+                        "%016llx refs=%zu children=%.1f "
                         "expansion=%.1f ms (nodes=%zu)\n",
                         (unsigned long long)part_hash,
                         loaded_[part_hash].flat_refs.size(),
@@ -1703,7 +1703,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     std::optional<part_asset::PartAnimationLink>& animation_link  = snapshot_.animation_link;
     matter::animation::AnimAsset&                 loaded_animation = snapshot_.loaded_animation;
     if (!coherent_ok) {
-        printf("PartStore: coherent load failed for %016llx\n", (unsigned long long)part_hash);
+        MATTER_LOGE("part-store", "coherent load failed for %016llx\n", (unsigned long long)part_hash);
         return nullptr;
     }
     // Failures remain uncommitted but are intentionally re-probed on the next
@@ -1726,7 +1726,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             ? partition.lods.size()
             : partition.rigid_segments.front().lod_geometry.size();
         auto reject_partition = [&]() -> const LoadedPart* {
-            std::printf("PartStore: invalid partitioned animation geometry for %016llx\n",
+            MATTER_LOGE("part-store", "invalid partitioned animation geometry for %016llx\n",
                         static_cast<unsigned long long>(part_hash));
             return nullptr;
         };

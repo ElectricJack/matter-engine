@@ -3,6 +3,7 @@
 #include "animation_debug_overlay.h"
 #include "camera_controller.h"
 #include "console_panel.h"
+#include "matter/log.h"
 #include "matter/stream_settings.h"
 #include "matter/vt_budgets.h"
 #include "part_asset_v2.h"  // part_asset::replace_file_atomic_detailed
@@ -880,10 +881,10 @@ size_t migrate_legacy_fog_keys(const std::string& path,
         // leaving it behind would make this migration run again every connect.
         vol->erase(f.vol_key);
         if (!parsed) {
-            std::fprintf(stderr,
-                         "[props] %s: dropped unreadable legacy key "
-                         "render.volumetrics.%s\n",
-                         path.c_str(), f.vol_key);
+            MATTER_LOGW("props",
+                        "%s: dropped unreadable legacy key "
+                        "render.volumetrics.%s\n",
+                        path.c_str(), f.vol_key);
             ++folded;
             continue;
         }
@@ -916,19 +917,19 @@ size_t migrate_legacy_fog_keys(const std::string& path,
         fog_group->set(f.fog_key, make_doc_number(result, f.components));
 
         if (f.components == 1) {
-            std::fprintf(stderr,
-                         "[props] %s: folded render.volumetrics.%s (%g) into "
-                         "render.fog.%s: %g -> %g\n",
-                         path.c_str(), f.vol_key, mul[0], f.fog_key, base[0],
-                         result[0]);
+            MATTER_LOGI("props",
+                        "%s: folded render.volumetrics.%s (%g) into "
+                        "render.fog.%s: %g -> %g\n",
+                        path.c_str(), f.vol_key, mul[0], f.fog_key, base[0],
+                        result[0]);
         } else {
-            std::fprintf(stderr,
-                         "[props] %s: folded render.volumetrics.%s "
-                         "(%g, %g, %g) into render.fog.%s: "
-                         "(%g, %g, %g) -> (%g, %g, %g)\n",
-                         path.c_str(), f.vol_key, mul[0], mul[1], mul[2],
-                         f.fog_key, base[0], base[1], base[2], result[0],
-                         result[1], result[2]);
+            MATTER_LOGI("props",
+                        "%s: folded render.volumetrics.%s "
+                        "(%g, %g, %g) into render.fog.%s: "
+                        "(%g, %g, %g) -> (%g, %g, %g)\n",
+                        path.c_str(), f.vol_key, mul[0], mul[1], mul[2],
+                        f.fog_key, base[0], base[1], base[2], result[0],
+                        result[1], result[2]);
         }
         ++folded;
     }
@@ -942,20 +943,20 @@ size_t migrate_legacy_fog_keys(const std::string& path,
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f.good()) {
-            std::fprintf(stderr,
-                         "[props] %s: fog migration could not write %s - the "
-                         "legacy keys are still in the file and still inert\n",
-                         path.c_str(), tmp.c_str());
+            MATTER_LOGE("props",
+                        "%s: fog migration could not write %s - the "
+                        "legacy keys are still in the file and still inert\n",
+                        path.c_str(), tmp.c_str());
             return folded;
         }
         f << matter::jsondoc::write_json(doc);
     }
     if (part_asset::replace_file_atomic_detailed(tmp, path) ==
         part_asset::FileReplaceOutcome::NotReplaced) {
-        std::fprintf(stderr,
-                     "[props] %s: fog migration could not replace the file - "
-                     "the legacy keys are still in it and still inert\n",
-                     path.c_str());
+        MATTER_LOGE("props",
+                    "%s: fog migration could not replace the file - "
+                    "the legacy keys are still in it and still inert\n",
+                    path.c_str());
     }
     return folded;
 }
@@ -1081,7 +1082,7 @@ bool EditorProps::set_dlss_mode(int index) {
     // env-forced field by being drawn disabled; F8 and the FIFO command have
     // to refuse it here, or a key press would silently beat MATTER_DLSS_MODE.
     if (b->env_forced(field)) {
-        std::printf("DLSS: forced by %s; ignored\n", d->env ? d->env : "env");
+        MATTER_LOGW("props", "DLSS: forced by %s; ignored\n", d->env ? d->env : "env");
         return false;
     }
     // set_enum clamps to the label count, so an out-of-range caller lands on
@@ -1220,10 +1221,10 @@ void EditorProps::set_world(const std::string& project_dir,
     // outgoing world's values into the incoming world's file), so be loud.
     if (persist_ && !world_path_.empty() && world_dirty()) {
         if (!save_world_now() && !save_world_now()) {
-            std::fprintf(stderr,
-                         "[props] failed to save world overrides to %s - edits "
-                         "from the outgoing world were dropped\n",
-                         world_path_.c_str());
+            MATTER_LOGE("props",
+                        "failed to save world overrides to %s - edits "
+                        "from the outgoing world were dropped\n",
+                        world_path_.c_str());
         }
     }
     // The world-props DynamicGroup belongs to the OUTGOING session: a reload

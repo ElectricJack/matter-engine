@@ -29,6 +29,7 @@
 #include "gpu_matrix_pack.h"
 #include "frame_matrices.h"
 #include "matter/cloud_shadow_settings.h"
+#include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_definition.h"
 #include "matter/world_session.h"
@@ -1015,8 +1016,8 @@ void VkVolumetrics::update_settings(
                                    : fog.cloud_count);
     if (fog.cloud_count > matter::kMaxCloudLayers && !cloud_overflow_warned_) {
         cloud_overflow_warned_ = true;
-        std::fprintf(stderr,
-                     "[volumetrics] world asked for %d cloud layers; the "
+        MATTER_LOGW("volumetrics",
+                     "world asked for %d cloud layers; the "
                      "shader is specialized for at most %d, so the extra "
                      "layers are ignored\n",
                      static_cast<int>(fog.cloud_count), matter::kMaxCloudLayers);

@@ -3,6 +3,7 @@
 #include "mesh_simplifier.hpp"
 #include "mesh_smooth.hpp"
 #include "retopo_blacklist.h"
+#include "matter/log.h"
 
 #include <cstdio>
 #include <cstring>
@@ -53,7 +54,7 @@ MeshIndexed apply_stack(MeshIndexed mesh,
             opts.target_ratio = m.ratio;
             MeshIndexed out = simplify(mesh, opts);
             if (out.positions.empty() || out.indices.empty()) {
-                std::fprintf(stderr, "[modifier] %s: simplify(%g) produced an empty mesh, skipped\n",
+                MATTER_LOGW("modifier", "%s: simplify(%g) produced an empty mesh, skipped\n",
                              chunk_label.c_str(), m.ratio);
             } else {
                 mesh = std::move(out);
@@ -67,7 +68,7 @@ MeshIndexed apply_stack(MeshIndexed mesh,
             opts.mu = m.mu;
             SmoothResult r = smooth(mesh, opts);
             if (!r.ok) {
-                std::fprintf(stderr, "[modifier] %s: smooth failed (%s), skipped\n",
+                MATTER_LOGW("modifier", "%s: smooth failed (%s), skipped\n",
                              chunk_label.c_str(), r.err.c_str());
             } else {
                 mesh = std::move(r.mesh);
@@ -79,7 +80,7 @@ MeshIndexed apply_stack(MeshIndexed mesh,
             namespace bl = matter_engine3::retopo_blacklist;
             const uint64_t h = chunk_retopo_hash(mesh, m);
             if (bl::is_blacklisted(h)) {
-                std::fprintf(stderr, "[modifier] %s: retopo blacklisted (%016llx), skipped\n",
+                MATTER_LOGW("modifier", "%s: retopo blacklisted (%016llx), skipped\n",
                              chunk_label.c_str(), (unsigned long long)h);
                 break;
             }
@@ -100,13 +101,13 @@ MeshIndexed apply_stack(MeshIndexed mesh,
             RetopoResult r = retopo(mesh, opts);
             bl::end_attempt(h);
             if (!r.ok) {
-                std::fprintf(stderr, "[modifier] %s: retopo failed (%s), skipped\n",
+                MATTER_LOGW("modifier", "%s: retopo failed (%s), skipped\n",
                              chunk_label.c_str(), r.err.c_str());
             } else {
                 mesh = std::move(r.mesh);
             }
 #else
-            std::fprintf(stderr, "[modifier] %s: retopo unavailable (built without autoremesher), skipped\n",
+            MATTER_LOGW("modifier", "%s: retopo unavailable (built without autoremesher), skipped\n",
                          chunk_label.c_str());
 #endif
             break;

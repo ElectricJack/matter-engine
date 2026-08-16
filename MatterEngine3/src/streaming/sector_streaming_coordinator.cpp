@@ -1,5 +1,7 @@
 #include "sector_streaming_coordinator.h"
 
+#include "matter/log.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -565,11 +567,11 @@ void Coordinator::worker_step(
             s.total_us += us;
             s.max_us = s.max_us > us ? s.max_us : us;
             if (s.calls % TickStats::kReportEvery == 0) {
-                std::fprintf(stderr,
-                             "[stream-tick] %lld ticks | mean %.3f ms | max "
-                             "%.3f ms | resident %zu\n",
-                             s.calls, s.total_us / double(s.calls) / 1000.0,
-                             s.max_us / 1000.0, streamer_->resident_count());
+                MATTER_LOGI("stream-tick",
+                            "%lld ticks | mean %.3f ms | max "
+                            "%.3f ms | resident %zu\n",
+                            s.calls, s.total_us / double(s.calls) / 1000.0,
+                            s.max_us / 1000.0, streamer_->resident_count());
             }
         } else {
             streamer_->update(worker_anchor_->x, worker_anchor_->y,

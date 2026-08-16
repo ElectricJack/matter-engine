@@ -1,4 +1,5 @@
 #include "matter/props.h"
+#include "matter/log.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -68,7 +69,7 @@ const char* kind_name(Value::Kind k) {
 }
 
 void warn_type(const char* group_path, const Desc& d, const Value& v) {
-    fprintf(stderr, "[props] %s.%s: expected %s, got %s — skipped\n",
+    MATTER_LOGW("props", "%s.%s: expected %s, got %s — skipped\n",
             group_path ? group_path : "?", d.name ? d.name : "?",
             type_name(d.type), kind_name(v.kind));
 }
@@ -772,7 +773,7 @@ void apply_env(void* instance, const Group& g) {
         const char* raw = getenv(d.env);
         if (!raw || !*raw) continue;
         if (!parse_and_set(instance, d, raw))
-            fprintf(stderr, "[props] %s: unparsable %s value \"%s\" for %s.%s — ignored\n",
+            MATTER_LOGW("props", "%s: unparsable %s value \"%s\" for %s.%s — ignored\n",
                     d.env, type_name(d.type), raw, g.path ? g.path : "?",
                     d.name ? d.name : "?");
         else
@@ -788,7 +789,7 @@ void apply_env(Binding& b) {
         const char* raw = getenv(d.env);
         if (!raw || !*raw) { b.set_env_forced(i, false); continue; }
         if (!parse_and_set(b.instance(), d, raw)) {
-            fprintf(stderr, "[props] %s: unparsable %s value \"%s\" for %s.%s — ignored\n",
+            MATTER_LOGW("props", "%s: unparsable %s value \"%s\" for %s.%s — ignored\n",
                     d.env, type_name(d.type), raw, g.path ? g.path : "?", d.name ? d.name : "?");
             b.set_env_forced(i, false);
             continue;
@@ -839,8 +840,8 @@ void save_scope(const Registry& r, Scope scope, Value& doc) {
             if (!fields_equal(b.instance(), b.baseline(), d)) {
                 if (!field_finite(b.instance(), d)) {
                     // Keep whatever the file already holds for this field.
-                    std::fprintf(stderr,
-                                 "[props] %s.%s is not finite - not persisting it\n",
+                    MATTER_LOGW("props",
+                                 "%s.%s is not finite - not persisting it\n",
                                  g.path, d.name);
                     continue;
                 }
@@ -1006,8 +1007,8 @@ DynamicGroup::~DynamicGroup() {
         // Desc string, the value buffer). Salvage rather than abort: dropping
         // the binding here is strictly better than leaving it dangling, but the
         // owner got the lifetime wrong and should hear about it.
-        fprintf(stderr,
-                "[props] DynamicGroup '%s' destroyed while still bound "
+        MATTER_LOGE("props",
+                "DynamicGroup '%s' destroyed while still bound "
                 "(binding %u) — unbind_from() before releasing it\n",
                 path_.c_str(), binding_);
         if (bound_registry_) bound_registry_->unbind(binding_);

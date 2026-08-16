@@ -19,6 +19,7 @@
 #include "imgui_impl_vulkan.h"
 #include "matter/vulkan_device.h"
 #include "matter/render_debug.h"
+#include "matter/log.h"
 #include "editor_props.h"
 #include "camera_orbit.h"
 
@@ -2057,14 +2058,15 @@ bool Ui::ensure_streaming_anchor(matter::WorldSession& session) {
     if (!matter_viewer::attach_streaming(streaming_anchor_, world)) {
         matter_viewer::clear_anchor(streaming_anchor_);
         anchor_id_input_ = 0;
-        std::fprintf(stderr,
-                     "[streaming] failed to attach the sector streaming anchor\n");
+        MATTER_LOGE("streaming",
+                    "failed to attach the sector streaming anchor\n");
         return false;
     }
 
     anchor_id_input_ = streaming_anchor_.selected;
-    std::printf(
-        "[streaming] auto-attached sector streaming anchor entity %llu "
+    MATTER_LOGI(
+        "streaming",
+        "auto-attached sector streaming anchor entity %llu "
         "(world-kind session, sea level %.2f)\n",
         static_cast<unsigned long long>(streaming_anchor_.selected),
         static_cast<double>(sea_level));

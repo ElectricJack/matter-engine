@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "matter/log.h"
 #include "matter/vt_budgets.h"
 #include "matter/vulkan_device.h"
 #include "profile.h"
@@ -100,7 +101,7 @@ void buffer_barrier(VkCommandBuffer cmd, VkBuffer buffer,
 
 namespace {
 [[noreturn]] void generation_audit_fail(const char* domain, const char* what) {
-    std::fprintf(stderr, "[vt] GENERATION AUDIT FAILED (%s): %s\n", domain,
+    MATTER_LOGE("vt", "GENERATION AUDIT FAILED (%s): %s\n", domain,
                  what);
     std::fflush(stderr);
     std::abort();
@@ -630,8 +631,8 @@ void VtResidency::note_rejection(const char* reason, size_t wanted_bytes) {
     const double budget_mb =
         static_cast<double>(mesh_budget_bytes_) / (1024.0 * 1024.0);
     const double wanted_kb = static_cast<double>(wanted_bytes) / 1024.0;
-    std::fprintf(stderr,
-                 "[vt] WARNING: variant registration REJECTED (%s) -- this "
+    MATTER_LOGW("vt",
+                 "WARNING: variant registration REJECTED (%s) -- this "
                  "part falls back to the legacy path and ignores its "
                  "surfaces() classification. variants=%u/%u, mesh=%.1f/%.1f "
                  "MiB, indirection=%.1f/%.1f MiB, wanted=%.1f KiB. Raise "

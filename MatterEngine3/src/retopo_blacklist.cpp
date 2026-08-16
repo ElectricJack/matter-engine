@@ -1,4 +1,5 @@
 #include "retopo_blacklist.h"
+#include "matter/log.h"
 
 #include <cinttypes>   // PRIx64 / SCNx64
 #include <cstdio>
@@ -70,7 +71,7 @@ void init(const std::string& cache_root) {
     g_initialized = true;
 
     if (!g_blacklist.empty()) {
-        std::fprintf(stderr,
+        MATTER_LOGI("retopo",
             "retopo_blacklist: loaded %zu known-crasher hash(es) from %s\n",
             g_blacklist.size(), g_pending_path.c_str());
     }

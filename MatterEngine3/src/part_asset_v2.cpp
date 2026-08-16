@@ -8,6 +8,7 @@
 // bakes. Header-only (inline), so this costs no link dependency from the
 // serializer onto the baker.
 #include "part_flatten.h"     // active_ladder_shape_digest (flat identity)
+#include "matter/log.h"
 
 #include <cstdio>
 #include <cstring>
@@ -540,7 +541,7 @@ static bool write_file_atomic(const std::string& path,
     if (!part_bundle::write_section(path, resolved_hash,
                                     bundle_tag_for_format(version),
                                     payload.data(), payload.size())) {
-        std::fprintf(stderr,
+        MATTER_LOGE("part",
                      "  save_v2: bundle section write failed for '%s' "
                      "(format %u, hash %016llx)\n",
                      path.c_str(), version,
@@ -601,7 +602,7 @@ static uint32_t read_and_validate_header(Reader& r,
         if (version == kFormatVersionFlat) {
             const uint64_t on_disk =
                 rhash_x ^ static_cast<uint64_t>(version) ^ expected_resolved_hash;
-            std::fprintf(stderr,
+            MATTER_LOGW("flatten",
                          "  part_asset: flat %016llx carries ladder shape "
                          "%016llx, this bake is %016llx; rejecting it as stale "
                          "(it will be re-flattened).\n",

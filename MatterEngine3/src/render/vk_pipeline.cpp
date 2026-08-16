@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <utility>
 
+#include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "shaders_gen/embedded_spirv.h"
 #include "vk_device_internal.h"
@@ -316,7 +317,7 @@ bool run_transform_probe(VulkanDevice& vulkan,
                            VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
                        buffer, error) ||
         !upload_buffer(vulkan, buffer, &data, sizeof(data), 0, error)) {
-        std::fprintf(stderr, "transform probe setup failed: %s\n", error.c_str());
+        MATTER_LOGE("vk", "transform probe setup failed: %s\n", error.c_str());
         return false;
     }
     VkDescriptorSetLayoutBinding binding{};
@@ -327,14 +328,14 @@ bool run_transform_probe(VulkanDevice& vulkan,
     VkComputePipelineResource pipeline;
     if (!create_compute_pipeline(vulkan, "transform_probe.comp.spv", {binding},
                                  pipeline, error)) {
-        std::fprintf(stderr, "transform probe pipeline failed: %s\n",
+        MATTER_LOGE("vk", "transform probe pipeline failed: %s\n",
                      error.c_str());
         return false;
     }
     write_storage_buffer_descriptor(pipeline, 0, buffer, 0, sizeof(data));
     if (!dispatch_compute(vulkan, pipeline, 1, 1, 1, error) ||
         !readback_buffer(vulkan, buffer, &data, sizeof(data), 0, error)) {
-        std::fprintf(stderr, "transform probe dispatch failed: %s\n",
+        MATTER_LOGE("vk", "transform probe dispatch failed: %s\n",
                      error.c_str());
         return false;
     }

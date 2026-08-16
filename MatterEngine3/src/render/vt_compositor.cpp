@@ -11,6 +11,7 @@
 #include <deque>
 #include <iterator>
 
+#include "matter/log.h"
 #include "profile.h"
 #include "shaders_gen/embedded_spirv.h"
 // GpuChart / GpuTri and the stream builder: shared with WP-H's enricher so the
@@ -118,14 +119,14 @@ void log_memory_heaps_once(const VkPhysicalDeviceMemoryProperties& props) {
     if (done || !std::getenv("MATTER_VT_MEM_LOG")) return;
     done = true;
     for (uint32_t h = 0; h < props.memoryHeapCount; ++h) {
-        std::fprintf(stderr, "[vt.mem] heap %u: %.0f MiB%s\n", h,
+        MATTER_LOGI("vt.mem", "heap %u: %.0f MiB%s\n", h,
                      double(props.memoryHeaps[h].size) / (1024.0 * 1024.0),
                      (props.memoryHeaps[h].flags &
                       VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? " DEVICE_LOCAL" : "");
     }
     for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
         const VkMemoryPropertyFlags f = props.memoryTypes[i].propertyFlags;
-        std::fprintf(stderr, "[vt.mem] type %2u -> heap %u %s%s%s\n", i,
+        MATTER_LOGI("vt.mem", "type %2u -> heap %u %s%s%s\n", i,
                      props.memoryTypes[i].heapIndex,
                      (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL " : "",
                      (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "HOST_VISIBLE " : "",
@@ -925,9 +926,9 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
                 ++stats.tape_lane_overflows;
                 if (!tape_overflow_warned) {
                     tape_overflow_warned = true;
-                    std::fprintf(
-                        stderr,
-                        "[vt] WARNING: surfaces() tape %016llx needs more "
+                    MATTER_LOGW(
+                        "vt",
+                        "WARNING: surfaces() tape %016llx needs more "
                         "than %u field-derived vertex lanes (overflow: "
                         "input code %d, curv radius %.3f) -- the part stays "
                         "on weight-seam mode 2 (per-vertex weights). "
@@ -936,7 +937,6 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
                             ctx->surface_tape_hash),
                         kVtMaxSurfaceLanes, tape_pack.scan.overflow_code,
                         tape_pack.scan.overflow_radius);
-                    std::fflush(stderr);
                 }
             } else {
                 ++stats.tape_pack_failures;
@@ -1325,15 +1325,14 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
         if (skip_log_budget.load(std::memory_order_relaxed) == 0) return;
         if (skip_log_budget.fetch_sub(1, std::memory_order_relaxed) == 0)
             return;
-        std::fprintf(stderr,
-                     "[vt] compositor SKIPPED fill (%s): variant=%016llx "
+        MATTER_LOGW("vt",
+                     "compositor SKIPPED fill (%s): variant=%016llx "
                      "rung=%u mip=%u page=(%u,%u) slot=%u — page will render "
                      "black\n",
                      reason,
                      static_cast<unsigned long long>(r.variant_hash),
                      unsigned(r.rung), unsigned(r.mip), unsigned(r.page_x),
                      unsigned(r.page_y), unsigned(r.physical_slot));
-        std::fflush(stderr);
     };
 
     for (size_t i = 0; i < count; ++i) {

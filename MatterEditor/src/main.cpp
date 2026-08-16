@@ -32,6 +32,7 @@
 #include "selection_set.h"
 #include "toolbar_panel.h"
 #include "console_panel.h"
+#include "matter/log.h"
 #include "ui.h"
 #include "wireframe_controls.h"
 #include "session_binding.h"
@@ -84,6 +85,45 @@
 #endif
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// Console log sink. Bridges the engine-wide matter::log facility into the
+// editor's Console panel: every MATTER_LOG* line (from the engine, its
+// libraries, or the editor itself) is mirrored into the ConsoleLog ring buffer
+// so the panel shows the same diagnostics that go to stderr. Fires on whatever
+// thread logged; ConsoleLog::push is thread-safe by design.
+void console_log_sink(matter::log::Level level, const char* tag,
+                      const char* message, void* user) {
+    auto* log = static_cast<viewer::ConsoleLog*>(user);
+    if (!log) return;
+    viewer::LogSeverity severity;
+    switch (level) {
+        case matter::log::Level::Warn:  severity = viewer::LogSeverity::Warning; break;
+        case matter::log::Level::Error: severity = viewer::LogSeverity::Error; break;
+        default:                        severity = viewer::LogSeverity::Info; break;
+    }
+    // Reproduce the tee's "[tag] message" shape so a copied console line reads
+    // the same as the terminal output it mirrors.
+    if (tag && tag[0] != '\0') {
+        log->push(severity, std::string("[") + tag + "] " + message);
+    } else {
+        log->push(severity, message);
+    }
+}
+
+// RAII guard: registers the console sink for its lifetime. Declared just AFTER
+// the ConsoleLog it targets so it destructs FIRST (locals unwind in reverse),
+// removing the sink before the ConsoleLog it points at is torn down -- no
+// worker thread can log into a half-destroyed buffer.
+struct ConsoleLogSinkGuard {
+    explicit ConsoleLogSinkGuard(viewer::ConsoleLog& log) : log_(&log) {
+        matter::log::add_sink(&console_log_sink, log_);
+    }
+    ~ConsoleLogSinkGuard() { matter::log::remove_sink(&console_log_sink, log_); }
+    ConsoleLogSinkGuard(const ConsoleLogSinkGuard&) = delete;
+    ConsoleLogSinkGuard& operator=(const ConsoleLogSinkGuard&) = delete;
+    viewer::ConsoleLog* log_;
+};
 
 // ---------------------------------------------------------------------------
 // Properties panel field access (Phase 5 Task 7, generalized by the property
@@ -803,11 +843,11 @@ int main() {
     PerfRunConfig perf;
     std::string perf_error;
     if (!read_perf_run_config(perf, perf_error)) {
-        std::fprintf(stderr, "FATAL: %s\n", perf_error.c_str());
+        MATTER_LOGE("perf", "FATAL: %s\n", perf_error.c_str());
         return 1;
     }
     if (!glfwInit()) {
-        std::fprintf(stderr, "FATAL: glfwInit failed\n");
+        MATTER_LOGE("editor", "FATAL: glfwInit failed\n");
         return 1;
     }
     // Replay run (shot_replay.h): reproduce a recorded issue shot and exit.
@@ -816,7 +856,7 @@ int main() {
     // fact would reflow the docked panels and move the viewport.
     const viewer::ShotReplay replay = viewer::load_replay_from_env();
     if (!replay.valid && !replay.error.empty()) {
-        std::fprintf(stderr, "FATAL: MATTER_REPLAY: %s\n", replay.error.c_str());
+        MATTER_LOGE("replay", "FATAL: MATTER_REPLAY: %s\n", replay.error.c_str());
         glfwTerminate();
         return 1;
     }
@@ -829,7 +869,7 @@ int main() {
             ? static_cast<int>(replay.frame_height) : 720,
         "MatterEngine3 World Viewer", nullptr, nullptr);
     if (!window) {
-        std::fprintf(stderr, "FATAL: glfwCreateWindow failed\n");
+        MATTER_LOGE("editor", "FATAL: glfwCreateWindow failed\n");
         glfwTerminate();
         return 1;
     }
@@ -842,7 +882,7 @@ int main() {
         std::getenv("MATTER_VK_VALIDATION") != nullptr;
     auto vulkan = matter::VulkanDevice::create(window, enable_validation, error);
     if (!vulkan) {
-        std::fprintf(stderr, "FATAL: %s\n", error.c_str());
+        MATTER_LOGE("editor", "FATAL: %s\n", error.c_str());
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
@@ -878,7 +918,7 @@ int main() {
     engine_desc.render_device = vulkan.get();
     auto engine = matter::EngineContext::create(engine_desc, error);
     if (!engine) {
-        std::fprintf(stderr, "FATAL: %s\n", error.c_str());
+        MATTER_LOGE("editor", "FATAL: %s\n", error.c_str());
         vulkan.reset();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -887,7 +927,7 @@ int main() {
 
     viewer::Ui ui;
     if (!ui.setup(window, *vulkan, error)) {
-        std::fprintf(stderr, "FATAL: %s\n", error.c_str());
+        MATTER_LOGE("editor", "FATAL: %s\n", error.c_str());
         engine.reset();
         vulkan.reset();
         glfwDestroyWindow(window);
@@ -923,7 +963,7 @@ int main() {
         std::printf("  [%zu] %s  (%s)\n", i, worlds[i].label.c_str(),
                     worlds[i].project_dir.c_str());
     if (worlds.empty()) {
-        std::fprintf(stderr, "FATAL: no worlds found under %s\n",
+        MATTER_LOGE("editor", "FATAL: no worlds found under %s\n",
                      examples_root().c_str());
         ui.shutdown();
         engine.reset();
@@ -992,12 +1032,12 @@ int main() {
             std::printf("MATTER_CAM_PATH: %zu poses from %s\n", cam_path.size(),
                         value);
         } else {
-            std::fprintf(stderr, "FATAL: MATTER_CAM_PATH: cannot open %s\n",
+            MATTER_LOGE("editor", "FATAL: MATTER_CAM_PATH: cannot open %s\n",
                          value);
             return 1;
         }
         if (cam_path.empty()) {
-            std::fprintf(stderr, "FATAL: MATTER_CAM_PATH: %s has no poses\n",
+            MATTER_LOGE("editor", "FATAL: MATTER_CAM_PATH: %s has no poses\n",
                          value);
             return 1;
         }
@@ -1065,7 +1105,7 @@ int main() {
             }
         }
         if (!found) {
-            std::fprintf(stderr,
+            MATTER_LOGE("editor",
                          "FATAL: MATTER_WORLD '%s' is not a committed world\n",
                          value);
             ui.shutdown();
@@ -1147,7 +1187,7 @@ int main() {
         std::string world_error;
         auto result = engine->open_world(desc, world_error);
         if (!result) {
-            std::fprintf(stderr, "open_world: %s\n", world_error.c_str());
+            MATTER_LOGE("open-world", "open_world: %s\n", world_error.c_str());
             return result;
         }
         // Persisted streaming-LOD overrides (stream.lod, World scope) reach the
@@ -1183,6 +1223,9 @@ int main() {
     viewer::SelectionSet selection_set;
     matter::scene::SimulationControl sim_control;
     viewer::ConsoleLog console_log;
+    // Mirror the engine-wide matter::log stream into this panel for as long as
+    // console_log lives (guard removes the sink before console_log destructs).
+    ConsoleLogSinkGuard console_log_sink_guard(console_log);
     console_log.push(viewer::LogSeverity::Info,
                       "Connected to " + worlds[initial_world].world_name);
 
@@ -1730,7 +1773,7 @@ int main() {
         shot.preview_width = tw;
         shot.preview_height = th;
         if (!shot.preview && !preview_error.empty())
-            std::fprintf(stderr, "issue preview: %s\n", preview_error.c_str());
+            MATTER_LOGW("issue", "issue preview: %s\n", preview_error.c_str());
     };
     // Part Workbench (part-workbench.md W2): private isolation session, see
     // part_workbench.h's architecture note. cache/lab-scratch is entirely
@@ -1845,7 +1888,7 @@ int main() {
             value <= viewer::kToolbarMaxTimeScale)
             ui.set_sim_time_scale(value);
         else
-            std::fprintf(stderr, "MATTER_TIME_SCALE ignored: '%s' outside [%.2f, %.2f]\n",
+            MATTER_LOGW("editor", "MATTER_TIME_SCALE ignored: '%s' outside [%.2f, %.2f]\n",
                          scale, viewer::kToolbarMinTimeScale,
                          viewer::kToolbarMaxTimeScale);
     }
@@ -2292,7 +2335,7 @@ int main() {
                 case Action::Stop: ok = sim_control.stop(session->ecs(), sim_err); break;
             }
             if (!ok) {
-                std::fprintf(stderr, "sim transport: %s\n", sim_err.c_str());
+                MATTER_LOGE("sim", "sim transport: %s\n", sim_err.c_str());
                 return viewer::FifoSimTransport::Result::failed(sim_err);
             }
             if (cmd.action == Action::Stop) {
@@ -3064,7 +3107,7 @@ int main() {
                 glfwWaitEventsTimeout(0.05);
                 continue;
             }
-            std::fprintf(stderr, "FATAL: begin_frame: %s\n", error.c_str());
+            MATTER_LOGE("editor", "FATAL: begin_frame: %s\n", error.c_str());
             break;
         }
 
@@ -3102,7 +3145,7 @@ int main() {
         // (see part_workbench.h's modal-isolation note).
         bake_lab.workbench().begin_frame();
         if (!ui_frame_ready) {
-            std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
+            MATTER_LOGE("editor", "FATAL: ImGui Vulkan prepare: %s\n",
                          error.c_str());
             mark_device_fatal(error);
         } else {
@@ -3150,7 +3193,7 @@ int main() {
             if (!hide_ui) ui.prepare_viewport_rect();
             render_frame = ui.viewport_render_frame(frame, error);
             if (!error.empty()) {
-                std::fprintf(stderr, "viewport target: %s\n", error.c_str());
+                MATTER_LOGE("editor", "viewport target: %s\n", error.c_str());
                 error.clear();
             }
             if (!hide_ui) {
@@ -3159,22 +3202,22 @@ int main() {
                 if (toolbar.play_clicked) {
                     std::string sim_err;
                     if (!sim_control.play(session->ecs(), sim_err))
-                        std::fprintf(stderr, "play: %s\n", sim_err.c_str());
+                        MATTER_LOGE("sim", "play: %s\n", sim_err.c_str());
                 }
                 if (toolbar.pause_clicked) {
                     std::string sim_err;
                     if (!sim_control.pause(sim_err))
-                        std::fprintf(stderr, "pause: %s\n", sim_err.c_str());
+                        MATTER_LOGE("sim", "pause: %s\n", sim_err.c_str());
                 }
                 if (toolbar.step_clicked) {
                     std::string sim_err;
                     if (!sim_control.step(sim_err))
-                        std::fprintf(stderr, "step: %s\n", sim_err.c_str());
+                        MATTER_LOGE("sim", "step: %s\n", sim_err.c_str());
                 }
                 if (toolbar.stop_clicked) {
                     std::string sim_err;
                     if (!sim_control.stop(session->ecs(), sim_err)) {
-                        std::fprintf(stderr, "stop: %s\n", sim_err.c_str());
+                        MATTER_LOGE("sim", "stop: %s\n", sim_err.c_str());
                     } else {
                         selection_set.clear();
                         editor_model.clear_selection();
@@ -3891,7 +3934,7 @@ int main() {
         else
             render_session->submit_overlay_lines(nullptr, 0);
         if (!render_session->render(render_camera, render_frame, options, error)) {
-            std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
+            MATTER_LOGE("editor", "FATAL: render: %s\n", error.c_str());
             mark_device_fatal(error);
         } else if (!show_isolation) {
             camera_input_order.render_scene();
@@ -4232,7 +4275,7 @@ int main() {
                     b->set_dirty(false);
                 }
             }
-            std::fprintf(stderr,
+            MATTER_LOGW("volumetric",
                          "volumetric froxel allocation rejected: requested %ux%ux%u "
                          "%.2f MiB; effective %ux%ux%u; %s\n",
                          stats.requested_froxel.width, stats.requested_froxel.height,
@@ -4276,7 +4319,7 @@ int main() {
         if (ui_frame_ready) {
             ui_frame_completed = ui.end_frame(frame, error);
             if (!ui_frame_completed) {
-                std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n",
+                MATTER_LOGE("editor", "FATAL: ImGui Vulkan backend: %s\n",
                              error.c_str());
                 mark_device_fatal(error);
             }
@@ -4306,14 +4349,14 @@ int main() {
         std::vector<uint8_t> rgba;
         if (capture && !session->readback_swapchain_rgba8(frame, rgba, error)) {
             ++screenshot_failures;
-            std::fprintf(stderr, "screenshot readback retry %d/5: %s\n",
+            MATTER_LOGW("screenshot", "screenshot readback retry %d/5: %s\n",
                          screenshot_failures, error.c_str());
             capture = false;
             if (issue_capture) { issue_capture = false; issue_state.capture_settle = 2; }
             else if (capture_path == screenshot_path) screenshot_settle = 1;
             else if (!fifo_immediate_capture) shot_settle = 2;
             if (screenshot_failures >= 5) {
-                std::fprintf(stderr, "FATAL: screenshot readback exhausted retries\n");
+                MATTER_LOGE("screenshot", "FATAL: screenshot readback exhausted retries\n");
                 // `error` still holds the last readback failure's text (the
                 // retry loop above overwrites it each attempt) -- five
                 // consecutive readback failures is a plausible device-loss
@@ -4421,7 +4464,7 @@ int main() {
             }
         }
         if (!frame_completed) {
-            std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
+            MATTER_LOGE("editor", "FATAL: end_frame: %s\n", error.c_str());
             // The primary device-fault seam: MATTER_VK_TEST_END_FRAME_FAULT
             // (record/submit) and a real VK_ERROR_DEVICE_LOST from
             // vkQueueSubmit2 both surface here.
@@ -4454,7 +4497,7 @@ int main() {
                         rgba, frame.extent.width, frame.extent.height,
                         preview_error);
                     if (!issue_state.frozen_preview)
-                        std::fprintf(stderr, "issue freeze preview: %s\n",
+                        MATTER_LOGW("issue", "issue freeze preview: %s\n",
                                      preview_error.c_str());
                     issue_state.phase = viewer::ReporterPhase::SelectingRegion;
                     issue_state.drag_active = false;
@@ -4549,7 +4592,7 @@ int main() {
                     bool comparable = true;
                     if (replay.frame_width != frame.extent.width ||
                         replay.frame_height != frame.extent.height) {
-                        std::fprintf(stderr,
+                        MATTER_LOGW("replay",
                                      "replay WARNING: framebuffer is %ux%u but the "
                                      "shot recorded %ux%u; pixels are NOT comparable\n",
                                      frame.extent.width, frame.extent.height,
@@ -4575,7 +4618,7 @@ int main() {
                          actual_vp.w != replay.viewport.w ||
                          actual_vp.h != replay.viewport.h);
                     if (viewport_moved) {
-                        std::fprintf(stderr,
+                        MATTER_LOGW("replay",
                                      "replay WARNING: viewport is %dx%d at (%d,%d) but the "
                                      "shot recorded %dx%d at (%d,%d) — the panel layout "
                                      "differs (imgui.ini). The projection differs, so "
@@ -4624,19 +4667,19 @@ int main() {
                                                   replay.viewport_uv[3] * actual_vp.h),
                                 0, fbh);
                             rect = viewer::ShotRect{x0, y0, x1 - x0, y1 - y0};
-                            std::fprintf(stderr,
+                            MATTER_LOGI("replay",
                                          "replay: crop covered the 3D view; remapped "
                                          "through viewport_uv to %dx%d at (%d,%d)\n",
                                          rect.w, rect.h, rect.x, rect.y);
                         } else {
-                            std::fprintf(stderr,
+                            MATTER_LOGI("replay",
                                          "replay: crop is outside the 3D view (UI only); "
                                          "keeping absolute rect. Panel CONTENT at these "
                                          "pixels depends on the layout\n");
                         }
                     }
                     if (!comparable && std::getenv("MATTER_REPLAY_STRICT")) {
-                        std::fprintf(stderr,
+                        MATTER_LOGE("replay",
                                      "FATAL: MATTER_REPLAY_STRICT set and this replay "
                                      "cannot reproduce the recorded shot\n");
                         fatal_error = true;
@@ -4647,7 +4690,7 @@ int main() {
                     out_h = static_cast<uint32_t>(rect.h);
                 }
                 if (!write_png(capture_path, out_rgba, out_w, out_h)) {
-                    std::fprintf(stderr, "screenshot FAILED %s\n",
+                    MATTER_LOGE("screenshot", "screenshot FAILED %s\n",
                                  capture_path.c_str());
                     fatal_error = true;
                 } else {
@@ -4725,11 +4768,11 @@ int main() {
                             perf_finish_counters, frame_stats, stats,
                             perf_start_dlss_resets,
                             validation_errors, perf_error)) {
-                        std::fprintf(stderr, "FATAL: perf: %s\n",
+                        MATTER_LOGE("perf", "FATAL: perf: %s\n",
                                      perf_error.c_str());
                         fatal_error = true;
                     } else if (validation_errors != 0) {
-                        std::fprintf(stderr,
+                        MATTER_LOGE("perf",
                                      "FATAL: perf observed %u Vulkan validation errors\n",
                                      validation_errors);
                         fatal_error = true;
@@ -4999,14 +5042,14 @@ int main() {
                         }
                     }
                 } else {
-                    std::fprintf(stderr, "issue: auto-file failed (%s)\n",
+                    MATTER_LOGW("issue", "issue: auto-file failed (%s)\n",
                                  auto_state.status.c_str());
                 }
             }
         } catch (...) {
             // Best-effort: the auto-filer must never become a second fatal
             // error on top of the one it exists to record.
-            std::fprintf(stderr, "issue: auto-file threw while recording a "
+            MATTER_LOGW("issue", "issue: auto-file threw while recording a "
                                  "device fault; ignored\n");
         }
     }
@@ -5032,7 +5075,7 @@ int main() {
             if (matter::profile::dump_chrome_trace(trace_path))
                 std::printf("profile: wrote trace to %s\n", trace_path);
             else
-                std::fprintf(stderr, "profile: could not write trace to %s\n",
+                MATTER_LOGW("profile", "profile: could not write trace to %s\n",
                              trace_path);
         }
     }
@@ -5064,7 +5107,7 @@ int main() {
     glfwDestroyWindow(window);
     glfwTerminate();
     if (validation_errors != 0) {
-        std::fprintf(stderr, "FATAL: Vulkan validation errors: %u\n",
+        MATTER_LOGE("editor", "FATAL: Vulkan validation errors: %u\n",
                      validation_errors);
         return 1;
     }

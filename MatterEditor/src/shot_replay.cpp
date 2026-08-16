@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "matter/log.h"
 #include "quickjs.h"
 
 namespace viewer {
@@ -179,8 +180,8 @@ ShotReplay load_shot_replay(const std::string& path, int shot_index) {
         if (layout_ok)
             replay.layout_ini = text;
         else
-            std::fprintf(stderr, "replay: layout sidecar %s is missing\n",
-                         sidecar.string().c_str());
+            MATTER_LOGW("replay", "layout sidecar %s is missing\n",
+                        sidecar.string().c_str());
     }
     {
         float fb[2] = {0, 0};

@@ -5,6 +5,7 @@
 // closure — the headless props test suite links only the core.
 
 #include "matter/props.h"
+#include "matter/log.h"
 
 #include "part_asset_v2.h"  // part_asset::replace_file_atomic_detailed
 
@@ -35,7 +36,7 @@ bool save_scope_file(const Registry& r, Scope scope, const std::string& path) {
     std::string existing;
     const bool had_file = read_text(path, existing);
     if (had_file && !jsondoc::parse_json(existing, doc)) {
-        fprintf(stderr, "[props] %s: unparsable, rewriting from scratch\n", path.c_str());
+        MATTER_LOGW("props", "%s: unparsable, rewriting from scratch\n", path.c_str());
         doc = jsondoc::Value();
     }
 
@@ -53,12 +54,12 @@ bool save_scope_file(const Registry& r, Scope scope, const std::string& path) {
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f.good()) {
-            fprintf(stderr, "[props] %s: cannot open temp file for write\n", tmp.c_str());
+            MATTER_LOGE("props", "%s: cannot open temp file for write\n", tmp.c_str());
             return false;
         }
         f << jsondoc::write_json(doc);
         if (!f.good()) {
-            fprintf(stderr, "[props] %s: write failed\n", tmp.c_str());
+            MATTER_LOGE("props", "%s: write failed\n", tmp.c_str());
             return false;
         }
     }
@@ -66,7 +67,7 @@ bool save_scope_file(const Registry& r, Scope scope, const std::string& path) {
     if (part_asset::replace_file_atomic_detailed(tmp, path) ==
         part_asset::FileReplaceOutcome::NotReplaced) {
         fs::remove(tmp, ec);
-        fprintf(stderr, "[props] %s: atomic replace failed\n", path.c_str());
+        MATTER_LOGE("props", "%s: atomic replace failed\n", path.c_str());
         return false;
     }
     return true;
@@ -77,7 +78,7 @@ bool load_scope_file(Registry& r, Scope scope, const std::string& path) {
     if (!read_text(path, text)) return false;
     jsondoc::Value doc;
     if (!jsondoc::parse_json(text, doc)) {
-        fprintf(stderr, "[props] %s: unparsable, ignored\n", path.c_str());
+        MATTER_LOGW("props", "%s: unparsable, ignored\n", path.c_str());
         return false;
     }
     load_scope(r, scope, doc);
@@ -89,7 +90,7 @@ bool load_group_file(Binding& b, const std::string& path) {
     if (!read_text(path, text)) return false;
     jsondoc::Value doc;
     if (!jsondoc::parse_json(text, doc)) {
-        fprintf(stderr, "[props] %s: unparsable, ignored\n", path.c_str());
+        MATTER_LOGW("props", "%s: unparsable, ignored\n", path.c_str());
         return false;
     }
     load_group(b, doc);

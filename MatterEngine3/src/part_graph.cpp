@@ -2,6 +2,7 @@
 #include "matter/lod_contract.h"  // W5: kMaxSerializedLodLevels (exclude-mask bit width guard)
 #include "part_asset_v2.h"   // SP-1 (MatterEngine3, via -I../include): compute_resolved_hash,
                             //   cache_path_resolved; pulls in v1 part_asset.h for fnv1a64
+#include "matter/log.h"
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -473,7 +474,7 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
         // down an otherwise-successful part bake.
         if (!baker_.bake_static_lods(n.source, n.params, n.child_hashes,
                                      n.child_modules, n.child_params, n.resolved_hash)) {
-            std::fprintf(stderr,
+            MATTER_LOGW("lod",
                 "  PartGraph::install: static-lods bake failed for part %s (non-fatal, "
                 "authored ladder unavailable this run)\n", n.module.c_str());
         }
@@ -665,11 +666,11 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     last_child_modules_placed_.clear();
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
     if (!r.error.ok) {
-        std::fprintf(stderr, "  HostBaker::bake: %s\n", r.error.message.c_str());
+        MATTER_LOGE("part", "  HostBaker::bake: %s\n", r.error.message.c_str());
         return false;
     }
     if (r.resolved_hash != resolved_hash) {
-        std::fprintf(stderr,
+        MATTER_LOGE("part",
             "  HostBaker::bake: resolved_hash mismatch: expected %016llx got %016llx\n",
             (unsigned long long)resolved_hash, (unsigned long long)r.resolved_hash);
         return false;
@@ -685,7 +686,7 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
     script_host::ScriptHost::LodBudgetSpec spec = host_.eval_lod_budgets(source);
     if (spec.budgets.empty()) return true;                    // not opted in
     if (!child_hashes.empty()) {
-        printf("HostBaker: lodBudgets on a part with children is unsupported; skipping\n");
+        MATTER_LOGW("lod", "HostBaker: lodBudgets on a part with children is unsupported; skipping\n");
         return true;
     }
     // Task 2: route sidecar to scratch if transient
@@ -766,7 +767,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
         return part_asset::save_static_lod_plan(sidecar, resolved_hash, plan);
     }
     if (lods.size() > matter::kMaxSerializedLodLevels) {
-        std::fprintf(stderr,
+        MATTER_LOGW("lod",
             "HostBaker: static lods (%zu levels) exceeds the %zu-level serialized "
             "cap; skipping per-LOD authoring for this part\n",
             lods.size(), matter::kMaxSerializedLodLevels);
@@ -848,7 +849,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
         bool any_params = false;
         for (const auto& L : lods) if (L.has_params) { any_params = true; break; }
         if (any_params)
-            std::printf(
+            MATTER_LOGW("lod",
                 "HostBaker: static lods `params` levels on a part with children are "
                 "unsupported (mirrors bake_lod_variants's own children restriction); "
                 "those levels fall back to decimation from LOD0 -- `exclude` still applies\n");
@@ -900,7 +901,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
         lvl_opts.seed_params_json = base_merged;
         script_host::BakeResult lvl_r = host_.bake_source(source, level_params, lvl_opts);
         if (!lvl_r.error.ok) {
-            std::fprintf(stderr, "  HostBaker::bake_static_lods: level %zu build failed: %s\n",
+            MATTER_LOGE("lod", "  HostBaker::bake_static_lods: level %zu build failed: %s\n",
                         i, lvl_r.error.message.c_str());
             return false;
         }

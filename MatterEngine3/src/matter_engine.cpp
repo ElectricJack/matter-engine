@@ -14,6 +14,7 @@
 #include "matter/draw_overrides.h"
 #include "matter/stream_settings.h"
 #include "matter/vt_budgets.h"
+#include "matter/log.h"
 
 // E3 event system: per-session evt::Hub carrying typed bake/stream events;
 // the legacy poll_event() API is a compat shim over lane::legacy_poll.
@@ -254,8 +255,8 @@ static void vt_classify_chart_vertices(const VtSurfaceClassifier& classifier,
     const bool misuse =
         classifier.tape->uses_world_inputs() && !classifier.world_anchored;
     if (misuse && classifier.tape->note_world_input_misuse()) {
-        fprintf(stderr,
-                "[vt] surfaces(): world inputs (altitude/height/moisture/"
+        MATTER_LOGW("vt",
+                "surfaces(): world inputs (altitude/height/moisture/"
                 "biome/...) on a variant referenced by more than one instance; "
                 "they evaluate to fallback constants for such variants "
                 "(warning once)\n");
@@ -426,8 +427,8 @@ matter_stream::Config make_streaming_profile(
     // that authored it, which is the kill switch.
     if (const char* nested_env = std::getenv("MATTER_NESTED_SECTORS")) {
         profile.nested_sectors = nested_env[0] != '0';
-        std::fprintf(stderr,
-                     "[stream] MATTER_NESTED_SECTORS=%s: nested sector LOD "
+        MATTER_LOGI("stream",
+                     "MATTER_NESTED_SECTORS=%s: nested sector LOD "
                      "%s\n",
                      nested_env,
                      profile.nested_sectors ? "ON" : "OFF");
@@ -442,8 +443,8 @@ matter_stream::Config make_streaming_profile(
     profile.volumetric_sectors = world_settings.volumetric_sectors;
     if (const char* vol_env = std::getenv("MATTER_VOLUMETRIC_SECTORS")) {
         profile.volumetric_sectors = vol_env[0] != '0';
-        std::fprintf(stderr,
-                     "[stream] MATTER_VOLUMETRIC_SECTORS=%s: volumetric "
+        MATTER_LOGI("stream",
+                     "MATTER_VOLUMETRIC_SECTORS=%s: volumetric "
                      "sectors %s\n",
                      vol_env,
                      profile.volumetric_sectors ? "ON" : "OFF");
@@ -455,8 +456,8 @@ matter_stream::Config make_streaming_profile(
     // request AWAY, and a StreamCaverns that quietly ran the column path while
     // its script said otherwise is exactly the confusion M3 has to avoid.
     if (profile.volumetric_sectors && !profile.nested_sectors) {
-        std::fprintf(stderr,
-                     "[stream] volumetricSectors requires nestedSectors; "
+        MATTER_LOGW("stream",
+                     "volumetricSectors requires nestedSectors; "
                      "running the column path\n");
         profile.volumetric_sectors = false;
     }
@@ -474,8 +475,8 @@ matter_stream::Config make_streaming_profile(
     // point of a gated mode is that you can tell which side of the gate you are
     // on from the log rather than by inferring it from what did not happen.
     if (profile.volumetric_sectors) {
-        std::fprintf(stderr,
-                     "[stream] tiling: VOLUMETRIC (octree cubes), octree "
+        MATTER_LOGI("stream",
+                     "tiling: VOLUMETRIC (octree cubes), octree "
                      "extent y %.1f..%.1f, S_0 %.1f m\n",
                      profile.y_min, profile.y_max, profile.sector_size);
     } else {
@@ -483,8 +484,8 @@ matter_stream::Config make_streaming_profile(
         // once, with the reason a given world is still on it -- there are two
         // and they need different fixes, so one message for both would send
         // half its readers the wrong way.
-        std::fprintf(stderr,
-                     "[stream] tiling: COLUMN (DEPRECATED -- %s). Cube tiles "
+        MATTER_LOGW("stream",
+                     "tiling: COLUMN (DEPRECATED -- %s). Cube tiles "
                      "are the direction; see terrain_mesher.h. "
                      "MATTER_VOLUMETRIC_SECTORS=1 forces the octree.\n",
                      profile.nested_sectors
@@ -497,8 +498,8 @@ matter_stream::Config make_streaming_profile(
         // An inverted or empty extent would make the ty range empty on every
         // tick -- a world that streams nothing, with no other symptom. Refuse
         // the mode rather than the world: columns do not consult these.
-        std::fprintf(stderr,
-                     "[stream] volumetricSectors needs yMax > yMin (got "
+        MATTER_LOGW("stream",
+                     "volumetricSectors needs yMax > yMin (got "
                      "%.3f..%.3f); running the column path\n",
                      profile.y_min, profile.y_max);
         profile.volumetric_sectors = false;
@@ -535,8 +536,8 @@ matter_stream::Config make_streaming_profile(
                                 ? profile.sector_size : 1.0f;
         const double tiles = double(reach) / double(pitch) + 1.0;
         if (tiles > double(matter_stream::kSectorCoordMax)) {
-            std::fprintf(stderr,
-                "[stream] AUTHORED REACH DOES NOT FIT THE SECTOR KEY: %.0f m at "
+            MATTER_LOGE("stream",
+                "AUTHORED REACH DOES NOT FIT THE SECTOR KEY: %.0f m at "
                 "S_0 = %.0f m is %.0f level-0 tiles, past the %lld the 20-bit "
                 "packed coordinate holds (sector_streamer.h kSectorCoordBits). "
                 "Tiles beyond that alias onto tiles %lld away instead of "
@@ -1531,8 +1532,8 @@ struct WorldSession::Impl {
         // exe -- env prefixes and stale builds have burned that assumption
         // before (worktree-bootstrap gotcha #8).
         if (off)
-            std::fprintf(stderr,
-                         "[stream] MATTER_NO_MERGE_DEFER=1: the merge-coverage "
+            MATTER_LOGI("stream",
+                         "MATTER_NO_MERGE_DEFER=1: the merge-coverage "
                          "eviction hold is DISABLED (A/B baseline)\n");
         return !off;
     }();
@@ -2523,7 +2524,7 @@ void WorldSession::Impl::ensure_bake_pool_started() {
     if (requested > 32) requested = 32;
     stream_worker_count = requested;
     if (requested <= 1) return;
-    fprintf(stderr, "[stream] bake pool: %d workers\n", requested);
+    MATTER_LOGI("stream", "bake pool: %d workers\n", requested);
     bake_pool.reserve(static_cast<size_t>(requested));
     for (int i = 0; i < requested; ++i)
         bake_pool.emplace_back([this] { bake_pool_loop(); });
@@ -2937,8 +2938,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                                           dump_png, err);
         };
     } else {
-        fprintf(stderr,
-                "[matter_engine] tileset .gtex bake disabled: %s "
+        MATTER_LOGW("matter_engine",
+                "tileset .gtex bake disabled: %s "
                 "(cached atlases still load; uncached ground stays untextured)\n",
                 engine->render_device
                     ? engine->render_device->ray_tracing_unavailable_reason().c_str()
@@ -3014,15 +3015,15 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     set_authored_sun(provider->world_settings());
 
                     {
-                        fprintf(stderr, "resolve cache: hit %016llx\n",
+                        MATTER_LOGI("resolve", "resolve cache: hit %016llx\n",
                                 (unsigned long long)rc_cache_key);
 
                         // Proceed directly to publish_pipeline with cached data.
                         auto t_publish_start_rc = clk_t::now();
                         double total_ms_rc = std::chrono::duration<double, std::milli>(
                             clk_t::now() - t_bake_start).count();
-                        fprintf(stderr,
-                            "[bake-timing] install=0ms compose=0ms (resolve-cache-hit) "
+                        MATTER_LOGI("bake-timing",
+                            "install=0ms compose=0ms (resolve-cache-hit) "
                             "publish=...ms total(pre-publish)=%.0fms\n", total_ms_rc);
 
                         PublishPipelineParams pp_rc;
@@ -3041,14 +3042,14 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                             clk_t::now() - t_publish_start_rc).count();
                         double total_ms2 = std::chrono::duration<double, std::milli>(
                             clk_t::now() - t_bake_start).count();
-                        fprintf(stderr,
-                            "[bake-timing] install=0ms compose=0ms publish=%.0fms "
+                        MATTER_LOGI("bake-timing",
+                            "install=0ms compose=0ms publish=%.0fms "
                             "total=%.0fms (resolve-cache-hit)\n",
                             publish_ms_rc, total_ms2);
                         return;  // done — no full install+compose
                     }
                 } else {
-                    fprintf(stderr, "resolve cache: restore_from_cache failed (%s) — full resolve\n",
+                    MATTER_LOGW("resolve", "resolve cache: restore_from_cache failed (%s) — full resolve\n",
                             rc_err.c_str());
                 }
             }
@@ -3067,7 +3068,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         BAKE_SPAN(bake_trace::kSpanInstall);   // same region install_ms measures
         std::string err;
         if (!provider->install_graph(err, part_graph::BakePolicy::RootsOnly)) {
-            printf("install: %s\n", err.c_str());
+            MATTER_LOGE("install", "install: %s\n", err.c_str());
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(err),
                        "install", err);
             return;
@@ -3109,7 +3110,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         stream_fill_steps = 0;
         stream_fill_step_ms = 0.0;
         if (!install_world(token, werr)) {
-            fprintf(stderr, "install_world: %s\n", werr.c_str());
+            MATTER_LOGE("install_world", "install_world: %s\n", werr.c_str());
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(werr),
                        "install", werr);
             return;
@@ -3158,7 +3159,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // fill time produced a confidently-wrong 8.7x speedup claim once
         // already. Say what it excludes, and name the line that answers the
         // question it gets mistaken for.
-        fprintf(stderr, "[bake-timing] install=%.0fms world=%.0fms publish=%.0fms "
+        MATTER_LOGI("bake-timing", "install=%.0fms world=%.0fms publish=%.0fms "
                         "total=%.0fms (world-kind: ROOTS ONLY — the sector fill "
                         "is NOT in this number, see [stream.fill])\n",
                 install_ms, world_ms, publish_ms, total_ms);
@@ -3183,7 +3184,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         BAKE_SPAN(bake_trace::kSpanCompose);   // same region compose_ms measures
         std::string err;
         if (!provider->compose_world(new_manifest, err)) {
-            printf("compose: %s\n", err.c_str());
+            MATTER_LOGE("compose", "compose: %s\n", err.c_str());
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(err),
                        "compose", err);
             return;
@@ -3207,9 +3208,9 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_save.root_hashes = provider->install_result().root_hashes;
         if (!resolve_cache::save(cfg.cache_root, cfg.world_name,
                                  rc_cache_key, rc_save)) {
-            fprintf(stderr, "resolve cache: save failed (non-fatal)\n");
+            MATTER_LOGW("resolve", "resolve cache: save failed (non-fatal)\n");
         } else {
-            fprintf(stderr, "resolve cache: saved key %016llx\n",
+            MATTER_LOGI("resolve", "resolve cache: saved key %016llx\n",
                     (unsigned long long)rc_cache_key);
         }
     }
@@ -3234,7 +3235,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         clk_t::now() - t_publish_start).count();
     double total_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_bake_start).count();
-    fprintf(stderr, "[bake-timing] install=%.0fms compose=%.0fms publish=%.0fms total=%.0fms\n",
+    MATTER_LOGI("bake-timing", "install=%.0fms compose=%.0fms publish=%.0fms total=%.0fms\n",
             install_ms, compose_ms, publish_ms, total_ms);
 }
 
@@ -3324,7 +3325,7 @@ void WorldSession::Impl::publish_pipeline(
                 if (token && token->is_cancelled()) break;  // disconnect courtesy
                 if (store->get_or_load(h)) ++prewarmed;
             }
-            fprintf(stderr, "[stream] pre-warmed %zu/%zu child variants\n",
+            MATTER_LOGI("stream", "pre-warmed %zu/%zu child variants\n",
                     prewarmed, sector_child_hashes.size());
         }
 
@@ -3729,7 +3730,7 @@ void WorldSession::Impl::publish_pipeline(
         // are served, is the exact bug the vector exists to kill. So the two
         // numbers have to be separately readable from a script, not only from
         // the editor's stats overlay.
-        std::fprintf(stderr,
+        MATTER_LOGI("resolve",
             "  resolve census: %u parts baked, %u cache hits, "
             "version digest %016llx\n",
             stats.parts_baked, stats.cache_hits,
@@ -3859,7 +3860,7 @@ void WorldSession::Impl::publish_pipeline(
 
         refine_tile_count = new_ctrl->tile_count();
         refine_ctrl = std::move(new_ctrl);
-        printf("[refine] controller built: %zu tiles\n", refine_tile_count);
+        MATTER_LOGI("refine", "controller built: %zu tiles\n", refine_tile_count);
     }
 
     // --- Phase C Task 9: world-kind session — SectorStreamer ------------------
@@ -3883,7 +3884,7 @@ void WorldSession::Impl::publish_pipeline(
         // succeeded, so partial authored state can never allocate sector work.
         streaming_profile_activation.publish(
             ecs_runtime.streaming_coordinator());
-        printf("[stream] Runtime coordinator profile ready for world-kind session\n");
+        MATTER_LOGI("stream", "Runtime coordinator profile ready for world-kind session\n");
     }
 }
 
@@ -3948,7 +3949,7 @@ void WorldSession::Impl::execute_refine_step() {
                 hub_.emit(std::move(ev));
             } else {
                 // Swap failed (get_or_load returned null) — leave Coarse for retry.
-                fprintf(stderr, "[refine] upgrade GL job failed for tile (%d,%d) — "
+                MATTER_LOGW("refine", "upgrade GL job failed for tile (%d,%d) — "
                         "will retry on next refine step\n", ev_tx, ev_tz);
                 refine_ctrl->mark(ti, matter_refine::TileRecord::State::Coarse);
             }
@@ -4054,14 +4055,14 @@ void WorldSession::Impl::execute_refine_step() {
         std::string berr;
         if (!refine_provider->ensure_part_baked(full_hash_n, berr)) {
             // Bake failure: log and mark Coarse so the tile stays eligible for retry.
-            fprintf(stderr, "[refine] ensure_part_baked failed for full hash %016llx: %s\n",
+            MATTER_LOGW("refine", "ensure_part_baked failed for full hash %016llx: %s\n",
                     (unsigned long long)full_hash_n, berr.c_str());
             refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Coarse);
             return;
         }
         if (!refine_provider->ensure_part_flattened(full_hash_n)) {
             // Flatten failure: log and mark Coarse so the tile stays eligible for retry.
-            fprintf(stderr, "[refine] ensure_part_flattened failed for full hash %016llx\n",
+            MATTER_LOGW("refine", "ensure_part_flattened failed for full hash %016llx\n",
                     (unsigned long long)full_hash_n);
             refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Coarse);
             return;
@@ -4175,8 +4176,8 @@ bool WorldSession::Impl::install_world(
         world_surface =
             std::make_unique<terrain_field::SurfaceRuntime>(std::move(sprog));
         world_surface_hash = world_surface->hash();
-        fprintf(stderr,
-                "[vt] surfaces() tape compiled: %u materials, %s inputs, "
+        MATTER_LOGI("vt",
+                "surfaces() tape compiled: %u materials, %s inputs, "
                 "hash=%016llx\n",
                 world_surface->material_count(),
                 world_surface->uses_world_inputs() ? "world" : "local",
@@ -4206,8 +4207,8 @@ bool WorldSession::Impl::install_world(
         world_habitat =
             std::make_unique<terrain_field::SurfaceRuntime>(std::move(hprog));
         world_habitat_channels = r.habitat_channels;
-        fprintf(stderr,
-                "[habitat] tape compiled: %d channels (%s), %s inputs, "
+        MATTER_LOGI("habitat",
+                "tape compiled: %d channels (%s), %s inputs, "
                 "hash=%016llx\n",
                 world_habitat->channel_count(),
                 [&] {
@@ -4332,7 +4333,7 @@ bool WorldSession::Impl::install_world(
     }
     std::vector<script_host::RequiredChild> children =
         host.eval_requires(world_sector_source, sector_requires_params);
-    fprintf(stderr, "[stream] WorldSector requires %zu child variants\n", children.size());
+    MATTER_LOGI("stream", "WorldSector requires %zu child variants\n", children.size());
 
     sector_child_hashes.clear();
     sector_child_modules.clear();
@@ -4360,7 +4361,7 @@ bool WorldSession::Impl::install_world(
         if (token && token->is_cancelled()) { install_cancelled = true; return false; }
         for (const auto& v : visiting) {
             if (v == key) {
-                fprintf(stderr, "install_world: requires cycle at %s (skipping)\n",
+                MATTER_LOGE("install_world", "install_world: requires cycle at %s (skipping)\n",
                         module.c_str());
                 return false;
             }
@@ -4378,7 +4379,7 @@ bool WorldSession::Impl::install_world(
                 std::string where = "cannot read child " + module + ".js in any object root";
                 for (const std::string& root : cfg.object_roots())
                     where += " [" + root + "]";
-                fprintf(stderr, "install_world: %s (skipping)\n", where.c_str());
+                MATTER_LOGE("install_world", "install_world: %s (skipping)\n", where.c_str());
                 events::BakeError ev;
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
@@ -4419,7 +4420,7 @@ bool WorldSession::Impl::install_world(
             if (!provider->host_baker().bake(source,
                     part_graph::params_from_json(params_json),
                     kid_hashes, kid_modules, kid_params, hash)) {
-                fprintf(stderr, "install_world: bake failed for %s (skipping)\n",
+                MATTER_LOGE("install_world", "install_world: bake failed for %s (skipping)\n",
                         module.c_str());
                 events::BakeError ev;
                 ev.code = BakeErrorCode::ScriptError;
@@ -4484,7 +4485,7 @@ bool WorldSession::Impl::install_world(
     // or stale at this point. The pre-warm lives in the reset job, right after
     // store.swap, where the new store exists and sector_child_hashes (populated
     // just above) is ready.
-    fprintf(stderr, "[stream] asset install complete: %zu child hashes, "
+    MATTER_LOGI("stream", "asset install complete: %zu child hashes, "
             "field_hash=%s, sector_size=%.1f, sea_level=%.2f\n",
             sector_child_hashes.size(), world_field_hash.c_str(),
             world_sector_size, world_sea_level);
@@ -4503,8 +4504,8 @@ bool WorldSession::Impl::install_world(
     // against an actual 2619 m: two adjacent lines disagreeing about one
     // number, with the wrong one first.
     if (profile.nested_sectors) {
-        fprintf(stderr,
-                "[stream] NESTED sector LOD: level 0 = %.0f m tiles, %zu "
+        MATTER_LOGI("stream",
+                "NESTED sector LOD: level 0 = %.0f m tiles, %zu "
                 "levels (the outermost BAND bounds residency; rings grade "
                 "scatter only)\n",
                 profile.sector_size, profile.terrain_bands.size());
@@ -4568,10 +4569,10 @@ bool WorldSession::Impl::install_world(
         // read after every override, which is why the line above no longer
         // prints one of its own.
         if (std::isinf(activation_radius))
-            fprintf(stderr, "[stream] resolver activation radius: unbounded "
+            MATTER_LOGI("stream", "resolver activation radius: unbounded "
                             "(no terrain bands)\n");
         else
-            fprintf(stderr, "[stream] resolver activation radius: %.0f m "
+            MATTER_LOGI("stream", "resolver activation radius: %.0f m "
                             "(outermost terrain band)\n", activation_radius);
         world_volumetrics_defaults = provider->world_settings().volumetrics;
         has_world_volumetrics = true;
@@ -4681,8 +4682,8 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
             }
             vk_scene->end_vt_surface_update();
             if (updated != 0) {
-                fprintf(stderr,
-                        "[vt] surfaces() tape change reclassified %u resident "
+                MATTER_LOGI("vt",
+                        "surfaces() tape change reclassified %u resident "
                         "sector variants (hash=%016llx)\n",
                         updated, (unsigned long long)world_surface_hash);
             }
@@ -5392,8 +5393,8 @@ bool WorldSession::Impl::publish_weld_draw(const WeldPairKey& pair,
             (store && store->find(hash) != nullptr);
         if (taken) {
             ++seam_counters.hash_collisions;
-            fprintf(stderr,
-                    "[seam] weld (%lld,%lld L%d face %d) hashed to %016llx, "
+            MATTER_LOGW("seam",
+                    "weld (%lld,%lld L%d face %d) hashed to %016llx, "
                     "which already names a baked part -- leaving this pair "
                     "undrawn rather than aliasing it\n",
                     (long long)pair.tx, (long long)pair.tz,
@@ -5456,8 +5457,8 @@ bool WorldSession::Impl::publish_weld_draw(const WeldPairKey& pair,
         static bool warned = false;
         if (!warned) {
             warned = true;
-            fprintf(stderr,
-                    "[seam] weld part registration refused (%s) -- this pair "
+            MATTER_LOGW("seam",
+                    "weld part registration refused (%s) -- this pair "
                     "draws nothing; the tiles' own border bands still overlap "
                     "the gap\n",
                     error.empty() ? "no detail" : error.c_str());
@@ -5614,16 +5615,16 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
                 if (sector_map.count(
                         SectorKey{tile.tx, tile.ty, tile.tz, rung}))
                     continue;
-                fprintf(stderr,
-                        "[seam] tile index holds (%lld,%lld,%lld r%d) which "
+                MATTER_LOGW("seam",
+                        "tile index holds (%lld,%lld,%lld r%d) which "
                         "is not in sector_map\n",
                         (long long)tile.tx, (long long)tile.ty,
                         (long long)tile.tz, rung);
             }
         }
         if (indexed != sector_map.size()) {
-            fprintf(stderr,
-                    "[seam] tile index holds %zu keys, sector_map holds %zu\n",
+            MATTER_LOGW("seam",
+                    "tile index holds %zu keys, sector_map holds %zu\n",
                     indexed, sector_map.size());
         }
     }
@@ -5673,8 +5674,8 @@ void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
         static bool alarmed = false;
         if (!alarmed && seam_counters.pairs_peak >= kSeamWeldPairAlarm) {
             alarmed = true;
-            fprintf(stderr,
-                    "[seam] the weld pool reached %d face pairs (%zu registered "
+            MATTER_LOGW("seam",
+                    "the weld pool reached %d face pairs (%zu registered "
                     "parts) against %zu resident sectors. The structural bound "
                     "is 4 x drawn tiles and the geometric expectation for a "
                     "nested world is two orders below that (~50-70), so this "
@@ -6051,8 +6052,8 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
                 static bool warned = false;
                 if (!warned) {
                     warned = true;
-                    fprintf(stderr,
-                            "[seam] weld (%lld,%lld,%lld L%d face %d): %s\n",
+                    MATTER_LOGW("seam",
+                            "weld (%lld,%lld,%lld L%d face %d): %s\n",
                             (long long)pair.tx, (long long)pair.ty,
                             (long long)pair.tz, pair.level,
                             cface, err.c_str());
@@ -6180,8 +6181,8 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         static bool warned = false;
         if (!warned) {
             warned = true;
-            fprintf(stderr,
-                    "[seam] weld (%lld,%lld,%lld L%d face %d) re-derived "
+            MATTER_LOGW("seam",
+                    "weld (%lld,%lld,%lld L%d face %d) re-derived "
                     "DIFFERENT "
                     "geometry from identical inputs (fingerprint %016llx, "
                     "content %016llx -> %016llx). The welder is not a function "
@@ -6211,8 +6212,8 @@ void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
         if (was_live) ++seam_counters.pairs_recontented;
         else          ++seam_counters.pairs_created;
         if (seam_churn_trace) {
-            fprintf(stderr,
-                    "[seam.churn] %s (%lld,%lld,%lld L%d f%d) fine %d/%d "
+            MATTER_LOGD("seam.churn",
+                    "%s (%lld,%lld,%lld L%d f%d) fine %d/%d "
                     "tri %zu | "
                     "created=%llu recontented=%llu noop=%llu stable=%llu\n",
                     was_live ? "recontent" : "create  ",
@@ -6382,8 +6383,8 @@ void WorldSession::Impl::note_drawn_level_violation(
         break;
     }
 
-    fprintf(stderr,
-            "[stream] sector (%lld,%lld,%lld r%d) shown at level %d beside a "
+    MATTER_LOGW("stream",
+            "sector (%lld,%lld,%lld r%d) shown at level %d beside a "
             "DRAWN level-%d face neighbour (%lld,%lld,%lld r%d) -- the +-1 "
             "drawn invariant is broken (the welder spans exactly one level, so "
             "this face gets no seam) | site=%s dir=%s co-unpark=%s "
@@ -6477,8 +6478,8 @@ void WorldSession::Impl::unpark_ready_sectors() {
                 // surviving level conflict is a STREAMER bug (staged refinement
                 // should make level changes monotone coarse->fine per region),
                 // whereas a surviving blocker is the older transition race.
-                fprintf(stderr,
-                        "[stream] sector (%lld,%lld r%d) parked %.1f s "
+                MATTER_LOGW("stream",
+                        "sector (%lld,%lld r%d) parked %.1f s "
                         "without its %s leaving -- showing it anyway "
                         "(overlap beats a hole)%s\n",
                         (long long)key.tx, (long long)key.tz, key.rung,
@@ -6503,7 +6504,7 @@ void WorldSession::Impl::unpark_ready_sectors() {
         static const bool park_profile =
             std::getenv("MATTER_STREAM_PARK_PROFILE") != nullptr;
         if (park_profile) {
-            fprintf(stderr, "[stream.park] unparked %zu, still parked %d\n",
+            MATTER_LOGD("stream.park", "unparked %zu, still parked %d\n",
                     shown.size(), parked_sectors - (int)shown.size());
         }
         // Mark before applying: world_state_attempted is what the release path
@@ -6696,8 +6697,8 @@ bool WorldSession::Impl::apply_sector_evictions(
                         if (first_sight) ++seam_counters.merge_coverage_holds;
                         if (deferred_sector_evictions ==
                             kDeferredEvictionAlarm) {
-                            fprintf(stderr,
-                                    "[stream] %d evictions are being held to "
+                            MATTER_LOGW("stream",
+                                    "%d evictions are being held to "
                                     "keep parked coarse tiles covered. The "
                                     "expectation is a handful per merge in "
                                     "flight, so this means coarse targets are "
@@ -6713,8 +6714,8 @@ bool WorldSession::Impl::apply_sector_evictions(
                 // becoming resident, and nothing here gates that, so a hold
                 // that outlives the valve means the bake or the streamer
                 // failed -- not a race this design accepts.
-                fprintf(stderr,
-                        "[stream] eviction of sector (%lld,%lld,%lld r%d) held "
+                MATTER_LOGW("stream",
+                        "eviction of sector (%lld,%lld,%lld r%d) held "
                         "%.1f s to keep parked ancestor (%lld,%lld,%lld r%d, "
                         "level %d) covered -- that ancestor STILL has a drawn "
                         "level-%d face neighbour, so the neighbouring "
@@ -7381,8 +7382,8 @@ void WorldSession::Impl::bake_and_stage_sector(
             if (bake_prof) {
                 const double ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - bake_t0).count();
-                std::fprintf(stderr,
-                    "[stream.bake] sector(%lld,%lld) lod=%d %.1f ms\n",
+                MATTER_LOGD("stream.bake",
+                    "sector(%lld,%lld) lod=%d %.1f ms\n",
                     (long long)req.tx, (long long)req.tz,
                     matter_stream::variant_terrain_lod(req.rung), ms);
             }
@@ -7411,7 +7412,7 @@ void WorldSession::Impl::bake_and_stage_sector(
         }
 
         if (!br.error.ok) {
-            fprintf(stderr, "[stream] sector bake failed (%lld,%lld r%d): %s\n",
+            MATTER_LOGE("stream", "sector bake failed (%lld,%lld r%d): %s\n",
                     (long long)req.tx, (long long)req.tz, req.rung,
                     br.error.message.c_str());
             mark_publication_for_retry(
@@ -7601,8 +7602,8 @@ void WorldSession::Impl::bake_and_stage_sector(
             const uint64_t mismatched =
                 verify_mismatch.load(std::memory_order_relaxed);
             if (!same || ((matched + mismatched) % 200) == 0) {
-                std::fprintf(stderr,
-                    "[stream.stage.verify] match=%llu MISMATCH=%llu%s%s\n",
+                MATTER_LOGI("stream.stage.verify",
+                    "match=%llu MISMATCH=%llu%s%s\n",
                     (unsigned long long)matched,
                     (unsigned long long)mismatched,
                     same ? "" : "  <-- differs at: ",
@@ -8083,8 +8084,8 @@ void WorldSession::Impl::bake_and_stage_sector(
                             static uint64_t verify_ok = 0, verify_bad = 0;
                             if (same) ++verify_ok; else ++verify_bad;
                             if (((verify_ok + verify_bad) % 200) == 0 || !same) {
-                                std::fprintf(stderr,
-                                    "[stream.prebuild.verify] match=%llu "
+                                MATTER_LOGI("stream.prebuild.verify",
+                                    "match=%llu "
                                     "MISMATCH=%llu%s\n",
                                     (unsigned long long)verify_ok,
                                     (unsigned long long)verify_bad,
@@ -8156,8 +8157,8 @@ void WorldSession::Impl::bake_and_stage_sector(
                     pub_cache.stop();
 #endif
                     if (pub_prof) {
-                        std::fprintf(stderr,
-                            "[stream.publish] sector(%lld,%lld,r%d) "
+                        MATTER_LOGD("stream.publish",
+                            "sector(%lld,%lld,r%d) "
                             "load=%.1f state=%.1f tracer=%.1f culler=%.1f "
                             "vulkan=%.1f [cpu=%.1f vloop=%.1f classify=%.1f gpu=%.1f] "
                             "cache=%.1f ms\n",
@@ -8290,8 +8291,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
             const double elapsed_ms = std::chrono::duration<double, std::milli>(
                 step_now - stream_fill_start).count();
             const auto snap = coordinator.snapshot();
-            fprintf(stderr,
-                    "[stream.rate] t=%.1f s dispatched=%llu (%.0f/s) "
+            MATTER_LOGI("stream.rate",
+                    "t=%.1f s dispatched=%llu (%.0f/s) "
                     "steps=%llu step_avg=%.1f ms worker_in_steps=%.0f%% "
                     "resident=%u inflight=%u pool=%zu\n",
                     elapsed_ms / 1000.0,
@@ -8313,8 +8314,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     stream_task_total_us.load(std::memory_order_relaxed) / 1000.0;
                 const double idle_ms =
                     stream_task_idle_us.load(std::memory_order_relaxed) / 1000.0;
-                fprintf(stderr,
-                        "[stream.task] n=%llu task=%.1f ms "
+                MATTER_LOGI("stream.task",
+                        "n=%llu task=%.1f ms "
                         "(bake %.1f + stage %.1f + prebuild %.1f + other %.1f) "
                         "busy=%.0f%% executors=%d\n",
                         (unsigned long long)tasks, busy_ms / tasks,
@@ -8332,8 +8333,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
                         (busy_ms + idle_ms) > 0
                             ? 100.0 * busy_ms / (busy_ms + idle_ms) : 0.0,
                         stream_worker_count);
-                fprintf(stderr,
-                        "[stream.stage] read=%.1f prep=%.1f ladder=%.1f "
+                MATTER_LOGI("stream.stage",
+                        "read=%.1f prep=%.1f ladder=%.1f "
                         "tail=%.1f warp=%.1f ms\n",
                         stream_stage_read_us.load(std::memory_order_relaxed)
                             / 1000.0 / tasks,
@@ -8348,8 +8349,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 // Inside the ladder: what the 100 ms is actually made of.
                 // Per RUNG, not per sector -- a terrain sector bakes
                 // TerrainBakeTargets::eps_ratio.size() of them.
-                fprintf(stderr,
-                        "[stream.frame] resolve=%.1f build=%.1f draw=%.1f ms "
+                MATTER_LOGI("stream.frame",
+                        "resolve=%.1f build=%.1f draw=%.1f ms "
                         "instances=%llu\n",
                         frame_resolve_us.load(std::memory_order_relaxed) / 1000.0,
                         frame_build_us.load(std::memory_order_relaxed) / 1000.0,
@@ -8371,14 +8372,14 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 zone(draw_cull_render, "cull_render", z1, sizeof z1);
                 zone(draw_skin_seal,   "skin_seal",   z2, sizeof z2);
                 zone(draw_composite,   "composite",   z3, sizeof z3);
-                fprintf(stderr,
-                        "[stream.draw] mean/max ms: %s | %s | %s | %s"
+                MATTER_LOGI("stream.draw",
+                        "mean/max ms: %s | %s | %s | %s"
                         "  vt_reg serviced=%llu deferred=%llu\n",
                         z0, z1, z2, z3,
                         (unsigned long long)vt_requests_serviced,
                         (unsigned long long)vt_requests_deferred);
-                fprintf(stderr,
-                        "[stream.vtreg] total ms: classify=%.0f lanes=%.0f "
+                MATTER_LOGI("stream.vtreg",
+                        "total ms: classify=%.0f lanes=%.0f "
                         "register=%.0f  (per serviced: %.1f / %.1f / %.1f)\n",
                         vt_classify_us / 1000.0, vt_lanes_us / 1000.0,
                         vt_register_us / 1000.0,
@@ -8388,13 +8389,13 @@ void WorldSession::Impl::execute_sector_stream_step() {
                             ? vt_lanes_us / 1000.0 / vt_requests_serviced : 0.0,
                         vt_requests_serviced
                             ? vt_register_us / 1000.0 / vt_requests_serviced : 0.0);
-                fprintf(stderr, "[stream.vtcache] hits=%llu misses=%llu\n",
+                MATTER_LOGI("stream.vtcache", "hits=%llu misses=%llu\n",
                         (unsigned long long)vt_cache_hits,
                         (unsigned long long)vt_cache_misses);
 #ifdef MATTER_VULKAN_VIEWER
                 const auto su = viewer::VkSceneRenderer::static_upload_census();
-                fprintf(stderr,
-                        "[stream.upload] static full n=%llu mean=%.1f max=%.1f ms"
+                MATTER_LOGI("stream.upload",
+                        "static full n=%llu mean=%.1f max=%.1f ms"
                         "  append n=%llu mean=%.2f ms\n",
                         (unsigned long long)su.full_count,
                         su.full_count ? su.full_us / 1000.0 / su.full_count : 0.0,
@@ -8407,8 +8408,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 // mesher call vs the scatter loop's per-candidate field
                 // queries. Everything else in `build` is JS interpretation.
                 const dsl::TerrainVerbCensus vc = dsl::terrain_verb_census();
-                fprintf(stderr,
-                        "[stream.build] mesher=%.1f ms (%llu tris) "
+                MATTER_LOGI("stream.build",
+                        "mesher=%.1f ms (%llu tris) "
                         "heightAt/slopeAt=%.1f ms (%llu calls) "
                         "biomeAt/moistureAt=%.1f ms (%llu calls) per sector\n",
                         vc.volume_us / 1000.0 / tasks,
@@ -8424,8 +8425,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 {
                     const warp_field::WarpCensus wc = warp_field::warp_census();
                     if (wc.sectors) {
-                        fprintf(stderr,
-                                "[stream.warp] sectors=%llu solved=%llu "
+                        MATTER_LOGI("stream.warp",
+                                "sectors=%llu solved=%llu "
                                 "solve=%.1f eval=%.1f ms/sector  tris=%llu "
                                 "folds=%llu\n",
                                 (unsigned long long)wc.sectors,
@@ -8443,8 +8444,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 for (size_t r = 0; r < lod_bake::kMaxCensusRungs; ++r) {
                     if (lc.rungs[r] == 0) continue;
                     const double n = (double)lc.rungs[r];
-                    fprintf(stderr,
-                            "[stream.ladder] rung%zu decimate=%.1f "
+                    MATTER_LOGI("stream.ladder",
+                            "rung%zu decimate=%.1f "
                             "reproject=%.1f chart=%.1f blas=%.1f = %.1f "
                             "ms/sector  tris %llu->%llu\n",
                             r, lc.decimate_us[r] / 1000.0 / tasks,
@@ -8514,15 +8515,15 @@ void WorldSession::Impl::execute_sector_stream_step() {
         // MATTER_STREAM_FILL_PROFILE, so an unconditional rate reads "0/s" on
         // a completed fill -- a made-up number in the one line everyone will
         // look at. Resident count and wall time are both always true.
-        fprintf(stderr, "[stream.fill] COMPLETE: %u sectors resident in %.2f s "
+        MATTER_LOGI("stream.fill", "COMPLETE: %u sectors resident in %.2f s "
                         "(%d workers; MATTER_STREAM_FILL_PROFILE=1 for the "
                         "rate breakdown)\n",
                 snapshot.status.resident_sectors, fill_ms / 1000.0,
                 stream_worker_count);
         if (stream_fill_timing) {
             stream_fill_timing = false;
-            fprintf(stderr,
-                    "[stream.fill] %.2f s  resident=%u dispatched=%llu "
+            MATTER_LOGI("stream.fill",
+                    "%.2f s  resident=%u dispatched=%llu "
                     "steps=%llu step_avg=%.2f ms rate=%.0f/s workers=%d\n",
                     fill_ms / 1000.0, snapshot.status.resident_sectors,
                     (unsigned long long)stream_fill_sectors,
@@ -8829,7 +8830,7 @@ bool WorldSession::Impl::ensure_tracer() const {
         });
     std::string err;
     if (!tracer->build(cfg.cache_root, trace_instances, err)) {
-        std::fprintf(stderr, "WorldSession: tracer build failed: %s\n", err.c_str());
+        MATTER_LOGE("tracer", "WorldSession: tracer build failed: %s\n", err.c_str());
         tracer.reset();
         return false;
     }
@@ -8843,8 +8844,8 @@ bool WorldSession::Impl::ensure_tracer() const {
     }
 
     if (std::getenv("MATTER_TRACER_PROFILE")) {
-        std::fprintf(stderr,
-                     "[tracer.build] instances=%zu resident=%zu disk=%zu\n",
+        MATTER_LOGI("tracer.build",
+                     "instances=%zu resident=%zu disk=%zu\n",
                      trace_instances.size(), tracer->resident_hits(),
                      tracer->disk_loads());
     }
@@ -8982,11 +8983,11 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
             simpl->inotify_watcher->add_watch(
                 simpl->cfg.engine_shared_lib_dir);
         simpl->inotify_watching = true;
-        printf("live-edit: watching %s\n", watched.c_str());
+        MATTER_LOGI("live-edit", "live-edit: watching %s\n", watched.c_str());
     }
 #else
     if (desc.enable_live_edit)
-        printf("live-edit: MATTER_LIVE_EDIT=1 ignored on non-Linux (inotify not available)\n");
+        MATTER_LOGW("live-edit", "live-edit: MATTER_LIVE_EDIT=1 ignored on non-Linux (inotify not available)\n");
 #endif
 
     // Phase C Task 6: read MATTER_REFINE_RADIUS override ONCE at init time.
@@ -9645,7 +9646,7 @@ struct VulkanDiagnosticMaterialOverride {
         char* end = nullptr;
         const long parsed = std::strtol(value, &end, 10);
         if (!end || *end != '\0' || parsed < 0 || parsed >= material_count) {
-            std::fprintf(stderr,
+            MATTER_LOGE("vulkan",
                 "Vulkan diagnostic: invalid ground tileset material '%s'\n",
                 value);
             return;
@@ -9657,14 +9658,14 @@ struct VulkanDiagnosticMaterialOverride {
             char* prior_end = nullptr;
             const long prior = std::strtol(prior_value, &prior_end, 10);
             if (!prior_end || *prior_end != '\0' || prior < -1 || prior > 3) {
-                std::fprintf(stderr,
+                MATTER_LOGE("vulkan",
                     "Vulkan diagnostic: invalid prior ground tileset slot '%s'\n",
                     prior_value);
                 return;
             }
             MaterialRegistrySetGroundTilesetSlot(selected_material,
                                                   static_cast<int>(prior));
-            std::fprintf(stderr,
+            MATTER_LOGI("vulkan",
                 "Vulkan diagnostic: seeded ground tileset material %d "
                 "prior packed slot %ld\n",
                 selected_material, prior);
@@ -9681,7 +9682,7 @@ struct VulkanDiagnosticMaterialOverride {
             std::fabs(packed_slot - rounded_slot) > 1e-6f ||
             rounded_slot < -1.0f ||
             rounded_slot > (float)(MATERIAL_MAX_DETAIL_SLOTS - 1)) {
-            std::fprintf(stderr,
+            MATTER_LOGE("vulkan",
                 "Vulkan diagnostic: invalid packed ground tileset slot %.9g "
                 "for material %d\n",
                 packed_slot, selected_material);
@@ -9690,7 +9691,7 @@ struct VulkanDiagnosticMaterialOverride {
         material_id = selected_material;
         prior_packed_slot = static_cast<int>(rounded_slot);
         MaterialRegistrySetGroundTilesetSlot(material_id, 0);
-        std::fprintf(stderr,
+        MATTER_LOGI("vulkan",
             "Vulkan diagnostic: applied ground tileset slot 0 to material %d\n",
             material_id);
     }
@@ -9702,12 +9703,12 @@ struct VulkanDiagnosticMaterialOverride {
         const float restored = packed_registry[
             static_cast<size_t>(material_id) * MATERIAL_FLOATS_PER_DEF + 11];
         if (restored == static_cast<float>(prior_packed_slot)) {
-            std::fprintf(stderr,
+            MATTER_LOGI("vulkan",
                 "Vulkan diagnostic: restored ground tileset material %d "
                 "to packed slot %d\n",
                 material_id, prior_packed_slot);
         } else {
-            std::fprintf(stderr,
+            MATTER_LOGE("vulkan",
                 "Vulkan diagnostic: failed to restore ground tileset material "
                 "%d: expected packed slot %d, observed %.9g\n",
                 material_id, prior_packed_slot, restored);
@@ -9815,7 +9816,7 @@ bool build_vulkan_part(uint64_t part_hash,
                                            mesh.colors[c] < 80;
                 }
             }
-            std::fprintf(stderr,
+            MATTER_LOGI("vulkan",
                 "Vulkan material diagnostic: part=%016llx mesh=%zu "
                 "registry=%d ids=%d tinted=%d red=%d green=%d\n",
                 static_cast<unsigned long long>(part_hash), mi,
@@ -9877,7 +9878,7 @@ bool build_vulkan_part(uint64_t part_hash,
                     ground_tileset_slot)) {
                 static bool warned_texture_material = false;
                 if (!warned_texture_material) {
-                    std::fprintf(stderr,
+                    MATTER_LOGW("vulkan",
                         "Vulkan milestone: ground material texture sampling is "
                         "not available; using authored texture-independent "
                         "base color/ORM/emission\n");
@@ -9974,9 +9975,9 @@ bool build_vulkan_part(uint64_t part_hash,
                         (loaded.lod_mesh_data[mi].vertex_count <= 0 ||
                          loaded.lod_mesh_data[mi].indices.empty());
                     if (chart_log)
-                        std::fprintf(
-                            stderr,
-                            "[vt-mask] part %016llx rung %zu: %s%s%s%s\n",
+                        MATTER_LOGD(
+                            "vt-mask",
+                            "part %016llx rung %zu: %s%s%s%s\n",
                             (unsigned long long)part.part_hash, mi,
                             no_charts ? "NO CHART TABLE " : "",
                             no_mesh_slot ? "NO MESH SLOT " : "",
@@ -9991,8 +9992,8 @@ bool build_vulkan_part(uint64_t part_hash,
                     // above only runs to lod_charts.size(), so every ladder
                     // rung at or beyond that index gets no mask bit, no log
                     // line, and no VT -- silently, forever.
-                    std::fprintf(stderr,
-                                 "[vt-mask] part %016llx charts=%zu ladder=%zu "
+                    MATTER_LOGD("vt-mask",
+                                 "part %016llx charts=%zu ladder=%zu "
                                  "mask=0x%x\n",
                                  (unsigned long long)part.part_hash, mask_rungs,
                                  loaded.lod_mesh_data.size(), rung_mask);
@@ -10767,7 +10768,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             if (!impl_->vk_scene->update_dynamic_instances(
                     valid.data(), static_cast<uint32_t>(valid.size()),
                     frame.serial, dyn_err)) {
-                fprintf(stderr, "dynamic instance error (non-fatal): %s\n",
+                MATTER_LOGW("dyn", "dynamic instance error (non-fatal): %s\n",
                         dyn_err.c_str());
             }
         }
@@ -10830,7 +10831,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     impl_->ecs_runtime.world(), skin_submissions,
                     rejected_skin_bounds, bridge_err, frame.serial)) {
                 skin_assets_ok = false;
-                fprintf(stderr, "animation skin bridge error (non-fatal): %s\n",
+                MATTER_LOGW("animation", "animation skin bridge error (non-fatal): %s\n",
                         bridge_err.c_str());
             }
         }
@@ -10848,7 +10849,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 skin_assets_ok
                     ? std::vector<viewer::VkAnimationBoundsInstance>{}
                     : rejected_skin_bounds)) {
-            fprintf(stderr, "animation skin frame queue rejected (non-fatal)\n");
+            MATTER_LOGW("animation", "animation skin frame queue rejected (non-fatal)\n");
         } else {
             animation_skin_queue_pending_seal = true;
         }

@@ -1,4 +1,5 @@
 #include "world_definition_loader.h"
+#include "matter/log.h"
 
 #include "module_resolver.h"
 
@@ -1329,8 +1330,8 @@ void fold_legacy_fog_multipliers(const WorldLoadDesc& desc, FogSettings& fog,
         name_b = "falloff";
     }
 
-    std::fprintf(stderr,
-                 "[fog] %s: volumetrics.fogDensityMul/fogFalloffMul/"
+    MATTER_LOGW("fog",
+                 "%s: volumetrics.fogDensityMul/fogFalloffMul/"
                  "fogFloorOffset are deprecated and were folded into "
                  "World.fog: density %g -> %g, %s %g -> %g, %s %g -> %g. "
                  "Paste those values into World.fog and delete the "

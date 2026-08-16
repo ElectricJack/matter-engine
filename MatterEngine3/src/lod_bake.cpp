@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include "lod_bake.h"
+#include "matter/log.h"
 #include "bake_trace.h"        // Bake Lab task 1.5: LOD ladder spans + counters
 #include "bake_trace_names.h"  // kSpanLod, kSpanLodRung
 #include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
@@ -157,8 +158,8 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         adopted = true;
     if (adopted) {
         if (chart_log)
-            std::fprintf(stderr,
-                         "[vt-chart] tris=%zu unify=1 base=1 ADOPTED "
+            MATTER_LOGD("vt-chart",
+                         "tris=%zu unify=1 base=1 ADOPTED "
                          "charts=%zu atlas=%ux%u\n",
                          tris.size(), out.charts.size(), out.atlas_w,
                          out.atlas_h);
@@ -168,8 +169,8 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                                         cone_deg, out);
     if (!built) {
         if (chart_log)
-            std::fprintf(stderr,
-                         "[vt-chart] tris=%zu unify=%d base=%d adopt=%s "
+            MATTER_LOGW("vt-chart",
+                         "tris=%zu unify=%d base=%d adopt=%s "
                          "BUILD FAILED -> charts=0 (this rung is stuck on the "
                          "legacy flat-tint path)\n",
                          tris.size(), unify ? 1 : 0, base_present ? 1 : 0,
@@ -178,8 +179,8 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         return false;
     }
     if (chart_log)
-        std::fprintf(stderr,
-                     "[vt-chart] tris=%zu unify=%d base=%d adopt=%s BUILT "
+        MATTER_LOGD("vt-chart",
+                     "tris=%zu unify=%d base=%d adopt=%s BUILT "
                      "charts=%zu atlas=%ux%u\n",
                      tris.size(), unify ? 1 : 0, base_present ? 1 : 0,
                      (unify && base_present) ? "no" : "n/a",
@@ -645,8 +646,8 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         }
         t_indexscan = lb_split();
         if (lb_prof) {
-            std::fprintf(stderr,
-                "[lod-rung] lvl=%zu keep=%.3f tris=%zu->%zu entries=%zu "
+            MATTER_LOGD("lod-rung",
+                "lvl=%zu keep=%.3f tris=%zu->%zu entries=%zu "
                 "decimate=%.1f reproject=%.1f register=%.1f indexscan=%.1f ms\n",
                 lvl, (double)keep, tris.size(), geo.size(), entries.size(),
                 t_decimate, t_reproject, t_register, t_indexscan);
@@ -980,8 +981,8 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
             // `dec_in` is what the QEM pass actually collapsed, which under
             // cascading is the previous rung, not `surface` — the one number
             // that says whether the cascade is live for this rung.
-            std::fprintf(stderr,
-                "[terrain-rung] lvl=%zu eps=%.2f tris=%zu->%zu (surface %zu, "
+            MATTER_LOGD("terrain-rung",
+                "lvl=%zu eps=%.2f tris=%zu->%zu (surface %zu, "
                 "skirts %zu, decimated %zu%s)\n",
                 lvl, (double)eps, tris.size(), geo.size(), surface.size(),
                 tris.size() - surface.size(), dec_in,

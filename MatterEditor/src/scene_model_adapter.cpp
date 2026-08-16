@@ -4,6 +4,7 @@
 
 #include "editor_model.h"
 #include "matter/event/event_hub.h"
+#include "matter/log.h"
 #include "matter/scene/scene_events.h"
 #include "matter/world_session.h"
 #include "scene/scene_change_tracker.h"  // scene_snapshot() (world_session.h fwd-decls it)
@@ -39,11 +40,11 @@ void SceneModelAdapter::build(matter::evt::Hub& session_hub,
         "editor.scene_rows_upserted", matter::evt::immediate,
         [this](const matter::scene::SceneRowsUpserted& ev) {
             if (ev.sequence != last_sequence_ + 1) {
-                std::fprintf(stderr,
-                             "[scene-adapter] upsert sequence gap (have %llu, got %llu) -> "
-                             "full resnapshot\n",
-                             static_cast<unsigned long long>(last_sequence_),
-                             static_cast<unsigned long long>(ev.sequence));
+                MATTER_LOGW("scene-adapter",
+                            "upsert sequence gap (have %llu, got %llu) -> "
+                            "full resnapshot\n",
+                            static_cast<unsigned long long>(last_sequence_),
+                            static_cast<unsigned long long>(ev.sequence));
                 full_snapshot();
                 return;
             }
@@ -55,11 +56,11 @@ void SceneModelAdapter::build(matter::evt::Hub& session_hub,
         "editor.scene_rows_removed", matter::evt::immediate,
         [this](const matter::scene::SceneRowsRemoved& ev) {
             if (ev.sequence != last_sequence_ + 1) {
-                std::fprintf(stderr,
-                             "[scene-adapter] remove sequence gap (have %llu, got %llu) -> "
-                             "full resnapshot\n",
-                             static_cast<unsigned long long>(last_sequence_),
-                             static_cast<unsigned long long>(ev.sequence));
+                MATTER_LOGW("scene-adapter",
+                            "remove sequence gap (have %llu, got %llu) -> "
+                            "full resnapshot\n",
+                            static_cast<unsigned long long>(last_sequence_),
+                            static_cast<unsigned long long>(ev.sequence));
                 full_snapshot();
                 return;
             }

@@ -248,6 +248,34 @@ Full docs: `docs/agent/control-surface.md` (env vars, FIFO grammar, events),
 `docs/agent/qa-cookbook.md` (copy-paste recipes), `docs/agent/issue-system.md`
 (capture/file/replay), `docs/README.md` (everything else).
 
+## Logging
+
+`MatterEngine3/include/matter/log.h` is the engine's one logging facility. For
+diagnostics, use the printf-style macros `MATTER_LOGE/W/I/D("tag", fmt, ...)`
+(error / warn / info / debug) rather than raw `printf`/`fprintf(stderr, ...)`.
+Each line tees to stderr **and** fans out to any registered sink; the editor
+registers a sink (`ConsoleLogSinkGuard` in `MatterEditor/src/main.cpp`) that
+mirrors every line into the in-editor Console panel, so engine and library
+diagnostics show up there, not just terminal output. The old `[tag]` prefix
+convention becomes the macro's first argument.
+
+- Header-only by design: many standalone test link lines (see
+  `MatterEditor/Makefile`) hand-pick a subset of engine `.cpp`, so a logging
+  `.cpp` would have to be added to each. Including the header is enough — no
+  Makefile edits, no link changes.
+- Compile-time control: `-DMATTER_LOG_MIN_LEVEL=N` (0=Trace … 4=Error, 6=Off)
+  strips every macro below `N` to `((void)0)` (arguments not evaluated);
+  `-DMATTER_LOG_TEE=0` drops the stderr tee but keeps sinks.
+- The format-check attribute is `gnu_printf`, not `printf`: on MinGW the plain
+  `printf` archetype maps to the MSVCRT checker and rejects `%zu`/`%llu`/`%lld`,
+  which the smoke build's `-Werror` would turn into a hard error.
+- **Do NOT route genuine stdout program output through the logger.** Deliberate
+  machine-readable output that QA/tooling parses on stdout — world listings, the
+  `==== seam-weld summary ====` table, the `STATS`/`STATSVT` census lines, the
+  Vulkan RT/wireframe capability banners, `MATTER_CAM*` dumps — stays on
+  `printf`. The logger tees to stderr, so moving those would break `drive.py`
+  and replay tooling that read stdout.
+
 ## Project Relationships
 
 Current projects and their relationships. Dependencies run one way only:

@@ -7,6 +7,7 @@
 #include "tlas_manager.hpp"       // TLASManager (required by load_v2 signature)
 #include "bvh.h"                  // BVHRay, Intersection, Tri, TriEx
 #include "material_registry.h"    // MaterialRegistryGet
+#include "matter/log.h"
 
 #include <algorithm>
 #include <cassert>
@@ -339,7 +340,7 @@ struct WorldTracer::Impl {
                 expand_instance(cache_root, ci.child_resolved_hash,
                                 combined, depth + 1, err);
                 if (!err.empty()) {
-                    std::fprintf(stderr,
+                    MATTER_LOGW("tracer",
                         "world_tracer: warning expanding child 0x%llx of 0x%llx: %s\n",
                         (unsigned long long)ci.child_resolved_hash,
                         (unsigned long long)hash, err.c_str());
@@ -362,8 +363,8 @@ struct WorldTracer::Impl {
         ei.part_hash = hash;
         std::memcpy(ei.transform, world_xf, 64);
         if (!invert4x4(world_xf, ei.inv)) {
-            std::fprintf(stderr, "world_tracer: near-singular transform for hash %llu\n",
-                         (unsigned long long)hash);
+            MATTER_LOGW("tracer", "world_tracer: near-singular transform for hash %llu\n",
+                        (unsigned long long)hash);
         }
         ei.nm = &nm_pool_.back();
 
@@ -606,7 +607,7 @@ bool WorldTracer::build(const std::string& cache_root,
         im.expand_instance(cache_root, ti.part_hash, ti.transform, 0, err);
         // Non-fatal: warn on missing parts but keep going.
         if (!err.empty()) {
-            std::fprintf(stderr, "world_tracer: warning: %s\n", err.c_str());
+            MATTER_LOGW("tracer", "world_tracer: warning: %s\n", err.c_str());
             err.clear();
         }
     }
