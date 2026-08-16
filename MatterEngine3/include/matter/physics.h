@@ -169,6 +169,52 @@ struct PhysicsRayHit {
     float fraction = 0.0f;
 };
 
+// Result of a ray cast against the live Box3D world, as opposed to the ECS
+// query tree that physics_ray_cast/PhysicsRayHit walk. This one CAN report hits
+// on static terrain colliders, which are not ECS entities — the character
+// controller's ground probe needs exactly this (design C1). `material_id` and
+// `triangle` carry the per-triangle data of a mesh/heightfield hit.
+struct PhysicsWorldRayHit {
+    Float3 position{};
+    Float3 normal{};
+    float fraction = 0.0f;
+    uint64_t material_id = 0;
+    int32_t triangle = -1;
+    bool hit = false;
+};
+
+// Opaque handle to a static terrain collider attached to the physics world.
+// 0 is the invalid handle.
+using TerrainColliderHandle = uint64_t;
+
+// A static triangle-mesh collider built from an indexed vertex/index stream.
+// Vertices are 3 floats each; `translation` is the world offset applied to them
+// (the caller picks the mode-correct offset per the streaming design). The spans
+// need only stay valid for the duration of the attach call — Box3D clones the
+// geometry into its own BVH.
+struct StaticMeshCollider {
+    const float* vertices = nullptr;    // 3 floats per vertex
+    int32_t vertex_count = 0;
+    const uint32_t* indices = nullptr;  // 3 indices per triangle
+    int32_t triangle_count = 0;
+    Float3 translation{};
+    float friction = 0.6f;
+};
+
+// A static heightfield collider sampled on a count_x*count_z grid (row-major).
+// `scale` is {x-spacing, y-multiplier, z-spacing}; global_min/global_max should
+// be shared across neighbouring sectors so their quantized edges line up exactly.
+struct StaticHeightFieldCollider {
+    const float* heights = nullptr;     // count_x * count_z, row-major
+    int32_t count_x = 0;
+    int32_t count_z = 0;
+    Float3 scale{1.0f, 1.0f, 1.0f};
+    Float3 translation{};
+    float global_min = 0.0f;
+    float global_max = 0.0f;
+    float friction = 0.6f;
+};
+
 struct PhysicsModule {
     explicit PhysicsModule(flecs::world&);
 };
@@ -183,5 +229,20 @@ bool physics_wake(flecs::entity);
 bool physics_ray_cast(flecs::world&, Float3, Float3, uint64_t, PhysicsRayHit&);
 std::vector<flecs::entity_t> physics_overlap_sphere(
     flecs::world&, Float3, float, uint64_t);
+
+// Ray cast against the live Box3D world (static terrain colliders included).
+bool physics_cast_ray_world(
+    flecs::world&, Float3 origin, Float3 translation, uint64_t category_mask,
+    PhysicsWorldRayHit&);
+
+// Attach/detach static terrain colliders to the physics world. Attach returns 0
+// on failure (invalid input, BVH overflow, world not ready). Detach destroys the
+// body/shape and then the referenced geometry, and returns false for an unknown
+// handle. These are the streaming layer's per-sector hooks (M1).
+TerrainColliderHandle physics_attach_static_mesh(
+    flecs::world&, const StaticMeshCollider&);
+TerrainColliderHandle physics_attach_static_heightfield(
+    flecs::world&, const StaticHeightFieldCollider&);
+bool physics_detach_static(flecs::world&, TerrainColliderHandle);
 
 } // namespace matter::physics

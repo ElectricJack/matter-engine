@@ -98,6 +98,21 @@ public:
         float radius,
         uint64_t category_mask);
 
+    // Ray cast against the live Box3D world, so static terrain colliders (which
+    // are not ECS entities) are visible. See design C1.
+    bool cast_ray_world(
+        Float3 origin,
+        Float3 translation,
+        uint64_t category_mask,
+        PhysicsWorldRayHit& hit);
+
+    // Static terrain collider lifecycle. attach_* returns 0 on failure; the
+    // detach destroys body/shape then the referenced geometry.
+    TerrainColliderHandle attach_static_mesh(const StaticMeshCollider& desc);
+    TerrainColliderHandle attach_static_heightfield(
+        const StaticHeightFieldCollider& desc);
+    bool detach_static(TerrainColliderHandle handle);
+
     uint32_t last_step_substeps() const noexcept;
     const std::vector<PhysicsSystemStage>& fixed_step_trace() const noexcept;
     const std::vector<PhysicsCommandTraceEntry>&

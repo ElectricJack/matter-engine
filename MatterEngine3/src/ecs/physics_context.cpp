@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <box3d/box3d.h>
+#include <box3d/collision.h>  // b3CreateMesh/b3CreateHeightField + destroyers
 
 #include "matter/event/event_hub.h"
 #include "matter/events/physics_events.h"
@@ -287,6 +288,17 @@ struct PhysicsContext::Impl {
     uint64_t ray_query_candidate_attempts_for_test = 0;
     uint64_t overlap_query_candidate_attempts_for_test = 0;
     bool stepping = false;
+
+    // Static terrain colliders keyed by opaque handle. Each owns a Box3D static
+    // body plus the mesh/heightfield data the shape references, which must
+    // outlive the shape and be freed only after the body is destroyed.
+    struct TerrainCollider {
+        b3BodyId body = b3_nullBodyId;
+        b3MeshData* mesh = nullptr;
+        b3HeightFieldData* height_field = nullptr;
+    };
+    std::unordered_map<TerrainColliderHandle, TerrainCollider> terrain_colliders;
+    TerrainColliderHandle next_terrain_handle = 1;
 };
 
 namespace {
@@ -545,6 +557,17 @@ PhysicsContext::~PhysicsContext() {
         b3DestroyWorld(impl_->world_id);
         impl_->world_id = b3_nullWorldId;
     }
+    // The world destroy took the terrain collider bodies/shapes with it; free
+    // the geometry they referenced now that no shape can touch it.
+    for (auto& entry : impl_->terrain_colliders) {
+        if (entry.second.mesh != nullptr) {
+            b3DestroyMesh(entry.second.mesh);
+        }
+        if (entry.second.height_field != nullptr) {
+            b3DestroyHeightField(entry.second.height_field);
+        }
+    }
+    impl_->terrain_colliders.clear();
     impl_->bridges.clear();
     if (impl_->query_tree_valid) {
         b3DynamicTree_Destroy(&impl_->query_tree);
@@ -1104,6 +1127,158 @@ std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
     return query.entities;
 }
 
+bool PhysicsContext::cast_ray_world(
+    Float3 origin,
+    Float3 translation,
+    uint64_t category_mask,
+    PhysicsWorldRayHit& hit) {
+    hit = {};
+    if (impl_ == nullptr || impl_->stepping || !world_is_valid() ||
+        !finite(origin) || !finite(translation) ||
+        (translation.x == 0.0f && translation.y == 0.0f &&
+         translation.z == 0.0f)) {
+        return false;
+    }
+    b3QueryFilter filter = b3DefaultQueryFilter();
+    filter.maskBits = category_mask;
+    const b3RayResult result = b3World_CastRayClosest(
+        impl_->world_id, box_position(origin), box_vector(translation), filter);
+    if (!result.hit) {
+        return false;
+    }
+    hit.position = {result.point.x, result.point.y, result.point.z};
+    hit.normal = {result.normal.x, result.normal.y, result.normal.z};
+    hit.fraction = result.fraction;
+    hit.material_id = result.userMaterialId;
+    hit.triangle = result.triangleIndex;
+    hit.hit = true;
+    return true;
+}
+
+TerrainColliderHandle PhysicsContext::attach_static_mesh(
+    const StaticMeshCollider& desc) {
+    if (impl_ == nullptr || impl_->stepping || !world_is_valid() ||
+        desc.vertices == nullptr || desc.indices == nullptr ||
+        desc.vertex_count < 3 || desc.triangle_count < 1) {
+        return 0;
+    }
+
+    // The flat float/uint32 spans are layout-compatible with b3Vec3/int32; the
+    // const_cast is safe because b3CreateMesh only reads and clones them.
+    b3MeshDef mesh_def{};
+    mesh_def.vertices =
+        reinterpret_cast<b3Vec3*>(const_cast<float*>(desc.vertices));
+    mesh_def.vertexCount = desc.vertex_count;
+    mesh_def.indices =
+        reinterpret_cast<int32_t*>(const_cast<uint32_t*>(desc.indices));
+    mesh_def.triangleCount = desc.triangle_count;
+    mesh_def.weldVertices = false;      // already welded upstream
+    mesh_def.useMedianSplit = true;     // grid-shaped terrain; keeps the BVH shallow
+    mesh_def.identifyEdges = true;      // internal-edge smoothing (winding is consistent)
+
+    // NULL means a BVH-stack overflow or an all-degenerate mesh — a recoverable
+    // skip, never a NULL-deref into b3CreateMeshShape.
+    b3MeshData* mesh = b3CreateMesh(&mesh_def, nullptr, 0);
+    if (mesh == nullptr) {
+        return 0;
+    }
+
+    b3BodyDef body_def = b3DefaultBodyDef();
+    body_def.type = b3_staticBody;
+    body_def.position = box_position(desc.translation);
+    const b3BodyId body = b3CreateBody(impl_->world_id, &body_def);
+    if (!b3Body_IsValid(body)) {
+        b3DestroyMesh(mesh);
+        return 0;
+    }
+
+    b3ShapeDef shape_def = b3DefaultShapeDef();
+    shape_def.baseMaterial.friction = desc.friction;
+    const b3Vec3 unit_scale{1.0f, 1.0f, 1.0f};
+    const b3ShapeId shape =
+        b3CreateMeshShape(body, &shape_def, mesh, unit_scale);
+    if (!b3Shape_IsValid(shape)) {
+        b3DestroyBody(body);
+        b3DestroyMesh(mesh);
+        return 0;
+    }
+
+    const TerrainColliderHandle handle = impl_->next_terrain_handle++;
+    impl_->terrain_colliders.emplace(
+        handle, Impl::TerrainCollider{body, mesh, nullptr});
+    return handle;
+}
+
+TerrainColliderHandle PhysicsContext::attach_static_heightfield(
+    const StaticHeightFieldCollider& desc) {
+    if (impl_ == nullptr || impl_->stepping || !world_is_valid() ||
+        desc.heights == nullptr || desc.count_x < 2 || desc.count_z < 2 ||
+        !(desc.scale.x > 0.0f && desc.scale.y > 0.0f && desc.scale.z > 0.0f)) {
+        return 0;
+    }
+
+    b3HeightFieldDef hf_def{};
+    hf_def.heights = const_cast<float*>(desc.heights);
+    hf_def.materialIndices = nullptr;
+    hf_def.scale = box_vector(desc.scale);
+    hf_def.countX = desc.count_x;
+    hf_def.countZ = desc.count_z;
+    hf_def.globalMinimumHeight = desc.global_min;
+    hf_def.globalMaximumHeight = desc.global_max;
+    hf_def.clockwiseWinding = false;
+
+    b3HeightFieldData* height_field = b3CreateHeightField(&hf_def);
+    if (height_field == nullptr) {
+        return 0;
+    }
+
+    b3BodyDef body_def = b3DefaultBodyDef();
+    body_def.type = b3_staticBody;
+    body_def.position = box_position(desc.translation);
+    const b3BodyId body = b3CreateBody(impl_->world_id, &body_def);
+    if (!b3Body_IsValid(body)) {
+        b3DestroyHeightField(height_field);
+        return 0;
+    }
+
+    b3ShapeDef shape_def = b3DefaultShapeDef();
+    shape_def.baseMaterial.friction = desc.friction;
+    const b3ShapeId shape =
+        b3CreateHeightFieldShape(body, &shape_def, height_field);
+    if (!b3Shape_IsValid(shape)) {
+        b3DestroyBody(body);
+        b3DestroyHeightField(height_field);
+        return 0;
+    }
+
+    const TerrainColliderHandle handle = impl_->next_terrain_handle++;
+    impl_->terrain_colliders.emplace(
+        handle, Impl::TerrainCollider{body, nullptr, height_field});
+    return handle;
+}
+
+bool PhysicsContext::detach_static(TerrainColliderHandle handle) {
+    if (impl_ == nullptr || handle == 0) {
+        return false;
+    }
+    const auto found = impl_->terrain_colliders.find(handle);
+    if (found == impl_->terrain_colliders.end()) {
+        return false;
+    }
+    // Destroy the body/shape first, then the geometry it referenced.
+    if (b3Body_IsValid(found->second.body)) {
+        b3DestroyBody(found->second.body);
+    }
+    if (found->second.mesh != nullptr) {
+        b3DestroyMesh(found->second.mesh);
+    }
+    if (found->second.height_field != nullptr) {
+        b3DestroyHeightField(found->second.height_field);
+    }
+    impl_->terrain_colliders.erase(found);
+    return true;
+}
+
 void PhysicsContext::capture_events(flecs::world& world) {
     PhysicsEvents next;
     const flecs::world_t* owning_world = ecs_get_world(world.c_ptr());
@@ -1651,6 +1826,55 @@ std::vector<flecs::entity_t> physics_overlap_sphere(
     }
     return ref->value->overlap_sphere(
         normalized_world, center, radius, category_mask);
+}
+
+namespace {
+
+// Resolve the PhysicsContext owning `world`, or nullptr. Mirrors the guard in
+// physics_ray_cast/physics_overlap_sphere.
+detail::PhysicsContext* resolve_context(flecs::world& world) {
+    const flecs::world_t* real_world = ecs_get_world(world.c_ptr());
+    if (real_world == nullptr) {
+        return nullptr;
+    }
+    flecs::world normalized_world(const_cast<flecs::world_t*>(real_world));
+    const detail::PhysicsContextRef* ref =
+        normalized_world.try_get<detail::PhysicsContextRef>();
+    return ref != nullptr ? ref->value : nullptr;
+}
+
+} // namespace
+
+bool physics_cast_ray_world(
+    flecs::world& world,
+    Float3 origin,
+    Float3 translation,
+    uint64_t category_mask,
+    PhysicsWorldRayHit& hit) {
+    detail::PhysicsContext* context = resolve_context(world);
+    if (context == nullptr) {
+        hit = {};
+        return false;
+    }
+    return context->cast_ray_world(origin, translation, category_mask, hit);
+}
+
+TerrainColliderHandle physics_attach_static_mesh(
+    flecs::world& world, const StaticMeshCollider& desc) {
+    detail::PhysicsContext* context = resolve_context(world);
+    return context != nullptr ? context->attach_static_mesh(desc) : 0;
+}
+
+TerrainColliderHandle physics_attach_static_heightfield(
+    flecs::world& world, const StaticHeightFieldCollider& desc) {
+    detail::PhysicsContext* context = resolve_context(world);
+    return context != nullptr ? context->attach_static_heightfield(desc) : 0;
+}
+
+bool physics_detach_static(
+    flecs::world& world, TerrainColliderHandle handle) {
+    detail::PhysicsContext* context = resolve_context(world);
+    return context != nullptr ? context->detach_static(handle) : false;
 }
 
 } // namespace matter::physics
