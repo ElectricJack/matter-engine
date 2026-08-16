@@ -3621,13 +3621,19 @@ int main() {
                 walk_have_cursor = false;
             }
         }
-        if (bake_ready && (walk_mode || walk_test)) {
-            flecs::world& w = session->ecs();
-            if (w.c_ptr() != walk_registered_world) {
-                matter::character::register_character_systems(w);
-                walk_registered_world = w.c_ptr();
+        // Register the character-controller system on every loaded world
+        // (idempotent), so a scene that AUTHORS a CharacterController entity
+        // runs it even without entering walk mode.
+        if (bake_ready) {
+            flecs::world& cw = session->ecs();
+            if (cw.c_ptr() != walk_registered_world) {
+                matter::character::register_character_systems(cw);
+                walk_registered_world = cw.c_ptr();
                 walk_player = 0;  // fresh world: any previous player id is stale
             }
+        }
+        if (bake_ready && (walk_mode || walk_test)) {
+            flecs::world& w = session->ecs();
             if (walk_test && !walk_mode) {
                 walk_mode = true;
                 std::string werr;

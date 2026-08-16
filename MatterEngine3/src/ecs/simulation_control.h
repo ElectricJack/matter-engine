@@ -2,6 +2,7 @@
 
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/character.h"
 #include "matter/scene.h"
 #include "animation/animation_evaluator.h"
 
@@ -34,6 +35,8 @@ struct EntitySnapshot {
     bool has_sphere_collider = false;
     physics::CapsuleCollider capsule_collider{};
     bool has_capsule_collider = false;
+    character::CharacterController character_controller{};
+    bool has_character_controller = false;
 };
 
 // Complete scene snapshot taken at Play transition.

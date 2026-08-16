@@ -11,13 +11,16 @@
 #include "matter/character.h"
 #include "matter/ecs.h"
 #include "matter/physics.h"
-#include "matter/world_session.h"  // matter::TickDesc
+#include "matter/world_definition.h"  // RawEntityRecipe
+#include "matter/world_session.h"     // matter::TickDesc
 #include "../src/ecs/ecs_runtime.h"
+#include "../src/ecs/scene_registry.h"
 
 #include <cmath>
 #include <vector>
 
 using namespace matter;
+using namespace matter::scene;
 
 namespace {
 
@@ -194,6 +197,77 @@ void test_jump_and_latch() {
     CHECK(!cc_of(player).grounded, "the character leaves the ground when jumping");
 }
 
+// M4: a scene can AUTHOR a CharacterController; the schema converts a slope
+// limit given in degrees to the stored cosine, adds a MoveIntent so the system
+// matches, and the controller system then drives the authored entity.
+void test_authored_character_runs() {
+    ecs_runtime::Runtime runtime;
+    character::register_character_systems(runtime.world());
+
+    std::vector<RawEntityRecipe> raw = {
+        {"player", "Player", "",
+         R"({"LocalTransform":{"translation":[0,5,0]},)"
+         R"("CharacterController":{"radius":0.5,"height":2.0,"moveSpeed":6.0,)"
+         R"("maxSlopeAngleDeg":50,"jumpSpeed":7.0}})"}};
+    std::vector<EntityRecipe> recipes;
+    RecipeError err;
+    CHECK(validate_batch(raw, recipes, err), "character recipe validates");
+    SceneGeneration gen;
+    CHECK(instantiate(runtime.world(), recipes.data(),
+                      static_cast<uint32_t>(recipes.size()), gen, err),
+          "character recipe instantiates");
+
+    flecs::entity e = runtime.world().lookup("Player");
+    CHECK(e.is_valid() && e.is_alive(), "authored player entity exists");
+    const auto* cc = e.try_get<character::CharacterController>();
+    CHECK(cc != nullptr, "authored entity has CharacterController");
+    CHECK(e.has<character::MoveIntent>(),
+          "instantiate adds a MoveIntent so the controller system matches it");
+    if (cc != nullptr) {
+        CHECK(near(cc->radius, 0.5f, 1e-4f) && near(cc->height, 2.0f, 1e-4f) &&
+                  near(cc->move_speed, 6.0f, 1e-4f) &&
+                  near(cc->jump_speed, 7.0f, 1e-4f),
+              "authored tunables are applied");
+        CHECK(near(cc->max_slope_cos,
+                   std::cos(50.0f * 3.14159265f / 180.0f), 1e-4f),
+              "maxSlopeAngleDeg (degrees) is stored as its cosine");
+    }
+
+    const float y0 = tf_of(e).translation.y;
+    step(runtime, 30);  // no ground: the controller system should let it fall
+    CHECK(tf_of(e).translation.y < y0 - 0.1f,
+          "the authored character is driven by the controller system");
+}
+
+// M4: MoveIntent is the modular seam — one controller system drives many
+// characters, each steered by whatever writes its intent (here, the test).
+void test_two_characters_move_independently() {
+    ecs_runtime::Runtime runtime;
+    character::register_character_systems(runtime.world());
+    Ground g = make_ground(flat, 33, 64.0f);
+    physics::physics_attach_static_heightfield(runtime.world(), g.desc);
+
+    flecs::entity a = runtime.world()
+                          .entity("A")
+                          .set<ecs::LocalTransform>({{20, 2, 30}, {}, {1, 1, 1}})
+                          .set<character::CharacterController>({})
+                          .set<character::MoveIntent>({});
+    flecs::entity b = runtime.world()
+                          .entity("B")
+                          .set<ecs::LocalTransform>({{20, 2, 34}, {}, {1, 1, 1}})
+                          .set<character::CharacterController>({})
+                          .set<character::MoveIntent>({});
+    step(runtime, 90);  // settle both onto the ground
+
+    a.set<character::MoveIntent>({{1.0f, 0.0f, 0.0f}, false, false});
+    b.set<character::MoveIntent>({{-1.0f, 0.0f, 0.0f}, false, false});
+    step(runtime, 90);
+
+    CHECK(tf_of(a).translation.x > 21.0f, "character A walks +x");
+    CHECK(tf_of(b).translation.x < 19.0f,
+          "character B walks −x independently under the same system");
+}
+
 }  // namespace
 
 int main() {
@@ -202,9 +276,11 @@ int main() {
     test_climbs_walkable_slope();
     test_slides_down_steep_slope();
     test_jump_and_latch();
+    test_authored_character_runs();
+    test_two_characters_move_independently();
 
     if (g_failures == 0) {
-        printf("ALL PASS (character controller M2)\n");
+        printf("ALL PASS (character controller M2+M4)\n");
         return 0;
     }
     printf("%d FAILURE(S)\n", g_failures);

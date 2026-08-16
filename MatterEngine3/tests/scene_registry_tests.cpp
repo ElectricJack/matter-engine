@@ -143,7 +143,7 @@ static void test_find_component_unknown() {
 }
 
 static void test_component_count() {
-    CHECK(component_count() == 9, "expected 9 registered components");
+    CHECK(component_count() == 10, "expected 10 registered components");
 }
 
 // ---------------------------------------------------------------------------

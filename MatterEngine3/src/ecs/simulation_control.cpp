@@ -124,6 +124,11 @@ bool SimulationControl::capture_snapshot(flecs::world& world) {
             snap.capsule_collider = *cc;
             snap.has_capsule_collider = true;
         }
+        if (const auto* chc =
+                e.try_get<character::CharacterController>()) {
+            snap.character_controller = *chc;
+            snap.has_character_controller = true;
+        }
         snapshot_.entities.push_back(std::move(snap));
     });
 
@@ -159,6 +164,10 @@ bool SimulationControl::restore_snapshot(flecs::world& world) {
         if (snap.has_box_collider) e.set<physics::BoxCollider>(snap.box_collider);
         if (snap.has_sphere_collider) e.set<physics::SphereCollider>(snap.sphere_collider);
         if (snap.has_capsule_collider) e.set<physics::CapsuleCollider>(snap.capsule_collider);
+        if (snap.has_character_controller) {
+            e.set<character::CharacterController>(snap.character_controller);
+            e.set<character::MoveIntent>({});
+        }
         if (!snap.name.empty()) e.set_name(snap.name.c_str());
         id_to_entity[snap.id.value] = e;
     }

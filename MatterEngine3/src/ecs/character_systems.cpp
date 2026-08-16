@@ -50,6 +50,12 @@ void step_character(flecs::world& world,
 }  // namespace
 
 void register_character_systems(flecs::world& world) {
+    // Idempotent: hosts (the editor, tests) may call this every frame or once
+    // per world without knowing whether it already ran. Registering the system
+    // twice would double-step every character, so bail if it already exists.
+    if (world.lookup("MatterCharacterController")) {
+        return;
+    }
     world.component<CharacterController>()
         .member("radius", &CharacterController::radius)
         .member("height", &CharacterController::height)

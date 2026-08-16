@@ -3,6 +3,7 @@
 
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/character.h"
 #include "matter/streaming.h"
 
 namespace matter::scene {
@@ -21,6 +22,10 @@ bool add_kind(flecs::entity e, ComponentKind kind) {
         case ComponentKind::ConvexHullCollider: e.set<physics::ConvexHullCollider>({}); return true;
         case ComponentKind::PartInstance:       e.set<PartInstance>({}); return true;
         case ComponentKind::SectorStreaming:    e.add<streaming::SectorStreaming>(); return true;
+        case ComponentKind::CharacterController:
+            e.set<character::CharacterController>({});
+            e.set<character::MoveIntent>({});
+            return true;
     }
     return false;
 }
@@ -37,6 +42,10 @@ bool remove_kind(flecs::entity e, ComponentKind kind) {
         case ComponentKind::ConvexHullCollider: e.remove<physics::ConvexHullCollider>(); return true;
         case ComponentKind::PartInstance:       e.remove<PartInstance>(); return true;
         case ComponentKind::SectorStreaming:    e.remove<streaming::SectorStreaming>(); return true;
+        case ComponentKind::CharacterController:
+            e.remove<character::CharacterController>();
+            e.remove<character::MoveIntent>();
+            return true;
     }
     return false;
 }
@@ -56,6 +65,8 @@ void copy_components(flecs::entity src, flecs::entity dst) {
     copy_one<physics::BoxCollider>(src, dst);
     copy_one<physics::ConvexHullCollider>(src, dst);
     copy_one<PartInstance>(src, dst);
+    copy_one<character::CharacterController>(src, dst);
+    copy_one<character::MoveIntent>(src, dst);
     if (src.has<streaming::SectorStreaming>()) dst.add<streaming::SectorStreaming>();
 }
 

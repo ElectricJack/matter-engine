@@ -1,7 +1,10 @@
 #include "scene_registry.h"
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/character.h"
 #include "matter/streaming.h"
+
+#include <cmath>
 
 #include <algorithm>
 #include <cstddef>
@@ -155,6 +158,16 @@ static const FieldDescriptor s_part_instance_fields[] = {
 
 static const FieldDescriptor s_sector_streaming_fields[] = {};
 
+static const FieldDescriptor s_character_controller_fields[] = {
+    fd_float("radius", ME_FIELD_OFF(character::CharacterController, radius), 0.05f, 5.0f),
+    fd_float("height", ME_FIELD_OFF(character::CharacterController, height), 0.2f, 5.0f),
+    fd_float("move_speed", ME_FIELD_OFF(character::CharacterController, move_speed), 0.0f, 50.0f),
+    // Stored as the cosine of the slope limit; authored in degrees (see instantiate).
+    fd_float("max_slope_cos", ME_FIELD_OFF(character::CharacterController, max_slope_cos), 0.0f, 1.0f),
+    fd_float("step_up_height", ME_FIELD_OFF(character::CharacterController, step_up_height), 0.0f, 2.0f),
+    fd_float("jump_speed", ME_FIELD_OFF(character::CharacterController, jump_speed), 0.0f, 50.0f),
+};
+
 // ---------------------------------------------------------------------------
 // Component descriptor table.
 // ---------------------------------------------------------------------------
@@ -178,6 +191,9 @@ static const ComponentDescriptor s_descriptors[] = {
      sizeof(PartInstance), alignof(PartInstance)},
     {ComponentKind::SectorStreaming, "SectorStreaming", s_sector_streaming_fields, 0, false,
      sizeof(streaming::SectorStreaming), alignof(streaming::SectorStreaming)},
+    {ComponentKind::CharacterController, "CharacterController",
+     s_character_controller_fields, 6, false,
+     sizeof(character::CharacterController), alignof(character::CharacterController)},
 };
 
 static constexpr uint32_t s_descriptor_count = sizeof(s_descriptors) / sizeof(s_descriptors[0]);
@@ -835,6 +851,26 @@ bool instantiate(flecs::world& world,
             case ComponentKind::SectorStreaming:
                 e.add<streaming::SectorStreaming>();
                 break;
+            case ComponentKind::CharacterController: {
+                std::string chj =
+                    extract_component_value_json(recipe.components_json, key);
+                character::CharacterController cc{};  // struct defaults
+                float f;
+                if (extract_float_field(chj, "radius", f)) cc.radius = f;
+                if (extract_float_field(chj, "height", f)) cc.height = f;
+                if (extract_float_field(chj, "moveSpeed", f)) cc.move_speed = f;
+                if (extract_float_field(chj, "maxSlopeAngleDeg", f))
+                    cc.max_slope_cos = std::cos(f * 3.14159265f / 180.0f);
+                if (extract_float_field(chj, "stepHeight", f))
+                    cc.step_up_height = f;
+                if (extract_float_field(chj, "jumpSpeed", f)) cc.jump_speed = f;
+                e.set<character::CharacterController>(cc);
+                // The controller reads a MoveIntent; give it a zero one so the
+                // system matches. Whatever drives the character (editor input,
+                // AI, script) overwrites it at runtime.
+                e.set<character::MoveIntent>({});
+                break;
+            }
             }
         }
 
