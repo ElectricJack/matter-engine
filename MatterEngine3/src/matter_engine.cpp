@@ -7911,19 +7911,16 @@ void WorldSession::Impl::bake_and_stage_sector(
                     published.boundary = loaded->boundary;
 
                     // Terrain collision (character-controller M1): attach a
-                    // static heightfield collider for the finest (level-0) tiles
-                    // of a heightfield world, so a physics character can stand on
-                    // and slide across streamed ground. Sampled analytically from
-                    // the world field (no dependency on the render mesh), with a
-                    // world-shared height range so neighbouring tiles quantize
-                    // identically and line up seamlessly. Rides the existing
-                    // streaming residency — level-0 tiles are the near-anchor
-                    // ones — and is memory-capped. Volumetric (cave) worlds use
-                    // the mesh path and a player-follow anchor lands in M1's
-                    // remaining wiring / M3.
-                    if (world_field && world_field->is_heightfield() &&
-                        !world_volumetric_sectors &&
-                        sector_level_of(key.rung) == 0 &&
+                    // static collider for the finest (level-0) resident tiles so
+                    // a physics character can stand on and slide across streamed
+                    // ground. Heightfield worlds sample the world field into a
+                    // heightfield shape (seam-free via a shared height range);
+                    // volumetric (cube-tile) worlds build a triangle-mesh shape
+                    // from the resident tile mesh with a downward seam skirt.
+                    // Rides the existing streaming residency (level-0 tiles are
+                    // the near-anchor ones) and is memory-capped. A player-follow
+                    // anchor lands in M3.
+                    if (world_field && sector_level_of(key.rung) == 0 &&
                         published.collider == 0) {
                         if (terrain_collider_count >= kMaxTerrainColliders) {
                             if (!terrain_collider_cap_warned) {
@@ -7935,19 +7932,60 @@ void WorldSession::Impl::bake_and_stage_sector(
                             }
                         } else {
                             const float col_size = sector_size_for(key.rung);
-                            const int samples = std::clamp(
-                                static_cast<int>(std::lround(col_size)) + 1,
-                                9, 33);
-                            auto hf =
-                                matter::terrain_collider::build_heightfield_collider(
-                                    [this](float x, float z) {
-                                        return world_field->height_at(x, z);
-                                    },
-                                    key.tx, key.tz, col_size, samples,
-                                    -1000.0f, 1000.0f, /*friction=*/0.9f);
-                            const matter::physics::TerrainColliderHandle h =
-                                matter::physics::physics_attach_static_heightfield(
-                                    ecs_runtime.world(), hf.collider());
+                            matter::physics::TerrainColliderHandle h = 0;
+                            // A heightfield-recognized world uses the analytic
+                            // surface collider even when it RENDERS with
+                            // volumetric cube tiles (the field's height is still
+                            // the ground). For those, only the cube whose
+                            // vertical span straddles the surface gets a
+                            // collider, so each XZ column has one, not one per
+                            // stacked cube.
+                            bool at_surface = true;
+                            if (world_field->is_heightfield() &&
+                                world_volumetric_sectors) {
+                                const float cx = float(key.tx) * col_size +
+                                                 col_size * 0.5f;
+                                const float cz = float(key.tz) * col_size +
+                                                 col_size * 0.5f;
+                                const float surf =
+                                    world_field->height_at(cx, cz);
+                                const float ylo = float(key.ty) * col_size;
+                                at_surface =
+                                    surf >= ylo - 0.5f * col_size &&
+                                    surf <= ylo + 1.5f * col_size;
+                            }
+                            if (world_field->is_heightfield() && at_surface) {
+                                const int samples = std::clamp(
+                                    static_cast<int>(std::lround(col_size)) + 1,
+                                    9, 33);
+                                auto hf = matter::terrain_collider::
+                                    build_heightfield_collider(
+                                        [this](float x, float z) {
+                                            return world_field->height_at(x, z);
+                                        },
+                                        key.tx, key.tz, col_size, samples,
+                                        -1000.0f, 1000.0f, /*friction=*/0.9f);
+                                h = matter::physics::
+                                    physics_attach_static_heightfield(
+                                        ecs_runtime.world(), hf.collider());
+                            } else if (!world_field->is_heightfield() &&
+                                       loaded != nullptr &&
+                                       !loaded->lod_mesh_data.empty()) {
+                                // Triangle-mesh collider from the resident tile
+                                // mesh; skirt the open faces by ~2 native voxels
+                                // to bridge the unwelded cross-level seam gap.
+                                const int level = sector_level_of(key.rung);
+                                const float voxel = 2.0f * float(1 << level);
+                                const auto& geom = loaded->lod_mesh_data.front();
+                                auto md = matter::terrain_collider::
+                                    build_mesh_collider(
+                                        geom, world_volumetric_sectors, key.tx,
+                                        key.ty, key.tz, col_size,
+                                        /*skirt=*/2.0f * voxel,
+                                        /*friction=*/0.9f);
+                                h = matter::physics::physics_attach_static_mesh(
+                                    ecs_runtime.world(), md.collider());
+                            }
                             if (h != 0) {
                                 published.collider = h;
                                 ++terrain_collider_count;
