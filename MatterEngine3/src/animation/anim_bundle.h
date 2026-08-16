@@ -44,6 +44,16 @@ struct BundleCandidates {
 // Test-only companion for deterministic same-process publication contention.
 void release_animation_bundle_test_lock();
 void set_animation_bundle_test_replace_legacy_lock_directory_once();
+// Checksum of a part's REP0 body section, the value stored in
+// BundleIdentity::part_body_checksum. The animation link binds to the part
+// BODY, so this is deliberately the REP0 section rather than the whole file
+// (post-M4 a part shares its .bundle with the flat ladder / impostor atlas).
+// Exposed so the bake PRODUCER (script_host) and the publish/load VALIDATORS
+// compute it the exact same way — a second private copy is what silently broke
+// AnimatedRigGallery's commit after the M4 migration (issue 55f61c18).
+bool checksum_part(const std::filesystem::path& part_file, uint64_t part_hash,
+                   uint64_t& out);
+
 bool publish_animation_bundle(const BundleCandidates&, const BundleIdentity&, Diagnostics&);
 bool load_committed_animation_bundle(const std::filesystem::path&, uint64_t,
                                      BLASManager&, AnimAsset&, Diagnostics&);

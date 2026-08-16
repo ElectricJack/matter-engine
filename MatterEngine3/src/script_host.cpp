@@ -74,14 +74,16 @@ void report_animation_diagnostics(BakeResult& out,
     report_animation_diagnostics(out, diagnostics.items);
 }
 
-uint64_t part_body_checksum(const std::filesystem::path& path) {
-    FILE* f = std::fopen(path.string().c_str(), "rb");
-    if (!f) return 0;
-    std::fseek(f, 0, SEEK_END); const long size = std::ftell(f); std::fseek(f, 0, SEEK_SET);
-    std::vector<unsigned char> bytes(size > 40 ? size_t(size) : 0);
-    const bool ok = !bytes.empty() && std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
-    std::fclose(f); if (!ok) return 0;
-    uint64_t h=1469598103934665603ull; for (size_t i=40;i<bytes.size();++i) { h^=bytes[i]; h*=1099511628211ull; } return h;
+// Delegate to the animation bundle's own REP0-section checksum so the value
+// stored in BundleIdentity::part_body_checksum matches what the publish/load
+// validators recompute. This used to hash the whole candidate file from
+// offset 40, which was the part body only before the M4 bundle migration wrote
+// an MPBN wrapper around REP0 -- after M4 the producer and validator could
+// never agree, so every AnimatedRigGallery commit was rejected as
+// "bundle.candidate" and the world loaded with no rig (issue 55f61c18).
+uint64_t part_body_checksum(const std::filesystem::path& path, uint64_t resolved_hash) {
+    uint64_t out = 0;
+    return matter::animation::checksum_part(path, resolved_hash, out) ? out : 0;
 }
 
 // Resolve the authored direct-triangle claims while the original build stream
@@ -2307,7 +2309,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                  part_asset::save_v2(part_candidate.string(),blas,tlas,kids.empty()?nullptr:kids.data(),kids.size(),lods,emitters,link,r.resolved_hash) &&
                  matter::animation::save_anim_candidate(asset,anim_candidate,diagnostics);
             matter::animation::BundleIdentity identity; identity.resolved_hash=r.resolved_hash; identity.nonce=nonce;
-            identity.part_body_checksum=part_body_checksum(part_candidate); identity.anim_body_checksum=matter::animation::anim_body_checksum(asset);
+            identity.part_body_checksum=part_body_checksum(part_candidate,r.resolved_hash); identity.anim_body_checksum=matter::animation::anim_body_checksum(asset);
             identity.target_abi_tag=matter::animation::kAnimationTargetAbiTag; identity.ozz_tag_hash=matter::animation::kAnimationOzzTagHash;
             identity.lods=matter::animation::manifest_lod_signatures(binding);
             if (ok) ok=matter::animation::publish_animation_bundle({part_candidate,anim_candidate,root},identity,diagnostics);
