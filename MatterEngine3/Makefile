@@ -170,7 +170,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/render/lod_trace.cpp \
           src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
-          src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp src/ecs/terrain_collider_build.cpp \
+          src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp src/ecs/terrain_collider_build.cpp src/ecs/character_systems.cpp \
           src/scene/scene_service.cpp src/scene/scene_change_tracker.cpp \
           src/matter_engine.cpp \
           src/refine_controller.cpp \

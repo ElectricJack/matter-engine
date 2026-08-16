@@ -7,6 +7,7 @@
 #include "matter/world_session.h"
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/character.h"  // walking mode (M3)
 #include "matter/scene.h"
 #include "matter/streaming.h"
 #include "ecs/simulation_control.h"
@@ -1361,6 +1362,19 @@ int main() {
     bool left_mouse_down = false;
     bool camera_capture = false;
     bool tab_down = false;
+    // ---- walking mode (character controller M3) ------------------------------
+    bool walk_mode = false;
+    bool walk_key_down = false;         // 'G' toggle edge
+    bool walk_jump_down = false;        // Space edge (jump)
+    flecs::entity_t walk_player = 0;    // spawned player entity
+    const void* walk_registered_world = nullptr;  // world the system is registered on
+    float walk_yaw = 0.0f;              // mouse-look, radians
+    float walk_pitch = 0.0f;
+    double walk_last_cx = 0.0, walk_last_cy = 0.0;
+    bool walk_have_cursor = false;
+    // Headless proof: on world-ready, spawn a character on the streamed terrain,
+    // force Play + walk mode, and hold forward so a screenshot shows it standing.
+    const bool walk_test = std::getenv("MATTER_WALK_TEST") != nullptr;
     bool f9_down = false;
     bool f10_down = false;
     bool f8_down = false;
@@ -3586,6 +3600,210 @@ int main() {
         if (bake_ready) ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera,
                                    !stats.freeze_stream_anchor);
+
+        // ---- walking mode (character controller M3) -------------------------
+        // 'G' toggles a first-person capsule that walks/slides on the streamed
+        // terrain. Registers the fixed-pipeline controller system once per
+        // world, spawns the player onto the terrain via a downward world-ray,
+        // feeds WASD + mouse look into its MoveIntent before the tick, and lets
+        // the camera follow it. MATTER_WALK_TEST forces it on for a headless
+        // screenshot that proves the character stands on streamed ground.
+        if (!walk_test && key_pressed(window, GLFW_KEY_G, walk_key_down)) {
+            walk_mode = !walk_mode;
+            if (walk_mode) {
+                std::string werr;
+                sim_control.play(session->ecs(), werr);
+                if (!camera_capture) {
+                    camera_capture = true;
+                    camera_controller.set_capture(window, true,
+                                                  camera_prefs.raw_mouse_motion);
+                }
+                walk_have_cursor = false;
+            }
+        }
+        if (bake_ready && (walk_mode || walk_test)) {
+            flecs::world& w = session->ecs();
+            if (w.c_ptr() != walk_registered_world) {
+                matter::character::register_character_systems(w);
+                walk_registered_world = w.c_ptr();
+                walk_player = 0;  // fresh world: any previous player id is stale
+            }
+            if (walk_test && !walk_mode) {
+                walk_mode = true;
+                std::string werr;
+                sim_control.play(session->ecs(), werr);
+            }
+
+            flecs::entity player =
+                walk_player != 0 ? w.entity(walk_player) : flecs::entity();
+            // Spawn onto the terrain below the camera. Uses the session's CPU
+            // world tracer (over the placed terrain, independent of physics
+            // colliders), so the ground is found even before colliders have
+            // streamed in — then the camera-follow chain descends the streaming
+            // anchor to the player and the terrain colliders stream in around it.
+            if (walk_mode && (walk_player == 0 || !player.is_alive())) {
+                const float origin[3] = {camera.position.x,
+                                         camera.position.y + 5.0f,
+                                         camera.position.z};
+                const float dir[3] = {0.0f, -1.0f, 0.0f};
+                matter::RayHit rh{};
+                if (session->raycast(origin, dir, camera.position.y + 2000.0f,
+                                     rh) &&
+                    rh.t >= 0.0f) {
+                    const float ground_y = origin[1] - rh.t;
+                    matter::character::CharacterController cc{};
+                    matter::ecs::LocalTransform lt{};
+                    // Spawn at ~rest height so it barely settles.
+                    lt.translation = {origin[0],
+                                      ground_y + cc.height * 0.5f + 0.1f,
+                                      origin[2]};
+                    flecs::entity np =
+                        w.entity()
+                            .set<matter::ecs::LocalTransform>(lt)
+                            .set<matter::character::CharacterController>(cc)
+                            .set<matter::character::MoveIntent>({});
+                    walk_player = np.id();
+                    player = np;
+                    const matter::Float3 f{camera.target.x - camera.position.x,
+                                           camera.target.y - camera.position.y,
+                                           camera.target.z - camera.position.z};
+                    walk_yaw = std::atan2(f.x, f.z);
+                    const float fl =
+                        std::sqrt(f.x * f.x + f.y * f.y + f.z * f.z);
+                    walk_pitch =
+                        fl > 1e-4f
+                            ? std::asin(std::max(-1.0f, std::min(1.0f, f.y / fl)))
+                            : 0.0f;
+                }
+            }
+
+            // Safety floor: while physics colliders are still streaming in under
+            // the character (streaming has bake latency; the CPU tracer is
+            // immediate), keep it on the traced terrain surface so it never
+            // falls through. Only fires while ungrounded; once a real collider
+            // grounds it, the mover holds it above the surface and this is a
+            // no-op. Holding it here also keeps the streaming anchor at the
+            // ground so the level-0 tiles (and their colliders) fill in.
+            if (walk_mode && player.is_alive()) {
+                const auto* cc0 =
+                    player.try_get<matter::character::CharacterController>();
+                const auto* lt0 = player.try_get<matter::ecs::LocalTransform>();
+                // Only catch TRUE fall-through — an ungrounded character with no
+                // physics collider beneath it (a streaming gap). If a collider
+                // IS present, leave it to the mover, which correctly slides the
+                // character down slopes steeper than its limit rather than
+                // pinning it in place.
+                bool needs_floor = false;
+                if (cc0 != nullptr && lt0 != nullptr && !cc0->grounded) {
+                    matter::physics::PhysicsWorldRayHit probe{};
+                    const bool has_collider =
+                        matter::physics::physics_cast_ray_world(
+                            w,
+                            {lt0->translation.x, lt0->translation.y,
+                             lt0->translation.z},
+                            {0.0f, -(cc0->height + 2.0f), 0.0f}, ~0ull, probe);
+                    needs_floor = !has_collider;
+                }
+                if (needs_floor) {
+                    const float o[3] = {lt0->translation.x,
+                                        lt0->translation.y + 50.0f,
+                                        lt0->translation.z};
+                    const float d[3] = {0.0f, -1.0f, 0.0f};
+                    matter::RayHit rh{};
+                    if (session->raycast(o, d, lt0->translation.y + 2050.0f,
+                                         rh) &&
+                        rh.t >= 0.0f) {
+                        const float surf = o[1] - rh.t;
+                        const float rest = surf + cc0->height * 0.5f;
+                        if (lt0->translation.y < rest) {
+                            matter::ecs::LocalTransform lt = *lt0;
+                            lt.translation.y = rest;
+                            player.set<matter::ecs::LocalTransform>(lt);
+                            matter::character::CharacterController cc = *cc0;
+                            cc.velocity.y = 0.0f;
+                            player
+                                .set<matter::character::CharacterController>(cc);
+                        }
+                    }
+                }
+            }
+
+            if (walk_mode && player.is_alive() &&
+                sim_control.mode() == matter::scene::SimulationMode::Play) {
+                if (camera_capture) {
+                    double cx = 0.0, cy = 0.0;
+                    glfwGetCursorPos(window, &cx, &cy);
+                    if (walk_have_cursor) {
+                        walk_yaw -= float(cx - walk_last_cx) * 0.0025f;
+                        walk_pitch -= float(cy - walk_last_cy) * 0.0025f;
+                        walk_pitch = std::max(-1.4f, std::min(1.4f, walk_pitch));
+                    }
+                    walk_last_cx = cx;
+                    walk_last_cy = cy;
+                    walk_have_cursor = true;
+                } else {
+                    walk_have_cursor = false;
+                }
+                const float sy = std::sin(walk_yaw), cyaw = std::cos(walk_yaw);
+                const matter::Float3 fwd{sy, 0.0f, cyaw};
+                const matter::Float3 right{-cyaw, 0.0f, sy};
+                int fmove = 0, smove = 0;
+                if (walk_test) {
+                    // Settle in place: gravity slides it off steep spots onto
+                    // walkable ground, where the mover grounds it.
+                    fmove = 0;
+                } else {
+                    fmove =
+                        (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ? 1 : 0) -
+                        (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ? 1 : 0);
+                    smove =
+                        (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1 : 0) -
+                        (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1 : 0);
+                }
+                matter::Float3 dir{fwd.x * fmove + right.x * smove, 0.0f,
+                                   fwd.z * fmove + right.z * smove};
+                const float dl = std::sqrt(dir.x * dir.x + dir.z * dir.z);
+                if (dl > 1e-3f) {
+                    dir.x /= dl;
+                    dir.z /= dl;
+                } else {
+                    dir = {0.0f, 0.0f, 0.0f};
+                }
+                const bool jump =
+                    !walk_test &&
+                    key_pressed(window, GLFW_KEY_SPACE, walk_jump_down);
+                const bool sprint =
+                    glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+                if (const auto* cur =
+                        player.try_get<matter::character::MoveIntent>()) {
+                    matter::character::MoveIntent mi = *cur;  // preserve jump latch
+                    mi.move_dir = dir;
+                    mi.sprint = sprint;
+                    if (jump) mi.jump = true;
+                    player.set<matter::character::MoveIntent>(mi);
+                }
+            }
+
+            if (walk_mode && player.is_alive()) {
+                const auto* lt = player.try_get<matter::ecs::LocalTransform>();
+                const auto* cc =
+                    player.try_get<matter::character::CharacterController>();
+                if (lt != nullptr && cc != nullptr) {
+                    const matter::Float3 eye{
+                        lt->translation.x,
+                        lt->translation.y + cc->height * 0.5f,
+                        lt->translation.z};
+                    const float cp = std::cos(walk_pitch);
+                    const matter::Float3 look{cp * std::sin(walk_yaw),
+                                              std::sin(walk_pitch),
+                                              cp * std::cos(walk_yaw)};
+                    camera.position = eye;
+                    camera.target = {eye.x + look.x, eye.y + look.y,
+                                     eye.z + look.z};
+                }
+            }
+        }
+
         matter::TickDesc tick{};
         // Slow motion scales the frame delta only. fixed_delta_seconds is left
         // alone so the fixed step keeps its size and simply occurs less often;
@@ -4437,7 +4655,10 @@ int main() {
                 if ((camera_input_order.camera_update_allowed() ||
                      camera_capture) &&
                     !viewer::issue_reporter_wants_mouse(issue_state) &&
-                    !cam_path_running) {
+                    !cam_path_running && !walk_mode) {
+                    // Walk mode drives the camera from the character each frame
+                    // (before the tick); the free-fly controller must not fight
+                    // it.
                     camera_controller.update(window, dt, camera, camera_prefs);
                 }
             }
