@@ -272,6 +272,18 @@ ECS_TARGET = build/ecs_tests
 ECS_CPP = ecs_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
+# Character controller (M0). Reuses the ECS runtime closure verbatim (filter out
+# only the ecs_tests entry point) plus the new character system source.
+CHARACTER_TARGET = build/character_controller_tests
+CHARACTER_CPP = character_controller_tests.cpp ../src/ecs/character_systems.cpp $(filter-out ecs_tests.cpp,$(ECS_CPP))
+CHARACTER_C = $(FLECS_C)
+
+# Terrain collider + world-ray foundation (M1). Same runtime closure as ECS;
+# the collider/world-ray code lives in physics_context.cpp already in that set.
+TERRAINCOLLIDER_TARGET = build/terrain_collider_tests
+TERRAINCOLLIDER_CPP = terrain_collider_tests.cpp ../src/ecs/terrain_collider_build.cpp $(filter-out ecs_tests.cpp,$(ECS_CPP))
+TERRAINCOLLIDER_C = $(FLECS_C)
+
 PHYSICS_TARGET = build/physics-tests
 PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
@@ -1396,6 +1408,8 @@ GPU_PIPELINE_CPP += $(ANIMATION_BAKE_HOST_CPP)
 # Collect the sources compiled under each flavor.
 def_CPP_SRCS := $(sort \
     $(ECS_CPP) \
+    $(CHARACTER_CPP) \
+    $(TERRAINCOLLIDER_CPP) \
     $(ANIMATION_STORE_CPP) \
     $(ANIMATION_BUDGET_CPP) \
     $(PHYSICS_CPP) \
@@ -1571,6 +1585,8 @@ EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
     ../src/event/dispatch_context.cpp)
 
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
+CHARACTER_OBJS = $(call obj_list,def,$(CHARACTER_CPP)) $(call obj_list,flecsc,$(CHARACTER_C)) $(EVENT_IMPL_DEF_OBJS)
+TERRAINCOLLIDER_OBJS = $(call obj_list,def,$(TERRAINCOLLIDER_CPP)) $(call obj_list,flecsc,$(TERRAINCOLLIDER_C)) $(EVENT_IMPL_DEF_OBJS)
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
 # The animation suites below reach physics_context.cpp through the same ECS
 # runtime closure (ANIMATION_ECS_RUNTIME_REQUIRED / ANIMATION_STORE_CPP), so
@@ -1676,7 +1692,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-character run-terraincollider run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1849,6 +1865,18 @@ $(ECS_TARGET): check-ecs-animation-sources $(ECS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLIN
 
 run-ecs: $(ECS_TARGET)
 	./$(ECS_TARGET)
+
+$(CHARACTER_TARGET): $(CHARACTER_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(CHARACTER_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
+
+run-character: $(CHARACTER_TARGET)
+	./$(CHARACTER_TARGET)
+
+$(TERRAINCOLLIDER_TARGET): $(TERRAINCOLLIDER_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(TERRAINCOLLIDER_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
+
+run-terraincollider: $(TERRAINCOLLIDER_TARGET)
+	./$(TERRAINCOLLIDER_TARGET)
 
 $(PHYSICS_TARGET): check-physics-animation-sources $(PHYSICS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(PHYSICS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
