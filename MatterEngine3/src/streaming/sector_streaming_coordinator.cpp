@@ -1,3 +1,22 @@
+// MatterEngine3/src/streaming/sector_streaming_coordinator.cpp — see
+// sector_streaming_coordinator.h for the design (intent vs worker, the tagging
+// scheme, the publication protocol and the threading rules).
+//
+// Reading guide for this file, in declaration order: the selection-tick
+// instrumentation and the tag-identity predicates; the no-throw worker-step
+// wrapper; the three small helper classes (admission capacity, the thread-safe
+// pending-eviction batch, the publication transaction guard); Coordinator,
+// whose caller-side entry points are all short lock-and-record functions and
+// whose real work is concentrated in worker_step(); and finally
+// ProfileActivationGate.
+//
+// Two habits recur and are deliberate rather than defensive noise:
+//   - reserve-before-mutate, so an allocation failure leaves state unchanged
+//     and the operation can simply be retried;
+//   - catch(...) -> return false at every noexcept boundary, because these
+//     paths run on the streaming lane and during teardown where propagating
+//     would terminate the process.
+
 #include "sector_streaming_coordinator.h"
 
 #include <algorithm>
@@ -51,6 +70,14 @@ TickStats& tick_stats() {
     return s;
 }
 
+// Identity for the tag-tracking vectors. same_request/same_eviction compare the
+// FULL tag — owner, generation, issuance AND the sector coordinates — so a
+// re-issued request for the same sector after a restart is a distinct entry and
+// a stale completion can never match it.
+//
+// same_sector is the deliberate exception: it compares coordinates only,
+// because a streamer eviction carries no tag and has to be correlated with
+// whichever resident request currently covers that sector.
 bool same_request(const TaggedRequest& lhs, const TaggedRequest& rhs) {
     return lhs.owner == rhs.owner && lhs.generation == rhs.generation &&
            lhs.issuance == rhs.issuance &&
@@ -93,6 +120,10 @@ void set_error_noexcept(std::string& error, const char* message) noexcept {
 
 } // namespace
 
+// Runs one worker step behind a hard no-throw boundary: std::bad_alloc is
+// reported as OutOfMemory, anything else as Internal, and the reporting call is
+// itself wrapped so a throwing handler cannot take the worker down. Both
+// callbacks may be null (a null step is simply not run).
 void run_idle_worker_step_noexcept(
     void* step_context,
     IdleWorkerStep step,
@@ -117,6 +148,12 @@ void run_idle_worker_step_noexcept(
     }
 }
 
+// First-fit over the fixed occupancy bitmap; `slot` receives the index, which
+// the caller must hand back to release(). Returning false means FULL, which is
+// a normal outcome: the claim is what bounds in-flight publications, so a
+// caller that cannot get one must wait rather than dispatch. No internal
+// synchronization — the session serializes every call under its completion
+// mutex.
 bool PublicationCompletionCapacity::try_reserve(size_t& slot) noexcept {
     if (size_ == kCapacity) return false;
     for (size_t index = 0; index < occupied_.size(); ++index) {
@@ -152,6 +189,14 @@ size_t PublicationCompletionCapacity::size() const noexcept {
     return size_;
 }
 
+// Appends `evictions` under the batch's own lock, skipping tags already pending
+// and duplicates within the source batch itself.
+//
+// Two passes on purpose: the first only COUNTS the additions so the single
+// reserve happens before anything is pushed, which is what makes a failure
+// leave `pending_` byte-for-byte as it was and the whole call retryable.
+// Returns false on overflow or on any exception. Dedup is a linear scan per
+// element (quadratic in the batch size); batches are small by construction.
 bool PendingEvictionBatch::append(
     const std::vector<TaggedEviction>& evictions,
     void* fault_context,
@@ -199,6 +244,12 @@ bool PendingEvictionBatch::append(
     }
 }
 
+// Applies the whole pending set through `endpoint`, which is called OUTSIDE the
+// lock (it reaches into app/GPU state) against a value snapshot taken under it.
+// Tags are erased only after the endpoint reports success for the COMPLETE
+// snapshot, so a failed apply retries exactly the same set instead of losing
+// it, and anything appended while the endpoint ran survives untouched. An empty
+// set succeeds trivially.
 bool PendingEvictionBatch::apply(
     const Endpoint& endpoint,
     std::string& error) noexcept {
@@ -278,6 +329,11 @@ PublicationTransaction::PublicationTransaction(
       rollback_(rollback),
       acknowledge_(acknowledge) {}
 
+// Completes a transaction that was never resolved — including one whose
+// commit()/fail() failed, since those leave it active precisely so this runs.
+// Re-commits when a commit was already intended, otherwise rolls back and
+// acknowledges false, discarding any error text (there is nobody left to report
+// it to).
 PublicationTransaction::~PublicationTransaction() noexcept {
     if (!active_) return;
     if (publish_intent_) {
@@ -339,6 +395,11 @@ void Coordinator::set_profile(
     ++profile_revision_;
 }
 
+// Records the latest anchor position as intent, ignored unless `owner` is the
+// currently intended owner. Note it bumps NO revision: an anchor move is the
+// steady-state case and must not restart streaming, so the worker simply reads
+// whatever is here on its next tick. clear_anchor() does bump one, because
+// losing the anchor forces a teardown.
 void Coordinator::submit_anchor(flecs::entity_t owner, float x, float y,
                                 float z) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -399,6 +460,15 @@ uint64_t Coordinator::allocate_issuance() {
     return last_issuance_;
 }
 
+// Moves the streamer's pending evictions into the coordinator's own queue,
+// tagging each with the issuance of the resident request covering that sector
+// (0 when none is tracked).
+//
+// Ordering is append-then-commit-then-drop: the tags are pushed first, and if
+// SectorStreamer::commit_evictions fails the appended range is truncated back
+// off, so the streamer and the coordinator can never disagree about which
+// evictions have changed hands. Resident entries are erased only after that
+// commit succeeds.
 void Coordinator::collect_streamer_evictions(
     void* fault_context,
     EvictionTransferFault fault) {
@@ -479,6 +549,11 @@ void Coordinator::clear_worker_streamer(
     worker_generation_ = 0;
 }
 
+// Recomputes the externally visible status from worker state and stores it —
+// but ONLY if the attachment revision has not moved since worker_step sampled
+// it. A detach that raced this tick must not be overwritten by a snapshot
+// describing the world it just left. Counts are clamped into uint32 by
+// snapshot_count.
 void Coordinator::publish_snapshot(
     uint64_t attachment_revision,
     const std::optional<matter_stream::Config>& profile,
@@ -503,6 +578,29 @@ void Coordinator::publish_snapshot(
     if (attachment_revision_ == attachment_revision) published_snapshot_ = next;
 }
 
+// One streaming-lane tick, and the only place the SectorStreamer is driven.
+// Four phases, in order:
+//
+//   1. Sample intent under the lock — intended owner/profile/anchor, all four
+//      revision counters, and the acknowledgement inbox, which is SWAPPED out
+//      so each acknowledgement is consumed exactly once.
+//   2. Reconcile. An owner change, ANY moved revision (attach/detach, profile,
+//      anchor reset, restart) or a lost anchor tears the streamer down
+//      entirely; there is no incremental reconfiguration. The next tick then
+//      builds a fresh streamer with a new generation, which is what makes every
+//      request from the old one recognizably stale.
+//   3. Drive selection: build the streamer on first use (allocating its
+//      generation) and call SectorStreamer::update at the current anchor. That
+//      call is the entire selection pass and the thing MATTER_STREAM_TICK_TRACE
+//      times.
+//   4. Retire acknowledgements, collect the streamer's evictions, publish the
+//      status snapshot.
+//
+// An acknowledgement whose owner/generation no longer match the worker's, or
+// whose request is no longer tracked as issued, is dropped silently — that is
+// the stale-completion path, not an error. A sector the caller published but
+// the streamer refuses (on_published false) becomes an eviction, but only when
+// begin_publication had claimed it; otherwise nothing downstream is holding it.
 void Coordinator::worker_step(
     void* fault_context,
     EvictionTransferFault fault) {
@@ -634,6 +732,19 @@ void Coordinator::worker_step(
     publish_snapshot(attachment_revision, profile, profile_error);
 }
 
+// Issues the next sector the streamer wants, tagged with the worker's
+// (owner, generation) and a fresh issuance, and tracks it as both issued and a
+// publication candidate.
+//
+// Returns false as a NORMAL outcome in three cases: no streamer yet; intent has
+// moved on since the worker applied it (a detach/reattach or an anchor reset in
+// flight); or the streamer has nothing to ask for. It is never an error report.
+//
+// The allocation order is load-bearing: both tracking vectors are reserved
+// BEFORE SectorStreamer::next_request mutates its inflight set, and the inner
+// catch un-tracks the request and cancels it in the streamer — so an allocation
+// failure anywhere here cannot leave a sector inflight with nobody to complete
+// it. `fault` fires at exactly those two tracking points for tests.
 bool Coordinator::next_request(
     TaggedRequest& out,
     void* fault_context,
@@ -686,6 +797,12 @@ bool Coordinator::next_request(
     }
 }
 
+// Claims a completed request for publication, moving it from the candidate list
+// to the publishing list. Returns false when the request's (owner, generation)
+// no longer matches an Active published snapshot, or when it is not (or no
+// longer) a candidate; in both cases the caller must acknowledge false instead
+// of publishing. Membership in the publishing list is what makes a later
+// failure roll back as an eviction rather than silently vanishing.
 bool Coordinator::begin_publication(
     const TaggedRequest& request) noexcept {
     try {
@@ -711,6 +828,10 @@ bool Coordinator::begin_publication(
     }
 }
 
+// Moves the whole local eviction queue into the session-owned batch, clearing
+// the local copy only on success. A failed transfer leaves the queue intact for
+// the next attempt — dropping an eviction tag would leave a sector resident
+// downstream with nothing left to release it.
 bool Coordinator::transfer_evictions(
     PendingEvictionBatch& destination,
     void* fault_context,
@@ -728,6 +849,10 @@ std::vector<TaggedEviction> Coordinator::take_evictions() {
     return result;
 }
 
+// Final teardown: drops both the intent and the worker halves, streamer
+// included, leaving the coordinator as constructed. Call only once the worker
+// has stopped — it takes the mutex but does not synchronize with a concurrent
+// worker_step, which touches unguarded worker-lane state.
 void Coordinator::terminal_clear() noexcept {
     try {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -752,6 +877,9 @@ void Coordinator::terminal_clear() noexcept {
     }
 }
 
+// Holds a profile PRIVATELY. Installation stages build one incrementally, and
+// nothing reaches Coordinator until publish() — which is what keeps a
+// half-configured profile from ever starting a streamer.
 void ProfileActivationGate::stage(const matter_stream::Config& profile) {
     staged_ = profile;
 }

@@ -1,3 +1,26 @@
+// MatterEngine3/src/animation/animation_systems.cpp
+//
+// Implementation of `AnimationSystems` (see `animation_systems.h` for the
+// phase order, ownership and threading rules) plus the flecs registration
+// that installs the phases.
+//
+// Layout of this file:
+// - An anonymous namespace of math and validation helpers. Matrices here are
+//   `Mat4f` in the engine's ROW-major convention with translation in the last
+//   column (`m[3]`, `m[7]`, `m[11]`); do not mix them with a column-major
+//   convention borrowed from another library.
+// - `AnimationPoseSnapshotStore` - the double-buffered pose publication store.
+// - The service bridge: `refresh_service_binding` / `detach_service_binding`
+//   and the checkpoint capture/validate/restore trio.
+// - `run_fixed_pre` ... `run_frame`, in schedule order, then
+//   `register_animation_systems`.
+//
+// Conventions used throughout: every per-animator map is keyed by
+// `animator_key()`; a phase never throws or asserts on bad per-animator state,
+// it `continue`s past that animator so one broken binding cannot stall the
+// whole schedule; and `(void)` on a publish call marks a failure that is
+// intentionally non-fatal.
+
 #include "animation/animation_systems.h"
 #include "animation/animation_math.h"
 
@@ -17,6 +40,9 @@ struct AnimationSystemsContext {
     AnimationSystems* value = nullptr;
 };
 
+// The map key every per-animator container in this file uses. Folding the
+// generation in means a recycled slot index gets a fresh key, so state
+// belonging to a removed animator can never be picked up by its successor.
 uint64_t animator_key(AnimatorInstanceHandle instance) {
     return (uint64_t(instance.slot_index) << 32u) | instance.generation;
 }
@@ -56,6 +82,11 @@ Mat4f multiply_matrix(const Mat4f& a, const Mat4f& b) {
     return out;
 }
 
+// Gauss-Jordan inverse with partial pivoting, over the full 4x4 (no affine
+// shortcut, so a projective row would still invert). Returns false - leaving
+// `out` untouched - when a pivot is non-finite or smaller than 1e-8, which is
+// how a singular or degenerate root transform is rejected rather than
+// producing NaNs downstream.
 bool inverse(const Mat4f& source, Mat4f& out) {
     float a[4][8]{};
     for (int row = 0; row < 4; ++row) for (int column = 0; column < 4; ++column) {
@@ -87,6 +118,11 @@ Quaternion normalize_quaternion(Quaternion q) {
 Quaternion multiply_quaternion(Quaternion a, Quaternion b) {
     return normalize_quaternion(quaternion_multiply(a, b));
 }
+// Extract the rotation from a possibly scaled or sheared matrix. Unlike
+// `model_rotation` in animation_targets.cpp this one orthonormalizes first, so
+// it is the one to use on an entity's world transform, which may carry scale.
+// Returns false for a degenerate basis (zero-length or near-parallel columns),
+// which callers treat as "this root has no usable orientation" and bail on.
 bool matrix_rotation(const Mat4f& m, Quaternion& out) {
     const auto finite3 = [](Float3 v) {
         return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
@@ -164,6 +200,12 @@ bool matrix_rotation(const Mat4f& m, Quaternion& out) {
     return true;
 }
 
+// Fetch an animator root entity's world matrix. Prefers the hierarchy
+// system's cached `WorldTransform` and falls back to composing the entity's
+// own `LocalTransform` only for un-parented roots (see the comment inside).
+// Returns false when the entity has neither, when it is parented but not yet
+// propagated, or when the resulting basis has no extractable rotation - every
+// caller treats false as "skip this animator this tick" rather than an error.
 bool current_entity_world(flecs::world& world, uint64_t entity_id, Mat4f& out) {
     const flecs::entity entity=world.entity(entity_id);
     if(const ecs::WorldTransform* transform=entity.try_get<ecs::WorldTransform>()) {
@@ -230,6 +272,14 @@ bool controller_input_value(const AnimationRuntimeBindingLease::Value& source,
     return false;
 }
 
+// The only world-query interface a native controller ever sees. It wraps the
+// real provider (which may be null) so that: non-finite or negative-distance
+// rays are rejected before reaching it; the per-fixed-tick admission budget is
+// shared across every controller on every animator in that tick; and an
+// over-budget ray becomes an explicit no-hit instead of an unbudgeted direct
+// call. All four counters are references into the owning `AnimationSystems`,
+// so the broker is a stack object valid only for the duration of one fixed
+// post phase.
 class ControllerQueryBroker final : public AnimationWorldQueries {
 public:
     ControllerQueryBroker(const AnimationWorldQueries* source, uint64_t& count,
@@ -274,6 +324,14 @@ bool has_targets_for_cadence(const std::vector<CanonicalTarget>& declarations,
     });
 }
 
+// Emit every marker crossed by moving the clip clock from `previous` to
+// `current`, in traversal order. Handles playing backwards (`current <
+// previous`) and, for looping clips, a step that wraps any number of times -
+// the cycle window is widened by one on each side so a marker sitting exactly
+// on a loop boundary is not skipped. Ties break on `marker_index` for
+// determinism. This is the descriptor-clock path used only by directly
+// registered fixed work; service-bound animators use `emit_crossed_markers`
+// against the evaluator's graph clock instead.
 void emit_runtime_markers(AnimatorInstanceHandle instance, const std::vector<RuntimeClipMarker>& markers,
                           float duration, bool loop, float previous, float current,
                           std::vector<AnimationMarkerEvent>& out) {
@@ -297,6 +355,10 @@ void emit_runtime_markers(AnimatorInstanceHandle instance, const std::vector<Run
     for (const auto& item : items) out.push_back({instance, item.marker.marker_index, item.marker.time});
 }
 
+// The completeness gate for publication: a valid handle, all five streams the
+// same length, and non-null pointers whenever that length is non-zero. A
+// partially filled snapshot is rejected rather than stored, so a consumer that
+// gets a snapshot back never has to check individual streams.
 bool complete(const AnimationPoseSnapshot& snapshot) {
     const uint32_t count = snapshot.local_pose.count;
     return snapshot.instance.valid() &&
@@ -319,6 +381,12 @@ void copy(ArrayView<T> source, std::vector<T>& destination) {
     destination.assign(source.data, source.data + source.count);
 }
 
+// Register one phase body as a flecs system. The `AnimationSystemsContext`
+// singleton carries the `AnimationSystems*`, so the systems keep working
+// across a world that outlives any particular registration and quietly do
+// nothing if the context was cleared. The tag added at the end
+// (`FramePipelineSystem` vs `FixedPipelineSystem`) is what assigns the system
+// to the frame or fixed pipeline.
 template <typename Phase, typename Fn>
 void register_system(flecs::world& world, const char* name, Fn&& fn) {
     flecs::system system = world.system<const AnimationSystemsContext>(name)
@@ -361,6 +429,10 @@ AnimationPoseSnapshot AnimationPoseSnapshotStore::view(
             {buffer.previous_skin_palette.data(), static_cast<uint32_t>(buffer.previous_skin_palette.size())}};
 }
 
+// Deep-copies all five streams into the slot's back buffer, then flips. The
+// copy is what makes a published pose independent of the evaluator storage it
+// came from; the flip is what keeps the previously published pose readable
+// until the next publish overwrites it. Creates the slot on first publish.
 bool AnimationPoseSnapshotStore::publish(const AnimationPoseSnapshot& snapshot) {
     if (!complete(snapshot)) {
         return false;
@@ -504,6 +576,21 @@ AnimationBudgetRuntimeStats AnimationSystems::runtime_stats() const noexcept {
     return result;
 }
 
+// Install or update one animator's binding from a service lease. This is the
+// single entry point through which control writes, target writes and graph
+// replacements all arrive, so it re-validates the whole descriptor every time:
+// target count and chain exclusivity, controller cadence, and that every
+// controller input names an existing Fixed input of the matching type, and
+// that no two controllers claim the same target.
+//
+// What is deliberately PRESERVED across a refresh, when the descriptor and
+// asset identity are unchanged: the clip clock, sampled root transforms and
+// the evaluated target - otherwise a control write would restart the animator.
+// Controller instances are likewise reused unless the descriptor identity or
+// controller count changed.
+//
+// Returns false without mutating any of the three maps if anything fails, so a
+// rejected lease leaves the previous binding intact.
 bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLease& lease) {
     if (!lease.valid() || !lease.descriptor || !lease.descriptor->evaluation) return false;
     const AnimationRuntimeBindingDescriptor& descriptor = *lease.descriptor;
@@ -591,6 +678,15 @@ bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLeas
     return true;
 }
 
+// Advance the smoothing of every target declared at `cadence` (targets of the
+// other cadence are skipped untouched) and commit the result. Desired
+// transforms are stored in WORLD space, so when the animator has a root entity
+// they are first resolved into root-relative space against that root's current
+// world matrix - which is why this runs after physics/hierarchy, not before.
+//
+// All-or-nothing: any failure returns false having committed nothing, because
+// the smoothed candidates are only moved back into `target_runtime_` once
+// every target succeeded.
 bool AnimationSystems::apply_targets(flecs::world& world, AnimatorInstanceHandle instance, EvaluationCadence cadence, double delta_seconds) {
     const uint64_t slot_key=animator_key(instance);
     const auto binding=service_bindings_.find(slot_key); const auto runtime=target_runtime_.find(slot_key);
@@ -713,6 +809,11 @@ bool AnimationSystems::copy_animation_debug_pose(AnimatorInstanceHandle instance
     return true;
 }
 
+// Drop every trace of one animator: root-motion mailbox, fixed work, all four
+// pose stores, both evaluators, the pose-LOD history, both visibility maps,
+// the lease and the target runtime (which destroys its controller instances).
+// Called by the service on remove, replace and detach. Idempotent, and safe
+// for an animator that was never bound.
 void AnimationSystems::detach_service_binding(AnimatorInstanceHandle instance) {
     if (!instance.valid()) return;
     desired_root_motion_.erase(animator_key(instance));
@@ -822,6 +923,14 @@ void AnimationSystems::sample_service_bindings() {
     if (service_ != nullptr) (void)service_->sample_fixed_controls();
 }
 
+// Build one evaluation request per bound animator and run them as a single
+// batch through the fixed evaluator, then publish any pose whose frame serial
+// matches the current frame.
+//
+// The three `*_values` vectors exist to keep the converted control arrays
+// alive: each request holds raw pointers into them, so they must not be
+// resized or destroyed before `evaluate` returns. Reserving up front is a
+// correctness requirement here, not a micro-optimisation.
 void AnimationSystems::evaluate_service_bindings(flecs::world& world, double delta_seconds,
                                                  float accumulator_alpha) {
     const ecs::AnimationFixedState fixed = world.get<ecs::AnimationFixedState>();
@@ -942,6 +1051,10 @@ void AnimationSystems::trace(AnimationScheduleEvent event, double delta_seconds)
     trace_.push_back({event, delta_seconds});
 }
 
+// FixedPreUpdate. Rotates the fixed tick counter and then samples pending
+// fixed API writes through the service, which is the moment gameplay writes
+// made since the last fixed step become observable to evaluation. Nothing is
+// evaluated here.
 void AnimationSystems::run_fixed_pre(flecs::world& world, double fixed_delta) {
     ecs::AnimationFixedState state = world.get<ecs::AnimationFixedState>();
     state.previous_tick = state.current_tick;
@@ -953,6 +1066,17 @@ void AnimationSystems::run_fixed_pre(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedAdvanceClocks, fixed_delta);
 }
 
+// FixedUpdate. Evaluates every bound animator's graph at the current fixed
+// state (alpha 1.0 - presentation interpolation belongs to the frame phase
+// alone), then walks each animator's fixed work to emit crossed markers and
+// publish desired root motion for this tick.
+//
+// Two clock paths meet here: a service-bound animator's markers come from the
+// evaluator's graph clip advances, while a directly registered fixed work
+// record (the test/tool seam) advances its own descriptor clock. Markers from
+// all animators are collected, then stable-sorted into a deterministic
+// (animator, clip, node, time, marker index) order before being appended to
+// `marker_events_`, so emission order does not depend on map iteration.
 void AnimationSystems::run_fixed_update(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedSampleRootChannels, fixed_delta);
     struct OrderedMarker { AnimatorInstanceHandle instance; uint16_t node; uint16_t clip; AnimationMarkerEvent event; };
@@ -1013,6 +1137,12 @@ void AnimationSystems::run_fixed_update(flecs::world& world, double fixed_delta)
     trace(AnimationScheduleEvent::FixedEmitMarkers, fixed_delta);
 }
 
+// PrePhysics. The single authority for root motion: consumes each animator's
+// published motion for this tick and applies it to the root entity's
+// `LocalTransform` (translation added, rotation pre-multiplied), marking the
+// entity modified and dirty so hierarchy propagation picks it up before
+// physics moves kinematic bodies. An animator with no root entity still has
+// its motion consumed and recorded, it is just not applied to the world.
 void AnimationSystems::run_pre_physics(flecs::world& world, double fixed_delta) {
     const uint64_t tick = world.get<ecs::AnimationFixedState>().current_tick;
     for (const auto& pair : fixed_work_) {
@@ -1037,6 +1167,11 @@ void AnimationSystems::run_pre_physics(flecs::world& world, double fixed_delta) 
     trace(AnimationScheduleEvent::PrePhysicsAuthority, fixed_delta);
 }
 
+// Physics and PostPhysicsHierarchy. Animation does no work in these phases;
+// the bodies exist so the schedule boundary is observable in the trace and so
+// the ordering constraint (root motion before physics, target resolution
+// after hierarchy propagation) is expressed in the registered system order
+// rather than only in prose.
 void AnimationSystems::run_physics(double fixed_delta) {
     trace(AnimationScheduleEvent::PhysicsStep, fixed_delta);
 }
@@ -1045,6 +1180,16 @@ void AnimationSystems::run_post_physics(double fixed_delta) {
     trace(AnimationScheduleEvent::PostPhysicsHierarchy, fixed_delta);
 }
 
+// FixedPostUpdate. The heaviest fixed phase, in four stages:
+//  1. Controllers, executed in a deterministic (priority, animator, index)
+//     order. Each gets only its declared Fixed inputs and the shared query
+//     broker; its write batch is validated as a whole and applied only if
+//     every write names a target it owns with finite, in-range values.
+//  2. The tick's world queries, through the same admission budget.
+//  3. Target smoothing plus fixed-cadence IK, publishing the solved pose.
+//  4. Preserving the solved pose into the two fixed snapshot stores, which
+//     become the interpolation endpoints the frame phase reads. These stores
+//     are intentionally not part of renderer publication or checkpoint state.
 void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedEvaluateControllers, fixed_delta);
     // Controller execution is deterministic by (declared priority, animator
@@ -1140,6 +1285,23 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedPublishSnapshot, fixed_delta);
 }
 
+// FrameUpdate. Advances the frame serial, samples pending frame API writes,
+// and produces the presentation pose the renderer consumes.
+//
+// Animators are sorted by (explicit priority, distance, key) from the last
+// committed visibility observations and offered to the pose-LOD scheduler in
+// that order, then admitted against `max_evaluated_joints_per_frame`. A
+// non-admitted animator is republished from its last complete presentation
+// pose (or, failing that, its last fixed pose) under the new frame serial, so
+// the renderer always has something tagged for this frame; only when neither
+// exists does it fall through to the bind-pose fallback counter.
+//
+// Admitted animators are re-evaluated on `presentation_evaluator_` - a copy
+// that must never write back into simulation state - at the interpolated fixed
+// controls, then have fixed target state layered in before any frame-cadence
+// IK. The presentation clock advances by the runtime's wall-clock delta when
+// one was supplied, so a time-scaled simulation does not throttle how often
+// presentation refreshes.
 void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     ecs::AnimationFrameState state = world.get<ecs::AnimationFrameState>();
     ++state.frame_serial;

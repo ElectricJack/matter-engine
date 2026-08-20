@@ -1,3 +1,53 @@
+// ---------------------------------------------------------------------------
+// MatterEngine3/src/dsl_animation.cpp
+//
+// The rig / clip / motion / binding half of `dsl::DslState`. Every animation
+// authoring verb a part script can call lands here: `beginRig`/`root`/`bone`/
+// `socket`/`push`/`pop`/`atJoint`/`radius`/`mirrorBranch`/`endRig`, the clip
+// verbs (`beginClip` .. `generate` .. `endClip`), the motion-graph verbs
+// (`beginMotion`/`input`/`target`/`controller`/nodes/`endMotion`) and the
+// binding verbs (`skin`, `segments`, `attach`, `bind`).
+//
+// How it fits:
+//   - The JS entry points are the `j_*` functions in `dsl_bindings.cpp`; they
+//     coerce arguments and then call the `DslState::rig_*` / `clip_*` /
+//     `motion_*` methods below. Nothing in the engine calls this directly.
+//   - All authored state is held in `DslState::animation_`, an
+//     `AnimationBuildBuffer` (`dsl_animation.h`) created by `begin_rig` and
+//     destroyed with the `DslState`. There is at most ONE rig per bake.
+//   - Validation and canonicalization live in `animation/animation_validate.h`;
+//     the Ozz skeleton/clip compilers in `animation/ozz_adapter.h`. The IR
+//     types (`AnimationBuild`, `JointDef`, `ClipTrack`, `GraphNode`, ...) come
+//     from `animation/animation_ir.h`.
+//
+// Call order: `beginRig` -> `root` -> bones/sockets -> `endRig`, and only then
+// clips, motions and bindings, each of which requires a COMPLETED rig.
+//
+// Error model: every verb is fail-soft. A rejected argument or a wrong session
+// state calls `set_rig_error`, which is sticky and first-error-wins, and the
+// verb returns. Nothing throws and the JS script keeps running; the bake
+// harvests the error afterwards. Failed validation additionally records the
+// full `Diagnostics` list via `record_animation_diagnostics`.
+//
+// Canonicalization: `buffer.canonical` is refreshed after each successful
+// structural edit (`refresh_canonical_animation`). It is therefore absent when
+// no rig was authored AND when the most recent edit failed validation — never
+// stale-but-present.
+//
+// Geometry: bindings do not own triangles. `rig_skin` and the `bind(name, fn)`
+// scope record RANGES — `[op_begin, op_end)` into `DslState::buffer_.ops` and
+// `[triangle_begin, triangle_end)` into the triangle buffer — so the geometry
+// itself stays in the shared build buffer and `cancel_binding_scope` can
+// truncate both back.
+//
+// Units and conventions: metres for translations and joint radii, radians for
+// `clip_rotate`, seconds for clip durations and key times, samples/second for
+// the clip rate. Quaternions are stored xyzw and canonicalized (unit length,
+// positive leading component) so the same authored rig always hashes the same.
+//
+// Threading: one `DslState` and one QuickJS context per bake worker. Nothing
+// here is shared between threads and nothing here takes a lock.
+// ---------------------------------------------------------------------------
 #include "dsl_state.h"
 #include "triangle_emit.hpp"
 
@@ -27,6 +77,11 @@ using matter::animation::JointDef;
 using matter::animation::SocketDef;
 using matter::animation::SourceSpan;
 
+// Validity gate shared by every verb that stores a transform. `valid_transform`
+// is the whole contract: finite translation/rotation/scale, a rotation with
+// non-degenerate length (so it can be normalized), and a strictly positive
+// scale on all three axes. A transform that fails it is refused at the verb
+// rather than being repaired.
 bool finite(float value) { return std::isfinite(value); }
 bool finite3(const Float3& value) { return finite(value.x) && finite(value.y) && finite(value.z); }
 bool finiteq(const Quaternion& value) { return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w); }
@@ -35,6 +90,10 @@ bool valid_transform(const AnimationTransform& value) {
     return finite3(value.translation) && finiteq(value.rotation) && finite3(value.scale) && length2 > 1e-12f &&
            value.scale.x > 0.0f && value.scale.y > 0.0f && value.scale.z > 0.0f;
 }
+// Joint / socket lookup by name. Linear scans over the authored rig, called
+// once or more per verb — fine at authoring scale (a rig is tens of joints),
+// but it is O(joints) and `rig_mirror_branch` calls it inside a loop.
+// Returns -1 for an unknown joint; joints and sockets share one name space.
 int find_joint(const AnimationBuild& build, const std::string& name) {
     for (size_t i = 0; i < build.rig.joints.size(); ++i) if (build.rig.joints[i].name == name) return static_cast<int>(i);
     return -1;
@@ -42,6 +101,11 @@ int find_joint(const AnimationBuild& build, const std::string& name) {
 bool has_socket(const AnimationBuild& build, const std::string& name) {
     return std::any_of(build.rig.sockets.begin(), build.rig.sockets.end(), [&](const SocketDef& s) { return s.name == name; });
 }
+// Normalize in place and pick a canonical sign: `q` and `-q` are the same
+// rotation, so the first non-zero component of (w, x, y, z) is forced positive.
+// That keeps the authored bytes — and therefore the part's resolved hash —
+// stable across two spellings of the same pose. A zero quaternion is left
+// alone (`valid_transform` rejects it upstream).
 void canonicalize(Quaternion& q) {
     const float length = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
     if (length == 0.0f) return;
@@ -49,6 +113,11 @@ void canonicalize(Quaternion& q) {
     const float sign = q.w != 0.0f ? q.w : (q.x != 0.0f ? q.x : (q.y != 0.0f ? q.y : q.z));
     if (sign < 0.0f) { q.x=-q.x; q.y=-q.y; q.z=-q.z; q.w=-q.w; }
 }
+// Mirror a rotation across the plane normal to `axis` (0 = x, 1 = y, 2 = z).
+// Expands the quaternion to a rotation matrix, conjugates it by the reflection
+// (negating the mirrored row AND column, which keeps the determinant +1 so the
+// result is still a rotation), then reads a quaternion back out. Used only by
+// `mirrorBranch`.
 Quaternion reflect_rotation(Quaternion q, int axis) {
     canonicalize(q);
     const float x=q.x, y=q.y, z=q.z, w=q.w;
@@ -122,6 +191,10 @@ void normalize_q(Quaternion& q) {
         q.w /= n;
     }
 }
+// Mirror a joint-local transform across `axis`: negate that component of the
+// translation, mirror the rotation, and take the absolute value of the scale.
+// The mirror lives entirely in the translation and rotation — a negative scale
+// would flip triangle winding on any geometry bound to the mirrored branch.
 AnimationTransform reflected(AnimationTransform value, int axis) {
     if (axis == 0) value.translation.x = -value.translation.x;
     if (axis == 1) value.translation.y = -value.translation.y;
@@ -130,12 +203,25 @@ AnimationTransform reflected(AnimationTransform value, int axis) {
     value.scale.x = std::fabs(value.scale.x); value.scale.y = std::fabs(value.scale.y); value.scale.z = std::fabs(value.scale.z);
     return value;
 }
+// `mirrorBranch`'s implicit rename: replace `from` with `to` in `source`, but
+// only when `from` occurs EXACTLY once. Zero occurrences, two or more, or an
+// empty `from` all return false, so an ambiguous rename is reported as an
+// authoring error instead of being guessed at.
 bool token_name(const std::string& source, const std::string& from, const std::string& to, std::string& out) {
     const size_t pos = source.find(from);
     if (from.empty() || pos == std::string::npos || source.find(from, pos + from.size()) != std::string::npos) return false;
     out = source; out.replace(pos, from.size(), to); return true;
 }
 
+// Re-validate the authored build and replace `buffer.canonical`. Called after
+// every structural edit that can change the IR (endRig, each binding verb).
+//
+// A build with no graph nodes gets a synthetic `__rig_only_output` node so a
+// rig-only part still canonicalizes; `begin_motion` erases that node again when
+// a real motion graph is declared.
+//
+// On failure `buffer.canonical` is left untouched and `diagnostics` carries the
+// reasons — the caller records them and raises the rig error.
 bool refresh_canonical_animation(AnimationBuildBuffer& buffer, const SourceSpan& source,
                                  matter::animation::Diagnostics& diagnostics) {
     AnimationBuild candidate = buffer.authored;
@@ -149,6 +235,10 @@ bool refresh_canonical_animation(AnimationBuildBuffer& buffer, const SourceSpan&
 }
 } // namespace
 
+// The last successfully validated canonical build. Empty when no rig was
+// authored, and also empty when the most recent structural edit failed
+// validation. The no-rig case returns a reference to a function-local static
+// so the returned reference is always valid.
 const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canonical_rig() const {
     static const std::optional<matter::animation::CanonicalAnimationBuild> none;
     return animation_ ? animation_->canonical : none;
@@ -162,12 +252,30 @@ RigDebugState DslState::rig_debug_state() const {
     result.radius = animation_->radius;
     return result;
 }
+// Open the one rig a part may author. Returns the buffer's handle, or 0 after
+// setting the rig error — a second `beginRig`, or one inside an open geometry
+// session, is refused. The handle is a constant (there is exactly one rig per
+// bake); scripts hold it only to spell `rig.<verb>()`.
 uint64_t DslState::begin_rig(const std::string& name) {
     if (animation_) { set_rig_error("only one rig is permitted per bake"); return 0; }
     if (session_ != Session::None || region_open_ || polygon_open_ || contour_open_) { set_rig_error("beginRig inside an open authoring session"); return 0; }
     animation_ = std::make_unique<AnimationBuildBuffer>(); animation_->open = true; animation_->name = name;
     return animation_->handle;
 }
+// ---------------------------------------------------------------------------
+// Rig cursor verbs.
+//
+// The rig is authored with a cursor, not with explicit parent arguments:
+// `root` and `bone` both APPEND a joint and then select it as the parent for
+// whatever is added next; `push`/`pop` save and restore the (parent, radius)
+// pair; `atJoint` re-selects an existing joint without appending anything.
+//
+// `local` is parent-relative (metres for the translation, xyzw quaternion for
+// the rotation) and is canonicalized before it is stored. The joint also
+// captures the cursor's current `radius` (metres) — that is what generated skin
+// geometry is sized from, so `radius()` must be set BEFORE the bones it should
+// apply to.
+// ---------------------------------------------------------------------------
 void DslState::rig_root(const std::string& name, const AnimationTransform& local) {
     if (!rig_open()) { set_rig_error("root outside an open rig session"); return; }
     if (!animation_->authored.rig.joints.empty()) { set_rig_error("multiple roots in rig session"); return; }
@@ -211,6 +319,17 @@ void DslState::rig_socket(const std::string& name, const AnimationTransform& loc
     AnimationTransform normalized = local; canonicalize(normalized.rotation);
     animation_->authored.rig.sockets.push_back({name, animation_->current_parent, normalized, rig_source_});
 }
+// Clone the subtree rooted at `from`, mirrored across `axis` (0 = x, 1 = y,
+// 2 = z), including every socket attached to a joint in that subtree.
+//
+// Destination names come from one of two spellings: an explicit `names` map,
+// which must cover every descendant joint and socket exactly (the subtree root
+// itself maps to `to`), or — when the map is empty — the single-occurrence
+// token replacement `rename_from` -> `rename_to` (see `token_name`).
+//
+// All-or-nothing: every collision and every rename ambiguity, for joints AND
+// sockets, is checked before the first joint is appended, so a rejected
+// mirrorBranch leaves the rig exactly as it was.
 void DslState::rig_mirror_branch(const std::string& from, const std::string& to, int axis, const std::string& rename_from, const std::string& rename_to, const std::map<std::string, std::string>& names) {
     if (!rig_open()) { set_rig_error("mirrorBranch outside an open rig session"); return; }
     if (axis < 0 || axis > 2 || find_joint(animation_->authored, from) < 0 || to.empty()) { set_rig_error("mirrorBranch has an invalid source, axis, or destination"); return; }
@@ -249,6 +368,12 @@ void DslState::rig_mirror_branch(const std::string& from, const std::string& to,
     for (const JointDef& source : joints) { AnimationTransform local=reflected(source.local,axis); const std::string parent = source.name == from ? source.parent : remap[source.parent]; animation_->authored.rig.joints.push_back({remap[source.name], parent, local, source.radius, rig_source_}); }
     for (const auto& cloned : mirrored_sockets) animation_->authored.rig.sockets.push_back({cloned.second,remap[cloned.first.joint],reflected(cloned.first.local,axis),rig_source_});
 }
+// Close the rig and canonicalize it. Requires a balanced push/pop stack.
+//
+// On validation failure the rig stays OPEN (`open` true, `ended` false) and the
+// rig error is set, so every later clip/motion/binding verb also fails with
+// "requires a completed rig" rather than silently authoring against a rig that
+// never validated.
 void DslState::end_rig() {
     if (!rig_open()) { set_rig_error("endRig outside an open rig session"); return; }
     if (!animation_->stack.empty()) { set_rig_error("rig stack left unbalanced at endRig"); return; }
@@ -257,6 +382,18 @@ void DslState::end_rig() {
     animation_->open=false; animation_->ended=true;
 }
 
+// ---------------------------------------------------------------------------
+// Clip authoring.
+//
+// `duration` is seconds; `rate` is samples per second and is only consumed by
+// `generate()` (see `clip_sample_segments`). The ClipTrack container is pushed
+// immediately, and every `clip_*` verb below writes into `clips.back()` — which
+// is why only one clip may be open at a time.
+//
+// Structural clip authoring is refused inside a `bind` scope and inside a
+// `generate()` callback; the pose verbs (`clip_at`/`clip_rotate`/
+// `clip_translate`) are the only ones legal during generate.
+// ---------------------------------------------------------------------------
 void DslState::begin_clip(const std::string& name, float duration, float rate, bool loop, bool additive) {
     if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
     if(animation_&&animation_->generating){set_rig_error("structural authoring is forbidden during generate");return;}
@@ -272,11 +409,24 @@ void DslState::clip_duration(float duration) { if(animation_&&animation_->genera
 void DslState::clip_rate(float rate) { if(animation_&&animation_->generating){set_rig_error("sampleRate is structural and forbidden during generate");return;} if(!animation_||!animation_->clip_open){set_rig_error("sampleRate outside an open clip");return;} animation_->clip_rate=rate; animation_->authored.clips.back().rate=rate; }
 void DslState::clip_loop(bool loop) { if(animation_&&animation_->generating){set_rig_error("loop is structural and forbidden during generate");return;} if(!animation_||!animation_->clip_open){set_rig_error("loop outside an open clip");return;} animation_->clip_loop=loop; animation_->authored.clips.back().loop=loop; }
 void DslState::clip_mode(bool additive) { if(animation_&&animation_->generating){set_rig_error("mode is structural and forbidden during generate");return;} if(!animation_||!animation_->clip_open){set_rig_error("mode outside an open clip");return;} animation_->clip_additive=additive; animation_->authored.clips.back().additive=additive; }
+// Select the joint the pose verbs write to.
+//
+// TWO THINGS WORTH KNOWING. The selection is stored in `animation_->name` —
+// the same field `beginRig` put the rig's name in; while a clip is open that
+// field means "selected joint". And `DslState::translate`/`rotateX`/`rotateY`/
+// `rotateZ` (dsl_state.cpp) REROUTE into `clip_translate`/`clip_rotate`
+// whenever a clip is open and this selection is non-empty. That reroute is how
+// a `generate()` callback poses the rig with the ordinary transform verbs.
 void DslState::clip_at(const std::string& joint) {
     if(!animation_||!animation_->clip_open){set_rig_error("at outside an open clip");return;}
     if(find_joint(animation_->authored,joint)<0){set_rig_error("clip at selects an unknown joint");return;}
     animation_->name=joint;
 }
+// Post-multiply the selected joint's working pose by a rotation of `radians`
+// about the axis (x, y, z); the axis is expected already normalized (the
+// rotateX/Y/Z reroute passes a unit axis). Accumulates into `clip_pose`, which
+// `begin_clip_sample` seeded from the rig's bind pose — `capture_clip_sample`
+// is what turns the accumulated pose into keys.
 void DslState::clip_rotate(float x,float y,float z,float radians) {
     if(!animation_||!animation_->clip_open){set_rig_error("clip rotation outside an open clip");return;}
     const int j=find_joint(animation_->authored,animation_->name); if(j<0){set_rig_error("clip rotation has no selected joint");return;}
@@ -289,6 +439,10 @@ void DslState::clip_translate(float x,float y,float z) {
     if(!finite(x)||!finite(y)||!finite(z)){set_rig_error("clip translation must be finite");return;}
     auto& p=animation_->clip_pose[(size_t)j]; p.translation.x+=x; p.translation.y+=y; p.translation.z+=z;
 }
+// Append a key at `time` (seconds) on `joint`'s track, creating the track on
+// first use. Keys are appended UNSORTED — `capture_clip_sample` and `end_clip`
+// stable-sort each track by time before anything reads it. The track lookup is
+// a linear scan of the clip's tracks.
 void DslState::clip_key(const std::string& joint,float time,const AnimationTransform& value) {
     if(animation_&&animation_->generating){set_rig_error("key is structural and forbidden during generate");return;}
     if(!animation_||!animation_->clip_open){set_rig_error("key outside an open clip");return;}
@@ -301,6 +455,15 @@ void DslState::clip_marker(float normalized_time,const std::string& name) {
     if(!animation_||!animation_->clip_open){set_rig_error("marker outside an open clip");return;}
     animation_->authored.clips.back().markers.push_back({name,normalized_time,rig_source_});
 }
+// One half of the `generate(cb)` protocol, driven by `j_generate` in
+// dsl_bindings.cpp: begin a sample by resetting `clip_pose` to the rig's bind
+// pose, clearing the joint selection, and setting `generating` — which blocks
+// all structural animation authoring AND all geometry authoring for the
+// duration of the callback. The JS callback then poses joints, and
+// `capture_clip_sample` closes the sample.
+//
+// Returns false (with the rig error set) when no clip is open or a generate is
+// already in flight; the caller stops sampling.
 bool DslState::begin_clip_sample() {
     if(!animation_||!animation_->clip_open){set_rig_error("generate outside an open clip");return false;}
     if(animation_->generating){set_rig_error("nested generate callback is forbidden");return false;}
@@ -308,6 +471,12 @@ bool DslState::begin_clip_sample() {
     for(const auto& j:animation_->authored.rig.joints){animation_->clip_pose.push_back(j.local);animation_->clip_pose_joints.push_back(j.name);}
     animation_->name.clear(); return true;
 }
+// Close one `generate()` sample: emit a key for EVERY rig joint at
+// `phase * duration`, whether the callback moved it or not (generated clips are
+// densely sampled), then clear `generating`. `phase` is normalized 0-1.
+//
+// Returns false — after clearing `generating` — when the pose array no longer
+// matches the rig, which the caller treats as "stop sampling".
 bool DslState::capture_clip_sample(float phase) {
     if(!animation_||!animation_->clip_open||animation_->clip_pose.size()!=animation_->authored.rig.joints.size()){if(animation_)animation_->generating=false;return false;}
     auto& clip=animation_->authored.clips.back();
@@ -316,8 +485,20 @@ bool DslState::capture_clip_sample(float phase) {
     for(size_t i=0;i<animation_->clip_pose.size();++i){ ClipTrack* track=nullptr; for(auto& t:clip.tracks)if(t.joint==animation_->clip_pose_joints[i])track=&t; if(!track){clip.tracks.push_back({animation_->clip_pose_joints[i],{},rig_source_});track=&clip.tracks.back();} track->keys.push_back({phase*clip.duration,animation_->clip_pose[i],rig_source_}); }
     animation_->generating=false; return true;
 }
+// Number of sample segments `generate()` should walk: ceil(duration * rate),
+// clamped to [1, UINT32_MAX]. 0 means "not samplable" — no open clip, or a
+// non-finite / non-positive duration or rate — and the caller reports that as
+// an authoring error. A looping clip generates `segments` samples (the wrap
+// key closes the cycle); a non-looping clip generates `segments + 1`.
 uint32_t DslState::clip_sample_segments() const { if(!animation_||!animation_->clip_open||!finite(animation_->clip_duration)||!finite(animation_->clip_rate)||animation_->clip_duration<=0||animation_->clip_rate<=0)return 0; const double n=std::ceil((double)animation_->clip_duration*(double)animation_->clip_rate); return (uint32_t)std::max(1.0,std::min(n,(double)UINT32_MAX)); }
 bool DslState::clip_is_loop() const { return animation_&&animation_->clip_open&&animation_->clip_loop; }
+// Close the clip and COMPILE it. This is the expensive verb in this file: it
+// sorts tracks and markers, applies the loop closure documented below,
+// re-validates the whole build, then builds and serializes the Ozz skeleton
+// (once per rig, into `authored.ozz_skeleton_blob`) and the Ozz animation
+// (into `clip.ozz_blob`).
+//
+// On any failure the clip stays OPEN and the rig error is set.
 void DslState::end_clip() {
     if(animation_&&animation_->generating){set_rig_error("endClip is forbidden during generate");return;}
     if(!animation_||!animation_->clip_open){set_rig_error("endClip outside an open clip");return;}
@@ -357,6 +538,19 @@ void DslState::end_clip() {
     if(!matter::animation::serialize_animation(oa,clip.ozz_blob)||clip.ozz_blob.empty()){set_rig_error("clip serialization failed","clip-compile");return;}
     animation_->clip_open=false; animation_->current_clip.clear(); animation_->name.clear();
 }
+// ---------------------------------------------------------------------------
+// Motion graph authoring.
+//
+// Between `beginMotion` and `endMotion`, `input`/`target`/`controller`/node
+// declarations are appended to `authored.inputs` / `.targets` / `.controllers`
+// / `.graph.nodes`; `end_motion` validates and canonicalizes the whole build in
+// one pass. `begin_motion` erases the synthetic `__rig_only_output` node that
+// `refresh_canonical_animation` inserts, because a real motion graph declares
+// its own output node.
+//
+// Requires a completed rig, cannot nest inside a clip, and only one motion
+// session may be open.
+// ---------------------------------------------------------------------------
 void DslState::begin_motion(const std::string& name) { if(binding_scope_){set_rig_error("structural animation authoring is forbidden inside a bind scope");return;} if(animation_&&animation_->generating){set_rig_error("structural authoring is forbidden during generate");return;} if(!animation_||!animation_->ended){set_rig_error("beginMotion requires a completed rig");return;} if(animation_->clip_open){set_rig_error("beginMotion cannot nest inside a clip");return;} if(animation_->motion_open){set_rig_error("motion session already open");return;} auto& nodes=animation_->authored.graph.nodes; nodes.erase(std::remove_if(nodes.begin(),nodes.end(),[](const GraphNode& n){return n.name=="__rig_only_output";}),nodes.end()); animation_->motion_open=true; animation_->current_motion=name; }
 void DslState::motion_input(const InputSchema& input){if(!animation_||!animation_->motion_open){set_rig_error("input outside an open motion");return;} animation_->authored.inputs.push_back(input);}
 // An externally driven target starts INACTIVE. The spec's runtime contract is
@@ -374,6 +568,13 @@ void DslState::motion_node(const GraphNode& node){if(!animation_||!animation_->m
 void DslState::end_motion(){if(animation_&&animation_->generating){set_rig_error("endMotion is forbidden during generate");return;} if(!animation_||!animation_->motion_open){set_rig_error("endMotion outside an open motion");return;} matter::animation::Diagnostics d; matter::animation::CanonicalAnimationBuild c; if(!matter::animation::validate_and_canonicalize_animation_build(animation_->authored,c,d)){if(!d.items.empty())rig_source_=d.items.front().source;record_animation_diagnostics(d); set_rig_error(d.items.empty()?"motion validation failed":d.items.front().message,"motion-validation");return;} animation_->canonical=std::move(c); animation_->motion_open=false; animation_->current_motion.clear();}
 
 namespace {
+// Resolve a binding's joint selection to joint INDICES. An empty `requested`
+// means "every non-root joint".
+//
+// A selection names the CHILD joint of a parent-child segment — a segment is
+// the bone between a joint and its parent — so the root joint is rejected, as
+// are duplicates and unknown names. `error` receives the message the caller
+// hands to `set_rig_error`.
 bool binding_segments(const AnimationBuildBuffer& animation, const std::vector<std::string>& requested,
                       std::vector<size_t>& selected, std::string& error) {
     const auto& joints = animation.authored.rig.joints;
@@ -393,6 +594,9 @@ bool binding_segments(const AnimationBuildBuffer& animation, const std::vector<s
     if (selected.empty()) { error = "binding selection has no parent-child segments"; return false; }
     return true;
 }
+// Skin bindings, rigid bindings and attachments share ONE name space: a name is
+// unique only if it appears in none of the three lists. An empty name is never
+// unique.
 bool unique_binding_name(const AnimationBuild& build, const std::string& name) {
     if (name.empty()) return false;
     for (const auto& binding : build.skin_bindings) if (binding.name == name) return false;
@@ -402,6 +606,20 @@ bool unique_binding_name(const AnimationBuild& build, const std::string& name) {
 }
 }
 
+// Declare a skin binding over the selected segments and, when `generate` is
+// set, AUTHOR ITS GEOMETRY as a side effect.
+//
+// The generated path walks the rig to accumulate world-space joint positions
+// (the rig stores only parent-local transforms), opens its own voxel session,
+// unions a cylinder per selected segment plus a sphere at every endpoint at
+// `joint.radius * radius_scale`, closes the session, and records the resulting
+// `[op, triangle)` ranges as the binding's geometry. So this verb mutates the
+// shared build buffer, not just the animation IR — which is why it refuses to
+// run with any geometry session already open.
+//
+// `radius_scale` and `falloff` are unitless positive multipliers; `spacing` is
+// the generated voxel size in metres. Each selected segment may be claimed by
+// only one primary (non-decorative) binding — see `primary_segment_claims`.
 void DslState::rig_skin(const std::string& name, const std::vector<std::string>& requested,
                         float radius_scale, float falloff, bool generate, float spacing) {
     if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
@@ -455,6 +673,17 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
     }
 }
 
+// Open a `bind(name, fn)` scope: remember where the build buffer's op list and
+// triangle buffer stand so everything the callback authors can be attributed to
+// the named binding.
+//
+// `name` is resolved against skin bindings first, then rigid bindings — a name
+// matches only one kind — and ALL bindings sharing that name receive the range.
+// Returns false with the rig error set when the name is unknown, a scope is
+// already open, or a geometry session is open.
+//
+// Must be paired with `end_binding_scope` or `cancel_binding_scope`;
+// `j_bind_geometry` in dsl_bindings.cpp owns that pairing.
 bool DslState::begin_binding_scope(const std::string& name) {
     if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open || animation_->generating) {
         set_rig_error("bind requires a completed rig outside clip or motion authoring"); return false;
@@ -477,6 +706,14 @@ bool DslState::begin_binding_scope(const std::string& name) {
     return true;
 }
 
+// Close the scope and record `[op_begin, op_end) x [triangle_begin,
+// triangle_end)` onto every binding the scope named. An empty scope is an
+// error — `bind` must author something.
+//
+// If re-validation fails, the just-pushed ranges are popped back off so the IR
+// is left as it was and false is returned. NOTE that the failure path does NOT
+// reset `binding_scope_`: the caller is expected to follow a false return with
+// `cancel_binding_scope`, which also discards the authored geometry.
 bool DslState::end_binding_scope() {
     if (!binding_scope_) { set_rig_error("bind scope is not open"); return false; }
     const BindingScope scope=*binding_scope_;
@@ -516,6 +753,9 @@ bool DslState::end_binding_scope() {
     return true;
 }
 
+// Abandon the open scope and TRUNCATE the build buffer's ops and the triangle
+// buffer back to where the scope started, discarding whatever the callback
+// authored. A no-op when no scope is open, so it is safe on every error path.
 void DslState::cancel_binding_scope() {
     if (!binding_scope_) return;
     const BindingScope scope=*binding_scope_;
@@ -525,6 +765,13 @@ void DslState::cancel_binding_scope() {
     binding_scope_.reset();
 }
 
+// Declare a rigid binding: one `RigidBindingDef` per selected joint, all
+// sharing `name`, each carrying the same `bind_offset` as the joint-local
+// placement for whatever geometry a later `bind(name)` scope authors.
+//
+// `decorative` bindings do NOT claim their segments, so a decorative rigid can
+// ride along on a segment a skin binding already owns; a non-decorative one
+// competes for the single primary claim per segment.
 void DslState::rig_segments(const std::string& name, const std::vector<std::string>& requested, bool decorative,
                             const AnimationTransform& bind_offset) {
     if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
@@ -547,6 +794,14 @@ void DslState::rig_segments(const std::string& name, const std::vector<std::stri
     }
 }
 
+// Attach an already-declared child part at a socket or joint. The `socket`
+// argument is looked up as a socket first and then as a joint, so either kind
+// of anchor is spelled the same way.
+//
+// The child must be in the part's static requires: its resolved hash is looked
+// up here, and BOTH an unresolvable child and one whose committed artifact is
+// known-invalid are errors. v1 additionally forbids attaching a child that
+// itself carries committed animation (no nested rigs).
 void DslState::rig_attach(const std::string& name, const std::string& socket,
                           const std::string& child_module, const AnimationTransform& local) {
     if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
@@ -575,6 +830,10 @@ void DslState::rig_attach(const std::string& name, const std::string& socket,
     }
 }
 
+// Bake-side readers, called after `build()` returns. `canonical_animation` is
+// an alias of `canonical_rig` (the validated IR the runtime consumes);
+// `authored_animation` hands back the pre-canonicalization build, or null when
+// the part authored no rig at all.
 const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canonical_animation() const { return canonical_rig(); }
 const matter::animation::AnimationBuild* DslState::authored_animation() const { return animation_ ? &animation_->authored : nullptr; }
 

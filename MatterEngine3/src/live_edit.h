@@ -1,4 +1,18 @@
 #pragma once
+// MatterEngine3/src/live_edit.h
+//
+// The SP-5 dev live-edit loop: watch the project's script files, and when one
+// changes rebake exactly the parts that can be affected and re-flatten the
+// roots above them, without restarting the editor.
+//
+// The session is deliberately made of nothing but interfaces -- FileWatcher
+// (file_watcher.h) plus GraphResolver / Baker / Flattener / ErrorSink
+// (live_edit_interfaces.h) -- so the scoping and ordering rules can be tested
+// against fakes with no engine, no filesystem and no clock. live_edit_prod.h
+// supplies the production implementations.
+//
+// See docs/superpowers/specs/2026-06-24-dev-live-edit-design.md for the
+// design; the SP-N references in these comments point into it.
 #include "file_watcher.h"
 #include "live_edit_interfaces.h"
 #include <set>
@@ -15,10 +29,20 @@ struct LiveEditConfig {
 struct RebuildReport {
     std::vector<PartId> rebaked;       // exactly the upward cone, topo order
     std::vector<PartId> reflattened;   // affected roots
+    // False means the pass STOPPED at the first bad bake or flatten, so
+    // `rebaked`/`reflattened` above hold only what completed before it. Work
+    // already done is not undone -- this is a partial-progress record, not a
+    // rollback log.
     bool succeeded = true;             // false => fail-closed, last-good kept
     std::vector<LiveEditError> errors; // structured errors surfaced this pass
 };
 
+// All five collaborators are held BY REFERENCE for the session's lifetime, so
+// each must outlive it. The session has no thread affinity of its own and
+// takes no lock: it runs entirely on whichever thread calls tick() or
+// rebuild(), and the callee interfaces are responsible for their own
+// threading.
+//
 // Owns the dev live-edit loop. Pulls debounced events from the watcher, maps
 // each changed file to its parts (SP-3 reverse map), computes the upward cone,
 // rebakes it in topo order under the dev budget (SP-2), then re-flattens each

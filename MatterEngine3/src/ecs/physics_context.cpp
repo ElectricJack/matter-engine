@@ -1,3 +1,38 @@
+// MatterEngine3/src/ecs/physics_context.cpp
+//
+// The ECS <-> Box3D bridge. The engine's authored physics state is declarative
+// ECS components (RigidBody, colliders, LocalTransform); Box3D wants imperative
+// native handles. A BridgeRecord is one entity's reconciled pairing of the two,
+// and everything in this file exists to keep that pairing honest.
+//
+// One fixed step, in phase order (see ecs_runtime.cpp's phase graph):
+//   reconcile() — create/destroy/rebuild native bodies for entities whose
+//                 declaration changed. The ONLY point at which a bridge is
+//                 retired, which is what lets the later stages trust the
+//                 userData pointers Box3D hands back.
+//   push()      — drain the command queues and drive NON-dynamic bodies from
+//                 their ECS transform (static: set; kinematic: target). Dynamic
+//                 bodies are Box3D-authoritative and are not pushed.
+//   step()      — b3World_Step plus capture_events() into `events_`.
+//   pull()      — write dynamic poses/velocities back into the ECS, emit the
+//                 captured pairs as flecs entity events, and mirror an
+//                 aggregate onto the session hub.
+//
+// Validation is paranoid by design, and the redundancy is not accidental: every
+// path that consumes a Box3D userData pointer re-checks owning world, entity id,
+// liveness, map identity (the map still maps that entity to THIS record) and
+// that the body/shape ids round-trip. Anything that fails counts a stale event
+// and is dropped rather than trusted.
+//
+// Determinism: iteration order is made deterministic wherever it can affect the
+// simulation — reconcile candidates are sorted and uniqued, push walks bridges
+// in entity-id order, teleports/velocities/wakes are sorted by entity, and the
+// captured event lists are sorted before publication.
+//
+// Threading: the enqueue_* methods are the only members callable off the tick
+// thread; they validate, then take command_mutex, and are noexcept (an
+// allocation failure returns false rather than propagating). Everything else —
+// reconcile/push/step/pull/queries — is tick-thread only.
 #include "physics_context.h"
 #include "physics_shapes.h"
 
@@ -49,6 +84,16 @@ void emit_pair_events(
     }
 }
 
+// One entity's native physics presence. Heap-allocated and held by unique_ptr in
+// Impl::bridges so its ADDRESS is stable: that address is stored as the Box3D
+// body and shape userData, and every event path re-derives the entity from it.
+//
+// `configuration_hash` + `desired` are the reconciler's change detector — a
+// mismatch against the freshly validated declaration means destroy and rebuild
+// rather than mutate in place. `query_proxy` is this shape's proxy in the
+// context's own broadphase tree (-1 = none) and must be moved whenever the shape
+// moves. `live` false means the native handles are already gone and the record
+// is only awaiting erasure.
 struct BridgeRecord {
     const flecs::world_t* owning_world = nullptr;
     flecs::entity_t entity = 0;
@@ -71,6 +116,10 @@ struct QueuedCommand {
     Quaternion rotation{};
 };
 
+// Identity of a queued command is (originating world, entity, kind) — the
+// PAYLOAD is deliberately excluded from both the hash and the equality. That is
+// what makes a wake command idempotent: re-queuing one before the next push
+// collapses into the existing entry instead of accumulating.
 struct QueuedCommandHash {
     size_t operator()(const QueuedCommand& command) const noexcept {
         const size_t world_hash =
@@ -261,6 +310,22 @@ struct HullDeleter {
 
 } // namespace
 
+// All mutable state of a context. Split out of the header so nothing outside
+// this file needs the Box3D headers.
+//
+// Command queues, and their differing semantics matter to gameplay code:
+//   teleports/velocities — maps keyed by entity, so LAST WRITE WINS within a
+//                          step; applied in entity-id order;
+//   forces/impulses      — vectors, so every enqueued one is applied and they
+//                          ACCUMULATE; applied in enqueue order;
+//   wakes                — a set, so duplicates collapse.
+// All five are guarded by command_mutex and swapped out wholesale by push().
+//
+// `query_tree` is the context's OWN broadphase for ray/overlap queries, separate
+// from the solver's; proxies are created in reconcile() and moved on body
+// movement, teleport and set_body_state. `stepping` guards against re-entrant
+// queries while the solver is running. The *_for_test members are fault-
+// injection hooks consumed once and cleared by the path they affect.
 struct PhysicsContext::Impl {
     b3WorldId world_id = b3_nullWorldId;
     b3DynamicTree query_tree{};
@@ -300,6 +365,11 @@ bool is_live_dynamic_bridge(const BridgeRecord& bridge) {
            b3Shape_GetUserData(bridge.shape) == &bridge;
 }
 
+// The gate every enqueue_* passes through, called BEFORE taking the lock. A
+// command is accepted only for a live, dynamic, error-free entity of THIS
+// context's world whose bridge is fully live on both the Box3D and ECS sides.
+// Rejection is normal and silent (the caller returns false); it is not an error
+// condition, just "that entity is not simulable right now".
 bool can_enqueue_command(
     const std::unordered_map<
         flecs::entity_t, std::unique_ptr<BridgeRecord>>& bridges,
@@ -357,6 +427,11 @@ BridgeRecord* validate_queued_command(
     return found->second.get();
 }
 
+// Commands in entity-id order. Purely for determinism: the queues are hash
+// containers, so applying them in iteration order would make the simulation
+// depend on hash layout. Note that forces and impulses are NOT run through this
+// — they are vectors applied in enqueue order, which is already deterministic
+// and, unlike teleport/velocity, order-sensitive because they accumulate.
 std::vector<QueuedCommand> sorted_map_commands(
     const std::unordered_map<flecs::entity_t, QueuedCommand>& commands) {
     std::vector<QueuedCommand> sorted;
@@ -429,6 +504,12 @@ struct IndexedRayQuery {
     bool found = false;
 };
 
+// b3DynamicTree ray callback. The RETURN VALUE is the tree's continue-clipping
+// parameter, not a hit report: returning input->maxFraction means "ignore this
+// proxy, keep the current search range", while returning the accepted hit's
+// fraction shrinks the search to everything nearer. Ties are broken by the lower
+// entity id so a ray hitting two coincident shapes resolves the same way every
+// run.
 float indexed_ray_callback(
     const b3RayCastInput* input,
     int proxy_id,
@@ -522,6 +603,11 @@ PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
     impl_->query_tree_valid = true;
 }
 
+// Teardown order is defensive: every bridge is first de-fanged (proxy destroyed,
+// userData nulled, marked not-live) so nothing that runs during world
+// destruction can follow a pointer into a half-destroyed record, and only then
+// is the Box3D world destroyed. Individual bodies are not destroyed one by one —
+// b3DestroyWorld takes them.
 PhysicsContext::~PhysicsContext() {
     if (impl_ == nullptr) {
         return;
@@ -582,6 +668,13 @@ void PhysicsContext::mark_for_reconcile(flecs::entity_t entity) noexcept {
     }
 }
 
+// Transform-change hook, and the feedback-loop breaker. pull() writes a body's
+// pose back into LocalTransform, which trips the transform observer, which would
+// otherwise mark the entity dirty and make the reconciler re-examine a body that
+// nothing authored. The pending bit set by pull() is consumed here: if the
+// entity's transform still matches the native pose exactly (and scale is unit),
+// the write was ours and no reconcile is scheduled. Any real divergence — an
+// authored move, a scaled transform — falls through to mark_for_reconcile.
 void PhysicsContext::mark_transform_for_reconcile(
     flecs::entity entity) noexcept {
     if (impl_ == nullptr || !entity || entity.id() == 0) {
@@ -717,6 +810,21 @@ bool PhysicsContext::enqueue_wake(
     }
 }
 
+// Bring native bodies in line with the declarative components. Candidate-driven:
+// normally only entities marked dirty since the last pass are examined, but a
+// lost mark (mark_for_reconcile failing to allocate) sets full_reconcile_required
+// and this pass then audits every declarative body AND every published bridge —
+// failing closed rather than leaking a native body.
+//
+// Per candidate: dead, un-bodied, or invalid-configuration entities have their
+// bridge destroyed; a bridge whose configuration still matches is left alone; any
+// other change is a DESTROY AND REBUILD, never an in-place edit. A dynamic body
+// being rebuilt has its pose and velocities read out first and written back
+// after, so retuning a collider does not teleport a falling object.
+//
+// It does write to the ECS — PhysicsError is set on rejection and removed on
+// success — and it resets fixed_step_trace, so it must be the first physics
+// stage of a step.
 void PhysicsContext::reconcile(flecs::world& world) {
     impl_->fixed_step_trace.clear();
     impl_->fixed_step_trace.push_back(PhysicsSystemStage::Reconcile);
@@ -883,6 +991,16 @@ void PhysicsContext::reconcile(flecs::world& world) {
     }
 }
 
+// ECS -> Box3D. Two jobs: refresh world settings and drive non-dynamic bodies
+// from their authored transform (static bodies are set outright, kinematic ones
+// get a target transform so the solver derives a velocity over fixed_delta), then
+// apply the drained command queues.
+//
+// Dynamic bodies are skipped here by design — they are Box3D-authoritative
+// between reconciles, and gameplay moves them through the command queues instead.
+// A command that fails revalidation at this point is counted in
+// stats_.failed_commands and dropped silently; only commands that actually
+// applied appear in last_command_trace.
 void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     if (!world_is_valid()) {
         return;
@@ -998,6 +1116,10 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     }
 }
 
+// Advance the solver by one fixed step and snapshot its event streams. Raises
+// the `stepping` flag for the duration, which makes ray_cast/overlap_sphere
+// refuse to run — Box3D's structures are not queryable mid-step. A non-finite or
+// non-positive delta is a no-op that does not even record a trace entry.
 void PhysicsContext::step(flecs::world& world, float fixed_delta) {
     if (!world_is_valid() || !std::isfinite(fixed_delta) ||
         fixed_delta <= 0.0f) {
@@ -1014,6 +1136,17 @@ void PhysicsContext::step(flecs::world& world, float fixed_delta) {
     ++stats_.steps;
 }
 
+// Ray query against the context's OWN broadphase tree, not the solver's. That
+// tree is refreshed from move events, teleports and set_body_state, so results
+// reflect proxy bounds as of the last such update. `category_mask` is tested
+// against the category bits captured when the proxy was created, i.e. the
+// collider's filter at its last reconcile.
+//
+// `translation` is the full ray vector (origin + t*translation for t in [0,1]),
+// not a direction — a zero translation is rejected. Returns false while a step
+// is in progress, for a world this context does not own, for non-finite inputs,
+// and on a plain miss; `hit` is zeroed on entry either way. Ties on fraction go
+// to the lower entity id.
 bool PhysicsContext::ray_cast(
     flecs::world& world,
     Float3 origin,
@@ -1104,6 +1237,17 @@ std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
     return query.entities;
 }
 
+// Drain Box3D's per-step event streams into `events_`, which REPLACES the
+// previous step's snapshot (events() therefore exposes only the most recent
+// step). Called from step(), never on its own.
+//
+// Every event is resolved back to a bridge through the shape/body userData and
+// re-validated; anything that fails counts stats_.stale_events and is dropped.
+// Pair events are canonicalised so the lower entity id is always `first` — and
+// for hit events the contact normal is FLIPPED when that swap happens, so the
+// normal always points from `first` toward `second`. Body move events also take
+// the opportunity to move the query proxy. Every list is sorted before it is
+// published, so the snapshot is order-stable across runs.
 void PhysicsContext::capture_events(flecs::world& world) {
     PhysicsEvents next;
     const flecs::world_t* owning_world = ecs_get_world(world.c_ptr());
@@ -1248,6 +1392,18 @@ void PhysicsContext::capture_events(flecs::world& world) {
     events_ = std::move(next);
 }
 
+// Box3D -> ECS, and the gameplay event delivery point.
+//
+// For each moved DYNAMIC body it writes LocalTransform (scale forced to unit —
+// physics owns pose only) and PhysicsVelocity, and adds TransformDirty so the
+// hierarchy propagates. Each such write sets the bridge's pending bit first; see
+// mark_transform_for_reconcile for why that matters.
+//
+// It then re-publishes the snapshot captured during step(): one flecs entity
+// event per endpoint of every contact/sensor pair, so each participant hears
+// about the other, followed by a single aggregate PhysStep on the session hub
+// when one is attached. Observers run synchronously; structural changes they
+// make are deferred by the enclosing system as usual.
 void PhysicsContext::pull(flecs::world& world) {
     if (!world_is_valid()) {
         return;
@@ -1489,6 +1645,10 @@ void PhysicsContext::set_stepping_for_test(bool stepping) noexcept {
     }
 }
 
+// Look up the context published on a world by Runtime. THROWS
+// std::runtime_error when the world has none (or has had it nulled during
+// teardown) — use context_world_is_valid(), or the try_get on
+// PhysicsContextRef directly, on any path that must not throw.
 PhysicsContext& context(flecs::world& world) {
     const PhysicsContext* value = try_context(world);
     if (value == nullptr) {

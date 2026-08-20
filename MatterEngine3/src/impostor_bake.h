@@ -308,6 +308,10 @@ struct ClusterImpostor {
     std::vector<uint8_t> atlas;           // atlas_bytes(): layer 0 then layer 1
 };
 
+// Every eligible cluster's impostor for ONE part -- the unit save/load moves
+// as a single bundle section. A part whose clusters all fall under
+// kMinTerminalTris produces an empty PartImpostor, which is written as nothing
+// at all (save returns false) and read back as LoadFailure::Absent.
 struct PartImpostor {
     std::vector<ClusterImpostor> clusters;
     bool empty() const { return clusters.empty(); }
@@ -365,6 +369,11 @@ uint64_t depicts_hash_finish(uint64_t h);
 // content-addressed discipline as cache_path_lods / cache_path_hints.
 std::string cache_path_impostor(uint64_t resolved_hash);
 
+// Serializes `in` into the part bundle's IMPO section at `path`, stamped with
+// (part_hash, depicts_hash) for load() to validate against. Returns false
+// without writing when there is nothing to write (no clusters) or when a
+// cluster's atlas is not exactly atlas_bytes() long -- i.e. was baked at a
+// different cell resolution than the one in force now.
 bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
           const PartImpostor& in);
 

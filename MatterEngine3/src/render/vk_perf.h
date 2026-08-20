@@ -1,5 +1,10 @@
 #pragma once
 
+// MatterEngine3/src/render/vk_perf.h
+//
+// Header-only, no Vulkan dependency; included by vk_scene_renderer.cpp and
+// vk_temporal.cpp. Everything lives in `viewer::vk_perf`.
+//
 // Geometric pre-growth for the large vectors the renderer's build region refills
 // every frame. Split out of the former vk_build_profile.h when the profiling
 // half migrated to libs/ProfileLib (see
@@ -30,6 +35,10 @@
 namespace viewer {
 namespace vk_perf {
 
+// The MATTER_VK_VECTOR_GROWTH kill switch, read ONCE into a function-local
+// static: changing the variable after the first call has no effect for the
+// rest of the process. Anything other than a leading '0' (including unset and
+// empty) means enabled.
 inline bool geometric_growth_enabled() {
     static const bool value = [] {
         const char* env = std::getenv("MATTER_VK_VECTOR_GROWTH");
@@ -38,6 +47,10 @@ inline bool geometric_growth_enabled() {
     return value;
 }
 
+// reserve() that grows to at least twice the current capacity. Never shrinks
+// and never reallocates when `count` already fits, so it is safe to call every
+// frame. It does trade memory for reallocations: a vector that spikes once
+// keeps the doubled capacity until it is destroyed or shrunk elsewhere.
 template <typename T, typename A>
 inline void reserve_geometric(std::vector<T, A>& target, std::size_t count) {
     if (count <= target.capacity()) return;

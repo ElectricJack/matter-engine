@@ -1,3 +1,46 @@
+// MatterEditor/src/scene_tree_panel.cpp
+//
+// The Scene panel's tree: the ImGui half of `draw_scene_tree` (contract and
+// parameter meanings in scene_tree_panel.h). It renders ONE list out of two
+// unrelated sources —
+//
+//  - Baked roots, from `state.cached_snapshot` (the session's part-graph
+//    snapshot, refreshed by generation in `sync_scene_tree_graph_cache`).
+//    Labelled "[Baked]". These are content, not entities: they carry a
+//    resolved hash and no SceneEntityId.
+//  - ECS entities, from `editor.rows()` (EditorModel, delta-fed by
+//    scene_model_adapter.*). Labelled "[Entity]", or "[Runtime]" when the id
+//    is absent from the caller's authored-entity set (a play-mode spawn).
+//
+// Selection. A click has to land in three places and they are kept consistent
+// by hand, not by a single owner: `editor.select()` / `editor.clear_selection()`
+// (the EditorModel's entity selection, which the Properties panel reads),
+// `state.selected_root_hash` (the baked-root highlight), and the app-wide
+// `SelectionSet` via `ctx.selection` (which the gizmo and the selection
+// outline read). Selecting a baked root clears the entity selection and vice
+// versa — that mutual exclusion is why the baked-root "is selected" test also
+// requires `editor.selection().id.value == 0`. Any new click site added here
+// must update all three.
+//
+// Layout. The entity list is drawn FLAT. `editor.rows()` already arrives in
+// hierarchy order with a `depth` per row, so nesting is faked with
+// Indent/Unindent by `depth * kIndentWidth` rather than by nesting ImGui tree
+// nodes. A row with children or a Part is still a non-leaf node (so it pushes,
+// and the matching TreePop runs), but its children are drawn by later
+// iterations of the same flat loop rather than inside that push — only the
+// synthetic "[Part]" bullet is genuinely nested. Collapsing a row therefore
+// does not hide its children.
+//
+// Filtering. The text box drives two different filters: `editor.set_filter`
+// (model-side, for entities) and a local lowercase substring test against the
+// module name (for baked roots). `filter_mode` then decides which of the two
+// sections is drawn at all: 0 = both, 1 = entities only, 2 = roots only.
+//
+// Threading. UI thread, inside an ImGui frame. Every mutation goes out through
+// the nullable `SceneCommands` / `FieldCommands` callbacks main.cpp binds to
+// the live session; failures are reported to the Console (`log_error`) rather
+// than asserting, and the destructive menu items are disabled during Play.
+
 #include "scene_tree_panel.h"
 
 #include "matter/world_session.h"
@@ -56,12 +99,27 @@ void log_error(ConsoleLog* console_log, const char* action,
                       std::string(action) + ": " + edit_error_message(error));
 }
 
+// Frame the camera on whatever is currently in the SelectionSet. A silent
+// no-op unless the caller supplied all three of camera/selection/fields — the
+// context-menu "Focus" item is drawn regardless, so a panel driven without
+// them does nothing instead of crashing.
 void focus_on(TreeContext& ctx) {
     if (ctx.camera && ctx.selection && ctx.fields) {
         focus_camera_on_selection(*ctx.camera, *ctx.selection, *ctx.fields);
     }
 }
 
+// The "[Baked]" section: one leaf row per ROOT node in the cached graph
+// snapshot, filtered by a case-insensitive substring of the module name
+// (`filter_lower` must already be lowercased by the caller). Non-root nodes
+// are skipped — they only exist composed inside other parts and have no world
+// instance to select, the same rule reveal_part.cpp applies.
+//
+// A click records `SelectedObject{BakedRoot, resolved_hash}` — the identical
+// selection viewer.reveal_part produces — and clears the ECS entity selection
+// so the two channels are never both live. "Open Source" shells out to the OS
+// handler for the node's authoring file (os_open.h) and is greyed when the
+// node carries no source path.
 void draw_baked_roots(SceneTreeState& state, EditorModel& editor,
                       TreeContext& ctx, const std::string& filter_lower) {
     for (const auto& [module, node] : state.cached_snapshot.nodes) {
@@ -107,6 +165,19 @@ void draw_baked_roots(SceneTreeState& state, EditorModel& editor,
     }
 }
 
+// The "[Entity]" / "[Runtime]" section: `EditorModel::rows()` drawn flat with
+// manual indentation (see the file header). `authored_entity_ids`, when
+// non-null, is the last Edit-mode simulation snapshot's id set; a row missing
+// from it is a play-mode spawn and is tagged [Runtime]. Null means "no
+// snapshot yet" and every row reads as [Entity].
+//
+// The context menu mutates through `ctx.commands`, whose individual
+// std::functions may each be empty and are tested before use; Duplicate and
+// Delete are additionally greyed during Play. Duplicate nudges the copy's
+// LocalTransform.translation by +0.5 on x so it is not coincident with the
+// original, and only when the FieldCommands get/set float3 pair is available.
+// Every failure path logs to the Console via `log_error` rather than
+// asserting.
 void draw_entities(SceneTreeState& state, EditorModel& editor, TreeContext& ctx,
                    const std::unordered_set<uint64_t>* authored_entity_ids) {
     constexpr float kIndentWidth = 16.0f;
@@ -231,6 +302,11 @@ void draw_scene_tree(SceneTreeState& state, EditorModel& editor,
                      const FieldCommands* fields,
                      ConsoleLog* console_log,
                      const std::unordered_set<uint64_t>* authored_entity_ids) {
+    // Refresh the baked-root cache before anything reads it: the snapshot is
+    // pulled here, once per draw, never by the row loops below. A null
+    // `session` leaves the cache untouched, so a disconnected editor keeps
+    // showing the last world's roots until the world-switch seam resets it
+    // (reset_scene_tree_graph_cache).
     sync_scene_tree_graph_cache(state, session);
 
     if (ImGui::InputTextWithHint("##filter", "Filter...", state.filter_text,

@@ -143,6 +143,10 @@ void GpuJobQueue::shut_down() {
     ch_.shut_down();
 }
 
+// "Nothing QUEUED", not "nothing running": Channel::empty() reports only the
+// deque, and pump() has already popped the job it is currently executing. A job
+// in flight on the app/GL thread is therefore invisible here, so idle() alone is
+// not a safe "all posted GPU work has finished" gate.
 bool GpuJobQueue::idle() const {
     return ch_.empty();
 }
@@ -197,6 +201,12 @@ std::shared_ptr<CancelToken> CommandQueue::push(Command c) {
     return tok;
 }
 
+// Consumer side, single consumer only (Channel::wait_pop is consumer-thread
+// only). Blocks indefinitely until a live command arrives; returns false only
+// once the channel has been shut down AND drained, which is the worker loop's
+// termination signal. Superseded commands are skipped here, when they are
+// popped, rather than being erased at push time -- that is what keeps pending_
+// in lockstep with the channel, one pop_front per delivered item.
 bool CommandQueue::pop(Command& out) {
     for (;;) {
         Command tmp;
@@ -220,6 +230,11 @@ bool CommandQueue::pop(Command& out) {
     }
 }
 
+// `ms` is a TOTAL budget measured from entry, not a per-wait timeout: the
+// deadline is computed once and each skipped-superseded command re-waits only
+// the time remaining, so a burst of cancelled commands cannot stretch the
+// caller's wait. Clamped at zero, so an already-expired budget still makes one
+// non-blocking attempt.
 bool CommandQueue::pop_wait(Command& out, int ms, bool& out_timed_out) {
     out_timed_out = false;
     const auto deadline =
@@ -251,6 +266,11 @@ bool CommandQueue::pop_wait(Command& out, int ms, bool& out_timed_out) {
     }
 }
 
+// Terminal and safe to call twice (Channel::shut_down early-returns). Cancels
+// the in-flight command's token plus every queued token, so no producer is left
+// waiting on work that will never run, then shuts the channel so a parked
+// pop()/pop_wait() wakes and returns false. Every later push() takes the
+// shut-down guard and hands back an already-cancelled token.
 void CommandQueue::shut_down() {
     std::lock_guard<std::mutex> lk(m_);
     shut_down_ = true;

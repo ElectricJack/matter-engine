@@ -8,6 +8,47 @@
 //      b. Non-physics instances in placement order (strip[o][c] then interior[t]).
 //
 // strip occurrences are kept as ALL occurrence instances (Phase 3 renders each one).
+//
+// WHERE THIS SITS IN THE TILESET BAKE. `tileset_phase.cpp` evaluates a tileset
+// root script into a `TilesetSpec` (tileset_spec.h) -- config, base
+// heightfield, per-layer placements, drops. This header turns that spec into a
+// `SettledTorus`: the same placements with physics-resolved poses, ready for
+// the .gtex atlas bake (tileset_gtex.*) and the render phase. Two steps, and
+// they are split so the interactive Settle Lab and the batch bake feed the
+// simulator identical inputs:
+//   `build_settle_plan`  spec -> `SettlePlan`. Loads and memoizes colliders,
+//                        builds the torus heightfield and the sync-group
+//                        occurrence frames, and snaps non-physics placements
+//                        analytically. No physics world, no RNG draws.
+//   `settle_tileset`     plan -> run it through a `SettleWorld` (box3d) ->
+//                        `SettledTorus`. Calls `build_settle_plan` itself.
+//
+// THE 4x4 TORUS. Everything here is expressed on a `kTorusN` x `kTorusN` grid
+// of tiles (kTorusN == 4, see tileset_layout.h), which is why poses are
+// "torus-space": world XZ in [0, kTorusN * cfg.size) metres, y in metres above
+// the base. The grid wraps toroidally, so a placement on a tile boundary is
+// simulated as several occurrence instances kept in sync by a sync group --
+// that is what makes an edge strip identical on both tiles that share it.
+//
+// UNITS. Metres throughout for positions and sizes; quaternions are xyzw;
+// `LayerSpec::embed` is a fraction of the collider's fitted height, not a
+// distance.
+//
+// DETERMINISM AND CACHING. `SettleReport::pose_hash` is the determinism hash
+// over the final poses. `settle_cache_save`/`settle_cache_load` persist a whole
+// `SettledTorus` under a key folded from the script source hash, the sorted
+// child hashes, the canonical root params and the engine version vector
+// (`version_vector.h`); a load rejects on magic, version, key or version-digest
+// mismatch and every rejection is reported as a plain miss, never an error.
+// `SettleReport::from_cache` records that no physics ran.
+//
+// THREADING. Free functions with no shared state, but `settle_tileset` runs a
+// box3d simulation and is not cheap; treat it as bake-thread work. The cache
+// writes through a `.tmp` file and renames, so a concurrent reader sees either
+// the old file or the complete new one.
+//
+// FAILURE. Fail-closed on collider load/fit problems. NON-CONVERGENCE IS NOT A
+// FAILURE: it surfaces in `SettleReport::converged_all` and the bake continues.
 
 #include "tileset_spec.h"
 #include "tileset_settle.h"  // LayerResult, Pose, BodySpawn, HeightField
@@ -18,6 +59,10 @@
 
 namespace tileset {
 
+// One placed child part after settling: which part, at what scale, where.
+// This is the unit Phase 3 renders and the unit the settle cache stores, and
+// the order of the containing vector is a tested contract (see the ordering
+// block at the top of this file).
 struct SettledInstance {
     uint64_t child_hash = 0;
     float    scale = 1.0f;
@@ -25,6 +70,10 @@ struct SettledInstance {
     int      layer = -1;      // provenance: -1 = shared dropChild, else layer index
 };
 
+// Diagnostics from the settle run. Advisory only -- nothing here makes the bake
+// fail; `converged_all == false` means bodies were still moving when the layer
+// hit its step budget, which shows up as slightly floating or jittered props
+// rather than as an error.
 struct SettleReport {
     bool converged_all = true;
     // One LayerResult per script layer (in declaration order).
@@ -35,6 +84,11 @@ struct SettleReport {
     bool from_cache = false;           // true when loaded from settle cache (no physics ran)
 };
 
+// The settle stage's whole output, and the exact payload the settle cache
+// round-trips: the tile config and base heightfield copied through from the
+// spec, every settled instance in the contracted order, the variant ranges
+// Phase 3 replays, and the report. A cache hit reconstructs this without
+// running physics at all.
 struct SettledTorus {
     TileConfig cfg;
     BaseField  base;
@@ -43,6 +97,10 @@ struct SettledTorus {
     SettleReport report;
 };
 
+// Where the settle stage reads baked child geometry from. The children must
+// already be baked into `<parts_cache_dir>/parts/` before either entry point
+// is called -- neither builds them; a missing child is a hard failure via
+// `collider_for_part`.
 struct BakeInputs {
     std::string parts_cache_dir;   // directory that CONTAINS parts/
 };

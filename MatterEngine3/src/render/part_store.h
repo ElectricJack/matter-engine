@@ -1,6 +1,49 @@
 #ifndef VIEWER_PART_STORE_H
 #define VIEWER_PART_STORE_H
 
+// MatterEngine3/src/render/part_store.h
+//
+// PartStore — the engine's CPU-side store of resident part geometry — and the
+// types that describe one resident part. Everything the renderer draws comes
+// from here: a `.part` artifact is decoded, its LOD ladder is re-baked (the
+// artifact stores LOD0 only), the resulting triangles are registered into one
+// shared BLASManager, and the CPU vertex streams stay resident for the Vulkan
+// part builder to upload.
+//
+// Where it sits. Below: part_asset_v2 (artifact decode), lod_bake (the ladder),
+// chart_atlas (chart-space VT tables), impostor_bake (terminal billboards),
+// warp_field (terrain ground coordinates), animation/animation_asset_store, and
+// MatterSurfaceLib's BLASManager. Above: the streaming and publish paths in
+// matter_engine.cpp and the Vulkan renderer. LOD SELECTION is not here — this
+// store only carries the per-rung threshold values the bake produced, and the
+// engine's one selection rule lives in
+// MatterEngine3/src/render/lod_distance.h.
+//
+// Threading. PartStore holds no lock of its own; the split is by method.
+//   - stage_load(), stage_from_bake(), and the private read_coherent_snapshot()
+//     / snapshot_from_baked() / stage_from_snapshot() touch NO shared state and
+//     are meant to run on a streaming worker while the app thread renders. This
+//     is where a sector load's 20-40 ms actually goes.
+//   - commit_staged(), get_or_load(), release(), build_rigid_segment_subparts()
+//     and blas() mutate the shared BLASManager and the loaded_ map, and must
+//     run on the thread that owns the store.
+//   - set_scratch_dir() must be called before any staging starts: the worker
+//     path reads scratch_dir_ unsynchronized, on the assumption that it is
+//     immutable after configuration.
+//
+// Lifetime. loaded_ is a std::map, so a `const LoadedPart*` handed out by
+// get_or_load() / find() / commit_staged() stays valid across later loads and
+// is invalidated only by release() of that same hash (or store teardown).
+// release() frees CPU memory and drops BLAS references; it never deletes the
+// on-disk artifact, so the next get_or_load() simply re-reads it.
+//
+// Units and spaces. Geometry is part-local metres; `bound_radius` and every
+// cluster radius is HALF the AABB diagonal; transforms are row-major with
+// column-vector algebra (matter/math_types.h).
+//
+// This header also DEFINES script_host::BakedGeometry, which script_host.h
+// only forward-declares — the note on that struct explains why it lives here.
+
 #include <mutex>
 #include "blas_manager.hpp"     // MSL BLASManager / BLASHandle
 #include "chart_atlas.h"        // chart-space VT sidecar (WP-A, contract C1)
@@ -93,6 +136,9 @@ struct ExpandedNode {
 // lod_mesh[i]  : index into LoadedPart::lod_mesh_data for the cluster's i-th level
 //                mesh-data (stored there to keep mesh-data ownership in one place).
 struct LoadedCluster {
+    // Part-local metres — the space this part's instance transform maps to
+    // world. On the flat path these are the artifact's stored FlatCluster
+    // bounds; on the staged path they are recomputed from the rung meshes.
     float aabb_min[3];
     float aabb_max[3];
     float radius;                          // half AABB diagonal
@@ -135,8 +181,30 @@ struct SurfaceClassCache {
     }
 };
 
+// One part resident in memory: its LOD ladder (a BLAS handle plus a CPU mesh
+// per rung), the per-cluster tables the GPU culler consumes, the baked
+// child-instance table for compositional parts, and the precomputed expansion.
+// Created by PartStore::commit_staged / get_or_load, owned by
+// PartStore::loaded_, destroyed by PartStore::release — which also drops the
+// BLAS references (release_loaded_part_blas in part_store.cpp).
+//
+// The parallel-array discipline is the thing to get right. `thresholds`,
+// `lod_blas`, `lod_charts` and the FIRST lod_blas.size() entries of
+// `lod_mesh_data` are parallel, one per whole-part rung. On the flat path the
+// per-cluster meshes are APPENDED to lod_mesh_data after those entries, and
+// LoadedCluster::lod_mesh indexes the whole vector absolutely — never
+// relatively to its cluster.
+//
+// `owned_blas`, not the view arrays, is the authoritative release list: the
+// same deduplicated handle can legitimately appear more than once in lod_blas
+// or in a cluster's lod_blas, so releasing from those would over-release.
+//
+// A part with an empty lod_blas is a pure assembler (it only places children).
+// That is a normal state, not a failure.
 struct LoadedPart {
     std::vector<BLASHandle> lod_blas;       // lod_blas[i] -> BLAS for LOD level i
+    // Half the AABB diagonal, in part-local metres. The projected-size input
+    // for LOD and the value the SectorResolver's part LOD table carries.
     float                   bound_radius = 0.0f;
     std::vector<float>      thresholds;      // per-LOD screen-size thresholds
     // WP-A (chart-space VT): per-rung chart tables, parallel to lod_blas.
@@ -247,11 +315,28 @@ struct WarpAnchor {
     float base_sector_size = 0.0f;   // 0 = "same as sector_size"
 };
 
+// The store proper: one BLASManager shared by every loaded part, plus the map
+// of resident LoadedParts keyed by content hash. Content-addressed and durable
+// — a `.part` baked on a prior run is found on disk under `cache_root` (or
+// under the scratch dir, which is probed first), so a "load" here is a decode
+// plus a ladder bake, never a re-run of the authoring DSL.
+//
+// Constructed once per world session and owned by it. It holds a BLASManager
+// by value and hands out interior pointers into loaded_, so it is never copied
+// or relocated. Read the threading split in this file's header comment before
+// calling anything from a worker thread — the safe set is small and explicit.
+//
+// (Note: the paragraph above `struct WarpAnchor` opens with a sentence that
+// describes THIS class, not WarpAnchor; it was left behind when the struct was
+// hoisted out of the class body.)
 class PartStore {
 public:
     explicit PartStore(std::string cache_root);
 
     // True if the part is loaded in memory OR a .part exists on disk. Drives reconcile.
+    // A miss in the resident map falls through to a ::stat of the scratch dir
+    // and then the cache root, so this is a filesystem call per non-resident
+    // hash, not a map lookup.
     bool has(uint64_t part_hash) const;
 
     // Load (memoized) a part: load_v2 -> lod_bake LODs -> register in the shared
@@ -351,12 +436,16 @@ public:
 
     // Return a pointer to an already-loaded part (nullptr if not loaded). Does NOT
     // trigger loading. Useful for tests and post-load inspection.
+    // The returned pointer stays valid until release(part_hash): loaded_ is a
+    // std::map, so admitting other parts never invalidates it.
     const LoadedPart* find(uint64_t part_hash) const {
         auto it = loaded_.find(part_hash);
         return (it != loaded_.end()) ? &it->second : nullptr;
     }
     // Observational tooling seam: returns an already-loaded part whose
     // immutable sibling .anim has this identity. Never performs disk I/O.
+    // Linear over every resident part — O(loaded parts) per call, which is why
+    // it is described as a tooling seam rather than a lookup.
     const LoadedPart* find_animation(uint64_t animation_identity) const {
         for (const auto& entry : loaded_) {
             const LoadedPart& loaded = entry.second;
@@ -367,6 +456,11 @@ public:
         return nullptr;
     }
 
+    // The shared manager every resident part's handles index into. Handed out
+    // mutable by design (the renderer and the flat loader register and release
+    // through it), so callers must be on the store's owning thread, and must
+    // not release entries this store owns — release(part_hash) is the way to
+    // give a part's registrations back.
     BLASManager& blas() { return blas_; }
     const std::string& cache_root() const { return cache_root_; }
     size_t loaded_count() const { return loaded_.size(); }
@@ -381,15 +475,24 @@ public:
                                       std::vector<uint64_t>& out_hashes);
 
     // LOD table for the SectorResolver: radius + thresholds per loaded part.
+    // Builds and returns a FRESH table on every call — O(resident parts x their
+    // flat_refs) with an allocation per entry. Snapshot it; do not call it once
+    // per lookup.
     lod_select::PartLodTable part_lod_table() const;
 
     // Release a loaded part from CPU memory (lod_mesh_data, BLAS handles, clusters).
     // After this call get_or_load(part_hash) will re-read from disk on next access.
     // Safe no-op if part_hash is not currently loaded.
+    // Also: a hash belonging to an animated root's rigid-subpart set is IGNORED
+    // here — only releasing that root tears the whole set down, since the
+    // subparts are lifetime-owned by it. The on-disk artifact is never deleted.
     void release(uint64_t part_hash);
 
     // Task 2: set the scratch directory for transient parts.
     // get_or_load probes scratch first, then falls back to cache_root_.
+    // Call before any staging begins: the worker-thread read path
+    // (read_coherent_snapshot) reads scratch_dir_ without synchronization on
+    // the assumption that it is immutable after configuration.
     void set_scratch_dir(std::string dir) { scratch_dir_ = std::move(dir); }
 
 #ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
@@ -464,6 +567,10 @@ private:
                                    bool terrain_sector = false,
                                    const WarpAnchor& warp = WarpAnchor{});
 
+    // cache_root_ and scratch_dir_ are treated as immutable once configured —
+    // the off-thread staging path reads them unlocked. loaded_ is a std::map on
+    // purpose: every LoadedPart* this class hands out must survive later
+    // insertions, and only erasing that key invalidates one.
     std::string                       cache_root_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir
     BLASManager                       blas_;

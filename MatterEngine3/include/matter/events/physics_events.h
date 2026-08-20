@@ -15,6 +15,25 @@
 // contact or sensor activity, so the E4 Events inspector shows physics in the
 // unified timeline alongside bake/stream/scene events. It is a hub event (a
 // non-entity, cross-cutting per-step summary), not a per-entity gameplay event.
+// ---------------------------------------------------------------------------
+// Emission site, conditions and usage
+// ---------------------------------------------------------------------------
+// PhysicsContext::pull (src/ecs/physics_context.cpp) emits this at the END of
+// the pull stage, after the per-entity flecs events for the same fixed step,
+// and only when contacts + sensors > 0 — so an idle sim contributes nothing to
+// the trace. The hub pointer is optional (PhysicsContext::set_event_hub, null
+// by default so headless physics tests need no hub); no hub means no mirror,
+// and nothing else about the step changes.
+//
+// Delivery therefore happens on whichever thread drives the fixed-step pull
+// stage; an immediate subscriber runs inline on that thread. Subscribe through
+// the session's evt::Hub (matter/event/event_hub.h):
+//
+//   auto sub = hub.must_subscribe<matter::events::PhysStep>(
+//       "events-inspector", lane_or_immediate, [](const auto& e) { ... });
+//
+// must_subscribe is [[nodiscard]]; the returned Subscription owns the
+// registration and must outlive the interest.
 #pragma once
 #include <cstdint>
 
@@ -27,6 +46,12 @@ namespace matter::events {
 // exit). Emitted only when at least one occurred, so an idle sim is silent in
 // the trace. The per-entity events (physics::PhysContactBegin, ...) carry the
 // gameplay detail; this is the inspector-facing aggregate.
+// Each counter is a SUM of two transition lists — contact begin + contact end
+// for `contacts`, sensor enter + sensor exit for `sensors` — so a pair that
+// both begins and ends inside one step contributes 2, and neither number is a
+// count of currently-touching pairs. The emit site aggregate-initializes this
+// positionally (`PhysStep{contacts, sensors}`), so reordering or inserting a
+// field here silently changes what the mirror reports.
 struct PhysStep {
     MT_EVENT_NAME("phys.step");
     uint32_t contacts = 0;

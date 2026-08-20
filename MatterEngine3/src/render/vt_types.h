@@ -285,6 +285,19 @@ struct VtFillRequest {
     }
 };
 
+// The tier-1 page-fill seam. Exactly one implementation is installed on the
+// residency layer (VtResidency::set_filler, which takes ownership) and lives
+// for the process; today that is vt_stub_filler.cpp (CPU BC encode of a flat
+// material colour) or vt_compositor.{h,cpp} (the real GPU compositor).
+//
+// The residency layer fully resolves every request before calling — destination
+// slot, chart table, part context, pool binding — so an implementation needs no
+// state beyond its own staging/pipeline resources. fill() is invoked from
+// VtResidency::record_frame, between the pool's layout transitions, so an
+// implementation may only RECORD into `cmd`: never submit, never wait, never
+// transition the pool images, and never touch indirection state (mapping is the
+// residency layer's job, after the fill, and only for requests that reported
+// success).
 class VtPageFiller {
   public:
     virtual ~VtPageFiller() = default;
@@ -334,6 +347,19 @@ struct VtEnrichRequest {
     }
 };
 
+// The tier-2 enrichment seam. OPTIONAL, unlike the filler: the renderer
+// installs one (VtResidency::set_enricher, takes ownership) only when hardware
+// ray tracing is available, and with none installed nothing is ever queued and
+// every page simply stays tier-1.
+//
+// Same recording discipline as VtPageFiller — record into `cmd`, do not submit
+// or wait, do not transition the pool. The difference is that enrichment is a
+// read-modify-write of a page that is ALREADY mapped and samplable: the
+// indirection is never touched, so a page being enriched keeps rendering its
+// tier-1 content. Because the refinement multiplies into the page in place,
+// running it twice on one fill darkens the page twice; the residency layer
+// prevents that by tracking tier per PHYSICAL SLOT and resetting it wherever a
+// slot changes hands (VtResidency::slot_reset_tier).
 class VtPageEnricher {
   public:
     virtual ~VtPageEnricher() = default;

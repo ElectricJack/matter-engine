@@ -1,3 +1,44 @@
+// MatterEditor/src/animation_debug_overlay.cpp
+//
+// Implementation of the viewport animation-diagnostics overlay declared in
+// animation_debug_overlay.h. Everything is drawn as 2D primitives on ImGui's
+// foreground draw list: this file projects world-space points itself and hands
+// ImGui screen-space coordinates, so it needs no Vulkan pipeline, no shader and
+// no engine render state.
+//
+// TWO MATRIX CONVENTIONS LIVE IN THIS FILE. Do not confuse them:
+//
+//   - the file-local `Mat4` (anonymous namespace) is COLUMN-major, the classic
+//     GL view/projection layout: element (row, column) is `m[row + column * 4]`.
+//     `look_at`, `perspective`, the `Mat4` overload of `multiply` and `project`
+//     all use it, and it is used ONLY for the camera's view-projection.
+//   - `matter::Mat4f` (MatterEngine3/include/matter/math_types.h) is ROW-major:
+//     element (row, column) is `m[row * 4 + column]`, with translation in m[3],
+//     m[7], m[11]. The `matter::Mat4f` overload of `multiply`, plus `point`,
+//     `origin` and `local_matrix`, use it -- and it is the format every
+//     transform in the snapshot arrives in.
+//
+// Coordinate flow for one point: joint model-space transform -> composed with
+// the instance's world transform (`multiply`, row-major) -> `point` to get a
+// world position -> `project` through the column-major view-projection into
+// viewport pixels, offset by (viewport_x, viewport_y).
+//
+// `project` returns false for anything at or behind the eye plane and for any
+// non-finite result, and every draw helper silently skips the primitive in that
+// case. An off-screen or degenerate rig therefore draws nothing rather than
+// smearing garbage across the window.
+//
+// Skin weights arrive as uint16 and are normalized by dividing by 65535. They
+// are never renormalized, so an under-weighted vertex is shown shrunk toward
+// the origin exactly as the GPU would render it.
+//
+// The three point-cloud layers subsample `asset.lod0_influences` with a stride
+// chosen so at most ~4096 points (~2048 for skin weights) are ever projected.
+// Cost is bounded no matter how dense the mesh is, but the cloud is a SAMPLE --
+// a single bad vertex may simply not be in it.
+//
+// Render thread only (ImGui), between NewFrame and Render.
+
 #include "animation_debug_overlay.h"
 
 #include "imgui.h"
@@ -9,8 +50,15 @@
 namespace viewer {
 namespace {
 
+// Column-major 4x4 (element (row, column) == m[row + column * 4]), used only
+// for the camera's view and projection matrices. Distinct from matter::Mat4f,
+// which is row-major -- see the file header above.
 struct Mat4 { float m[16] = {}; };
 
+// Right-handed look-at looking down -Z. Returns an ALL-ZERO matrix, not
+// identity, when the forward or right vector degenerates (target coincident
+// with eye, or `up` parallel to forward). `project` then rejects every point,
+// so the overlay draws nothing rather than something wrong.
 Mat4 look_at(const float eye[3], const float target[3], const float up[3]) {
     float f[3] = {target[0] - eye[0], target[1] - eye[1],
                   target[2] - eye[2]};
@@ -37,6 +85,11 @@ Mat4 look_at(const float eye[3], const float target[3], const float up[3]) {
     return out;
 }
 
+// GL-style perspective. `fov_y` is the VERTICAL field of view in RADIANS (the
+// caller passes camera.vertical_fov_radians). The depth row it writes is never
+// read -- `project` consumes only x, y and w -- so this matrix's depth
+// convention is unrelated to whatever the engine's Vulkan pipeline uses.
+// Returns an all-zero matrix on degenerate parameters.
 Mat4 perspective(float fov_y, float aspect, float near_p, float far_p) {
     Mat4 out{};
     const float t = std::tan(fov_y * 0.5f);
@@ -59,6 +112,13 @@ Mat4 multiply(const Mat4& a, const Mat4& b) {
     return out;
 }
 
+// World-space point -> viewport pixel. `width`/`height` are the 3D viewport's
+// pixel size and `ox`/`oy` its top-left offset in the window; the y axis is
+// flipped so the result is in ImGui's top-left-origin screen space.
+//
+// Returns false for anything at or behind the eye plane (w <= 1e-4) and for any
+// non-finite result; `out` is meaningless in that case. Callers must treat
+// false as "skip this primitive", not as an error.
 bool project(const Mat4& vp, int width, int height, float ox, float oy,
              const matter::Float3& p, ImVec2& out) {
     float x = vp.m[0] * p.x + vp.m[4] * p.y + vp.m[8] * p.z + vp.m[12];
@@ -73,6 +133,9 @@ bool project(const Mat4& vp, int width, int height, float ox, float oy,
     return std::isfinite(out.x) && std::isfinite(out.y);
 }
 
+// Affine transform of a point by a ROW-major matter::Mat4f (translation read
+// from m[3], m[7], m[11]). The bottom row is assumed to be (0, 0, 0, 1) and is
+// not applied: there is no perspective divide here.
 matter::Float3 point(const matter::Mat4f& matrix,
                      const matter::Float3& p) {
     return {
@@ -85,6 +148,11 @@ matter::Float3 origin(const matter::Mat4f& matrix) {
     return point(matrix, {});
 }
 
+// Builds a row-major matter::Mat4f from a translation/rotation/scale triple.
+// The quaternion is used as-is and assumed unit length (matter::Quaternion
+// documents that nothing normalizes it). Scale is applied to the rotation
+// basis' COLUMNS -- scale.x scales m[0], m[4], m[8] -- i.e. it is a local,
+// pre-rotation scale.
 matter::Mat4f local_matrix(const matter::AnimationTransform& transform) {
     const float x = transform.rotation.x, y = transform.rotation.y;
     const float z = transform.rotation.z, w = transform.rotation.w;
@@ -105,6 +173,9 @@ matter::Mat4f local_matrix(const matter::AnimationTransform& transform) {
     return out;
 }
 
+// Row-major product a*b -- parent * child when composing a joint chain. This is
+// a different function from the column-major `multiply` above, for a different
+// matrix type; the two are not interchangeable.
 matter::Mat4f multiply(const matter::Mat4f& a, const matter::Mat4f& b) {
     matter::Mat4f out{};
     for (int row = 0; row < 4; ++row)
@@ -125,6 +196,11 @@ void draw_line(ImDrawList* draw_list, const Mat4& vp,
         draw_list->AddLine(pa, pb, color, thickness);
 }
 
+// Three lines from the transform's origin along its local X (red), Y (green)
+// and Z (blue) axes, `scale` long in world units. Used for joint frames, socket
+// frames and evaluated IK target frames alike, so colour is the only cue for
+// which axis is which -- and the only cue for what kind of frame it is is its
+// size, chosen by the caller.
 void draw_axes(ImDrawList* draw_list, const Mat4& vp,
                int width, int height, float ox, float oy,
                const matter::Mat4f& transform, float scale) {
@@ -137,6 +213,9 @@ void draw_axes(ImDrawList* draw_list, const Mat4& vp,
               point(transform, {0, 0, scale}), IM_COL32(80, 150, 255, 230));
 }
 
+// Wireframe box for one conservative joint bound. The AABB's min/max are in the
+// JOINT's space, so they are transformed by that joint's world matrix; the box
+// drawn on screen is therefore generally not axis-aligned.
 void draw_aabb(ImDrawList* draw_list, const Mat4& vp,
                int width, int height, float ox, float oy,
                const matter::Mat4f& transform,
@@ -161,6 +240,11 @@ void draw_aabb(ImDrawList* draw_list, const Mat4& vp,
                   IM_COL32(100, 220, 255, 170), 1.0f);
 }
 
+// The CPU's answer for where a skinned vertex lands: a linear blend of up to
+// four palette matrices applied to the bind position, then the instance's world
+// transform. Weights are uint16 normalized by 65535 and are NOT renormalized.
+// Lanes with a zero weight or a joint index past the end of the palette are
+// skipped, which is the only bounds check performed on the palette.
 matter::Float3 skinned_position(
     const matter::AnimationDebugVertexInfluence& vertex,
     const std::vector<matter::Mat4f>& palette,
@@ -178,6 +262,9 @@ matter::Float3 skinned_position(
     return point(world_transform, result);
 }
 
+// Normalized (0-1) weight this vertex gives `selected_joint`, or 0 when that
+// joint is not one of its four influences. Zero is a normal result, not an
+// error -- most vertices are unaffected by most joints.
 float selected_weight(const matter::AnimationDebugVertexInfluence& vertex,
                       uint16_t selected_joint) {
     for (size_t i = 0; i < 4; ++i)
@@ -209,7 +296,12 @@ void draw_animation_debug_overlay(
                     static_cast<float>(framebuffer_width) / framebuffer_height,
                     camera.near_plane, camera.far_plane),
         look_at(eye, target, up));
+    // Foreground draw list: over the composited frame, outside any ImGui window
+    // (so panels do not clip it) and with no depth test.
     ImDrawList* draw_list = ImGui::GetForegroundDrawList();
+    // One world matrix per joint, built once and reused by every layer below.
+    // Indexed in lockstep with `asset.joints`; valid_animation_debug_snapshot is
+    // what guarantees the pose and the asset joint arrays are parallel.
     std::vector<matter::Mat4f> world_models;
     world_models.reserve(pose.model_pose.size());
     for (const auto& model : pose.model_pose)
@@ -253,6 +345,8 @@ void draw_animation_debug_overlay(
         for (size_t i = 0; i < count; ++i) {
             const auto& definition = asset.targets[i];
             const auto& state = pose.targets[i];
+            // Only three-joint (two-bone) chains are visualized; anything else
+            // is skipped outright rather than drawn partially.
             if (definition.chain.size() != 3) continue;
             for (size_t joint = 1; joint < definition.chain.size(); ++joint)
                 draw_line(draw_list, vp, framebuffer_width, framebuffer_height,
@@ -423,8 +517,8 @@ void draw_animation_debug_overlay_controls(
         ImGui::InputInt("Weight joint", &options.weight_joint);
         options.weight_joint = std::max(options.weight_joint, 0);
     }
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
+    ImGui::EndDisabled();  // closes BeginDisabled(!options.skin_weights)
+    ImGui::EndDisabled();  // closes BeginDisabled(!options.enabled)
 }
 
 } // namespace viewer

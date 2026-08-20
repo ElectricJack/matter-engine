@@ -1,6 +1,56 @@
 #ifndef SURFACE_H
 #define SURFACE_H
 
+// libs/MatterSurfaceLib/include/surface.h
+//
+// The public C API of MatterSurfaceLib's isosurface mesher. Given an array of
+// `Particle` spheres it samples a smooth-min (metaball) union-of-spheres
+// signed field over the grid described by `Bounds` and marching-cubes it into
+// a mesh, optionally folding in ordered CSG stages, non-sphere "fat"
+// primitives, subtractive carve particles and foreign clip particles.
+//
+// How it fits:
+//  - Implemented in `src/surface.c` -- real C, hence the `extern "C"` block
+//    and the plain-C `MtVec3` / `Particle` types.
+//  - The marching-cubes branch of `meshing_algorithm.h` calls in here;
+//    `cell.cpp` / `cluster.cpp` drive it per merge group; MatterEngine3's bake
+//    pipeline sits above that.
+//  - It does NOT touch the GPU. `Mesh` and `Color` are raylib POD types only
+//    (the GL/raylib render path is deleted); a `Mesh` here is a CPU vertex /
+//    index buffer that the BLAS packer later consumes.
+//
+// Threading and scratch:
+//  - There is no global state. Concurrency is expressed through
+//    `SurfaceScratch`: create ONE per worker thread with
+//    `CreateSurfaceScratch()`, reuse it across calls, and destroy it with
+//    `DestroySurfaceScratch()`. It owns the reusable memory pool and the
+//    particle spatial hash.
+//  - `GenerateMeshWithScratch` / `GenerateMeshStaged` / `ProbeFieldScalar` and
+//    the `...WithScratch` normal pass all take that scratch; the plain
+//    `GenerateMesh` / `ComputeSurfaceNormals` entry points are the same
+//    algorithms without the reuse. Geometry is byte-identical either way.
+//  - `SurfaceScratchHash()` exposes the hash the last scratch-based mesh build
+//    produced so downstream per-triangle nearest-particle lookups can reuse it
+//    instead of rebuilding.
+//
+// Conventions and gotchas:
+//  - `particleRadius` is a REFERENCE radius (the maximum effective radius in
+//    the set) used only to size the spatial-hash search; each particle's own
+//    `.radius` is what the field actually integrates. Passing something
+//    smaller than the true maximum silently loses geometry.
+//  - `blendWidth` (and `carveBlend`) are fillet widths in the same length
+//    units as the radii; 0 means a hard union / hard subtraction.
+//  - Every optional feature has a documented "pass NULL, 0" form that is
+//    byte-identical to the path without it. That is deliberate -- it is what
+//    lets new features ship without invalidating existing bakes -- so preserve
+//    it when extending these signatures.
+//  - Shading normals from `ComputeSurfaceNormals` are the analytic field
+//    gradient, which depends only on world position and is therefore
+//    continuous across independently meshed cells. Any pass that moves
+//    vertices or recomputes normals from face geometry (e.g. mesh
+//    simplification) must be followed by re-running it, or shading seams
+//    appear at cell boundaries.
+
 // Phase 4 (Step 3) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
 // Bounds and ProbeFieldScalar's `point` param moved off raylib's Vector3 onto
 // matter_math_c.h's MtVec3. raylib.h stays included -- Mesh/Color (GenerateMesh's
@@ -13,6 +63,11 @@
 #include "csg_stages.h"      // FieldStages (ordered CSG)
 #include <stdbool.h>
 
+// Plain-C vector and triangle records for handing geometry to a BVH builder.
+// Despite the comment below these are definitions, not forward declarations,
+// and neither type is referenced anywhere else in the tree today -- the
+// engine's BVH stores SpatialQueryLib's `Tri` / `TriEx` (`tri.h`) instead.
+// Treat them as a legacy interchange format, not as the current one.
 // Forward declaration for BVH Triangle
 typedef struct {
     float x, y, z;
@@ -27,6 +82,14 @@ typedef struct {
 } BVHTriangle;
 
 
+// The sampling volume for one mesh build. `center` and `size` are in the same
+// space as the `Particle` positions handed to the same call (cluster-local for
+// the cell mesher, world space for a probe), and `divisionPow` sets the grid
+// resolution to 2^divisionPow per axis -- so it, together with `size`, fixes
+// the sampled cell size and hence the smallest feature the mesher can resolve
+// (`MeshContext::voxel` in `meshing_algorithm.h` is the derived figure).
+// Raising `divisionPow` by one multiplies field-evaluation cost by roughly
+// eight.
 // Bounds structure defining the volume for isosurface generation
 typedef struct {
     MtVec3 center;
@@ -34,6 +97,10 @@ typedef struct {
     int     divisionPow;  // Resolution = 2^divisionPow
 } Bounds;
 
+// Legacy tuning flags. Note that no function declared in this header accepts a
+// `MeshGenerationConfig` -- `GetDefaultMeshConfig()` is its only producer, and
+// the behaviour it describes is fixed inside `src/surface.c`. Kept for source
+// compatibility; do not expect setting these to change anything.
 // Mesh generation configuration options
 typedef struct {
     bool enableEdgeDeduplication;  // Enable/disable edge deduplication (saves memory but may have duplicate vertices)

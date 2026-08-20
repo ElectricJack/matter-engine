@@ -1,3 +1,66 @@
+// MatterEngine3/src/sector_streamer.cpp
+//
+// The terrain streaming SELECTOR. Given one anchor position per tick it
+// decides which terrain tiles should exist, in which variant, and in what
+// order to bake them. It is pure bookkeeping: no threads, no GPU resources, no
+// file or network I/O, and no knowledge of what a bake actually does.
+// sector_streamer.h carries the design rationale (variant packing, the retired
+// edge mask, the nested key format, staged refinement); this file is the
+// mechanism.
+//
+// Where it sits
+// -------------
+// Owned and driven by streaming/sector_streaming_coordinator.h, itself driven
+// from matter_engine.cpp. The coordinator does everything this class refuses
+// to know about: it turns a SectorRequest into a bake job, reports the outcome
+// through on_published()/on_failed(), and drains take_evictions() to unpublish.
+// Every value crossing that boundary is a plain (tx, ty, tz, rung) tuple.
+//
+// Threading and call order
+// ------------------------
+// SINGLE-THREADED. Nothing here takes a lock, and update() rewrites `sectors_`
+// in place, so every method must be called from the coordinator's own thread.
+// The intended per-tick order is
+//
+//     update(anchor)                       // recompute the desired map
+//     while (next_request(&r)) ...         // launch bakes, up to max_inflight
+//     on_published(...) / on_failed(...)   // as results land
+//     take_evictions()                     // unpublish what update() retired
+//
+// Nothing enforces it: calling next_request() without a preceding update()
+// simply re-serves the stale desired map.
+//
+// Two selection modes, one class
+// ------------------------------
+//   - UNIFORM (Config::nested_sectors off) -- update(): a single grid of
+//     `sector_size` tiles, a desired scatter rung per ring radius, and an
+//     optional terrain-LOD ladder folded in afterwards by
+//     assign_terrain_lods().
+//   - NESTED (nested_sectors on) -- update_nested(): a quadtree, or an OCTREE
+//     under `volumetric_sectors`, descended from the coarsest level. Tile size
+//     doubles with the level, and the authored terrain bands are reinterpreted
+//     as level radii rather than replaced.
+// The constructor decides which is live and may force flags OFF (a band table
+// that resolves no level ladder disables nesting, and disabling nesting
+// disables volumetric sectors); config() reports what it settled on.
+//
+// Units and conventions
+// ---------------------
+// All radii, sizes and hysteresis are world METRES. `SectorState::dist` is
+// always an XZ distance -- it grades the scatter tier, which is a horizontal
+// notion. Only tile_near_dist() gains a y term, and only under
+// `volumetric_sectors`; anchor y is stored on every path and read nowhere else.
+//
+// Rungs are OPAQUE ints across the public boundary. With the terrain ladder on
+// they are packed variants (scatter tier + terrain LOD + a marker bit),
+// compared for identity and decoded only through the variant_* helpers in the
+// header. -1 uniformly means "none": not desired, nothing resident, nothing in
+// flight.
+//
+// Diagnostics: MATTER_STREAM_NO_EVICT, MATTER_STREAM_NO_STAGING and
+// MATTER_STREAM_NO_LATERAL are read once each at the top of this file. All
+// three are test / A-B-measurement only, and each self-reports to stderr when
+// it fires.
 #include "sector_streamer.h"
 #include <cmath>
 #include <cstdint>
@@ -135,6 +198,10 @@ SectorStreamer::SectorStreamer(Config cfg)
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Anchor to the CENTRE of a uniform-grid sector, in metres. XZ only: the
+// anchor's altitude is deliberately not part of it, for the reason the
+// header's tile_centre_dist note gives -- this distance grades scatter tiers,
+// and scatter is vegetation standing on the surface, a horizontal notion.
 float SectorStreamer::sector_dist(int64_t tx, int64_t tz) const {
     float cx = (float(tx) + 0.5f) * cfg_.sector_size;
     float cz = (float(tz) + 0.5f) * cfg_.sector_size;
@@ -142,6 +209,12 @@ float SectorStreamer::sector_dist(int64_t tx, int64_t tz) const {
     return std::sqrt(dx * dx + dz * dz);
 }
 
+// The first ring whose radius covers `d` (rings are innermost-first, so this
+// is a coarsening walk outwards). -1 means "past every ring", which in the
+// UNIFORM path means the sector is not desired at all. The nested path never
+// calls this; it grades scatter with nested_scatter_tier(), which CLAMPS to
+// the coarsest tier instead of refusing, because there residency is bounded by
+// the terrain bands rather than by the rings.
 int SectorStreamer::desired_rung_for_dist(float d) const {
     for (const auto& ring : cfg_.rings)
         if (d <= ring.radius) return ring.rung;
@@ -1007,6 +1080,25 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_y,
 // update()
 // ---------------------------------------------------------------------------
 
+// One tick of the selector. Delegates wholesale to update_nested() when
+// nesting is on; what follows is the UNIFORM-grid path, in four phases whose
+// order is load-bearing:
+//
+//   1. reset every tracked sector's desired_rung to -1, age its cooldown, and
+//      refresh its distance against the new anchor;
+//   2. scan the square of tiles covering the outer ring + hysteresis and set
+//      desired_rung from the ring table, inserting entries for tiles not yet
+//      tracked;
+//   3. apply demotion hysteresis, queue evictions, and prune entries that are
+//      neither desired, resident, in flight nor cooling down -- this pruning
+//      is what stops `sectors_` growing without bound as the anchor travels;
+//   4. assign_terrain_lods(), which must see the FINAL desired scatter tiers
+//      and only the surviving entries, and which repacks desired_rung as a
+//      variant.
+//
+// Phase 2 costs one distance evaluation per finest-grid cell over the whole
+// disc -- around 100k at StreamMountain's reach. That number is the reason the
+// nested path exists; see the note in update_nested().
 void SectorStreamer::update(float anchor_x, float anchor_y, float anchor_z) {
     if (cfg_.nested_sectors) {
         update_nested(anchor_x, anchor_y, anchor_z);
@@ -1252,6 +1344,13 @@ const std::vector<Eviction>& SectorStreamer::peek_evictions() const noexcept {
     return evictions_;
 }
 
+// Drop the first `count` evictions -- and only after the destination has
+// accepted every one of them. `source` must be THE vector peek_evictions()
+// handed back: the check is pointer identity (`&source != &evictions_`), not a
+// value comparison, so a caller that committed against a COPY fails loudly
+// here instead of silently discarding evictions the real queue still owes.
+// Returns false without modifying anything on either that mismatch or a
+// `count` past the end.
 bool SectorStreamer::commit_evictions(
     const std::vector<Eviction>& source,
     size_t count) noexcept {
@@ -1264,6 +1363,14 @@ bool SectorStreamer::commit_evictions(
 // clear()
 // ---------------------------------------------------------------------------
 
+// Full reroll: every resident tile is APPENDED to the eviction queue (the
+// queue is not emptied first, so anything already pending survives) and all
+// tracked state is dropped -- residency, cooldowns and inflight markers alike.
+//
+// Bakes already in flight are NOT cancelled; the streamer simply forgets them,
+// so their on_published() finds no entry, returns false, and the caller
+// discards the artifact. `inflight_` is reset to 0, so the whole request
+// budget is available again on the very next tick.
 void SectorStreamer::clear() {
     for (auto& [k, st] : sectors_) {
         if (st.resident_rung >= 0) {
@@ -1280,6 +1387,9 @@ void SectorStreamer::clear() {
 // Accessors
 // ---------------------------------------------------------------------------
 
+// O(tracked sectors): there is no running total, so this walks the entire map
+// on every call. Fine for a per-frame HUD line or a test assertion; do not put
+// it inside a loop that is already iterating sectors.
 size_t SectorStreamer::resident_count() const {
     size_t n = 0;
     for (const auto& [k, st] : sectors_)

@@ -1,3 +1,28 @@
+// MatterEditor/src/part_workbench.cpp
+//
+// Implementation of viewer::PartWorkbench (see part_workbench.h for the
+// modal-isolation architecture and the per-frame call order).
+//
+// The pieces, in the order they appear below:
+//   - file helpers (read_file / write_file / ensure_dir_alias)
+//   - WorkbenchBakeObserver: the engine BakeObserver seam, the only place in
+//     this file touched by a non-main thread
+//   - scratch-project layout: paths, the generated iso world file, and the
+//     JSON manifest of pinned variations
+//   - open_part / apply_params / tick: the bake lifecycle
+//   - draw*: the ImGui panels
+//   - W5 per-LOD authoring, which is the only code here that writes to a real
+//     project file rather than to scratch
+//
+// On-disk layout, all of it disposable:
+//   cache/lab-scratch/<project>/objects            -> junction to the real project
+//   cache/lab-scratch/<project>/shared-lib         -> junction, when present
+//   cache/lab-scratch/<project>/worlds/__iso_X.js  -> generated, see part_workbench_iso.h
+//   cache/lab-scratch/<project>/.cache/__iso_X/    -> the isolation bake cache
+//   cache/lab-scratch/<project>/workbench_manifest.json
+//
+// Paths are relative to the process working directory, which for the editor is
+// always MatterEditor/ (launch rule 1, docs/agent/control-surface.md).
 #include "part_workbench.h"
 
 #include "part_workbench_iso.h"
@@ -54,6 +79,13 @@ std::string read_file(const std::string& path, bool& ok) {
     return ss.str();
 }
 
+// Truncating whole-file write, creating parent directories first.
+//
+// GOTCHA: the return value only reports whether the stream OPENED. The write
+// itself is not checked and the stream is not flushed before returning, so a
+// full disk or a failing device still reports success. write_lods_to_source()
+// — the one caller that writes to a real project file — compensates by
+// re-reading and re-verifying what actually landed on disk.
 bool write_file(const std::string& path, const std::string& text) {
     fs::path p(path);
     std::error_code ec;
@@ -281,6 +313,12 @@ void PartWorkbench::refresh_default_params() {
     }
 }
 
+// The part's content address for `params_json`: the same resolved hash the
+// bake pipeline keys its cache on, as 16 lowercase hex digits. Returns an
+// EMPTY string when no script host exists yet or the part source failed to
+// load — callers treat that as "unknown", never as hash 0. Note that a part
+// whose source has a JS error resolves to 0 and therefore to the string
+// "0000000000000000", which is a legitimate-looking but meaningless key.
 std::string PartWorkbench::compute_hash_hex(const std::string& params_json) {
     if (!host_ || part_source_.empty()) return {};
     const uint64_t hash = host_->host.resolve_hash(part_source_, params_json);
@@ -289,6 +327,13 @@ std::string PartWorkbench::compute_hash_hex(const std::string& params_json) {
     return std::string(buf);
 }
 
+// Load `workbench_manifest.json` for the current scratch project, replacing
+// whatever was in memory. Fail-soft in every direction: a missing, empty,
+// unparsable or wrong-shaped file simply yields an empty manifest, because the
+// manifest holds convenience state (pin names, last measurements) and losing
+// it must never block opening a part. `manifest_project_key_` records which
+// scratch project the loaded data belongs to, so open_part() reloads only when
+// the project actually changes.
 void PartWorkbench::load_manifest() {
     manifest_.parts.clear();
     manifest_project_key_ = scratch_project_dir();
@@ -367,6 +412,12 @@ void PartWorkbench::save_manifest() {
     write_file(manifest_path(), write_json(root));
 }
 
+// The manifest record for the currently open module, CREATING an empty one on
+// first use. Never fails, so callers can treat it as always-present.
+//
+// The returned reference is into `manifest_.parts` and is invalidated by any
+// later part_record() call that appends a new record — use it within one
+// statement group, do not cache it across an open_part().
 WorkbenchPartRecord& PartWorkbench::part_record() {
     for (WorkbenchPartRecord& rec : manifest_.parts)
         if (rec.module == module_) return rec;
@@ -385,6 +436,17 @@ void PartWorkbench::close() {
     lod_inspector_.reset();  // W4: drop stale force_lod/hide_children overrides
 }
 
+// Open (or re-open) `module` from `source_project_dir/objects` in isolation.
+//
+// Destroys any current session/engine first, then rebuilds everything: the
+// scratch project and its junctions, the manifest, the resolved default
+// params, the generated iso world file, the W5 authoring model, a fresh
+// EngineContext + WorldSession, and finally request_bake().
+//
+// Reports failure only through `status_line_` (drawn in the panel) — there is
+// no return value, and a failed open simply leaves is_open() false. Empty
+// arguments are ignored outright, which is what makes the picker's "Open"
+// button safe to click with a blank module box.
 void PartWorkbench::open_part(const std::string& source_project_dir, const std::string& module) {
     if (module.empty() || source_project_dir.empty()) return;
     session_.reset();
@@ -444,6 +506,15 @@ void PartWorkbench::open_part(const std::string& source_project_dir, const std::
     status_line_ = "opened " + module_ + " (cache hit if scratch-baked before)...";
 }
 
+// Rewrite the iso world with `params_json` and reload the session so the new
+// variation bakes. `cold` additionally deletes the scratch cache's `parts`
+// directory first, forcing a real rebake instead of a content-hash cache hit
+// — that is the difference between the "Bake (cold rebake)" button and a pin's
+// "Load" button, which share this one entry point.
+//
+// Asynchronous: this only kicks the reload off. Completion arrives later as a
+// BakeFinished event drained in tick(), which is where the manifest and the
+// status line are updated. No-op when nothing is open.
 void PartWorkbench::apply_params(const std::string& params_json, bool cold) {
     if (!session_) return;
     current_params_json_ = params_json;
@@ -462,6 +533,13 @@ void PartWorkbench::apply_params(const std::string& params_json, bool cold) {
     bake_start_ms_ = now_ms();
 }
 
+// Point the isolation camera at instance 0's baked AABB from a fixed 3/4 view.
+// Silently does nothing until the part has actually baked (instance_info /
+// part_bounds both fail before that), which is why open_part() sets
+// `awaiting_bounds_frame_` and tick() retries this once BakeFinished arrives.
+// Distances are metres; the framing radius is clamped to 0.25 m so a
+// degenerate or empty part still yields a usable camera instead of one sitting
+// inside the origin.
 void PartWorkbench::frame_camera_on_bounds() {
     if (!session_) return;
     matter::InstanceInfo info;
@@ -488,6 +566,18 @@ void PartWorkbench::frame_camera_on_bounds() {
     camera_.position = {cx + dx * distance, cy + dy * distance, cz + dz * distance};
 }
 
+// Per-frame isolation-session work, called unconditionally from main() whether
+// or not the Workbench tab is visible — that is what keeps a background bake
+// progressing and makes switching back to the tab instant.
+//
+// Three jobs: tick the session (no fixed steps — the isolation scene has no
+// physics), drain the bake observer's rung log into `status_line_`, and drain
+// the session's event queue. A BakeFinished with no errors is where the
+// manifest is updated (baked_hashes, per-pin tris/ms) and saved, and where the
+// deferred camera framing finally runs. No-op while closed.
+//
+// Main thread only: this is the sole reader of the observer's mutex-guarded
+// state, and the only writer of `status_line_` that ImGui later reads.
 void PartWorkbench::tick(float dt) {
     if (!session_) return;
     matter::TickDesc td{};
@@ -551,6 +641,12 @@ void PartWorkbench::pump_gpu_jobs(float ms_budget) {
 // UI
 // ---------------------------------------------------------------------------
 
+// Draw the Workbench tab body. Call inside the tab's ImGui scope, and ONLY
+// when the tab is actually focused: the first statement raises
+// `viewport_active_`, which is the signal main() reads through
+// wants_viewport() to decide that the isolation session — not the production
+// session — renders into the shared viewport this frame. begin_frame() must
+// have cleared that flag earlier in the same frame.
 void PartWorkbench::draw(const std::vector<WorldEntry>& worlds) {
     viewport_active_ = true;
 

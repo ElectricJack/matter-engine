@@ -1,3 +1,43 @@
+// libs/MatterSurfaceLib/src/voxel_imposter.cpp
+//
+// Dense voxel imposter for a baked part: a low-cost stand-in that a distant
+// viewer can ray-march instead of tracing the part's real triangles. The public
+// contract and the struct layouts are in `../include/voxel_imposter.h`; the
+// design doc it cites is
+// docs/superpowers/specs/2026-06-22-voxel-box-imposter-design.md.
+//
+// Bake path:
+//
+//   flatten_part_triangles_mat(blas, tlas)   // instances -> world-space tris
+//     -> bake_voxels(tris, params, hash, out)  // surface voxelization
+//     -> save(cache_path(compute_vox_hash(params)), out, hash)
+//
+// and on a later run `load()` re-reads it, refusing the file unless BOTH the
+// parameter hash and the SOURCE PART hash match — so re-baking the part
+// invalidates its imposter automatically.
+//
+// Conventions:
+//  - `bounds_min`/`bounds_max` are the tight world-space AABB of the flattened
+//    triangles; the grid divides exactly that box, so a voxel's world size is
+//    extent/n per axis and dims are chosen (`choose_grid_dims`) to keep voxels
+//    roughly cubic.
+//  - `coverage` is BINARY: 0 or 255. Any triangle overlapping the voxel sets it
+//    to 255. There is no partial coverage and `VoxGenParams::coverThresh` is
+//    not consulted (see the `(void)p.coverThresh` at the end of `bake_voxels`).
+//  - `albedo` is RGB8, area-weighted over the triangles that touched the voxel,
+//    with the material's albedo pre-blended by the triangle tint.
+//  - `normal` is an octahedral RG8 encoding of the area-weighted average
+//    geometric normal; `oct_encode`/`oct_decode` must stay bit-compatible with
+//    the GLSL decode in `bvh_tlas_common.glsl`.
+//  - `voxel_index(x,y,z) == (z*ny + y)*nx + x` everywhere, including in the
+//    file format and in `dda_first_hit`.
+//  - `dda_first_hit` works in NORMALIZED box space [0,1]^3, not world space.
+//
+// CPU-only and GL-free; allocates the full dense grid (nx*ny*nz * 6 bytes plus
+// three temporary float arrays during the bake), so `maxDim` is the real memory
+// dial. Nothing here is thread-safe by itself, but nothing is shared either —
+// each call operates only on its arguments.
+
 #include "../include/voxel_imposter.h"
 #include "../include/part_asset.h"   // fnv1a64
 #include "../include/material_registry.h"
@@ -9,6 +49,9 @@
 #include <sys/stat.h>
 // tlas_manager.hpp and blas_manager.hpp are already pulled in via voxel_imposter.h
 
+// File-local helpers: raw byte append/read for the `.vxi` serializer (mirroring
+// part_asset.cpp's), and the small vector math used by the separating-axis
+// triangle/box test below.
 namespace {
 // ---- I/O helpers ----
 template <class T> void put(std::vector<uint8_t>& b, const T& v){
@@ -111,6 +154,16 @@ void oct_decode(const uint8_t in[2], float n[3]) {
     n[0]=x/l; n[1]=y/l; n[2]=z/l;
 }
 
+// Walk every TLAS draw record, transform its BLAS's triangles by the record's
+// matrix, and return them all as one flat world-space array. A part is many
+// BLAS entries and each entry may be instanced several times, so the output can
+// be far larger than the sum of the unique geometry — this is O(total instanced
+// triangles) in both time and memory.
+//
+// Records whose BLAS handle is not in `blas` are skipped silently. Per-triangle
+// material/tint come from `BLASEntry::tri_extra` when present, otherwise from
+// the instance's own `material_id` with a neutral (1,1,1,0) tint. Only positions
+// are transformed; nothing here carries normals.
 std::vector<FlatTri> flatten_part_triangles_mat(const BLASManager& blas, const TLASManager& tlas) {
     std::vector<FlatTri> out;
     const auto& recs = tlas.get_draw_records();
@@ -142,6 +195,22 @@ std::vector<FlatTri> flatten_part_triangles_mat(const BLASManager& blas, const T
     return out;
 }
 
+// Surface-voxelize `tris` into a dense grid. This is a SHELL, not a solid:
+// only voxels an actual triangle passes through are marked, so the interior of
+// a closed mesh stays empty and a ray that enters through a hole travels
+// straight through.
+//
+// Per triangle: compute its AABB, clip that to the grid, and for every candidate
+// voxel run the exact `tri_box_overlap` SAT test. Covered voxels accumulate
+// area-weighted (w = triangle area) albedo and geometric normal, which are then
+// normalized and quantized in a second pass. Cost is O(sum of per-triangle
+// voxel-AABB volumes), so a few very large triangles are much more expensive
+// than the triangle count suggests.
+//
+// `out` is fully overwritten (including bounds, dims and `source_part_hash`).
+// Returns false on empty input, `maxDim < 1`, or a degenerate AABB; on false
+// `out` may already have been reset. Degenerate zero-thickness axes are floored
+// to 1e-6 so a flat part still voxelizes into a one-voxel-thick slab.
 bool bake_voxels(const std::vector<FlatTri>& tris, const VoxGenParams& p,
                  uint64_t source_part_hash, VoxelImposter& out) {
     if (tris.empty() || p.maxDim < 1) return false;
@@ -200,6 +269,19 @@ bool bake_voxels(const std::vector<FlatTri>& tris, const VoxGenParams& p,
     return true;
 }
 
+// Amanatides-Woo grid traversal, kept deliberately in step with the shader's
+// `voxelMarch` — changes here must be mirrored there or the CPU and GPU
+// imposters disagree.
+//
+// `o`/`d` are in normalized box space [0,1]^3 and `d` need not be unit length;
+// `tHit` is returned in the same parameterization. A ray starting inside a
+// covered voxel reports an immediate hit at the entry t. The `guard` loop bound
+// of (nx+ny+nz)*2 is a safety net against floating-point stalls, not a real
+// traversal limit — a diagonal walk needs at most about nx+ny+nz steps.
+//
+// `cov` is indexed as (z*ny+y)*nx+x and is NOT bounds-checked against the passed
+// dims, so the caller must pass the dims the coverage array was built with
+// (`load()` enforces this for deserialized imposters).
 bool dda_first_hit(const float o[3], const float d[3],
                    int nx,int ny,int nz, const std::vector<uint8_t>& cov,
                    int& hitX,int& hitY,int& hitZ, float& tHit) {
@@ -294,6 +376,13 @@ bool save(const std::string& path, const VoxelImposter& v, uint64_t vox_hash) {
     return std::rename(tmp.c_str(), path.c_str()) == 0;
 }
 
+// Read a `.vxi` back. Unlike `part_asset::load`, this one IS transactional:
+// everything is parsed into a local `VoxelImposter` and only moved into `out`
+// after the last check passes, so a rejected file leaves `out` untouched.
+//
+// Every `return false` is a normal "regenerate" outcome — missing file, short
+// read, wrong magic/version, parameter-hash or source-part-hash mismatch,
+// body content-hash mismatch, or dims that disagree with the blob sizes.
 bool load(const std::string& path, uint64_t expected_vox_hash,
           uint64_t expected_source_hash, VoxelImposter& out) {
     FILE* f = std::fopen(path.c_str(), "rb");

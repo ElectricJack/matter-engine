@@ -1,5 +1,45 @@
 #pragma once
 
+// MatterEngine3/src/render/vk_animation_skinning.h
+//
+// The CPU-side GPU-skinning work queue. `VkAnimationSkinning` takes the
+// per-frame list of visible skinned submissions, validates it, admits as much
+// as the animation budget allows, and publishes one `VkSkinFrameArenas` per
+// frame slot: flattened joint palettes, `VkSkinWorkItem`s for
+// `shaders_vk/animation_skin.comp`, the output vertex slices they write, the
+// indexed raster draws that consume those outputs, and an explicit fallback
+// record for everything that did not make it.
+//
+// Where it sits: `animation_skin_bridge.h` turns ECS animation state into
+// `VkSkinSubmission`s; `VkSceneRenderer` (vk_scene_renderer.cpp) drives the
+// frame protocol below and does the actual buffer allocation and upload;
+// `vk_animation_bounds.h` consumes the resulting `VkSkinRasterDraw`s to
+// decide which bind-pose geometry must be suppressed. The shader-visible
+// structs come from `vk_animation_types.h`.
+//
+// Frame protocol, in order, per frame slot:
+//   begin_frame(slot, completed_fence)   reclaim the slot; fails while its
+//                                        fence, or a fence that depends on
+//                                        its retained output, is outstanding
+//   submit_visible(slot, visible)        validate, sort, admit, publish
+//   reject_gpu_frame(slot, reason)       optional: allocation/upload failed,
+//                                        replace current work with fallbacks
+//   mark_submitted(slot, fence)          seal the slot against that fence
+//
+// Considerations:
+//  - Owns no Vulkan handles and takes no locks. It is plain CPU state driven
+//    from the render thread; it is not internally synchronized.
+//  - Fence values form ONE monotonically increasing timeline across all
+//    slots, not a per-slot counter.
+//  - Publication is transactional. Every validation failure publishes a
+//    complete fallback frame (retained last-complete draws or bind pose) --
+//    the queue is never left half-built, and callers downstream never see a
+//    work item whose source range or palette was not proven in range.
+//  - Retained "last complete" draws can point at an OLDER frame slot's output
+//    buffer. That is what `source_dependency_fence_` /
+//    `pending_source_users_` exist to protect: a producer slot cannot be
+//    recycled while a consumer still references its buffers.
+//  - Offsets in the arenas are element indices (vertices, joints), not bytes.
 #include "animation/animation_budget.h"
 #include "vk_animation_types.h"
 
@@ -13,10 +53,26 @@ namespace viewer {
 // upload implementation, not this lifetime rule: both palette streams are
 // copied from this single snapshot before the frame queue is published.
 struct VkSkinPose {
+    // Flat joint palette for this frame. Its size is the palette/joint count
+    // for the submission and is what `VkSkinInfluence::joint` is validated
+    // against.
     std::vector<VkSkinJoint> current;
+    // Previous frame's palette, used only for the previous-position output
+    // that feeds motion vectors. Read only when the submission sets
+    // `history_valid`; otherwise the queue substitutes `current`, which makes
+    // the motion vector zero.
     std::vector<VkSkinJoint> previous;
 };
 
+// One visible skinned cluster offered to the queue for this frame. The
+// producer has already done frustum/LOD selection, so the fields here are the
+// result of that decision, not a request for it.
+//
+// `render_priority` (higher first) then `distance_bucket` (nearer first) then
+// instance slot then LOD is the admission order under budget pressure -- see
+// `less_submission` in vk_animation_skinning.cpp. Anything past the budget is
+// not dropped silently: it gets a `VkSkinFallback` and, where a compatible
+// retained output exists, a retained raster draw.
 struct VkSkinSubmission {
     uint64_t asset_key = 0;
     // Immutable asset-local influence offset.  Source vertices are global to
@@ -79,6 +135,8 @@ struct VkSkinRasterDraw {
     uint32_t flags = 0;
 };
 
+// A half-open range of vertices inside a frame's skinned output arena.
+// `offset` and `count` are vertex counts, not bytes.
 struct VkSkinArenaSlice {
     uint32_t offset = 0;
     uint32_t count = 0;
@@ -87,7 +145,15 @@ struct VkSkinArenaSlice {
 // C1 deliberately leaves the actual raster-instance fallback choice to C2;
 // this record makes rejection visible and deterministic without emitting a
 // partially valid compute work item.
+// How a rejected instance is to be drawn instead.
+//   LastCompletePose  a still-live skinned output from an earlier frame slot
+//                     matches this instance exactly, so keep drawing it.
+//   BindPose          nothing usable is retained; fall back to the
+//                     unskinned bind-pose geometry.
 enum class VkSkinFallbackMode : uint8_t { LastCompletePose, BindPose };
+// Which renderer-side GPU step failed, as reported to `reject_gpu_frame`.
+// `None` is not a legal argument there -- it is the "no failure" state of
+// `VkSkinFrameArenas::gpu_failure`.
 enum class VkSkinGpuFailureReason : uint8_t { None, Allocation, Upload };
 struct VkSkinFallback {
     uint32_t instance_slot = 0;
@@ -97,6 +163,18 @@ struct VkSkinFallback {
         matter::animation::AnimationFallbackReason::None;
 };
 
+// Everything one frame slot publishes, replaced wholesale by each
+// `submit_visible` / `reject_gpu_frame`. The renderer uploads
+// `palette_current`, `palette_previous` and `work_items`, dispatches the skin
+// compute shader over them, then draws `raster_draws`.
+//
+// `palette_previous` always has the same length as `palette_current`: when a
+// submission has no valid history the current palette is duplicated into it.
+// `current_output` and `previous_output` are per-work-item slices of the
+// frame's skinned vertex arena, in vertices.
+//
+// `in_flight` plus `submitted_fence` are set by `mark_submitted` and are what
+// stop `begin_frame` from recycling the slot early.
 struct VkSkinFrameArenas {
     std::vector<VkSkinJoint> palette_current;
     std::vector<VkSkinJoint> palette_previous;
@@ -126,9 +204,29 @@ public:
         uint32_t frame_slots = 3,
         matter::animation::AnimationBudgetConfig budget = {});
 
+    // Appends the asset's influences to the immutable packed arena, which
+    // only ever grows for the lifetime of this object. Returns false for a
+    // zero key, an empty list, an over-budget asset count, or a re-register
+    // of an existing key whose influences are not byte-identical; a
+    // byte-identical re-register succeeds and is a no-op.
     bool register_asset(uint64_t asset_key,
                         const std::vector<VkSkinInfluence>& influences);
+    // Reclaims a frame slot and clears its arenas. Returns false -- leaving
+    // the slot untouched -- while the slot's own fence is still outstanding,
+    // while a later frame's fence still depends on output retained from this
+    // slot, or while an unsealed consumer references it. Succeeding also
+    // retires every `retained_outputs_` entry pointing at this slot, since
+    // those buffers are about to be overwritten.
     bool begin_frame(uint32_t frame_slot, uint64_t completed_fence);
+    // Validates, sorts, budget-admits and publishes the frame's queue.
+    // Submissions with `current_frustum_visible == false` are dropped up
+    // front and get no work, output slice or raster draw.
+    //
+    // Returning false does NOT mean "nothing happened": a malformed
+    // submission replaces the whole slot with a fallback-only frame (retained
+    // last-complete draws where possible, bind pose otherwise) so no partially
+    // valid work can reach the GPU. False is also returned for an
+    // out-of-range slot or a slot already sealed by `mark_submitted`.
     bool submit_visible(uint32_t frame_slot,
                         const std::vector<VkSkinSubmission>& visible);
     // Frame slots are sealed exactly once.  A rejected seal leaves the
@@ -140,6 +238,8 @@ public:
     // slices (or bind pose) before the frame is sealed.
     bool reject_gpu_frame(uint32_t frame_slot, VkSkinGpuFailureReason reason);
 
+    // An out-of-range slot returns a shared static empty arena rather than
+    // failing, so callers can read it unconditionally.
     const VkSkinFrameArenas& frame(uint32_t frame_slot) const;
     // Immutable packed influence arena. WorkItem::influence indexes this
     // buffer directly, so the renderer can upload it once per asset revision.
@@ -167,6 +267,11 @@ private:
         uint32_t offset = 0;
     };
     std::map<uint64_t, AssetInfluences> assets_;
+    // The last successfully sealed skinned output for one (slot, generation),
+    // keyed by `instance_key`. A retained draw is only reused when every
+    // geometry field below still matches the new submission exactly -- same
+    // asset, LOD, cluster, source range and index range -- because the
+    // retained vertices were skinned for that exact geometry.
     struct RetainedOutput {
         uint64_t asset_key = 0;
         uint32_t lod = 0;

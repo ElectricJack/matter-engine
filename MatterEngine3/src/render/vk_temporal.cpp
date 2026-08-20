@@ -1,3 +1,29 @@
+// MatterEngine3/src/render/vk_temporal.cpp
+//
+// Implementation of the renderer's temporal state (see vk_temporal.h for the
+// attempt/commit protocol and the conventions).
+//
+// Three things worth knowing before reading:
+//
+//  - `begin()` has three history-lookup paths, fastest first: an ALIGNED path
+//    when the incoming id sequence is element-for-element the previous one; a
+//    CURSOR path that walks the previous frame's ids in parallel and only
+//    hashes on a mismatch; and the original keyed hash lookup. The long
+//    comments in place explain why each exists -- a streaming world changes the
+//    id set almost every frame, which defeats the aligned path but not the
+//    cursor.
+//  - Candidate storage is RECYCLED rather than reallocated (`spare_`), because
+//    at streaming scale the per-frame allocate/free of ~20 MB dominated.
+//  - Both optimisations have env kill switches (`MATTER_VK_TEMPORAL_RECYCLE=0`,
+//    `MATTER_VK_TEMPORAL_CURSOR=0`) so a suspected regression can be A/B'd
+//    without a rebuild. Read once and cached in a function-local static.
+//
+// Profiling zones (`engine_prof::kTemporal*`) bracket the align check, the
+// table fill, the map build and the history resolution separately, so the
+// per-frame cost can be attributed to a path rather than to `begin()` as a
+// whole.
+//
+// Everything here is render-thread-only and takes no locks.
 #include "vk_temporal.h"
 
 #include <algorithm>
@@ -12,6 +38,9 @@
 namespace viewer {
 namespace {
 
+// Radical inverse of `index` in `base` -- the Halton low-discrepancy sequence,
+// returning [0,1). Bases 2 and 3 give the standard 2D sample pattern used for
+// sub-pixel camera jitter; index 0 returns 0, so callers start at 1.
 float halton(std::uint64_t index, std::uint32_t base) {
     float result = 0.0f;
     float fraction = 1.0f;
@@ -27,6 +56,16 @@ bool same_extent(VkExtent2D a, VkExtent2D b) {
     return a.width == b.width && a.height == b.height;
 }
 
+// Apply a sub-pixel translation to a projection by shearing rows 0 and 1 of
+// `view_to_clip` toward its w row, then rebuild every derived matrix and the
+// frustum planes from it. `x_pixels`/`y_pixels` are screen-space (Y-down)
+// pixels of `extent`.
+//
+// Shearing the projection rather than translating the view keeps the camera
+// position exactly where it was, which is what makes the jittered and
+// unjittered pairs describe the same eye.
+//
+// A zero extent returns the source untouched (no jitter), not an error.
 FrameMatrices jitter_frame(const FrameMatrices& source, float x_pixels,
                            float y_pixels, VkExtent2D extent) {
     FrameMatrices result = source;
@@ -54,6 +93,10 @@ FrameMatrices jitter_frame(const FrameMatrices& source, float x_pixels,
 
 }  // namespace
 
+// The reject tests below run in a fixed order and each returns immediately, so
+// `rejection_bits` names the FIRST reason the history was refused. Keep this
+// order identical to gi_temporal.comp -- a test that fires here but not there
+// (or vice versa) is exactly the divergence this mirror exists to catch.
 GiTemporalResult GiTemporalState::accumulate(
     const GiTemporalSurface& current, matter::Float3 velocity_pixels,
     VkExtent2D extent, GiPixelCoord pixel, bool reset,
@@ -138,6 +181,9 @@ GiTemporalResult GiTemporalState::accumulate(
     return result;
 }
 
+// `presented_index_ ^= 1` is the only place the ping-pong flips, so a frame
+// that failed to present leaves the renderer reading and writing the same
+// history set it did last time -- no half-written history is ever promoted.
 bool GiTemporalState::commit_presented(std::uint64_t attempt_token) {
     if (!has_candidate_ || candidate_token_ != attempt_token) return false;
     presented_ = candidate_;
@@ -190,6 +236,14 @@ inline std::uint32_t transform_slot_hash(std::uint64_t id) {
 }
 }  // namespace
 
+// Materialise the linear-probe index over `ids`. Idempotent: a no-op once
+// `map_built` is set, which is what lets begin() call it unconditionally on
+// the keyed path.
+//
+// Capacity is a power of two at >= 2x the entry count, so the table is at most
+// half full and probe runs stay short. Side effect: it also establishes
+// `unique` / `unique_known`, which the aligned and cursor fast paths in
+// begin() require -- those paths are only sound when no id repeats.
 void TemporalState::TransformTable::build_map() {
     if (map_built) return;
     std::size_t capacity = 16;
@@ -222,6 +276,10 @@ void TemporalState::TransformTable::build_map() {
     map_built = true;
 }
 
+// Returns -1 for "not present", and also for "the map was never built" --
+// callers must have called build_map() first or they will silently see every
+// instance as new. The probe loop is unbounded by design: build_map keeps the
+// table under half full, so an empty slot always terminates it.
 std::int32_t TemporalState::TransformTable::find_index(
     std::uint64_t id) const {
     if (!map_built || slot_entries.empty()) return -1;
@@ -503,6 +561,10 @@ matter::Float3 temporal_velocity_pixels(const TemporalFrame& frame,
             0.0f};
 }
 
+// FNV-1a over the raw bytes of the three inputs. Byte-order dependent, which
+// is fine -- the value never leaves the process and only has to be stable
+// within a run. 0 is remapped to 1 so a hash collision with the "unset" id
+// cannot silently erase an instance's history.
 std::uint64_t temporal_instance_id(std::uint64_t source_instance_id,
                                    std::uint64_t part_hash,
                                    std::uint32_t child_ordinal) {

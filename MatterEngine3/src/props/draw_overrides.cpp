@@ -1,3 +1,37 @@
+// MatterEngine3/src/props/draw_overrides.cpp
+//
+// Implementation of the per-module draw-override system declared in
+// matter/draw_overrides.h. Read that header first — it explains WHY hide is
+// enforced on the CPU while max_draw_distance and lod_bias are enforced in
+// shaders_vk/cull.comp. This file is the plumbing.
+//
+// Three layers, in the order data flows through them:
+//
+//   DrawOverrideTable     module NAME -> ModuleDrawOverride. Sparse by
+//                         construction: setting a module back to the neutral
+//                         value erases its row rather than storing it, so
+//                         `empty()` genuinely means "no overrides".
+//   DrawOverrideResolver  owns a catalog of part content hash -> module name and
+//                         answers the two questions the renderer asks: is this
+//                         part hidden, and what is the GPU-visible entry lane.
+//                         Both are kept incremental — a world with no overrides
+//                         never rebuilds anything.
+//   Property bridge       build_draw_override_group() synthesises a
+//                         props::DynamicGroup with three fields per module
+//                         (hide / max dist / LOD bias), and
+//                         read_draw_override_group() reads the edited group back
+//                         into a table. Field names are "<module><sep><field>",
+//                         split with split_draw_override_field.
+//
+// Units and ranges: `max_draw_distance` is metres with 0 meaning unlimited;
+// `lod_bias` is a unitless multiplier with 1 meaning unchanged. Both are clamped
+// on the READ side (read_draw_override_group) rather than in the schema, because
+// the distance widget is deliberately unranged so that 0 stays reachable.
+//
+// Threading: none of this locks. It is app-thread state, mutated when the
+// property panel or a FIFO `set` lands and read when the renderer rebuilds; the
+// GPU lane is handed over through the consume_gpu_dirty() flag.
+
 #include "matter/draw_overrides.h"
 
 #include <algorithm>
@@ -26,6 +60,9 @@ std::string field_name_for(const std::string& module, const char* field) {
 // DrawOverrideTable
 // ---------------------------------------------------------------------------
 
+// Stores one module's override, or ERASES its row when `value` is the neutral
+// default — that is what keeps the table sparse and makes `empty()` meaningful.
+// An empty module name is ignored.
 void DrawOverrideTable::set(const std::string& module,
                             const ModuleDrawOverride& value) {
     if (module.empty()) return;
@@ -42,6 +79,10 @@ const ModuleDrawOverride* DrawOverrideTable::find(
     return it == by_module_.end() ? nullptr : &it->second;
 }
 
+// The set of module names currently marked `hide`. Rebuilt on every call and
+// used by DrawOverrideResolver::set_table to decide whether the renderer's
+// memoised instance expansions must be invalidated — comparing two of these is
+// how a hide-only change is told apart from a distance/bias-only change.
 std::set<std::string> DrawOverrideTable::hidden_modules() const {
     std::set<std::string> out;
     for (const auto& kv : by_module_)
@@ -53,6 +94,10 @@ std::set<std::string> DrawOverrideTable::hidden_modules() const {
 // DrawOverrideResolver
 // ---------------------------------------------------------------------------
 
+// Drops every part_hash -> module association and the caches derived from it.
+// The override TABLE itself survives — this is for a world unload, where the
+// parts go away but the user's authored overrides should still apply to the next
+// world's matching module names.
 void DrawOverrideResolver::clear_catalog() {
     catalog_.clear();
     hidden_memo_.clear();
@@ -62,6 +107,14 @@ void DrawOverrideResolver::clear_catalog() {
     }
 }
 
+// Associates a part content hash with the module that produced it. Returns true
+// when the catalog actually changed (a new hash, or a hash whose module moved) —
+// callers use that to decide whether the property group needs rebuilding.
+//
+// part_hash 0 and an empty module name are both rejected as false. The memoised
+// hidden answer for the hash is always invalidated, and the GPU entry lane is
+// updated in place (kept sorted by hash) only when the new module carries a
+// GPU-visible override, so worlds with no overrides never touch it.
 bool DrawOverrideResolver::add_module(uint64_t part_hash,
                                       const std::string& module) {
     if (part_hash == 0 || module.empty()) return false;
@@ -97,6 +150,9 @@ bool DrawOverrideResolver::add_module(uint64_t part_hash,
     return true;
 }
 
+// The distinct module names in the catalog, sorted and de-duplicated — the input
+// build_draw_override_group() expects, so the generated panel has one stable
+// section per module. Allocates and sorts on every call.
 std::vector<std::string> DrawOverrideResolver::modules() const {
     std::vector<std::string> out;
     out.reserve(catalog_.size());
@@ -106,6 +162,11 @@ std::vector<std::string> DrawOverrideResolver::modules() const {
     return out;
 }
 
+// Replaces the whole override table. Returns true when the HIDDEN SET changed,
+// which is the caller's signal to invalidate the renderer's memoised instance
+// expansions (a hide is enforced at expansion time; the other two are not).
+// A distance/LOD-bias-only edit therefore returns false while still marking the
+// GPU lane dirty.
 bool DrawOverrideResolver::set_table(DrawOverrideTable table) {
     const std::set<std::string> before = table_.hidden_modules();
     table_ = std::move(table);
@@ -116,6 +177,10 @@ bool DrawOverrideResolver::set_table(DrawOverrideTable table) {
     return before != after;
 }
 
+// Recomputes the whole GPU entry lane from the catalog + table, ascending by
+// part_hash. Sets the dirty flag only when the result actually differs from what
+// is already there, so a table edit that touches no GPU-visible field does not
+// force a re-upload. O(catalog).
 void DrawOverrideResolver::rebuild_gpu_entries() {
     std::vector<PartDrawOverrideEntry> next;
     if (!table_.empty()) {
@@ -150,6 +215,10 @@ void DrawOverrideResolver::rebuild_gpu_entries() {
     gpu_dirty_ = true;
 }
 
+// Whether the renderer should skip this part entirely. Answers false immediately
+// when nothing at all is hidden, and otherwise memoises per hash — hence the
+// mutable memo behind a const method. Both add_module and set_table invalidate
+// the memo, so a stale answer cannot survive an edit.
 bool DrawOverrideResolver::hidden(uint64_t part_hash) const {
     if (!any_hidden_) return false;
     auto memo = hidden_memo_.find(part_hash);
@@ -164,6 +233,9 @@ bool DrawOverrideResolver::hidden(uint64_t part_hash) const {
     return result;
 }
 
+// Reads AND CLEARS the GPU-lane dirty flag: true means the entry lane changed
+// since the last call and must be re-uploaded. Exactly one consumer may call
+// this, since the second caller in a frame always sees false.
 bool DrawOverrideResolver::consume_gpu_dirty() {
     const bool was = gpu_dirty_;
     gpu_dirty_ = false;
@@ -174,6 +246,10 @@ bool DrawOverrideResolver::consume_gpu_dirty() {
 // Property-system bridge
 // ---------------------------------------------------------------------------
 
+// Splits a generated property field name back into its module and field parts at
+// the LAST separator, so a module name containing the separator still round-trips
+// to the right field. Returns false — leaving both outputs untouched — for null,
+// a missing separator, or an empty module/field half.
 bool split_draw_override_field(const char* field_name, std::string& module,
                                std::string& field) {
     if (!field_name) return false;
@@ -184,6 +260,11 @@ bool split_draw_override_field(const char* field_name, std::string& module,
     return true;
 }
 
+// Synthesises the "draw overrides" property group: three fields (hide, max dist,
+// LOD bias) per module, named "<module><sep><field>". Returns null for an empty
+// module list, which callers treat as "show no panel". Empty module names are
+// skipped. The caller owns the group and must unbind_from() the registry before
+// releasing it.
 std::unique_ptr<props::DynamicGroup> build_draw_override_group(
     const std::vector<std::string>& modules) {
     if (modules.empty()) return nullptr;
@@ -234,6 +315,12 @@ std::unique_ptr<props::DynamicGroup> build_draw_override_group(
     return builder.build();
 }
 
+// The inverse of build_draw_override_group: CLEARS `out` and refills it from the
+// group's current values. This is where the range clamping happens (distance to
+// [0, kDrawOverrideMaxDistance], bias to [min, max] lod bias, NaN to the low
+// bound), since the widgets themselves are deliberately unranged. Fields whose
+// names do not split into module+field are ignored, and staging per module before
+// the final `set` means a module left entirely at its defaults produces no row.
 void read_draw_override_group(const props::DynamicGroup& group,
                               DrawOverrideTable& out) {
     out.clear();

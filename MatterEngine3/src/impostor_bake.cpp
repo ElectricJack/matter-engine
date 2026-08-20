@@ -1,3 +1,34 @@
+// MatterEngine3/src/impostor_bake.cpp
+//
+// Implementation of the impostor tier declared in impostor_bake.h -- read
+// that header first; it carries the design rationale (view/cell sizing, guard
+// band, channel packing, eligibility floor). This file is the mechanism:
+//
+//   - depicts_hash_begin/add_cluster/finish: the atlas's cache identity.
+//     part_flatten folds it when WRITING, part_store folds it again when
+//     deciding whether a cached atlas is still fresh; both sides must fold
+//     exactly the same inputs (mesh vertices, atlas layout constants, and the
+//     referenced materials' registry albedo).
+//   - bake_cluster: a fixed-order software rasterizer. For each of the kViews
+//     directions it projects every triangle into a supersampled grid, keeps
+//     the nearest hit per subsample, then resolves each texel into the view's
+//     cell of the two atlas layers. Called from part_flatten.cpp on the
+//     terminal ladder rung, once per eligible cluster.
+//   - pad_cluster_atlas: silhouette dilation, run as bake_cluster's last step.
+//   - build_quad: the two-triangle billboard the rung actually draws.
+//   - save/load: the atlas travels as the IMPO section of the part's bundle
+//     (part_bundle), not as a separate sidecar file.
+//
+// DETERMINISM IS THE STANDING CONSTRAINT. Two cold bakes must produce
+// byte-identical atlases, so this file uses its own sqrt-based `unit()`
+// instead of precomp.h's rsqrtf normalize, a strict `>` depth test (first
+// triangle wins a tie), a fixed neighbour order in the padding, and no
+// threads, hash-map iteration, clock or RNG anywhere.
+//
+// Everything here is a pure function of its arguments except for the material
+// registry reads (MaterialRegistryGet/Count) in AlbedoLut and the
+// depicts-hash, and `cell_px()`'s environment read in the header.
+//
 #include "impostor_bake.h"
 #include "part_bundle.h"   // M4: the atlas is a bundle section
 
@@ -690,6 +721,12 @@ namespace {
 
 constexpr char kMagic[4] = {'F', 'I', 'M', 'P'};
 
+// The atlas's own 64-byte header, written verbatim at the front of the IMPO
+// bundle section (the byte layout the standalone `.fimp` sidecar used, kept so
+// the atlas still validates its magic, format, part identity and depicts-hash
+// independently of the bundle around it). Host byte order and host struct
+// layout -- the static_assert below pins the size, and any layout change must
+// bump kFormatVersion or existing atlases will mis-parse.
 struct Header {
     char     magic[4];
     uint32_t version;
@@ -759,6 +796,13 @@ bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
                                       section.data(), section.size());
 }
 
+// Checks run in a fixed order, cheapest and most-expected first: section
+// present -> header long enough -> magic -> format/layout constants -> part
+// identity -> depicts-hash (staleness) -> declared sizes -> payload checksum
+// -> per-cluster field sanity. Every rejection clears `out` through the
+// `reject` helper, so a caller never sees a half-populated PartImpostor. Note
+// that Absent covers "this part has no atlas at all", which is the normal case
+// for a part with no eligible cluster and not an error.
 bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
           PartImpostor& out, LoadFailure* fail, std::string* reason) {
     out.clusters.clear();

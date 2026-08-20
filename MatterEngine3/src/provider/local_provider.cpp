@@ -1,3 +1,34 @@
+// MatterEngine3/src/provider/local_provider.cpp
+//
+// Implementation of the in-process WorldProvider. See local_provider.h for the
+// interface, the lifecycle and the threading rules; this file is the machinery.
+//
+// The phases, in the order they run:
+//   prepare_paths()        create <cache_root>/parts and absolutize every
+//                          configured path into the abs_* members
+//   load_authored_world()  evaluate the world script -> roots, transforms,
+//                          expand/tileset flags, lights, settings, materials,
+//                          prop specs, authored entities
+//   install_graph()        resolve and bake the part graph through PartGraph
+//                          and the shared HostBaker; retains ir_.bake_plan so
+//                          ensure_part_baked() can bake subtrees on demand
+//   compose_world()        place roots into the WorldManifest (an `expand`
+//                          root promotes its baked child table to instances)
+//   run_tileset_deferred() settle each detail tileset, bake or load its .gtex,
+//                          and bind the owning materials to an LRU slot
+// connect() is the synchronous composition of all of the above, plus eager
+// flatten and FlatInstanceRef expansion.
+//
+// Notes for anyone editing here:
+//   - Transforms are row-major float[16]; multiply_transform() below is the
+//     only matrix multiply in the file and follows that convention.
+//   - Almost every entry point is wrapped in
+//     `#if defined(MATTER_HAVE_SCRIPT_HOST)` with an #else arm that only sets
+//     an error string — keep both arms in step when changing a signature.
+//   - Diagnostics in this file still go to printf/fprintf rather than
+//     MATTER_LOG*.
+//   - Nothing here takes a lock; see the threading paragraph in the header.
+
 #include "local_provider.h"
 #include "script/world_definition_loader.h"
 
@@ -83,6 +114,10 @@ matter::Mat4f identity_transform() {
     result.m[0] = result.m[5] = result.m[10] = result.m[15] = 1.0f;
     return result;
 }
+// Row-major 4x4 multiply: result = a * b with both operands and the result in
+// the row-major float[16] convention used by every transform in this subsystem.
+// Argument order matters — compose_world applies it as
+// multiply_transform(parent, relative).
 matter::Mat4f multiply_transform(const matter::Mat4f& a,
                                  const matter::Mat4f& b) {
     matter::Mat4f result{};
@@ -94,6 +129,11 @@ matter::Mat4f multiply_transform(const matter::Mat4f& a,
     return result;
 }
 // Resolve a path (possibly relative to cwd) to an absolute path.
+// Gotcha: the POSIX arm (realpath) FAILS for a path that does not exist yet and
+// the input is then returned unchanged, while the Windows arm (_fullpath) is
+// purely lexical and always succeeds. Call it after the directory has been
+// created if you need the resolved form on both platforms — prepare_paths()
+// creates the cache root before absolutizing it for exactly this reason.
 std::string abspath(const std::string& rel) {
     char buf[PATH_MAX];
     if (fs_realpath(rel.c_str(), buf)) return std::string(buf);
@@ -211,6 +251,14 @@ std::string LocalProvider::resolve_object_path(const std::string& module) const 
     return {};
 }
 
+// Create <cache_root>/parts and fill in every abs_* member from cfg_. Must run
+// before anything reads an abs_* path; both install_graph() and
+// restore_from_cache() call it first. The only failure is being unable to
+// create the cache directory.
+//
+// abs_object_roots_ is the full object search path (scene tier first, project
+// tier second); abs_schemas_ is the PROJECT tier alone and must not be used to
+// resolve a module, or a scene-local override is silently ignored.
 bool LocalProvider::prepare_paths(std::string& err) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -239,6 +287,22 @@ bool LocalProvider::prepare_paths(std::string& err) {
     return true;
 }
 
+// Evaluate the world script through matter::load_world_definition and populate
+// everything it produces: roots_ / root_transforms_ / expand_flags_ /
+// tileset_flags_, authored_lights_, world_settings_, world_materials_,
+// world_prop_specs_ and authored_entities_. Clears all of them first, so it is
+// safe to call again on a re-install.
+//
+// Two side conditions worth knowing:
+//   - defineMaterial() already installed its materials in the global registry
+//     while the script evaluated; world_materials_ is kept only for scheduling
+//     the detail-tileset bakes.
+//   - world_module_ is set only when the source LEXICALLY contains a `field(`
+//     method. The statics loader deliberately does not execute field(), so
+//     this regex is how a field/streaming world is recognised and handed to
+//     install_world for the established evaluation path.
+//
+// Requires MATTER_HAVE_SCRIPT_HOST; the #else arm just reports that.
 bool LocalProvider::load_authored_world(std::string& err) {
     roots_.clear();
     root_transforms_.clear();
@@ -307,6 +371,15 @@ bool LocalProvider::load_authored_world(std::string& err) {
 #endif
 }
 
+// Module names named by authored entities' PartInstance components, so those
+// parts get baked even though nothing places them in the manifest.
+//
+// This is a hand-rolled scan of the components JSON, not a parse: it looks for
+// the literal "PartInstance" key, then the first "part" key after the opening
+// brace, then a double-quoted string value (skipping only spaces after the
+// colon). Anything shaped differently — a single-quoted value, a tab after the
+// colon, "part" nested deeper — is silently skipped rather than reported.
+// Returned as a set, so the result is unique and in name order.
 std::set<std::string> LocalProvider::collect_entity_part_modules(
     const std::vector<matter::RawEntityRecipe>& entities) {
     std::set<std::string> modules;
@@ -333,6 +406,12 @@ std::set<std::string> LocalProvider::collect_entity_part_modules(
     return modules;
 }
 
+// Append the entity-referenced modules that are not already install roots, and
+// record where they start in entity_part_root_start_. That boundary matters:
+// the root_params_json override in install_graph() only rewrites params for
+// indices BELOW it, and entity_part_hashes() reads roots_for_install_ /
+// ir_.root_hashes in parallel. Must be called after roots_for_install_ has been
+// filled from the manifest roots and before install().
 void LocalProvider::append_entity_part_roots() {
     entity_part_root_start_ = roots_for_install_.size();
     std::set<std::string> seen_roots;

@@ -1,3 +1,28 @@
+// MatterEngine3/src/module_resolver.cpp
+//
+// Implements module_resolver.h. Three stages, each independently testable:
+//
+//   1. strip_comments_and_strings  blank out everything an `import` token could
+//      hide in — line and block comments, string and template-literal bodies —
+//      while PRESERVING the one kind of string that matters, the specifier of an
+//      `import`/`from`. Whitespace-preserving, so offsets stay meaningful.
+//   2. parse_import_specifiers     pull the quoted specifiers out of the cleaned
+//      text, matching the `import` keyword at a word boundary so `export ... from`
+//      is not mistaken for one, and handling the bare side-effect form.
+//   3. fold_sources                resolve each specifier against the shared-lib
+//      search path, read it, recurse into its own imports, and emit the canonical
+//      NUL-separated buffer: part source first, then every module sorted by
+//      resolved specifier.
+//
+// The SORT is what makes the buffer canonical — the order files happen to be
+// discovered in must not reach the part hash — and the `seen` set makes import
+// cycles terminate rather than fail. Everything is fail-closed: a missing or
+// illegal module aborts the fold instead of silently omitting a dependency,
+// because an omitted module would hash as a different (but valid-looking) part.
+//
+// Deliberately a hand-written scanner rather than a JS parser: it must run
+// without a QuickJS runtime, on the bake worker, once per part resolve.
+
 #include "module_resolver.h"
 #include <cctype>
 #include <fstream>
@@ -109,6 +134,10 @@ bool resolve_specifier(const std::string& specifier, const std::string& shared_l
                              out_path, err);
 }
 
+// Roots are tried IN ORDER and the first readable file wins, which is how a
+// project's shared-lib shadows the engine's copy of the same module name. On
+// failure `err` lists every path attempted — with a search path there is no
+// single path that "should" have existed, so naming one would misdirect.
 bool resolve_specifier(const std::string& specifier,
                        const std::vector<std::string>& shared_lib_roots,
                        std::string& out_path, std::string& err) {

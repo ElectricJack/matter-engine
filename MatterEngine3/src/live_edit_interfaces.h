@@ -3,6 +3,25 @@
 #include <vector>
 #include <set>
 
+// MatterEngine3/src/live_edit_interfaces.h
+//
+// The abstract boundary between the live-edit loop (live_edit.h) and the rest
+// of the engine. LiveEditSession never touches the part graph, the script
+// host, part_flatten or the console directly -- it only calls the four
+// interfaces below, which is what makes its scoping, ordering and
+// fail-closed behaviour testable against fakes with no engine present.
+//
+// Implementations
+//   production : live_edit_prod.h (ProdGraphResolver / ProdBaker /
+//                ProdFlattener, over the part-graph snapshot + ScriptHost)
+//                and live_edit_error_hub.h (HubErrorSink).
+//   tests      : hand-written fakes.
+//
+// Threading is the implementation's business, not this header's: the session
+// calls every method inline from whichever thread runs the rebuild pass, so
+// the implementations are what decide what is safe (ProdGraphResolver, for
+// example, mutates the snapshot and is worker-thread-only).
+//
 // The SP-2/SP-3/SP-4 collaboration seams SP-5 depends on. SP-2/3/4 provide
 // concrete implementations at execution time; SP-5 codes against these so its
 // scoping/debounce/last-good logic is unit-testable with fakes.
@@ -13,6 +32,15 @@ using ResolvedHash = std::string;  // folded transitive hash (SP-1/SP-3) keying 
 
 // Structured error surfaced fail-closed (SP-2). `where` is best-effort source loc.
 struct LiveEditError {
+    // What went wrong, coarse enough for a consumer to decide how to present
+    // it:
+    //   Script         - the part script itself failed (throw, DSL error).
+    //   SessionMisuse  - DSL session/state misuse reported by the bake.
+    //   BudgetExceeded - the bake ran past its time budget. Not produced by
+    //                    ProdBaker, which runs bakes unbounded.
+    //   ResolveFailed  - the part could not be resolved at all: unknown
+    //                    module, unreadable source, unresolved child.
+    //   FlattenFailed  - the part baked but its root subtree did not flatten.
     enum class Cause { Script, SessionMisuse, BudgetExceeded, ResolveFailed, FlattenFailed };
     Cause cause = Cause::Script;
     PartId part;          // the part whose bake/flatten failed
@@ -20,6 +48,9 @@ struct LiveEditError {
     std::string where;    // best-effort "file:line"
 };
 
+// Result of one bake or flatten. `error` is only meaningful when `ok` is
+// false; a successful outcome leaves it default-constructed rather than
+// clearing it explicitly.
 struct BakeOutcome { bool ok = false; LiveEditError error; };
 
 // SP-3 seam: resolve + reverse-map + ancestors + topo + affected roots.

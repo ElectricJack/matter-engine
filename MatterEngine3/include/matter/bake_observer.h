@@ -1,5 +1,7 @@
 #pragma once
 
+// MatterEngine3/include/matter/bake_observer.h
+//
 // BakeObserver — optional, Lab-only seam for watching a part bake rung-by-
 // rung (Part Workbench W3, docs/part-workbench.md SS-I.4 "per-rung live
 // watch"). Mirrors the discipline already established by bake_trace's
@@ -33,6 +35,11 @@
 //     when unset: each site does a plain pointer null-check before touching
 //     the observer, so the null-observer path is byte-identical to the
 //     pre-W3 code.
+//
+// NAMESPACE: unlike the rest of `matter/*.h`, this type is declared in the
+// GLOBAL namespace, not in `matter`. Refer to it as plain `BakeObserver` (and
+// do not "fix" that without updating BakeOptions::observer and
+// PartStore::set_bake_observer).
 struct BakeObserver {
     virtual ~BakeObserver() = default;
 

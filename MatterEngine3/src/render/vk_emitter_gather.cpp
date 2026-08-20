@@ -1,3 +1,16 @@
+// MatterEngine3/src/render/vk_emitter_gather.cpp
+//
+// Implementation of VolumeEmitterGatherer (see vk_emitter_gather.h for the
+// layout contract and who consumes it). Pure CPU, no Vulkan: transform each
+// part-local emitter into world space, drop everything beyond kMaxRange, sort
+// by distance, keep the nearest kMaxEmitters, and convert to the std430 GPU
+// record.
+//
+// Cost is O(n log n) in the instance count with two temporary vectors per
+// call, so it is meant to be run once per frame over the emitters of resident
+// parts, not per froxel. No state carries between calls except the one-shot
+// overflow warning.
+
 #include "vk_emitter_gather.h"
 
 #include <algorithm>
@@ -20,6 +33,10 @@ static void transform_point(const float M[16], const float v[3], float out[3]) {
         out[i] = M[i] * v[0] + M[4 + i] * v[1] + M[8 + i] * v[2] + M[12 + i];
 }
 
+// Direction transform: the upper 3x3 applied directly, with no translation and
+// no inverse-transpose. Correct for rotation and uniform scale; a
+// non-uniformly scaled or sheared instance will skew the emitter direction.
+// Callers normalize afterwards.
 static void transform_dir(const float M[16], const float d[3], float out[3]) {
     for (int i = 0; i < 3; ++i)
         out[i] = M[i] * d[0] + M[4 + i] * d[1] + M[8 + i] * d[2];
@@ -50,6 +67,12 @@ static float dist_sq(const float a[3], const float b[3]) {
 // gather()
 // ---------------------------------------------------------------------------
 
+// Returns the nearest-first, at most kMaxEmitters emitters within kMaxRange
+// metres of `camera_pos`, already in world space and GPU layout. Emitters
+// past the cap are silently dropped — the nearest win — with a single stderr
+// warning the first time it happens for this gatherer. The returned vector is
+// freshly allocated per call and its size is what the caller must write into
+// the SSBO's count field.
 std::vector<GpuVolumeEmitter> VolumeEmitterGatherer::gather(
     const float camera_pos[3],
     const std::vector<EmitterInstance>& instances)

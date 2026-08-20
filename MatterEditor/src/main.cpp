@@ -2,6 +2,166 @@
 // NO_API window and presents genuine WorldSession data through VkSceneRenderer.
 // MATTER_CAM, MATTER_WORLD, MATTER_HIZ, MATTER_SCREENSHOT and FIFO commands are
 // retained from the legacy viewer.
+//
+// MatterEditor/src/main.cpp
+//
+// The editor's whole entry point: `main()` plus a file-local anonymous
+// namespace of helpers. There is no App/Editor class — every long-lived
+// object (the GLFW window, VulkanDevice, EngineContext, WorldSession, Ui,
+// the panels, the command registry) is a LOCAL of `main()`, and their
+// declaration order is their destruction order. Several teardown comments at
+// the bottom of the file depend on that.
+//
+// Vulkan-only. The GL/raylib render and windowing path was deleted in Phase
+// 5a: the window is created with GLFW_CLIENT_API = GLFW_NO_API and every
+// pixel goes through matter::VulkanDevice + VkSceneRenderer.
+//
+// ---------------------------------------------------------------------------
+// Startup sequence
+// ---------------------------------------------------------------------------
+// In order, because most steps depend on the one before:
+//
+//   1. `process_start_time` is stamped first, so the device-fault auto-filer
+//      at the very end can tell a vulkan_device_fault.log written by THIS run
+//      from a stale one left by an earlier crash.
+//   2. stdout is unbuffered when MATTER_CMD_FIFO is set — FIFO automation
+//      consumes exact acknowledgement lines as its synchronization.
+//   3. read_perf_run_config() (MATTER_PERF_*), then glfwInit().
+//   4. viewer::load_replay_from_env() runs BEFORE the window exists: a
+//      MATTER_REPLAY shot records its framebuffer size, and the window has to
+//      be created at that size for the same geometry to land on the same
+//      pixels.
+//   5. glfwCreateWindow -> matter::VulkanDevice::create -> EngineContext::create.
+//   6. viewer::Ui::setup (Dear ImGui + its Vulkan backend). For a replay the
+//      recorded imgui.ini layout is restored and IniFilename is cleared, so
+//      the panel layout — and therefore the viewport rect — is reproduced too.
+//   7. viewer::scan_worlds(examples_root()) builds the world list; MATTER_WORLD
+//      (or, failing that, the replay's own world) picks `initial_world`.
+//   8. EditorProps::init() binds the property registry BEFORE anything writes
+//      the tunable structs, so bind() captures the compiled defaults.
+//   9. open_world() -> matter::WorldSession, then SessionBinding::initialize()
+//      builds the app<->session bridge and opens the first command epoch
+//      BEFORE requesting the initial bake, so no bake.started can precede its
+//      subscribers.
+//  10. Command handlers are registered on the app lane; the frame loop starts.
+//
+// ---------------------------------------------------------------------------
+// What one iteration of the frame loop does
+// ---------------------------------------------------------------------------
+//   glfwPollEvents -> retire preview textures queued on earlier frames ->
+//   hotkeys (TAB mouse capture, F8 DLSS, F9/F10 issue capture, F11
+//   presentation mode) -> read MATTER_CMD_FIFO bytes and dispatch as many
+//   queued lines as no blocking wait forbids -> registry.pump(app_lane) ->
+//   shot/issue-capture deadman checks -> VulkanDevice::begin_frame (fence
+//   wait + swapchain acquire) -> Ui::begin_frame and all panel drawing ->
+//   MATTER_CAM_PATH pose -> the `frame_camera` snapshot -> viewport pick and
+//   orbit -> streaming anchor update -> WorldSession::tick ->
+//   PropertyScheduler::flush_dirty -> pump_gpu_jobs -> Bake Lab / Workbench
+//   tick -> poll_event drain (bake events, world-authored value adoption) ->
+//   RenderOptions assembly -> WorldSession::render -> selection/frustum/
+//   animation overlays -> FrameStats mirrored into ViewerStats ->
+//   Ui::end_frame -> optional swapchain readback (screenshot or issue shot)
+//   -> VulkanDevice::end_frame -> phase timing + the issue frame-history ring
+//   -> FIFO block releases and the deferred `quit` -> perf sampling -> the
+//   STATS line -> post-frame seam (reload / world switch).
+//
+//   Two timing rules the rest of the loop relies on:
+//   - `frame_camera` is taken after the UI and after the cam-path pose, and is
+//     const for the remainder of the frame, so streaming, tick, render, the
+//     overlays and the pick all agree on exactly one camera.
+//   - Heavy session operations (reload, world switch) NEVER run mid-ImGui
+//     draw. Their command handlers only RECORD intent on SessionBinding; the
+//     actual session destroy/recreate happens at the post-frame seam at the
+//     bottom of the loop.
+//
+// ---------------------------------------------------------------------------
+// Environment control surface
+// ---------------------------------------------------------------------------
+// Full reference: docs/agent/control-surface.md. Read directly by THIS file:
+//
+//   MATTER_WORLD              world to open, by name, case-insensitive; a name
+//                             not in the scanned list is fatal
+//   MATTER_CAM                "ex,ey,ez,tx,ty,tz" initial camera
+//   MATTER_CAM_PATH           file of one `eye target` pose per line, consumed
+//                             ONE POSE PER RENDERED FRAME — frame-indexed, not
+//                             wall-clock, which is what makes it a determinism
+//                             gate. `#` and blank lines are ignored.
+//   MATTER_CAM_PATH_WARMUP    frames held at pose 0 once drawable (default 30)
+//   MATTER_CAM_PATH_SETTLE    SECONDS of unchanged resident_sectors required
+//                             before the path starts (0 = off)
+//   MATTER_CAM_PATH_EXIT      quit once the path plus its drain tail ends
+//   MATTER_SCREENSHOT         capture-then-quit to this PNG path
+//   MATTER_SCREENSHOT_SETTLE  frames to hold before that capture (default 3;
+//                             a streamed world needs far more)
+//   MATTER_REPLAY             reproduce a recorded issue shot (shot_replay.h)
+//   MATTER_REPLAY_OUT         where the replay PNG goes (default replay.png)
+//   MATTER_REPLAY_SETTLE      replay settle frames (default 90 — RT worlds
+//                             accumulate through a temporal denoiser)
+//   MATTER_REPLAY_STRICT      make a non-comparable replay a fatal error
+//   MATTER_CMD_FIFO           command stream: a real FIFO on POSIX, an
+//                             append-only polled file on Windows
+//   MATTER_HIDE_UI            hide every panel; the 3D view then renders
+//                             straight to the swapchain image
+//   MATTER_TIME_SCALE         initial simulation time scale (clamped to the
+//                             toolbar range, otherwise ignored with a message)
+//   MATTER_LIVE_EDIT          enable world-script live edit on the session
+//   MATTER_CACHE_ROOT         engine cache root, canonicalized to absolute
+//   MATTER_VK_VALIDATION      request Vulkan validation layers — opt-in,
+//                             because they are a Vulkan-SDK dependency the
+//                             shipped exe must not require
+//   MATTER_PERF_OUTPUT        with MATTER_PERF_WARMUP_SECONDS and
+//                             MATTER_PERF_SAMPLE_SECONDS: a timed perf run
+//                             that writes one JSON object and quits. All three
+//                             must be set together or startup fails.
+//   MATTER_PROFILE_TRACE      dump the ProfileLib tail as a Chrome trace on exit
+//   MATTER_SEAM_TRACE         per-frame seam-welder poll, printed on change,
+//                             plus an end-of-run PASS/FAIL verdict
+//   MATTER_FORCE_LOD_TINT     force the LOD-tint geometry debug view
+//   MATTER_TEST_RESIZE        resize the window once, after the bake
+//   MATTER_CAPTURE_LIGHTING_UI focus the Lighting tab during a capture run
+//   MATTER_HIZ                recognised but IGNORED (the HZB is gone)
+//
+// Reached through the property registry's own env layer rather than a getenv
+// in this file: MATTER_DISABLE_VK_RT, MATTER_DLSS_MODE, the MATTER_SUN_*
+// angles, and every other `.env()`-bound tunable (see editor_props.cpp).
+// MATTER_VK_SMOKE_MODE is not handled here at all — the Vulkan smoke suite is
+// a separate binary (MatterEngine3/tests/vulkan_smoke_tests.cpp).
+//
+// ---------------------------------------------------------------------------
+// The FIFO / QA timeline
+// ---------------------------------------------------------------------------
+// Lines arriving on MATTER_CMD_FIFO are split into `fifo_pending_lines` and
+// popped one at a time. A blocking verb (wait_frames / wait_idle / wait_event
+// / shot / shot_now / `issue capture`) sets `fifo_block` and STOPS the pop
+// loop until it releases — that is what turns a pre-written command file into
+// a timeline instead of "every buffered line lands in one frame". Reading more
+// bytes off the file is never gated; only dispatch is. Everything else parses
+// into a typed viewer::Fifo* command and goes through registry.dispatch(), so
+// each external submission is named, traced and explicitly completed.
+//
+// ---------------------------------------------------------------------------
+// Sharp edges
+// ---------------------------------------------------------------------------
+// - Teardown order is load-bearing and partly MANUAL, because C++ would
+//   otherwise get it wrong: session.reset(), issue_previews.shutdown() and
+//   bake_lab.workbench().close() are all called by hand before vulkan.reset(),
+//   since those objects hold GPU resources but are stack locals that would be
+//   destroyed only when main() returns — after the device was gone.
+// - The process returns 1 when vulkan->validation_error_count() is non-zero at
+//   shutdown, independently of `fatal_error`.
+// - `fatal_error_reason` is set only by mark_device_fatal(), i.e. only at the
+//   Vulkan/device-surfacing failure sites. That is how the post-loop auto-filer
+//   tells a device fault from any other fatal exit without matching on error
+//   text — a non-device fatal exits with no report, exactly as before.
+// - Most world-authored settings (camera, fog, sun, volumetrics, atmosphere,
+//   cloud shadows, the world's `static props`) adopt through a one-shot
+//   `apply_world_*_after_bake` flag consumed at the first successful bake, and
+//   are re-armed at both the reload seam and the world-switch seam. The ORDER
+//   inside that block matters: the authored values must land before
+//   EditorProps::on_world_connected() snapshots the "Reset to World" baseline.
+// - A replay deliberately neither persists nor adopts: EditorProps::init() is
+//   passed persist=false and ImGui's IniFilename is cleared, so a headless
+//   capture can neither inherit nor overwrite an interactive session's files.
 #include "matter/engine_context.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_session.h"
@@ -110,6 +270,16 @@ const T* get_ptr(flecs::entity e) {
     return e.has<T>() ? &e.get<T>() : nullptr;
 }
 
+// Resolve a stable authored SceneEntityId to the live flecs entity carrying it.
+//
+// O(entities): a full each() scan with no early exit, run once per Properties
+// field get/set, once per specialized-editor action, and once per selection
+// validate callback. Entity selections are keyed by SceneEntityId rather than
+// by flecs entity id on purpose, so a selection survives across frames for
+// entities the ECS creates dynamically.
+//
+// Returns a default-constructed (`is_valid() == false`) entity when nothing
+// matches; every caller treats that as "not found", not as an error.
 flecs::entity find_scene_entity(flecs::world& world, matter::scene::SceneEntityId id) {
     flecs::entity found;
     world.each([&](flecs::entity e, const matter::scene::SceneEntityId& sid) {
@@ -354,6 +524,12 @@ matter::scene::SceneEditResult component_add(matter::WorldSession* session,
     return SceneEditResult{SceneEditError::None, id};
 }
 
+// The remove half of component_add above, and the same shape: a strcmp ladder
+// over component NAMES, because flecs remove<T>() is typed on the C++ type.
+// Transform is absent from both ladders — every scene entity has one — so
+// asking for "Transform" here returns InvalidTarget rather than removing it.
+// Removing a component the entity does not have is a no-op in flecs and still
+// reports success.
 matter::scene::SceneEditResult component_remove(matter::WorldSession* session,
                                                 matter::scene::SceneEntityId id,
                                                 const char* component_name) {
@@ -482,6 +658,11 @@ bool toggle_presentation_mode(GLFWwindow* window, WindowedPlacement& saved) {
     return true;
 }
 
+// Rising-edge key test: true only on the frame the key goes down. `previous`
+// is an in/out latch OWNED BY THE CALLER — one bool per key (see the
+// tab_down/f8_down/f9_down/f10_down/f11_down locals in main) — and is updated
+// to the current down-state on every call, so each key must be polled once per
+// frame or its latch goes stale.
 bool key_pressed(GLFWwindow* window, int key, bool& previous) {
     const bool down = glfwGetKey(window, key) == GLFW_PRESS;
     const bool pressed = down && !previous;
@@ -489,6 +670,12 @@ bool key_pressed(GLFWwindow* window, int key, bool& previous) {
     return pressed;
 }
 
+// Write tightly-packed RGBA8 (4 bytes/texel, no row padding) to `path` as a
+// PNG, creating any missing parent directories first. Returns false when
+// `rgba` is not exactly width*height*4 bytes — a caller bug, not an I/O
+// failure — or when stb's encoder fails. Never throws; directory creation
+// takes the std::error_code overload and its result is deliberately ignored,
+// since stbi_write_png reports the real outcome.
 bool write_png(const std::string& path, const std::vector<uint8_t>& rgba,
                uint32_t width, uint32_t height) {
     if (rgba.size() != static_cast<size_t>(width) * height * 4) return false;
@@ -570,13 +757,23 @@ std::string issues_root() {
 
 std::string shared_lib_root() { return resolve_asset_root("MatterEngine3/shared-lib"); }
 
+// A timed performance run, configured entirely by MATTER_PERF_OUTPUT /
+// MATTER_PERF_WARMUP_SECONDS / MATTER_PERF_SAMPLE_SECONDS — all three or none
+// (read_perf_run_config below rejects a partial set). The run waits for the
+// bake to finish and the world to actually draw, warms for `warmup_seconds`,
+// samples end-to-end frame cadence for `sample_seconds`, writes one JSON
+// object to `output_path`, and then requests quit. See the PerfPhase state
+// machine in the frame loop.
 struct PerfRunConfig {
     bool enabled = false;
     std::string output_path;
-    double warmup_seconds = 0.0;
-    double sample_seconds = 0.0;
+    double warmup_seconds = 0.0;   // seconds; may be 0
+    double sample_seconds = 0.0;   // seconds; must be > 0
 };
 
+// Monotonic engine counters snapshotted at the start and at the end of the
+// sampling window. The JSON reports the DELTAS, not these absolutes, which is
+// what makes "a static scene must stop uploading" an assertable property.
 struct PerfCounters {
     uint64_t vertex_uploads = 0;
     uint64_t cluster_uploads = 0;
@@ -632,6 +829,11 @@ double median_of_sorted(const std::vector<double>& sorted) {
                : (sorted[middle - 1] + sorted[middle]) * 0.5;
 }
 
+// Escape `value` for embedding inside a JSON string. Returns the escaped INNER
+// text only — the surrounding double quotes are written by the call sites in
+// write_perf_result — so the result is not a complete JSON literal on its own.
+// Control characters below 0x20 become \u00xx; bytes >= 0x80 pass through
+// unchanged (the inputs here are ASCII diagnostic strings).
 std::string json_string(const std::string& value) {
     std::string escaped;
     escaped.reserve(value.size());
@@ -655,6 +857,19 @@ std::string json_string(const std::string& value) {
     return escaped;
 }
 
+// Write the perf run's single-line JSON result; returns false with `error` set
+// on an empty sample set or an output path that cannot be written.
+//
+// `frame_times` is taken BY VALUE and sorted in place (milliseconds per frame,
+// end-to-end loop cadence). The median and p95 come out of that sorted vector;
+// p95 is element ceil(0.95 * n) - 1, so a one-frame run reports that frame for
+// both.
+//
+// Two different time bases live in the output and mixing them up is the usual
+// mistake: the `*_delta` fields are end-minus-start over the whole sampling
+// window, while every gpu_*_ms / cpu_*_ms / loop_*_ms field is the LAST
+// SAMPLED FRAME only. The inline comments in the body say why each group was
+// added.
 bool write_perf_result(const PerfRunConfig& config, const std::string& world,
                        std::vector<double> frame_times, const PerfCounters& start,
                        const PerfCounters& finish,
@@ -789,6 +1004,14 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// main() — startup
+// ---------------------------------------------------------------------------
+// Every long-lived object below is a local of this function, and declaration
+// order is destruction order (see the Shutdown section at the bottom, which
+// has to undo part of that by hand). The full startup sequence is in the file
+// header. Each early-failure path unwinds only what it has already created,
+// which is why the teardown calls repeat with a growing prefix.
 int main() {
     // Stamped before anything else so the device-fault auto-filer (see the
     // post-loop seam near the end of main) can tell a vulkan_device_fault.log
@@ -933,6 +1156,15 @@ int main() {
         return 1;
     }
 
+    // -----------------------------------------------------------------------
+    // Camera and scripted camera paths
+    // -----------------------------------------------------------------------
+    // Layered, later layers overwriting earlier ones: the compiled default
+    // (init_camera), then a replay's recorded projection, then MATTER_CAM.
+    // The world's own authored camera is adopted later still — at the first
+    // successful bake, via apply_world_camera_after_bake — and only when
+    // neither a replay nor MATTER_CAM has already fixed the pose.
+    // -----------------------------------------------------------------------
     matter::CameraDesc camera{};
     init_camera(camera);
     const char* initial_camera_env = std::getenv("MATTER_CAM");
@@ -1043,6 +1275,9 @@ int main() {
     // would drop the last few poses' results.
     int cam_path_drain = 0;
 
+    // -----------------------------------------------------------------------
+    // World selection, ViewerStats, and the property registry
+    // -----------------------------------------------------------------------
     int initial_world = 0;
     // MATTER_WORLD still wins, so a replay can be re-aimed at another world
     // deliberately; absent that, the shot's own world is authoritative.
@@ -1080,6 +1315,13 @@ int main() {
     stats.world_current = initial_world;
     stats.gpu_cull_active = true;
     stats.connected = true;
+    // MATTER_HIZ is recognised only so old scripts get an answer instead of
+    // silence: the Hi-Z occlusion buffer it selected no longer exists (it could
+    // not work on tile-sized clusters) and the FIFO `hiz` verb prints the same
+    // kind of notice, pointing at viewer.debug.occlusion_draw_cull.
+    // NOTE: the four-line banner at the very top of this file still lists
+    // MATTER_HIZ among the variables "retained from the legacy viewer", which
+    // now overstates it — it is retained as a no-op.
     if (std::getenv("MATTER_HIZ"))
         std::printf("MATTER_HIZ: not available in Vulkan milestone; ignored\n");
     float min_projected_size = 0.0f;
@@ -1137,6 +1379,14 @@ int main() {
     // the world-authored values above it have been adopted.
     bool apply_world_props_after_bake = true;
 
+    // -----------------------------------------------------------------------
+    // Session lifecycle
+    // -----------------------------------------------------------------------
+    // open_world() is the ONE place a matter::WorldSession is created — used
+    // both for the initial open here and for every world switch at the
+    // post-frame seam, so the two can never drift. It deliberately does not
+    // request a bake: SessionBinding owns bake ordering.
+    // -----------------------------------------------------------------------
     const std::string shared_lib = shared_lib_root();
     auto open_world = [&](const viewer::WorldEntry& entry) {
         matter::WorldDesc desc;
@@ -1170,6 +1420,17 @@ int main() {
         return 1;
     }
 
+    // -----------------------------------------------------------------------
+    // App-side models, panel state, and the ECS/scene bridges
+    // -----------------------------------------------------------------------
+    // Everything from here to the command-registry section is wiring: the
+    // observable EditorModel and its scheduler, the selection set, simulation
+    // transport, the console log, and the std::function bridges
+    // (FieldCommands / ComponentCommands / SpecializedEditors / SceneCommands)
+    // that let UI code in viewer:: mutate world state without knowing about
+    // flecs or WorldSession. Several of those closures capture `session` by
+    // reference, so they follow a world switch automatically.
+    // -----------------------------------------------------------------------
     // E5c: app-owned observable-model scheduler (event-system.md S I.9). Declared
     // BEFORE editor_model so it OUTLIVES it — the EditorModel's revision Property
     // unregisters from this scheduler in its destructor, so the scheduler must
@@ -1358,6 +1619,14 @@ int main() {
             // matter::streaming::SectorStreaming / sector_streamer.cpp yet.
         };
 
+    // -----------------------------------------------------------------------
+    // Frame-loop state
+    // -----------------------------------------------------------------------
+    // Per-key rising-edge latches for key_pressed(), the saved windowed rect
+    // for F11 presentation mode, and the `reported_*` mirrors that make the
+    // DLSS and RT reporters below print only when something actually changed
+    // (a per-frame print would drown a several-thousand-frame soak).
+    // -----------------------------------------------------------------------
     bool left_mouse_down = false;
     bool camera_capture = false;
     bool tab_down = false;
@@ -1736,6 +2005,15 @@ int main() {
     // part_workbench.h's architecture note. cache/lab-scratch is entirely
     // separate from production worlds' <project>/.cache/<world> roots.
     bake_lab.workbench().configure(vulkan.get(), examples_root(), shared_lib);
+    // -----------------------------------------------------------------------
+    // Capture control: MATTER_SCREENSHOT / MATTER_REPLAY
+    // -----------------------------------------------------------------------
+    // A replay run IS a screenshot run — it reuses the settle/readback/quit
+    // path wholesale and differs only in cropping the result to the recorded
+    // rect. The `apply_world_*_after_bake` / `*_override_ready` flags declared
+    // just below are the one-shot adoption latches described in the file
+    // header's "sharp edges".
+    // -----------------------------------------------------------------------
     // Frames to hold after the world is ready before reading back. Three is
     // enough for a raster frame, but RT worlds accumulate through a temporal
     // denoiser, so an early capture catches whatever the accumulation happened
@@ -1855,6 +2133,19 @@ int main() {
         ui.set_hide_ui(true);
     }
 
+    // -----------------------------------------------------------------------
+    // MATTER_CMD_FIFO command stream
+    // -----------------------------------------------------------------------
+    // POSIX: a real named FIFO, created here and opened O_RDWR|O_NONBLOCK so
+    // the read side never blocks and never sees EOF between writers; it is
+    // unlinked at shutdown.
+    // Windows: there is no POSIX FIFO, so the same path names an append-only
+    // file that the loop polls by size, remembering its own read offset
+    // (`cmd_offset`) and rewinding to 0 if the file shrinks — i.e. if a driver
+    // truncated or replaced it.
+    // Either way the bytes land in `cmd_buffer`, are split on newlines into
+    // `fifo_pending_lines`, and are dispatched under the `fifo_block` gate.
+    // -----------------------------------------------------------------------
     int cmd_fd = -1;
 #ifdef _WIN32
     HANDLE cmd_handle = INVALID_HANDLE_VALUE;
@@ -2516,6 +2807,19 @@ int main() {
         return true;
     };
 
+    // =======================================================================
+    // Frame loop
+    // =======================================================================
+    // Exits on: the window's close button, `quit_requested` (a MATTER_SCREENSHOT
+    // capture landing, a FIFO `quit` once nothing is in flight, a finished perf
+    // run, or MATTER_CAM_PATH_EXIT), or `fatal_error`. The per-frame ordering
+    // — and the two timing rules it exists to preserve — are laid out in the
+    // file header.
+    //
+    // `phase_split()` below is a rolling split timer: each call returns the ms
+    // since the previous split, so the recorded phases exactly partition
+    // perf_frame_start..end_frame and sum to the frame time they decompose.
+    // =======================================================================
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
         // swapchain acquire are part of the user-visible frame cadence.
@@ -2623,6 +2927,9 @@ int main() {
                     (editor_props.gpu_prefs().dlss_mode + 1) % 4);
             }
         }
+        // ---- FIFO: drain bytes, split into lines, dispatch under the gate ---
+        // Reading is unconditional every frame; only DISPATCH is gated by
+        // `fifo_block`. See the file header's "FIFO / QA timeline" note.
 #ifndef _WIN32
         if (cmd_fd >= 0) {
             char bytes[512];
@@ -3058,6 +3365,17 @@ int main() {
         }
 
         phase.poll = phase_split();   // events + input, everything up to acquire
+        // ---- Frame begin: fence wait + swapchain acquire --------------------
+        // A "zero-sized" failure is the minimized-window case: wait briefly on
+        // events and retry, without treating it as an error. Any other failure
+        // breaks the loop. begin_frame also rebuilds an out-of-date swapchain,
+        // which is why a window resize (F11 presentation mode,
+        // MATTER_TEST_RESIZE, a user drag) needs no handling of its own here.
+        //
+        // NOTE: the `continue` on the zero-sized path skips the whole rest of
+        // the iteration, including the end-of-frame capture/quit resolution.
+        // That is why the shot and issue-capture deadman checks sit ABOVE this
+        // point rather than below it.
         matter::VulkanFrame frame{};
         if (!vulkan->begin_frame(frame, error)) {
             if (error.find("zero-sized") != std::string::npos) {
@@ -3095,6 +3413,15 @@ int main() {
                 selection_pivot, pivot_radius);
         }
 
+        // ---- UI pass --------------------------------------------------------
+        // `frame` is the swapchain frame; `render_frame` is what the 3D scene
+        // renders into — normally the offscreen viewport image that ImGui then
+        // samples, but when the UI is hidden (MATTER_HIDE_UI or F11
+        // presentation mode) viewport_render_frame hands back the swapchain
+        // frame directly, so the scene goes straight to the screen.
+        // A false `ui_frame_ready` is a device-surfacing failure and is
+        // reported through mark_device_fatal; the rest of the frame still runs
+        // its non-UI work.
         const bool ui_frame_ready = ui.begin_frame(frame, error);
         matter::VulkanFrame render_frame = frame;
         // Reset before the Bake Lab tab bar draws so wants_viewport() below
@@ -3752,6 +4079,15 @@ int main() {
                                   "[" + event.module + "] " + event.message);
             }
         }
+        // ---- RenderOptions assembly -----------------------------------------
+        // Rebuilt from scratch every frame out of ViewerStats + EditorProps, so
+        // every control is live with no separate "apply" step. Device
+        // capability is ANDed in HERE, once (RT, wireframe), so no caller can
+        // ask the renderer for something the GPU cannot do. The `use_*_override`
+        // flags are set only once the matching stats field actually holds THIS
+        // world's authored value — see fog_override_ready / sun_override_ready
+        // — and are cleared again for the Part Workbench's isolation session,
+        // which has its own world and its own authored fog and sun.
         matter::RenderOptions options;
         const bool native_rt_requested =
             fifo_render_path_override
@@ -3976,6 +4312,14 @@ int main() {
                 }
             }
         }
+        // ---- Post-render: QA waits, seam trace, stats mirror -----------------
+        // `frame_stats` binds the session's own FrameStats and is read
+        // throughout the rest of the iteration. Note it is always the
+        // PRODUCTION session's, even on a frame where the Part Workbench's
+        // isolation session owned the viewport.
+        //
+        // The long assignment block further down copies it field-by-field into
+        // ViewerStats, which is what the HUD and every panel actually read.
         const matter::FrameStats& frame_stats = session->frame_stats();
         // QA timeline: wait_idle / wait_event release checks. Here (frame_stats
         // just refreshed, and bake_ready reflects this frame's poll_event
@@ -4282,6 +4626,19 @@ int main() {
             }
         }
 
+        // ---- Swapchain readback: screenshots and issue shots -----------------
+        // At most ONE capture per frame, chosen by the priority of the
+        // if/else-if chain below: MATTER_SCREENSHOT (which also quits once its
+        // PNG lands), then a settled FIFO `shot`, then a FIFO `shot_now` via
+        // fifo_present, then an F9/F10/`issue capture` readback. The issue
+        // readback is deliberately NOT gated on instances_drawn — "the world
+        // renders nothing" is exactly the kind of defect worth photographing.
+        //
+        // The readback runs BEFORE VulkanDevice::end_frame, i.e. before
+        // present. A failure re-arms the relevant settle counter so the next
+        // frame retries; five consecutive failures is treated as a device
+        // fatal (mark_device_fatal), on the theory that it is a plausible
+        // device-loss symptom.
         bool capture = false;
         bool issue_capture = false;
         bool fifo_immediate_capture = false;
@@ -5011,6 +5368,21 @@ int main() {
         }
     }
 
+    // =======================================================================
+    // Shutdown
+    // =======================================================================
+    // Order here is load-bearing and partly MANUAL. GPU-owning objects that are
+    // stack locals of main() — issue_previews, the Bake Lab workbench's
+    // isolation session, and the WorldSession itself — would otherwise be
+    // destroyed only when main() returns, i.e. after vulkan.reset() had already
+    // killed the device. Each is therefore released explicitly below, and
+    // ui.shutdown() runs after issue_previews.shutdown() because the preview
+    // handles are ImGui descriptor sets that need the ImGui Vulkan backend
+    // alive to remove.
+    //
+    // Exit code: 1 if the device counted any Vulkan validation error over the
+    // run, otherwise 1 if `fatal_error`, otherwise 0.
+    // =======================================================================
     // Idempotent: a completed MATTER_CAM_PATH already closed it. This covers a
     // run that ended some other way (window closed, fatal error) so the trace
     // still gets its summary line rather than being silently truncated.

@@ -1,6 +1,33 @@
 #ifndef VIEWER_BAKE_LAB_H
 #define VIEWER_BAKE_LAB_H
 
+// MatterEditor/src/bake_lab.h
+//
+// The "Bake Lab" dockable window: a tab shell over four independent panels --
+// Workbench (part_workbench.h), Timeline (bake_lab_timeline.h), Events
+// (event_inspector.h) and Animation (animation_panel.h over
+// AnimationPanelModel) -- plus a parked "Settle" placeholder.
+//
+// BakeLab itself holds almost no logic. It owns the sub-panels by value, turns
+// two commands (workbench.open_part, lab.focus_tab) into a pending tab focus
+// and a pending window raise, and refreshes the animation model only while the
+// Animation tab is actually open. Each tab's behaviour lives in its own header.
+//
+// Ownership and lifetime: main.cpp constructs one BakeLab at main-loop scope
+// and keeps it for the life of the process. Ui::draw_bake_lab_panel owns the
+// ImGui::Begin/End pair and calls draw_contents() inside it; main.cpp calls
+// tick_frame() once per frame, and calls workbench().begin_frame() every frame
+// even while this window is hidden (see the note in bake_lab.cpp).
+//
+// Threading: render thread only. Everything here is ImGui plus synchronous
+// WorldSession queries.
+//
+// Headless control: the command handlers below are registered in main.cpp
+// against the app command registry, which is the same registry the QA command
+// FIFO drives (docs/agent/control-surface.md -- FIFO and UI are two front ends
+// onto one registry). "Open this part in the Workbench" is therefore reachable
+// from a scripted timeline as well as from a click.
+
 #include <string>
 #include <vector>
 
@@ -81,6 +108,9 @@ public:
     PartWorkbench& workbench() { return workbench_; }
 
 private:
+    // Sub-panels held by value: each owns its own state and is constructed and
+    // destroyed with the lab. Only workbench_ is exposed (workbench() above),
+    // because main.cpp has to tick and pump its isolation session.
     BakeLabTimeline timeline_;
     EventInspector event_inspector_;
     PartWorkbench workbench_;

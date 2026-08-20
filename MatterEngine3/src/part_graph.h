@@ -1,4 +1,35 @@
 #pragma once
+// MatterEngine3/src/part_graph.h
+//
+// SP-3, the part graph. Given a list of ROOT module requests it resolves the
+// whole reachable module DAG, deduplicates it, topologically sorts it, and
+// bakes every node children-first into the content-addressed part cache.
+//
+// THE TWO SEAMS BELOW ARE THE POINT. `ModuleResolver` answers "what is this
+// module's source, and what children does its `static requires` ask for at
+// these params"; `Baker` answers "what is this part's resolved hash, is it
+// already cached, and bake it". The graph algorithm in part_graph.cpp depends
+// on nothing else, so the logic tests drive it with fakes and never start a
+// script host. The production implementations (`FileModuleResolver`,
+// `HostBaker`) live at the bottom of this header behind
+// MATTER_HAVE_SCRIPT_HOST.
+//
+// HASH AUTHORITY IS THE HOST, NOT THIS LAYER (master C-2). A part's resolved
+// hash folds the MERGED params — the schema's `static params` defaults overlaid
+// with the parent's overrides — and only the script host can read those
+// defaults, so SP-3 asks `Baker::resolve_hash` and memoizes the answer. The
+// separate memo key computed inside part_graph.cpp is a DIFFERENT number: it
+// identifies a node for DAG dedup within one install and never leaves the
+// process.
+//
+// IDENTITY IS THE SOURCE BYTES, not the module path: two roots that load
+// byte-identical source with identical params are one node, so a renamed copy
+// of a schema does not bake twice.
+//
+// THREADING. `install()` runs on the WORKER thread under the async session and
+// is the sole graph mutator; nothing here takes a lock. Callers today are
+// `src/provider/local_provider.cpp` (with a snapshot and a BakePolicy) and
+// `src/tileset_phase.cpp`.
 #include "part_graph_snapshot.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include <cstdint>
@@ -120,6 +151,9 @@ std::string params_to_json(const Params& params);
 // SP-3 v1 only handles the shapes eval_requires emits (flat numbers/bools/strings).
 Params params_from_json(const std::string& json);
 
+// NOTE: nothing in the repo constructs or consumes this type today — the
+// resolve pass uses the file-local `InternalNode` in part_graph.cpp, and what
+// escapes an install is `BakeInputs` (via InstallResult::bake_plan).
 // Resolved node in the graph (one per unique (source_hash, canonical_params)).
 struct ResolvedNode {
     uint64_t              resolved_hash = 0;
@@ -156,6 +190,12 @@ struct FailedPart {
     uint64_t    resolved_hash = 0;  // 0 if hash could not be determined
 };
 
+// Outcome of one install. Note the two-tier failure model: `ok` is false only
+// for a STRUCTURAL failure that aborts the whole install (a cycle, a module
+// that cannot be loaded, a failed lod-variant sidecar). Everything else is
+// skip-and-continue — `ok` stays true and the casualties are listed in
+// `failed`, with the corresponding entry in `root_hashes` zeroed. A caller that
+// only checks `ok` will happily place a world with parts missing.
 struct InstallResult {
     bool                     ok = false;
     std::string              error;       // human-readable; names the offending part on failure
@@ -172,6 +212,11 @@ struct InstallResult {
     std::unordered_map<uint64_t, BakeInputs> bake_plan;
 };
 
+// The graph algorithm itself: resolve, dedup, topo-sort, bake. Holds nothing
+// but REFERENCES to its two seams, which must outlive it; it carries no state
+// between calls, so one instance can be installed repeatedly (each call builds
+// its own memo table from scratch) and two instances over the same seams are
+// indistinguishable from one.
 class PartGraph {
 public:
     PartGraph(ModuleResolver& resolver, Baker& baker);

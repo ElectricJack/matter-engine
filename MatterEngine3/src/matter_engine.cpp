@@ -1,3 +1,92 @@
+// MatterEngine3/src/matter_engine.cpp
+//
+// THE ENGINE FACADE. Everything MatterEditor can ask the engine to do arrives
+// here: this file implements the whole public API declared in
+// matter/engine_context.h and matter/world_session.h and fans it out to the
+// subsystems below. Nothing outside this file talks to the provider, the part
+// store, the streamer or the renderer directly.
+//
+// Two objects, both PIMPL:
+//
+//   EngineContext   process-level. Holds the cache root (canonicalised to an
+//                   absolute path), the BORROWED VulkanDevice and the shader
+//                   override directory, and registers the calling thread as THE
+//                   GL/app thread. Sessions are opened from it.
+//   WorldSession    one loaded world. Owns the bake worker thread, the sector
+//                   bake pool, the provider, the PartStore, the Vulkan scene
+//                   renderer, the ECS/scene layer, the event hub, the streaming
+//                   ledger and the seam-weld pool. `WorldSession::Impl` is where
+//                   nearly all of this file's state lives.
+//
+// Subsystems it drives (each has its own header; look there for detail):
+//   local_provider.h            script host, part graph, bake plan (worker)
+//   part_store.h                artifact decode, LOD ladder, residency
+//   render/vk_scene_renderer.h  Vulkan: parts, instances, cull, RT, VT, DLSS
+//   streaming/sector_streaming_coordinator.h   which sectors are wanted
+//   terrain_field.h             the world's field / surfaces() / habitat() tapes
+//   seam_weld.h                 cross-level seam geometry (pool lives here)
+//   world_tracer.h              lazy CPU BVH behind raycast()/instance_info()
+//   refine_controller.h         camera-driven closed-world tile refinement
+//   matter/event/event_hub.h    typed bake/stream events; poll_event() is a shim
+//
+// THREADING — three kinds of thread, and the rules are not symmetric:
+//
+//   App/GL thread   the thread that called EngineContext::create (registered
+//                   there; assert_gl_thread() guards it). It must own tick(),
+//                   render(), pump_gpu_jobs(), finish_vulkan_frame(),
+//                   poll_event() and every accessor/query below. EVERY GpuJob
+//                   body runs on it, inside pump_gpu_jobs().
+//   Bake worker     one per session, started lazily by request_bake()/reload().
+//                   Runs the command queue (execute_bake, publish_pipeline,
+//                   install_world, execute_rebake_cone) and, in its idle slots,
+//                   one refine or one sector-streaming step. It owns the
+//                   streaming Coordinator single-threadedly and reaches GPU,
+//                   store and world state ONLY through gpu_jobs (post() =
+//                   fire-and-forget FIFO, run_blocking() = barrier).
+//   Bake pool       MATTER_STREAM_WORKERS executors running
+//                   bake_and_stage_sector: script bake, LOD-ladder staging and
+//                   the VkScenePart prebuild, all off the render thread. Only
+//                   the worker dispatches to it, and anything that tears down a
+//                   bake input (world_field, provider, streaming profile) must
+//                   quiesce_bake_pool() first.
+//
+// LIFECYCLE
+//   EngineContext::create(desc) -> open_world(desc) -> request_bake()
+//   per frame, on the app thread: tick() -> render(cam, frame, opts) ->
+//     pump_gpu_jobs(budget) -> finish_vulkan_frame(serial, presented), with
+//     poll_event() drained for progress and errors.
+//   ~WorldSession runs a fixed shutdown protocol (see the destructor): cancel
+//   commands, drain GPU jobs, join the worker, terminal streaming teardown,
+//   close the hub, then release the renderer and the store.
+//
+// BUILD CONFIGURATIONS. MatterEditor compiles this TU with
+// MATTER_VULKAN_VIEWER; MatterEngine3's own kernel build does not, and there
+// every rendering entry point compiles to a stub returning an error string (see
+// the #ifndef block near the end). Bake, streaming and query code is shared.
+//
+// CONVENTIONS
+//   * Transforms are ROW-MAJOR float[16]; translation is at [3], [7], [11] --
+//     never [12..14]. Several loops here depend on that.
+//   * Distances are world metres. Sector tile coordinates (tx, ty, tz) are in
+//     units of the LEVEL-0 tile size S_0 (`world_sector_size`); a level-L tile
+//     is S_0 << L across.
+//   * A SectorRequest's `rung` is a PACKED VARIANT (scatter detail tier +
+//     terrain LOD), not a mesh resolution -- decode with matter_stream::variant_*.
+//   * Instance ids are CONTENT-DERIVED, never allocation counters; see
+//     sector_instance_id() for why that is load-bearing.
+//
+// SHARP EDGES
+//   * Every state.apply() in this file must be followed by
+//     `tracer_dirty = true; tracer.reset();` -- WorldTracer holds raw PartStore
+//     pointers, so a released part would dangle.
+//   * gpu_jobs.pump()'s budget bounds how many jobs START, never how long one
+//     takes; a single expensive publish still blows the frame.
+//   * The MATTER_* env vars read here (MATTER_STREAM_*, MATTER_VT_*,
+//     MATTER_SEAM_*, MATTER_NESTED_SECTORS, MATTER_VOLUMETRIC_SECTORS, ...) are
+//     A/B kill switches; each is documented at its read site.
+//   * This file is far too large to hold in one's head. Navigate by the
+//     `// ---------` section dividers.
+//
 // matter_engine.cpp — Stage 2b facade: EngineContext / WorldSession over the
 // in-process viewer pipeline. Implements the public API in matter/engine_context.h
 // and matter/world_session.h. The logic is relocated verbatim from viewer/main.cpp
@@ -5,6 +94,8 @@
 // facade in Task 6 produces pixel-identical screenshots.
 //
 // Task 7 will implement raycast/instance_count/instance_info (currently stubs).
+// (Task 7 landed: raycast / instance_count / instance_info are implemented at
+// the bottom of this file, over the lazily built WorldTracer BVH.)
 
 #include "profile.h"
 #include "matter/engine_context.h"
@@ -119,6 +210,21 @@ namespace matter {
 // Used as the FileWatcher argument for LiveEditSession constructed on the
 // worker thread (which uses rebuild(paths) directly, never tick()).
 namespace {
+// ---------------------------------------------------------------------------
+// File-local helpers
+//
+// Everything in this anonymous namespace is engine-internal: the animation
+// debug snapshot copy, the surfaces()-tape classifier used by the Vulkan part
+// builders, the streaming profile assembly, and small streaming predicates.
+// None of it is reachable from outside this translation unit.
+// ---------------------------------------------------------------------------
+
+// Copy a committed animation asset into the editor-facing debug snapshot,
+// VALIDATING as it goes: joints must be parent-before-child, sockets and target
+// chains must index existing joints, and skin influences must be 4-wide with
+// weights summing to exactly 65535. Returns false (leaving `out` default) on any
+// violation or on an ABI/ozz tag mismatch, so a malformed rig shows nothing
+// rather than a plausible-looking wrong rig.
 bool copy_animation_debug_asset(
     const viewer::LoadedPart& loaded,
     const animation::DecodedAnimationRuntimeAsset& decoded,
@@ -326,6 +432,21 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------
+// Streaming profile assembly
+// ---------------------------------------------------------------------------
+
+// Build the streamer's Config for one world, layering three sources in this
+// order: engine defaults, the world script's authored settings, then the
+// MATTER_STREAM_* / MATTER_NESTED_SECTORS / MATTER_VOLUMETRIC_SECTORS env
+// overrides. The editor's LOD Settings overrides are applied LATER, by
+// install_world, over the result of this function -- so anything derived from
+// the band table here would read a table a later override can still replace.
+//
+// It also refuses modes it cannot honour (volumetric without nesting, an
+// inverted Y extent) with a stderr line rather than silently correcting them,
+// and warns when the authored reach overflows the 20-bit packed sector
+// coordinate. `sector_size` is S_0, the level-0 tile size, in world metres.
 matter_stream::Config make_streaming_profile(
     float sector_size,
     const matter::WorldSettings& world_settings) {
@@ -624,15 +745,47 @@ static BakeErrorCode classify_error(const std::string& err) {
 // ---------------------------------------------------------------------------
 // EngineContext::Impl — minimal engine-level state shared by all sessions.
 // ---------------------------------------------------------------------------
+// Process/device-level state, shared by every session opened from this context.
+// Created only by EngineContext::create and outlives every WorldSession (each
+// session holds a non-owning pointer to it in `Impl::engine`).
 struct EngineContext::Impl {
-    std::string cache_root;
-    bool gl46 = false;
-    VulkanDevice* render_device = nullptr;
+    std::string cache_root;   // absolute; every bake artifact path is relative to it
+    bool gl46 = false;        // vestigial GL-era capability flag; nothing reads it
+    VulkanDevice* render_device = nullptr;  // BORROWED from the host app; null = headless
 };
 
 // ---------------------------------------------------------------------------
 // WorldSession::Impl — per-world session state (mirrors main.cpp locals).
 // ---------------------------------------------------------------------------
+// All of one loaded world's state. Created by EngineContext::open_world and
+// destroyed by ~WorldSession, which runs a fixed teardown protocol before the
+// members are released (see the destructor).
+//
+// THREE THREADS TOUCH THIS STRUCT, and which one owns a member is the single
+// most important thing to know about it:
+//
+//   * App/GL thread     the renderer members (vk_*), the resident sector ledger
+//                       (sector_map, sector_tile_index, seam_welds, weld_parts),
+//                       `state`, `store`, the tracer, the scene service/tracker
+//                       and the draw-override resolver. Every GpuJob body runs
+//                       here, so a member mutated inside a job is app-thread
+//                       state even when the job was posted by the worker.
+//   * Bake worker       the provider, the command/bake pipeline members, the
+//                       refine controller, the world field / surfaces / habitat
+//                       tapes and the streaming Coordinator.
+//   * Bake pool         only request-local data plus the atomics below; it reads
+//                       world_field / sector sources / the profile, whose
+//                       teardown is fenced by quiesce_bake_pool().
+//
+// Cross-thread members carry their own note: a mutex (focus_mutex, seed_mutex,
+// streaming_lod_mutex, graph_snapshot_mutex, draw_override_mutex,
+// streaming_status_mutex, publication_completion_mutex), an atomic, or a
+// thread-safe channel (gpu_jobs, commands, hub_).
+//
+// DECLARATION ORDER IS LOAD-BEARING in two places: `hub_` is declared before the
+// async-bake members that emit into it so it outlives them, and the scene
+// service/tracker after `ecs_runtime` and `hub_` so they destruct first (members
+// destroy in reverse declaration order). Both are documented at their fields.
 struct WorldSession::Impl {
     EngineContext::Impl* engine = nullptr;   // non-owning
     AnimationService animation_service;
@@ -833,6 +986,22 @@ struct WorldSession::Impl {
     // A request owns one fixed completion slot before sector bake begins.
     // max_inflight is 16; twice that capacity leaves room for acknowledgements
     // retained across a coordinator generation transition without allocating.
+    // The life of one completion slot. A slot is claimed BEFORE the sector bake
+    // starts and is only freed once the publication has been either committed
+    // and acknowledged to the streamer, or rolled back — which is what makes a
+    // failed bake, a failed publish and a torn-down session all converge on the
+    // same cleanup path instead of leaking a sector's resources.
+    //
+    //   Free      unclaimed.
+    //   Reserved  claimed by the worker's dispatch loop; no artifact yet.
+    //   Posted    the bake produced an artifact and a publish job is queued.
+    //   Running   the publish job is executing on the app/GL thread.
+    //   Retry     the slot needs another rollback/acknowledge attempt; drained by
+    //             retry_publication_completions() from pump_gpu_jobs().
+    //
+    // Transitions are all taken under publication_completion_mutex and every
+    // mutator is noexcept: this is the path that has to work when something else
+    // has already failed.
     enum class PublicationCompletionState : uint8_t {
         Free,
         Reserved,
@@ -2478,6 +2647,17 @@ void WorldSession::Impl::set_authored_sun(const matter::WorldSettings& settings)
     world_cloud_shadows_defaults = settings.cloud_shadows;
     has_world_cloud_shadows = true;
 }
+
+// ---------------------------------------------------------------------------
+// Bake worker thread and sector bake pool
+//
+// One worker per session executes commands (BakeAll / Reload / RebakeCone /
+// Shutdown) and, in its idle slots, one refine or one sector-streaming step.
+// With MATTER_STREAM_WORKERS > 1 it dispatches sector bakes to a pool of
+// executors instead of running them inline; the pool holds no shared mutable
+// state and results funnel back through the publication-completion ledger,
+// gpu_jobs and the event hub either way.
+// ---------------------------------------------------------------------------
 
 void WorldSession::Impl::ensure_worker_started() {
     if (worker.joinable()) return;
@@ -6809,6 +6989,19 @@ void WorldSession::Impl::flush_deferred_eviction_for(const SectorKey& key) {
     apply_sector_evictions(forced, ignored, DeferMode::None);
 }
 
+// ---------------------------------------------------------------------------
+// Publication-completion ledger
+//
+// The fixed-capacity slot table that tracks every in-flight sector publication
+// from dispatch to acknowledgement. Every function here is noexcept and takes
+// publication_completion_mutex, because this is the machinery that has to keep
+// working while something else is failing: a slot is reserved on the worker,
+// marked with its artifact by the bake, driven to Running by the publish job on
+// the app thread, and finally either committed (acknowledged to the streamer) or
+// rolled back (world state, GPU, store and transient artifact released).
+// A slot stuck in Retry is retried from pump_gpu_jobs() until it settles.
+// ---------------------------------------------------------------------------
+
 WorldSession::Impl::PublicationCompletion*
 WorldSession::Impl::reserve_publication_completion(
     const std::shared_ptr<viewer::LocalProvider>& provider_ref) noexcept {
@@ -7190,6 +7383,13 @@ bool WorldSession::Impl::clear_streaming_profile(
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot publication — worker state mirrored for app-thread readers
+// ---------------------------------------------------------------------------
+
+// Copy the coordinator's status into the mutex-guarded mirror the editor reads
+// (WorldSession::streaming_status) and into Flecs. App thread; called from
+// tick() and pump_gpu_jobs().
 void WorldSession::Impl::publish_streaming_snapshot() {
     const streaming::detail::Snapshot snapshot =
         ecs_runtime.streaming_coordinator().snapshot();
@@ -9030,6 +9230,9 @@ const flecs::world& WorldSession::ecs() const {
     return impl_->ecs_runtime.world();
 }
 
+// Overwrite `camera`'s position/target with the world script's authored camera.
+// Returns false — leaving `camera` untouched — when no world is open or the
+// script authored none, which is the normal case for most worlds.
 bool WorldSession::apply_authored_camera(CameraDesc& camera) const {
     if (!impl_->provider) return false;
     const WorldCameraSettings& authored =
@@ -9141,6 +9344,16 @@ void WorldSession::set_bake_focus(const float pos[3]) {
     impl_->focus[2] = pos[2];
 }
 
+// ---------------------------------------------------------------------------
+// Bake commands — all ASYNCHRONOUS
+//
+// Each of these enqueues one command and returns immediately; the worker thread
+// executes it and reports progress as events (poll_event / the hub). Pushing a
+// command SUPERSEDES any in-flight one: CommandQueue::push cancels the running
+// token and clears anything still pending, so the older bake unwinds at its next
+// cancellation checkpoint. Nothing here is safe to call from the worker.
+// ---------------------------------------------------------------------------
+
 void WorldSession::request_bake() {
     // Phase B: enqueue a BakeAll command and return immediately. The worker
     // executes the pipeline; progress arrives via poll_event() and GL work
@@ -9182,12 +9395,18 @@ void WorldSession::regenerate(uint64_t world_seed) {
     impl_->commands.push(std::move(c));
 }
 
+// Sea level in world metres, from the most recent world eval. False means this
+// session has no world field (a closed, non-streamed world), not an error.
 bool WorldSession::sea_level(float& out) const {
     if (impl_->world_sea_level == std::numeric_limits<float>::lowest()) return false;
     out = impl_->world_sea_level;
     return true;
 }
 
+// Deep-COPY the worker's part-graph snapshot under graph_snapshot_mutex. False
+// while the session is disconnected or before the first successful install
+// (generation 0) — both normal, not errors. Poll graph_generation() first if you
+// only need to know whether it moved: this copies the whole graph.
 bool WorldSession::graph_snapshot(part_graph_snapshot::Snapshot& out) const {
     if (!impl_->connected) return false;
     std::lock_guard<std::mutex> lock(impl_->graph_snapshot_mutex);
@@ -9589,6 +9808,19 @@ void WorldSession::Impl::reconcile_runtime_animation_skinning() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-frame app-thread entry points
+// ---------------------------------------------------------------------------
+
+// Advance the world one frame's worth of simulation, on the app thread, BEFORE
+// render(). It steps the ECS (fixed steps + interpolation per TickDesc),
+// reconciles animation instances and skinning against the part store, polls the
+// provider and the live-edit watcher, mirrors the streaming status, and flushes
+// the scene-delta tracker.
+//
+// An INVALID tick (ecs_runtime rejected the step) is not an error: the counter
+// is bumped and the status/scene flush still run, so edits made through
+// SceneService before the tick still publish their deltas.
 void WorldSession::tick(const TickDesc& desc) {
     const ecs_runtime::TickResult result = impl_->ecs_runtime.tick(desc);
     if (result.invalid) {
@@ -9714,6 +9946,25 @@ struct VulkanDiagnosticMaterialOverride {
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+// LoadedPart -> VkScenePart: conversion and registration
+//
+// Three functions, one job, split so the expensive half can leave the render
+// thread:
+//   build_vulkan_part      pure CPU conversion (vertex repack, chart/VT
+//                          declaration, surfaces()-tape argmax, cluster
+//                          packing). No renderer, no GPU state -- a streaming
+//                          executor runs it during the bake.
+//   register_vulkan_part   the two renderer calls for a part a worker prebuilt.
+//   ensure_vulkan_part     build + register in one go, for callers that have
+//                          only a LoadedPart. App/GL thread.
+//
+// All three early-out on `registered_part_slot(part_hash) >= 0`, so re-calling
+// them for an already-registered part is cheap. `drawable == false` with a true
+// return means "nothing to draw" (no meshes/vertices/clusters), which is a
+// normal outcome, not a failure.
+// ---------------------------------------------------------------------------
 
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash, const viewer::LoadedPart& loaded,
@@ -10236,6 +10487,31 @@ bool register_vulkan_part(viewer::VkSceneRenderer& renderer,
 
 } // anonymous namespace
 
+// ---------------------------------------------------------------------------
+// WorldSession::render — the per-frame render-thread pipeline
+// ---------------------------------------------------------------------------
+//
+// Records one frame into the caller's already-begun VulkanFrame. App/GL thread
+// only, and the single longest function in this file; it runs in four phases,
+// each of which is timed into FrameStats and into ProfileLib's render lane:
+//
+//   resolve  SectorLodResolver turns world state + the LOD table into the set of
+//            source instances for this camera (activation radius, per-sector LOD).
+//   build    expand each source into renderer instances (memoised per source in
+//            VulkanInstanceCache), register any part the expansion needs, refresh
+//            the temporal mirror, materials, lighting/atmosphere and the dynamic
+//            ECS bridge, then prepare_frame.
+//   draw     service the VT demand requests, record cull+render, seal animation
+//            skinning, record overlay lines, composite to the swapchain.
+//   stats    scrape cull/VT/DLSS/RT/volumetrics counters into FrameStats.
+//
+// Returns false with `err` set on a renderer failure; every such path first
+// discards the temporal attempt so the next frame is not reprojected against a
+// frame that never presented. Two non-failure early-outs return true after only
+// clearing to the sky colour: no connected world, or no drawable instances.
+//
+// The caller MUST pair every call with finish_vulkan_frame(frame.serial,
+// presented) once the submission's fate is known.
 bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                           const RenderOptions& opts, std::string& err) {
     err.clear();
@@ -11168,6 +11444,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     return true;
 }
 
+// Close out the frame render() recorded: commit or discard its temporal history,
+// animation visibility and dynamic-instance bookkeeping. Call it exactly once per
+// render(), on the app thread, with `presented` telling the truth about the
+// submission — a discarded frame must not be reprojected against.
+// A serial that does not match the frame render() opened is ignored silently.
 void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
     if (!impl_ || frame_serial != impl_->vk_temporal_serial ||
         impl_->vk_temporal_token == 0) {
@@ -11283,6 +11564,14 @@ const FrameStats& WorldSession::frame_stats() const {
     return impl_->stats;
 }
 
+// Snapshot every live animated instance (rig, pose, targets, skin influences) for
+// the editor's animation panel.
+//
+// FALSE MEANS "NOT COHERENT RIGHT NOW", not "error": it is returned whenever two
+// bindings disagree about an asset's identity, an asset is not resident, or a
+// pose's array sizes do not match the rig. `out` is only assigned on success, so
+// a caller should keep showing its previous snapshot and retry next frame.
+// True with an empty vector means there is nothing animated.
 bool WorldSession::animation_debug_snapshots(
     std::vector<AnimationDebugInstanceSnapshot>& out) const {
     out.clear();
@@ -11409,11 +11698,24 @@ AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Status mirrors and world-authored defaults
+//
+// Read from the app thread while the worker writes the originals, so each of
+// these returns a COPY taken under the mutex that guards its mirror. The
+// world_* accessors answer "what did the world script author?" and return false
+// when the world declared nothing — the editor uses that to decide whether to
+// seed its own live override groups, so false must not be treated as an error.
+// ---------------------------------------------------------------------------
+
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {
     std::lock_guard<std::mutex> lock(impl_->streaming_status_mutex);
     return impl_->streaming_status_copy;
 }
 
+// Aggregate the live seam-weld pool plus the session's cumulative seam counters.
+// O(live pairs) — it walks every weld record — and it reads app-thread state
+// (seam_welds, weld_parts) without a lock, so call it from the app thread only.
 WorldSession::SeamWeldStatus WorldSession::seam_weld_status() const {
     SeamWeldStatus out{};
     const Impl& impl = *impl_;
@@ -11548,6 +11850,15 @@ props::DynamicGroup* WorldSession::draw_overrides() {
     return impl_->draw_overrides_group.get();
 }
 
+// THE app-thread service call. Every GpuJob the worker posted — bake publishes,
+// sector publishes, evictions, VT reclassification — actually executes inside
+// this call, so a frame loop that stops calling it stops all bake and streaming
+// progress even though the worker keeps running.
+//
+// `ms_budget` bounds how many jobs START, never how long one takes: the queue
+// guarantees each job it begins runs to completion, so one expensive publish can
+// still overrun the frame. It also retries any stuck publication completions and
+// republishes the streaming snapshot.
 void WorldSession::pump_gpu_jobs(float ms_budget) {
     impl_->gpu_jobs.pump((double)ms_budget);
     std::string completion_error;
@@ -11568,6 +11879,15 @@ void WorldSession::pump_gpu_jobs(float ms_budget) {
 // ---------------------------------------------------------------------------
 // Query API — backed by a lazily built CPU BVH (WorldTracer).
 // ---------------------------------------------------------------------------
+// All four queries below go through ensure_tracer(), which REBUILDS the CPU BVH
+// whenever world state has changed since the last query — and every sector
+// publish, eviction, weld change and refine swap marks it dirty. So the first
+// query after any world change is O(world) and allocating, while repeats are
+// cheap; do not call these per-frame on a streaming world. Seam welds are
+// excluded from the tracer by design (they have no PartStore artifact).
+//
+// False from any of them means "no world connected, or the tracer could not be
+// built (nothing loaded yet)", which is a normal state rather than an error.
 bool WorldSession::raycast(const float origin[3], const float dir[3],
                            float max_t, RayHit& out) {
     if (!impl_->connected) return false;
@@ -11635,6 +11955,14 @@ bool WorldSession::instance_info_by_hash(uint64_t hash, InstanceInfo& out) {
 }
 
 #ifdef MATTER_VULKAN_VIEWER
+// Resolve the instance under a cursor position through the renderer's ID buffer:
+// cursor pixels are rescaled from the framebuffer to the raster extent, the token
+// is read back from the GPU, and it is resolved first against the dynamic-entity
+// bridge and then against the static token -> part_hash map render() maintains.
+//
+// Performs a GPU READBACK, so this is a click-time call, not a per-frame one.
+// False covers every miss: empty pixel, no world, or a token this frame's map
+// does not know.
 bool WorldSession::pick_at_pixel(float cursor_x, float cursor_y,
                                  int fb_width, int fb_height,
                                  PickIdentity& out) {
@@ -11680,6 +12008,11 @@ bool WorldSession::pick_at_pixel(float, float, int, int, PickIdentity& out) {
 #endif
 
 #ifdef MATTER_VULKAN_VIEWER
+// Stage debug lines for the NEXT render() call, which draws them and clears the
+// buffer — so the editor must resubmit every frame it wants them. `vertex_data`
+// is copied: interleaved {x, y, z, r, g, b, a} per vertex, drawn as a LINE_LIST
+// with depth testing. Fewer than two vertices (or a null pointer) clears the
+// overlay instead of drawing.
 void WorldSession::submit_overlay_lines(const float* vertex_data,
                                         uint32_t vertex_count) {
     if (!vertex_data || vertex_count < 2) {
@@ -11695,6 +12028,11 @@ void WorldSession::submit_overlay_lines(const float* vertex_data,
 void WorldSession::submit_overlay_lines(const float*, uint32_t) {}
 #endif
 
+// Object-space AABB of a RESIDENT part, in world metres, as the union of its
+// cluster bounds. Uses PartStore::find, so it never triggers a load: false means
+// the part is not resident (or a clusterless part has no bound radius either),
+// never "not on disk". A clusterless part falls back to a cube of its bound
+// radius, which is conservative rather than tight.
 bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
     if (!impl_->store) return false;
     const auto* lp = impl_->store->find(part_hash);

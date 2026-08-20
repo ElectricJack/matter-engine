@@ -1,3 +1,22 @@
+// MatterEngine3/src/render/vk_animation_bounds.cpp
+//
+// Implementation of the animated-bounds store and the skinned/static draw
+// arbitration declared in vk_animation_bounds.h.
+//
+// The shape of the work: each cluster carries a set of joint-local AABBs; a
+// pose supplies one skin matrix per joint; the animated bound is the union of
+// every joint box transformed by its matrix (and, when history is valid, by
+// the previous frame's matrix too, so the box covers the shutter interval).
+// Because a transformed box is re-axis-aligned corner by corner, the result
+// is conservative -- it can only grow, never shrink below the true extent.
+//
+// Publication is deliberately all-or-nothing per instance: a pose that fails
+// anywhere -- non-finite matrix, palette too short, degenerate union -- falls
+// back for ALL of that instance's clusters rather than mixing fresh and stale
+// boxes within one mesh.
+//
+// Everything here is object space, single-threaded, and allocation-happy by
+// design (it runs once per frame per animated instance, not per vertex).
 #include "vk_animation_bounds.h"
 
 #include <algorithm>
@@ -57,6 +76,9 @@ void transform_point(const VkSkinMatrix& matrix, const float in[3],
     }
 }
 
+// Conservative re-axis-alignment: transform all eight corners and take their
+// AABB. The corner bit pattern is x = bit 2, y = bit 1, z = bit 0, and the
+// result is only meaningful if `local` was a valid (non-inverted) box.
 VkAnimationBoundsAabb transform_aabb(const VkAnimationBoundsAabb& local,
                                      const VkSkinMatrix& matrix) noexcept {
     VkAnimationBoundsAabb result = empty_aabb();
@@ -82,6 +104,11 @@ bool VkAnimationBounds::valid_aabb(const VkAnimationBoundsAabb& aabb) noexcept {
     return ::viewer::valid_aabb(aabb);
 }
 
+// Structural pose check only. It requires a non-empty current palette,
+// matching previous size when history is claimed, and finite POSITION
+// matrices; the per-joint normal matrices are not inspected here because
+// bounds are derived from positions alone. Joint indices are validated later,
+// against the specific cluster's joint list.
 bool VkAnimationBounds::valid_pose(const VkSkinPose& pose,
                                    bool history_valid) noexcept {
     if (pose.current.empty()) return false;
@@ -116,6 +143,11 @@ bool VkAnimationBounds::identical_asset(const VkAnimationBoundsAsset& a,
     return true;
 }
 
+// Rejects: a zero asset key, no clusters, a non-finite or inverted
+// conservative bound, a cluster with no joints, a duplicated
+// (cluster_index, lod) pair, and any invalid joint-local box. The skin bridge
+// calls this before touching renderer state so a malformed ECS binding never
+// creates a registration to unwind.
 bool valid_animation_bounds_asset(const VkAnimationBoundsAsset& asset) noexcept {
     if (asset.asset_key == 0 || asset.clusters.empty() ||
         !valid_aabb(asset.conservative_asset_bound)) return false;
@@ -172,6 +204,11 @@ bool VkAnimationBounds::update_instance(uint32_t instance_slot,
         }
     }
 
+    // Three-way outcome, in preference order: a complete pose replaces the
+    // retained bounds; else a retained bound for this SAME asset is
+    // republished unchanged; else the conservative asset bound goes out with
+    // occlusion disabled and the retained bounds are cleared, because they
+    // belong to a different asset revision than the one now bound here.
     const auto instance_key = std::make_pair(instance_slot, instance_generation);
     InstanceState& state = instances_[instance_key];
     if (complete) {
@@ -193,6 +230,10 @@ bool VkAnimationBounds::update_instance(uint32_t instance_slot,
                               asset.conservative_asset_bound, false});
     }
 
+    // Replace this instance's published records wholesale, then restore the
+    // key ordering the whole vector is expected to hold. This is a full
+    // erase-insert-sort per updated instance, i.e. O(n log n) in the total
+    // published set, not in this instance's clusters.
     dynamic_bounds_.erase(
         std::remove_if(dynamic_bounds_.begin(), dynamic_bounds_.end(),
                        [instance_slot, instance_generation](const VkAnimationDynamicClusterBound& value) {
@@ -246,6 +287,10 @@ void VkAnimationBounds::fail_open_instances(
     }
 }
 
+// Retires an asset revision and everything published under it: every instance
+// whose recorded `asset_key` matches loses both its retained bounds and its
+// published records. Returns false for a zero key or a key that was not
+// registered.
 bool VkAnimationBounds::unregister_asset(uint64_t asset_key) noexcept {
     if (asset_key == 0 || assets_.erase(asset_key) == 0) return false;
     std::vector<std::pair<uint32_t, uint32_t>> retired_instances;
@@ -299,6 +344,17 @@ std::vector<VkAnimationBoundsGpuRecord> VkAnimationBounds::gpu_records() const {
     return records;
 }
 
+// Keeps only the draws the renderer's actual GPU state can support this
+// frame. A draw is dropped when its output frame slot is out of range or its
+// buffers are not ready, when it targets the current slot but this frame's
+// source validation/dispatch did not succeed, when its index range is empty,
+// not a whole number of triangles, or outside the shared index buffer, when
+// its vertex range falls outside that slot's skinned output, or when its
+// instance slot has no transform. The two `int32_t` ceiling checks exist
+// because those offsets are consumed as signed values by the indexed draw.
+//
+// Dropping here is not an error: it means the bind-pose/static path keeps the
+// cluster for this frame.
 std::vector<VkSkinRasterDraw> filter_ready_animation_skin_raster_draws(
     const std::vector<VkSkinRasterDraw>& draws,
     const VkSkinRasterValidationView& validation) {

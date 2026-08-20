@@ -84,6 +84,12 @@ const char* bc_format_name(BcFormat format);
 //
 // Fail-closed (false + err, `out` cleared) on null src, non-positive extents,
 // or a size that would overflow. Never crashes, never partially fills.
+//
+// Concurrency: safe to call from several threads at once. The vendored
+// backends' one-time table init is behind a std::call_once and a call
+// otherwise touches only its own arguments and locals. Note that each
+// concurrent call still spawns up to its own `max_threads` workers, so budget
+// the total rather than assuming the cap applies process-wide.
 bool encode_bc7(const uint8_t* src_rgba8, int w, int h,
                 std::vector<uint8_t>& out, std::string& err,
                 unsigned max_threads = 0);

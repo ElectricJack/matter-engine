@@ -1,3 +1,32 @@
+// MatterEngine3/src/render/vk_atmosphere.cpp
+//
+// Implementation of the physical atmosphere LUT generator declared in
+// vk_atmosphere.h.
+//
+// The dispatch chain is strictly ordered, because each pass samples the
+// previous one's output: transmittance -> multiscatter -> sky view ->
+// irradiance. `record_dispatches` inserts the GENERAL <-> SHADER_READ_ONLY
+// transitions between them, so the images are left in
+// SHADER_READ_ONLY_OPTIMAL and are immediately bindable by graphics, compute
+// and ray-tracing stages afterwards. The first two passes are skipped when
+// only the observer or sun moved (`coefficients_dirty` false), since they
+// depend on the medium coefficients alone.
+//
+// Push constants are a fixed 48-byte block shared by all four pipelines, with
+// a `static_assert` pinning the size against the GLSL declaration.
+//
+// Two generation paths exist and they are not equivalent:
+//  - `record()` writes the live images from inside the caller's frame command
+//    buffer and commits its state immediately.
+//  - `build_candidate()` generates into separate images through its own
+//    blocking immediate submit, leaving the live set untouched until
+//    `commit_candidate()`. This is the path vk_scene_renderer.cpp uses. Note
+//    that it reaches its result by temporarily moving the candidate images
+//    into the live members and rewriting the shared descriptor sets, then
+//    restoring both -- including on the failure paths.
+//
+// The LUTs are R16G16B16A16_SFLOAT, so both readbacks decode half floats by
+// hand (`half_to_float`) rather than relying on a conversion library.
 #include "vk_atmosphere.h"
 
 #include <algorithm>
@@ -38,6 +67,9 @@ bool normalize(matter::Float3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
+// IEEE 754 binary16 -> binary32, including subnormals, infinities and NaN.
+// Needed because the LUTs are R16G16B16A16_SFLOAT and both readback paths
+// receive raw texel bytes.
 float half_to_float(uint16_t value) {
     const uint32_t sign = static_cast<uint32_t>(value & 0x8000u) << 16;
     uint32_t exponent = (value >> 10) & 0x1fu;
@@ -164,6 +196,11 @@ bool VkAtmosphere::create_candidate_images(Candidate& candidate,
     return created;
 }
 
+// Clears the fallback LUT set once, through a blocking immediate submit, and
+// leaves all four in SHADER_READ_ONLY_OPTIMAL. Index 0 is the transmittance
+// image and is cleared to opaque white (full transmission); the rest are
+// cleared to transparent black. These images are never regenerated, so this
+// is the only thing that ever writes them.
 bool VkAtmosphere::initialize_emergency(matter::VulkanDevice& vulkan,
                                         std::string& error) {
     struct ClearRequest { std::array<matter::VkImageResource*, 4> images; };
@@ -359,6 +396,9 @@ bool VkAtmosphere::coefficient_change_pending() const {
     return !has_committed_settings_ || !same_settings(requested_settings_, committed_settings_);
 }
 
+// View staleness test: any altitude move beyond the shared threshold, or a
+// sun direction whose dot with the committed one has dropped below 0.999999
+// (about 0.08 degrees). Always true before the first commit.
 bool VkAtmosphere::view_change_pending(float camera_world_y,
                                        const matter::Float3& to_sun) const {
     if (!has_committed_settings_) return true;
@@ -367,6 +407,15 @@ bool VkAtmosphere::view_change_pending(float camera_world_y,
            dot(to_sun, committed_to_sun_) < 0.999999f;
 }
 
+// Records the whole LUT chain into `command_buffer`, reading the CURRENT
+// `requested_settings_` for its push constants -- `build_candidate` relies on
+// that by swapping the request in around this call. When `coefficients_dirty`
+// is false the transmittance and multiscatter passes are skipped and only the
+// view-dependent sky-view and irradiance passes run.
+//
+// Barriers are part of the contract: every image is transitioned to GENERAL
+// before its dispatch and back to SHADER_READ_ONLY_OPTIMAL after it, with
+// destination stages covering compute, fragment and ray tracing.
 bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
                                      bool coefficients_dirty, float camera_world_y,
                                      const matter::Float3& to_sun,
@@ -461,6 +510,10 @@ bool VkAtmosphere::record(VkCommandBuffer command_buffer, float camera_world_y,
     return true;
 }
 
+// Copies the whole 3x3 irradiance image to a host-visible buffer and decodes
+// it into 9 SH coefficients. Blocking: it allocates a staging buffer and
+// waits on an immediate submit. Any non-finite texel fails the readback, which
+// is what keeps a NaN LUT from ever being committed.
 bool VkAtmosphere::readback_irradiance(
     matter::VkImageResource& image,
     std::array<matter::Float3, 9>& output, std::string& error) {
@@ -544,6 +597,12 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
         return false;
     }
 
+    // The generation machinery only knows how to write the live members and
+    // the shared descriptor sets, so the candidate images are swapped in here
+    // and the committed set parked in `saved`. Every exit path below --
+    // success, dispatch failure, readback failure, injected failure -- must
+    // swap them back and rewrite the descriptors, which is why the restore
+    // sits after the validation instead of inside an early return.
     RetiredLuts saved{std::move(transmittance_), std::move(multiscatter_),
                       std::move(sky_view_), std::move(irradiance_sh_)};
     transmittance_ = std::move(candidate.transmittance);
@@ -629,6 +688,9 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
         valid = false;
         error = "atmosphere candidate direct bases are invalid";
     }
+    // The serial a successful commit will take. It is stored on the candidate
+    // rather than bumped here, so a discarded candidate consumes no serial and
+    // `generation_serial()` only ever advances on an actual commit.
     candidate.state.generation_serial = generation_serial_ + 1;
 
     candidate.transmittance = std::move(transmittance_);
@@ -658,6 +720,11 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
     return valid;
 }
 
+// Atomic swap-in of a validated candidate: retire the live images against the
+// caller's frame slot, adopt the candidate's, publish its CPU-side state, then
+// point the compute descriptor sets at the new images. An invalid candidate is
+// ignored, and the moved-from candidate is marked invalid so a caller cannot
+// commit it twice.
 void VkAtmosphere::commit_candidate(Candidate&& candidate,
                                     uint32_t protected_frame_slot) {
     if (!candidate.valid) return;

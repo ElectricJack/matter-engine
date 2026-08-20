@@ -1,3 +1,39 @@
+// MatterEngine3/src/render/lod_trace.cpp
+//
+// Implementation of the fly-through LOD determinism trace. See render/
+// lod_trace.h for what the trace is for and why it is shaped this way; this
+// file owns the process-global state, the file, and the emission format.
+//
+// THE STREAM FORMAT (parsed by MatterEngine3/tools/lod_trace_diff.py). Plain
+// ASCII, one record per line, in this order:
+//
+//   V 1 lod-trace
+//       Version line, always first. Everything after the first space is
+//       free-form; the comparator refuses a stream whose version it does not
+//       know.
+//   C <pairs> <tokens> <clusters> #f<label>
+//       Census, emitted only when it CHANGES. `pairs` is the number of
+//       (instance, cluster) draws the GPU emitted that frame. This is the
+//       anti-vacuity record: without it, two runs that draw nothing at all
+//       would diff clean.
+//   E <token> <cluster> <from> <to> #f<label>
+//       One rung change. `from`/`to` are rung numbers, or `-` for "not drawn",
+//       so a pair that stops or starts drawing is an event rather than a
+//       silent disappearance. Emitted in (token, cluster) order.
+//   ! <what> ...
+//       A trace-invalidating condition (a zero instance token, a duplicate
+//       key). The comparator fails any run containing one.
+//   S events=.. max_pairs=.. zero_tokens=.. duplicate_keys=..
+//       Run summary, written by close(). Frame COUNT is deliberately absent —
+//       see the comment there.
+//
+// `#f<label>` is the frame label the caller stamped (the camera-path pose
+// index, not the renderer's frame serial — the header explains why).
+//
+// Threading and lifetime: one global State for the process, no locking, render
+// thread only. Every entry point is safe to call when tracing is off; they all
+// funnel through enabled(), which latches the env var once.
+
 #include "render/lod_trace.h"
 
 #include <cstdio>
@@ -27,6 +63,14 @@ struct Census {
     }
 };
 
+// The whole module's state. `latched` records that the env var has been read
+// (once per process); `active` that a file is open and tracing is really on;
+// `capture` is the caller-driven gate that keeps the streaming-in phase out of
+// the comparison; `closed` makes close() idempotent and later submits inert.
+// `previous` is the last frame's selection and is what the next frame diffs
+// against — it is the only cross-frame state, and the reason frames must be
+// submitted in order from one thread. The counters below it exist purely to
+// feed the summary line.
 struct State {
     bool latched = false;
     bool active = false;
@@ -51,6 +95,10 @@ State& state() {
     return value;
 }
 
+// Read MATTER_LOD_TRACE once and, if set, open the file and write the version
+// line. Every failure path (unset, empty, unopenable) leaves `active` false, so
+// tracing simply stays off — an unwritable path is reported to stderr and is
+// never fatal to the run.
 void latch() {
     State& s = state();
     if (s.latched) return;
@@ -69,6 +117,10 @@ void latch() {
     std::fprintf(stderr, "[lod-trace] recording to %s\n", path);
 }
 
+// Format a rung for the E line, or "-" when the pair is absent on that side.
+// The returned pointer aims into the CALLER'S buffer, so the two sides of one
+// event need two distinct buffers — which is why submit_frame declares
+// from_buffer and to_buffer separately rather than reusing one.
 const char* rung_text(char (&buffer)[16], bool present, uint32_t lod) {
     if (!present) return "-";
     std::snprintf(buffer, sizeof(buffer), "%u", lod);
@@ -97,6 +149,15 @@ uint64_t frame_label(uint64_t fallback) {
     return s.label_set ? s.label : fallback;
 }
 
+// Fold one frame's drawn set into the stream. Three steps: build the sorted
+// selection (rejecting zero tokens and duplicate keys loudly), emit the census
+// if it moved, then walk the previous and current selections together and emit
+// one E line per pair whose rung changed, appeared or disappeared. Cost is
+// O(pairs log pairs) for the map build plus a linear merge; it runs per frame,
+// but only when tracing is enabled.
+//
+// Early-outs, in order: tracing off, capture gate closed, or already closed.
+// The entries vector is taken by value and consumed.
 void submit_frame(uint64_t label, std::vector<Entry> entries) {
     if (!enabled()) return;
     State& s = state();

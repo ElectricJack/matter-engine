@@ -1,4 +1,6 @@
 #pragma once
+// MatterEngine3/src/polygon_triangulate.hpp
+//
 // Phase 3: a constrained ear-clipping triangulator that supports holes.
 //
 // Pure, dependency-free (no MSL/raylib types) so it is unit-testable in
@@ -30,6 +32,14 @@ struct Profile {
 // Triangulate the profile. Returns indices into the concatenated vertex list
 // (outer first, then holes in order). Size is a multiple of 3. Returns empty on
 // a degenerate/too-small profile.
+// Winding is normalized internally, so an outer contour handed in CW (or a hole
+// handed in CCW) is accepted and still produces CCW output.
+//
+// FAILURE IS SILENT AND PARTIAL. A self-intersecting or otherwise non-simple
+// profile stops the clip as soon as a pass finds no ear, and what has been
+// clipped so far is returned. The result is still a multiple of 3, so the only
+// way a caller can notice is by counting: a complete triangulation of an
+// n-vertex merged loop has exactly n-2 triangles.
 std::vector<int> triangulate(const Profile& profile);
 
 } // namespace poly_tri

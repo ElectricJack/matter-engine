@@ -1,6 +1,54 @@
 #ifndef CLUSTER_H
 #define CLUSTER_H
 
+// ---------------------------------------------------------------------------
+// libs/MatterSurfaceLib/include/cluster.h
+// ---------------------------------------------------------------------------
+// A Cluster is one rigidly-transformed body of matter: a flat list of
+// StaticParticles in local space, subdivided into Cells (cell.h) that each
+// mesh their own share of the implicit surface.
+//
+// Responsibilities
+//   - Particle storage and ids (add_particle overloads).
+//   - Cell creation and lookup, through a SpatialHash keyed on cell
+//     coordinates; a particle is distributed into every cell its radius
+//     touches, so neighbouring cells overlap and the field stays continuous.
+//   - Driving rebuilds: mark_cells_dirty_around_particle() then
+//     rebuild_dirty_cells(), which fans the CPU half of meshing out over the
+//     MeshWorkerPool and commits the results.
+//   - Meshing policy shared by all its cells: simplification ratio, lattice
+//     tier-0 spacing, division-pow ceiling, carve particles, AO bake config.
+//
+// Ownership and lifetime
+//   Constructed with references to a BLASManager and a TLASManager, both of
+//   which must outlive the Cluster -- cells register BLAS entries with the
+//   former and add_to_tlas() writes instances into the latter. The Cluster
+//   owns its Cells, its SpatialHash and its MeshWorkerPool.
+//
+// Space and units
+//   Particle positions, cell bounds and everything the meshers see are
+//   CLUSTER-LOCAL. `position_` / `rotation_` place the cluster in the world;
+//   local_to_world() is the only conversion. There is no scale.
+//
+// Threading
+//   The Cluster object itself is single-threaded: only the per-cell CPU mesh
+//   build is parallel, and that happens inside rebuild_dirty_cells() on the
+//   pool's workers against per-worker SurfaceScratch. Do not call other
+//   Cluster methods concurrently with a rebuild.
+//
+// Gotchas
+//   - Committing a cell's mesh needs a graphics context, so MatterEngine3's
+//     headless bake does not drive Cluster at all; script_host.cpp includes
+//     this header only for StaticParticle. Treat Cluster as the interactive /
+//     prototype path.
+//   - add_to_tlas() is const but mutates the TLASManager, and it currently
+//     applies only the cluster's translation (see the TODO in cluster.cpp) --
+//     rotation_ is not baked into the instance transform.
+//   - `no_mesh_cells_` is a memo of cells known to produce no geometry, keyed
+//     by packed integer cell coordinates; clear it when the field changes
+//     underneath it.
+// ---------------------------------------------------------------------------
+
 // Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
 // this header used to include raylib.h for Vector3/Vector4/Quaternion. It is
 // C++-only (no C consumer), so it uses matter_math.h's mm::Vec3/mm::Vec4/
@@ -24,6 +72,16 @@ class CellRenderVisitor;
 class MeshWorkerPool;
 
 // Static particle structure for matter representation
+//
+// The authored unit of matter: a sphere in cluster-local space carrying the
+// material and per-instance tint that the mesher tags onto the triangles it
+// produces. "Static" means it does not move once placed -- these are geometry
+// inputs, not simulated particles.
+//
+// POD, copied by value into the Cluster's `particles_` vector; cells refer to
+// entries by index, so the vector must not be reallocated while a mesh build
+// is reading it. MatterEngine3 consumes this type directly (script_host.cpp)
+// even though it does not drive Cluster.
 struct StaticParticle {
     mm::Vec3 position;      // Position in local cluster space
     float radius;          // Particle radius
@@ -51,6 +109,9 @@ public:
     void set_rotation(const mm::Quat& rot) { rotation_ = rot; }
 
     // Transform particles between local and world space
+    // Applies rotation_ then position_. There is no scale and no inverse
+    // helper -- everything else in this class (particles, cell bounds, meshing)
+    // stays in cluster-local space.
     mm::Vec3 local_to_world(const mm::Vec3& local_pos) const;
 
     // Particle management
@@ -64,6 +125,16 @@ public:
     uint32_t get_particle_count() const { return static_cast<uint32_t>(particles_.size()); }
     
     // Cell management
+    // mark_cells_dirty_around_particle(): flags every cell the sphere touches,
+    // creating cells as needed. Call it for each particle whose influence
+    // changed, then rebuild once.
+    //
+    // rebuild_dirty_cells(): the expensive one. Re-buckets particles, runs the
+    // CPU mesh build for every dirty cell across the MeshWorkerPool, then
+    // commits the results on the calling thread (mesh upload plus BLAS
+    // registration), so it must be called from the thread that owns the
+    // graphics context. Cost scales with dirty cells x particles, not with the
+    // number of marks.
     void mark_cells_dirty_around_particle(const mm::Vec3& local_position, float radius);
     void rebuild_dirty_cells();
     std::vector<Cell*> get_cells_in_region(const mm::Vec3& min_bound, const mm::Vec3& max_bound);
@@ -72,6 +143,12 @@ public:
     void accept(CellVisitor& visitor) const;
     
     // TLAS integration
+    // Walks every meshed cell and emits one TLAS instance per merge-group BLAS.
+    // `const` on the Cluster only -- it mutates the referenced TLASManager, and
+    // it appends rather than replacing, so calling it twice duplicates every
+    // instance. The instance material it packs is a merge-group id used purely
+    // as a fallback; real triangles carry their own per-triangle materialId.
+    // Only the cluster's translation is applied (rotation_ is not).
     void add_to_tlas() const;
     
     // Cell sizing

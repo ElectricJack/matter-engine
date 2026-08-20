@@ -1,4 +1,58 @@
 #pragma once
+// MatterEngine3/src/script_host.h
+//
+// The JavaScript-to-artifact boundary of the engine. `ScriptHost` evaluates an
+// authored ES class -- a Part, a World, or a Tileset -- inside QuickJS-ng and
+// turns it into engine data: a `.part`/`.bundle` artifact on disk, a
+// `tileset::TilesetSpec`, or a `WorldEvalResult` carrying field / surface /
+// habitat program text plus the world's constants.
+//
+// Where it sits
+// -------------
+// This is the front door of the script subsystem. The DSL verb state a build()
+// fills lives in dsl_state.h; shared-lib import folding lives in
+// module_resolver.h; the engine-owned World statics path is delegated whole to
+// script/world_definition_loader.h. Callers are the bake/provider layer
+// (provider/local_provider, part_graph, live_edit_prod), render/part_store.h
+// (for the retained-geometry handoff), the editor's asset browser and Part
+// Workbench, and most of MatterEngine3/tests. Nothing here knows about Vulkan,
+// raylib or the renderer: it produces bytes and descriptions, and the render
+// side loads them separately.
+//
+// The call model
+// --------------
+// Every entry point below is a ONE-SHOT evaluation: a fresh, isolated
+// JSContext per call, the class top level runs, the requested method (or none)
+// is invoked, and the context is torn down. There is no long-lived script
+// world to keep in sync, so unrelated sources can be asked about in any order.
+//
+// Two axes separate the entry points:
+//   - whether they RUN build() and write an artifact (`bake_source`,
+//     `eval_tileset`, `eval_world`) or only READ declarations without building
+//     (`resolve_hash`, `eval_requires`, `eval_lod_budgets`, `eval_lods`,
+//     `eval_no_impostor`, `merged_params_json`);
+//   - what they hand back -- `BakeResult`, `TilesetEvalResult`,
+//     `WorldEvalResult` all lead with a `BakeError`.
+//
+// Conventions the whole file shares
+// ---------------------------------
+//   - FAIL-CLOSED. On any JS error the call returns an error result and writes
+//     nothing. The no-build readers go further: any shape violation discards
+//     the WHOLE declaration rather than half-parsing it, so a malformed block
+//     reads as "not opted in" and can never partially apply.
+//   - CANONICAL JSON. Every params string crossing this boundary is
+//     sorted-key, whitespace-free JSON, because the content hash is taken over
+//     it -- two spellings of the same params must hash identically.
+//   - HASH AGREEMENT. `resolve_hash` and `bake_source` share one params-merge
+//     and shared-lib-folding path, so the hash a bake writes under is always
+//     the hash a lookup computes.
+//
+// Threading
+// ---------
+// Only `fold_cache_` is guarded, by `fold_mu_`. The `last_*` members are plain
+// per-call scratch overwritten by whichever call ran most recently, so two
+// concurrent bakes through the SAME instance would race over them; give each
+// baking thread its own ScriptHost.
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -22,6 +76,11 @@ namespace script_host {
 // blas_manager/part_asset out of every script_host.h includer.
 struct BakedGeometry;
 
+// The uniform error channel every result type in this header leads with.
+// `ok == false` means the call produced NOTHING -- no artifact written, no
+// spec, no program text -- so a caller tests `ok` first and ignores the rest
+// of the result otherwise. `code` is only populated when the DSL supplied a
+// category; an engine-side failure may leave it empty with only `message` set.
 struct BakeError {
     bool        ok = true;        // true = no error
     std::string code;             // stable machine-readable category when supplied by the DSL
@@ -137,6 +196,11 @@ struct WorldEvalResult {
     std::string habitat_program;
     std::vector<std::string> habitat_channels;
     std::string biomes_json;      // JSON.stringify of biomes() return value
+    // World constants read off `static world`, all in world METRES:
+    // `sector_size` is the authored sector pitch the streamer tiles by, and
+    // [y_min, y_max] the authored vertical extent that bounds a terrain slab
+    // (and, under volumetric sectors, the octree). The initialisers here are
+    // the values a world that declares none is treated as having.
     float sector_size = 16.0f;
     float y_min = -64.0f;
     float y_max = 192.0f;
@@ -151,6 +215,17 @@ struct RequiredChild {
 // Bakes ONE part from `source` (ES class extending Part) with `params_json`
 // (caller overrides; defaults come from the class's static params).
 // Fresh isolated JSContext per call; fail-closed; writes <=1 .part.
+//
+// Default-constructed and cheap; it holds no script state between calls. The
+// only things that survive one are the shared-lib root list, the fold cache,
+// and the `last_*` diagnostics. That shapes how instances are kept: one per
+// baking context rather than a shared pool, because `set_shared_lib_root`
+// clears the fold cache, so an instance driven alternately from two different
+// shared-lib roots would thrash it.
+//
+// The `last_*` accessors describe the MOST RECENT call only, are overwritten
+// by the next one, and are unguarded -- read them only from the thread that
+// made the call, and only for tests and diagnostics.
 class ScriptHost {
 public:
     // child_modules/child_params (parallel to child_hashes) feed placeChild's
@@ -367,6 +442,9 @@ private:
                                        BakeError& err);
 
     std::vector<std::string> shared_lib_roots_;
+    // Scratch describing the MOST RECENT call, overwritten by the next one and
+    // meaningless before the first. Surfaced through the `last_*` accessors
+    // above; unguarded, unlike the fold cache below.
     std::string last_merged_params_;
     bool last_build_ran_ = false;
     dsl::BuildBuffer last_buffer_;

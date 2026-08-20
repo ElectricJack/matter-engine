@@ -15,6 +15,21 @@
 // BLASManager::register_triangles(tris, count, triex). There is NO separate
 // triangle BLAS and NO triangle render path. The VariationRecorder's children()
 // feed save_v2's child-instance table (SP-1). Triangles never enter the SDF.
+//
+// Ownership and threading: both classes are plain value types holding nothing
+// but std::vectors -- no GPU or OS resource, freely copyable, and destroyed
+// with the part build. They are not synchronized; one build buffer belongs to
+// the one thread evaluating that part's script.
+//
+// Conventions the whole file assumes:
+//   - Output is an unindexed triangle soup; `triangles()` and `tri_extra()`
+//     are a strictly parallel stream (index i of one describes index i of the
+//     other), which is what makes truncate()/appendTo() safe.
+//   - Vertices are authored in LOCAL space and baked through the supplied
+//     transform at emit time. Winding is outward, and a mirroring transform
+//     is compensated for rather than allowed to flip the surface.
+//   - Only sphere() produces smooth per-vertex normals; every other generator
+//     (capsule included) writes the triangle's face normal into TriEx.
 #include "tri.h"      // Tri, TriEx, mat4, float3, make_float3
 #include "part_asset_v2.h"  // SP-1: part_asset::ChildInstance, part_asset::compute_resolved_hash
 #include <vector>
@@ -45,12 +60,26 @@ enum class JoinType { MITER, BEVEL, ROUND };
 // thin surfaces: transformed by the supplied matrix, tagged with a per-triangle
 // material id, carrying neutral tint (1,1,1,0) and a face-normal shading
 // fallback. NO SDF/field interaction. JS-free so it is unit-testable directly.
+//
+// One instance accumulates all of a part's direct geometry across the whole
+// script evaluation; it is never partially consumed. The only ordering rule is
+// the shape cursor: beginShape() opens it, vertex() appends only while it is
+// open, endShape() closes it. Every other method (line, sphere, box,
+// cappedCone, capsule, extrude, pushRaw) appends complete geometry
+// immediately and is independent of that cursor.
+//
+// Costs are not obvious from the names: these generators emit tens to hundreds
+// of triangles per call (a default capsule is segments*(2 + 4*rings) tris),
+// and a part that calls them in a loop pays for every one.
 class TriangleBuildBuffer {
 public:
     // tint defaults to neutral (1,1,1,0 = alpha 0 = no tint) so existing callers
     // are byte-identical; the DSL passes the tint cursor through (G4).
     void beginShape(ShapeType type, const mat4& transform, int material_id,
                     float4 tint = make_float4(1,1,1,0));
+    // vertex() outside an open shape is silently ignored, and endShape() drops
+    // trailing vertices that do not complete a primitive rather than reporting
+    // them -- an odd vertex count is a quiet no-op, not an error.
     void vertex(float3 position);   // local-space; transformed at endShape()
     void endShape();                // assembles pending vertices into Tri/TriEx
 
@@ -110,6 +139,9 @@ public:
     // direct triangles register as ONE BLAS.
     void appendTo(std::vector<Tri>& out_tris, std::vector<TriEx>& out_triex) const;
 
+    // Drops all accumulated geometry AND any shape left open. Note the
+    // asymmetry with truncate(), which only shortens the geometry stream and
+    // leaves the shape cursor alone.
     void clear();
 
 private:

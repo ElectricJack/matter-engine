@@ -1,5 +1,29 @@
 #pragma once
 
+// MatterEditor/src/editor_model.h
+//
+// The editor-side model behind the Scene/outliner panel: an authoritative map
+// of SceneRecords, the flattened preorder hierarchy derived from it, the
+// current selection, and thin wrappers over the engine's scene-mutation
+// commands.
+//
+// It is engine-agnostic in both directions on purpose. Inbound, rows arrive as
+// canonical scene.rows_upserted / scene.rows_removed deltas fed by
+// scene_model_adapter.* (see the E5c note on SceneCommands below); outbound,
+// mutations go through the SceneCommands closures rather than through the ECS
+// world. That is what lets MatterEngine3/tests/editor_model_tests.cpp drive
+// the whole model with no session and no renderer. Nothing ImGui is included
+// here — only matter/scene.h and matter/event/property.h.
+//
+// Lifetime and threading: main.cpp owns one EditorModel for the process and
+// calls attach_scheduler() once, after the app's PropertyScheduler exists.
+// Nothing here locks — every method is called from the editor's main loop, and
+// the coalesced re-flatten runs inside the scheduler's flush on that same
+// thread.
+//
+// Ids: a SceneEntityId `value` of 0 is the universal sentinel — "no parent" on
+// a record, "nothing selected" on a Selection.
+
 #include "matter/scene.h"
 #include "matter/event/property.h"
 
@@ -12,8 +36,14 @@
 
 namespace viewer {
 
+// What the outliner and the viewport agree is selected — they share one
+// instance rather than each keeping their own.
 struct Selection {
     matter::scene::SceneEntityId id{};
+    // World generation at the moment of selection, stamped by select() from
+    // last_generation_. Only the legacy poll path (refresh) ever advances that
+    // counter, so on the delta-driven viewer this stays 0; no code currently
+    // reads it back.
     uint64_t world_generation = 0;
 };
 
@@ -22,7 +52,11 @@ struct HierarchyRow {
     matter::scene::SceneEntityId id{};
     matter::scene::SceneEntityId parent_id{};
     std::string name;
+    // Preorder depth: 0 for a root, +1 per level. The rows are stored flat, so
+    // this is the only indentation cue the panel gets.
     uint32_t depth = 0;
+    // Direct children in the record STORE, not in the filtered row list — a
+    // row can report children that the active filter is hiding.
     uint32_t child_count = 0;
     std::vector<std::string> component_names;
 };
@@ -55,6 +89,19 @@ struct SceneCommands {
                                                   matter::scene::SceneEntityId new_parent)> reparent;
 };
 
+// The outliner's model: an authoritative SceneRecord store plus the flattened,
+// filtered hierarchy derived from it.
+//
+// Call order: attach_scheduler() once, then feed rows — apply_snapshot() for a
+// full set, apply_upsert()/apply_remove() for deltas. rows() reflects the last
+// completed re-flatten, which for the delta paths happens at the next
+// PropertyScheduler flush rather than inside the delta call, so a panel that
+// draws between the delta and the flush sees the previous row set for one
+// frame.
+//
+// Holds a Subscription and a Property that reference the app scheduler, so it
+// must not outlive it and is not meant to be copied. No locks: main-loop only,
+// including the observer installed by attach_scheduler().
 class EditorModel {
 public:
     // --- observable delta-driven collection (E5c, event-system.md S I.14) ----
@@ -87,6 +134,9 @@ public:
     void refresh(const SceneCommands& commands);
 
     // Filter the hierarchy by name/id substring.
+    // In practice the match is case-insensitive and against the row NAME only
+    // — the id is not searched. Reapplies the filter immediately; it does not
+    // wait for a flush.
     void set_filter(const std::string& filter);
     const std::string& filter() const { return filter_; }
 
@@ -96,11 +146,22 @@ public:
     const Selection& selection() const { return selection_; }
     bool has_selection() const { return selection_.id.value != 0; }
 
-    // Hierarchy access.
+    // Hierarchy access. Both report the FILTERED rows, so row_count() shrinks
+    // as you type into the filter box and the unfiltered set is not exposed.
+    // The returned reference is invalidated by the next re-flatten (any
+    // apply_snapshot, or any delta once the scheduler flushes), so do not hold
+    // it across a frame.
     const std::vector<HierarchyRow>& rows() const { return filtered_rows_; }
     uint32_t row_count() const { return static_cast<uint32_t>(filtered_rows_.size()); }
 
     // Commands (return error on failure, None on success).
+    //
+    // `commands` is borrowed per call, never stored. Each command moves the
+    // selection as a side effect: create_empty/duplicate_selected select what
+    // they created, delete_selected clears it, reparent_selected leaves it
+    // alone. A command whose closure is null returns InvalidTarget; one that
+    // needs a selection and has none returns EntityNotFound. None of them
+    // update the row set — that happens when the resulting delta arrives.
     matter::scene::SceneEditResult create_empty(const SceneCommands& commands);
     matter::scene::SceneEditResult duplicate_selected(const SceneCommands& commands);
     matter::scene::SceneEditResult delete_selected(const SceneCommands& commands);

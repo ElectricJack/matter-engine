@@ -1,6 +1,38 @@
 #ifndef MESH_SIMPLIFIER_HPP
 #define MESH_SIMPLIFIER_HPP
 
+// libs/MatterSurfaceLib/include/mesh_simplifier.hpp
+//
+// QEM (quadric error metric) edge-collapse decimation. This is the workhorse
+// behind LOD: a part's ladder is built by re-simplifying the full-resolution
+// mesh at successively smaller `target_ratio` values, then reprojecting the
+// per-triangle `TriEx` onto each rung with `mesh_transform.hpp`'s
+// `reproject_triex`.
+//
+// Where it sits: MatterSurfaceLib, above SpatialQueryLib and below
+// MatterEngine3's bake pipeline. Two entry points with identical semantics —
+// `simplify_mesh` for a raylib `Mesh` (the mesher's native output, still the
+// format at the BLAS/upload boundary) and `simplify` for `MeshIndexed` (the
+// pipeline-internal format from `mesh_indexed.hpp`).
+//
+// Threading: pure CPU, no GL, no mutable global state — safe to run on
+// `MeshWorkerPool` workers, which is how cell meshes are decimated.
+//
+// Gotchas:
+//   - Seam correctness comes from `lock_boundary`, not from the decimator.
+//     Both locking classes documented on `SimplifyOptions` below exist to
+//     keep neighbouring cells and adjacent LOD levels watertight; read them
+//     before changing the flag.
+//   - `target_ratio` is a request, not a guarantee. Locked vertices cannot
+//     collapse and `max_error` stops the queue early, so the result can carry
+//     many more triangles than asked for. Callers budgeting triangles must
+//     measure the output rather than assume the ratio.
+//   - `simplify_mesh` returns a NEW mesh allocated with raylib's `MemAlloc`.
+//     Free it with `UnloadMesh` (main thread, if it was uploaded) or with
+//     `unload_cpu_mesh` from `mesh_build_utils.h` (any thread, if it was not).
+//   - The `MeshIndexed` overload round-trips through a raylib `Mesh`
+//     internally, so it costs a full conversion each way — see its comment.
+
 // Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
 // CellBounds moved off raylib's Vector3 onto matter_math.h's mm::Vec3 (C++-
 // only, no C consumer). raylib.h stays included -- simplify_mesh's Mesh

@@ -1,9 +1,55 @@
+// libs/MatterSurfaceLib/src/particle_culling.cpp
+//
+// Slot -> particle conversion for lattice-authored geometry. The authoring side
+// fills an `Occupancy` (sparse map of integer `SlotCoord` -> `SlotData`); this
+// file converts that into the `EmittedParticle` stream the surfacer meshes,
+// and does two jobs while converting:
+//
+//  1. Interior culling (`cull_interior`). Slots are bucketed into meshing CELLS
+//     of `CullParams::cell_size`. A cell is INTERIOR if every slot in it is
+//     buried, and CORE if it is interior and all 26 neighbour cells are also
+//     interior. Core slots are dropped outright — they are further than one
+//     cell from anything that gets meshed, so removing them cannot move the
+//     outer isosurface. Interior-but-not-core cells keep their particles so the
+//     meshed shell always has particle-bearing neighbours and no inner surface
+//     forms.
+//  2. Tiering (`slot_depth` / `slot_tier` / `make_sub_particle`). A slot near
+//     the surface is split into 2^tier per axis (up to 8^max_tier sub-particles)
+//     at proportionally smaller radius and jitter, so detail is spent where it
+//     is visible. Tier 0 with sub-offset (0,0,0) reproduces the legacy
+//     one-particle-per-slot output EXACTLY; `coarse_material_mask` forces
+//     tier 0 for chosen materials.
+//
+// Determinism. Everything random-looking here is hashed from the integer slot
+// coordinate, the sub-offset and `CullParams::seed` — there is no RNG state and
+// no dependence on iteration order, so two runs with the same occupancy and
+// params emit identical particles. `lattice_vhash`/`lattice_vnoise` are the
+// shared primitives (also declared in the header for other callers); `fbm3` is
+// the local 4-octave stack over them.
+//
+// Units and spaces. Positions are LOCAL to the lattice (`Lattice::slot_position`
+// output space), not world space. `spacing` is the tier-0 lattice pitch S;
+// `EmittedParticle::detail_size` is S / 2^tier. Radii are in the same local
+// units. Tints are RGBA with w used as blend strength.
+//
+// Cost. `cull_interior` walks the occupancy twice and calls `slot_is_buried` /
+// `slot_depth` per slot, each a dense (2r+1)^3 box scan, so it is roughly
+// O(occupied slots x margin^3) plus O(interior cells x 26). It allocates the
+// full particle vector up front-free (push_back), so peak memory scales with
+// 8^max_tier x surface slots.
+//
+// No GPU, no I/O, no globals — pure functions over the passed structures.
+
 #include "particle_culling.h"
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 #include <cassert>
 
+// Deterministic integer hash -> [0,1]. Only 24 bits of the mixed word are kept,
+// so the output is quantized to 1/0xFFFFFF steps. Not a quality PRNG: it is
+// chosen for being stable across runs, platforms and build configs, which is
+// what the bake caches depend on.
 float lattice_vhash(int x, int y, int z) {
     uint32_t h = ((uint32_t)x * 374761393u) ^ ((uint32_t)y * 668265263u) ^ ((uint32_t)z * 2147483647u);
     h = (h ^ (h >> 13)) * 1274126177u;
@@ -11,6 +57,9 @@ float lattice_vhash(int x, int y, int z) {
     return (float)(h & 0xFFFFFFu) / (float)0xFFFFFFu; // [0,1]
 }
 
+// Trilinear value noise on the integer lattice, smoothstep-interpolated, in
+// [0,1]. Continuous but only C1 at cell boundaries — fine for tint/radius
+// modulation, not intended as a surface-defining field.
 float lattice_vnoise(float x, float y, float z) {
     int xi = (int)floorf(x), yi = (int)floorf(y), zi = (int)floorf(z);
     float xf = x - xi, yf = y - yi, zf = z - zi;
@@ -143,6 +192,18 @@ static SlotCoord cell_coord_of(const Lattice& lat, SlotCoord c, const CullParams
     return SlotCoord{cx, cy, cz};
 }
 
+// Three passes over the occupancy (contract and rationale: the header).
+// Implementation notes:
+//  - Cells are keyed by `pack_slot(cell coord)` in unordered maps, so the two
+//    maps and the core set are all keyed the same way; `coord_of` exists only
+//    to recover the integer coordinate from that packed key.
+//  - Output order follows `Occupancy::for_each`, not a sorted order.
+//  - `stats->cells_skipped` counts ALL interior cells (core included), while
+//    `cells_core` counts only the ones whose particles were actually dropped;
+//    `cells_meshed` is total minus interior.
+//  - `no_mesh_cells` likewise receives every interior cell, core or not.
+//  - `p.margin` is clamped up to 1: a margin of 0 would call every occupied
+//    slot buried.
 std::vector<EmittedParticle> cull_interior(const Lattice& lattice,
                                            const Occupancy& occ,
                                            const CullParams& p,
@@ -215,6 +276,10 @@ std::vector<EmittedParticle> cull_interior(const Lattice& lattice,
     return out;
 }
 
+// The A/B baseline for `cull_interior`: same tiering and same
+// `make_sub_particle` call, no cell classification and no dropping. The
+// per-slot body below is a deliberate duplicate of `cull_interior`'s pass 3 —
+// keep the two in sync, or the comparison stops measuring only the culling.
 std::vector<EmittedParticle> emit_all(const Lattice& lattice,
                                       const Occupancy& occ,
                                       const CullParams& p) {
@@ -231,6 +296,15 @@ std::vector<EmittedParticle> emit_all(const Lattice& lattice,
     return out;
 }
 
+// Emits one SUBTRACTIVE particle per seed whose noise value clears the
+// threshold; the result is meant to be handed to the mesher's carve list, not
+// to its additive particle list.
+//
+// Each carve particle sits at EXACTLY its seed's position — only the radius
+// varies (with the overshoot past the threshold, capped by `cp.r_max`) — and
+// `materialId` is forced to 0 since a divot exposes the surrounding material
+// rather than introducing one. `cp.amt <= 0` returns an empty vector, which is
+// the "carving off" path. Noise is sampled in the seeds' own coordinate space.
 std::vector<Particle> generate_carve_particles(const std::vector<Particle>& seeds,
                                                const CarveParams& cp) {
     std::vector<Particle> out;

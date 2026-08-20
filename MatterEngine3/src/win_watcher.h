@@ -1,4 +1,12 @@
 #pragma once
+// MatterEngine3/src/win_watcher.h — Windows FileWatcher backend (stubbed).
+// The entire body is inside #ifdef _WIN32, so including it on another
+// platform is a no-op. See file_watcher.h for the interface and the live-edit
+// contract (LiveEditSession holds a watcher by reference and polls it once per
+// host tick). Nothing in the engine or the editor constructs this class today;
+// its only reference is dev_live_edit_tests.cpp, which asserts that
+// constructing it throws — so the deferral cannot quietly turn into a watcher
+// that reports no changes.
 #include "file_watcher.h"
 #ifdef _WIN32
 #include <stdexcept>

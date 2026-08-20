@@ -1,3 +1,30 @@
+// libs/SpatialQueryLib/src/bvh_analyzer.cpp
+//
+// Implementation of `include/bvh_analyzer.h`, which documents what the analysis
+// is for, which fields of the result structs are real, which declarations have
+// no definition here, and the non-owning-registry contract. This file is where
+// the FORMULAS live, and they are all hand-tuned heuristics with no units:
+//
+//   balance_factor    min LEAF depth / max NODE depth. 1.0 when every leaf sits
+//                     at the deepest level.
+//   tree_efficiency   log2(triangles) / max(avg_depth, 1). Can exceed 1.0 for a
+//                     shallow tree over many triangles -- it is not a fraction.
+//   traversal cost    0.10*avg_depth + 0.05*surface_area_ratio
+//                     + 0.02*triangle_distribution_variance. Arbitrary weights,
+//                     dimensionless, comparable only between two builds of the
+//                     same mesh.
+//   memory_efficiency 1 / (1 + MB), i.e. a pure size penalty, not a measure of
+//                     packing.
+//   quality score     30*balance + 25*efficiency + 20*utilization
+//                     + 15/(1+variance) + 10*memory_efficiency, clamped to 100.
+//
+// Because none of these are measurements, a score movement means "the tree
+// changed shape in the direction these weights like", never "tracing got
+// faster". Measure tracing if that is the question.
+//
+// Everything here is single-threaded and unguarded by design (see the header),
+// and the analyses walk the tree recursively -- bounded in practice only by the
+// builder's depth cap of 40.
 #include "bvh_analyzer.h"
 #include <chrono>
 #include <cmath>
@@ -6,10 +33,16 @@
 #include <iomanip>
 
 // Static member initialization
+// Storage for the header's static registries. These are dynamically-initialised
+// globals, so registering from another translation unit's static initialiser is
+// unsafe (static initialisation order); every real caller registers from normal
+// runtime code.
 std::unordered_map<std::string, BVHReportManager::BVHEntry> BVHReportManager::bvh_registry_;
 std::unordered_map<std::string, BVHReportManager::TLASEntry> BVHReportManager::tlas_registry_;
 
 // Helper function to get current time in milliseconds
+// Milliseconds since an unspecified epoch -- only differences are meaningful,
+// and the only use is timing the analysis itself.
 double BVHAnalyzer::GetTimeMs() {
     auto now = std::chrono::high_resolution_clock::now();
     auto duration = now.time_since_epoch();
@@ -17,6 +50,13 @@ double BVHAnalyzer::GetTimeMs() {
 }
 
 // Calculate surface area of a BVH node
+// FULL surface area, 2*(xy + yz + zx) -- twice the half-area convention
+// `aabb::area()` in bvh.h uses for its SAH comparisons. The two numbers are not
+// interchangeable, and every surface-area field in `BVHTreeAnalysis` is on this
+// full-area scale, in world units squared.
+//
+// An empty node (the inverted 1e30 sentinel) yields a huge positive value here
+// rather than zero, so a partially-built tree skews these totals badly.
 float BVHAnalyzer::CalculateNodeSurfaceArea(const BVHNode& node) {
     float3 extent = node.aabbMax - node.aabbMin;
     return 2.0f * (extent.x * extent.y + extent.y * extent.z + extent.z * extent.x);
@@ -69,6 +109,23 @@ float BVHAnalyzer::CalculateQualityScore(const BVHTreeAnalysis& analysis) {
 }
 
 // Recursive node analysis for BLAS
+// Depth-first walk filling the per-depth vectors, the leaf statistics and the
+// triangle histogram. It grows `depth_counts` and the three `*_per_depth`
+// vectors together as it discovers new depths, so they always stay the same
+// length.
+//
+// `min_depth` is tracked over LEAVES only (a shallow interior node is not a
+// shallow leaf), while `max_depth` covers every node -- so `balance_factor` is
+// deliberately a leaf-vs-node comparison.
+//
+// Gotcha: during the walk `avg_surface_area_per_depth[d]` holds a SUM, not an
+// average. `AnalyzeBVH` divides it down afterwards. Reading it mid-walk, or
+// calling this twice into the same analysis, produces nonsense.
+//
+// Interior children are read as `leftFirst` and `leftFirst + 1`, matching the
+// node layout documented on `BVHNode`. Out-of-range indices and a null pool are
+// silently ignored, so a malformed tree yields a small analysis rather than a
+// crash.
 void BVHAnalyzer::AnalyzeNodeRecursive(const BVH* bvh, uint32_t node_idx, uint32_t depth, 
                                        BVHTreeAnalysis& analysis, std::vector<uint32_t>& depth_counts) {
     if (!bvh->bvhNode || node_idx >= bvh->nodesUsed) return;
@@ -116,6 +173,10 @@ void BVHAnalyzer::AnalyzeNodeRecursive(const BVH* bvh, uint32_t node_idx, uint32
 }
 
 // Recursive TLAS analysis
+// TLAS walk. Descends through the `left`/`right` 16-bit overlay of `leftRight`
+// rather than the packed word, and stops at leaves without recording anything
+// about the instance -- which is why `TLASAnalysis` has no per-instance depth
+// or triangle data.
 void BVHAnalyzer::AnalyzeTLASNodeRecursive(const TLAS* tlas, uint32_t node_idx, uint32_t depth,
                                            TLASAnalysis& analysis) {
     if (!tlas->tlasNode || node_idx >= tlas->nodesUsed) return;
@@ -135,6 +196,13 @@ void BVHAnalyzer::AnalyzeTLASNodeRecursive(const TLAS* tlas, uint32_t node_idx, 
 }
 
 // Generate quality assessment and recommendations
+// Turn the computed ratios into canned prose. The thresholds (balance < 0.5,
+// depth > 2*log2(triangles), variance > 10, utilization < 0.7, cost > 5) are
+// hand-picked constants with no derivation behind them.
+//
+// Clears both string lists first, so it is safe to re-run, and appends one
+// POSITIVE line to `quality_issues` when the score clears 80 -- a non-empty
+// issue list is therefore not evidence of a problem.
 void BVHAnalyzer::GenerateQualityAssessment(BVHTreeAnalysis& analysis) {
     analysis.quality_issues.clear();
     analysis.recommendations.clear();
@@ -176,6 +244,23 @@ void BVHAnalyzer::GenerateQualityAssessment(BVHTreeAnalysis& analysis) {
 }
 
 // Main BVH analysis function
+// The full analysis, in order: null-guard, size/memory basics, the recursive
+// walk, then several passes over the per-depth vectors to turn accumulated sums
+// into averages, variances and derived ratios, and finally the scoring and
+// prose. Order matters -- every later step reads what an earlier one wrote.
+//
+// Guards only against null pointers, not against an EMPTY mesh: with
+// `triCount == 0` both `node_utilization` (divides by 2*total_triangles) and
+// `avg_node_surface_area` (divides by total_nodes) divide by zero and the score
+// propagates NaN. Check `total_triangles` before trusting a result.
+//
+// `surface_area_ratio` is looser than its name suggests: it sums the average
+// area of every node at any depth that CONTAINS at least one leaf, times the
+// node count at that depth -- i.e. it includes interior nodes sharing a depth
+// with leaves, so it over-estimates the leaf area whenever the tree is not
+// uniform-depth.
+//
+// Allocating and O(nodes). Not a per-frame or per-commit call.
 BVHTreeAnalysis BVHAnalyzer::AnalyzeBVH(const BVH* bvh, const BvhMesh* mesh, const std::string& name) {
     double start_time = GetTimeMs();
     
@@ -270,6 +355,18 @@ BVHTreeAnalysis BVHAnalyzer::AnalyzeBVH(const BVH* bvh, const BvhMesh* mesh, con
 }
 
 // TLAS analysis function
+// TLAS analysis. Populates the structural fields, then loops the instances
+// pushing a stub `BVHTreeAnalysis` carrying only `total_nodes` -- a full
+// per-instance analysis would need each instance's `BvhMesh`, which is not
+// reachable from a `TLAS`.
+//
+// Consequence to be aware of when reading the result: `total_blas_triangles` is
+// declared and divided by, but never incremented anywhere in that loop, so
+// `avg_instance_triangles` is always exactly 0. The header lists the other
+// fields that are declared but never written.
+//
+// `tlas_quality_score` is `60 * balance + 40 if any instances`, so an empty
+// TLAS scores 0 and any non-degenerate one starts at 40.
 TLASAnalysis BVHAnalyzer::AnalyzeTLAS(const TLAS* tlas, const std::string& name) {
     double start_time = GetTimeMs();
     
@@ -320,6 +417,16 @@ TLASAnalysis BVHAnalyzer::AnalyzeTLAS(const TLAS* tlas, const std::string& name)
 }
 
 // Generate human-readable report
+// Format the analysis as a multi-section text block.
+//
+// The line breaks are the two-character sequence backslash-n, not newlines --
+// the string literals below are escaped twice. The returned string is therefore
+// one long line unless the consumer unescapes it. Preserved as-is because
+// changing it would change every existing consumer's output.
+//
+// Prints `min_depth` and `min_triangles_per_leaf` unconditionally, so an
+// unanalysed or empty tree reports them as 4294967295 (their UINT32_MAX
+// "never set" sentinel).
 std::string BVHAnalyzer::GenerateReport(const BVHTreeAnalysis& analysis, const std::string& tree_name) {
     std::ostringstream report;
     
@@ -420,6 +527,13 @@ void BVHReportManager::RegisterTLAS(const std::string& name, const TLAS* tlas) {
     tlas_registry_[name] = entry;
 }
 
+// Refresh whichever registries hold `name`, and only if that entry is still
+// marked stale. Note it checks BOTH maps, so a name registered as a BVH and as
+// a TLAS refreshes both in one call. An unknown name does nothing at all --
+// there is no error channel.
+//
+// This is the expensive call (a full recursive walk per stale entry);
+// `cell.cpp` gates it behind the MSL_BVH_ANALYSIS environment variable.
 void BVHReportManager::UpdateAnalysis(const std::string& name) {
     auto bvh_it = bvh_registry_.find(name);
     if (bvh_it != bvh_registry_.end()) {
@@ -464,6 +578,11 @@ void BVHReportManager::UnregisterBVH(const std::string& name) {
     bvh_registry_.erase(name);
 }
 
+// Drop every registration and every cached analysis. This is the only way the
+// registry ever shrinks apart from `UnregisterBVH`, and it is the safe response
+// to tearing down a batch of BVHs at once -- the registry holds raw non-owning
+// pointers and cannot observe their destruction. Note there is no
+// `UnregisterTLAS`: a TLAS entry can only be removed by `Clear`.
 void BVHReportManager::Clear() {
     bvh_registry_.clear();
     tlas_registry_.clear();

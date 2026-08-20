@@ -1,3 +1,107 @@
+// MatterEngine3/src/render/vk_scene_renderer.cpp
+//
+// VkSceneRenderer: the Vulkan world renderer. This is the largest file in the
+// repo and owns everything between "here is a scene" and "here are the pixels
+// in the swapchain image". The renderer is Vulkan-ONLY -- the GL/raylib render
+// path was deleted -- so any surviving mention of GL anywhere in this
+// subsystem is stale by construction.
+//
+// What it owns
+// ------------
+// - The resident scene geometry: ONE cluster buffer, ONE vertex buffer and ONE
+//   index buffer shared by every registered part (`ensure_part`), their CPU
+//   staging mirrors, and a `FreeRangeList` recycler so streamed evictions
+//   return their ranges instead of growing the tail forever.
+// - Per-frame resources (`FrameResources`, one per swapchain frame slot):
+//   descriptor sets, the frame-constants UBO, the instance / draw-command /
+//   draw-transform storage buffers, the animation-skin arenas, the RT scratch
+//   and TLAS, and a timestamp query pool.
+// - Every pipeline: the compute cull (TWO specializations of
+//   shaders_vk/cull.comp -- see create_pipeline), the G-buffer raster and its
+//   skinned/wireframe variants, the occlusion ID pass, the composite, the
+//   display transform, the overlay lines, the animation-skin compute, the GI
+//   temporal + A-trous denoisers, and the ray-tracing pipeline with its SBT.
+// - The subordinate modules it constructs and drives: `VkVolumetrics`,
+//   `VkAtmosphere`, `VkCloudShadows`, and the chart-space virtual-texturing
+//   runtime (`vt::VtResidency` with a `VtCompositor` page filler and an
+//   optional ray-traced `VtEnricher`).
+//
+// How it fits
+// -----------
+// Constructed by the engine facade (matter_engine.cpp) over a
+// `matter::VulkanDevice` (vk_context.*), which owns the instance, device,
+// swapchain, immediate-submit queue and per-frame retention list. Raw Vulkan
+// resource helpers (`create_buffer`, `create_image`, `record_image_transition`,
+// `submit_immediate`, `retain_for_frame`) come from vk_resources.*. Geometry
+// and instances arrive from the bake/publish path as `VkScenePart` /
+// `VkSceneInstance` (see part_store.* and world_state.*). The GPU-side cull
+// rule lives in shaders_vk/cull.comp; VT residency in vt_residency.* and
+// vt_compositor.*.
+//
+// Frame graph -- the order everything below is recorded in
+// --------------------------------------------------------
+//   prepare_frame()                 build region; records almost nothing:
+//     atmosphere transaction, previous frame's timestamp readback + query
+//     reset, dynamic-instance merge, deferred command-template flush,
+//     scene-buffer and frame-constant uploads, stats swap, frame retention.
+//   record_cull_and_render()        the frame proper, in this order:
+//     VT demand pass -> raster targets -> cloud shadows -> environment
+//     descriptor -> vt_begin_frame() -> skin compute -> cull pass 0 (the
+//     UNFILTERED draw list) -> occlusion ID raster -> visible-id reduce ->
+//     cull pass 1 (the real draw list, tested against the mask just written)
+//     -> record_raster(), which in turn runs:
+//        VT pre-pass -> G-buffer (5-target MRT + depth) -> RT shadows/GI via
+//        record_ray_traced_shadows() (BLAS builds, TLAS, trace, denoisers) ->
+//        volumetrics -> composite into the HDR target -> VT post-pass.
+//   record_composite_to_swapchain() optional DLSS evaluation, then the display
+//     transform into the acquired swapchain image; closes the `total` GPU zone.
+//
+// Threading
+// ---------
+// Every public entry point belongs to the app/Vulkan thread and there is no
+// internal locking. Baking, world evaluation and asset loading run on other
+// threads and reach this class only through the engine facade, which marshals
+// them onto this thread (see the `gpu_run` note in load_tileset_slot).
+//
+// Descriptor and buffer lifetime -- the rules that bite
+// -----------------------------------------------------
+// - Buffers grow by REPLACEMENT, never in place: `ensure_buffer` and friends
+//   allocate a new `VkBufferResource` and move it in, reporting `replaced` so
+//   the caller can rewrite the descriptors that named the old one.
+// - None of these set layouts use UPDATE_AFTER_BIND, so a descriptor set must
+//   not be rewritten while a command buffer that already bound it is
+//   recording. That is why `write_vt_descriptors_for_frame()` runs at the top
+//   of record_cull_and_render() rather than beside the raster record, and why
+//   `load_tileset_slot` wait_idles before rewriting every frame slot's set.
+// - Anything a recorded command buffer touches must be handed to
+//   `vulkan_->retain_for_frame()` BEFORE the command that references it, or a
+//   later growth can free memory the GPU is still reading.
+// - A storage buffer's `length()` in GLSL is its CAPACITY, and ensure_buffer
+//   rounds up (16-byte floor, then doubling). Every per-slot table uploaded
+//   here is therefore padded to the whole allocation with a neutral value, not
+//   just to its payload -- see the long note in upload_scene_buffers.
+//
+// Conventions and sharp edges
+// ---------------------------
+// - Reversed-Z throughout: depth clears to 0.0 (far), the compare op is
+//   GREATER_OR_EQUAL, and near/far are recovered as m[11]/(m[10]+1) and
+//   m[11]/m[10].
+// - The G-buffer viewport has NEGATIVE height, which preserves the engine's
+//   top-left framebuffer convention; the occlusion ID pass repeats it
+//   deliberately so both passes cull the same faces.
+// - LOD has exactly ONE rule: render/lod_distance.h. Three CPU mirrors call it
+//   (`select_cluster_lod_view`, `update_vt_demand`, `build_ray_geometry`)
+//   purely to predict what cull.comp will pick. Do not add a second
+//   projected-size comparison anywhere in this file.
+// - Shaders are embedded SPIR-V (shaders_gen/embedded_spirv.h), generated by
+//   the MatterEngine3 build from shaders_vk/. A GLSL edit needs the SPIR-V
+//   regenerated; a green link can otherwise keep running the old shader.
+// - `poison()` latches an unrecoverable partial GPU mutation. Once poisoned,
+//   every public entry point fails with the recorded reason until `reset()`.
+// - Members and methods guarded by MATTER_VK_TEST_FAULT_INJECTION are fixtures
+//   for MatterEngine3/tests and the Vulkan smoke suite, not production paths;
+//   `render_gbuffer_and_composite` in particular is a legacy immediate path
+//   that the smoke suite drives instead of prepare_frame/record_cull_and_render.
 #if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
@@ -43,6 +147,16 @@
 
 namespace viewer {
 namespace {
+
+// ---------------------------------------------------------------------------
+// File-local helpers
+//
+// Environment kill switches, the std140/std430 GPU structs this translation
+// unit owns, thin Vulkan wrappers, and the `record_*` callbacks that are
+// either recorded straight into the frame command buffer or handed to
+// matter::submit_immediate as an ImmediateRecordFn. Nothing here is visible
+// outside this file.
+// ---------------------------------------------------------------------------
 
 // ---- per-frame build-cost kill switches ---------------------------------
 // Each guards one CPU-time optimisation in the build region and defaults to
@@ -92,6 +206,20 @@ bool temporal_copy_fuse_enabled() {
     return value;
 }
 
+// Set 0, binding 0: the per-frame uniform block, uploaded once per frame by
+// upload_frame_constants() and read by cull.comp, raster.vert, gbuffer.frag
+// and visibility_id.vert. The layout is std140 and MUST match the shaders'
+// declaration -- the static_assert below is the only automatic check.
+//
+// Members are APPENDED, never reordered: a shader that declares only the
+// prefix it uses stays valid because every earlier member keeps its offset.
+//   counts     = {instances, max clusters per instance, materials, dynamic
+//                 animation bounds}
+//   capacities = {clusters, instances, draw commands, draw-transform BUCKET
+//                 total} -- capacities.w is skin_transform_base_, NOT the
+//                 buffer length; see upload_frame_constants.
+//   temporal   = {jitter active, history reset, internal width, internal
+//                 height}
 struct alignas(16) FrameConstants {
     GpuMat4 world_to_clip;
     GpuMat4 previous_world_to_clip;
@@ -168,6 +296,13 @@ constexpr uint32_t kGiHistoryLengthMax  = 65535u;       // UINT16_MAX
 // (VkAccelerationStructureInstanceKHR::instanceCustomIndex is 24 bits).
 constexpr uint32_t kTlasCustomIndexMax  = 1u << 24;
 
+// "Opaque" here means a ray may stop at the first hit: the geometry gets
+// VK_GEOMETRY_OPAQUE_BIT_KHR and TLAS instance mask 0x01, so no any-hit
+// shader runs for it. Anything that can partially transmit -- alpha-tested
+// cutouts, glass, thin-walled scatterers -- must land in the non-opaque layer
+// (mask 0x02) instead, where rt_visibility.rahit attenuates rather than
+// blocking. Getting this wrong is silent: the surface simply casts a solid
+// shadow it should not have.
 bool rt_material_is_opaque(const MaterialGpuRecord& material) {
     // Thin-walled scatterers must sit in the non-opaque TLAS layer even
     // though they author shadowOpacity = 1.0: a backlit blob's sun ray
@@ -301,6 +436,12 @@ VkPipelineStageFlags2 gbuffer_sampled_stages(
     return stages;
 }
 
+// One compute-cull dispatch, described by value so the same description can be
+// recorded inline into the frame command buffer (record_cull_dispatch_commands)
+// or handed to submit_immediate through the fault-injection callback below.
+// `sets` is {frame set 0, scene set 1} in binding order. The material fields
+// are used only by the immediate/test path, which has no separate upload step:
+// on the production path upload_scene_buffers already recorded the copy.
 struct CullDispatchRecord {
     VkPipeline pipeline;
     VkPipelineLayout layout;
@@ -384,6 +525,22 @@ void record_cull_dispatch(VkCommandBuffer command_buffer, void* user_data) {
 }
 #endif
 
+// The complete plan for one call to record_raster(): every attachment,
+// pipeline, descriptor set, buffer and scalar that pass needs, flattened into
+// one POD so the recorder can also be used as a plain
+// matter::ImmediateRecordFn (function pointer + void* user_data).
+//
+// EVERY pointer is BORROWED and must outlive the record_raster() call: the
+// renderer's attachments, the caller's stack vectors of skin buffers, and
+// `error`/`ray_trace_ok`, which are out-parameters -- record_raster reports
+// ray-tracing failure by writing false through `ray_trace_ok` and the message
+// through `error`, because a void callback cannot return one.
+//
+// Two renderer pointers, deliberately not one:
+//   `renderer` also gates the ray-traced-shadow branch, which dereferences
+//   `frame` -- null on the legacy immediate path.
+//   `vt_hooks` exists so that path can still run the VT frame hooks without
+//   taking the RT branch (see the comment on the field).
 struct RasterRecord {
     matter::VkImageResource* albedo;
     matter::VkImageResource* normal;
@@ -468,6 +625,27 @@ void record_neutral_volume_clear(VkCommandBuffer command_buffer, void* user_data
                               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 }
 
+// Records the whole shading half of a frame into `command_buffer`, in order:
+//
+//   1. VT pre-pass (page fills + feedback clear -- transfers, so before any
+//      dynamic rendering begins),
+//   2. the G-buffer: 5-target MRT (albedo / normal / ORM / velocity /
+//      material+instance identity) plus depth, drawn from the indirect
+//      commands cull.comp just finalized, then the explicit skinned draws,
+//   3. ray-traced sun visibility and GI, by calling back into
+//      VkSceneRenderer::record_ray_traced_shadows (which builds the BLAS/TLAS
+//      and runs the denoisers) -- or clearing those targets to neutral when
+//      RT is off,
+//   4. volumetrics (froxel density / scatter / integrate),
+//   5. the fullscreen composite into the HDR target,
+//   6. VT post-pass (feedback readback copy).
+//
+// Called directly with the frame command buffer from record_cull_and_render()
+// on the production path, and through submit_immediate on the legacy
+// render_gbuffer_and_composite() path the smoke suite drives.
+//
+// All PROFILE_SCOPE zones in here measure CPU command-buffer RECORDING time.
+// GPU time for the same passes comes from the kGpuZone* timestamps.
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     auto& record = *static_cast<RasterRecord*>(user_data);
     const auto valid_skin_draw = [&record](const VkSkinRasterDraw& draw) {
@@ -962,6 +1140,19 @@ uint16_t float_to_half(float value) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// vk_scene_detail: CPU mirrors and checked arithmetic
+//
+// Exported (rather than file-local) so MatterEngine3/tests can exercise them
+// directly. Two groups:
+//   - the CPU mirrors of shaders_vk/cull.comp's LOD selection. They exist to
+//     PREDICT what the GPU will draw, so they must stay bit-for-bit the same
+//     rule; all of them go through render/lod_distance.h rather than
+//     re-deriving it.
+//   - overflow-checked size/capacity arithmetic. Every one of these returns
+//     false and fills `error` rather than wrapping, because the wrapped value
+//     would become a buffer size or a dispatch count.
+// ---------------------------------------------------------------------------
 namespace vk_scene_detail {
 
 uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
@@ -1114,6 +1305,10 @@ std::vector<RtGeometrySelection> select_rt_instance_geometry(
     return result;
 }
 
+// Stage mask for scene set 1's storage-buffer bindings 0-5. Two of them are
+// read outside the cull dispatch: binding 3 (DrawTransforms) is fetched by
+// raster.vert per instance, and binding 5 (Materials) by both raster.vert and
+// gbuffer.frag. Everything else is compute-only.
 VkShaderStageFlags scene_binding_stage_flags(uint32_t binding) noexcept {
     if (binding == 5)
         return VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1159,6 +1354,14 @@ bool checked_mul_to_device_size(size_t count, size_t element_size,
     return true;
 }
 
+// Doubling growth policy for every buffer in this file: start at 16 bytes,
+// double until `required` fits, clamp to `limit` (the smaller of the device's
+// descriptor range and maxBufferSize). Fails rather than truncating.
+//
+// The consequence worth remembering is that the result is routinely LARGER
+// than the payload, and a shader's `length()` reports that capacity -- so a
+// table uploaded through here must be padded to the whole allocation with a
+// neutral value, or the shader reads never-written memory past the payload.
 bool checked_grown_capacity(VkDeviceSize current, VkDeviceSize required,
                             VkDeviceSize limit, VkDeviceSize& result,
                             const char* label, std::string& error) {
@@ -1218,6 +1421,15 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
 
 }  // namespace vk_scene_detail
 
+// ---------------------------------------------------------------------------
+// Construction, teardown, and pipeline creation
+//
+// The constructor allocates NOTHING on the device: init() is lazy and is
+// called on first use from prepare_frame / record_cull_and_render /
+// load_tileset_slot. destroy_pipeline() is the matching teardown and runs both
+// from the destructor and from a poisoned reset().
+// ---------------------------------------------------------------------------
+
 VkSceneRenderer::VkSceneRenderer(matter::VulkanDevice& vulkan)
     : vulkan_(&vulkan), dlss_bridge_(&vulkan.streamline_bridge()) {
     // A renderer that has not yet received RenderOptions remains neutral.
@@ -1236,6 +1448,22 @@ bool VkSceneRenderer::begin_animation_skinning_frame(
     return animation_skinning_.begin_frame(frame_slot, completed_fence);
 }
 
+// Chooses which of the caller's candidate skin submissions this frame will
+// actually deform on the GPU, and publishes the animated bounds the cull pass
+// and the RT lane will plan against.
+//
+// `visible` may contain a candidate per baked LOD; the compacted set keeps at
+// most the ONE whose rung matches what cull.comp will raster-select, so a
+// submission whose rung moved is dropped rather than animating a mesh nobody
+// draws. Selection uses lod_selection_eye(), i.e. the frozen cull eye when the
+// cull camera is frozen.
+//
+// Returns false when the skin queue rejected the frame; the affected instances
+// are then failed open to their conservative asset bounds and keep drawing
+// their static bind pose. Call order per frame is
+// begin_animation_skinning_frame -> this -> record_animation_skinning ->
+// finish_animation_skinning_frame. MATTER_SKIN_PROBE=1 prints the per-cluster
+// census of what was dropped in compaction and why.
 bool VkSceneRenderer::submit_visible_animation_skinning(
     uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible,
     const FrameMatrices& matrices, matter::Float3 camera_eye,
@@ -1618,6 +1846,14 @@ VkSceneRenderer::~VkSceneRenderer() {
     destroy_pipeline();
 }
 
+// Tears down everything init()/create_pipeline() built: the subordinate
+// modules, every pipeline, layout, descriptor pool, sampler and query pool,
+// the VT runtime, the tileset and impostor images, and `frames_`. Leaves
+// `initialized_` false so a later init() rebuilds from scratch.
+//
+// Does NOT wait for the device itself -- both callers (the destructor and the
+// poisoned branch of reset()) wait_idle first. Calling it while a frame is in
+// flight would destroy objects a submitted command buffer still references.
 void VkSceneRenderer::destroy_pipeline() {
     if (!vulkan_) return;
     if (volumetrics_) {
@@ -1867,6 +2103,27 @@ bool VkSceneRenderer::create_environment_resources(std::string& error) {
     return true;
 }
 
+// Builds the two shared descriptor set layouts and, through them, essentially
+// every pipeline the renderer owns.
+//
+//   set 0: one uniform buffer, the FrameConstants block.
+//   set 1: the scene set -- 20 bindings covering the cluster/instance/command/
+//          transform/stats/material storage buffers, the ground tileset array
+//          and its params UBO, the chart-VT pool/indirection/variants/feedback,
+//          the per-part draw-override and occlusion-class tables, the impostor
+//          atlas, and the M4 ID-pass list + visibility mask. The bindings are
+//          documented inline below; the numbering has HOLES from removed
+//          features and those holes are load-bearing (a default-constructed
+//          VkDescriptorSetLayoutBinding has binding 0, so leaving a gap
+//          unfilled creates a duplicate binding 0 and layout creation fails).
+//
+// The compute cull is TWO pipelines from one SPIR-V module, told apart by
+// specialization constant 0: pass 0 emits the unfiltered ID-pass list, pass 1
+// emits the real draw list and tests the visibility mask.
+//
+// Then delegates to create_raster_pipelines / create_display_pipeline /
+// create_overlay_line_pipeline / create_gi_* / create_ray_tracing_pipeline. On
+// any failure the caller (init) calls destroy_pipeline() to unwind.
 bool VkSceneRenderer::create_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
     // Phase 2 (tileset POM, Task 10) adds FRAGMENT_BIT: gbuffer.frag needs
@@ -2230,6 +2487,18 @@ bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
            fail_vk("vkCreateComputePipelines(GI A-trous)", result, error);
 }
 
+// The ray-tracing set layout, pipeline and shader binding table. Only reached
+// when the device reports hardware ray tracing; RT-less devices keep every
+// rt_* handle null and record_ray_traced_shadows clears its targets instead.
+//
+// Nine stages in seven groups: three raygen (shadow / surface-test /
+// lighting), two miss (visibility / radiance) and two triangle hit groups
+// (visibility with an attenuating any-hit, surface with an alpha-test
+// any-hit). The SBT is laid out as three separately base-aligned raygen
+// records followed by the miss and hit categories, which is why
+// rt_sbt_test_raygen_address_ / rt_sbt_lighting_raygen_address_ are stored
+// individually -- a trace picks its entry point by choosing an address, not
+// by an index.
 bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
     VkDescriptorSetLayoutBinding bindings[] = {
@@ -2517,6 +2786,23 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                 raygen_span + 2 * category_span, error);
 }
 
+// Creates the five graphics pipelines that share the scene pipeline layout,
+// plus the composite pass and its samplers:
+//   raster_pipeline_                 the G-buffer (5-target MRT + depth)
+//   visibility_id_pipeline_          the occlusion ID pass -- same vertex
+//                                    input, same commands, same transforms and
+//                                    the SAME rasterization state, which is
+//                                    what makes its answer mean anything about
+//                                    the real pass
+//   skinned_raster_pipeline_         the compute-skinned vertex specialization
+//   wireframe_*                      line-mode copies, only when the device
+//                                    enabled fillModeNonSolid
+//   composite_pipeline_              the fullscreen lighting resolve
+//
+// Note the state that is deliberately SHARED and the state that is
+// deliberately not: the ID pass inherits cull mode, winding and the reversed-Z
+// compare from the G-buffer state, while the composite gets its own
+// CULL_MODE_NONE rasterization struct because it draws a fullscreen triangle.
 bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     const VkDevice device = vulkan_->device();
     VkShaderModule raster_vertex = VK_NULL_HANDLE;
@@ -3306,6 +3592,24 @@ void VkSceneRenderer::update_descriptor(
     vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
 }
 
+// ---------------------------------------------------------------------------
+// Buffer growth and per-frame resources
+//
+// Every buffer in this renderer grows by replacement and never shrinks. The
+// `replaced` out-parameter is the contract: a true means the descriptors that
+// named the old allocation are now stale and update_frame_descriptors() (or a
+// targeted update_descriptor()) must run before anything binds the set again.
+// ---------------------------------------------------------------------------
+
+// Grows `buffer` to at least `required_size` if it is smaller, keeping the
+// existing allocation otherwise. New allocations are HOST_VISIBLE (coherent,
+// cached if available) so uploads are plain memcpy + flush with no staging
+// copy. The size is rounded up by checked_grown_capacity's doubling policy and
+// clamped to the device's descriptor range / maxBufferSize; exceeding those
+// fails with a legible message rather than allocating.
+//
+// The CONTENTS of a replaced buffer are NOT copied forward -- the caller must
+// re-upload. Sets `*replaced` (when non-null) so descriptors can be rewritten.
 bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
                                      VkDeviceSize required_size,
                                      VkBufferUsageFlags usage,
@@ -3422,6 +3726,20 @@ bool VkSceneRenderer::ensure_index_buffer(VkDeviceSize required_size,
     return true;
 }
 
+// Allocates `frames_` and everything that is per-swapchain-frame-slot: a fresh
+// descriptor pool, 18 descriptor sets per slot (frame, scene, skin, composite,
+// environment, display, 3 GI-temporal, 9 GI-A-trous), one seed allocation of
+// every per-frame buffer, and a timestamp query pool.
+//
+// Idempotent while the slot count does not grow. When it does, the OLD pool is
+// destroyed after a wait_idle -- so this must not be called with a frame in
+// flight on a slot count change. The pool-size arithmetic below is hand-summed
+// against the layouts in create_pipeline(); the running commentary on each
+// term is how it is kept honest when a binding is added.
+//
+// Every per-frame buffer is seeded at one element even when empty: a
+// descriptor written with a null buffer is a validation error on the very
+// first frame, before upload_scene_buffers has ever run to size it.
 bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                                              std::string& error) {
     if (frame_slot_count == 0) {
@@ -3709,6 +4027,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     return true;
 }
 
+// Rewrites EVERY binding of one frame slot's frame/scene/skin sets from the
+// renderer's current buffers, plus the tileset, impostor and VT descriptors.
+// Call after any ensure_buffer() reported `replaced`, and never while a
+// command buffer that already bound these sets is still recording (no layout
+// here uses UPDATE_AFTER_BIND).
 void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
     update_descriptor(frame.descriptor_sets[0], 0,
                       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -3803,6 +4126,19 @@ void VkSceneRenderer::probe_skin_raster_draws(
     }
 }
 
+// Uploads this frame's skin arenas (source vertices, influences, both joint
+// palettes, the work list) and records the animation_skin compute dispatch
+// into the frame command buffer, then publishes the raster draws whose ranges
+// survived validation into `resources.ready_skin_raster_draws`.
+//
+// FAILS SOFT: an allocation, upload or range-validation problem calls
+// downgrade_gpu_skin(), which rejects the GPU frame, fails the affected
+// instances open to their conservative asset bounds and clears `error` -- so
+// this returns TRUE having quietly fallen back to the static bind-pose path.
+// A false return means the fallback itself could not be applied.
+//
+// The barrier at the end publishes the compute output to VERTEX_INPUT and
+// VERTEX_SHADER, which is how record_raster's skinned draws read it.
 bool VkSceneRenderer::record_animation_skinning(
     const matter::VulkanFrame& frame, FrameResources& resources,
     std::string& error) {
@@ -4460,6 +4796,18 @@ bool VkSceneRenderer::ensure_vt_dummies(std::string& error) {
     return true;
 }
 
+// Lazily starts the chart-space virtual-texturing runtime on first demand: a
+// vt::VtResidency with the tier-1 VtCompositor installed as its page filler
+// and, when hardware ray tracing exists, the tier-2 hemisphere-AO VtEnricher.
+// A world whose parts carry no charts never calls this, and neither does one
+// whose deferred parts never get close enough to want a variant.
+//
+// Fails CLOSED and PERMANENTLY: a failed init latches vt_unavailable_ for the
+// whole session and every part keeps rendering through the legacy flat-tint
+// path. A missing compositor or enricher is NOT a failure -- the stub filler
+// still produces correct-topology pages (duller, not broken), and no enricher
+// simply means every page stays tier-1. MATTER_VT_DISABLE=1 takes the same
+// legacy path without a rebuild.
 bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     if (vt_ && vt_->available()) return true;
     if (vt_unavailable_) {
@@ -4576,6 +4924,17 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     return true;
 }
 
+// Rebinds the tier-1 compositor's inputs -- the ground tileset slot views and
+// the decoded material table -- and then invalidates all resident page
+// content so everything is re-baked from them.
+//
+// EXPENSIVE AND BLOCKING: calls vulkan_->wait_idle(). That is deliberate and
+// safe only because the setters require the device idle with respect to prior
+// fills, and because the trigger is a world-load / live-edit event (a tileset
+// slot load, or a material table change), not a per-frame one. It must run
+// outside any active command-buffer recording, which is why the per-frame
+// caller is vt_begin_frame(). PROFILE_COUNT("vt.input_pushes") is what proves
+// it is not silently running every publish in a streaming world.
 void VkSceneRenderer::push_vt_compositor_inputs() {
     if (!vt_compositor_ || !vt_inputs_dirty_) return;
     // How often this whole path actually runs. The comment below asserts it is
@@ -4883,6 +5242,19 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
     return slot != vt::kVtNoSlot;
 }
 
+// The demand pass for deferred VT parts, run once per frame from
+// record_cull_and_render before prepare_frame's uploads. Three jobs:
+//   - stamp which (part, rung) pairs are WANTED this frame, using the same
+//     LOD rule and the same (possibly frozen) cull eye cull.comp will use,
+//   - queue registration requests for wanted-but-unregistered rungs, ranked by
+//     projected size and capped at vt_max_requests_ (the engine drains them
+//     via take_vt_rung_requests and answers with register_vt_rung),
+//   - proactively evict variants nothing has wanted for vt_linger_frames_, so
+//     the pool tracks the camera instead of pinning the high-water working set.
+//
+// O(static instances x clusters) on the render thread -- the cull.instances /
+// cull.clusters counters at the call site are what separate "this frame was
+// slow" from "this world is big". Returns immediately when no part is deferred.
 void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
                                        float pixel_budget) {
     if (vt_deferred_parts_ == 0) return;
@@ -5235,6 +5607,16 @@ void VkSceneRenderer::rebuild_part_draw_overrides() {
         part_draw_override_table_.assign(1, matter::PartDrawOverrideGpu{});
 }
 
+// Rebuilds scene set 1's binding 19: one uint per part slot, 1 = "may occlude
+// and may be occlusion-tested", 0 = excluded from the M4 ID pass entirely.
+//
+// The default is 1 everywhere, so dead slots, parts registered before the
+// first material upload and out-of-range ids all keep the pre-exclusion
+// behaviour. A part drops to 0 when any material on any of its MESH rungs is
+// alpha-tested or thin-walled -- both are porous surfaces whose coarse ID-pass
+// proxy is a solid silhouette, which would wrongly hide whatever is behind
+// them. Excluded parts fall back to frustum-only culling: a cost, never a
+// coverage, regression.
 void VkSceneRenderer::rebuild_part_occluder_table() {
     part_occluder_dirty_ = false;
     // Default 1 everywhere: an unknown class occludes, which is the
@@ -5328,6 +5710,27 @@ void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
     vkUpdateDescriptorSets(vulkan_->device(), 4, writes, 0, nullptr);
 }
 
+// The three per-frame VT hooks, in the order they must run:
+//
+//   vt_begin_frame()       OUTSIDE command-buffer recording, once this slot's
+//                          fence has been waited on. Pushes dirty compositor
+//                          inputs (wait_idle), drains deferred part
+//                          invalidations, advances the residency frame,
+//                          consumes the previous readback, resizes the
+//                          feedback target and rewrites this slot's VT
+//                          descriptors. Called near the TOP of
+//                          record_cull_and_render, before the cull dispatch
+//                          binds scene set 1 -- rewriting a set a recording
+//                          command buffer has already bound is invalid.
+//   vt_record_pre_pass()   from record_raster, before dynamic rendering
+//                          begins: the queued page fills plus the feedback
+//                          clear, both transfers.
+//   vt_record_post_pass()  from record_raster, after the G-buffer: copies the
+//                          1/8-res feedback target into this slot's readback
+//                          buffer, consumed at the next vt_begin_frame on the
+//                          same slot.
+//
+// All three no-op when the VT runtime never started.
 void VkSceneRenderer::vt_begin_frame(FrameResources& frame,
                                      uint32_t frame_slot) {
     if (!vt_ || !vt_->available()) return;
@@ -6114,6 +6517,26 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ground tileset slots (.gtex)
+// ---------------------------------------------------------------------------
+
+// Decodes one .gtex atlas, slices it into a 16-layer Wang-tile array per
+// channel, block-compresses the four core channels, uploads everything, and
+// swaps the result into `slot`.
+//
+// SLOW AND BLOCKING, by design: it decodes and BC-encodes on the calling
+// thread and then wait_idles before rewriting every frame slot's scene set 1.
+// Loads are world-connect / rebake events, so the stall is acceptable; the
+// provider marshals the call onto the app/Vulkan thread via gpu_run.
+//
+// Fails closed at every step -- a malformed atlas, an unsupported BC format or
+// a failed upload leaves the previous occupant of the slot untouched and
+// returns false; the caller's contract is "that slot's ground stays
+// untextured". A v1 .gtex simply has no horizon channels, which is not an
+// error. Also lazily calls init(): the deferred tileset phase runs before the
+// first frame, so this used to lose the race and silently drop a session's
+// first ground atlas.
 bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
                                         std::string& error) {
     error.clear();
@@ -6608,6 +7031,24 @@ bool VkSceneRenderer::bake_tileset(const tileset::SettledTorus& settled,
                                     error);
 }
 
+// ---------------------------------------------------------------------------
+// Atmosphere, environment and composite descriptor publication
+//
+// The atmosphere LUTs are published transactionally: a candidate is generated,
+// its descriptors are written, and only a successful write commits it. Any
+// failure discards the candidate and falls back to the last committed state
+// rather than leaving a half-published environment bound.
+// ---------------------------------------------------------------------------
+
+// Rewrites the composite set for one frame slot, selecting between the RAW
+// per-frame ray-traced signals and their DENOISED counterparts (A-trous
+// output, else the temporal history) for each of diffuse / specular /
+// transmission, plus the volumetric integrated volume or its 1x1x1 dummy.
+//
+// Called several times per frame -- after the GI temporal and A-trous records
+// change which image is current, and again from record_cull_and_render before
+// the raster -- so the composite always samples the newest valid image. It
+// also latches last_composite_used_gi_temporal_ for the diagnostics.
 void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     matter::VkImageResource* diffuse =
         gi_settings_.enabled && gi_candidate_frame_serial_ != 0
@@ -6778,6 +7219,17 @@ void VkSceneRenderer::resolve_live_atmosphere(uint32_t change_mask,
     pending_atmosphere_change_mask_ = matter::kAtmosphereChangeNone;
 }
 
+// Decides whether this frame's atmosphere request differs from the committed
+// one and, if so, generates a candidate LUT set, publishes its descriptors and
+// commits it -- all or nothing.
+//
+// A steady request costs nothing but a descriptor refresh and reports an exact
+// zero in the atmosphere GPU lane (an unchanged frame submits no candidate, so
+// decaying an old EMA there would invent work that did not happen). Candidate
+// LUT dispatches are submitted SYNCHRONOUSLY, above the frame command buffer.
+// Any failure discards the candidate and resolves live lighting from the last
+// committed state, so a rejected atmosphere never leaves a partly published
+// one bound. Called once per frame, first thing in prepare_frame().
 bool VkSceneRenderer::resolve_atmosphere_transaction(
     FrameResources& frame, float camera_world_y, std::string& error) {
     matter::Float3 to_sun{-lighting_.sun_direction.x,
@@ -6975,6 +7427,15 @@ AtmosphereLutHandles VkSceneRenderer::test_atmosphere_lut_handles() const noexce
 }
 #endif
 
+// Publishes one frame slot's environment set: the sky-view and irradiance-SH
+// LUTs, the four cloud-shadow clipmap levels, and the 56-float EnvironmentBlock
+// UBO (two cloud transforms, cloud state/filter, then EnvironmentLightingGpu).
+//
+// FALLIBLE because the UBO write is a flush transaction: on a flush failure the
+// previous block is restored, the cloud-shadow generation is discarded, and
+// false is returned -- callers must not treat this as a void publish. The three
+// candidate_* parameters are how resolve_atmosphere_transaction publishes an
+// uncommitted LUT set; passing null uses the committed state.
 bool VkSceneRenderer::update_environment_descriptor(
     FrameResources& frame, std::string& error,
     const matter::VkImageResource* candidate_sky,
@@ -7106,6 +7567,15 @@ void VkSceneRenderer::note_command_layout_rebuild() {
     ++upload_counters_.command_layout_rebuilds;
 }
 
+// ---- the poison latch ------------------------------------------------------
+//
+// Some failures happen after the GPU state has been partly mutated and cannot
+// be unwound (a buffer replaced but not re-uploaded, an upload that failed
+// halfway). Rather than continue with an inconsistent scene, poison() records
+// the cause once and every public entry point then refuses with that same
+// message via fail_if_poisoned(). Only reset() clears it -- and a poisoned
+// reset() is the "full" variant, which destroys the pipeline and buffers
+// outright rather than trying to reuse them.
 bool VkSceneRenderer::fail_if_poisoned(std::string& error) const {
     if (!poisoned()) return false;
     error = poison_reason_;
@@ -7266,6 +7736,25 @@ void VkSceneRenderer::set_test_animation_skin_failure(
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// Initialization and scene mutation (parts, materials)
+// ---------------------------------------------------------------------------
+
+// Lazy, IDEMPOTENT device initialization: device limits, the impostor atlas,
+// every descriptor layout and pipeline, the tileset and VT dummies, the
+// volumetrics / atmosphere / cloud-shadow modules, and the static cluster /
+// vertex / index buffers at their reserved sizes.
+//
+// Never called from the constructor -- every GPU entry point (prepare_frame,
+// record_cull_and_render, load_tileset_slot, ...) calls it on first use, so
+// whichever runs first pays for it. Any failure calls destroy_pipeline() to
+// unwind and leaves `initialized_` false.
+//
+// The static reservation here is the whole point of the "size once, generously"
+// policy: these three buffers are created empty ONLY here, so a reservation
+// applied anywhere later is a no-op (they are already non-empty by then) and
+// the streaming load climbs the doubling ladder instead, dragging the running
+// frame through upload_scene_buffers' O(world) rewrite.
 bool VkSceneRenderer::init(std::string& error) {
     error.clear();
     if (fail_if_poisoned(error)) return false;
@@ -7427,6 +7916,25 @@ bool VkSceneRenderer::init(std::string& error) {
     return initialized_;
 }
 
+// Registers a part's geometry with the renderer and returns its part SLOT, or
+// -1 with `error` set. A part already registered under the same hash returns
+// its existing slot without touching anything.
+//
+// What one call does: validates the part's cluster/LOD/index ranges, allocates
+// its cluster / vertex / index ranges (reusing a settled freed range when one
+// fits, else extending the tail), copies the geometry into the CPU staging
+// arrays, records those writes as dirty ranges for the ranged upload path,
+// builds the RT per-LOD records and BLAS input buffers, adopts any impostor
+// atlases, and registers chart-VT variants.
+//
+// Slots are NEVER reused: release_part empties the record but leaves the index
+// valid, because GpuCluster::part_slot values and rt_lods refer to it.
+//
+// The O(clusters x LODs) command-template fill is DEFERRED to the next
+// prepare_frame (command_template_dirty_), so a frame that streams in several
+// parts pays for one rebuild rather than one per part; the admission check
+// near the top is what proves that deferred rebuild cannot fail because of
+// this registration.
 int VkSceneRenderer::ensure_part(const VkScenePart& part,
                                  std::string& error) {
     error.clear();
@@ -7785,6 +8293,12 @@ void VkSceneRenderer::refresh_part_slot_index() const {
     part_slot_index_version_ = slot_of_version_;
 }
 
+// part_hash -> part slot, or -1. Answers exactly what slot_of_.find() answers,
+// but from a flat open-addressed mirror rebuilt lazily whenever
+// slot_of_version_ moves -- one probe instead of a red-black-tree descent, on
+// a path that runs ~90k times per frame during a streaming fill (see the notes
+// in update_instances and build_ray_geometry). MATTER_VK_SLOT_INDEX=0 falls
+// back to the map.
 int VkSceneRenderer::part_slot_lookup(uint64_t part_hash) const {
     if (!slot_index_enabled()) {
         const auto found = slot_of_.find(part_hash);
@@ -7819,6 +8333,18 @@ bool VkSceneRenderer::part_raster_range(
     return true;
 }
 
+// Replaces the CPU material table. The two revisions must be MONOTONIC and any
+// data change must carry a new revision -- both are rejected with an error
+// rather than accepted, because a silent change would leave the RT geometry
+// classification and the derived tables describing a table that no longer
+// exists.
+//
+// Accepting a table has side effects well beyond the buffer: it re-derives
+// every part's RT opaque/non-opaque classification (recomputed, not merely
+// flagged, because a material can change class and change back before a
+// replacement BLAS is submitted), marks the occlusion-class table and the VT
+// compositor inputs dirty, and requests a GI history reset. The GPU upload
+// itself happens later, in upload_scene_buffers.
 bool VkSceneRenderer::update_materials(
     const std::vector<MaterialGpuRecord>& records, uint64_t shading_revision,
     uint64_t geometry_revision, std::string& error) {
@@ -8905,6 +9431,19 @@ bool VkSceneRenderer::test_readback_animation_skin_output(
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// RT denoiser: temporal reprojection, then A-trous
+//
+// Three independent signals share one pipeline pair, selected by
+// `signal_mode`: 0 = diffuse GI, 1 = specular, 2 = transmission. Each has its
+// own double-buffered GiHistorySet (presented / candidate, swapped only when
+// finish_ray_tracing_frame reports the frame succeeded) and its own pair of
+// ping-ponged A-trous targets.
+// ---------------------------------------------------------------------------
+
+// Runs the temporal pass for all three signals. `retain` adds the images to
+// the frame's retention list and is false only on the test-fixture paths that
+// submit immediately and wait.
 bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
                                          std::string& error, bool retain) {
     gi_candidate_was_reset_ = false;
@@ -9093,6 +9632,15 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
     return true;
 }
 
+// Edge-avoiding A-trous wavelet filter over one signal's temporal output,
+// guided by that signal's depth / normal / identity / history-length images.
+// Step widths 1,2,4,8,16; FIVE iterations for diffuse and THREE for the two
+// sharper signals, ping-ponging between two targets -- which is why the final
+// image is filtered[(iteration_count - 1) & 1] and not a fixed index.
+//
+// Three descriptor sets per signal, not one per iteration: iteration 0 reads
+// the history, odd iterations read filtered[0] and even ones filtered[1], so
+// the bindings repeat after the first.
 bool VkSceneRenderer::record_gi_atrous_signal(
     const matter::VulkanFrame& frame, uint32_t signal_mode,
     std::string& error, bool retain) {
@@ -9244,6 +9792,17 @@ bool VkSceneRenderer::record_gi_atrous_signal(
         error);
 }
 
+// The commit point for everything this renderer staged during `frame_serial`.
+// Must be called exactly once per recorded frame, with `succeeded` reporting
+// whether that frame was actually SUBMITTED -- a frame abandoned before
+// submission leaves every staged structure holding its previous contents.
+//
+// On success it promotes: the GI candidate history to presented (and clears
+// whichever reset flags that candidate consumed), each candidate BLAS to the
+// live one, and the slot's staged TLAS to reusable. On failure it drops the
+// candidates and leaves the slot to rebuild. Nothing here bumps the geometry
+// epoch: the build that produced a candidate already did, and bumping again
+// would retire the TLAS built alongside it, which is still perfectly valid.
 void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
                                                bool succeeded) {
     if (frame_serial == 0) return;
@@ -9312,6 +9871,22 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Settings setters, module accessors and test forwarders
+//
+// Everything from here to the free-range recycler is either a setter that
+// latches authored state (and, where the change invalidates temporal history,
+// requests the matching reset) or a thin forwarder to VkVolumetrics /
+// VkCloudShadows so callers do not need those headers.
+// ---------------------------------------------------------------------------
+
+// Latches the authored lighting block and DERIVES the two sun-disc cosines
+// from the angular diameter, overwriting whatever the caller put in those two
+// fields. That is deliberate: computing them here is what guarantees the
+// composite sky, the RT environment and the reflection prefilter all see the
+// same thresholds for the same diameter. Also accumulates an
+// atmosphere-change mask for the next resolve, and mirrors the fresh sun
+// direction into the tileset UBO.
 void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
     const auto different3 = [](matter::Float3 a, matter::Float3 b) {
         return a.x != b.x || a.y != b.y || a.z != b.z;
@@ -9783,6 +10358,21 @@ uint32_t VkSceneRenderer::allocate_index_range(uint32_t count) {
     return start;
 }
 
+// Unregisters a part: returns its cluster/vertex/index ranges to the
+// recyclers (quarantined until every frame that could still read the old bytes
+// has retired), hands back its impostor atlas slots, releases its VT variant,
+// queues the deferred compositor/enricher invalidation, filters out every
+// instance that referenced it, and empties the PartRecord.
+//
+// No compaction and no static re-upload: the bytes stay where they are,
+// unreferenced, until a later registration reuses the range. The zeroed
+// clusters are deliberately NOT recorded as a dirty range, so the GPU copy
+// keeps stale bytes for the freed slot -- safe only because every consumer
+// reaches the cluster buffer through a LIVE part. Any future pass that walks
+// the buffer by capacity must zero through a dirty range or skip dead slots.
+//
+// The slot index itself is never reused (cluster part_slot values and rt_lods
+// refer to it); the emptied record simply stops matching every liveness test.
 void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (poisoned()) return;
     // Releasing a part destroys its bottom-level structures, so no cached TLAS
@@ -9894,6 +10484,24 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     command_template_dirty_ = true;
 }
 
+// ---------------------------------------------------------------------------
+// The instance set: temporal history, the unchanged-input snapshot, and the
+// draw-command template
+//
+// These functions are the renderer's hottest CPU path during a streaming fill
+// (tens of thousands of instances per frame, tens of MB of vectors), which is
+// why they are dense with allocation and comparison shortcuts. Each shortcut
+// is behaviour-preserving and individually documented; the kill switches at
+// the top of the file (MATTER_VK_SLOT_INDEX, MATTER_VK_SNAPSHOT_VERSION,
+// MATTER_VK_TEMPORAL_COPY) select between two implementations of the same
+// result, so flipping one is an A/B of cost only.
+// ---------------------------------------------------------------------------
+
+// Stores this frame's temporal (motion-vector / history) state and records, in
+// `temporal_history_changed_`, whether anything update_instances() actually
+// READS has changed since its last snapshot. The flag is sticky until
+// update_instances takes a fresh snapshot, so any number of calls between two
+// update_instances() calls are covered.
 void VkSceneRenderer::set_temporal_frame(const TemporalFrame& frame) {
     // Track, for update_instances()' unchanged-input fast path, whether the
     // history data it actually reads changed. That is exactly:
@@ -10048,6 +10656,19 @@ void VkSceneRenderer::snapshot_instance_inputs(
     instance_snapshot_valid_ = true;
 }
 
+// Replaces the STATIC instance set from the caller's span: resolves each
+// instance's part slot, packs its transforms, resolves its temporal history,
+// and (when the per-part instance layout changed) rebuilds the draw-command
+// template.
+//
+// Strips any dynamic tail prepare_frame() appended before doing anything, so
+// the vectors hold exactly the static set on entry and exit.
+//
+// Returns false only when a layout rebuild failed; in that case every vector
+// it touched is rolled back to its previous contents and the snapshot is
+// invalidated. Returning true does NOT imply an upload happened -- an
+// unchanged input set returns early without touching the GPU, bumping a
+// generation, or updating max_clusters_per_instance_.
 bool VkSceneRenderer::update_instances(
     const std::vector<VkSceneInstance>& instances, std::string& error) {
     error.clear();
@@ -10292,6 +10913,19 @@ bool VkSceneRenderer::update_instances(
     return true;
 }
 
+// Rebuilds the CPU-side indirect draw table from the STATIC instance set.
+//
+// The table has one DrawCommand per (cluster, LOD) bucket, indexed
+// `cluster_index * kVkMaxLod + lod` -- exactly the `bucket` cull.comp computes
+// -- so the GPU only has to fill in instance_count and the transform slots.
+// Each bucket's `first_instance` is the start of its region in the
+// draw-transform buffer, sized by that cluster's part's instance count; the
+// regions are monotonic and that is validated before every dispatch.
+//
+// Also produces part_command_ranges_ (the per-part span record_raster issues
+// multi-draws from), the raster-enabled mask, skin_transform_base_ and
+// draw_transform_slots_. O(clusters x kVkMaxLod), which is why registrations
+// defer it via command_template_dirty_ and flush_command_template().
 bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     VkDeviceSize command_count = 0;
     if (!vk_scene_detail::checked_mul_to_device_size(
@@ -10552,6 +11186,29 @@ VkSceneRenderer::StaticUploadCensus VkSceneRenderer::static_upload_census() {
     return c;
 }
 
+// ---------------------------------------------------------------------------
+// Per-frame GPU upload
+// ---------------------------------------------------------------------------
+
+// Pushes everything the cull dispatch and the raster need into this frame
+// slot's buffers: materials (staged host-visible then copied to a device-local
+// buffer through `material_command_buffer`), the static cluster/vertex/index
+// arrays, instances, the draw-command template, the VT slot / draw-override /
+// occlusion-class tables, and the skin transform tail.
+//
+// The static arrays take one of two paths. kAppend writes only the dirty
+// ranges in place and costs O(new parts); kFull recreates all three buffers
+// and rewrites O(world) into fresh host-visible memory -- a 366 ms frame in one
+// captured trace. kFull is reached only when a buffer outgrew its reservation,
+// and the diagnostic printed there gives the numbers needed to raise it (see
+// static_reserve_bytes in init()).
+//
+// The command template is re-uploaded UNCONDITIONALLY every frame: cull.comp
+// writes instance_count into those records on the GPU, so the CPU copy has to
+// be restored before the next dispatch.
+//
+// On failure most paths call poison() -- by then the buffers have been partly
+// replaced or partly written and cannot be unwound.
 bool VkSceneRenderer::upload_scene_buffers(
     FrameResources& frame, VkCommandBuffer material_command_buffer,
     bool reset_stats, std::string& error) {
@@ -11178,6 +11835,15 @@ void VkSceneRenderer::record_material_upload(VkCommandBuffer command_buffer,
         ++frame.material_upload_record_count;
 }
 
+// Fills and uploads the FrameConstants UBO for this frame slot.
+//
+// This is also the single site that owns the FROZEN CULL CAMERA: on the rising
+// edge of the freeze it snapshots the frustum planes, the eye and the
+// projection, and thereafter feeds the frozen values to cull.comp and the ID
+// pass while `world_to_clip` stays live. That split is the whole feature --
+// the frame draws from wherever you flew to, but the cull keeps answering
+// about the frozen view. Taking the snapshot anywhere else would mean a second
+// opinion about what the cull camera is.
 bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
                                               const FrameMatrices& matrices,
                                               matter::Float3 camera_eye,
@@ -11267,6 +11933,33 @@ void VkSceneRenderer::write_gpu_timestamp(VkCommandBuffer cmd, uint32_t zone_id,
     frame.ts_written[zone_id] |= bit;
 }
 
+// ---------------------------------------------------------------------------
+// Per-frame recording
+//
+// Three calls per presented frame, in this order and all on the app/Vulkan
+// thread:
+//   prepare_frame()                 build region (uploads, no passes)
+//   record_cull_and_render()        cull + G-buffer + RT + volumetrics +
+//                                   composite into the HDR target
+//   record_composite_to_swapchain() DLSS + display transform
+// followed by finish_ray_tracing_frame() once the submission outcome is known.
+// ---------------------------------------------------------------------------
+
+// The build region -- what the engine times as stats.build_ms. Records almost
+// nothing into the command buffer beyond the material copy and the timestamp
+// pool reset; everything else is CPU work and host-visible uploads.
+//
+// In order: lazy init and per-slot resource growth, the atmosphere
+// transaction, the previous submission's LOD-trace capture (which MUST happen
+// before upload_scene_buffers restores the command template over the GPU's
+// written counts), the free-range recycler's clock, the deferred
+// command-template flush, timestamp readback + query reset, the dynamic
+// instance merge and its command-layout re-derivation, animation bounds, the
+// scene and frame-constant uploads, the stats buffer swap, and the frame's
+// resource retention list.
+//
+// The caller has already waited this slot's fence, which is what makes reading
+// last frame's stats and commands out of the same buffers safe.
 bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                                     const FrameMatrices& matrices,
                                     matter::Float3 camera_eye,
@@ -11594,6 +12287,20 @@ bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
     return true;
 }
 
+// The whole ray-tracing lane for one frame: BLAS selection and builds
+// (build_ray_geometry), the TLAS instance list and its build or cache reuse
+// (emit_ray_instances), and the trace plus denoisers
+// (record_ray_trace_dispatch).
+//
+// Called from record_raster, AFTER the G-buffer -- the shadow and lighting
+// raygen shaders reconstruct their ray origins from this frame's depth and
+// identity attachments, so it cannot run earlier.
+//
+// Returns true having cleared visibility to fully-lit and the raw signals to
+// zero when ray tracing is off, unavailable, or there is nothing to trace: a
+// missing occluder reads as a soft lighting omission, which is the failure
+// direction this lane always chooses. LOD selection here uses the CULL eye,
+// not the live one, or the traced surface and the drawn surface disagree.
 bool VkSceneRenderer::record_ray_traced_shadows(
     const matter::VulkanFrame& frame, const FrameMatrices& matrices,
     matter::Float3 camera_eye, float pixel_budget,
@@ -11698,6 +12405,21 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     return true;
 }
 
+// Picks the traced rung for every (RT instance, cluster) and records the BLAS
+// builds needed to back them, filling `selected_geometry` (what the TLAS will
+// reference) and `pending` (what is being built this frame).
+//
+// This is the RT mirror of cull.comp's selection and must agree with it term
+// for term: same planning bounds, same radius, same average-basis scale, same
+// lod_distance.h rule, and the same per-part max_draw_distance and lod_bias
+// overrides. A divergence here does not merely cost performance -- it puts a
+// different surface in the TLAS than the G-buffer the rays start from.
+//
+// Three exclusions, each argued at length inline: an instance whose nearest
+// cluster is past its furthest mesh rung (the O(instances x clusters) early
+// out), a cluster whose selected rung is the terminal impostor, and a cluster
+// a skin raster draw owns. Builds are batched against a 64 MiB scratch budget,
+// and any recorded build bumps rt_geometry_epoch_, retiring every cached TLAS.
 bool VkSceneRenderer::build_ray_geometry(
     const matter::VulkanFrame& frame,
     matter::Float3 camera_eye, float pixel_budget,
@@ -12187,6 +12909,20 @@ void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
     std::fflush(stderr);
 }
 
+// Turns the selected geometry into TLAS instances plus the parallel
+// GpuRtPartRecord table the hit shaders resolve surfaces through, then either
+// rebuilds this slot's TLAS or REUSES the cached one.
+//
+// Reuse requires a completed previous build for this slot, an unchanged
+// geometry epoch, and byte-identical instance records -- an exact memcmp,
+// which is what catches a cluster changing LOD. It matters: rebuilding every
+// frame measured ~15 ms at 58k instances against ~1 ms of actual tracing.
+//
+// Sets `instances_empty` when there is nothing to trace (a normal outcome, not
+// an error). The part table is cleared over its WHOLE allocation, not just the
+// bytes this frame needs: rt_parts[] is an unsized SSBO array, so its length in
+// the shader is the capacity, and a stale record from a denser frame is
+// structurally valid while pointing at freed geometry.
 bool VkSceneRenderer::emit_ray_instances(
     const matter::VulkanFrame& frame,
     PFN_vkGetAccelerationStructureBuildSizesKHR get_sizes,
@@ -12427,6 +13163,17 @@ bool VkSceneRenderer::emit_ray_instances(
     return true;
 }
 
+// Writes the RT descriptor set from current renderer state and records up to
+// two traces plus the denoisers: the shadow raygen at the full trace extent,
+// then (when GI is enabled) the lighting raygen at raw_diffuse_extent_, then
+// record_gi_temporal + record_gi_atrous.
+//
+// The whole 21-write descriptor array is rebuilt every frame rather than
+// patched, so a tileset slot load or a VT state change needs no separate "on
+// change" write for the RT set -- and bindings 15-19 are built from exactly
+// the same live/dummy state write_vt_descriptors_for_frame() uses, so a ray
+// and a fragment always resolve against the identical pool, indirection and
+// variant table.
 bool VkSceneRenderer::record_ray_trace_dispatch(
     const matter::VulkanFrame& frame,
     const FrameMatrices& matrices,
@@ -12832,6 +13579,29 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     return true;
 }
 
+// Records the frame proper into `frame.command_buffer`. Must follow a
+// successful prepare_frame() on the SAME frame slot -- it asserts that by
+// checking frame_slot == active_frame_index_.
+//
+// Order (each step depends on the one before it):
+//   1. atmosphere LUT record, draw-region validation,
+//   2. the VT demand pass (before the uploads, so a release lands in this
+//      frame's vt_draw_slots),
+//   3. raster targets, then the occlusion ID targets -- in that order, because
+//      the ID targets are sized from the raster extent this call publishes,
+//   4. volumetric froxel bundle, cloud shadows, environment descriptor,
+//   5. vt_begin_frame() -- MUST precede the cull dispatch, which is the first
+//      thing to bind scene set 1 into this recording command buffer,
+//   6. the animation-skin compute record,
+//   7. cull pass 0 -> ID raster -> visible-id reduce -> cull pass 1. All four
+//      are in this command buffer in this order, which is what makes the mask
+//      pass 1 tests describe THIS frame's camera rather than the last one's,
+//   8. record_raster(), which runs the G-buffer, RT, volumetrics and composite.
+//
+// On success it publishes this slot's cull result (stats_valid,
+// cull_result_valid, the LOD-trace bookkeeping) -- a slot only carries a
+// readable result once the frame that dispatched culling recorded through to
+// the end.
 bool VkSceneRenderer::record_cull_and_render(
     const matter::VulkanFrame& frame, const FrameMatrices& matrices,
     matter::Float3 camera_eye, float pixel_budget, std::string& error) {
@@ -13419,6 +14189,21 @@ bool VkSceneRenderer::readback_draw_transforms(
 
 #endif
 
+// ---------------------------------------------------------------------------
+// Render targets, DLSS, and presentation
+// ---------------------------------------------------------------------------
+
+// Creates (or recreates, on a resize) every render target the renderer owns:
+// the five G-buffer attachments, depth, HDR, sun visibility, the three raw RT
+// signals and their aux images, both GiHistorySets per signal, and the A-trous
+// ping-pong pairs. The RT-signal targets are sized by
+// gi_settings_.trace_scale, so a trace-scale change resizes too.
+//
+// EXPENSIVE AND BLOCKING on a change: wait_idles and frees the DLSS
+// resources first, because everything below is replaced wholesale. It also
+// resets all GI/temporal history state and clears raster_attachments_ready_,
+// so the first frame after a resize has no history to reproject from. Returns
+// true without touching anything when the extents already match.
 bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                                             std::string& error) {
     if (width == 0 || height == 0) {
@@ -14207,6 +14992,18 @@ bool VkSceneRenderer::test_record_hdr_constant(
 }
 #endif
 
+// The presentation pass: optionally runs DLSS over the HDR target, then draws
+// the display transform (exposure + ACES, or passthrough for the byte-exact
+// debug views) into the acquired swapchain image. Also closes the `total` GPU
+// timestamp zone and marks this slot's timestamps readable next frame.
+//
+// Requires a completed record_cull_and_render (raster_attachments_ready_) and
+// a display pipeline built for THIS swapchain format -- a format change fails
+// here rather than rendering through a mismatched pipeline.
+//
+// The passthrough switch is not cosmetic: debug views that pack data into the
+// pixels (linear depth, raw G-buffer albedo) must reach the swapchain
+// byte-for-byte or the value the shader wrote stops meaning what it says.
 bool VkSceneRenderer::record_composite_to_swapchain(
     const matter::VulkanFrame& frame, std::string& error) {
     error.clear();
@@ -14519,6 +15316,14 @@ void record_pick_readback(VkCommandBuffer cb, void* user_data) {
 }
 }  // namespace
 
+// Mouse picking: reads one pixel of the G-buffer identity attachment and
+// returns its instance token (the .y lane; .x is the material index plus the
+// impostor marker bit).
+//
+// BLOCKS -- it allocates a staging buffer, submits an immediate copy and waits
+// for it, so this is an interaction-rate call, not a per-frame one. Reads the
+// LAST completed frame's attachment, and fails when none exists or the pixel
+// is outside the rendered extent. UINT32_MAX means "nothing was drawn here".
 bool VkSceneRenderer::readback_pick_identity(uint32_t x, uint32_t y,
                                              uint32_t& instance_token,
                                              std::string& error) {
@@ -14796,6 +15601,20 @@ int VkSceneRenderer::fill_rt_instances(
     return count;
 }
 
+// Drops the entire resident scene -- parts, clusters, instances, staging
+// arrays, free lists, command template, RT instances and every cached TLAS --
+// and clears the poison latch. This is the world-switch path.
+//
+// Two variants. Normally the device objects (pipelines, the static buffers,
+// the attachments) SURVIVE and only the contents are cleared. A poisoned reset
+// additionally destroys the pipeline and buffers outright, so the next init()
+// rebuilds them at the reservation.
+//
+// ALWAYS wait_idles first, and that is load-bearing: after this the free lists
+// are empty, so the next registration allocates from offset 0 and its ranged
+// writes land IN PLACE in the very buffers any still-in-flight frame is
+// reading. Does NOT destroy the tileset slots, the impostor atlas or the VT
+// runtime -- those are torn down by destroy_pipeline().
 void VkSceneRenderer::reset() {
     const bool full_reset = poisoned();
     // ALWAYS idle, not just on the poisoned path.

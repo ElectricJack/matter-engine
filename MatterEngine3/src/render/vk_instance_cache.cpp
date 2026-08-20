@@ -1,3 +1,17 @@
+// MatterEngine3/src/render/vk_instance_cache.cpp
+//
+// Implementation of VulkanInstanceCache (see vk_instance_cache.h for what the
+// two cache levels are for). Nothing here touches Vulkan or the GPU: it is
+// bookkeeping over vectors of VkSceneInstance, and its whole job is to make
+// the O(world) expansion in matter_engine.cpp run for new sources only.
+//
+// The fingerprint is defined TWICE on purpose — once per instance
+// (fingerprint_one, for the per-source key) and once over a whole set
+// (fingerprint_resolved_instances, for the flat key) — folding exactly the
+// same four fields in the same order, so the two levels can never disagree
+// about what "the same source" means. Change one fold and you must change the
+// other.
+
 #include "vk_instance_cache.h"
 
 #include "../provider/sector_resolver.h"
@@ -26,6 +40,10 @@ uint64_t fingerprint_one(const ResolvedInstance& instance) noexcept {
 
 } // namespace
 
+// FNV-1a over the concatenated bytes of every instance's four identity fields.
+// Because it is a running fold, it is sensitive to ORDER as well as content:
+// the same set resolved in a different order is a miss. O(n) with no
+// allocation; called once per matches() and once per store().
 uint64_t fingerprint_resolved_instances(
     const std::vector<ResolvedInstance>& resolved) noexcept {
     uint64_t fingerprint = 1469598103934665603ull;
@@ -102,6 +120,11 @@ void VulkanInstanceCache::store_source(
     ++source_expansion_count_;
 }
 
+// Rebuilds sources_ containing only the ids still present in `resolved`,
+// dropping the memos of evicted sectors that would otherwise accumulate
+// forever in a streaming world. Early-outs when the map is no larger than the
+// live set, so the common frame pays only a size comparison; when it does run
+// it allocates a whole replacement map and moves the survivors across.
 void VulkanInstanceCache::prune_sources(
     const std::vector<ResolvedInstance>& resolved) {
     if (sources_.size() <= resolved.size()) return;

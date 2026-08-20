@@ -1,3 +1,19 @@
+// MatterEngine3/src/render/vk_lighting_controls.cpp
+//
+// Implementation of the lighting-override gate declared in
+// vk_lighting_controls.h. Two properties the inline comments below defend and
+// that any edit here has to preserve:
+//
+//   1. IDEMPOTENCE AND BIT-IDENTITY. An already-valid value must come back
+//      unchanged, bit for bit — not merely equal-ish. The engine decides
+//      "has anyone moved the sun?" with a float comparison against the
+//      authored value, so a sanitize pass that renormalized an in-range angle
+//      would make an untouched Lighting panel look like an edit.
+//   2. SHARED BOUNDS. The limits are not local taste: sun_shadow_samples
+//      matches the clamp in shaders_vk/rt_shadow.rgen, and the sun angular
+//      diameter bounds come from matter/sun_angles.h so the world-authored
+//      path (which never calls this) clamps to the same numbers.
+
 #include "vk_lighting_controls.h"
 #include <algorithm>
 #include <cmath>
@@ -9,6 +25,13 @@ float finite_or(float value, float fallback) noexcept {
 }
 }
 
+// Field-by-field clamp + NaN replacement. Note that the fallbacks passed to
+// finite_or() are hard-coded neutral values rather than
+// VulkanLightingOverrides' own defaults, so a NaN sun_multiplier comes back as
+// 1.0, not as the shipped 1.67; the sun-orientation block below is the
+// exception and does read the struct defaults. `out` starts default-
+// constructed, so any field this function forgets to assign silently keeps the
+// struct default instead of the caller's value.
 matter::VulkanLightingOverrides sanitize_vulkan_lighting_overrides(
     const matter::VulkanLightingOverrides& value) noexcept {
     matter::VulkanLightingOverrides out{};
@@ -67,6 +90,10 @@ matter::VulkanLightingOverrides sanitize_vulkan_lighting_overrides(
     return out;
 }
 
+// Clamps through the full sanitizer, then 2^ev. The braced argument
+// {1.0f, 1.0f, 1.0f, exposure_ev} is aggregate initialization of the FIRST FOUR
+// members of VulkanLightingOverrides in declaration order — reordering that
+// struct would silently land `exposure_ev` in the wrong field here.
 float vulkan_exposure_scale(float exposure_ev) noexcept {
     const auto clean = sanitize_vulkan_lighting_overrides(
         {1.0f, 1.0f, 1.0f, exposure_ev});

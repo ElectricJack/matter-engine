@@ -1,3 +1,39 @@
+// MatterEngine3/src/render/part_store.cpp
+//
+// Implementation of PartStore (part_store.h). FOUR load paths land in this
+// file, and knowing which one ran explains most questions about a part's
+// contents:
+//
+//   1. get_or_load() -> load_flat(): a bake-time flattened `<hash>.flat.part`
+//      (v3 clustered, or legacy v2). Uses the artifact's stored per-cluster
+//      ladders directly, resolves the terminal impostor rung against its
+//      `.fimp` sidecar, and leaves `children` empty. The collapsed path that
+//      authored props take.
+//   2. get_or_load() -> read_coherent_snapshot() -> the partitioned-animation
+//      branch: an ANLK-linked artifact whose skin and rigid streams stay
+//      separate. It registers straight into the shared manager, so it is NOT
+//      stageable off-thread.
+//   3. get_or_load() -> stage_from_snapshot() -> commit_staged(): the ordinary
+//      compositional part, ladder re-baked from LOD0.
+//   4. stage_load() / stage_from_bake() on a streaming worker, then
+//      commit_staged() on the owning thread. The same stage_from_snapshot body
+//      as (3), split so the expensive half runs off the render thread.
+//
+// One rule shapes the code: everything expensive (artifact decode, QEM
+// decimation, TriEx reprojection, BVH build, chart bake, warp solve) runs
+// against a PRIVATE BLASManager, and the only shared-state step is
+// commit_staged()'s bounded adopt-and-insert. The comments through this file
+// record the measurements that forced that split — see
+// docs/sector-bake-time-findings-2026-07-30.md.
+//
+// Diagnostics. This file still reports through printf/fprintf rather than the
+// repo's matter/log.h. Two env vars gate the noisy ones — MATTER_FLAT_GATE_LOG
+// (why a flat artifact was rejected) and MATTER_PARTSTORE_PROFILE (the
+// flat-path timing split) — and the same questions are answerable from the
+// PROFILE_COUNT counters partstore.flat_ok / flat_reject / flat_relinked /
+// flat_no_snapshot and expansion.coldload without per-item stderr, which has
+// measurably distorted this engine's own profiling before.
+
 #include "part_store.h"
 #include "profile.h"
 #include "animation/anim_bundle.h"
@@ -48,6 +84,13 @@ static void release_loaded_part_blas(BLASManager& blas, const LoadedPart& lp) {
     }
 }
 
+// Structural precondition for an INDEXED mesh: positive vertex count, a
+// non-empty index list that is a multiple of three, every channel present at
+// its exact per-vertex stride, and every index in range. Used wherever a mesh
+// is about to be sliced or re-triangulated so a malformed stream fails closed
+// instead of reading out of bounds. Note it REQUIRES surface_uvs, material_ids
+// and baked_ao, so a mesh built without them counts as invalid here even
+// though it would draw.
 static bool valid_indexed_mesh(const RasterMeshData& mesh) {
     if (mesh.vertex_count <= 0 || mesh.indices.empty() || mesh.indices.size() % 3 != 0)
         return false;
@@ -61,6 +104,10 @@ static bool valid_indexed_mesh(const RasterMeshData& mesh) {
                        [vertices](uint32_t index) { return index < vertices; });
 }
 
+// Append one source vertex to `out` across every channel. `out.material_ids`
+// grows exactly once per appended vertex, which is what lets
+// slice_rigid_segment_mesh use its size as the running output vertex count.
+// The warp channels are not carried across.
 static void append_indexed_vertex(const RasterMeshData& source, uint32_t old_index,
                                   RasterMeshData& out) {
     const size_t vertex = static_cast<size_t>(old_index);
@@ -78,6 +125,14 @@ static void append_indexed_vertex(const RasterMeshData& source, uint32_t old_ind
     out.baked_ao.push_back(source.baked_ao[vertex]);
 }
 
+// Carve the triangles named by `ranges` out of an indexed source mesh into a
+// new, compacted mesh, remapping indices so `out` holds only the vertices its
+// own triangles reference. Output triangle order follows `ranges` order rather
+// than source order.
+//
+// Fails closed — returns false, leaving `out` partially filled — for an
+// invalid source, an empty or inverted range, a range past the end, or two
+// ranges claiming the same triangle. Callers must discard `out` on false.
 static bool slice_rigid_segment_mesh(
         const RasterMeshData& source,
         const std::vector<matter::animation::BindingGeometryRange>& ranges,
@@ -110,6 +165,11 @@ static bool slice_rigid_segment_mesh(
     return out.vertex_count > 0 && !out.indices.empty();
 }
 
+// Deterministic content identity for one rigid segment carved out of a source
+// part: FNV-1a over a format tag, the source hash, the segment ordinal and the
+// mesh's own geometry signature. Stable across runs and processes, which is
+// what lets build_rigid_segment_subparts memoize a set and detect a repeat.
+// Never returns 0 — that value is reserved as "no part".
 static uint64_t rigid_subpart_hash(uint64_t source_hash, uint32_t segment_ordinal,
                                    const RasterMeshData& mesh) {
     uint64_t hash = 1469598103934665603ull;
@@ -129,6 +189,10 @@ static uint64_t rigid_subpart_hash(uint64_t source_hash, uint32_t segment_ordina
     return hash ? hash : 1ull;
 }
 
+// Half the AABB diagonal of the mesh's own vertices, in part-local metres —
+// the same definition LoadedPart::bound_radius uses everywhere else. Callers
+// pass only non-empty slices; an empty mesh would leave the seeded infinities
+// in place and return a non-finite radius.
 static float subpart_bound_radius(const RasterMeshData& mesh) {
     float minimum[3] = {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()};
     float maximum[3] = {-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
@@ -145,6 +209,12 @@ static float subpart_bound_radius(const RasterMeshData& mesh) {
     return 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+// Convert an indexed mesh back into the parallel Tri / TriEx arrays
+// BLASManager registers. Positions, normals, chart UVs and AO stay per-CORNER,
+// but the two per-triangle attributes are taken from the FIRST corner only:
+// `materialId` from material_ids[a] and `tint` from colors[a] (unpacked 0-255
+// to 0-1). A triangle whose corners disagree therefore inherits corner a's
+// material and tint. `centroid` is filled here because the BVH build needs it.
 static void mesh_to_triangles(const RasterMeshData& mesh, std::vector<Tri>& triangles,
                               std::vector<TriEx>& extras) {
     triangles.reserve(mesh.indices.size() / 3);
@@ -236,6 +306,25 @@ void build_expansion(uint64_t root_hash,
 
 PartStore::PartStore(std::string cache_root) : cache_root_(std::move(cache_root)) {}
 
+// Materialize each rigid segment of an already-loaded animated part as an
+// independent, immutable subpart, admitted to loaded_ under its own
+// deterministic hash (rigid_subpart_hash) and returned through `out_hashes`.
+//
+// Two sources, in preference order. An EXACT partition — the artifact carried
+// per-segment LOD streams in rigid_lod_mesh_data with matching thresholds — is
+// registered rung for rung. Otherwise LOD0 of the source is sliced by the
+// binding's authored triangle ranges and a fresh ladder is baked per slice.
+// LOD0 deliberately: the ranges name triangles in the undecimated stream, so
+// slicing a coarser rung would silently re-assign ownership.
+//
+// All-or-nothing. `admitted` plus the rollback lambda undo every insertion and
+// every shared-BLAS registration on any failure, so a false return leaves the
+// store exactly as it was found. The result is memoized per source hash in
+// rigid_subparts_: a repeat call with the same hash set returns the cached set,
+// and a hash colliding with the source or with an already-loaded part is
+// refused outright.
+//
+// Owning-thread only — it registers into the shared blas_ and mutates loaded_.
 bool PartStore::build_rigid_segment_subparts(
         uint64_t source_part_hash, const matter::animation::BindingBake& binding,
         std::vector<uint64_t>& out_hashes) {

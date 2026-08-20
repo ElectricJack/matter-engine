@@ -9,6 +9,20 @@
  * why eviction frees bytes only when the LAST ref to a blob goes away, and why
  * evict_to_budget() and compact() are separate calls: dropping refs is cheap
  * bookkeeping, reclaiming disk is a pack rewrite.
+ *
+ * Path: libs/AssetStoreLib/src/ref_table.cpp. Implements the RefTable half of
+ * ../include/asset_store.h; blob_store.cpp implements the other half.
+ *
+ * State lives in <store.dir()>/refs.bin, written whole and swapped in by
+ * tmp+rename, exactly like the blob index. The table takes no lock of its own:
+ * it holds a BlobStore& and leans entirely on that store's cross-process
+ * writer lock, which is also why every mutator starts by refusing to run
+ * against a read-only store.
+ *
+ * Nothing here is thread-safe, and nothing here flushes implicitly -- the
+ * destructor drops the in-memory table on the floor, so an unflushed session
+ * is simply lost. That is a legitimate outcome for a cache: the blobs still
+ * exist, they have just stopped being findable by key.
  */
 
 #include "../include/asset_store.h"
@@ -47,6 +61,21 @@ struct HashKeyHash {
 
 }  // namespace
 
+/* All of RefTable's state.
+ *
+ * `refs` is a std::map rather than a hash map on purpose: iteration order is
+ * key order, which makes refs.bin byte-identical for the same set of refs and
+ * gives compact() a deterministic, prefix-clustered pack layout.
+ *
+ * `by_hash` is the reference count (and payload size) per distinct blob,
+ * rebuilt wholesale by reindex_hashes() after a load and maintained
+ * incrementally afterwards. It is what makes the budget count a shared blob
+ * once.
+ *
+ * `tick` is a monotonic counter, persisted in refs.bin and consumed by both
+ * put() and lookup(); it is the LRU clock and has nothing to do with wall
+ * time. `dirty` records that the in-memory table has diverged from the file --
+ * note that no code currently reads it, so flush() rewrites unconditionally. */
 struct RefTable::Impl {
     BlobStore* store = nullptr;
     RefTableConfig cfg;
@@ -72,6 +101,8 @@ struct RefTable::Impl {
         }
     }
 
+    /* Distinct blob payload bytes: by_hash holds one entry per blob however
+     * many keys point at it. O(distinct blobs) on every call. */
     uint64_t live_bytes() const {
         uint64_t total = 0;
         for (auto& kv : by_hash) total += kv.second.size;
@@ -81,6 +112,11 @@ struct RefTable::Impl {
     bool load(std::string* err);
 };
 
+/* Reads refs.bin whole and validates it -- trailing CRC, magic, version, then
+ * every entry's declared lengths against the buffer -- before swapping it in.
+ * An absent file is success and an empty table, which is what a fresh store
+ * looks like. Anything else is a hard failure that aborts RefTable::open()
+ * rather than silently discarding the cache's bookkeeping. */
 bool RefTable::Impl::load(std::string* err) {
     std::string path = refs_path();
     if (!os::file_exists(path)) return true;
@@ -143,6 +179,10 @@ std::unique_ptr<RefTable> RefTable::open(BlobStore& store, const RefTableConfig&
     return t;
 }
 
+/* Bind key -> blob, counting a fresh reference and stamping the LRU tick.
+ * `size` comes from the caller and is never checked against the store, yet it
+ * is what the budget is measured in; if two keys name the same blob with
+ * different sizes, the last one written owns that blob's accounting. */
 bool RefTable::put(const std::string& key, const BlobHash& h, uint32_t kind, uint64_t size) {
     Impl& d = *d_;
     if (!h.valid()) return false;
@@ -168,6 +208,9 @@ bool RefTable::put(const std::string& key, const BlobHash& h, uint32_t kind, uin
     return true;
 }
 
+/* The LRU touch, which is why this is not const and why peek() exists beside
+ * it. It mutates the in-memory table even on a read-only store -- harmlessly,
+ * because flush() refuses to write one out. */
 bool RefTable::lookup(const std::string& key, RefInfo* out) {
     Impl& d = *d_;
     auto it = d.refs.find(key);
@@ -202,6 +245,14 @@ uint64_t RefTable::live_bytes() const { return d_->live_bytes(); }
 uint64_t RefTable::budget_bytes() const { return d_->cfg.budget_bytes; }
 void RefTable::set_budget_bytes(uint64_t b) { d_->cfg.budget_bytes = b; }
 
+/* Drop refs, oldest touch first, until the distinct-payload total is back
+ * under budget; ties break on key so the choice is deterministic and
+ * reproducible.
+ *
+ * This is bookkeeping only. No blob is deleted, no byte of disk is reclaimed,
+ * and the BlobStore is not touched at all -- evicted blobs simply become
+ * orphans that the next compact() declines to carry forward. A zero budget
+ * means unlimited and returns immediately. */
 EvictStats RefTable::evict_to_budget() {
     Impl& d = *d_;
     EvictStats st;
@@ -239,6 +290,10 @@ EvictStats RefTable::evict_to_budget() {
     return st;
 }
 
+/* Compact the underlying store down to exactly the blobs this table still
+ * references, then flush the table itself. Both halves matter: a compacted
+ * store left with a stale refs.bin would name blobs that no longer exist. A
+ * false return can mean either half failed. */
 bool RefTable::compact(CompactStats* out) {
     Impl& d = *d_;
     if (d.store->read_only()) return false;
@@ -253,6 +308,11 @@ bool RefTable::compact(CompactStats* out) {
     return flush();
 }
 
+/* Serialise the whole table and swap it in by tmp+rename -- the same commit
+ * shape the blob index uses, and the only way anything here reaches disk. The
+ * staging name is a fixed "refs.tmp", not pid-qualified as the blob index's
+ * is; the store's cross-process writer lock is what guarantees only one
+ * process ever writes it. */
 bool RefTable::flush() {
     Impl& d = *d_;
     /* The last line of defence: whatever a reader did to its in-memory copy --

@@ -1,5 +1,51 @@
 #include "animation/animation_runtime_asset.h"
 
+// MatterEngine3/src/animation/animation_runtime_asset.cpp
+//
+// Serialization boundary of the animation runtime.
+//
+// Encoding turns an authored `AnimationBuild` plus its `CanonicalAnimationBuild`
+// into five sections of an `AnimAsset`; decoding turns those sections back into
+// a `DecodedAnimationRuntimeAsset` holding a validated
+// `AnimationEvaluationDefinition` and the runtime binding descriptor.
+//
+// Sections and their four-character tags
+// --------------------------------------
+//   RigSchema               "RIG3"  canonical joints + sockets
+//   InputTargetSchemas      "ITS3"  graph inputs + IK targets
+//   GraphControllerBytecode "AGC3"  graph nodes (runtime order) + controllers
+//   OzzSkeleton             (opaque) the serialized Ozz skeleton archive
+//   OzzClips                "OCL3"  per-clip header + embedded Ozz archive
+//
+// Wire format
+// -----------
+// Fixed little-endian scalars, no padding and no alignment requirement; every
+// variable-length run is preceded by a u32 count. Each tagged section starts
+// with its 4-byte tag then a u32 equal to `kRuntimeSectionVersion`. Strings are
+// a u32 length plus raw bytes. Adding, reordering, or resizing a field is a
+// format break, so `kRuntimeSectionVersion` must be bumped with it.
+//
+// Failure model -- fail closed
+// ----------------------------
+// Every `take_*` is bounds-checked and returns false rather than throwing or
+// reading past the end; floats must be finite, quaternions non-degenerate, and
+// scales strictly positive. Each `decode_*` additionally requires that it
+// consumed the section EXACTLY (`at == section.bytes.size()`), so trailing
+// garbage is a rejection rather than something ignored. `decode_animation_
+// runtime_asset` assembles into a local candidate and only moves it into `out`
+// once every check has passed, so a caller's existing asset is never left half
+// overwritten. Every rejection appends a diagnostic code and a message.
+//
+// Ownership
+// ---------
+// The decoder deserializes the Ozz skeleton and animations into a heap
+// `OwnedEvaluation` and hands out the contained
+// `AnimationEvaluationDefinition` through an aliasing `shared_ptr`. That is
+// what keeps the borrowed `skeleton`/`animation` pointers inside the
+// definition valid for as long as anyone holds the definition.
+//
+// Threading: pure functions over caller-supplied buffers; no shared state.
+
 #include "animation/animation_binding_bake.h"
 #include "animation/animation_controllers.h"
 #include "animation/animation_evaluator.h"
@@ -14,10 +60,18 @@
 namespace matter::animation {
 namespace {
 
+// Wire-format version stamped into, and required by, every tagged section.
+// Bump on any layout change. The two size caps below are anti-DoS bounds on
+// untrusted section content, not authoring limits.
 constexpr uint32_t kRuntimeSectionVersion = 1;
 constexpr uint32_t kMaxSerializedString = 64u * 1024u;
 constexpr uint32_t kMaxSerializedClipBytes = 64u * 1024u * 1024u;
 
+// ---------------------------------------------------------------------------
+// Writers. Little-endian, appended to `bytes`; no framing of their own beyond
+// the u32 length that `put_string` writes. `put_float` type-puns through a
+// u32, so it preserves the exact bit pattern including signed zero.
+// ---------------------------------------------------------------------------
 void put_u8(std::vector<uint8_t>& bytes, uint8_t value) { bytes.push_back(value); }
 void put_u16(std::vector<uint8_t>& bytes, uint16_t value) {
     bytes.push_back(uint8_t(value));
@@ -58,6 +112,14 @@ void put_tag(std::vector<uint8_t>& bytes, const char (&tag)[5]) {
     bytes.insert(bytes.end(), tag, tag + 4);
 }
 
+// ---------------------------------------------------------------------------
+// Readers. Each advances the cursor `at` only on success and returns false on
+// a short buffer, leaving `at` where it was. The remaining-length tests are
+// written as `bytes.size() - at < n` rather than `at + n > bytes.size()`
+// specifically to avoid overflowing the addition on a corrupt cursor.
+// `take_float` additionally rejects NaN and infinity, so finiteness never has
+// to be re-checked downstream.
+// ---------------------------------------------------------------------------
 bool take_u8(const std::vector<uint8_t>& bytes, size_t& at, uint8_t& value) {
     if (at >= bytes.size()) return false;
     value = bytes[at++];
@@ -103,6 +165,11 @@ bool take_quaternion(const std::vector<uint8_t>& bytes, size_t& at, Quaternion& 
     return take_float(bytes, at, value.x) && take_float(bytes, at, value.y) &&
            take_float(bytes, at, value.z) && take_float(bytes, at, value.w);
 }
+// Reads a transform and validates it as usable: all ten components finite, the
+// rotation not a (near) zero quaternion, and all three scale components
+// strictly positive. A degenerate rotation or a zero/negative scale would make
+// the joint-to-model matrix non-invertible, so it is rejected at the boundary
+// rather than surfacing as a collapsed skin later.
 bool take_transform(const std::vector<uint8_t>& bytes, size_t& at,
                     AnimationTransform& value) {
     if (!take_float3(bytes, at, value.translation) ||
@@ -115,6 +182,10 @@ bool take_transform(const std::vector<uint8_t>& bytes, size_t& at,
     return q2 > 1e-12f && value.scale.x > 0.0f && value.scale.y > 0.0f &&
            value.scale.z > 0.0f;
 }
+// Checks a section's 4-byte tag and version header. Note that it matches the
+// tag at offset 0 of `bytes` and OVERWRITES `at` with 4 -- it is a
+// section-start check, not a cursor-relative read, so it must be the first
+// thing a `decode_*` calls and cannot be used mid-stream.
 bool take_tag_version(const std::vector<uint8_t>& bytes, size_t& at,
                       const char (&tag)[5]) {
     if (bytes.size() < 8 || std::memcmp(bytes.data(), tag, 4) != 0) return false;
@@ -217,6 +288,9 @@ bool take_value(const std::vector<uint8_t>& bytes, size_t& at, AnimationValue& v
     return false;
 }
 
+// Returns the single section of `kind`, or null if there is none OR more than
+// one. Duplicate sections are treated as corruption, not as "last one wins",
+// so a tampered or merged asset cannot smuggle a second graph past validation.
 const AnimSection* unique_section(const AnimAsset& asset, AnimSectionKind kind) {
     const AnimSection* result = nullptr;
     for (const AnimSection& section : asset.sections) {
@@ -227,6 +301,8 @@ const AnimSection* unique_section(const AnimAsset& asset, AnimSectionKind kind) 
     return result;
 }
 
+// Replaces the first section of `kind` in place, or appends one if absent, so
+// re-encoding an asset does not accumulate duplicate sections.
 void set_section(AnimAsset& asset, AnimSectionKind kind, std::vector<uint8_t> bytes) {
     for (AnimSection& section : asset.sections) {
         if (section.kind != kind) continue;
@@ -257,6 +333,18 @@ int find_name(const std::vector<GraphNode>& values, const std::string& name) {
     return -1;
 }
 
+// ---------------------------------------------------------------------------
+// Encoders. Each validates while it writes and returns false on the first
+// violation -- which can leave partial bytes in the output buffer, so callers
+// must discard the buffer rather than ship it (see
+// `encode_animation_runtime_sections`, which only installs sections once all
+// four encoders have succeeded).
+// ---------------------------------------------------------------------------
+
+// "RIG3": joint count, socket count, then each joint (name, parent, subtree
+// range, rest transform, radius) and each socket (name, owning joint, local
+// transform). Rejects an empty rig, an out-of-range socket joint, a
+// non-positive radius, and any non-finite/degenerate transform.
 bool encode_rig(const CanonicalRig& rig, std::vector<uint8_t>& bytes) {
     if (rig.joints.empty() || rig.joints.size() > kMaxJoints ||
         rig.sockets.size() > kMaxJoints) return false;
@@ -285,6 +373,10 @@ bool encode_rig(const CanonicalRig& rig, std::vector<uint8_t>& bytes) {
     return true;
 }
 
+// "ITS3": graph input declarations (name, type, cadence, default value) then
+// IK targets. Each input's default value must have the input's declared type,
+// and every target's chain must be exactly three joints -- the two-bone solver
+// is the only one there is.
 bool encode_inputs_targets(const AnimationBuild& authored,
                            const CanonicalAnimationBuild& canonical,
                            std::vector<uint8_t>& bytes) {
@@ -326,6 +418,15 @@ bool encode_inputs_targets(const AnimationBuild& authored,
     return true;
 }
 
+// "AGC3": the compiled graph plus its controller declarations.
+//
+// This is where authored NAMES become runtime INDICES. `canonical.graph_order`
+// supplies the topological order; `runtime_index` inverts it so each authored
+// dependency name can be emitted as its runtime position, and the check
+// `runtime_index[dependency] >= runtime_index[node]` enforces the
+// dependencies-point-strictly-backwards invariant the evaluator relies on. An
+// unresolvable clip/input/controller name is a hard failure; an absent
+// (empty-string) reference encodes as UINT16_MAX.
 bool encode_graph(const AnimationBuild& authored,
                   const CanonicalAnimationBuild& canonical,
                   std::vector<uint8_t>& bytes) {
@@ -382,6 +483,11 @@ bool encode_graph(const AnimationBuild& authored,
     return true;
 }
 
+// "OCL3": per clip a header (name, duration, playback rate, loop, additive,
+// markers) followed by the length-prefixed Ozz archive bytes. Markers are
+// emitted with their declaration-order index, which is what runtime events are
+// keyed by; the marker NAME is written for diagnostics only and the decoder
+// discards it.
 bool encode_clips(const AnimationBuild& authored, std::vector<uint8_t>& bytes) {
     if (authored.clips.empty() || authored.clips.size() > kMaxGraphNodes) return false;
     put_tag(bytes, "OCL3");
@@ -421,6 +527,13 @@ bool encode_clips(const AnimationBuild& authored, std::vector<uint8_t>& bytes) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Decode-side intermediates. These hold a section's content after parsing but
+// before cross-section validation; nothing here is handed to a caller.
+// `EncodedNode` keeps `controller_index` beside the runtime node because the
+// reference is only legal on a NativeController node and that has to be
+// checked against the controller table, which lives in the same section.
+// ---------------------------------------------------------------------------
 struct EncodedController {
     std::string name;
     std::string type;
@@ -440,6 +553,11 @@ struct DecodedClip {
     std::vector<uint8_t> archive;
 };
 
+// Reads "RIG3" and re-derives the structural invariants rather than trusting
+// them: joint 0 must be the root (no parent), every other joint's parent must
+// be a strictly lower index (so parents precede children), and each joint's
+// subtree range must start at the joint itself and end after it but within the
+// rig. Requires the section to be consumed exactly.
 bool decode_rig(const AnimSection& section, CanonicalRig& rig) {
     size_t at = 0;
     uint32_t joints = 0, sockets = 0;
@@ -469,6 +587,11 @@ bool decode_rig(const AnimSection& section, CanonicalRig& rig) {
     return at == section.bytes.size();
 }
 
+// Reads "ITS3". Enum bytes are range-checked before the cast, an input's
+// default value must match its declared type, chains must be exactly three
+// joints, and a target must name a controller if and only if its driver is
+// `Controller`. Joint indices are only checked against the RIG later, by the
+// caller, since this section does not know the joint count.
 bool decode_inputs_targets(const AnimSection& section,
                            std::vector<RuntimeInputDefinition>& inputs,
                            std::vector<CanonicalTarget>& targets) {
@@ -525,6 +648,11 @@ bool decode_inputs_targets(const AnimSection& section,
     return at == section.bytes.size();
 }
 
+// Reads "AGC3". Re-establishes the acyclicity invariant directly from the wire
+// (`dependency >= i` is rejected, so every edge points strictly backwards in
+// the emitted order) and bounds every count by the node count. Clip, input and
+// controller indices are read but validated against their tables by the
+// caller.
 bool decode_graph(const AnimSection& section, std::vector<EncodedNode>& nodes,
                   std::vector<EncodedController>& controllers) {
     size_t at = 0;
@@ -571,6 +699,11 @@ bool decode_graph(const AnimSection& section, std::vector<EncodedNode>& nodes,
     return at == section.bytes.size();
 }
 
+// Reads "OCL3". Marker names are parsed for framing but intentionally
+// discarded -- runtime markers are identified by index. The Ozz archive is
+// copied out as opaque bytes here and only deserialized (and cross-checked
+// against this header's name, track count and duration) in
+// `decode_animation_runtime_asset`.
 bool decode_clips(const AnimSection& section, std::vector<DecodedClip>& clips) {
     size_t at = 0;
     uint32_t clip_count = 0;
@@ -608,6 +741,13 @@ bool decode_clips(const AnimSection& section, std::vector<DecodedClip>& clips) {
     return at == section.bytes.size();
 }
 
+// Proves the canonical rig section and the separately serialized Ozz skeleton
+// describe the same skeleton: identical joint count, parents, subtree ranges,
+// and rest transforms to within 1e-5.
+//
+// Rotations compare equal to their own negation, because a quaternion and its
+// negation are the same rotation and the two serializers need not agree on
+// which representative they stored.
 bool validate_rig_against_skeleton(const CanonicalRig& rig,
                                    const OzzSkeleton& skeleton) {
     if (rig.joints.size() != skeleton.joint_count()) return false;
@@ -639,12 +779,29 @@ bool validate_rig_against_skeleton(const CanonicalRig& rig,
     return true;
 }
 
+// Backing storage for a decoded definition: the Ozz skeleton and animations
+// the definition's raw pointers refer to, kept in one heap object so a single
+// `shared_ptr` controls the whole lifetime. `value` must not be copied out of
+// here -- callers alias it through the owning `shared_ptr` instead.
 struct OwnedEvaluation {
     OzzSkeleton skeleton;
     std::vector<OzzAnimation> animations;
     AnimationEvaluationDefinition value;
 };
 
+// Turns one decoded controller declaration into a runtime controller entry.
+//
+// v1 supports exactly one type: `"proceduralGait"` at Fixed cadence; anything
+// else fails the whole load. It collects the targets that name this
+// controller -- which must be exactly two, and whose ORDER in the target list
+// decides which is the left foot -- seeds each foot's predicted position from
+// the corresponding chain end effector's rest MODEL translation, and binds the
+// optional `speed` input by name (a `speed` input of the wrong type or cadence
+// is an error, its absence is not).
+//
+// The controller is then constructed once through the v1 registry purely to
+// validate the parameter blob and learn its state footprint, which is added to
+// the running `state_bytes` total.
 bool compile_controller(const EncodedController& authored, uint16_t controller_index,
                         const CanonicalRig& rig,
                         const std::vector<RuntimeInputDefinition>& inputs,
@@ -689,6 +846,13 @@ bool compile_controller(const EncodedController& authored, uint16_t controller_i
 
 } // namespace
 
+// Encodes all five runtime sections and installs them on `asset`, replacing any
+// existing section of the same kind.
+//
+// All-or-nothing: the four encoders run into local buffers first, so if any of
+// them (or a missing Ozz skeleton blob) fails, `asset` is left completely
+// untouched and a single `runtime-asset-encode` diagnostic is emitted.
+// `diagnostics` is cleared on entry.
 bool encode_animation_runtime_sections(const AnimationBuild& authored,
                                        const CanonicalAnimationBuild& canonical,
                                        AnimAsset& asset,
@@ -711,6 +875,29 @@ bool encode_animation_runtime_sections(const AnimationBuild& authored,
     return true;
 }
 
+// Full decode path: sections -> a validated runtime definition and binding
+// descriptor. `out` is written only on complete success; `diagnostics` is
+// cleared on entry and carries a code plus message for whichever gate failed.
+//
+// Gates, in order:
+//  - ABI and Ozz compatibility tags on the asset itself;
+//  - all five sections present and non-duplicated;
+//  - each section parses and is consumed exactly;
+//  - every target chain joint is within the rig;
+//  - the binding bake supplies one inverse-bind matrix per joint;
+//  - the Ozz skeleton deserializes and agrees with the canonical rig;
+//  - every Ozz clip deserializes and its name, track count and duration match
+//    its schema entry;
+//  - controller references are one-to-one -- each NativeController node names
+//    a controller, each controller is named by exactly one node;
+//  - `valid_animation_evaluation_definition` accepts the assembled graph and
+//    target chains are mutually exclusive;
+//  - every declared controller compiles.
+//
+// It also precomputes the rest model pose (needed to seed controllers) and the
+// per-instance scratch sizes recorded on the definition. `descriptor->
+// fixed_work.clip` is seeded from clips.front() -- the first clip, not a
+// "current" one. Allocates: this deserializes every clip archive in the asset.
 bool decode_animation_runtime_asset(const AnimAsset& asset,
                                     DecodedAnimationRuntimeAsset& out,
                                     Diagnostics& diagnostics) {

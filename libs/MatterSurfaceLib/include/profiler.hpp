@@ -1,5 +1,46 @@
 #pragma once
 
+
+// libs/MatterSurfaceLib/include/profiler.hpp
+//
+// A small, header-only, wall-clock profiler local to MatterSurfaceLib.
+//
+// This is NOT the engine's profiler. MatterEngine3 and MatterEditor use
+// `libs/ProfileLib` (frame records, Chrome-trace export via MATTER_PROFILE_TRACE,
+// the in-editor Performance/Memory panels, compile-out via MATTER_PROFILE=0).
+// This header predates that and survives only because `src/blas_manager.cpp`
+// and `src/tlas_manager.cpp` still bracket their hot paths with
+// `PROFILE_SECTION(...)`. Prefer ProfileLib for anything new.
+//
+// Usage:
+//     PROFILE_FRAME_BEGIN();            // bracket a frame so section times
+//     ...                               // can be expressed as a % of it
+//     { PROFILE_SECTION("BLAS Build");  // RAII: times the enclosing scope
+//       ... }
+//     PROFILE_FRAME_END();
+//     PROFILE_PRINT();                  // sorted table to stdout
+//
+// Considerations:
+//  - All state lives in one process-wide singleton (`Profiler::instance()`)
+//    behind a single mutex. Timestamps are deliberately taken BEFORE the lock
+//    so contention is not charged to the measured code, but the lock itself
+//    serialises every begin/end across all threads.
+//  - Sections are keyed by NAME ONLY, with at most one in-flight start per
+//    name. Nesting the same name, or timing the same name on two threads at
+//    once, overwrites the start timestamp -- the later scope wins and the
+//    earlier one is mis-attributed. Give concurrent sections distinct names.
+//  - Nothing is compiled out. There is no MATTER_PROFILE-style switch here, so
+//    the clock reads, the string keys and the mutex are always paid for.
+//  - All times are milliseconds. `percentage` is relative to the AVERAGE frame
+//    time and only refreshes every 10th `end_frame()`.
+//  - `reset_stats()` zeroes the accumulated stats but does not clear in-flight
+//    section starts, so a section straddling a reset still records on its end.
+//  - Output goes through `printf` to stdout, not through `matter/log.h`, so it
+//    does not appear in the editor Console.
+//  - The header relies on `<algorithm>` (std::sort/min/max) and `<cstdio>`
+//    (printf) being pulled in transitively by its includers; it does not
+//    include them itself.
+
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -14,6 +55,14 @@ using TimePoint = Clock::time_point;
 using Duration = std::chrono::nanoseconds;
 
 // Statistics for a performance section
+// One accumulator per named section (and one for the frame itself). All times
+// are in milliseconds and are cumulative since construction or the last
+// `reset()`. Two things to know:
+//  - `min_time_ms` starts at the sentinel 1e9 meaning "no sample yet";
+//    `print_stats()` prints 0.0 instead whenever it is still above 1e8.
+//  - `percentage` is a cached, lazily-refreshed field (every 10th frame) and
+//    is NOT recomputed on `update()`. Reading it directly can give a stale or
+//    zero value; `print_stats()` sidesteps it and divides inline.
 struct SectionStats {
     std::string name;
     double total_time_ms = 0.0;
@@ -41,6 +90,20 @@ struct SectionStats {
     }
 };
 
+// The process-wide profiler singleton. Created on first `instance()` call
+// (function-local static, so initialisation is thread-safe) and never
+// destroyed before exit; it holds a `std::mutex`, so it is neither copyable
+// nor movable, and the private constructor keeps callers on `instance()`.
+//
+// Every public method takes `mutex_`, so all of them are safe to call from any
+// thread -- but see the name-keying caveat in the file header: concurrent
+// sections sharing a name will corrupt each other's timings even though the
+// container access itself is synchronised.
+//
+// Frame bracketing is optional: sections still accumulate without
+// begin_frame/end_frame, but percentages are meaningless until a frame time
+// exists.
+//
 // Main profiler class
 class Profiler {
 public:
@@ -74,6 +137,10 @@ public:
         }
     }
     
+    // Stamps a start time for `name`. Only ONE start is retained per name, so
+    // a nested or concurrent section with the same name silently replaces the
+    // pending one and the outer/earlier scope's measurement is lost. Allocates
+    // a map node plus a copy of the string on a name's first use.
     void begin_section(const std::string& name) {
         // Take a timestamp BEFORE acquiring the lock to keep timing accurate.
         auto t = Clock::now();
@@ -81,6 +148,11 @@ public:
         section_starts_[name] = t;
     }
 
+    // Closes the pending section for `name` and folds the elapsed time into
+    // its `SectionStats`. Silently does nothing if no start is pending --
+    // an unmatched end, or a second end for the same name, is a no-op rather
+    // than an error, so a mismatched pair shows up as missing data, not a
+    // failure.
     void end_section(const std::string& name) {
         auto end_time = Clock::now();
         std::lock_guard<std::mutex> lk(mutex_);
@@ -96,6 +168,13 @@ public:
         section_starts_.erase(it);
     }
     
+    // Dumps a table of every section, sorted by average time, to stdout via
+    // `printf` (not `matter/log.h`). `const` only in the C++ sense: it does not
+    // reset anything, so successive calls report cumulative averages since the
+    // last `reset_stats()`. It holds the mutex for the whole dump, and
+    // allocates + sorts a temporary index vector, so it is not something to
+    // call per frame. Sections that were never entered, or that average under
+    // 0.01 ms, are filtered out entirely.
     void print_stats() const {
         std::lock_guard<std::mutex> lk(mutex_);
         printf("\n=== Performance Statistics ===\n");
@@ -156,6 +235,9 @@ public:
         return frame_stats_.average_time_ms;
     }
     
+    // Average (not most-recent) time for `name`, in milliseconds. Returns 0.0
+    // for a name that was never timed, which is indistinguishable from a
+    // section that genuinely averaged zero.
     double get_section_time_ms(const std::string& name) const {
         std::lock_guard<std::mutex> lk(mutex_);
         auto it = sections_.find(name);
@@ -204,6 +286,9 @@ private:
 // Convenience macros
 #define PROFILE_FRAME_BEGIN() Performance::Profiler::instance().begin_frame()
 #define PROFILE_FRAME_END() Performance::Profiler::instance().end_frame()
+// NOTE: the timer variable name is hardcoded as `_timer`, so two
+// PROFILE_SECTION uses in the SAME scope collide (redeclaration). Open a
+// nested block for the second one, or construct a `ScopedTimer` by hand.
 #define PROFILE_SECTION(name) Performance::ScopedTimer _timer(name)
 #define PROFILE_PRINT() Performance::Profiler::instance().print_stats()
 #define PROFILE_RESET() Performance::Profiler::instance().reset_stats()

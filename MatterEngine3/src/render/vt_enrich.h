@@ -71,6 +71,27 @@
 //     destruction through the same graveyard evict_lru uses, so an entry built
 //     only a frame ago -- whose acceleration-structure build may still be
 //     writing its scratch -- outlives the batch that referenced it.
+//   * the DESTRUCTOR is the one thing that is not deferred: it frees the live
+//     cache and the graveyard unconditionally, so the device must be idle
+//     with respect to this enricher's recorded work before it runs.
+//
+// THREADING. Nothing in the implementation takes a lock. An instance belongs
+// to the single thread that records enrich() into command buffers, and every
+// other entry point (invalidate_part, sample_count, max_footprint_meters,
+// stats) should be called from there too.
+//
+// TIME IS THE CALLER'S. There is no internal clock or frame counter: the
+// enricher's cache LRU and its deferred-destroy graveyard are both driven by
+// VtEnrichRequest::frame_index, taken from the FIRST request of each batch.
+// The value must not regress between batches (enrich() clamps it monotonically
+// and the comment there records what happened the one time it did).
+//
+// TUNABLES. The five per-page parameters (samples, strength, cap_texels,
+// cap_meters, min_ao) live in matter::VtEnrichSettings (matter/vt_budgets.h),
+// are re-read and clamped once per enrich() batch, and travel to the shader as
+// push constants — so an editor edit lands on the next enriched page with no
+// reload. Only the acceleration-structure cache cap is latched at create()
+// time, because it sizes the descriptor pool.
 
 #include <cstdint>
 #include <memory>
@@ -84,6 +105,22 @@ namespace matter { class VulkanDevice; }
 
 namespace vt {
 
+// The tier-2 enricher. Behind its pimpl it owns both compute pipelines, the
+// descriptor pool, the point sampler used to read the pool back, a ring of
+// per-batch transient resources, and a per-(variant, rung) cache whose entries
+// each own a chart SSBO, a triangle SSBO, the acceleration-structure input and
+// scratch buffers, a BLAS, a TLAS and a descriptor set.
+//
+// Lifetime: instances come only from create() — the constructor is private and
+// the type is neither copyable nor assignable. A null return is normal and
+// means "tier-2 is off" (see create()); the caller keeps rendering tier-1
+// pages, which are already correct. The matter::VulkanDevice handed to
+// create() is BORROWED and must outlive the enricher.
+//
+// Enrichment is purely additive and idempotent per fill but NOT per call: the
+// pass multiplies occlusion into the page, so running it twice on the same
+// filled page darkens it twice. Guaranteeing once-per-fill is the residency
+// layer's bookkeeping job.
 class VtEnricher final : public VtPageEnricher {
   public:
     // 128 payload + 4 border on each side (chart_atlas.h).
@@ -104,6 +141,10 @@ class VtEnricher final : public VtPageEnricher {
     static std::unique_ptr<VtEnricher> create(matter::VulkanDevice& vulkan,
                                               VkPipelineCache pipeline_cache,
                                               std::string& err);
+    // Destroys everything, including cached acceleration structures and any
+    // entries still waiting in the deferred-destroy graveyard — unlike
+    // invalidate_part(), this waits for nothing, so the device must already be
+    // idle with respect to work this enricher recorded.
     ~VtEnricher() override;
     VtEnricher(const VtEnricher&) = delete;
     VtEnricher& operator=(const VtEnricher&) = delete;
@@ -112,6 +153,17 @@ class VtEnricher final : public VtPageEnricher {
     // without a sampled ORM view, an out-of-range slot, or a mesh the
     // acceleration structure cannot be built from are skipped (fail-closed,
     // counted in stats). Requests past kMaxRequestsPerBatch are skipped too.
+    //
+    // Records only — no submit, no wait. One call consumes one slot of the
+    // kMaxBatchesInFlight ring and may record acceleration-structure builds
+    // for variants seen for the first time, so its cost is not uniform per
+    // page. batch[0].frame_index drives cache LRU and graveyard retirement for
+    // the whole call; every request in the batch is enriched with a single
+    // snapshot of the live settings. All requests in one batch must target the
+    // same pool ORM image (see the note in vt_enrich.cpp's enrich()).
+    //
+    // A skipped request simply leaves that page tier-1 correct — unlike the
+    // compositor, a skip here is not a visible failure and is not logged.
     void enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                 size_t count) override;
 
@@ -124,8 +176,18 @@ class VtEnricher final : public VtPageEnricher {
     // Rays per texel (MATTER_VT_ENRICH_SAMPLES, default 32, clamped 8..64).
     uint32_t sample_count() const override;
     // kEnrichFadeSpan x MATTER_VT_ENRICH_CAP_METERS (default 4 x 0.5 = 2.0 m).
+    // The page texel footprint, in METRES, past which enrichment contributes
+    // nothing; the residency layer uses it to skip coarse pages entirely.
     float max_footprint_meters() const override;
+    // Both re-read the live settings on every call rather than returning an
+    // init-time copy, so neither is constant across frames — do not cache the
+    // result past the frame that asked for it.
 
+    // Mixed semantics, on purpose: pages_enriched / requests_skipped /
+    // as_builds / as_evictions are monotonic lifetime counters incremented
+    // while enrich() RECORDS, whereas as_cached (live cache entries) and
+    // as_bytes (their accounted GPU allocation total, in bytes) are GAUGES
+    // recomputed at the end of each batch. Nothing resets any of them.
     struct Stats {
         uint64_t pages_enriched = 0;
         uint64_t requests_skipped = 0;

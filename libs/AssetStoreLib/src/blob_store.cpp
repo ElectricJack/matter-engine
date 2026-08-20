@@ -10,6 +10,26 @@
  * reader can address, and the next writer truncates each pack back to the size
  * the index recorded. There is no scan, no journal and no repair -- the torn
  * bytes are simply overwritten by the next append.
+ *
+ * Path: libs/AssetStoreLib/src/blob_store.cpp. Implements everything in
+ * ../include/asset_store.h except the RefTable (ref_table.cpp) and the hash
+ * and checksum functions (store_hash.cpp).
+ *
+ * File map, in order: the private Impl (all of BlobStore's state, pimpl'd out
+ * of the public header), index load and index write, the recovery truncate and
+ * the stale-pack sweep, the public BlobStore surface, compaction, and finally
+ * ReadBatch.
+ *
+ * What lives in the store directory:
+ *   p<gen>_<id>.pack   append-only blob records; <gen> bumps on every compact()
+ *   index.bin          the sole authority; rewritten whole and renamed in
+ *   index.<pid>.tmp    the staging file for that rename, pid-qualified
+ *   store.lock         the cross-process writer lock, held open for a session
+ *
+ * Threading: none. Nothing here locks, and nothing here is atomic. One
+ * BlobStore per thread is the contract; the only concurrency this file handles
+ * is between PROCESSES, and it handles it with the lock file plus the fact
+ * that a rename is all-or-nothing.
  */
 
 #include "../include/asset_store.h"
@@ -40,6 +60,10 @@ struct HashKeyHash {
     }
 };
 
+/* One row of the in-memory index and, minus `pending`, one 40-byte row of
+ * index.bin. `offset` points at the PAYLOAD, not at the record header that
+ * precedes it: reads seek straight there and never parse a header. `crc` is
+ * the payload's CRC-32 and is checked on every read. */
 struct IndexEntry {
     BlobHash hash;
     uint64_t offset = 0;   /* payload offset within the pack */
@@ -51,6 +75,10 @@ struct IndexEntry {
 
 /* A live handle on one pack file, opened lazily. */
 struct PackFile {
+    /* The two sizes are the crash-safety invariant in miniature: everything
+     * between committed_size and write_size is on disk but addressed by
+     * nothing, and the next writer open truncates it away. `f` stays null
+     * until the first read or write actually touches this pack. */
     os::File* f = nullptr;
     uint64_t committed_size = 0;   /* from the index: bytes the index vouches for */
     uint64_t write_size = 0;       /* including uncommitted appends              */
@@ -67,6 +95,15 @@ std::string join(const std::string& dir, const std::string& name) {
 
 /* ==================================================================== Impl */
 
+/* All of BlobStore's state, pimpl'd so that neither os::File nor
+ * <unordered_map> nor any OS type appears in the public header.
+ *
+ * No synchronisation anywhere in here -- a BlobStore is single-threaded by
+ * contract. Cross-process safety is the `lock` member on a writer handle plus
+ * the atomic index rename, nothing more.
+ *
+ * `index` holds committed entries and this writer's uncommitted ones together;
+ * `pending` distinguishes them and `dirty` says whether any exist. */
 struct BlobStore::Impl {
     StoreConfig cfg;
     std::string dir;
@@ -88,6 +125,10 @@ struct BlobStore::Impl {
     }
 
     std::string index_path() const { return join(dir, "index.bin"); }
+    /* The staging index is pid-qualified so that a leftover from a writer that
+     * died can never be confused with, or collide with, this one's. (refs.tmp
+     * in ref_table.cpp is not pid-qualified; the writer lock is what keeps
+     * that safe.) */
     std::string index_tmp_path() const {
         char buf[64];
         snprintf(buf, sizeof(buf), "index.%d.tmp", (int)
@@ -110,6 +151,11 @@ struct BlobStore::Impl {
         return join(dir, pack_name(gen, id));
     }
 
+    /* Lazily opens pack `id` of the CURRENT generation and caches the handle
+     * for the rest of the session. Returns null for an out-of-range id or an
+     * open failure, which every caller turns into IoError. A read-only store
+     * opens the pack read-only, so a reader cannot write through a mistake
+     * here. */
     os::File* pack_handle(uint32_t id) {
         if (id >= packs.size()) return nullptr;
         PackFile& p = packs[id];
@@ -131,6 +177,14 @@ struct BlobStore::Impl {
 
 /* ------------------------------------------------------------- index load */
 
+/* Reads index.bin whole, validates it -- trailing CRC first, then magic,
+ * version, declared size, and every entry naming a pack that is actually
+ * listed -- and only then swaps it in. A failure at any point returns false
+ * with the previously loaded index left completely untouched, which is what
+ * lets reload_index() fail safely on a live reader.
+ *
+ * A missing index.bin is not a failure: that is a brand-new store, and the
+ * result is generation 0 with no packs and no entries. */
 bool BlobStore::Impl::load_index(std::string* err) {
     std::string path = index_path();
     if (!os::file_exists(path)) {
@@ -203,6 +257,10 @@ bool BlobStore::Impl::load_index(std::string* err) {
 
 /* ------------------------------------------------------------ index write */
 
+/* Serialises a complete index to `path` and fsyncs it. This writes a STAGING
+ * file only -- the caller performs the rename that makes it authoritative, and
+ * that rename is the commit. `entries` is taken by value because it is sorted
+ * in place. */
 bool BlobStore::Impl::write_index(const std::string& path, uint32_t gen,
                                   const std::vector<uint64_t>& pack_sizes,
                                   std::vector<IndexEntry> entries,
@@ -283,6 +341,14 @@ void BlobStore::Impl::sweep_stale_packs() {
 BlobStore::BlobStore() : d_(new Impl()) {}
 BlobStore::~BlobStore() = default;
 
+/* Open order matters, and it is: create the directory, take the writer lock,
+ * load the index, truncate the packs back to what it vouches for, sweep packs
+ * from other generations. A writer therefore finishes all of its crash
+ * recovery before any caller can read a single byte.
+ *
+ * A read-only open skips every one of those steps -- no lock, no truncation,
+ * no sweep -- so it can never disturb a live writer, and it fails outright if
+ * the directory does not already exist. */
 std::unique_ptr<BlobStore> BlobStore::open(const StoreConfig& cfg, std::string* err) {
     std::unique_ptr<BlobStore> s(new BlobStore());
     Impl& d = *s->d_;
@@ -324,6 +390,11 @@ std::unique_ptr<BlobStore> BlobStore::open(const StoreConfig& cfg, std::string* 
     return s;
 }
 
+/* Append one blob. The bytes are hashed before anything else, so re-putting
+ * identical content costs a hash and nothing more. Everything written here is
+ * unaddressable by any other process until flush_index() renames a new index
+ * over the old one; this handle can read it back immediately only because its
+ * own in-memory index already names it. */
 Status BlobStore::put(const void* data, size_t len, BlobHash* out_hash) {
     Impl& d = *d_;
     if (d.read_only) return Status::ReadOnly;
@@ -336,6 +407,10 @@ Status BlobStore::put(const void* data, size_t len, BlobHash* out_hash) {
     if (it != d.index.end()) return Status::Ok;   /* dedup: already stored */
 
     /* Choose a pack: the last one, unless the record would overflow it. */
+    /* The `write_size != 0` guard below means a blob larger than
+     * max_pack_bytes still lands, alone, in a fresh empty pack instead of
+     * rolling over forever looking for room: max_pack_bytes is a rollover
+     * threshold, not a hard cap on file size. */
     uint64_t record_bytes = align_up8(kRecordHeaderBytes + (uint64_t)len);
     if (d.packs.empty()) d.packs.resize(1);
     uint32_t pid = (uint32_t)d.packs.size() - 1;
@@ -399,6 +474,14 @@ Status BlobStore::put(const void* data, size_t len, BlobHash* out_hash) {
     return Status::Ok;
 }
 
+/* The commit point. fsync every open pack first -- committing an index that
+ * named bytes still sitting in the page cache would be the one way to break
+ * the invariant -- then write index.<pid>.tmp, fsync that, and rename it over
+ * index.bin.
+ *
+ * Returns true immediately when nothing is pending. A false return leaves the
+ * store exactly as it was: the previous index is still the authority, and the
+ * pending appends stay pending. */
 bool BlobStore::flush_index() {
     Impl& d = *d_;
     if (d.read_only) return false;
@@ -429,6 +512,13 @@ bool BlobStore::flush_index() {
     return true;
 }
 
+/* Cheap when nothing changed: one stat of index.bin, and the whole load is
+ * skipped when the stamp matches. The stamp is derived from (mtime, size) --
+ * see os::stamp_of -- and on POSIX st_mtime has one-second granularity, so two
+ * commits inside the same second that happen to produce the same index length
+ * are indistinguishable to this check. Returns true both for "reloaded" and
+ * for "nothing to do"; false means the file was there but unreadable or failed
+ * its CRC, in which case the previous index is retained. */
 bool BlobStore::reload_index() {
     Impl& d = *d_;
     uint64_t stamp = 0;
@@ -508,6 +598,22 @@ std::vector<BlobHash> BlobStore::all_hashes() const {
 
 /* ------------------------------------------------------------- compaction */
 
+/* Rewrite the store into generation+1, keeping only `keep` and laying it out
+ * in exactly that order.
+ *
+ * Sequence: flush pending puts, stream each survivor through a CRC check into
+ * fresh p<gen+1>_*.pack files, write and rename the new index (that rename is
+ * the commit), adopt the new generation in memory, then sweep the old packs.
+ *
+ * Duplicates in `keep` are ignored, hashes absent from the index are skipped,
+ * and a survivor whose payload fails its CRC is dropped instead of copied --
+ * compaction is therefore also the point at which bit rot leaves the store.
+ *
+ * Any failure before the rename leaves the old generation completely intact;
+ * the half-written new packs are unreachable and get swept at a later open.
+ * After the rename the old packs are deleted best-effort. Every BlobLocation
+ * and pack id handed out before this call is stale afterwards, and a reader
+ * that has not reloaded starts seeing IoError rather than wrong bytes. */
 bool BlobStore::compact(const BlobHash* keep, size_t keep_count, CompactStats* out) {
     Impl& d = *d_;
     if (d.read_only) return false;
@@ -664,6 +770,16 @@ void ReadBatch::clear() {
 const ReadResult& ReadBatch::result(size_t i) const { return d_->results[i]; }
 const BatchStats& ReadBatch::stats() const { return d_->stats; }
 
+/* Synchronous. Resolves every request against the store's CURRENT in-memory
+ * index -- submit() never reloads it for you -- sorts the hits into physical
+ * (pack, offset) order, coalesces near neighbours, and reads each coalesced
+ * chunk exactly once.
+ *
+ * Returns true even when nothing could be read: per-blob outcomes live in each
+ * ReadResult::status. A null `arena`, or a pack that will not open, surfaces as
+ * IoError on every affected result, not as a false return. Results are rebuilt
+ * from scratch on each call, so re-submitting the same batch reads everything
+ * again and allocates from the arena again. */
 bool ReadBatch::submit(MemArena* arena) {
     Impl& b = *d_;
     BlobStore::Impl& d = *b.store->d_;

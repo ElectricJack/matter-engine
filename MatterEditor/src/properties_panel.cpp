@@ -1,3 +1,31 @@
+// MatterEditor/src/properties_panel.cpp
+//
+// How a frame of this panel works:
+//
+//   1. draw_properties_contents() classifies the selection. A mixed
+//      entity + baked-root selection is refused outright (they have nothing in
+//      common to show); an all-baked-root selection draws read-only info cards
+//      and returns; otherwise the selected entity ids and their HierarchyRows
+//      are gathered from the EditorModel.
+//   2. Only components present on EVERY selected entity are drawn, in
+//      PropertiesRegistry order, one CollapsingHeader each. Transform is
+//      exempt from that test because every scene entity has one.
+//   3. Each field is rendered by the per-WidgetKind function matching its
+//      registry entry. Those functions read through FieldCommands, cache the
+//      result, draw from the cache, and on edit fan the new value out to every
+//      selected id.
+//   4. Components with a specialized editor get their extra controls appended
+//      inside the same header; an "+ Add Component" footer closes the panel.
+//
+// The Play-mode rule shapes most of the code: while SimulationMode::Play is
+// active the ECS is NOT re-read (`live` is false) and every widget is wrapped
+// in ImGui::BeginDisabled, so the panel shows the last values captured before
+// Play started rather than a per-frame changing readout of the simulation.
+//
+// Everything here is main/UI thread only, and every mutation goes through the
+// FieldCommands/ComponentCommands callbacks — this file never touches flecs or
+// a WorldSession.
+//
 // Phase 5 Task 7 — Properties inspector panel implementation.
 // Task 9 — Baked root properties: read-only info card for BakedRoot
 // selections, sourced from the part_graph_snapshot::Snapshot.
@@ -93,6 +121,15 @@ std::string make_cache_key(const char* component, const char* field, uint64_t pr
 // fans the new value out to every selected entity.
 // ---------------------------------------------------------------------------
 
+// The seven field renderers below share one shape, and one convention worth
+// stating once: `ids[0]` is the PRIMARY entity — its value is what is shown
+// and cached, and the rest of the selection is consulted only to decide the
+// "(mixed)" label. An entity whose getter FAILS is skipped rather than
+// counted as disagreement, so a component present on some entities but not
+// all cannot make the field read as mixed (it would already have been
+// filtered out one level up, which only shows components common to all).
+// `live == false` (Play mode) skips the read entirely and draws whatever the
+// cache last held.
 void draw_float_field(PropertiesPanelState& state, const FieldCommands& fields,
                       const std::vector<SceneEntityId>& ids, const char* component,
                       const FieldWidget& fw, bool is_slider, bool live) {
@@ -393,6 +430,17 @@ void draw_field(PropertiesPanelState& state, const FieldCommands& fields,
 // is true. Multi-select: every action button fans out to every id in `ids`.
 // ---------------------------------------------------------------------------
 
+// PartInstance's specialized editor: shows the current part and opens a
+// filtered picker popup that assigns a new one to every selected entity.
+//
+// TWO WIDTH GOTCHAS live here. A part hash is 64-bit everywhere else in the
+// engine, but the field accessors only expose it as uint32_t, so
+// `current_hash` holds the low 32 bits: the "Part: 0x%08X" fallback label is a
+// truncated hash, and the `p.first == static_cast<uint64_t>(current_hash)`
+// name lookup can only match a part whose full hash happens to fit in 32 bits.
+// This is dormant today because main.cpp's list_available_parts is a stub that
+// returns an empty list, so the popup always shows "No parts available" and
+// assign_part (which does take a full uint64_t) is never reached.
 void draw_part_instance_editor(SpecializedEditors& specialized, const FieldCommands& fields,
                                const std::vector<SceneEntityId>& ids) {
     PartEditorCommands& part_cmds = specialized.part_commands();
@@ -456,6 +504,17 @@ void draw_part_instance_editor(SpecializedEditors& specialized, const FieldComma
     }
 }
 
+// RigidBody's specialized editor: four runtime actions, each fanned out to
+// every selected entity. `camera_position` is world-space metres and is what
+// "Teleport To Camera" writes into the transform.
+//
+// The impulse and target-velocity drag boxes are function-local `static`s —
+// one shared pair for the whole application, not per entity and not per panel.
+// Selecting a different entity therefore keeps whatever was last typed, which
+// is convenient for repeating a nudge and surprising if you expect it to
+// reset. Several of these actions are approximations or stubs on the main.cpp
+// side (see the closures wired there); the buttons draw regardless, and a
+// click on one whose callback is null is silently discarded.
 void draw_rigidbody_editor(SpecializedEditors& specialized,
                            const std::vector<SceneEntityId>& ids,
                            const matter::Float3& camera_position) {
@@ -542,6 +601,11 @@ void draw_specialized_editor(SpecializedEditors& specialized, const FieldCommand
     }
 }
 
+// The "+ Add Component" menu. Offers only components that are user-addable AND
+// absent from EVERY selected entity: the registry is probed with rows[0]'s
+// component list, then each candidate is rejected if any other selected row
+// already carries it. Adding fans out to all selected ids, so the menu can
+// never produce a partial add. Only drawn outside Play mode.
 void draw_add_component_footer(const PropertiesRegistry& registry,
                                const std::vector<SceneEntityId>& ids,
                                const std::vector<const HierarchyRow*>& rows,
@@ -589,6 +653,15 @@ const part_graph_snapshot::Node* find_node_by_hash(
     return nullptr;
 }
 
+// Read-only info card for one baked-root selection: module, source path,
+// resolved hash (with a clipboard copy), child count, and the resolved params
+// JSON. Nothing here is editable — a baked root is an output of the bake, not
+// a scene object.
+//
+// Handles both "no snapshot yet" (before the first bake) and "hash not in the
+// snapshot" with a message rather than a blank panel. "Open Source" hands the
+// node's source path to the OS default handler via os_open_file(), and is
+// disabled when the node carries no path.
 void draw_baked_root_card(const SelectedObject& obj,
                           const part_graph_snapshot::Snapshot* snapshot) {
     if (!snapshot) {

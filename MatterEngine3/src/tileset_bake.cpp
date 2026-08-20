@@ -1,3 +1,36 @@
+// tileset_bake.cpp — the tileset settle stage.
+//
+// Implements everything declared in tileset_bake.h. Read that header first: it
+// carries the instance-ordering contract, the torus conventions and the
+// lifetime rule for `SettlePlan::colliders`, all of which this file depends on
+// and none of which are repeated here.
+//
+// The file is four sections, in order:
+//   1. Local helpers -- `mat_to_pose` (a dropChild's 4x4 row-major transform
+//      into a `Pose`, rejecting non-uniform scale) and `base_height` (sampling
+//      the authored per-tile base heightfield).
+//   2. `build_settle_plan` -- spec to plan. Torus heightfield, collider
+//      memoization (a base fit per (hash, override), then a scaled fit per
+//      (hash, override, scale)), shared drops, then each script layer:
+//      physics layers become `BodySpawn`s, non-physics layers are snapped to
+//      the base analytically here and never see the simulator.
+//   3. `settle_tileset` -- register sync groups, settle drops as one batch,
+//      settle each physics layer in declaration order, finalize, then read the
+//      poses back in exactly the contracted instance order. Instrumented with
+//      Bake Lab spans/counters (`BAKE_SPAN` / `BAKE_COUNT`), which are no-ops
+//      without a collector.
+//   4. The settle cache -- plain little-endian binary, written to a `.tmp` and
+//      renamed. Load is fail-closed: every count is validated against the
+//      remaining file bytes before a resize, and any inconsistency is reported
+//      as a miss (false), never as an error and never as a throw.
+//
+// A NOTE ON POSE READBACK. `settle_tileset` walks `world.poses()` with a single
+// running index and assumes it is laid out drops-then-layers in spawn order --
+// i.e. that the plan's `drop_provs` and each `LayerPlan::provs` are exactly
+// parallel to the spawns handed to `settle_layer`. That parallelism is the
+// invariant that keeps `child_hash`/`scale`/`layer` attached to the right pose;
+// anything that reorders spawns must reorder the provenance vectors with them.
+
 #include "tileset_bake.h"
 #include "tileset_layout.h"
 #include "tileset_part_collider.h"
@@ -109,6 +142,11 @@ static bool mat_to_pose(const float m[16], Pose& out, std::string& err)
 // ---------------------------------------------------------------------------
 // Sample the tiled base heightfield at world (x, z).
 // ---------------------------------------------------------------------------
+// `tile_size` is ONE tile's edge in metres (cfg.size), not the torus edge: the
+// base grid is per-tile and repeats, so world coordinates are folded modulo one
+// tile before lookup. Nearest-neighbour, not interpolated. Returns 0 for a
+// tileset that never called `base()`, which is the flat-ground case rather than
+// an error.
 static float base_height(const BaseField& base, float x, float z, float tile_size)
 {
     if (!base.set) return 0.0f;
@@ -601,6 +639,12 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 //   uint32_t version  = 1
 //   uint64_t key                 (lookup key written at save time)
 //   uint64_t version_digest      (matter_version::digest(); M4)
+//
+// STALE ABOVE, corrected here rather than rewritten: the two literals in the
+// header sketch have drifted from the constants that actually implement it.
+// `kSettleCacheMagic` is 0x434C5453 ('STLC' little-endian), not 0x544C5343,
+// and `kSettleCacheVersion` is 2, not 1 -- both are defined immediately below
+// this block and are what save writes and load compares.
 //
 // Body (all little-endian):
 //   TileConfig cfg               (5 floats + 1 uint64 + 2 floats = fixed layout)

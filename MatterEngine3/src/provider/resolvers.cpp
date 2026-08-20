@@ -1,3 +1,33 @@
+// MatterEngine3/src/provider/resolvers.cpp
+//
+// Implements SectorLodResolver (declared in sector_resolver.h): the per-frame
+// answer to "which instances render this frame, and at which LOD rung?".
+//
+// resolve() runs once per frame on the caller's thread and does three things:
+//   1. Re-bin the world's instances into sector_grid sectors, but ONLY when
+//      WorldState::version() changed since the last call. The cached binning is
+//      the Stage 1 CPU-floor fix — re-binning ~44k instances into a std::map
+//      every frame dominated the frame time.
+//   2. lod_select::select_sector_lods_ex picks one rung per (sector, part) from
+//      the camera position. This is exact per frame and never cached, so the
+//      output matches the uncached implementation exactly.
+//   3. Emit one ResolvedInstance per instance in every sector kept by the
+//      activation test, plus expanded children for parts past their inline
+//      cutover.
+//
+// Distances, not projected sizes. Both remaining comparisons here go through
+// render/lod_distance.h — lod::normalized_switch_distance, lod::reach,
+// lod::select_rep — which is THE single LOD rule in the engine (the Vulkan cull
+// shader and the other CPU mirror call the same header). Do not reintroduce a
+// projected-size comparison here; the in-function comment below carries the
+// algebra proving the two forms agree.
+//
+// Units and spaces: transforms, sector centres and the camera position are all
+// world space; pitch_ and active_radius_ are in the same units, and the
+// distances handed to lod_distance are distances from the eye. Output order is
+// sector-map order (std::map over SectorCoord), so it is deterministic for a
+// given world version but is neither world order nor camera order.
+
 #include "sector_resolver.h"
 #include "matrix_math.h"
 #include "render/lod_distance.h"   // lod::normalized_switch_distance / reach / select_rep
@@ -11,6 +41,12 @@
 
 namespace viewer {
 
+// Stable identity for a child emitted by inline-cutover expansion. Folds the
+// parent's stable id, the child's part hash and the child's 1-based ordinal
+// with the usual hash_combine constants, so the same child of the same parent
+// gets the same id on every frame — anything upstream keyed on stable_id
+// depends on that. A result of 0 is remapped to 1, keeping it distinct from the
+// 0 that ResolvedInstance::stable_id default-initializes to.
 static uint64_t child_stable_id(uint64_t parent, uint64_t part_hash,
                                 uint32_t ordinal) {
     uint64_t hash = parent ^ (part_hash + 0x9e3779b97f4a7c15ull +
@@ -82,6 +118,10 @@ SectorLodResolver::resolve(const WorldState& state,
         float sy = (c.y + 0.5f) * pitch_;
         float sz = (c.z + 0.5f) * pitch_;
         float dx = sx - cam_pos.x, dy = sy - cam_pos.y, dz = sz - cam_pos.z;
+        // Activation is a sphere test on the sector CENTRE, not on its bounds:
+        // a sector is dropped as soon as its centre leaves active_radius_, even
+        // if part of it is still inside. That is why active_radius_ is derived
+        // from the outermost terrain LOD band rather than dialled by hand.
         if (std::sqrt(dx*dx + dy*dy + dz*dz) > active_radius_) continue;
 
         static const std::map<uint64_t, lod_select::LodChoice> kNoLods;
@@ -99,6 +139,11 @@ SectorLodResolver::resolve(const WorldState& state,
 
             auto pit = lods.find(inst.resolved_hash);
             const lod_select::PartLod* pl = (pit != lods.end()) ? &pit->second : nullptr;
+            // Inside the cutover distance the parent is emitted as its TRUNK
+            // ONLY (segment 0) and each of its refs is emitted beside it as a
+            // separate instance with its own rung (segment 1). Outside it, the
+            // parent is emitted whole (segment 1, the tail of the loop) and no
+            // children are expanded. inline_cutover <= 0 disables the split.
             if (pl && pl->inline_cutover > 0.0f &&
                 dist_to_eye <= lod::normalized_switch_distance(pl->inline_cutover)
                                    * lod::reach(pl->bound_radius, 1.0f, pixel_budget_)) {

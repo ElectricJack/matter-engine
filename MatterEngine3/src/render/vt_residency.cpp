@@ -1,3 +1,70 @@
+// MatterEngine3/src/render/vt_residency.cpp
+//
+// Implementation of VtResidency, the GPU-facing half of chart-space virtual
+// texturing. vt_residency.h carries the CONTRACT — the indirection packing that
+// shaders_vk/vt_common.glsl must agree with, the GPU-timeline recycling rules,
+// and every public method's pre/postconditions. Read it first; this file is the
+// machinery behind it.
+//
+// WHAT IS HERE, in file order:
+//   - anonymous helpers: the two key folds and the two pipeline-barrier wrappers
+//   - resource creation and teardown (create_buffer, create_array_image,
+//     create_pool_image, init, shutdown)
+//   - variant registration and release (register_variant, release_rung_alias,
+//     release_variant_key, release_variant, update_variant_surface,
+//     write_variant_record, invalidate_all_content)
+//   - the fill queue (queue_page) and the WP-H tier-2 enrichment queue
+//     (queue_enrich, drain_enrich, slot_reset_tier)
+//   - feedback consumption (drain_feedback) and the per-frame recording
+//     (refresh_budgets, begin_frame, ensure_feedback, record_feedback_clear,
+//     record_frame, record_feedback_readback)
+//
+// THREADING. Every method here belongs to the thread that owns the Vulkan frame
+// — VkSceneRenderer's render thread. Nothing is internally synchronised: the
+// fill and enrich queues, the slot pool, the table allocator and the CPU mesh
+// copies are all plain single-threaded state.
+//
+// PER-FRAME ORDER, as VkSceneRenderer's vt_begin_frame / vt_record_pre_pass /
+// vt_record_post_pass hooks establish it:
+//   begin_frame(serial, slot)     CPU only: refresh budgets, collect the
+//                                 graveyards, consume this slot's readback
+//   ensure_feedback(w, h)         resize the 1/8-res feedback target
+//   record_feedback_clear(cmd)  \ both BEFORE vkCmdBeginRendering — they are
+//   record_frame(cmd)           / transfers plus the filler's own passes
+//   ... the G-buffer pass writes feedback as storage ...
+//   record_feedback_readback(cmd) AFTER vkCmdEndRendering
+//
+// M6 — WHAT A "VARIANT" IS KEYED BY, and the single easiest thing to get wrong
+// in this file. A LAYER is keyed by the PARAMETERISATION:
+// variant_key(hash, chart_atlas::parameterisation_id(atlas)). The caller-facing
+// (hash, rung) pair is only an ALIAS: param_key_of_rung_ maps the alias onto the
+// layer key, layer_of_ maps the layer key onto the layer index, and
+// VariantRung::alias_refs refcounts the rungs sharing it. Every rung of a part
+// that shares a chart table therefore shares one page set — which is the point,
+// since the pages then survive a rung switch. Any code that recomputes
+// variant_key(hash, rung) and looks it up in layer_of_ directly is wrong: that
+// key is not registered there.
+//
+// FAIL-CLOSED EVERYWHERE. Every gate in register_variant (unusable layout, no
+// free layer, mesh budget, indirection arena, page pool) rejects the whole
+// registration rather than half-completing it, and the rung then draws through
+// the legacy per-material path. Rejections are counted (Stats::rejected_variants)
+// and the first one logs loudly, because on screen a rejection is only a
+// uniform far field with a boundary — nothing else in the pipeline reports it.
+//
+// SIZING NOTE carried from the header: the indirection is a BUFFER because the
+// old one-array-layer-per-(variant, rung) image ran into NVIDIA's per-format
+// maxArrayLayers of 2048 for R16G16_UINT, which capped the simultaneously
+// registered working set. A buffer has no such wall; capacity is now just
+// MATTER_VT_INDIRECTION_MB of 4-byte entries.
+//
+// TUNABLES all come from matter::VtResidencyBudgets (matter/vt_budgets.h) — no
+// local getenv reads remain except MATTER_VT_DEBUG_GENERATIONS, which arms the
+// abort-on-failure recycling audit rather than setting a value. The four LIVE
+// budgets are re-read every begin_frame (refresh_budgets), so an editor slider
+// takes effect on the next frame; max_variants_ and the indirection arena size
+// a buffer at init and are not live-editable.
+
 #include "vt_residency.h"
 
 #include <algorithm>
@@ -13,10 +80,24 @@
 namespace vt {
 namespace {
 
+// Fold a (part hash, discriminator) pair into one 64-bit map key by xoring in a
+// golden-ratio multiple of discriminator + 1 (so discriminator 0 is not the
+// identity).
+//
+// The parameter is named `rung` for history, but under M6 this is called with
+// TWO different discriminators and the distinction matters:
+//   variant_key(hash, rung)                      -> the caller-facing ALIAS key,
+//                                                   the key of param_key_of_rung_
+//   variant_key(hash, parameterisation_id(atlas)) -> the LAYER key, the key of
+//                                                   layer_of_
+// Looking an alias key up in layer_of_ finds nothing for any unified part.
 uint64_t variant_key(uint64_t hash, uint32_t rung) {
     return hash ^ (0x9E3779B97F4A7C15ull * (rung + 1u));
 }
 
+// Pack (layer, mip, page y, page x) into the single key queued_keys_ uses to
+// find an already-queued fill. 16 bits each for px and py, 8 for the mip, the
+// layer above. Nothing ever decodes it — it only has to be injective.
 uint64_t page_key(uint32_t layer, const VtPageKey& p) {
     return (static_cast<uint64_t>(layer) << 40) |
            (static_cast<uint64_t>(p.mip) << 32) |
@@ -41,6 +122,15 @@ bool env_flag(const char* name) {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+// The two vkCmdPipelineBarrier2 wrappers every recorded path in this file goes
+// through. `barrier` covers mip 0 and ALL array layers, which is the whole
+// image here: pool and feedback images are single-mip arrays by construction
+// (VT pages are addressed through the indirection, not through hardware mips).
+//
+// The caller supplies the OLD layout because this file tracks each image's
+// current layout itself (PoolImage::layout) rather than re-querying, and updates
+// that field right next to the call. Keeping the two together is what stops the
+// tracked layout and the recorded transition from drifting apart.
 void barrier(VkCommandBuffer cmd, VkImage image, uint32_t layers,
              VkImageLayout old_layout, VkImageLayout new_layout,
              VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
@@ -107,6 +197,9 @@ namespace {
 }
 }  // namespace
 
+// RAII: the destructor runs shutdown(), which is idempotent and safe on an
+// object that was never init()ed (it early-outs on the null device). It does
+// NOT wait the device idle — see shutdown().
 VtResidency::VtResidency() = default;
 VtResidency::~VtResidency() { shutdown(); }
 
@@ -114,6 +207,19 @@ VtResidency::~VtResidency() { shutdown(); }
 // Resource creation
 // ---------------------------------------------------------------------------
 
+// One buffer with its own dedicated VkDeviceMemory — there is no suballocator
+// in this layer, so keep the call count low rather than the sizes small. The
+// allocation is registered with the engine's GPU memory census, and a
+// HOST_VISIBLE buffer is mapped permanently (Buffer::mapped) for the life of the
+// object; nothing here ever unmaps and remaps.
+//
+// `properties` is REQUIRED, `preferred` is nice-to-have and falls back to
+// `properties` when zero — that split is what lets the feedback readback ask for
+// HOST_CACHED while still accepting a device that cannot offer it.
+//
+// Destroys `out` first, so this doubles as a resize. A zero size leaves an empty
+// but valid Buffer and returns true. Every failure path destroys what it built,
+// so `out` is never left half-constructed.
 bool VtResidency::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                 VkMemoryPropertyFlags properties, Buffer& out,
                                 std::string& error,
@@ -168,6 +274,9 @@ bool VtResidency::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
     return true;
 }
 
+// Unmaps, destroys, un-tracks and zeroes. Safe on an already-empty Buffer, and
+// safe after shutdown() cleared vulkan_ (it then just resets the struct — the
+// device that owned the handles is gone).
 void VtResidency::destroy_buffer(Buffer& b) {
     if (!vulkan_) {
         b = Buffer{};
@@ -185,6 +294,11 @@ void VtResidency::destroy_buffer(Buffer& b) {
 }
 
 namespace {
+// The 2D array image helper both the page pool and the feedback target are built
+// from. mipLevels is 1 by construction: a pool layer has no hardware mip chain,
+// because VT mips are virtual and resolved through the indirection instead.
+// Device-local memory only. Rolls back the image, memory and census entry on any
+// failure, and reports the allocation size so the caller can un-track it later.
 bool create_array_image(matter::VulkanDevice& vulkan, VkFormat format,
                         uint32_t width, uint32_t height, uint32_t layers,
                         VkImageUsageFlags usage, VkImage& image,
@@ -260,6 +374,15 @@ bool create_array_image(matter::VulkanDevice& vulkan, VkFormat format,
 }
 }  // namespace
 
+// (Re)creates one CHANNEL of the physical page pool: a square
+// kVtPoolLayerEdgeTexels array image of `layers` layers. Usage is SAMPLED plus
+// TRANSFER_DST and nothing else — deliberately no STORAGE, which is why fills
+// reach the pool exclusively through transfer copies and why
+// VtPoolBinding::transfer_dst_layout is set rather than negotiated per filler.
+// A filler that needed GENERAL could not exist without changing this function.
+//
+// Destroys whatever the channel held first, and leaves the tracked layout at
+// UNDEFINED; the first record_frame transitions it.
 bool VtResidency::create_pool_image(uint32_t channel, VkFormat format,
                                     uint32_t layers, std::string& error) {
     PoolImage& out = pool_[channel];
@@ -298,6 +421,27 @@ void VtResidency::destroy_pool_image(PoolImage& image) {
     image = PoolImage{};
 }
 
+// Brings the runtime up. Called lazily by the renderer on the first
+// chart-bearing part, because the physical pool is large and a world with no
+// charts should pay nothing for it. Returns true immediately if already up.
+//
+// ORDER MATTERS at the top: the env/registry budget pass runs before pool_pages
+// is read, because that value is now one of the budgets. The pool size is then
+// derived either from pool_mb (at 7 bytes per page texel: BC7 + BC5 + BC7 +
+// RGBA8) or from an explicit page count, rounded UP to whole layers — and a
+// layer count past the device's maxImageArrayLayers is a hard init failure, not
+// a clamp.
+//
+// After that, in order: per-channel format-support check, the four pool images,
+// the device-local indirection buffer, the zeroed staging for the one-time pool
+// scrub, the linear and point samplers, the variant record buffer, the
+// per-frame-slot table staging ring, the slot pool and table allocator, the free
+// layer list, the pool binding handed to fillers, and finally a stub filler if
+// none was installed.
+//
+// ANY failure calls shutdown() and returns false with `error` set. That is not
+// fatal to the frame: the renderer keeps every part on the legacy path and
+// records vt_unavailable_reason_.
 bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     if (ready_) return true;
     vulkan_ = &vulkan;
@@ -546,6 +690,13 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     return true;
 }
 
+// Full teardown, in dependency order: the filler and enricher first (they own
+// their own GPU objects and reference the pool binding), then the pool and
+// feedback images, samplers and buffers, then every piece of CPU bookkeeping.
+// Idempotent, and safe on an object that was never init()ed.
+//
+// It does NOT wait the device idle. Every caller must already have done so —
+// the destructor's caller included.
 void VtResidency::shutdown() {
     if (!vulkan_) {
         ready_ = false;
@@ -594,6 +745,12 @@ VkImageView VtResidency::pool_view(uint32_t channel) const {
     return channel < kVtChannelCount ? pool_[channel].view : VK_NULL_HANDLE;
 }
 
+// Installs the tier-1 page filler, replacing the stub init() puts in when none
+// was set. The residency layer OWNS it; the renderer borrows the pointer back
+// through filler(). Already-queued fills are not re-targeted: each one executes
+// against whichever filler is installed when record_frame drains it, so a swap
+// must be paired with invalidate_all_content() if the new filler bakes
+// different content.
 void VtResidency::set_filler(std::unique_ptr<VtPageFiller> filler) {
     filler_ = std::move(filler);
 }
@@ -657,6 +814,25 @@ void VtResidency::refresh_indirection_stats() {
     stats_.graveyard_layers = static_cast<uint32_t>(layer_graveyard_.size());
 }
 
+// Implements the header's contract; two things about the IMPLEMENTATION are
+// worth knowing before editing it.
+//
+// (1) The M6 fast paths come first and are documented inline: an exact re-
+// registration is idempotent, a rung whose parameterisation already has a layer
+// ALIASES it (taking a reference, spending no pages and no mesh budget), and a
+// strictly FINER rung tears the layer down and rebuilds it from its own mesh.
+//
+// (2) The gates below run in a fixed order chosen so a rejection never leaves
+// partial state: usable layout -> free layer slot -> CPU mesh budget ->
+// indirection table block -> pinned tail page slot. Each of the last two rolls
+// the previous one back if it fails (tables_.release_now is legal there because
+// no frame has ever seen the allocation). NOTHING is mutated until all of them
+// pass; only then is the caller's mesh ADOPTED (deep-copied, with v.context
+// repointed at the copies), the tail page mapped and force-queued, and the GPU
+// record written.
+//
+// The return value is the TRANSPORT slot — layer index + 1 — so that
+// kVtNoSlot (0) can mean "this rung has no VT" everywhere downstream.
 uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
                                        const chart_atlas::ChartAtlasRung& atlas,
                                        const VtPartContext& context) {
@@ -931,6 +1107,13 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     return layer + 1u;
 }
 
+// Tears down ONE LAYER, named by its parameterisation key. This is the bottom
+// half: callers hold (hash, rung) aliases and must come through
+// release_rung_alias() below, which refcounts them — calling this directly frees
+// a layer other live rungs may still be drawing through.
+//
+// Returns false when the key names no live layer, which callers use to decide
+// whether the stats they refresh could have changed.
 bool VtResidency::release_variant_key(uint64_t key) {
     const auto found = layer_of_.find(key);
     if (found == layer_of_.end()) return false;
@@ -991,6 +1174,9 @@ bool VtResidency::release_rung_alias(uint64_t alias) {
     return release_variant_key(key);
 }
 
+// Releases every rung of one part. The 0..31 sweep is not arbitrary: 32 is the
+// width of the renderer's chart-rung mask (viewer::kVkMaxChartRung), so a rung
+// numbered past it could never have been registered in the first place.
 void VtResidency::release_variant(uint64_t variant_hash) {
     if (!ready_) return;
     // Walks rung aliases, NOT layer keys. Under M6 a part's layer is keyed by
@@ -1083,6 +1269,19 @@ uint32_t VtResidency::slot_for(uint64_t variant_hash, uint32_t rung) const {
     return found == layer_of_.end() ? kVtNoSlot : found->second + 1u;
 }
 
+// Swaps one registered rung's tape classification in place (the header carries
+// the caller contract, including the wait-idle and the invalidation the caller
+// owes afterwards). Two implementation details:
+//
+//  - Every validity check runs BEFORE any mutation, so a call with mismatched
+//    sizes returns false with the old classification completely intact.
+//  - The mesh-byte accounting is applied as a DIFFERENCE against the bytes this
+//    variant previously held, on both the per-variant and the pool-wide total.
+//    Repeated updates therefore cannot inflate mesh_bytes_used_ and slowly
+//    starve registration.
+//
+// `strip` (no materials, null arrays, or an implausible material count) is a
+// normal outcome, not an error: the rung reverts to the TriEx materialId path.
 bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
                                          const uint8_t* weights,
                                          size_t weight_bytes,
@@ -1164,6 +1363,16 @@ bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
     return true;
 }
 
+// Rebuilds one layer's GPU-visible record (the struct vt_common.glsl's
+// VtVariantRecord mirrors) from its layout and table block, and marks the whole
+// record buffer dirty — record_frame re-memcpys it wholesale, which is cheaper
+// than tracking sub-ranges of a small host-visible buffer.
+//
+// This is also the audit point for record reuse under
+// MATTER_VT_DEBUG_GENERATIONS: rewriting a record before its previous owner's
+// retire serial IS the stale-mapping bug (an in-flight frame's draw records
+// would resolve the old variant through the new variant's record), so the audit
+// aborts rather than reporting.
 void VtResidency::write_variant_record(const VariantRung& v) {
     if (debug_generations_) {
         // A record may only be (re)written for a slot whose previous owner has
@@ -1198,6 +1407,23 @@ void VtResidency::write_variant_record(const VariantRung& v) {
 // Fill queue
 // ---------------------------------------------------------------------------
 
+// Request one page of one variant. Not necessarily a queue push:
+//
+//  - An already-resident page just TOUCHES its slot and returns. The touch is
+//    load-bearing twice over — it keeps the slot warm for the LRU and it arms
+//    this frame's eviction hysteresis, so a page requested this frame can never
+//    be this frame's eviction victim.
+//  - `force` bypasses that fast-out. It is how a pinned tail gets filled at all:
+//    a tail is mapped from the moment it is registered (that mapping is what
+//    makes every unmapped entry resolvable), so without `force` it would keep
+//    whatever undefined bytes its slot held.
+//  - `preassigned_slot` marks a TAIL fill — rewrite this slot in place instead
+//    of acquiring one. record_frame budgets tail fills separately from
+//    feedback-driven page fills for exactly this reason.
+//
+// Duplicate requests coalesce onto the existing entry, keeping the HIGHER
+// priority. Priority is how many mips coarser the currently-served page is, so
+// a page whose only coverage is the variant's tail is the most starved and wins.
 void VtResidency::queue_page(VariantRung& v, VtPageKey page, bool force,
                              uint32_t preassigned_slot) {
     if (!v.live || !v.indirection.in_range(page.mip, page.px, page.py)) return;
@@ -1239,6 +1465,15 @@ void VtResidency::queue_page(VariantRung& v, VtPageKey page, bool force,
 // WP-H tier-2 enrichment queue
 // ---------------------------------------------------------------------------
 
+// Forget everything tier 2 knows about one physical slot: clear its tier bit,
+// decrement the enriched-page count, and drop any pending enrichment candidate
+// naming it. Called from every site where a slot's CONTENT changes or goes away
+// — eviction, release, a fresh fill, a global invalidation — because enrichment
+// multiplies into the page IN PLACE: a stale tier bit either double-darkens a
+// page or claims occlusion baked for texels that have since been replaced.
+//
+// O(enrich queue): removing from the middle of enrich_queue_ reindexes
+// enrich_queued_slot_.
 void VtResidency::slot_reset_tier(uint32_t slot) {
     if (slot < slot_tier_.size()) {
         if (slot_tier_[slot] != 0 && stats_.enriched_pages != 0)
@@ -1258,6 +1493,11 @@ void VtResidency::slot_reset_tier(uint32_t slot) {
     stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
 }
 
+// Nominate a freshly filled page as a tier-2 candidate. A no-op when no
+// enricher is installed or the per-frame budget is zero, so tier 2 costs
+// literally nothing on a device without ray tracing. At most one candidate per
+// physical slot (a second request replaces the first), and the queue is hard
+// capped so a thrashing pool cannot grow it without bound.
 void VtResidency::queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot) {
     if (!enricher_ || max_enrich_per_frame_ == 0) return;
     if (slot >= slot_tier_.size()) return;
@@ -1294,6 +1534,16 @@ void VtResidency::queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot) {
     stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
 }
 
+// Records up to max_enrich_per_frame_ tier-2 enrichments into `cmd`. Each
+// candidate is re-validated against the slot pool first — the slot must still
+// hold exactly the page that was queued, since an eviction or re-fill in between
+// makes it stale (the re-fill queued its own candidate, so dropping this one
+// loses nothing).
+//
+// Consumed candidates are removed whether or not they were dispatched, and the
+// slot->index map is rebuilt from what is left. Transitions the ORM pool image
+// to shader-read before dispatching, because sampling it is how the enricher
+// reads the page's current texels back out of a BC-compressed pool.
 void VtResidency::drain_enrich(VkCommandBuffer cmd) {
     stats_.enrich_last_frame = 0;
     if (!enricher_ || max_enrich_per_frame_ == 0 || enrich_queue_.empty())
@@ -1371,6 +1621,22 @@ void VtResidency::inject_feedback_for_test(const VtFeedbackRequest* requests,
     injected_.assign(requests, requests + count);
 }
 
+// Turn one frame slot's completed feedback readback into page requests. Called
+// only from begin_frame, where the slot's previous submission is known retired.
+//
+// The readback is 2-3 frames stale by construction, which is fine and is why the
+// live checks below are tolerant: a request naming a released variant is
+// dropped, and one naming a slot that has since been recycled — impossible
+// inside the retirement horizon, which is wider than the readback ring — would
+// at worst queue a valid fill for the new owner.
+//
+// The two dedup stages are pure CPU-cost engineering, not semantics: the feedback
+// target is per-texel while a VT page covers hundreds of adjacent texels, and
+// queue_page() is idempotent for a repeated key. The inline comments carry the
+// equivalence argument and the measurement that motivated them.
+//
+// Test-injected requests (inject_feedback_for_test) are merged in and consumed
+// here, so a headless test can drive residency with no GPU readback at all.
 void VtResidency::drain_feedback(uint32_t frame_slot) {
     std::vector<VtFeedbackRequest> requests;
     requests.swap(injected_);
@@ -1501,6 +1767,17 @@ void VtResidency::refresh_budgets() {
     slots_.set_protect_frames(clamp_u32(b.evict_protect_frames, 1u, 100000u));
 }
 
+// The frame's CPU-only phase, and the first VT call of a frame. Records nothing
+// into a command buffer. In order: re-read the live budgets, adopt the frame
+// clock (frame_index_ is what every LRU stamp, hysteresis window and retire
+// serial in this file compares against), collect the three graveyards — page
+// slots, indirection table blocks, and dead layers whose GPU record can finally
+// be scrubbed — free the one-time pool-clear staging once it has retired, and
+// drain this slot's feedback into the fill queue.
+//
+// PRECONDITION: the caller's frame fence has already retired this slot's
+// previous submission. That is what makes reading its readback buffer and
+// recycling anything past its retire serial legal.
 void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
     if (!ready_) return;
     refresh_budgets();
@@ -1547,6 +1824,14 @@ void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
     }
 }
 
+// Size the feedback target to 1/8 of the raster extent in each axis (never
+// below 1x1) and rebuild the readback ring behind it. Cheap and idempotent when
+// the size has not moved — the whole body is skipped.
+//
+// A rebuild DROPS every slot's pending readback, so the frames immediately after
+// a resize simply produce no page requests. Nothing goes black: resident pages
+// stay resident and every unmapped entry still resolves to its variant's pinned
+// tail. Returns true unchanged when the runtime never started.
 bool VtResidency::ensure_feedback(uint32_t raster_width, uint32_t raster_height,
                                   std::string& error) {
     if (!ready_) return true;
@@ -1599,6 +1884,15 @@ bool VtResidency::ensure_feedback(uint32_t raster_width, uint32_t raster_height,
     return true;
 }
 
+// The two halves of the feedback round trip, and they BRACKET the G-buffer pass:
+// the clear is recorded before vkCmdBeginRendering (it is a transfer, and the
+// fragment shader writes the image as storage afterwards), the copy-out after
+// vkCmdEndRendering. Both maintain feedback_.layout themselves, and both are
+// no-ops when the runtime never started or the target has not been created.
+//
+// The readback lands in THIS frame slot's buffer and is consumed by the
+// begin_frame of the frame that next reuses the slot — which is where the 2-3
+// frame staleness of the whole feedback loop comes from.
 void VtResidency::record_feedback_clear(VkCommandBuffer cmd) {
     if (!ready_ || feedback_.image == VK_NULL_HANDLE) return;
     barrier(cmd, feedback_.image, 1, feedback_.layout,
@@ -1636,6 +1930,31 @@ void VtResidency::record_feedback_readback(VkCommandBuffer cmd) {
     feedback_slot_written_[frame_slot_] = true;
 }
 
+// Records the frame's entire VT GPU workload into `cmd`. Must be recorded
+// BEFORE the G-buffer pass and outside any render pass — everything here is
+// transfers plus the filler's and enricher's own dispatches.
+//
+// The order is load-bearing throughout:
+//   1. tier-2 enrichment, while the pool is still shader-readable (what the
+//      enricher samples) and before this frame's fills, so a page filled by this
+//      command buffer can never be enriched by the same one;
+//   2. pool images -> TRANSFER_DST, with the one-time zero scrub on first use;
+//   3. the indirection buffer's transfer window, with its one-time arena fill;
+//   4. the fill drain;
+//   5. indirection table uploads through this frame slot's staging ring;
+//   6. everything back to shader-read.
+//
+// Step 4 is where the policy lives: a stable priority sort, SEPARATE tail and
+// page budgets (a registration tail gates a whole variant into the VT path, so
+// it must never queue behind feedback-driven sharpening), page admission that
+// STOPS for the frame rather than thrashing once the pool is exhausted, a trim
+// of the queue to max_queue_, and — the part that is easy to get wrong — a page
+// becomes resident only AFTER the filler reports it actually wrote the slot.
+// Mapping before that is what once turned every skipped request into a page
+// pointing at never-written pool memory.
+//
+// Returns true unconditionally today, including when the runtime is not up;
+// `error` is reserved for a filler that grows a failure path.
 bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     if (!ready_) return true;
     stats_.fills_last_frame = 0;

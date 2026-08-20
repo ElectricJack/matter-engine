@@ -320,6 +320,15 @@ struct WeldProvenance {
     }
 };
 
+// The welder's output buffer -- allocated, owned and reused by the caller.
+//
+// NOTE ON THE COMMENT ABOVE: the "Positions are emitted relative to `origin_*`"
+// paragraph documents THIS struct, not `WeldProvenance`; the provenance
+// side-channel was later inserted between the paragraph and the struct it
+// belongs to. The rule it states is unchanged -- set `origin_*` before calling
+// `weld_face` (the origin is preserved across the `clear_geometry()` that call
+// performs), and every value in `buckets` is a world position minus that
+// origin, narrowed to float.
 struct WeldMesh {
     double origin_x = 0, origin_y = 0, origin_z = 0;
     std::vector<WeldBucket> buckets;

@@ -1,3 +1,25 @@
+// libs/MemoryLib/main.c
+//
+// Standalone self-test / demo program for MemoryLib's fixed-size object pool.
+// This is the project's DEFAULT make target: `make -C libs/MemoryLib` links
+// it together with src/*.c into build/memorylib, and running that binary
+// prints one PASSED/FAILED line per test and exits non-zero if any failed.
+//
+// Scope: mem_pool only. The arena, the growable array and the C++ RAII
+// wrappers are covered by the separate `make -C libs/MemoryLib test` target,
+// which builds tests/memory_tests.c and tests/memory_hpp_tests.cpp with
+// ASan+UBSan (the repo convention). This file is compiled WITHOUT sanitizers.
+//
+// Conventions used below:
+// - TEST_PASSED / TEST_FAILED are printf macros keyed off __func__ and
+//   __LINE__, so each test just returns true/false and reports itself.
+// - Each test owns its pool and must mem_pool_destroy() it on every exit
+//   path, including failures.
+// - Several tests assert exact stats numbers derived from the pool geometry
+//   they create (objectsPerPage of 10). Those constants are load-bearing: if
+//   mem_pool's paging or padding policy changes, the expectations here, not
+//   the allocator, are what will break first.
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -8,6 +30,10 @@
 #define TEST_PASSED printf("PASSED: %s\n", __func__)
 #define TEST_FAILED printf("FAILED: %s (line %d)\n", __func__, __LINE__)
 
+// Payload used by most tests: deliberately 32 bytes so the pool's stride
+// padding (to max_align_t) is a no-op and the byte arithmetic in test_stats
+// stays predictable. `value` is set to the object's index so reuse and
+// aliasing bugs show up as a mismatch.
 typedef struct TestObject {
     int value;
     char data[28]; // Make the object 32 bytes total
@@ -110,6 +136,14 @@ bool test_multiple_alloc_free() {
     return true;
 }
 
+// Pins down the pool's lazy-paging contract, so the hardcoded numbers are the
+// point rather than an implementation detail:
+//   - a freshly created pool owns no pages at all (pageCount/totalObjects/
+//     freeObjects all 0) — the first page is allocated by the first alloc;
+//   - one page of 10 gives totalObjects 10, freeObjects 9 after one alloc;
+//   - the 11th alloc adds a second page (20 total, 5 free after 15 allocs);
+//   - freeing objects raises freeObjects but never lowers pageCount — pages
+//     are only released by mem_pool_destroy().
 // Test allocator statistics
 bool test_stats() {
     MemPool* allocator = mem_pool_create(sizeof(TestObject), 10);
@@ -231,6 +265,12 @@ bool test_edge_cases() {
     return true;
 }
 
+// Checks that freed slots are recycled rather than newly carved. The pool's
+// free list is LIFO, so the exact addresses returned depend on free order;
+// the test therefore only asserts set membership (obj4/obj5 must each be one
+// of the two freed pointers), which is what the retained comments below about
+// "the original test" are explaining. Do not tighten this into an exact
+// address match — that couples the test to the free-list ordering.
 // Test reuse of freed objects
 bool test_reuse() {
     MemPool* allocator = mem_pool_create(sizeof(TestObject), 10);
@@ -288,6 +328,9 @@ bool test_reuse() {
     return true;
 }
 
+// Returns 0 only if all tests pass, so the binary doubles as a CI gate.
+// `total` is hardcoded and must be bumped by hand whenever a test is added,
+// otherwise the pass/fail tally silently lies.
 // Run all tests
 int main() {
     printf("=== MemPool Tests ===\n");

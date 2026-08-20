@@ -1,11 +1,27 @@
 #include "animation/animation_ir.h"
 
+// MatterEngine3/src/animation/animation_ir.cpp
+//
+// Out-of-line members of `animation_ir.h`. Only two things need a definition:
+// the total order over diagnostics, and the canonical text encoding of a
+// `CanonicalAnimationBuild`.
+//
+// Both exist for the same reason -- determinism. A bake must produce identical
+// bytes for identical input regardless of the order checks fired in or the
+// order containers happened to be walked, so diagnostics are sorted by source
+// position and `encode()` writes a fixed field order at a fixed precision.
+
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
 
 namespace matter::animation {
 
+// Total order over diagnostics: source position first (module, line, column,
+// object), then code, then message. Message is included as the final
+// tiebreaker so the order is total, not just deterministic-per-position --
+// `std::sort` is not stable, so a partial order would leave equal-keyed
+// entries free to permute between runs.
 bool DiagnosticLess::operator()(const Diagnostic& left, const Diagnostic& right) const {
     if (left.source.module != right.source.module) return left.source.module < right.source.module;
     if (left.source.line != right.source.line) return left.source.line < right.source.line;
@@ -21,6 +37,17 @@ void Diagnostics::add(const char* code, const SourceSpan& source, const char* me
 
 void Diagnostics::sort() { std::sort(items.begin(), items.end(), DiagnosticLess{}); }
 
+// Serializes the canonical build to the stable text the animation determinism
+// hash is taken over. Field order, delimiters, and the stream's 9 significant
+// digits (the round-trip precision of a 32-bit float) are all part of that
+// contract -- changing any of them changes every asset's hash.
+//
+// Layout: one line per joint, then one `socket|...` line per socket, then one
+// line per target (fixed fields, then the chain joints), then a single
+// `graph|...` line of the topological node order, then `authored_state`
+// verbatim. Fields are `|`-separated with `,` inside a vector; the encoder
+// does not escape those characters, so it assumes authored names contain
+// neither `|` nor a newline.
 std::string CanonicalAnimationBuild::encode() const {
     std::ostringstream output;
     output << std::setprecision(9);

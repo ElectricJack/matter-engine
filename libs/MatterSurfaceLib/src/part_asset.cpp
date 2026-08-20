@@ -1,3 +1,47 @@
+// libs/MatterSurfaceLib/src/part_asset.cpp
+//
+// On-disk format for a baked part: the `.part` file. A part is the pair
+// (BLASManager, TLASManager) produced by a bake — triangle geometry plus its
+// prebuilt BVH, and the list of instance placements that reference it. This
+// file is the only place that format is written or parsed; the declarations and
+// the format constants live in `../include/part_asset.h`
+// (`kMagic` = 'PART', `kFormatVersion`).
+//
+// Layout, in write order:
+//
+//   header  magic u32 | version u32 | param_hash u64 | sizeof(Tri) u32 |
+//           sizeof(TriEx) u32 | sizeof(BVHNode) u32 | content_hash u64
+//           (36 bytes; content_hash is FNV-1a over the BODY only)
+//   body    material table, then the BLAS table, then the instance table
+//
+// Everything is written as raw little-endian host structs, so the file is
+// host-ABI specific: the three `sizeof()` fields in the header are the guard
+// against a struct layout change silently reinterpreting old bytes. There is
+// no endian conversion — a `.part` is a local cache artifact, not a portable
+// asset.
+//
+// Cache-key discipline. `param_hash` is `compute_param_hash(PartGenParams)`,
+// i.e. the generator inputs XOR the format version; `load()` refuses a file
+// whose stored `param_hash` differs from the one the caller expects, so a
+// parameter change regenerates rather than resurrecting stale geometry. Bump
+// `kFormatVersion` in the header whenever the byte layout changes.
+//
+// GL-free and Vulkan-free: nothing here touches the GPU. The caller re-uploads
+// through the normal render path after a successful `load()`.
+//
+// Thread affinity: the functions themselves keep no global state, but they
+// mutate the passed managers, so a load/save must not race another user of the
+// same `BLASManager`/`TLASManager`.
+//
+// Gotchas:
+//  - `load()` mutates `blas` incrementally and can still fail afterwards, so a
+//    `false` return can leave partially-registered BLAS entries behind. Treat
+//    the managers as unusable and rebuild from scratch on failure.
+//  - `DrawRecord::is_imposter` is NOT serialized; every instance comes back
+//    with the field at its default `false`.
+//  - Only the FROZEN builtin material table is written (see the comment in
+//    `save()`), so per-world dynamic materials must be resolved at render time.
+
 #include "../include/part_asset.h"
 
 #include <cstdio>
@@ -7,6 +51,9 @@
 #include <unordered_map>
 #include <sys/stat.h>
 
+// Byte-blitting helpers. `put`/`put_bytes` append raw host bytes to a growing
+// body buffer; `Reader` is the mirror-image bounded cursor used by load().
+// Deliberately trivial — the format is "the structs, in order".
 namespace {
 template <class T>
 void put(std::vector<uint8_t>& b, const T& v) {
@@ -27,6 +74,12 @@ void ensure_parent_dir(const std::string& path) {
 #endif
 }
 
+// Bounds-checked forward cursor over the whole file image. Every read is
+// range-checked; the first overrun latches `ok` to false and all later reads
+// return zero / nullptr rather than trapping, so the caller can check `ok`
+// once per section instead of once per field. `take()` hands back a pointer
+// INTO the caller's buffer (no copy), so the returned pointers are only valid
+// while that buffer is alive.
 struct Reader {
     const uint8_t* p;
     const uint8_t* end;
@@ -63,6 +116,17 @@ std::string cache_path(uint64_t hash) {
     return std::string("parts/") + buf + ".part";
 }
 
+// Serialize the two managers to `path`. Builds the entire image in memory
+// first, then writes it to `path + ".tmp"` and renames, so a crash or a full
+// disk never leaves a torn `.part` where a valid one used to be.
+//
+// Returns false without writing anything if a draw record references a BLAS
+// handle that is not in `blas` (refusing to emit a cache that would fail to
+// load), and false on any I/O failure.
+//
+// BLAS handles are not stored; each instance stores the BLAS's INDEX in
+// `blas.get_entries()` order, and `load()` re-registers the entries in that
+// same order so the indices line up again.
 bool save(const std::string& path, const BLASManager& blas,
           const TLASManager& tlas, uint64_t param_hash) {
     std::vector<uint8_t> body;
@@ -112,6 +176,10 @@ bool save(const std::string& path, const BLASManager& blas,
     }
 
     // --- Header (36 bytes) ---
+    // content_hash covers the body only, so load() can verify it by hashing
+    // everything after the fixed-size header. The three sizeof() fields make a
+    // struct-layout change (a new Tri/TriEx/BVHNode field, a padding change, a
+    // different compiler) a load-time rejection instead of a garbage-in bake.
     const uint64_t content_hash = fnv1a64(body.data(), body.size());
     std::vector<uint8_t> head;
     put<uint32_t>(head, kMagic);
@@ -134,6 +202,18 @@ bool save(const std::string& path, const BLASManager& blas,
     return std::rename(tmp.c_str(), path.c_str()) == 0;
 }
 
+// Reconstruct `blas` + `tlas` from `path`. Reads the whole file into memory in
+// one go, then walks it with `Reader`.
+//
+// Every `return false` here is a NORMAL outcome meaning "regenerate this part",
+// not an error to report: missing file, short read, wrong magic/version,
+// mismatched struct sizes, `param_hash != expected_hash`, body content-hash
+// mismatch, a builtin material table that no longer matches the code, a BLAS
+// entry the manager rejected, or an out-of-range instance index.
+//
+// NOT transactional: BLAS entries are registered into `blas` as they are read,
+// so a failure partway through leaves the manager partially populated. The
+// caller must discard/reset both managers on false rather than reuse them.
 bool load(const std::string& path, uint64_t expected_hash,
           BLASManager& blas, TLASManager& tlas) {
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -218,6 +298,10 @@ bool load(const std::string& path, uint64_t expected_hash,
         insts.push_back(di);
     }
 
+    // Instances are replayed through the public draw path (so the manager's
+    // instance ids and revision counter advance normally) and the TLAS is built
+    // immediately — a loaded part is ready to render without a further build().
+    // A part with zero instances is legal and returns true with no TLAS built.
     if (!insts.empty()) {
         tlas.draw_batch(insts);
         tlas.build(blas);

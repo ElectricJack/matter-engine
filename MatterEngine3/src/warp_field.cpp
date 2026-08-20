@@ -35,6 +35,23 @@
 // the difference across each interior manifold edge, weighted by the pair's
 // summed 3D area — this times the marched offset bounds the marched-content
 // jump across a triangle edge (§4.1).
+//
+// File map, in the order solve() runs them:
+//   build_solve_mesh        weld the triangle soup, drop skirts/degenerates
+//   compute_border_pins     border chains -> pinned uv VALUES (+ chain rate)
+//   build_reference         per-triangle isometric coords + cotan weights
+//   build_laplacian         those weights as a symmetric CSR Laplacian
+//   build_chain_frame_rows  chain frame as Jacobian rows (the C1 half)
+//   build_border_gradient   that frame as Neumann terms on the first free ring
+//   cg_solve                harmonic init, then once per ARAP iteration
+//   fold_count / relax      bounded post-pass, accepted only while folds drop
+//   compute_stats           the §4.3 metrics
+//   apply_chain_frames      overwrite border vertices' one-sided frames
+//
+// Everything except the census counters is confined to the anonymous
+// namespace. The census globals are relaxed atomics: process-wide, monotonic,
+// never reset, so a reader gets a consistent value but not a consistent
+// snapshot across counters.
 
 #include "warp_field.h"
 
@@ -89,6 +106,12 @@ inline uint64_t edge_key(uint32_t a, uint32_t b) {
 }
 
 // Welded solve mesh shared by solve() / border_pins() / world_xz_stats().
+// Positions are SECTOR-LOCAL (bitwise the incoming Tri corner values, never
+// re-rounded) and stored in first-appearance order, so the vertex numbering is
+// a deterministic function of the input triangle order. `indices` covers only
+// the usable triangles and `tri_area` is parallel to it, one 3D area in square
+// metres per triangle -- both are indexed by the POST-filter triangle id, which
+// does not correspond to the caller's triangle id.
 struct SolveMesh {
     std::vector<float3> positions;
     std::vector<uint32_t> indices;   // usable triangles only
@@ -97,6 +120,12 @@ struct SolveMesh {
     size_t tri_count() const { return indices.size() / 3; }
 };
 
+// Weld the triangle soup on exact-bit position keys and drop what cannot be
+// solved: skirt triangles, triangles with (near-)zero area or NaN corners, and
+// triangles whose corners weld together. Returns false when fewer than 16
+// usable triangles survive -- a threshold, not an error path: every public
+// entry point treats it as "no field", and the render side falls back to
+// unwarped world-XZ addressing.
 bool build_solve_mesh(const Tri* tris, size_t tri_count,
                       const uint8_t* skirt_mask, SolveMesh& mesh) {
     if (!tris || tri_count == 0) return false;
@@ -761,6 +790,13 @@ void build_reference(const SolveMesh& mesh, float orientation,
     }
 }
 
+// Assemble the symmetric cotan Laplacian from the reference triangles into
+// CSR. Each triangle contributes its three edge weights in both directions;
+// the per-vertex lists are then sorted by neighbour index and duplicate
+// neighbours (the two triangles sharing an edge) are merged, with diag[v]
+// accumulating the row's total weight. Note that L.offsets is REBUILT by that
+// merge, so the offsets used while bucketing are not the ones the caller sees.
+// Sorting and merging are index-ordered, so the result is deterministic.
 void build_laplacian(const SolveMesh& mesh, const std::vector<TriRef>& refs,
                      Csr& L) {
     const size_t nv = mesh.vert_count();
@@ -1092,6 +1128,9 @@ static void apply_chain_frames(const PinSet& pins, Field& out) {
 struct WeightedValue {
     float v, w;
 };
+// Area-weighted percentile. Sorts `vals` IN PLACE (the caller's vector is
+// reordered), then walks the cumulative weight. Returns 0 for an empty input,
+// which is why an empty metric reads as 0 rather than as absent.
 float weighted_percentile(std::vector<WeightedValue>& vals, float pct) {
     if (vals.empty()) return 0.0f;
     std::sort(vals.begin(), vals.end(),
@@ -1109,6 +1148,16 @@ float weighted_percentile(std::vector<WeightedValue>& vals, float pct) {
     return vals.back().v;
 }
 
+// Fill FieldStats for a given uv assignment. Used both for a solved field and
+// for the world-XZ baseline, so the two are measured by identical code.
+//
+// The reported stretch/compress/aniso describe the CONTENT map phi (uv ->
+// surface), which is the inverse of the forward Jacobian computed here: hence
+// stretch = 1/sigma2(J) rather than sigma1(J). delta-J is measured on the
+// forward map instead, per interior manifold edge; an edge with a third
+// incident triangle is counted once and then ignored. Cost is O(tris) plus the
+// percentile sorts, and it allocates several per-triangle vectors, so it is
+// not a cheap call to make per frame.
 void compute_stats(const SolveMesh& mesh, const std::vector<float2>& uv,
                    FieldStats& stats) {
     const size_t nt = mesh.tri_count();
@@ -1191,6 +1240,11 @@ void compute_stats(const SolveMesh& mesh, const std::vector<float2>& uv,
 // ---------------------------------------------------------------------------
 // Census.
 // ---------------------------------------------------------------------------
+// Process-wide, monotonic, never reset; readers take deltas (warp_census()).
+// Relaxed ordering: individual counters are exact, but a warp_census() snapshot
+// taken while another thread is mid-solve can mix pre- and post-update values
+// across counters. g_evaluate_us is the only one this file does not maintain
+// itself -- callers add to it through warp_census_add_evaluate_us().
 std::atomic<uint64_t> g_sectors{0}, g_solved{0}, g_solve_us{0},
     g_evaluate_us{0}, g_tris{0}, g_folds{0};
 
@@ -1280,6 +1334,18 @@ FieldStats world_xz_stats(const Tri* tris, size_t tri_count,
     return stats;
 }
 
+// The full solve. `out` is overwritten unconditionally at entry, so a failed
+// call leaves a default (invalid) Field rather than the previous one.
+//
+// Census accounting: g_sectors counts ATTEMPTS and is incremented before the
+// first early-out, while g_solved, g_solve_us, g_tris and g_folds are only
+// updated on success -- so sectors minus solved is the count of meshes too
+// small or too degenerate to parameterise.
+//
+// Cost is dominated by the CG solves: one init solve of up to
+// opts.init_cg_iterations, then opts.arap_iterations warm-started solves of up
+// to opts.cg_iterations each, every one of them O(nnz(L)) per iteration.
+// Single-threaded throughout, and self-timed into out.stats.solve_ms.
 bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
            const SolveOptions& opts, Field& out) {
     const auto t0 = std::chrono::steady_clock::now();
@@ -1543,6 +1609,18 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
     return true;
 }
 
+// Sample the field at `count` render vertices. Two lookup paths: an exact
+// bitwise weld hit (every rung-0 vertex takes this one, a single hash probe),
+// and otherwise an expanding ring search over the XZ grid for the nearest
+// triangle, which is the expensive path and the reason coarse rungs cost more
+// to evaluate than rung 0. The weld map is rebuilt on EVERY call, so batching
+// all of a sector's vertices into one call matters.
+//
+// out_uv and out_frame must have room for 2 entries per vertex; both are fully
+// written up front with the fail-soft "no warp" values, so an invalid field or
+// an unmatched vertex still leaves defined data. This function does not touch
+// the census -- the caller times it and reports through
+// warp_census_add_evaluate_us().
 void evaluate(const Field& field, const float* positions, const float* normals,
               size_t count, float* out_uv, uint32_t* out_frame) {
     // Fail-soft default: uv 0, su 0 ("no warp"). Written up front so every

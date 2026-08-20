@@ -1,3 +1,31 @@
+// libs/MatterSurfaceLib/src/vertex_ao.cpp
+//
+// Per-vertex ambient occlusion baked from the OCCUPANCY GRID, not from the
+// meshed triangles. Occlusion is approximated by treating every occupied slot
+// within `AoParams::radius` of the vertex as a point occluder, weighted by
+// `max(0, dot(normalized(occluder - vertex), normal))` (so slots behind the
+// surface contribute nothing) and by a linear distance falloff. The result is
+// `1 - strength * sum`, clamped to [0,1]: 1 = fully open, 0 = fully occluded.
+//
+// Because it samples the source occupancy rather than the output geometry, the
+// term is stable under remeshing/simplification and cheap to compute at bake
+// time — but it also cannot see anything that is not in the occupancy grid
+// (other clusters, terrain, imported meshes).
+//
+// Spaces and units. Positions, `AoGrid::origin`, `AoGrid::spacing` and
+// `AoParams::radius` are all in the same CLUSTER-LOCAL units; the grid mapping
+// is `slot = round((p - origin) / spacing)`. Normals are the per-vertex normals
+// already in `TriEx` and are assumed unit length.
+//
+// Cost. A dense box scan per vertex: (2*reach+1)^3 occupancy lookups where
+// reach = ceil(radius/spacing), clamped to 64 so a misconfigured radius cannot
+// explode the bake. With a large radius/spacing ratio this dominates the bake —
+// keep the radius within a few slots.
+//
+// Pure and GL-free: no allocation, no global state, no GPU calls. Safe to run
+// on a bake worker thread as long as nothing mutates the `Occupancy` or the
+// `triEx` array concurrently.
+
 #include "vertex_ao.h"
 
 #include <cmath>
@@ -11,6 +39,11 @@ static inline SlotCoord slot_of(const AoGrid& g, float3 p) {
         (int)lroundf((p.z - g.origin.z) / g.spacing)};
 }
 
+// AO for one vertex at `p` with surface normal `n`. Returns 1.0 (fully open,
+// i.e. the disabled/no-op value) when the radius or the grid spacing is
+// non-positive, so a zeroed AoParams/AoGrid is a safe "AO off" configuration.
+// The slot containing `p` itself contributes nothing because its distance is
+// below the 1e-5 epsilon.
 static float vertex_ao(float3 p, float3 n, const Occupancy& occ,
                        const AoGrid& g, const AoParams& params) {
     const float R = params.radius;
@@ -45,6 +78,11 @@ static float vertex_ao(float3 p, float3 n, const Occupancy& occ,
     return ao;
 }
 
+// Writes ao0/ao1/ao2 for every triangle, in place. The two arrays are expected
+// to be parallel; a length mismatch is tolerated by processing only the shorter
+// prefix, so a short `triEx` silently leaves the tail of the mesh un-baked
+// rather than failing. Only the ao* fields are touched — positions and normals
+// are read, never written.
 void bake_vertex_ao(const std::vector<Tri>& tris, std::vector<TriEx>& triEx,
                     const Occupancy& occ, const AoGrid& grid, const AoParams& params) {
     const size_t n = tris.size() < triEx.size() ? tris.size() : triEx.size();

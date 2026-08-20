@@ -10,6 +10,41 @@
 // The final vol_integrated 3D texture is sampled by the composite fragment
 // shader to blend volumetric fog into the HDR image.
 
+// Ownership and threading
+// -----------------------
+// One `VkVolumetrics` is owned by the scene renderer. `init()` is called once
+// after the device exists; `destroy()` (also run by the destructor) releases
+// everything. Every method is render-thread-only: `record()` writes descriptor
+// sets in place, so a second thread touching this object while a frame is
+// being recorded is a use-after-free waiting to happen.
+//
+// Per-frame call order, all on the render thread:
+//   update_settings(...)          // latch UI / world settings
+//   set_lighting(...)             // sun direction for the scatter pass
+//   prepare_froxel_bundle(slot)   // may swap in a resized grid
+//   record(cmd, slot, ...)        // the three dispatches
+// `record()` is a no-op (returning true) when volumetrics is disabled or the
+// device has no ray query -- the scatter pass needs ray queries for shadow
+// rays, so the whole feature is off on such devices.
+//
+// Resource bundles
+// ----------------
+// Everything whose size depends on the froxel grid lives in a `FroxelBundle`.
+// Changing the grid resolution does not resize images in place: a new bundle
+// is built and the old one is parked in `retired_bundles_` until the frame
+// slot that could still be reading it has completed. `resource_generation()`
+// increments on every swap so observers can notice.
+//
+// Units and conventions
+// ---------------------
+// - Distances are metres; `kVolFroxelFarRange` is the far end of the grid.
+// - The froxel grid is camera-aligned: u,v across the screen (v DOWN) and w
+//   logarithmically distributed in view depth over [0.1 m, 3000 m].
+// - Matrices arrive row-major (`matter::Mat4f`) and are transposed into the
+//   push constants, which are column-major to match GLSL.
+// - The projection is reversed-Z; near/far are recovered from `view_to_clip`
+//   with the swapped identities noted in the .cpp.
+
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
@@ -47,9 +82,16 @@ struct VulkanVolumetricsSettings;
 
 namespace viewer {
 
+// Capacity of the emitter SSBO; extra emitters are dropped, not grown into.
 static constexpr uint32_t kVolMaxEmitters = 256;
+// Far end of the froxel grid in metres. Fog beyond this is not represented at
+// all, so a world's fog wall must sit inside it. The `*_reference` helpers
+// below and the GLSL shaders both hard-code the same 3000.0 -- change one and
+// you must change all three.
 static constexpr float    kVolFroxelFarRange = 3000.0f;
 static constexpr float    kVolShadowFarRange = 300.0f;
+// Edge length of the procedural 3D noise texture (kVolNoiseSize^3, RGBA8,
+// sampled with REPEAT).
 static constexpr uint32_t kVolNoiseSize = 32;
 
 // The renderer owns timestamp-query zone ids, while this module owns the
@@ -59,6 +101,10 @@ enum class VolumetricPass : uint8_t { Density, Scatter, Integrate };
 using VolumetricPassBoundary =
     std::function<void(VolumetricPass pass, bool is_end)>;
 
+// Workgroup counts of the last `record()`, for tests and the stats panel.
+// Only X and Y: every pass dispatches Z = 1 and marches all depth slices
+// inside the shader. Density uses 4x4 workgroups, integrate 8x8, which is why
+// the two pairs differ for the same grid.
 struct FroxelDispatchGrid {
     uint32_t density_x = 0;
     uint32_t density_y = 0;
@@ -66,6 +112,14 @@ struct FroxelDispatchGrid {
     uint32_t integrate_y = 0;
 };
 
+// A camera reduced to what the froxel mapping needs: origin, orthonormal
+// basis, and the projection's half-angles. Used only by the CPU reference
+// functions below, which reimplement the shaders' froxel math so tests can
+// assert against it without a GPU.
+//
+// `forward` points where the camera looks (the NEGATED third row of
+// world_to_view), and `up`/`right` complete a right-handed basis. Distances
+// are metres.
 struct FroxelCameraReference {
     matter::Float3 eye{};
     matter::Float3 forward{0.0f, 0.0f, -1.0f};
@@ -76,6 +130,13 @@ struct FroxelCameraReference {
     float near_plane = 0.1f;
 };
 
+// Recover the world-space eye position from a rigid world-to-view matrix, by
+// applying the inverse rotation to the negated translation. Correct only
+// because the rotation part is orthonormal -- this is not a general inverse.
+//
+// Do NOT substitute an unprojected NDC point for this: under the reversed-Z
+// projection NDC (0,0,0) is the FAR-plane centre, and using it once put the
+// "camera" a kilometre out and flipped every view-dependent term.
 inline matter::Float3 volumetric_camera_eye(
     const matter::Mat4f& world_to_view) {
     const auto& m = world_to_view.m;
@@ -85,6 +146,15 @@ inline matter::Float3 volumetric_camera_eye(
         -(m[2] * m[3] + m[6] * m[7] + m[10] * m[11])};
 }
 
+// CPU mirror of the shaders' world -> froxel-UVW mapping. `uvw.x`/`uvw.y` are
+// screen-normalized (v DOWN) and `uvw.z` is the LOGARITHMIC depth coordinate:
+// log(depth/near) / log(far/near) over [0.1 m, 3000 m], which is what puts
+// most slices near the camera.
+//
+// Returns false -- leaving `uvw` untouched -- when the point is behind the
+// near plane, past the far range, or outside the frustum. On success the
+// components are clamped to [0,1], so a true return means "inside", never
+// "clamped from outside".
 inline bool world_to_froxel_reference(
     const FroxelCameraReference& camera, const matter::Float3& world,
     matter::Float3& uvw) {
@@ -116,6 +186,9 @@ inline bool world_to_froxel_reference(
     return true;
 }
 
+// Inverse of `world_to_froxel_reference`: froxel UVW back to a world position.
+// `uvw.z` is clamped to [0,1] first, so out-of-range inputs land on the near
+// or far plane instead of extrapolating.
 inline matter::Float3 froxel_to_world_reference(
     const FroxelCameraReference& camera, const matter::Float3& uvw) {
     constexpr float froxel_near = 0.1f;
@@ -134,6 +207,13 @@ inline matter::Float3 froxel_to_world_reference(
                 camera.right.z * view_x + camera.up.z * view_y};
 }
 
+// Distance in metres from `world` along `direction` to where the ray leaves
+// the froxel frustum (near, far and the four side planes). This is what bounds
+// the local sun march: marching past the grid would sample media that was
+// never injected.
+//
+// Returns 0 when the start point is already outside any plane, or when the
+// result is not finite -- callers treat 0 as "do not march".
 inline float froxel_ray_exit_distance_reference(
     const FroxelCameraReference& camera, const matter::Float3& world,
     const matter::Float3& direction) {
@@ -221,6 +301,9 @@ struct CloudLightingReference {
     float normalized_order_energy = 0.0f;
 };
 
+// Henyey-Greenstein phase function. `mu` is cos(angle between view and light),
+// clamped to [-1,1]; `g` is the asymmetry parameter (positive = forward
+// scattering). Normalized over the sphere, so it integrates to 1.
 inline float cloud_hg_phase_reference(float mu, float g) {
     constexpr float pi = 3.14159265358979323846f;
     const float g2 = g * g;
@@ -279,6 +362,18 @@ inline CloudLightingReference cloud_lighting_reference(
     return result;
 }
 
+// Host side of the froxel volumetric-fog system: owns the 3D volume textures,
+// the emitter and cloud-layer SSBOs, the three compute pipelines and all their
+// descriptors, and drives the per-frame dispatches.
+//
+// Constructed empty and inert -- nothing is allocated until `init()`, and
+// `init()` on a device without ray tracing succeeds while allocating nothing,
+// leaving `active()` false and `record()` a no-op. Non-copyable; owned by the
+// scene renderer; render-thread only. `destroy()` is idempotent and is also
+// called by the destructor.
+//
+// Grid resolution and the cloud-lighting mode come from `update_settings()`
+// and take effect at the next `prepare_froxel_bundle()`, never mid-frame.
 class VkVolumetrics {
 public:
     VkVolumetrics();
@@ -324,6 +419,8 @@ public:
     matter::VkImageResource& cloud_density_or_dummy() {
         return active_bundle_.enhanced_clouds ? active_bundle_.cloud_density : cloud_density_dummy_;
     }
+    // Dimensions of the ACTIVE bundle, which lags `update_settings()` until the
+    // next successful prepare_froxel_bundle(); it is not the requested size.
     matter::FroxelGridDimensions dimensions() const { return active_bundle_.dimensions; }
     matter::FroxelXyScale effective_xy_scale() const;
     matter::FroxelDepthSlices effective_depth_slices() const;
@@ -331,7 +428,14 @@ public:
     bool last_scatter_history_was_valid_for_test() const {
         return last_scatter_history_was_valid_;
     }
+    // Bumped every time the active bundle is replaced (and once by init()).
+    // Anything caching a view or descriptor from this module must re-fetch when
+    // it changes.
     uint64_t resource_generation() const { return resource_generation_; }
+    // True when the last attempt to build a resized bundle failed. The previous
+    // bundle stays active and rendering continues -- this is a "you did not get
+    // the resolution you asked for" signal for the UI, not a fatal error.
+    // Cleared by the next successful swap.
     bool allocation_rejected() const { return allocation_rejected_; }
     const std::string& allocation_error() const { return allocation_error_; }
     void set_fail_next_bundle_creation_for_test(bool enabled) {
@@ -362,10 +466,20 @@ public:
     bool active() const { return enabled_ && ray_query_available_; }
 
     // Release all Vulkan resources.
+    // Idempotent, and safe to call on a never-initialized object (it returns
+    // immediately when there is no device). Destroys retired bundles too. The
+    // caller must have made sure no submitted frame still references any of
+    // this -- typically by waiting for device idle first.
     void destroy();
 
 private:
     // Push-constant structs matching the GLSL shaders exactly.
+    // Push-constant blocks. Layout is an ABI shared with the GLSL: the
+    // static_asserts under each one pin the size and the offsets that have
+    // moved before, so a field inserted in the wrong place fails the build
+    // instead of silently shifting every subsequent value in the shader.
+    // Matrices are stored COLUMN-major here (see pack_mat4_column_major);
+    // everything else is metres, seconds or normalized 0-1.
     struct DensityConstants {
         float clip_to_world[16];    // mat4 (column-major for GLSL)
         float camera_pos[3];
@@ -410,8 +524,22 @@ private:
     static_assert(offsetof(ScatterConstants, local_march_distance_m) == 236);
 
     bool create_noise_texture(matter::VulkanDevice& vulkan, std::string& error);
+    // Every resource whose size depends on the froxel grid, grouped so a
+    // resolution change can be done as one atomic swap rather than a series of
+    // in-place resizes.
+    //
+    // The bundle owns its own descriptor pool, so its sets die with it and can
+    // never outlive the images they point at. `media` is the density pass's
+    // output and the scatter pass's input; `scatter[2]` ping-pongs so this
+    // frame reads the previous frame's result; `integrated` is what the
+    // composite fragment shader samples.
     struct FroxelBundle {
         matter::FroxelGridDimensions dimensions{};
+        // Whether this bundle allocated the separate cloud-density volume and
+        // selected the "enhanced" pipeline specializations. Latched from
+        // `enhanced_clouds_requested_` when the bundle is built, so it can lag
+        // the requested setting until the next bundle swap. (The trailing note
+        // below predates that wiring.)
         bool enhanced_clouds = false;  // reserved for Task 9; false in Task 8.
         matter::VkImageResource media;
         matter::VkImageResource scatter[2];
@@ -441,10 +569,19 @@ private:
 
     // Runtime-sized resources are replaced only at a completed frame slot.
     FroxelBundle active_bundle_{};
+    // A superseded bundle, kept alive until the in-flight frame that may still
+    // reference it retires. `protected_slot` is the frame slot that must
+    // COMPLETE before the bundle may be destroyed (the slot opposite the one
+    // that performed the swap).
     struct RetiredBundle { FroxelBundle bundle; uint32_t protected_slot = 0; };
     std::vector<RetiredBundle> retired_bundles_;
+    // Grid the settings ask for, in froxels (width x height x depth slices).
+    // Differs from active_bundle_.dimensions until the next bundle swap.
     matter::FroxelGridDimensions requested_dimensions_{160, 90, 128};
     uint64_t resource_generation_ = 0;
+    // Frame slot that prepare_froxel_bundle() last readied, or UINT32_MAX for
+    // "none". record() prepares lazily when it does not match, and resets it to
+    // UINT32_MAX once it has recorded, so each frame must prepare again.
     uint32_t prepared_frame_slot_ = UINT32_MAX;
     bool allocation_rejected_ = false;
     std::string allocation_error_;
@@ -469,6 +606,9 @@ private:
 
     // Samplers.
     VkSampler linear_clamp_sampler_ = VK_NULL_HANDLE;
+    // Created by create_samplers() but currently bound by no descriptor -- the
+    // scatter history sampler is linear_clamp_sampler_. See the note in
+    // create_samplers().
     VkSampler linear_border_sampler_ = VK_NULL_HANDLE;
     VkSampler linear_repeat_sampler_ = VK_NULL_HANDLE;
 
@@ -497,7 +637,11 @@ private:
 
     // State.
     VkDevice device_ = VK_NULL_HANDLE;
+    // Vestigial: the live ping-pong index is FroxelBundle::ping_index, which is
+    // what record() flips and reads. This one is only ever zeroed by destroy().
     uint32_t ping_index_ = 0;
+    // Frames recorded since init; fed to the scatter shader as the seed for its
+    // stochastic sampling. Wraps harmlessly.
     uint32_t frame_index_ = 0;
     bool ray_query_available_ = false;
     bool enabled_ = false;
@@ -505,6 +649,11 @@ private:
 
     // Temporal reprojection: previous frame's world→clip matrix.
     matter::Mat4f prev_world_to_clip_{};
+    // Whether prev_world_to_clip_ describes a frame whose scatter result is
+    // still comparable to this one. Cleared on a bundle swap, on
+    // invalidate_history(), and by update_settings() whenever a change would
+    // alter the scatter result (cloud shape, march or scattering parameters) --
+    // blending across such a change would smear the old lighting in.
     bool has_prev_matrices_ = false;
 
     // Latched settings.
@@ -529,6 +678,8 @@ private:
     bool cloud_overflow_warned_ = false;
 
     // Lighting state (set externally before record).
+    // World-space direction the sunlight TRAVELS (pointing down), as handed
+    // over by set_lighting(). Expected normalized; nothing here renormalizes.
     float sun_direction_[3] = {-0.45f, -0.80f, -0.35f};
 
 public:

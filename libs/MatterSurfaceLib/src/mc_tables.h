@@ -1,6 +1,27 @@
 #ifndef MC_TABLES_H
 #define MC_TABLES_H
 
+// libs/MatterSurfaceLib/src/mc_tables.h
+//
+// The two classic marching-cubes lookup tables, indexed by the 8-bit cube
+// configuration (one bit per corner, set when that corner is inside the
+// isosurface).
+//
+// - `edgeTable[cfg]` is a 12-bit mask: bit e is set when cube edge e is crossed
+//   by the surface and therefore needs an interpolated vertex.
+// - `triTable[cfg]` lists the edge indices, three per triangle, that form the
+//   triangles for that configuration, terminated by -1 and padded with -1 to
+//   16 entries (the worst case is five triangles = 15 indices). It is `char`,
+//   so the -1 terminator relies on char being signed here.
+// Corner and edge numbering is the standard Bourke/Lorensen ordering; the
+// sampling code in surface.c must use the same one.
+//
+// GOTCHA: these are non-static, non-const definitions in a HEADER, so this file
+// may only be included by exactly ONE translation unit -- today that is
+// src/surface.c. Including it anywhere else is a duplicate-symbol link error.
+// Include guards do not help across TUs. If a second consumer ever needs the
+// tables, move the definitions into a .c and leave `extern` declarations here.
+
 // Edge table for marching cubes
 int edgeTable[256] = {
     0x0  , 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c,

@@ -2,6 +2,8 @@
 
 #include "matter/math_types.h"
 
+// MatterEngine3/src/animation/animation_math.h
+//
 // Shared scalar math for the animation tree.
 //
 // This header exists because the Hamilton product below had eleven homes in the

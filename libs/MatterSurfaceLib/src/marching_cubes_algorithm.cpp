@@ -1,3 +1,29 @@
+// libs/MatterSurfaceLib/src/marching_cubes_algorithm.cpp
+//
+// The default mesher (MeshAlgorithm::MarchingCubes), one of the implementations
+// behind include/meshing_algorithm.h's MeshingAlgorithm interface. Called from
+// Cell::build_group_mesh, once per merge group, via GetMeshingAlgorithm().
+//
+// Pipeline, all inside the single generate() below:
+//   1. Pick the field eval. Any fat primitive, or an ordered-CSG stage list
+//      with more than one stage, selects GenerateMeshStaged; everything else
+//      takes the legacy single-union GenerateMeshWithScratch path, which is
+//      kept byte-identical for the hot case.
+//   2. Optionally simplify (QEM) when `simplification_ratio < 1`, locking the
+//      cell boundary so neighbouring cells still weld, and recompute analytic
+//      gradient normals on the simplified mesh.
+//   3. Convert to Tri + TriEx and tag each triangle with a material and tint.
+//
+// Threading: const and GL-free. All temporaries come from the caller's
+// per-worker SurfaceScratch, so this runs on MeshWorkerPool threads. It must
+// stay that way -- no GL, no globals, no logging that isn't thread-safe.
+//
+// Ownership: the returned GroupMeshResult owns its Mesh; the caller commits or
+// frees it. Meshes discarded here go through unload_cpu_mesh (NOT raylib's
+// UnloadMesh, which would make GL calls off the main thread).
+//
+// Returns an empty result (mesh.vertexCount == 0) when there is nothing to
+// sample or the field produced no surface -- a normal outcome, not an error.
 #include "marching_cubes_algorithm.h"
 #include "mesh_build_utils.h"
 #include "mesh_simplifier.hpp"   // simplify_mesh, SimplifyOptions
@@ -58,6 +84,20 @@ GroupMeshResult MarchingCubesAlgorithm::generate(const MeshContext& ctx) const {
     std::vector<TriEx> triangle_normals;
     std::vector<Tri> triangles = convert_mesh_to_triangles(mesh, &triangle_normals);
 
+    // Per-triangle material/tint tagging: attribute each triangle to the
+    // nearest source primitive by centroid. Spheres win when the group has any
+    // (the scratch spatial hash the mesher already populated is reused for the
+    // nearest-neighbour query, so `nearest` is a pointer INTO `particles` and
+    // pointer arithmetic recovers its index, which also indexes the parallel
+    // `ctx.particle_tints`); a fat-primitive-only group falls back to a linear
+    // scan over bounding-sphere centres.
+    //
+    // `bestIdx` starts at 0, so a triangle whose query finds nothing within
+    // `tri_search` -- or any triangle at all when the scratch has no hash --
+    // silently inherits particle 0's material and tint rather than failing.
+    // The search radius is deliberately generous (2.5x the largest radius plus
+    // four blend widths) because a blended surface can sit well outside the
+    // particle that dominates it.
     SpatialHash* tri_hash = SurfaceScratchHash(ctx.scratch);
     float tri_search = ctx.max_radius * 2.5f + ctx.blend_width * 4.0f;
     for (size_t t = 0; t < triangle_normals.size() && t < triangles.size(); ++t) {

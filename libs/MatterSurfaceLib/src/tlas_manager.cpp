@@ -1,3 +1,38 @@
+// libs/MatterSurfaceLib/src/tlas_manager.cpp
+//
+// Implementation of `TLASManager` — the scene-graph-shaped front end to
+// SpatialQueryLib's top-level acceleration structure. The class contract lives
+// in `../include/tlas_manager.hpp`; this file is the mechanism.
+//
+// Model. The manager owns an OpenGL-style matrix stack (`push_matrix` /
+// `translate` / `rotate_*` / `scale`, with `ScopedMatrix` and the
+// `TLAS_PUSH_MATRIX` macro for RAII scoping). `draw(blas_handle, material_id)`
+// snapshots the CURRENT top-of-stack matrix into a `DrawRecord` and returns a
+// nonzero instance id. `build(blas_manager)` then converts every record into a
+// `BVHInstance` and constructs the `TLAS`.
+//
+//   TLASManager tlas(max_instances);
+//   { TLAS_PUSH_MATRIX(tlas); tlas.translate(...); tlas.draw(h, mat); }
+//   tlas.build(blas);          // required before get_tlas()/get_instance_count()
+//   tlas.clear();              // start the next frame/bake
+//
+// Ownership and lifetime. `instance_storage_` is the manager-owned backing
+// array the `TLAS` holds a RAW pointer into, so the built `TLAS` must be
+// dropped before that vector is cleared or reallocated — `build()` does exactly
+// that, and any future edit must preserve the order. `instances_` (the
+// unique_ptr vector) is a deprecated parallel copy that `build()` still fills;
+// the `TLAS` does not point at it. `instance_array_` is vestigial: nothing in
+// this file ever allocates it, so the destructor/clear/build teardown blocks
+// for it are dead as written.
+//
+// This file is CPU-only — no Vulkan, no GL, no descriptor or buffer handling.
+// The GPU upload path consumes `get_draw_records()` / `get_tlas()` elsewhere and
+// polls `content_revision()` to know when to re-upload.
+//
+// Threading. No locking anywhere; a manager belongs to whichever thread is
+// building or drawing with it. Warnings go to `printf`, not the engine logger,
+// and a capacity refusal in `draw()` is reported ONLY by that printf.
+
 #include "../include/tlas_manager.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -14,6 +49,10 @@ TLASManager::TLASManager(int max_instances)
     draw_records_.reserve(max_instances);
 }
 
+// `instance_storage_`, `instances_` and `tlas_` clean themselves up. The
+// `instance_array_` teardown below is vestigial — nothing in this translation
+// unit ever assigns that pointer, and the member is private, so the branch
+// cannot be taken today. Left in place rather than removed.
 TLASManager::~TLASManager() {
     // Clean up instance array
     if (instance_array_) {
@@ -33,6 +72,11 @@ mm::Mat4& TLASManager::get_current_matrix() {
     return const_cast<mm::Mat4&>(matrix_stack_.top());
 }
 
+// Duplicate the top of the matrix stack. Depth is capped at 32; past that the
+// push is SKIPPED with only a printf, while the matching `pop_matrix` (or
+// `ScopedMatrix` destructor) still pops — so exceeding the cap does not just
+// lose the new level, it discards a caller's outer level too. Keep nesting
+// shallow, or hoist the transform.
 void TLASManager::push_matrix() {
     if (matrix_stack_.size() >= 32) { // Reasonable limit
         printf("Warning: Matrix stack overflow in TLAS manager\n");
@@ -108,6 +152,13 @@ void TLASManager::rotate_axis(const float3& axis, float angle_radians) {
     multiply_matrix(rot);
 }
 
+// Record one instance of `blas_handle` at the current top-of-stack transform.
+// Returns the new instance id, which is always >= 1, so a 0 return means the
+// record was REFUSED — either the handle was invalid or the manager is at its
+// instance ceiling (raise it with `ensure_instance_capacity`). The refusal is
+// otherwise silent apart from a printf, so a caller that ignores the return
+// value renders/bakes missing geometry. Does not build anything; call `build()`
+// once all draws are recorded.
 uint32_t TLASManager::draw(BLASHandle blas_handle, uint32_t material_id) {
     PROFILE_SECTION("TLAS Draw Call");
     
@@ -125,6 +176,11 @@ uint32_t TLASManager::draw(BLASHandle blas_handle, uint32_t material_id) {
     return instance_id;
 }
 
+// Record a whole vector of instances. Each entry's `transform` REPLACES the
+// current matrix rather than composing with it (push / load / draw / pop), so
+// batch transforms are absolute, unlike the incremental `translate`/`rotate`
+// helpers. `is_imposter` is copied onto the record only when the draw actually
+// succeeded; refused entries are skipped entirely.
 void TLASManager::draw_batch(const std::vector<DrawInstance>& instances) {
     PROFILE_SECTION("TLAS Batch Draw");
 
@@ -143,6 +199,11 @@ void TLASManager::ensure_instance_capacity(int n) {
     draw_records_.reserve(static_cast<size_t>(n));
 }
 
+// Drop every recorded instance and the built TLAS, and reset the matrix stack
+// to a single identity. Instance ids restart at 1, so ids are REUSED across
+// clears — anything caching an id across a clear must revalidate it. Buffer
+// capacity is retained (`vector::clear`), which is the point: clear/redraw/build
+// each frame does not re-allocate. Bumps `content_revision()`.
 void TLASManager::clear() {
     draw_records_.clear();
     next_instance_id_ = 1;
@@ -171,6 +232,19 @@ void TLASManager::clear() {
     mark_dirty();
 }
 
+// Flatten the recorded instances into a freshly built TLAS. A FULL rebuild
+// every call — there is no incremental update path — so cost is O(draw records)
+// plus the TLAS build itself, and it allocates a `BVHInstance` per record.
+//
+// Preconditions and sharp edges:
+//  - Records whose BLAS handle is missing from `blas_manager` are SKIPPED with
+//    a printf, so the built instance count can be lower than the record count.
+//  - With no draw records it warns and returns EARLY, leaving the previously
+//    built TLAS in place. To end up with no TLAS, call `clear()`.
+//  - `tlas_` is reset before `instance_storage_` is touched because the TLAS
+//    holds a raw pointer into that vector.
+//  - `record.transform` (mm::Mat4) and `mat4` are the same row-major float[16],
+//    hence the plain element copy below.
 void TLASManager::build(const BLASManager& blas_manager) {
     PROFILE_SECTION("TLAS Build");
     
@@ -241,6 +315,9 @@ void TLASManager::build(const BLASManager& blas_manager) {
     mark_dirty();
 }
 
+// Instances in the BUILT TLAS, not recorded draws: 0 before the first `build()`,
+// and lower than `get_draw_record_count()` when records were skipped for a
+// missing BLAS. Use `get_draw_record_count()` for what was recorded.
 int TLASManager::get_instance_count() const {
     return tlas_ ? tlas_->blasCount : 0;
 }
@@ -250,6 +327,8 @@ int TLASManager::get_node_count() const {
 }
 
 
+// No-op: the whole body is commented out. Kept so existing call sites compile
+// and so the printf set can be re-enabled during a debugging session.
 void TLASManager::print_stats() const {
     // printf("=== TLAS Manager Statistics ===\n");
     // printf("Draw records: %zu/%d\n", draw_records_.size(), max_instances_);
@@ -265,6 +344,18 @@ void TLASManager::print_stats() const {
 }
 
 // Scene building utilities implementation
+// Convenience scene generators: each records `count` (or rows*cols) instances of
+// a single BLAS through the normal `draw()` path, so all of the manager's rules
+// apply — the caller must still call `build()`, and the instance ceiling still
+// silently caps the output.
+//
+// `TLAS_PUSH_MATRIX(manager)` declares a `ScopedMatrix` whose scope is the loop
+// BODY, so each iteration's transform is popped on the way out and the
+// transforms below do not accumulate.
+//
+// `create_scatter` draws from the global `std::rand()` and never seeds it, so
+// its layout depends on process-wide RNG state — not reproducible, and not
+// suitable for anything cached by content hash.
 namespace SceneBuilder {
 
 void create_grid(TLASManager& manager, BLASHandle blas_handle, 

@@ -157,6 +157,8 @@ bool encode_blocks(const uint8_t* src, int w, int h, BcFormat format,
         if (begin >= end) break;
         pool.emplace_back([&run_rows, begin, end] { run_rows(begin, end); });
     }
+    // The calling thread takes chunk 0 rather than idling, which is why
+    // `workers` counts it and the spawn loop starts at 1.
     run_rows(0, std::min(per, blocks_y));
     for (auto& t : pool) t.join();
     return true;
@@ -203,12 +205,17 @@ bool encode_bc5(const uint8_t* src_rg8, int w, int h,
 bool encode_bc4(const uint8_t* src_r8, int w, int h,
                 std::vector<uint8_t>& out, std::string& err,
                 unsigned max_threads) {
+    // stride 1: the gathered block is 16 tightly packed single-byte texels,
+    // all of which feed BC4's one channel.
     return encode_blocks(src_r8, w, h, BcFormat::kBc4, out, err, max_threads,
                          [](uint8_t* dst, const uint8_t* block) {
                              rgbcx::encode_bc4(dst, block, 1);
                          });
 }
 
+// `out` is always resized to texel_count and zero-filled first, so a null
+// source yields an all-zero buffer rather than an error — the callers validate
+// the pointer before getting here.
 void requantize_r16le_to_r8(const uint8_t* src_r16le, size_t texel_count,
                             std::vector<uint8_t>& out) {
     out.assign(texel_count, 0);
@@ -222,6 +229,20 @@ void requantize_r16le_to_r8(const uint8_t* src_r16le, size_t texel_count,
     }
 }
 
+// Encodes layer-major, then mip-major, one image at a time; `max_threads` is
+// passed down to each individual mip rather than used to run mips in parallel,
+// so the small tail of a mip chain naturally falls back to serial encoding
+// (worker_count()'s "at least 8 block rows per worker" floor).
+//
+// Mip dimensions halve with a floor of 1, matching the slicer, and each mip's
+// input byte count is checked against dim*dim*bytes_per_pixel before encoding —
+// a ragged or mis-sized chain is a hard failure, not a silently short output.
+//
+// On any failure `out` is reset to a default-constructed CompressedChannel, so
+// a caller can never observe a partially compressed channel.
+//
+// Cost: this is the expensive call in the tileset load path (a 4096 atlas slot
+// is ~44 Mtexel of BC7), which is why the caller normally caches the result.
 bool compress_sliced_channel(const SlicedChannel& src, BcFormat format,
                              bool src_is_r16le, CompressedChannel& out,
                              std::string& err, unsigned max_threads) {

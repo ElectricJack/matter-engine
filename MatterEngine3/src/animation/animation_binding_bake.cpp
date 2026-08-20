@@ -1,3 +1,52 @@
+// MatterEngine3/src/animation/animation_binding_bake.cpp
+//
+// The skin-binding baker and the codec for the five binding sections of a
+// `MANM` animation asset. Two halves:
+//
+//  - `build_skin_binding` turns a `CanonicalRig` plus one
+//    `viewer::IndexedPartGeometry` per LOD rung into a `BindingBake`:
+//    four-influence quantized skin weights per vertex, one inverse-bind
+//    matrix per joint, and per-joint AABBs in that joint's bind-local frame.
+//  - `set_anim_binding_bake` / `get_anim_binding_bake` serialize a
+//    `BindingBake` into, and parse it back out of, the GeometryBindings
+//    (`GBND` v2), InverseBindMatrices (`IBND` v1), ClusterBounds (`CBND` v1),
+//    RigidSegments (`RBND` v2) and Attachments (`ABND` v1) sections.
+//
+// Conventions
+// ---------------------------------------------------------------------------
+//  - `Mat4f` here is ROW-MAJOR with the translation in indices 3/7/11.
+//    `multiply(a, b)` is `a` then `b` read right-to-left in the usual
+//    parent-times-local sense: joint world = parent world * local.
+//  - The rig must be in canonical (preorder) index order: every joint's
+//    parent index is strictly less than its own. `bind_joints` enforces it,
+//    because it evaluates world transforms in a single forward pass.
+//  - Weights are `uint16_t` and must sum to exactly 65535 per vertex.
+//    `quantize` floors slots 1..3 and gives slot 0 the remainder, so slot 0
+//    absorbs all the rounding error and no vertex is left unnormalized.
+//  - A vertex that no bone reaches falls back to the single nearest allowed
+//    joint at full weight, so there are no unskinned vertices.
+//  - Vertex positions arrive in the part's model space; joint bounds are
+//    stored in each joint's bind-LOCAL space (position pushed through that
+//    joint's inverse-bind matrix).
+//
+// Validation
+// ---------------------------------------------------------------------------
+// `valid_binding` is the gate for both writing and reading, so a malformed
+// binding can neither be produced nor accepted. It checks finiteness,
+// weight normalization, joint-index range, per-vertex duplicate joints,
+// cluster ranges partitioning the LOD's vertices exactly once, every
+// influencing joint being covered by its cluster's bound list, unique rigid
+// segment (name, joint) pairs, unique attachment names, and — the subtle
+// one — that per LOD the skin's and every rigid segment's `blas_slot` form a
+// permutation of `0..owner_count-1`, i.e. exactly one BLAS stream per owner.
+//
+// All parsing is fail-closed and length-checked, and each section must be
+// consumed to its exact last byte; there are no partial results and no
+// diagnostics — these functions return a bare bool.
+//
+// Nothing here touches the GPU, the filesystem or any shared state; it is
+// pure computation over caller-owned data and is safe to run on a bake
+// worker.
 #include "animation/animation_binding_bake.h"
 
 #include "animation/animation_math.h"
@@ -111,6 +160,10 @@ bool inverse(const Mat4f& source, Mat4f& out) {
     }
     return true;
 }
+// A rig joint resolved to bind pose: `world` is the accumulated
+// parent-times-local matrix, `position` its origin in model space, `rotation`
+// the accumulated orientation, and `radius` the authored capsule radius used
+// by the falloff weighting.
 struct BindJoint { Float3 position{}; Quaternion rotation{}; float radius=1; Mat4f world{}; };
 bool bind_joints(const CanonicalRig&rig, std::vector<BindJoint>&out){
     if (rig.joints.empty() || rig.joints.size() > kMaxJoints) return false;
@@ -126,6 +179,15 @@ bool bind_joints(const CanonicalRig&rig, std::vector<BindJoint>&out){
 float smooth(float q){q=std::max(0.0f,std::min(1.0f,q));return q*q*(3.0f-2.0f*q);}
 bool valid_transform(const AnimationTransform& value);
 void add_weight(std::vector<float>&values,JointIndex joint,float weight){if(joint!=kInvalidJoint&&std::isfinite(weight)&&weight>0)values[joint]+=weight;}
+// Reduce a per-joint weight field to at most `kMaxSkinInfluences` slots and
+// quantize to uint16 weights summing to exactly 65535.
+//
+// Ordering is deterministic: descending weight, ties broken by joint index.
+// Slots 1..n are floored and slot 0 takes the remainder, so the total is
+// exact and the dominant joint absorbs the rounding. When no allowed joint
+// has any weight, the nearest allowed joint (ties by lowest index) gets the
+// full 65535 — a vertex is never left unbound. Returns an all-invalid
+// result only when `allowed` selects no joint at all.
 VertexInfluences quantize(std::vector<float> values,const std::vector<BindJoint>&joints,const Float3&p,const std::vector<bool>&allowed){
     VertexInfluences out; std::vector<JointIndex> order;
     for(JointIndex i=0;i<values.size();++i) if(allowed[i]&&values[i]>0) order.push_back(i);
@@ -195,6 +257,14 @@ bool valid_attachment_binding(const AttachmentBake& attachment) {
            (attachment.target_kind == AttachmentTargetKind::Joint || attachment.target_kind == AttachmentTargetKind::Socket) &&
            valid_transform(attachment.local);
 }
+// The single structural gate for a `BindingBake`, applied both before
+// writing sections and after parsing them. See the "Validation" block in the
+// file header for what it enforces; the load-bearing rules are that weights
+// sum to exactly 65535, that clusters partition each LOD's vertices exactly
+// once with every influencing joint present in the cluster's bound list, and
+// that per LOD the skin plus rigid segments claim each BLAS slot exactly
+// once. O(vertices * influences) with linear searches over the small
+// per-cluster lists.
 bool valid_binding(const BindingBake& bake) {
     if (bake.inverse_bind_matrices.empty() || bake.inverse_bind_matrices.size()>kMaxJoints || bake.lods.size()>64) return false;
     if (bake.lods.empty() && bake.rigid_segments.empty() && bake.attachments.empty()) return false;
@@ -268,10 +338,17 @@ bool valid_binding(const BindingBake& bake) {
     }
     return true;
 }
+// Find the unique section of `kind`. Returns nullptr both when it is missing
+// AND when it appears more than once — a duplicated section is treated as
+// corruption, not as "take the first".
 const AnimSection* section(const AnimAsset& asset, AnimSectionKind kind) { const AnimSection* found=nullptr; for(const auto& candidate:asset.sections) if(candidate.kind==kind){if(found)return nullptr;found=&candidate;} return found; }
 void set_section(AnimAsset& asset, AnimSectionKind kind, std::vector<uint8_t> bytes) { for(auto& section:asset.sections)if(section.kind==kind){section.bytes=std::move(bytes);return;} asset.sections.push_back({kind,std::move(bytes)}); }
 }
 
+// Joint-count constructor: used where the caller has no rig to hand. It can
+// only assume the canonical shape — preorder indices, so index 0 is the sole
+// root and every other index is a valid child. Prefer the `CanonicalRig`
+// overload, which derives validity from the real parent links.
 BindingClaims::BindingClaims(size_t joint_count)
     : primary_(joint_count, false), valid_children_(joint_count, true) {
     // Canonical rigs are preorder-indexed, so index zero is the only root.
@@ -286,6 +363,18 @@ BindingClaims::BindingClaims(const CanonicalRig& rig)
     }
 }
 
+// Claim a set of parent->child bone segments, addressed by CHILD joint index.
+// All-or-nothing: nothing is marked unless every entry is acceptable.
+//
+// Rejects an out-of-range index, a joint that is not a valid child (a root,
+// or one whose parent link is missing/forward), and a duplicate within the
+// same call. A non-decorative claim additionally rejects any segment already
+// claimed non-decoratively, and marks the segments taken. A decorative claim
+// checks the same shape rules but neither consults nor sets ownership, so
+// decorative geometry may deliberately overlap primary geometry.
+//
+// `claim_skin` and `claim_rigid` are the same operation under two names; the
+// distinction is for the caller's readability, not behaviour.
 bool BindingClaims::claim(const std::vector<JointIndex>& children,bool decorative){
     std::vector<bool> seen(primary_.size(), false);
     for (JointIndex child : children) {
@@ -302,6 +391,31 @@ bool BindingClaims::claim(const std::vector<JointIndex>& children,bool decorativ
 bool BindingClaims::claim_skin(const std::vector<JointIndex>& children,bool decorative){return claim(children,decorative);}
 bool BindingClaims::claim_rigid(const std::vector<JointIndex>& children,bool decorative){return claim(children,decorative);}
 
+// Bake skin weights for `lods` against `rig`.
+//
+// `child_joints` names the bones to skin, by CHILD joint index; each one's
+// parent is implicitly allowed to receive weight too, and no other joint is.
+// A root, an out-of-range index or a duplicate is rejected. `falloff_scale`
+// multiplies each joint's authored radius to set the reach of the weighting
+// field; it must be finite and positive.
+//
+// Weighting is a capsule falloff along every selected parent->child bone
+// (project the vertex onto the segment, lerp the endpoint radii at the
+// projection, split the field between the two joints by the same parameter),
+// plus a spherical falloff around each allowed joint so leaf and rootless
+// joints still bind. The result is quantized to four influences per vertex.
+//
+// `out` is cleared first and is only meaningful on a true return. It gets
+// one inverse-bind matrix per rig joint (not per selected joint), and per LOD
+// a single cluster (id 0) spanning every vertex, carrying a bind-local AABB
+// for each joint that actually influences something. Rigid segments and
+// attachments are NOT produced here — the caller fills those in.
+//
+// Fails on a non-canonical rig, a singular bind matrix, an empty
+// `child_joints`, or geometry whose vertex array does not match its
+// `vertex_count`. Cost is O(lods * vertices * joints), and the bounds pass
+// re-scans every vertex per influencing joint, so it is the expensive part
+// of an animated-part bake.
 bool build_skin_binding(const CanonicalRig&rig,const std::vector<JointIndex>&child_joints,const std::vector<viewer::IndexedPartGeometry>&lods,float falloff_scale,BindingBake&out){
     out={};if(!std::isfinite(falloff_scale)||falloff_scale<=0)return false;std::vector<BindJoint> joints;if(!bind_joints(rig,joints))return false;
     std::vector<bool> selected(joints.size(),false), allowed(joints.size(),false);
@@ -376,9 +490,19 @@ bool build_skin_binding(const CanonicalRig&rig,const std::vector<JointIndex>&chi
     }
     return true;
 }
+// Project a binding down to the per-LOD fingerprints stored in the bundle
+// manifest. Note `influence_count` is the number of influence SLOTS
+// (`vertices * kMaxSkinInfluences`), not the number of non-zero weights.
+// `manifest_matches_binding` is the exact-equality check used by both the
+// publish and the load validators.
 std::vector<LodBindingSignature> manifest_lod_signatures(const BindingBake&bake){std::vector<LodBindingSignature> out;out.reserve(bake.lods.size());for(const auto&lod:bake.lods)out.push_back({lod.indexed_vertex_signature,lod.vertex_count,static_cast<uint32_t>(lod.influences.size()*kMaxSkinInfluences)});return out;}
 bool manifest_matches_binding(const std::vector<LodBindingSignature>&manifest,const BindingBake&bake){return manifest==manifest_lod_signatures(bake);}
 
+// Serialize `bake` into the asset's five binding sections, replacing any
+// existing ones (and appending them if absent). Returns false and touches
+// nothing when `valid_binding` rejects the input, so a malformed binding can
+// never reach disk. The other five section kinds are left alone, and the
+// asset is still incomplete until all ten are present.
 bool set_anim_binding_bake(AnimAsset& asset, const BindingBake& bake) {
     if (!valid_binding(bake)) return false;
     std::vector<uint8_t> geometry, inverse_binds, bounds, rigid_segments, attachments;
@@ -419,6 +543,15 @@ bool set_anim_binding_bake(AnimAsset& asset, const BindingBake& bake) {
     return true;
 }
 
+// Parse the five binding sections back into `bake` (cleared on entry, and
+// meaningless on a false return).
+//
+// Fail-closed on every axis: a missing or duplicated section, a wrong tag or
+// section version, counts that exceed the caps or the remaining bytes, a
+// non-finite float, an LOD count disagreeing between the GBND and CBND
+// sections, trailing bytes in any section, or a payload that does not pass
+// `valid_binding`. There are no diagnostics — the caller reports the failure
+// (`bundle.binding`).
 bool get_anim_binding_bake(const AnimAsset& asset, BindingBake& bake) {
     bake={}; const auto* geometry=section(asset,AnimSectionKind::GeometryBindings); const auto* inverse_binds=section(asset,AnimSectionKind::InverseBindMatrices); const auto* bounds=section(asset,AnimSectionKind::ClusterBounds); const auto* rigid_segments=section(asset,AnimSectionKind::RigidSegments); const auto* attachments=section(asset,AnimSectionKind::Attachments);
     if(!geometry||!inverse_binds||!bounds||!rigid_segments||!attachments)return false;

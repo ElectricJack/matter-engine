@@ -1,4 +1,22 @@
 #pragma once
+// MatterEngine3/src/live_edit_prod.h
+//
+// The production wiring for the live-edit loop: the three seams from
+// live_edit_interfaces.h implemented over the part-graph snapshot
+// (part_graph_snapshot.h), the script host (script_host.h) and part_flatten.
+// Construct all three, hand them to a LiveEditSession together with a
+// FileWatcher and an ErrorSink, and the session drives them.
+//
+// LIFETIME. Every one of them holds the Snapshot and the ScriptHost BY
+// REFERENCE; both must outlive the resolver/baker/flattener, which in turn
+// must outlive the LiveEditSession that references them. The directory strings
+// are copies.
+//
+// The snapshot is shared MUTABLE state: ProdGraphResolver::reresolve writes
+// the new hash back into it so that the ancestors rebuilt later in the same
+// pass fold their children's current hashes. That is why the whole set is
+// worker-thread-only.
+//
 // Production live-edit seam implementations over the snapshot + ScriptHost.
 // All methods run on the WORKER thread (the sole graph mutator).
 // Consumed by Task 10's RebakeCone.
@@ -19,6 +37,13 @@ namespace live_edit_prod {
 // in-place so subsequent calls see current hashes.
 class ProdGraphResolver : public live_edit::GraphResolver {
 public:
+    // Two constructors, and they differ in more than arity:
+    //   single `shared_lib_dir` - parts_for_file() falls back to prefix
+    //       matching, turning "<shared_lib_dir>/<module>.js" into a module
+    //       name and looking it up in the snapshot's by_import index.
+    //   vector `shared_lib_dirs` - sets exact_shared_paths_, which DISABLES
+    //       that fallback entirely: a path that is not a by_file key maps to
+    //       no parts at all.
     ProdGraphResolver(part_graph_snapshot::Snapshot& snap,
                       script_host::ScriptHost& host,
                       std::string schemas_dir,
@@ -48,6 +73,9 @@ public:
     // ("" on failure).
     live_edit::ResolvedHash reresolve(const live_edit::PartId& p) override;
 
+    // snap_ is read AND written (reresolve updates node hashes in place), so
+    // this type is not safe to use from two threads at once even though its
+    // methods look like queries.
 private:
     part_graph_snapshot::Snapshot& snap_;
     script_host::ScriptHost&       host_;

@@ -1,5 +1,36 @@
 #pragma once
 
+// MatterEngine3/src/animation/anim_bundle.h
+//
+// The commit protocol for an animated part: three files that must agree
+// before the runtime will animate anything.
+//
+//   <cache_root>/parts/<hash>...        part_asset v2 (geometry + link)
+//   <cache_root>/parts/<hash>.anim      the animation asset (anim_asset.h)
+//   <cache_root>/parts/<hash>.anim.commit  the `MACM` manifest, written last
+//
+// `BundleIdentity` is the manifest's payload: the shared `BuildNonce`, the
+// body checksums of the other two files, the version/epoch/ABI/compiler
+// stamps, and one signature per LOD rung. `BundleCandidates` names the two
+// candidate files to promote plus the cache root.
+//
+// Typical producer flow (script_host / the bake path):
+//   1. bake the part and the animation to candidate paths,
+//   2. fill a `BundleIdentity` — nonce from `generate_build_nonce()`,
+//      `anim_body_checksum(asset)`, `checksum_part(...)`,
+//      `manifest_lod_signatures(binding)`,
+//   3. call `publish_animation_bundle`.
+// Consumers call `load_committed_animation_bundle`, which re-runs the whole
+// validation against the live files.
+//
+// Both entry points are self-contained file operations: they take no engine
+// locks, but `publish_animation_bundle` takes an exclusive, NON-BLOCKING
+// `<manifest>.lock` and fails (`bundle.lock`) rather than waiting if another
+// process is publishing the same hash. Neither is cheap — each fully loads
+// the part and the anim and rebuilds indexed geometry per LOD.
+//
+// Every failure path returns false and appends a `bundle.*` code to the
+// `Diagnostics`; the caller's output arguments are left untouched.
 #include "anim_asset.h"
 #include "part_asset_v2.h"
 
@@ -8,6 +39,12 @@
 
 namespace matter::animation {
 
+// Fingerprint of one LOD rung's skin binding, stored in the manifest so a
+// re-meshed part can be detected without re-deriving the whole binding.
+// `indexed_vertex_signature` comes from
+// `viewer::indexed_part_geometry_signature` and is salted with the rung
+// index; `influence_count` is the number of influence SLOTS
+// (`vertices * kMaxSkinInfluences`), not the number of non-zero weights.
 struct LodBindingSignature {
     uint64_t indexed_vertex_signature = 0;
     uint32_t vertex_count = 0;
@@ -17,6 +54,16 @@ struct LodBindingSignature {
                vertex_count == v.vertex_count && influence_count == v.influence_count;
     }
 };
+// The commit manifest's contents — the single record that ties the part
+// file, the `.anim` file and this build together.
+//
+// The version/epoch/compiler fields default to this build's constants, and
+// both `publish_animation_bundle` and `load_committed_animation_bundle`
+// require them to still equal those constants: comparing only the persisted
+// copies to each other would prove the siblings agree while all three are
+// stale. `target_abi_tag` / `ozz_tag_hash` default to 0 and must be filled in
+// by the producer with `kAnimationTargetAbiTag` / `kAnimationOzzTagHash`.
+// A zero `nonce` is rejected as unset.
 struct BundleIdentity {
     uint64_t resolved_hash = 0;
     BuildNonce nonce{};
@@ -30,6 +77,10 @@ struct BundleIdentity {
     uint32_t compiler_identifier = kAnimationCompilerIdentifier;
     std::vector<LodBindingSignature> lods;
 };
+// Inputs to one publish: the two freshly baked candidate files and the cache
+// root under which their live paths (and the `parts/` directory) are derived.
+// The candidates are consumed by the atomic replace, so they no longer exist
+// at their candidate paths after a successful publish.
 struct BundleCandidates {
     std::filesystem::path part_candidate;
     std::filesystem::path anim_candidate;
@@ -54,7 +105,16 @@ void set_animation_bundle_test_replace_legacy_lock_directory_once();
 bool checksum_part(const std::filesystem::path& part_file, uint64_t part_hash,
                    uint64_t& out);
 
+// Validate both candidates against `BundleIdentity` and against each other,
+// then atomically promote them and write the commit manifest last. Rolls
+// back from backups if any replace fails. Takes a non-blocking cross-process
+// lock; returns false with a `bundle.*` diagnostic on any failure, having
+// left the previously published state intact.
 bool publish_animation_bundle(const BundleCandidates&, const BundleIdentity&, Diagnostics&);
+// Load `<cache_root>` / `<hash>`'s committed bundle, re-running the full
+// publish-side validation. The `BLASManager` and `AnimAsset` outputs are
+// assigned only after every check passes, so a failed load never clobbers
+// the caller's existing state.
 bool load_committed_animation_bundle(const std::filesystem::path&, uint64_t,
                                      BLASManager&, AnimAsset&, Diagnostics&);
 } // namespace matter::animation

@@ -1,3 +1,17 @@
+// MatterEngine3/src/tileset_settle.cpp — SettleWorld implementation. See
+// tileset_settle.h for the contract; this file documents the internals and
+// why they are shaped this way.
+//
+// Everything inside the box3d world lives in SIM units: positions and linear
+// velocities are multiplied by SettleParams::sim_scale on the way in and
+// divided out on the way back (body_state / refresh_poses), gravity is scaled
+// with them, and density is divided by sim_scale^3 so the resulting mass stays
+// scale-invariant. Angular velocity is scale-invariant and is NOT converted.
+//
+// The per-tick order in step() -- b3World_Step, wrap_bodies, sync_groups_step,
+// then telemetry -- is the historical settle_layer order and is guarded by the
+// pose_hash golden test. Reordering it changes baked output.
+
 #include "tileset_settle.h"
 
 #include <chrono>
@@ -51,6 +65,11 @@ static void axes_to_quat(const float axis[3][3], float out_xyzw[4]) {
 
 // ---- impl -------------------------------------------------------------------
 
+// Everything the public class hides: the box3d world, the spawn-ordered body
+// list, the portal-sync groups, and the telemetry counters. The "step-mode
+// bookkeeping" block is reset by begin_layer and is only meaningful for the
+// layer currently in flight; the per-body vectors below it span the whole
+// world and only ever grow, since bodies are never removed.
 struct SettleWorld::Impl {
     b3WorldId world;
     float torus = 0.0f;        // sim units
@@ -86,6 +105,13 @@ struct SettleWorld::Impl {
     void refresh_poses();
 };
 
+// Builds the world and installs the base terrain as a single static body.
+// `torus_size` arrives in world metres and is stored scaled -- impl_->torus is
+// in sim units, which is what wrap_bodies compares against. `base.heights` is
+// handed to b3CreateHeightField as a raw pointer and nothing here copies it,
+// so the caller's HeightField must not be freed or resized before the
+// SettleWorld is destroyed. Throws std::runtime_error if box3d refuses the
+// heightfield; that is the only throwing path in this file.
 SettleWorld::SettleWorld(float torus_size, const HeightField& base, const SettleParams& params) {
     impl_ = std::make_unique<Impl>();
     impl_->params = params;
@@ -160,6 +186,16 @@ LayerResult SettleWorld::settle_layer(const std::vector<BodySpawn>& spawns) {
     return end_layer();
 }
 
+// Spawn one layer's bodies and reset the per-layer counters. Bodies from
+// earlier layers stay in the world, dynamic and usually asleep, so a new layer
+// can disturb them. Every spawn appends to impl_->bodies, so a body's index is
+// stable for the rest of the run and is what poses() / body_state() key on.
+//
+// The collider is read through the borrowed BodySpawn::collider pointer and
+// converted to a box3d shape right here; nothing retains it afterwards. A Hull
+// collider whose point cloud b3CreateHull rejects silently degrades to a
+// sphere of the fit's radius (see the fallback below): the body is still
+// simulated, just not with the shape the fit asked for.
 void SettleWorld::begin_layer(const std::vector<BodySpawn>& spawns) {
     const float S = impl_->params.sim_scale;
     impl_->layer_start = impl_->bodies.size();
@@ -252,6 +288,12 @@ void SettleWorld::begin_layer(const std::vector<BodySpawn>& spawns) {
     impl_->ticks_awake.resize(impl_->bodies.size(), 0);
 }
 
+// Advance one tick and return this tick's telemetry. The bookkeeping pass
+// walks EVERY body in the world, not just the current layer's, so a late
+// layer's tick costs more than an early one's: ts.total_awake and wake_events
+// are world-wide, while ts.layer_awake and the velocity maxima cover only the
+// bodies this layer spawned. ts.step_ms is wall time for the whole call,
+// including that pass, so it is not pure solver time.
 TickStats SettleWorld::step() {
     const auto t0 = std::chrono::steady_clock::now();
     const SettleParams& P = impl_->params;
@@ -345,6 +387,11 @@ BodyState SettleWorld::body_state(int index) const {
     return st;
 }
 
+// End of the run: force-snap every sync group to its exact averaged pose,
+// freeze those bodies as kinematic so the remaining free bodies can re-settle
+// against fixed geometry, run micro_relax_steps more ticks, then refresh
+// poses(). Irreversible -- the sync-group bodies never go back to dynamic --
+// so call it once, after the last layer.
 void SettleWorld::finalize() {
     // Exact snap: every instance gets the identical averaged local pose.
     impl_->sync_groups_step(true);
@@ -374,6 +421,11 @@ uint64_t SettleWorld::pose_hash() const {
     return h;
 }
 
+// Toroidal wrap in x/z (sim units), run after every b3World_Step. Sleeping
+// bodies are skipped: an asleep body no longer moves, so it was already
+// wrapped on the tick it fell asleep. Non-finite coordinates are left alone
+// instead of wrapped, because an infinite value would spin the while-loops
+// below forever.
 void SettleWorld::Impl::wrap_bodies() {
     if (torus <= 0.0f) return;
     for (const TrackedBody& tb : bodies) {
@@ -390,6 +442,17 @@ void SettleWorld::Impl::wrap_bodies() {
     }
 }
 
+// Portal sync. A strip that straddles a tile boundary is simulated as K
+// separate occurrences, one per place that strip appears on the torus. Each
+// tick this averages the K bodies of every canonical strip member -- position
+// (as a delta from instance 0's strip-local pose, unwrapped across the torus
+// seam), sign-aligned quaternion, and both velocities -- and writes the result
+// back to all K, so the occurrences stay exact copies of one another.
+//
+// force_snap = false is the per-tick path: groups with no awake member, and
+// members that already agree to within 1e-6, are skipped, because writing a
+// transform can wake a sleeping body and stall convergence indefinitely.
+// finalize() passes true to snap unconditionally.
 void SettleWorld::Impl::sync_groups_step(bool force_snap) {
     const float half = torus * 0.5f;
     for (SyncGroup& g : groups) {
@@ -474,6 +537,9 @@ void SettleWorld::Impl::sync_groups_step(bool force_snap) {
     }
 }
 
+// Rebuild out_poses (world metres, spawn order) from the live bodies. Called
+// only by end_layer() and finalize(), which is why poses() is stale while a
+// layer is mid-flight.
 void SettleWorld::Impl::refresh_poses() {
     const float inv = 1.0f / params.sim_scale;
     out_poses.clear();

@@ -12,6 +12,25 @@
 //
 // Compiled only when MATTER_HAVE_SCRIPT_HOST is defined (same guard as
 // FileModuleResolver + HostBaker in part_graph.h/.cpp).
+//
+// COST AND THREADING. One call constructs a fresh `ScriptHost` (its own QuickJS
+// runtime), evaluates the root twice (`eval_requires`, then `eval_tileset`),
+// recursively resolves and BAKES every child part through `PartGraph`, and on a
+// settle-cache miss runs a full box3d settle. Seconds, not milliseconds, and it
+// touches the parts cache on disk -- bake-thread work, never a frame path. Two
+// concurrent calls against the same `parts_cache_dir` are not coordinated here.
+//
+// FAIL-CLOSED, INCLUDING ON SOFT FAILURES. `PartGraph::install` reports ok even
+// when an individual child fails to resolve or bake, leaving a zero hash behind;
+// this file rejects that explicitly rather than letting a 0 flow into the
+// placement table (see step 3). The one deliberate exception is the settle-cache
+// SAVE, which is best-effort: a failed save costs the next run a re-settle and
+// nothing else.
+//
+// TWO CACHES, ONE IDENTITY. The settle cache is keyed here; the .gtex atlas
+// cache is keyed by the caller. They must agree about which children were used,
+// which is what `out_sorted_child_hashes` is for -- see the note at step 6 and
+// in tileset_phase.h.
 
 #include "tileset_phase.h"
 
@@ -53,6 +72,23 @@ static std::string find_object_source(const std::vector<std::string>& object_roo
     return {};
 }
 
+// The real implementation; all three public overloads are argument adapters
+// over it. The six numbered steps below are the whole pipeline.
+//
+// `object_roots` is a first-match-wins SEARCH PATH (scene tier before project
+// tier), and it is used for both the root module and, through
+// `FileModuleResolver`, every child -- deliberately, so a scene that overrides
+// one object cannot end up with a tileset settled against the project copy.
+//
+// `canonical_root_params_json` must already be canonical: it is hashed straight
+// into the settle cache key and passed verbatim to both evals, so two spellings
+// of the same params are two cache entries.
+//
+// OUTPUT ON SUCCESS. `out` is the settled torus, with `report.from_cache` set
+// when no physics ran. `out_sorted_child_hashes`, if given, is filled BEFORE the
+// cache short-circuit so a warm hit publishes the same list a cold settle does.
+// On failure `err` is set and `out` is left in whatever state the failing stage
+// reached -- callers must not read it.
 static bool run_tileset_phase_impl(const std::vector<std::string>& object_roots,
                                    const std::string& root_module,
                                    const std::string& canonical_root_params_json,
@@ -268,6 +304,11 @@ bool run_tileset_phase_from_object_roots(
 
 } // namespace tileset
 
+// Stubs for builds without the script host, so a caller can link and fail with
+// a message instead of failing to link. Note the coverage is PARTIAL: only the
+// two `run_tileset_phase_from_objects` overloads have stubs here, so a
+// script-host-less build that calls `run_tileset_phase_from_object_roots` --
+// declared in the header unconditionally -- still fails at link time.
 #else // !MATTER_HAVE_SCRIPT_HOST
 
 namespace tileset {

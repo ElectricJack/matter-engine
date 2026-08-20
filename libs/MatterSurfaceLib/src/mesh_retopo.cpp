@@ -1,3 +1,35 @@
+// libs/MatterSurfaceLib/src/mesh_retopo.cpp
+//
+// MatterSurfaceLib's wrapper over `third_party/autoremesher_core`. It is a
+// format adapter plus an attribute-restore step; none of the retopology math
+// lives here.
+//
+// Pipeline for one call to `retopo`:
+//   1. `to_ar_mesh`   — MeshIndexed (float3 positions) -> autoremesher::Mesh
+//                       (flat xyz float array); indices pass through as-is.
+//   2. `autoremesher::remesh` — the actual cross-field / MIQ remesher.
+//   3. `from_ar_mesh` — back to MeshIndexed. TriEx is NOT produced here: the
+//                       remesher invents a whole new triangle set, so there is
+//                       nothing to carry over index-wise.
+//   4. `reproject_triex` (mesh_transform.hpp) — restores materialId and tint by
+//                       nearest-source lookup. Shading normals are recomputed
+//                       smooth over the target (the default `SmoothTarget`
+//                       mode), which is correct for retopo output: it is an
+//                       organic quad-flow surface with no authored creases.
+//                       AO stays at its unbaked default; `vertex_ao` runs
+//                       downstream.
+//
+// Failure is a normal outcome, not an exception: on empty input or a remesher
+// error the returned `RetopoResult` has `ok == false`, `err` set, and an empty
+// `mesh` — callers are expected to fall back to the input mesh.
+// `elapsed_seconds` is filled in from the library even on the failure path, so
+// a timeout still reports how long it burned.
+//
+// Determinism / threading: `RetopoOptions::threads` defaults to 1 to pin
+// floating-point summation order, but note the caveat in `mesh_retopo.hpp` —
+// autoremesher_core builds its TBB scheduler once per PROCESS, so only the
+// first call's `threads` value takes effect. Do not assume two concurrent
+// `retopo` calls with different thread counts behave independently.
 #include "mesh_retopo.hpp"
 #include "mesh_transform.hpp"
 

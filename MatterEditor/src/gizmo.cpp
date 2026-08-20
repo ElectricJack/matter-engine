@@ -1,3 +1,14 @@
+// MatterEditor/src/gizmo.cpp
+//
+// The viewport's translate/rotate/scale handle, backed by ImGuizmo. Reads the
+// primary selection's LocalTransform through the FieldCommands getters, hands
+// ImGuizmo a matrix, and writes the manipulated result back through the same
+// closure set. See gizmo.h for the public contract and the matrix-convention
+// block below for why this file builds its own matrices.
+//
+// ImGui/main thread only, inside the ImGui frame and after
+// ImGuizmo::BeginFrame().
+
 #include "gizmo.h"
 
 #include <cmath>
@@ -181,6 +192,22 @@ ImGuizmo::OPERATION to_imguizmo_operation(GizmoOperation op) {
 
 } // namespace
 
+// One frame of the gizmo. Values are re-read from FieldCommands every frame,
+// so an edit made in the Properties panel moves the handle immediately.
+//
+// Two things to know before touching this:
+//
+//  - The object matrix is composed from LocalTransform ALONE. No parent chain
+//    is applied, so the handle is placed at the entity's local transform
+//    interpreted as a world transform, and the deltas it writes are local.
+//  - Any manipulation writes back ALL THREE fields — translation, rotation and
+//    scale — because the result arrives as one matrix and is decomposed. A
+//    pure translate drag therefore also rewrites the rotation quaternion and
+//    the scale with their round-tripped values, and decompose_matrix cannot
+//    recover a negative (mirrored) scale (see its TODO).
+//
+// Returns true whenever a gizmo was DRAWN, not whenever it was used; the
+// caller needs that to suppress camera input while the handle is hovered.
 bool draw_gizmo(GizmoState& state, const SelectionSet& selection,
                 const FieldCommands& fields, const matter::CameraDesc& camera,
                 matter::scene::SimulationMode mode, float viewport_x,
@@ -272,6 +299,9 @@ bool draw_gizmo(GizmoState& state, const SelectionSet& selection,
     return true;
 }
 
+// Edge-triggered (IsKeyPressed with repeat = false) and first-match-wins, so
+// holding a key does not thrash the mode. The caller is responsible for not
+// calling this while ImGui wants the keyboard — see gizmo.h.
 void update_gizmo_hotkeys(GizmoState& state) {
     if (ImGui::IsKeyPressed(ImGuiKey_G, false) ||
         ImGui::IsKeyPressed(ImGuiKey_T, false)) {

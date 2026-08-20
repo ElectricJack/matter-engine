@@ -2,6 +2,20 @@
 // Algorithm: build an index permutation via recursive longest-axis median split
 // (nth_element on (centroid[axis], index) — index as tie-break → deterministic).
 // Apply the permutation once at the end; compute per-cluster vertex AABBs.
+//
+// The two public entry points differ only in what they consume and what they
+// permute; both share `split_recursive_generic` below, templated on a functor
+// that maps an index to that triangle's centroid.
+//
+// Cost: one `nth_element` per split level, O(n log n) expected comparisons.
+// Recursion depth is log2(n / target_tris), so no explicit stack is needed.
+// Emission order is the DFS order of the split tree (left half before right),
+// which is also the order `first_tri` counts in.
+//
+// Degenerate input is absorbed rather than rejected: an empty range emits no
+// cluster at all, and a range whose centroids are all identical (zero extent
+// on the longest axis) is emitted as ONE cluster even when it is far larger
+// than target_tris — it cannot be split further.
 #include "part_cluster.h"
 #include <algorithm>
 #include <array>
@@ -103,6 +117,16 @@ static void split_recursive_generic(std::vector<uint32_t>& order,
 
 } // anonymous namespace
 
+// Peak memory: this builds a full permuted COPY of `tris` (and of `triex`)
+// before moving it back, so the transient high-water mark is ~2x the input.
+// That is exactly why the flatten path uses `split_centroids` and permutes a
+// uint32 index array instead. No non-test caller remains in the engine —
+// MatterEngine3/tests/part_flatten_tests.cpp keeps it as the reference the
+// streaming path is compared against.
+//
+// `triex` must be either empty or exactly parallel to `tris`. The assert below
+// is the only guard: a release build with a mismatched non-empty `triex` would
+// index out of range while applying the permutation.
 std::vector<Cluster> split_clusters(std::vector<Tri>& tris,
                                     std::vector<TriEx>& triex,
                                     uint32_t target_tris) {

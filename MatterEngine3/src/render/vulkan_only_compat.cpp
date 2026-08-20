@@ -51,12 +51,22 @@ void MemFree(void* ptr) {
     --g_outstanding_allocations;
 #endif
 }
+// Test-build-only leak probe: the count of MemAlloc calls not yet matched by a
+// MemFree. Compiled in (along with the counter increments above) only under
+// MATTER_VULKAN_COMPAT_TESTING, so the shipping build pays nothing.
 #ifdef MATTER_VULKAN_COMPAT_TESTING
 size_t MatterVulkanCompatOutstandingAllocations(void) {
     return g_outstanding_allocations.load();
 }
 #endif
 
+// Frees every host array a raylib Mesh owns. This is cell.cpp's unconditional
+// CPU-side mesh free (Cell::clear_meshes), so it must stay even in the
+// Vulkan-only build. It is a pure host free: upstream raylib would first delete
+// the mesh's GL buffer objects, but no GL objects exist here, so `vboId` is
+// just another host array to release. Passing a Mesh whose pointers were not
+// allocated through MemAlloc is undefined, and double-free is not guarded
+// against — raylib's convention is that the caller zeroes or drops the Mesh.
 void UnloadMesh(Mesh mesh) {
     MemFree(mesh.vertices);
     MemFree(mesh.texcoords);

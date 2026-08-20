@@ -1,3 +1,41 @@
+// libs/MatterSurfaceLib/src/cell.cpp
+//
+// A Cell is one axis-aligned box of a Cluster's local space. It holds the
+// indices of the cluster particles that touch it, bucketed by material MERGE
+// GROUP (not shading material -- shades of one material share a group and blend
+// into a single surface), and turns each bucket into one mesh plus one BLAS.
+//
+// Two-phase design, and the split matters:
+// - BUILD (`build_cell_meshes` -> `build_group_mesh` -> the MeshingAlgorithm):
+//   pure CPU, GL-free, allocation-local. It reads `material_particle_indices`
+//   and the cluster's particle array read-only and writes nothing on the Cell,
+//   so it runs on MeshWorkerPool threads with a per-worker `SurfaceScratch`.
+// - COMMIT (`commit_cell_meshes` -> `commit_group_mesh`): main thread only.
+//   Uploads meshes, registers BLASes, touches the BVH report registry and
+//   writes `material_meshes` / `material_blas` / `has_meshes`.
+// `rebuild_meshes` runs both back-to-back on the calling thread and is the
+// simple serial path; Cluster::rebuild_dirty_cells drives the parallel one.
+//
+// Conventions
+// - `coordinates` are integer cell coordinates stored as floats, using the
+//   CORNER convention: cell C spans [C*size, (C+1)*size]. See
+//   `calculate_bounds` -- it must match Cluster::get_cell_coordinates.
+// - All positions here are cluster-LOCAL, in world units (metres); the cluster
+//   transform is applied later, when instances are added to the TLAS.
+// - Sizes: `actual_size = smallest_cell_size * 2^size_power`; the marching-cubes
+//   voxel is `actual_size / (2^divisionPow - 1)`.
+//
+// Feature degradation with cell resolution, the smooth-min fillet width, and
+// the LOD taper/cull thresholds are documented at the `kFeature*` / `kBlend*`
+// constants below. Two env vars override tunables for experiments:
+// `MSL_BLEND_VOXELS`, `MSL_CARVE_BLEND`; `MSL_BVH_ANALYSIS=1` re-enables the
+// expensive per-commit BVH quality pass.
+//
+// Ownership: a Cell owns its meshes and its BLAS references. `clear_meshes`
+// must be given the BLASManager to release those references, or entries
+// accumulate; the destructor calls it WITHOUT a manager, so a Cell destroyed
+// while still holding handles leaks references (Cluster clears cells before
+// the managers go away).
 #include "../include/cell.h"
 #include "../include/cluster.h"
 #include "../include/blas_manager.hpp"
@@ -121,6 +159,11 @@ void Cell::clear_particle_indices() {
     is_dirty = true;
 }
 
+// Serial convenience path: release the old meshes, build, and commit, all on
+// the calling thread. Because it commits, it must be called on the main
+// thread. The parallel path (Cluster::rebuild_dirty_cells) calls
+// build_cell_meshes on a worker and commit_cell_meshes on the main thread
+// instead, and does NOT go through here.
 void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
                           SurfaceScratch* scratch,
                           float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
@@ -205,6 +248,27 @@ std::vector<Particle> build_clip_particles(
     return clip;
 }
 
+// Build the mesh for ONE merge group in this cell. This is where the group's
+// meshing parameters are resolved -- grid resolution, voxel size, blend width,
+// the LOD cull/vis radii, the transparency-gated clip set and the per-cell CSG
+// stage map -- before dispatching to the MeshingAlgorithm chosen by the group's
+// representative material.
+//
+// Thread affinity: const, GL-free and reentrant on the caller's per-worker
+// `scratch`; safe on a MeshWorkerPool thread. It reads `cluster_particles` and
+// this cell's `material_particle_indices` read-only.
+//
+// Returns a default-constructed result (mesh.vertexCount == 0) when the group
+// has nothing to sample -- that is a normal outcome and the caller drops it.
+// A group may be sphere-only, fat-primitive-only, or mixed; the fat-only case
+// is why several checks below tolerate an empty `particles`.
+//
+// Parameters worth spelling out: `base_detail` is the lattice tier-0 spacing
+// and `uniform_detail`, when > 0, overrides the per-cell finest detail so every
+// cell meshes at one resolution (neighbouring marching-cubes grids only stay
+// watertight at equal resolution). `carveParticles` are subtractive; `stages` /
+// `fat` / `clusterStage` are borrowed by the returned context only for the
+// duration of the call.
 GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
                                        SurfaceScratch* scratch,
                                        float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
@@ -372,6 +436,15 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
     return GetMeshingAlgorithm(algo).generate(ctx);
 }
 
+// Main thread only: publish one built group. Uploads the mesh (GL builds
+// only), registers its triangles with the BLAS manager, and refreshes the
+// named BVH-report entry. Takes `result` by non-const reference because it
+// moves the mesh into `material_meshes`.
+//
+// An empty mesh is skipped entirely, so the group keeps no entry at all. On a
+// registration failure the group's BLAS is set to 0 (== INVALID_BLAS_HANDLE),
+// which downstream code reads as "no ray-traced geometry for this group" while
+// the rasterised mesh still exists.
 void Cell::commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager) {
     if (result.mesh.vertexCount <= 0) {
         return;

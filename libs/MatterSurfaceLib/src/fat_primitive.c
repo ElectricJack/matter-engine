@@ -1,3 +1,29 @@
+// libs/MatterSurfaceLib/src/fat_primitive.c
+//
+// Signed-distance evaluation for the mesher's typed "fat" iso-primitives.
+// `primitive_sdf` at the bottom is the only exported symbol; everything above
+// it is a file-static helper.
+//
+// Fat primitives are the non-sphere brushes (oriented box, capsule,
+// cylinder/capped cone). Additive spheres are NOT represented here -- they stay
+// on the spatial-hash smooth-min hot path in surface.c. See
+// include/fat_primitive.h for the FatPrim layout and the field conventions.
+//
+// Contract
+// - Distances are SIGNED: negative inside the surface, zero on it. They are
+//   Euclidean and (for the box) exact outside, so they are usable directly by
+//   the marching-cubes field eval and by smooth-min blending.
+// - `p` is a WORLD point. Each shape is evaluated in brush-local,
+//   centre-relative space; `prim->invTransform` performs that mapping, which is
+//   also how a brush's scale is picked up.
+// - `invTransform` is treated as ROW-MAJOR and applied as M * (p,1) -- element
+//   (row, col) at m[row*4 + col]. This matches matter_math_c.h's Mat4; feeding
+//   it a column-major matrix silently transposes the brush.
+// - The switch defaults to the sphere case, so an unrecognised `kind` yields a
+//   sphere of `prim->radius` rather than an error.
+//
+// Pure and allocation-free: safe to call from any thread, and it is called per
+// grid sample, so keep it cheap.
 #include "../include/fat_primitive.h"
 #include <math.h>
 

@@ -45,6 +45,9 @@ public:
 
     int capacity() const { return static_cast<int>(entries_.size()); }
 
+    // Resident entry count. A linear pass over the pool, which is
+    // kMaxTilesetSlots (8) entries -- deliberately not maintained as a
+    // counter. find() is linear for the same reason.
     int size() const {
         int n = 0;
         for (const Entry& e : entries_) if (e.used) ++n;
@@ -121,6 +124,11 @@ public:
     }
 
 private:
+    // One slot's residency record: `key` is the resident atlas's .gtex content
+    // hash, and `stamp` is a monotonic acquisition clock rather than a frame
+    // or wall-clock time -- both acquire() and touch() bump it, and the lowest
+    // stamp among used entries is the eviction victim. key and stamp are
+    // meaningless while `used` is false.
     struct Entry {
         uint64_t key   = 0;
         uint64_t stamp = 0;
@@ -154,6 +162,11 @@ public:
     int capacity() const { return allocator_.capacity(); }
     const SlotAllocator& allocator() const { return allocator_; }
 
+    // Reserve a slot for `key` and report which materials the eviction, if
+    // any, displaced. Bookkeeping only: the caller performs the actual
+    // registry unbind/bind, and must call bind() once the atlas has loaded or
+    // forget() if it never does -- otherwise the slot stays reserved with no
+    // materials recorded against it.
     Acquired acquire(uint64_t key) {
         Acquired out;
         const SlotAllocator::Result r = allocator_.acquire(key);
@@ -172,6 +185,10 @@ public:
     }
 
     // Record the binding once the atlas actually loaded into its slot.
+    // Replaces any previous list for `key` wholesale. A material dropped from
+    // the list is NOT removed from all_bound_, so reset() can over-report it;
+    // that is harmless (unbinding an already-unbound material is a no-op) but
+    // it means all_bound_ is a superset, not an exact union.
     void bind(uint64_t key, const std::vector<int>& materials) {
         bound_[key] = materials;
         for (const int material : materials) all_bound_.insert(material);

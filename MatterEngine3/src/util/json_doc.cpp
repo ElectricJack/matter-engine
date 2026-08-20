@@ -1,3 +1,17 @@
+// MatterEngine3/src/util/json_doc.cpp — implementation of the order-preserving
+// JSON document declared in MatterEngine3/include/matter/json_doc.h.
+//
+// The header owns the API contract and the two properties that must not drift
+// (insertion-ordered object keys; integral numbers printed without ".0"). What
+// this file adds is the parser and writer themselves, and their deviations from
+// strict JSON — summarized on JsonParser below.
+//
+// Scope: this is for editor/property-system documents (workbench manifests,
+// params panels), where the input is something this engine wrote. It is NOT
+// hardened against hostile input (no nesting depth limit, so a deeply nested
+// document can overflow the stack) and it is NOT the canonical serializer used
+// for bake-cache content hashing — see the header for that distinction.
+
 #include "matter/json_doc.h"
 
 #include <cctype>
@@ -10,6 +24,18 @@ namespace matter {
 namespace jsondoc {
 namespace {
 
+// Recursive-descent parser over a borrowed string (`s_` is a reference — the
+// text must outlive the parser; parse_json keeps it on the stack, so this is
+// only a hazard if the class is reused). `i_` is the read cursor.
+//
+// It is LENIENT, deliberately, and the leniencies are worth knowing:
+//   * trailing garbage after the first complete value is accepted (see parse);
+//   * \uXXXX escapes are NOT decoded — see parse_raw_string;
+//   * number tokens are scanned greedily, so malformed ones parse to whatever
+//     atof makes of them rather than failing — see parse_number;
+//   * there is no nesting depth limit; recursion depth follows the input.
+// Failure is reported only as a false return, with no position or reason, and
+// `out` is left partially written.
 class JsonParser {
 public:
     explicit JsonParser(const std::string& text) : s_(text) {}
@@ -84,6 +110,12 @@ private:
         return true;
     }
 
+    // Reads a quoted string, decoding the six simple escapes (\n \t \r \" \\
+    // \/). Any OTHER escape drops the backslash and keeps the following
+    // character verbatim: there is no \uXXXX support at all, so a \u escape
+    // yields the literal text `u` followed by its four hex digits. Bytes are
+    // otherwise copied through untouched, so UTF-8 in the source survives as
+    // UTF-8. Returns false on an unterminated string.
     bool parse_raw_string(std::string& out) {
         if (peek() != '"') return false;
         ++i_;
@@ -126,6 +158,16 @@ private:
         return false;
     }
 
+    // Scans a number token greedily: a leading '-' then any run of digits, '.',
+    // 'e', 'E', '+' and '-'. That accepts shapes JSON does not (repeated signs,
+    // multiple dots) and hands them to atof rather than rejecting them; only an
+    // EMPTY token fails.
+    //
+    // Kind selection: a token of digits only whose value exceeds 2^53 — the
+    // largest integer a double represents exactly — becomes Kind::UInt64 so
+    // content hashes and part ids round-trip losslessly. Everything else,
+    // including every small integer, becomes Kind::Number. A consumer reading
+    // only `num` therefore misses the big ones (the header says so too).
     bool parse_number(Value& out) {
         size_t start = i_;
         if (peek() == '-') ++i_;
@@ -154,6 +196,11 @@ private:
     }
 };
 
+// Quotes and escapes a string, handling exactly the five characters the parser
+// decodes back (" \ \n \t \r). Other control characters are emitted RAW, which
+// is not strictly valid JSON — acceptable here because this pair is used for
+// documents this engine produces, but worth knowing before feeding the output
+// to a stricter reader.
 void write_json_escaped(const std::string& s, std::string& out) {
     out += '"';
     for (char c : s) {

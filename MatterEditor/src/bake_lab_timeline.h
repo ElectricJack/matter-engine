@@ -1,6 +1,32 @@
 #ifndef VIEWER_BAKE_LAB_TIMELINE_H
 #define VIEWER_BAKE_LAB_TIMELINE_H
 
+// MatterEditor/src/bake_lab_timeline.h
+//
+// The Bake Lab's Timeline tab: a flamegraph over one captured bake trace.
+//
+// Data comes from bake_trace (MatterEngine3/src/bake_trace.h). The engine's
+// Collector owns the live tree; WorldSession::last_bake_trace() deep-copies a
+// snapshot of it, and this panel owns that copy outright. Nothing here reads
+// live engine memory, so no lock is held while drawing and a bake may run while
+// the panel is on screen -- the picture is just a snapshot, not a live view.
+//
+// Pull-based, deliberately: the trace is only re-fetched when the user presses
+// Refresh (or switches source). BakeLab::tick_frame does nothing for this tab.
+//
+// Times throughout are milliseconds on the collector's clock, relative to the
+// start of the bake run -- absolute values are meaningless across sources, only
+// differences matter. A span whose end_ms is bake_trace::kOpenEndMs was still
+// open when the snapshot was taken; those are drawn dimmed and hatched, and
+// their duration is reported "so far", measured to the end of the trace.
+//
+// Structure of a draw: the tree is flattened once per refresh into flat_ (a
+// pre-order list with parent links) and every frame iterates that flat list.
+// The Span pointers in flat_ point INTO sources_[active_source_].root, so any
+// refresh invalidates them -- which is why a refresh also drops the pin.
+//
+// Render thread only.
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -54,7 +80,13 @@ private:
         std::vector<bake_trace::Counter> counters;
     };
 
+    // Re-fetches the trace for the active source and rebuilds everything
+    // derived from it. Destroys the previous span tree, so it also drops the
+    // pin and refits the view. No-op when `session` is null.
     void refresh_active_source(matter::WorldSession* session);
+    // Flattens the active source's span tree into flat_ (pre-order, with parent
+    // indices) and recomputes the full time extent. Called once per refresh,
+    // never per frame; every FlatSpan::span points into the current tree.
     void rebuild_flat();
     void draw_source_selector(matter::WorldSession* session);
     void draw_flamegraph_canvas();
@@ -62,17 +94,23 @@ private:
     void pin_flat_index(int flat_index);
     void fit_view();
 
+    // Lazily seeded with the single production-session entry on the first
+    // refresh or the first draw of the selector; never empty after that.
     std::vector<BakeLabTraceSource> sources_;
-    int active_source_ = 0;
+    int active_source_ = 0;   // index into sources_.
 
+    // Pre-order flattening of the active source's tree, rebuilt per refresh.
     std::vector<FlatSpan> flat_;
+    // Full extent of the flattened trace, in trace-relative milliseconds. Used
+    // to fit and to clamp the view, and as the end time for still-open spans.
+    // Defaults describe an empty 1 ms window so the divisions below stay safe.
     double full_begin_ms_ = 0.0;
     double full_end_ms_ = 1.0;
 
     // Visible time window in ms; kept within/around [full_begin_ms_, full_end_ms_].
     double view_begin_ms_ = 0.0;
     double view_end_ms_ = 1.0;
-    bool view_initialized_ = false;
+    bool view_initialized_ = false;  // false until the first fit_view().
 
     PinnedDetail pinned_;
 };

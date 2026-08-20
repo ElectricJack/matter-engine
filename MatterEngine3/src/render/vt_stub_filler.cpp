@@ -143,6 +143,17 @@ bool constant_bc5(const uint8_t rg[2], std::vector<uint8_t>& out,
     return tileset::encode_bc5(block, 4, 4, out, err, 1);
 }
 
+// The stub filler itself. Created only through make_vt_stub_filler() (which
+// runs init() and returns null on failure) and owned by VtResidency's
+// unique_ptr for the rest of the process.
+//
+// State is just a kRing-deep ring of persistently-mapped host-visible staging
+// buffers, each sized max_fills * kPageBytesTotal. The ring advances once per
+// fill() CALL — i.e. once per recorded frame — so kRing must be at least the
+// renderer's frames-in-flight or a still-executing copy's source bytes get
+// overwritten. Nothing here waits or submits: destroy() frees the staging
+// buffers outright, so the filler must not be destroyed while a fill it
+// recorded is still in flight.
 class VtStubFiller final : public VtPageFiller {
   public:
     VtStubFiller(matter::VulkanDevice& vulkan, uint32_t max_fills)
@@ -167,6 +178,15 @@ class VtStubFiller final : public VtPageFiller {
         return true;
     }
 
+    // Records one staging copy per channel per request. Two ways a request is
+    // silently NOT written, both of which leave out_filled false so the
+    // residency layer rolls the slot back and re-queues rather than mapping an
+    // unwritten page (see vt_types.h's per-request success contract):
+    //   * anything past max_fills_ — the batch is clamped to `usable`, since
+    //     the staging ring entry is only sized for that many pages;
+    //   * a BC encode failure, which `continue`s past the request.
+    // Requires batch[0].pool to be non-null and the pool images to already be
+    // in TRANSFER_DST_OPTIMAL; the residency layer records those transitions.
     void fill(VkCommandBuffer cmd, const VtFillRequest* batch,
               size_t count) override {
         if (count == 0 || batch == nullptr || batch[0].pool == nullptr) return;

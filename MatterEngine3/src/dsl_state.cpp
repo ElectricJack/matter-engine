@@ -1,3 +1,34 @@
+// ---------------------------------------------------------------------------
+// MatterEngine3/src/dsl_state.cpp
+//
+// The core geometry-authoring half of `dsl::DslState`: the transform stack
+// (`pushMatrix` .. `lookAt`), the voxel/CSG session and its brush emitters,
+// the in-session `raycast` field probe, child-hash lookup and `placeChild`,
+// and the volumetric `emitVolume` list.
+//
+// Siblings that hold the rest of the same class:
+//   - `dsl_triangle.cpp`  — the triangle build buffer plus beginShape/vertex/
+//                           endShape/line (and the ctor/dtor), kept apart for
+//                           the include reason spelled out in the NOTE below.
+//   - `dsl_animation.cpp` — rig / clip / motion / binding authoring.
+//   - `csg_lowering.cpp`  — lowers the emitted `BuildOp` list to a field and a
+//                           surface; `field_distance` (declared below) is its
+//                           evaluator.
+// Callers are the `j_*` bindings in `dsl_bindings.cpp`; the engine never calls
+// these methods directly.
+//
+// Conventions:
+//   - Coordinates are part-local metres, angles are radians.
+//   - Transforms are `mm::Mat4`, row-major (`matter_math.h`), and each emitted
+//     brush SNAPSHOTS `stack_.back()` — later transform changes never move an
+//     op that was already emitted.
+//   - Errors go through `set_error`, which is sticky and first-error-wins; a
+//     verb reports and returns, nothing throws, and the bake fails afterwards.
+//     Several methods therefore return early leaving a session open, which is
+//     harmless only because the sticky error already condemns the bake.
+//
+// Threading: one `DslState` per bake worker. No shared state and no locks here.
+// ---------------------------------------------------------------------------
 #include "dsl_state.h"
 #include <cmath>
 
@@ -102,6 +133,13 @@ void DslState::lookAt(float tx, float ty, float tz,
     stack_.back() = mm::multiply(m, rot);
 }
 
+// Open a voxel/SDF session. `spacing` is the voxel size in metres; a
+// non-positive value silently falls back to 0.1 m rather than erroring.
+//
+// Every brush emitted until `endVoxels` joins one implicit CSG expression, and
+// `endVoxels` back-stamps the FINAL smoothing value over the whole session
+// (see the note there). Sessions do not nest, and opening one first flushes any
+// retained polygon profile so lazily-held geometry cannot leak into it.
 void DslState::beginVoxels(float spacing) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (rig_open()) { set_error("beginVoxels inside an open rig session"); return; }
@@ -124,6 +162,18 @@ void DslState::endVoxels() {
     session_ = Session::None;
 }
 
+// ---------------------------------------------------------------------------
+// Brush emitters.
+//
+// Each appends one `BuildOp` to `buffer_.ops` carrying a SNAPSHOT of the
+// current transform, material, tint, smoothing and spacing, so the op is
+// self-contained and immune to later stack changes. Centres, half-extents,
+// endpoints and radii are in the CURRENT frame's local space (metres); the
+// stored transform is what maps them into part space.
+//
+// Emission order is the CSG order, and `endVoxels` rewrites the smoothing of
+// every op emitted since `beginVoxels`.
+// ---------------------------------------------------------------------------
 void DslState::emit_voxel_sphere(const mm::Vec3& c, float r, CsgOp op) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     BuildOp o{}; o.kind=BrushKind::Sphere; o.op=op; o.transform=stack_.back();
@@ -150,6 +200,22 @@ void DslState::emit_voxel_segment(BrushKind kind, const mm::Vec3& a, const mm::V
     buffer_.ops.push_back(o);
 }
 
+// Sphere-trace the smooth-min field of the CURRENT voxel session — only the ops
+// from `session_start_` to the end participate, so this probes what the script
+// has emitted so far, not the finished part.
+//
+// Requires an open session with at least one brush and a non-degenerate `dir`;
+// each of those sets the sticky DSL error and returns false. A plain MISS also
+// returns false and is NOT an error, so the return value alone cannot
+// distinguish the two — check `has_error()` if it matters. `dir` need not be
+// normalized. `origin` and the hit point are passed to `field_distance` as its
+// `worldPoint` argument, i.e. the same space the emitted brushes evaluate in.
+//
+// Cost: up to 512 marching steps out to 100 m plus 32 bisection steps plus 6
+// more evaluations for the central-difference normal (at 0.25 * spacing), and
+// EVERY evaluation walks every op in the session. Steps are scaled to 0.7x and
+// capped at 0.5 m because Difference/Intersection folds can over-report
+// distance near a carve boundary and a full step would tunnel through it.
 bool DslState::raycast(const mm::Vec3& origin, const mm::Vec3& dir,
                        mm::Vec3& outPoint, mm::Vec3& outNormal) {
     if (session_ != Session::Voxels) {
@@ -232,6 +298,13 @@ static void matrix_to_row16(const mm::Mat4& m, float out[16]) {
     for (int i = 0; i < 16; ++i) out[i] = m.m[i];
 }
 
+// Exact-match test for a declared `module \x1f canonical-params-json` variant.
+//
+// This asks ONLY about the with-params key: it returns false when no params are
+// supplied, unlike `lookup_child_hash`, which falls back to the bare-module
+// entry in that case. Callers use it to fail closed on an undeclared params
+// variant before they would otherwise get a silent bare-module resolution.
+// `params_json` must already be canonical (`params_to_json` form).
 bool DslState::has_composite_child_key(const std::string& module,
                                        const char* params_json, size_t len) {
     if (!params_json || len == 0) return false;
@@ -266,6 +339,13 @@ bool DslState::lookup_child_hash(const std::string& module,
     return true;
 }
 
+// Record a placement of an ALREADY-DECLARED child at the current transform
+// (captured as row-major float[16]).
+//
+// `params` is canonical JSON bytes or null; a lookup miss is a hard authoring
+// error naming the module — an undeclared child cannot be resolved to a hash
+// and so cannot be baked. `instanced` and `inline_below_px` (pixels) are
+// carried through to the bake unchanged.
 void DslState::placeChild(const std::string& module,
                           const void* params, size_t params_len,
                           bool instanced, float inline_below_px) {
@@ -296,6 +376,13 @@ void DslState::placeChild(const std::string& module,
     children_.push_back(p);
 }
 
+// Append a volumetric emitter. Validates radius > 0, length > 0, density >= 0
+// and a non-zero direction, then stores a COPY with `dir` normalized — the
+// caller's struct is left alone.
+//
+// GOTCHA: unlike the brush emitters above, the transform stack is NOT applied.
+// `pos` and `dir` are stored exactly as given, so an emitter authored inside a
+// pushMatrix/translate block does not move with it.
 void DslState::emit_volume(const VolumeEmitter& e) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (e.radius <= 0.0f) { set_error("emitVolume: radius must be > 0"); return; }

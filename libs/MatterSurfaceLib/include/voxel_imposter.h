@@ -1,4 +1,40 @@
 #pragma once
+
+// libs/MatterSurfaceLib/include/voxel_imposter.h
+//
+// Dense voxel-volume impostors: a way to stand in for a fully baked part at
+// distance by ray-marching a small 3D grid instead of intersecting its BVH.
+//
+// The pipeline, in the order the declarations below appear:
+//   1. `flatten_part_triangles_mat(blas, tlas)` -- walk every TLAS instance
+//      and emit world-space `FlatTri`s carrying material id and tint.
+//   2. `choose_grid_dims()` -- pick per-axis dims so voxels stay roughly
+//      isotropic under a `maxDim` budget for the longest axis.
+//   3. `bake_voxels()` -- surface-voxelize via `tri_box_overlap`, filling
+//      coverage plus area-weighted albedo and octahedrally encoded normal.
+//   4. `save()` / `load()` -- persist to `imposters/<16-hex>.vxi`.
+//   5. `dda_first_hit()` -- Amanatides-Woo traversal at render/trace time.
+//
+// Considerations:
+//  - Cache identity uses TWO hashes and both are checked on load:
+//    `compute_vox_hash(VoxGenParams)` pins the bake SETTINGS, and
+//    `source_part_hash` pins the INPUT PART. Either mismatch makes `load()`
+//    return false, which means "rebake", not "error". A content hash over the
+//    body catches corruption on top of that.
+//  - Encodings are shared with GLSL: the octahedral normal must match the
+//    decode in `bvh_tlas_common.glsl`, and voxels are always indexed
+//    `(z*ny + y)*nx + x`. Changing either without the other silently corrupts
+//    shading rather than failing.
+//  - Spaces differ per function, deliberately: `FlatTri` and `bake_voxels`
+//    work in WORLD space, while `dda_first_hit` takes its origin and direction
+//    in NORMALIZED box space [0,1]^3 and returns `tHit` in that same space.
+//  - Everything here is GL-free and unit-testable; `save()` writes temp+rename
+//    so a crash cannot leave a half-written artifact under its final name.
+//  - The only in-tree consumers today are `src/voxel_imposter.cpp` and
+//    `tests/voxel_imposter_tests.cpp`.
+//
+// Design doc: docs/superpowers/specs/2026-06-22-voxel-box-imposter-design.md
+
 #include "bvh.h"        // Tri, TriEx, float3
 #include "tlas_manager.hpp"
 #include "blas_manager.hpp"
@@ -30,6 +66,21 @@ struct VoxGenParams {
 };
 static_assert(sizeof(VoxGenParams) == 12, "VoxGenParams padding-free for byte hashing");
 
+// The baked payload: three dense per-voxel channels over one axis-aligned box,
+// plus the identity of the part it was baked from. Filled entirely by
+// `bake_voxels()` or `load()`; a partially populated instance is not a valid
+// state (`load()` leaves `out` untouched on failure rather than half-filling
+// it).
+//
+// `bounds_min`/`bounds_max` are world-space and come from the flattened
+// triangles. `nx`/`ny`/`nz` are per-axis voxel counts, chosen by
+// `choose_grid_dims()` so voxels stay near-cubic, hence generally unequal.
+// All three blobs are indexed through `voxel_index()`, which does NOT
+// bounds-check.
+//
+// Memory is the reason `maxDim` is a budget: the three blobs cost 6 bytes per
+// voxel together, so a full 128x128x128 grid is roughly 12 MB per part
+// (2 MB coverage + 6 MB albedo + 4 MB normal) held in host memory.
 struct VoxelImposter {
     float    bounds_min[3] = {0,0,0};
     float    bounds_max[3] = {0,0,0};

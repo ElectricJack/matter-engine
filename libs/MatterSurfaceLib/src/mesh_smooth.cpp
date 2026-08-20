@@ -1,4 +1,34 @@
 // Taubin lambda/mu smoothing (shrink-free Laplacian) on MeshIndexed.
+//
+// libs/MatterSurfaceLib/src/mesh_smooth.cpp
+//
+// One `smooth()` call runs `opts.iterations` Taubin passes. Each pass is two
+// uniform-weight (umbrella) Laplacian steps: a positive step of `lambda`
+// followed by a negative step of `mu`. The negative step is what makes this
+// shrink-free — a plain Laplacian pulls a closed surface inward every
+// iteration, and `mu` slightly larger in magnitude than `lambda` cancels that
+// at low spatial frequencies while still killing high-frequency noise. The
+// validator enforces the signs (`lambda > 0`, `mu < 0`); it does NOT enforce
+// |mu| > lambda, so an ill-chosen pair can still shrink or blow up.
+//
+// What it touches:
+//   - `positions` are moved. Topology (`indices`) is never changed, so vertex
+//     and triangle counts are identical to the input.
+//   - Vertices on a boundary or non-manifold edge (edge incidence != 2) are
+//     held EXACTLY fixed. A sheet's rim, a cut edge between clusters, and a
+//     T-junction all qualify, so smoothing a cluster cannot open a seam.
+//   - When `in.triex` is attached, N0/N1/N2 are recomputed as smooth
+//     area-weighted vertex normals over the smoothed positions. This has no
+//     notion of a crease and will melt a hard edge — expected, since Taubin
+//     smoothing has just rounded that edge off geometrically anyway. All other
+//     TriEx fields (materialId, tint, uv, AO) are carried through untouched.
+//
+// Determinism: the 1-ring is built from a `std::map` over sorted edge keys, so
+// neighbour order — and therefore floating-point summation order — is fixed.
+// Output is byte-stable across runs for the same input.
+//
+// Pure and allocation-heavy; no global state, no GPU, no locks. Safe from any
+// thread, including a bake worker.
 #include "mesh_smooth.hpp"
 
 #include <cmath>
@@ -14,6 +44,12 @@ std::pair<uint32_t, uint32_t> edge_key(uint32_t a, uint32_t b) {
 
 } // namespace
 
+// Validation is all up front and every failure is a normal, reportable outcome:
+// `r.ok` stays false, `r.err` carries the reason, and `r.mesh` is left EMPTY —
+// it is NOT a copy of the input, so a caller that wants "unchanged on failure"
+// must fall back to `in` itself. On success `r.mesh` starts as a full copy of
+// `in` and is smoothed in place, so the result is self-contained and does not
+// alias the input.
 SmoothResult smooth(const MeshIndexed& in, const SmoothOptions& opts) {
     SmoothResult r;
     if (in.positions.empty() || in.indices.empty()) { r.err = "smooth: empty mesh"; return r; }

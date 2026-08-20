@@ -1,5 +1,47 @@
 #pragma once
 
+
+// libs/MatterSurfaceLib/include/particle_culling.h
+//
+// The emission stage that sits between "which lattice slots are occupied"
+// (`lattice.h` + `occupancy.h`) and "which spheres get meshed"
+// (`Cluster::add_particle` -> `surface.h`). Its job is threefold:
+//
+//  1. Turn each occupied slot into one or more `EmittedParticle`s, applying
+//     deterministic jitter, radius variation, lumpiness and tint.
+//  2. Throw away work that cannot change the visible result: particles in
+//     CORE cells are dropped outright, and INTERIOR cells are reported back
+//     through `no_mesh_cells` so the cluster creates but does not mesh them.
+//  3. Assign a refinement tier per slot from its Chebyshev depth, so the
+//     outermost shell gets the finest subdivision and buried slots get none.
+//
+// Typical sequence:
+//     Lattice + Occupancy built
+//       -> cull_interior(lattice, occ, params, &stats, &no_mesh_cells)
+//       -> Cluster::add_particle() for each EmittedParticle
+//       -> optionally generate_carve_particles() for the subtractive set
+//     `emit_all()` is the uncontrolled baseline used for A/B acceptance runs;
+//     it takes the same `CullParams` so the two runs differ only in culling.
+//
+// Considerations:
+//  - Everything here is deterministic. Jitter, tint, radius variation and
+//    carve placement are all seeded from `CullParams::seed` / `CarveParams::seed`
+//    and quantized slot coordinates, so a re-emit of the same lattice
+//    reproduces the same particles bit-for-bit. Do not introduce call-order
+//    dependence.
+//  - The correctness invariant that makes culling safe: a cell is CORE only
+//    if it is interior AND all 26 neighbours are interior, so a dropped
+//    particle is never within sphere-reach of a meshed cell and no INNER
+//    surface can form. Loosening that condition punches holes in solids.
+//  - Cell bucketing must agree with the cluster's grid, hence
+//    `CullParams::cell_origin_offset` -- a mismatch here misclassifies cells
+//    at the boundary rather than failing loudly.
+//  - Pure CPU and GL-free; no globals, so it is safe to run per-cluster on
+//    worker threads.
+//  - Costs: `slot_depth` scans a Chebyshev box, so it is O(max_depth^3) per
+//    slot -- `CullParams::margin` / `max_tier` are the dials that make interior
+//    culling cheap or expensive.
+
 // Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
 // EmittedParticle/CullParams used to rely on raylib.h being transitively
 // available via lattice.h. lattice.h no longer includes it (mm::Vec3 instead),
@@ -21,6 +63,13 @@ struct EmittedParticle {
     float detail_size;  // nominal lattice spacing at this particle's tier (S / 2^tier)
 };
 
+// Every knob for one emission pass, shared by `cull_interior` and `emit_all`
+// so an A/B between them differs only in the culling. Fields carrying a
+// `= 0.0f` / `= 0` default are opt-in features added after the fact: leaving
+// them at their default reproduces the pre-feature behaviour exactly, which is
+// what keeps existing bakes byte-stable. Lengths are in the same space as the
+// lattice (cluster-local units); frequencies are in cycles per unit of that
+// same space.
 struct CullParams {
     int margin;          // sub-shell layers to keep; clamped to >= 1
     float base_radius;   // nominal particle radius
