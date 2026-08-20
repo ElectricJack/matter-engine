@@ -61,8 +61,9 @@ for d in sl.interposer.dll sl.dlss.dll; do
 done
 
 # The MatterEngine3 embedded-shaders step consumes this generated-but-committed
-# file through the MatterEngine3/shaders junction. If it has gone missing the
-# build fails late with a confusing "No rule to make target" -- catch it here.
+# file directly (MatterEngine3/Makefile's MSL_SHADER_DIR points straight at
+# this directory). If it has gone missing the build fails late with a
+# confusing "No rule to make target" -- catch it here.
 PROCESSED=libs/MatterSurfaceLib/shaders/raytrace_tlas_blas_processed.fs
 [ -f "$PROCESSED" ] || die "$PROCESSED is missing.
   It is committed but generated. Restore it with:

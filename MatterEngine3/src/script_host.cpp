@@ -35,6 +35,7 @@ extern "C" {
 }
 #include "bake_trace.h"        // Bake Lab task 1.4: part-bake phase spans
 #include "bake_trace_names.h"  // kSpanPartBake + fold/ctx/eval/merge/... constants
+#include "matter/log.h"
 #include <cstdio>
 #include <cstdlib>   // std::getenv (MATTER_BAKE_PROFILE)
 #include <cstring>
@@ -2389,8 +2390,8 @@ done:
         // are identical to what a snapshot of the trace would yield — without
         // the O(session-trace) snapshot + search this path used to do.
         const PartBakePhases::Times& t = phases.times;
-        std::fprintf(stderr,
-            "[bake_profile] %s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
+        MATTER_LOGI("bake_profile",
+            "%s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
             "merge=%.1f build=%.1f mesh=%.1f save=%.1f free=%.1f\n",
             prof_class.empty() ? "?" : prof_class.c_str(), t.total,
             t.fold, t.ctx, t.eval, t.merge, t.build, t.mesh, t.save,

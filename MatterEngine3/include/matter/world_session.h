@@ -99,10 +99,19 @@ struct RenderOptions {
     // one that stops occluded sectors being rasterised at all, as opposed
     // to the streaming cap, which only makes them coarser.
     //
-    // Off by default and a separate switch from the cap for a reason that
-    // is not caution for its own sake: a wrong bit in the cap costs detail,
-    // a wrong bit here removes geometry from the picture.
-    bool  occlusion_draw_cull = false;
+    // ON by default since 2026-08-13. It shipped off because a wrong bit
+    // here removes geometry from the picture where a wrong bit in the old
+    // streaming cap only cost detail -- and that caution was right to have,
+    // but it was caution about a feature that has since been measured: the
+    // ID pass rasterises the CULL camera at a divisor of 3 (not 6, where a
+    // sector the real frame drew could own no pixel and be wrongly culled),
+    // the mask is same-frame rather than last frame's, and a weld can no
+    // longer occlude itself. The cap and the HZB it used to sit beside were
+    // both measured and deleted (63a271a1); this is the only occlusion the
+    // engine has, so leaving it off left the engine with none.
+    //
+    // `set viewer.debug.occlusion_draw_cull false` turns it off at run time.
+    bool  occlusion_draw_cull = true;
     // FREEZE THE CULL CAMERA (M4, an inspection aid rather than a feature).
     //
     // Pins the frustum planes and the eye position the cull dispatch tests
@@ -280,6 +289,8 @@ struct FrameStats {
     // 2048-layer-capped image array).
     uint64_t vt_indirection_bytes = 0;          // live table blocks
     uint64_t vt_indirection_capacity_bytes = 0; // MATTER_VT_INDIRECTION_MB
+    // Impostor atlas VRAM (per-slot * max slots). 0 when impostors are off.
+    uint64_t impostor_atlas_bytes = 0;
     DlssMode dlss_selected_mode = DlssMode::Native;
     DlssMode dlss_active_mode = DlssMode::Native;
     uint32_t dlss_internal_width = 0;
@@ -354,6 +365,13 @@ public:
 
     bool render(const CameraDesc& cam, const VulkanFrame& frame,
                 const RenderOptions& opts, std::string& err);
+
+    // Submit world-space overlay lines for this frame. vertex_data is
+    // interleaved {x,y,z, r,g,b,a} × vertex_count, drawn as LINE_LIST
+    // with depth testing (reversed-Z) against the scene depth buffer.
+    // Call before render(); the lines are drawn after the composite pass
+    // and before the display transform.
+    void submit_overlay_lines(const float* vertex_data, uint32_t vertex_count);
 
     // Apply an optional camera spawn authored by the active World JavaScript.
     // Returns false when the world did not provide static camera settings.
@@ -784,7 +802,22 @@ public:
     bool raycast(const float origin[3], const float dir[3], float max_t, RayHit& out);
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
+    bool instance_info_by_hash(uint64_t part_hash, InstanceInfo& out);
+
+    // Lightweight root-entry iteration — reads directly from world state
+    // without building the CPU tracer. Safe to call while streaming.
+    uint32_t root_instance_count() const;
+    bool root_instance_info(uint32_t idx, InstanceInfo& out) const;
+
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
+
+    // GPU pick: read the identity buffer at a viewport pixel and resolve
+    // it to a static instance (part_hash) or dynamic entity. Coordinates
+    // are in viewport space (same as cursor_x/cursor_y in the editor);
+    // fb_width/fb_height are the viewport dimensions. Returns false on
+    // background or if the renderer has not completed a frame yet.
+    bool pick_at_pixel(float cursor_x, float cursor_y,
+                       int fb_width, int fb_height, PickIdentity& out);
 
     // Bake Lab W4: LOD Inspector grid data source (part-workbench.md SS-I.5).
     // Pure PartStore reads, no bake/render side effects — mirrors

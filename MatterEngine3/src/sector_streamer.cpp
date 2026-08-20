@@ -1,4 +1,5 @@
 #include "sector_streamer.h"
+#include "matter/log.h"
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -23,9 +24,9 @@ static bool stream_no_evict() {
         // exe (env prefixes and stale builds have burned that assumption
         // before — worktree-bootstrap gotcha #8).
         if (active)
-            std::fprintf(stderr,
-                         "[stream] MATTER_STREAM_NO_EVICT=1: evictions and "
-                         "rung rebakes DISABLED (diagnostic)\n");
+            MATTER_LOGI("stream",
+                        "MATTER_STREAM_NO_EVICT=1: evictions and "
+                        "rung rebakes DISABLED (diagnostic)\n");
         return active;
     }();
     return value;
@@ -43,9 +44,9 @@ static bool stream_no_staging() {
         const char* env = std::getenv("MATTER_STREAM_NO_STAGING");
         const bool active = env != nullptr && env[0] == '1';
         if (active)
-            std::fprintf(stderr,
-                         "[stream] MATTER_STREAM_NO_STAGING=1: staged "
-                         "refinement DISABLED (A/B baseline)\n");
+            MATTER_LOGI("stream",
+                        "MATTER_STREAM_NO_STAGING=1: staged "
+                        "refinement DISABLED (A/B baseline)\n");
         return active;
     }();
     return value;
@@ -63,10 +64,10 @@ static bool stream_no_lateral() {
         const char* env = std::getenv("MATTER_STREAM_NO_LATERAL");
         const bool active = env != nullptr && env[0] == '1';
         if (active)
-            std::fprintf(stderr,
-                         "[stream] MATTER_STREAM_NO_LATERAL=1: the lateral "
-                         "half of staged refinement is DISABLED (the footprint "
-                         "clamp still runs)\n");
+            MATTER_LOGI("stream",
+                        "MATTER_STREAM_NO_LATERAL=1: the lateral "
+                        "half of staged refinement is DISABLED (the footprint "
+                        "clamp still runs)\n");
         return active;
     }();
     return value;

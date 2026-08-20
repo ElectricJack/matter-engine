@@ -76,7 +76,20 @@ namespace components {
 //            is precisely what this component means. Every part artifact must
 //            miss so the cache holds only reproducible bytes — otherwise the
 //            cross-process gate diffs a new bake against a garbage-padded one.
-inline constexpr uint32_t kEngineBake = 7u;
+//   7 -> 8 : the CONTOUR SEAM MESHER became the default for Y-tiled tiles
+//            (docs/contour-seam-design-2026-08-13.md). A cube tile now
+//            terminates its mesh exactly on its own six face planes, against a
+//            canonical contour every tile touching a plane computes bitwise
+//            identically, instead of bridging its - borders by half a voxel and
+//            exporting boundary records for the runtime welder to join. Every
+//            volumetric tile's triangles differ, and the tiles are ~21-25%
+//            more numerous, so every one of them must miss.
+//            NOT what separates the two RULES from each other -- bake_mode.h's
+//            salt does that, and both modes salt to zero at their own default.
+//            This is what separates the new default from the old one, which no
+//            salt can do: the old artifacts were written when OFF was the
+//            default and therefore carry a zero salt too.
+inline constexpr uint32_t kEngineBake = 8u;
 
 // The physics library. A settle that lands differently is different content.
 inline constexpr uint32_t kBox3d = 1u;

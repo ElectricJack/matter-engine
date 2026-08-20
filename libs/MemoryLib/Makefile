@@ -1,3 +1,6 @@
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 CC = gcc
 CFLAGS = -Wall -Wextra -g -I./include
 LDFLAGS =

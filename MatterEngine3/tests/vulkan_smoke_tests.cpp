@@ -10743,6 +10743,181 @@ void run_cull_parity(matter::VulkanDevice& vulkan) {
                 gpu.stats.frustum_culled);
 }
 
+// Issue 77c79c44 (occlusion vs alpha-tested instances): the ID pass has no
+// discard and no billboard branch, so rasterising a cutout mesh or an
+// impostor card into it stamps a SOLID occluder where the real draw is
+// see-through -- enabling the alpine conifers hid the terrain sectors behind
+// their canopies. The fix excludes such clusters from the ID list and exempts
+// them from the mask test (fail open, frustum-only). Three scenes, one
+// property each:
+//   1. an alpha-tested quad in front of terrain occludes NOTHING and is
+//      itself never occlusion-culled;
+//   2. the same quad with an opaque material still occludes -- the mask
+//      path itself must survive the exclusion;
+//   3. a part whose ladder ends in an impostor billboard uses its coarsest
+//      MESH rung as the proxy, not the card.
+void run_occlusion_mask_tests(matter::VulkanDevice& vulkan) {
+    // Camera at the origin looking down -Z, 90 degrees, 320x320: the fixed
+    // cull scene's frame, without its parts.
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    std::string error;
+    CHECK(viewer::build_frame_matrices(camera, 320, 320, matrices, error),
+          error.empty() ? "build occlusion mask matrices" : error.c_str());
+    const matter::Float3 eye = camera.position;
+
+    // A double-winded quad at fixed z: both faces indexed so no cull-mode
+    // choice can silently drop it from the ID pass and pass a scenario
+    // vacuously.
+    const auto quad_part = [](uint64_t hash, float half, float z,
+                              uint32_t material_index) {
+        viewer::VkSceneCluster cluster{};
+        cluster.aabb_min = {-half, -half, z - 0.01f};
+        cluster.aabb_max = {half, half, z + 0.01f};
+        cluster.radius = half * 1.4142136f;
+        cluster.lods.push_back({0, 12, 0.0f});   // one open rung
+        viewer::VkScenePart part{hash, {cluster}};
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{0.5f, 0.5f, 0.5f, 0.0f};
+        const matter::Float4 surface{0.0f, 0.0f, 0.0f, 1.0f};
+        part.vertices = {
+            {{-half, -half, z}, normal, tint, surface, material_index, {}},
+            {{half, -half, z}, normal, tint, surface, material_index, {}},
+            {{half, half, z}, normal, tint, surface, material_index, {}},
+            {{-half, half, z}, normal, tint, surface, material_index, {}},
+        };
+        part.indices = {0, 1, 2, 0, 2, 3, 2, 1, 0, 3, 2, 0};
+        return part;
+    };
+
+    // One renderer session per scene: register, render ONE full frame (M4
+    // occlusion is same-frame: pass 0, ID raster, reduce and pass 1 all sit
+    // in this command buffer), then read the culled command counts back.
+    const auto run_scene = [&](const char* label,
+                               const std::vector<viewer::VkScenePart>& parts,
+                               const std::vector<MaterialGpuRecord>& materials,
+                               const auto& verify) {
+        viewer::VkSceneRenderer renderer(vulkan);
+        CHECK(renderer.init(error),
+              error.empty() ? label : error.c_str());
+        CHECK(renderer.update_materials(materials, 1, 1, error),
+              error.empty() ? label : error.c_str());
+        std::vector<viewer::VkSceneInstance> instances;
+        for (const viewer::VkScenePart& part : parts) {
+            CHECK(renderer.ensure_part(part, error) >= 0,
+                  error.empty() ? label : error.c_str());
+            instances.push_back({part.part_hash, identity_matrix()});
+        }
+        CHECK(renderer.update_instances(instances, error),
+              error.empty() ? label : error.c_str());
+        renderer.set_visibility_reduce(true);
+        renderer.set_visibility_draw_cull(true);
+        matter::VulkanFrame frame{};
+        CHECK(vulkan.begin_frame(frame, error),
+              error.empty() ? label : error.c_str());
+        if (frame.command_buffer == VK_NULL_HANDLE) return;
+        CHECK(renderer.prepare_frame(frame, matrices, eye, 1.0f, error) &&
+                  renderer.record_cull_and_render(frame, matrices, eye, 1.0f,
+                                                  error) &&
+                  renderer.record_composite_to_swapchain(frame, error) &&
+                  vulkan.end_frame(frame, error),
+              error.empty() ? label : error.c_str());
+        vulkan.wait_idle();
+        viewer::VkCullStats stats{};
+        std::vector<viewer::DrawCommand> commands;
+        CHECK(renderer.cull_stats(stats, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? label : error.c_str());
+        verify(stats, commands);
+    };
+    // Registration order is cluster order, so part i's rung-0 bucket is
+    // i * kVkMaxLod. Every part here is single-cluster with an open rung 0.
+    const auto instances_drawn = [](const std::vector<viewer::DrawCommand>&
+                                        commands,
+                                    size_t part_index) {
+        return commands[part_index * viewer::kVkMaxLod].instance_count;
+    };
+
+    std::vector<MaterialGpuRecord> materials(2);
+    materials[0].metal_opacity_spec_coat[1] = 1.0f;
+    materials[1].metal_opacity_spec_coat[1] = 1.0f;
+    materials[1].flags_misc[0] |= MATERIAL_ALPHA_TESTED;
+
+    // Terrain (part 0, opaque, z=-6, NDC extent ~0.33) behind a full-frustum
+    // front quad (part 1, z=-3, NDC extent 1.0).
+    // 1. Alpha-tested front quad: no occlusion either way.
+    run_scene("alpha-tested quad excluded from occlusion",
+              {quad_part(9101, 2.0f, -6.0f, 0), quad_part(9102, 3.0f, -3.0f, 1)},
+              materials,
+              [&](const viewer::VkCullStats& stats,
+                  const std::vector<viewer::DrawCommand>& commands) {
+                  CHECK(instances_drawn(commands, 0) == 1,
+                        "terrain behind an alpha-tested quad is not "
+                        "occlusion-culled");
+                  CHECK(instances_drawn(commands, 1) == 1,
+                        "the alpha-tested quad itself stays drawn (fail open)");
+                  CHECK(stats.occlusion_culled == 0,
+                        "no occlusion is charged against an alpha-tested "
+                        "occluder");
+              });
+    // 2. The identical quad, opaque: the mask must still cull.
+    run_scene("opaque quad still occludes",
+              {quad_part(9103, 2.0f, -6.0f, 0), quad_part(9104, 3.0f, -3.0f, 0)},
+              materials,
+              [&](const viewer::VkCullStats& stats,
+                  const std::vector<viewer::DrawCommand>& commands) {
+                  CHECK(instances_drawn(commands, 0) == 0 &&
+                            stats.occlusion_culled == 1,
+                        "terrain behind an opaque quad is occlusion-culled");
+                  CHECK(instances_drawn(commands, 1) == 1,
+                        "the opaque occluder itself is drawn");
+              });
+    // 3. A ladder that ends in a terminal impostor billboard: the coarsest
+    // MESH rung is the ID-pass proxy. The card (vertices 4..7, marked with
+    // impostor::kQuadMarker, full-frustum) would cover the terrain if it were
+    // rasterised; the mesh rung (a 0.2-half quad) covers almost nothing.
+    viewer::VkScenePart impostor_part{};
+    {
+        impostor_part = quad_part(9105, 0.2f, -3.0f, 0);
+        viewer::VkSceneCluster& cluster = impostor_part.clusters[0];
+        cluster.aabb_min = {-3.0f, -3.0f, -3.01f};
+        cluster.aabb_max = {3.0f, 3.0f, -2.99f};
+        cluster.radius = 3.0f * 1.4142136f;
+        cluster.lods[0].threshold = 1.0f;         // mesh rung, finite reach
+        cluster.lods.push_back({12, 6, 0.0f});    // terminal billboard, open
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{0.5f, 0.5f, 0.5f, 0.0f};
+        const matter::Float4 card{impostor::kQuadMarker, 0.0f, 0.0f, 1.0f};
+        impostor_part.vertices.push_back(
+            {{-3.0f, -3.0f, -3.0f}, normal, tint, card, 0, {}});
+        impostor_part.vertices.push_back(
+            {{3.0f, -3.0f, -3.0f}, normal, tint, card, 0, {}});
+        impostor_part.vertices.push_back(
+            {{3.0f, 3.0f, -3.0f}, normal, tint, card, 0, {}});
+        impostor_part.vertices.push_back(
+            {{-3.0f, 3.0f, -3.0f}, normal, tint, card, 0, {}});
+        impostor_part.indices.insert(impostor_part.indices.end(),
+                                     {4, 5, 6, 4, 6, 7});
+    }
+    run_scene("terminal billboard is not the occlusion proxy",
+              {quad_part(9106, 2.0f, -6.0f, 0), impostor_part}, materials,
+              [&](const viewer::VkCullStats& stats,
+                  const std::vector<viewer::DrawCommand>& commands) {
+                  CHECK(instances_drawn(commands, 0) == 1,
+                        "terrain behind an impostor card is not "
+                        "occlusion-culled");
+                  CHECK(stats.occlusion_culled == 0,
+                        "the card's silhouette is never charged as occlusion");
+              });
+    std::printf("occlusion mask exclusion scenarios complete\n");
+}
+
 void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
     viewer::VkSceneCluster cluster{};
     cluster.aabb_min = {-0.25f, -0.25f, -0.25f};
@@ -11954,6 +12129,7 @@ int main() {
             run_frame_resource_recovery_tests(*vulkan);
             run_vk_scene_checked_size_tests(*vulkan);
             run_cull_parity(*vulkan);
+            run_occlusion_mask_tests(*vulkan);
             run_cull_region_and_lifecycle_tests(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());

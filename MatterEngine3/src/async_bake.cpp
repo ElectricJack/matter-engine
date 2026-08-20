@@ -8,6 +8,7 @@
 // progress-guaranteeing budgeted pump, the run_blocking completion latch, and
 // shutdown draining; this file only layers each queue's specific policy on top.
 #include "async_bake.h"
+#include "matter/log.h"
 
 #include <chrono>
 #include <cstdio>
@@ -37,10 +38,10 @@ void assert_off_gl_thread(const char* where) {
     auto gl_id = s_gl_thread_id.load(std::memory_order_relaxed);
     if (gl_id == std::thread::id{}) return;  // not registered yet, skip
     if (std::this_thread::get_id() == gl_id) {
-        std::fprintf(stderr,
-                     "assert_off_gl_thread FAILED at %s: blocking call from the "
-                     "GL/pump thread would deadlock\n",
-                     where ? where : "?");
+        MATTER_LOGE("bake",
+                    "assert_off_gl_thread FAILED at %s: blocking call from the "
+                    "GL/pump thread would deadlock\n",
+                    where ? where : "?");
         std::abort();
     }
 #else
@@ -125,9 +126,9 @@ int GpuJobQueue::pump(double ms_budget) {
         const double job_ms = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - job_start).count();
         if (job_ms >= slow_ms) {
-            std::fprintf(stderr, "[gpu-job] %s took %.1f ms\n",
-                         env.job.name.empty() ? "(unnamed)" : env.job.name.c_str(),
-                         job_ms);
+            MATTER_LOGI("gpu-job", "%s took %.1f ms\n",
+                        env.job.name.empty() ? "(unnamed)" : env.job.name.c_str(),
+                        job_ms);
         }
         if (env.result) {
             env.result->ok = ok;
@@ -277,8 +278,8 @@ void assert_gl_thread(const char* where) {
     auto gl_id = s_gl_thread_id.load(std::memory_order_relaxed);
     if (gl_id == std::thread::id{}) return; // not registered yet, skip
     if (std::this_thread::get_id() != gl_id) {
-        std::fprintf(stderr, "assert_gl_thread FAILED at %s: called from wrong thread\n",
-                     where ? where : "?");
+        MATTER_LOGE("bake", "assert_gl_thread FAILED at %s: called from wrong thread\n",
+                    where ? where : "?");
         std::abort();
     }
 #else

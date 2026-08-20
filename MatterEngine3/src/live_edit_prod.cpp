@@ -8,6 +8,7 @@
 #include "part_graph.h"       // params_to_json, params_from_json (MATTER_HAVE_SCRIPT_HOST section)
 #include "part_asset_v2.h"    // cache_path_resolved, cache_path_flat
 #include "script_host.h"
+#include "matter/log.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -153,8 +154,8 @@ ProdGraphResolver::reresolve(const live_edit::PartId& p) {
     // Load source from disk.
     std::ifstream fin(source_path, std::ios::binary);
     if (!fin) {
-        std::fprintf(stderr, "ProdGraphResolver::reresolve: cannot open %s\n",
-                     source_path.c_str());
+        MATTER_LOGE("live-edit", "ProdGraphResolver::reresolve: cannot open %s\n",
+                    source_path.c_str());
         return "";
     }
     std::ostringstream ss; ss << fin.rdbuf();
@@ -263,7 +264,7 @@ ProdBaker::bake(const live_edit::PartId& p,
 
     // Verify hash agreement (master C-2).
     if (r.resolved_hash != resolved_hash) {
-        std::fprintf(stderr,
+        MATTER_LOGE("live-edit",
             "ProdBaker: hash mismatch for %s: expected %llu got %llu\n",
             p.c_str(), (unsigned long long)resolved_hash,
             (unsigned long long)r.resolved_hash);

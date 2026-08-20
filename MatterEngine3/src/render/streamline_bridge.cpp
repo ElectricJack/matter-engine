@@ -7,6 +7,8 @@
 #include <sstream>
 #include <utility>
 
+#include "matter/log.h"
+
 #if defined(MATTER_HAVE_STREAMLINE) && MATTER_HAVE_STREAMLINE
 #include <windows.h>
 
@@ -172,7 +174,7 @@ StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
         return bridge;
     }
     bridge.streamline_module_ = module;
-    std::fprintf(stderr, "Streamline: signed interposer loaded\n");
+    MATTER_LOGI("vk", "Streamline: signed interposer loaded\n");
     bridge.sl_init_ = reinterpret_cast<void*>(
         streamline_function<SlInitFn>(module, "slInit"));
     bridge.sl_get_feature_requirements_ = reinterpret_cast<void*>(
@@ -825,7 +827,7 @@ bool StreamlineBridge::set_vulkan_info(
         disable(result_reason("slGetFeatureFunction(DLSS)", feature_result));
         return true;
     }
-    std::fprintf(stderr, "Streamline: DLSS support ready\n");
+    MATTER_LOGI("vk", "Streamline: DLSS support ready\n");
     dlss_available_ = true;
     return true;
 #else

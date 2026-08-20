@@ -1011,6 +1011,7 @@ class VtResidency {
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
         uint32_t layers = 0;
         uint32_t edge = 0;
+        VkDeviceSize tracked_alloc_size = 0;
     };
 
     struct VariantRung {
@@ -1151,6 +1152,8 @@ class VtResidency {
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkDeviceSize size = 0;
         void* mapped = nullptr;
+        VkDeviceSize tracked_alloc_size = 0;
+        VkMemoryPropertyFlags tracked_mem_props = 0;
     };
     // `preferred` (0 = same as `properties`) is a soft request: find_memory_type
     // takes the first type that has it and falls back to any type meeting

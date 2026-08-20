@@ -67,14 +67,23 @@ const habitat = changes => ({
   dryness: 0.3, forest: 0.7, forestEdge: 0.4, shrubPatch: 0.8,
   meadowPatch: 0.8, flowerPatch: 0.8, groundCoverPatch: 0.8, ...changes,
 });
+// Each fixture is the habitat one form is authored for, plus the identity that
+// reaches it. For trees the identity is load-bearing, not decorative: since
+// 744cd255 a grove is a weighted MIXTURE, so the best-suited species only wins
+// the lottery for some identities and the dial is part of the fixture. For the
+// other families selection is a plain argmax and the identity only jitters.
 const reachabilityFixtures = [
   ['tree', habitat({ altitude: 180, moisture: 0.9, exposure: 0.1, forest: 1, forestEdge: 0 }), 0.01],
-  ['tree', habitat({ altitude: 250, moisture: 0.5, exposure: 0.25, forest: 1, forestEdge: 0.1 }), 0.13],
+  ['tree', habitat({ altitude: 250, moisture: 0.5, exposure: 0.25, forest: 1, forestEdge: 0.1 }), 0.15],
   ['tree', habitat({ altitude: 400, moisture: 0.25, exposure: 0.85, dryness: 0.85, forest: 0.8, forestEdge: 0.7 }), 0.25],
-  ['tree', habitat({ altitude: 120, moisture: 0.72, exposure: 0.05, forest: 1, forestEdge: 0 }), 0.37],
-  ['tree', habitat({ altitude: 150, moisture: 1, exposure: 0.25, forest: 0.35, forestEdge: 0.65 }), 0.49],
+  ['tree', habitat({ altitude: 120, moisture: 0.72, exposure: 0.05, forest: 1, forestEdge: 0 }), 0.36],
+  ['tree', habitat({ altitude: 150, moisture: 1, exposure: 0.25, forest: 0.35, forestEdge: 0.65 }), 0.51],
   ['tree', habitat({ altitude: 330, moisture: 0.6, exposure: 0.45, forest: 0.35, forestEdge: 1 }), 0.61],
-  ['shrub', habitat({ altitude: 450, moisture: 0.35, exposure: 0.85, dryness: 0.8, forest: 0.05, meadowPatch: 1 }), 0.05],
+  // Above 445 the mid-altitude dry shrub starts fading out; at 450 it was still
+  // at 0.98 and tied the dwarf shrub to within 3%, close enough for the
+  // per-form identity jitter to flip the argmax. 480 is unambiguously the
+  // dwarf's band.
+  ['shrub', habitat({ altitude: 480, moisture: 0.35, exposure: 0.85, dryness: 0.8, forest: 0.05, meadowPatch: 1 }), 0.05],
   ['shrub', habitat({ altitude: 120, moisture: 0.9, exposure: 0.15, forest: 0.25, forestEdge: 0.8 }), 0.29],
   ['shrub', habitat({ altitude: 320, moisture: 0.25, exposure: 0.75, dryness: 0.85, forest: 0.15 }), 0.53],
   ['shrub', habitat({ altitude: 180, moisture: 0.9, exposure: 0.2, forest: 0.5, forestEdge: 1 }), 0.77],

@@ -527,6 +527,16 @@ struct VkSceneInstance {
     // C3: dynamic animation bounds are keyed by the generational dynamic
     // instance slot. UINT32_MAX retains the immutable/static culling path.
     uint32_t animation_instance_slot = UINT32_MAX;
+    // Put this instance in the ray-tracing TLAS. False for geometry that is
+    // COINCIDENT with something already in it, where an extra occluder can only
+    // shadow itself: the seam welds (matter_engine.cpp sets it) are the fine
+    // tile's own surface laid over the coarse tile's, within centimetres of it
+    // by construction, so every shadow ray they add is a self-hit at t ~= 0.
+    // Measured before this existed: a weld band's sun visibility read 0.1/255
+    // against its neighbours' 164.5 at identical depth, identical raw albedo
+    // and identical normals -- a black strip painted over terrain that was
+    // already correct (docs/seam-suite-2026-08-13.md, finding 2).
+    bool ray_traced = true;
 };
 
 struct VkCullStats {
@@ -1000,6 +1010,19 @@ public:
     matter::Float3 frozen_cull_eye() const noexcept {
         return frozen_cull_eye_;
     }
+    // The eye every raster-matching CPU LOD mirror must select with: the
+    // frozen cull eye while the freeze is on, the live eye otherwise.
+    // cull.comp receives exactly this through FrameConstants::camera_eye, so
+    // a mirror that takes the live eye directly diverges from the drawn rung
+    // whenever the freeze is engaged. The RT geometry selection did, and the
+    // result was issue eb0b1070: terrain traced at one rung while drawn at
+    // another, so sun-visibility rays started under the traced surface and
+    // whole coarse triangles read black.
+    matter::Float3 lod_selection_eye(matter::Float3 live_eye) const noexcept {
+        return cull_camera_frozen_ && cull_camera_freeze_requested_
+                   ? frozen_cull_eye_
+                   : live_eye;
+    }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
@@ -1118,6 +1141,9 @@ public:
     void clear_cloud_shadow_density_override_for_test(bool invalidate_history);
     bool cloud_shadows_active() const;
     uint64_t cloud_shadow_persistent_bytes() const;
+    uint64_t impostor_atlas_total_bytes() const {
+        return impostor_atlas_bytes_ * kImpostorMaxSlots;
+    }
     matter::CloudShadowLevelDesc cloud_shadow_level_desc(uint32_t level) const;
     VkFormat cloud_shadow_density_format(uint32_t level) const;
     VkExtent3D cloud_shadow_density_extent(uint32_t level) const;
@@ -1172,6 +1198,15 @@ public:
     // setter above -- separate call because the two are now separate
     // policies; see matter::VtNearBandSettings for why they were split.
     void set_vt_near_band_settings(const matter::VtNearBandSettings& s);
+    // Draw world-space overlay lines into hdr_ with depth testing against
+    // depth_ (reversed-Z, no depth write). Call between record_cull_and_render
+    // and record_composite_to_swapchain. vertex_data is interleaved
+    // {x,y,z, r,g,b,a} × vertex_count; topology is LINE_LIST.
+    bool record_overlay_lines(VkCommandBuffer cb,
+                              const float* vertex_data,
+                              uint32_t vertex_count,
+                              const matter::Mat4f& world_to_clip,
+                              std::string& error);
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -1321,7 +1356,18 @@ public:
         return part.rt_lods[rt_lod_index].first_index;
     }
 #endif
+
+    // GPU pick: read the identity attachment at a single pixel.
+    // Returns the instance_token written by gbuffer.frag (.y of the
+    // R32G32_UINT material_instance_ attachment). UINT32_MAX on background.
+    bool readback_pick_identity(uint32_t x, uint32_t y,
+                                uint32_t& instance_token,
+                                std::string& error);
+
     int fill_rt_instances(std::vector<RtInstance>& output) const;
+
+    uint32_t raster_width() const { return raster_extent_.width; }
+    uint32_t raster_height() const { return raster_extent_.height; }
 
     // GPU timer results (ms, EMA-smoothed). Zones are non-overlapping;
     // each begin is recorded after the previous zone's end.
@@ -1464,7 +1510,12 @@ private:
         uint32_t lod_count;
         uint32_t part_slot;
         uint32_t cluster_index;
-        uint32_t pad1[3];
+        // Leading mesh-rung count (trailing rungs are impostor billboards);
+        // 0 = billboard-only. Gates the occlusion ID pass, which cannot
+        // rasterise a billboard honestly. Mirrors ClusterMeta.vis_mesh_lods
+        // in shaders_vk/cull.comp.
+        uint32_t vis_mesh_lods;
+        uint32_t pad1[2];
     };
     struct GpuInstance {
         GpuMat4 object_to_world;
@@ -1804,6 +1855,11 @@ private:
         // Per-part_slot draw overrides (max distance / LOD bias), read by
         // cull.comp. One neutral entry unless a module carries an override.
         matter::VkBufferResource part_draw_overrides;
+        // Per-part_slot occlusion class, read by cull.comp: 1 = the part's
+        // mesh rungs are alpha-test-free, so the no-discard ID pass can use
+        // them as occluders (and the mask may cull them); 0 = excluded from
+        // occlusion on both sides.
+        matter::VkBufferResource part_occluder_class;
         std::vector<VkSkinRasterDraw> ready_skin_raster_draws;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
@@ -1934,6 +1990,7 @@ private:
     bool create_environment_resources(std::string& error);
     bool create_raster_pipelines(std::string& error);
     bool create_display_pipeline(std::string& error);
+    bool create_overlay_line_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
     bool create_gi_temporal_pipeline(std::string& error);
     bool create_gi_atrous_pipeline(std::string& error);
@@ -2057,6 +2114,12 @@ private:
     // otherwise (a zero-length storage buffer is not bindable, and a neutral
     // slot-0 entry costs the shader nothing).
     void rebuild_part_draw_overrides();
+    // Rebuilds the per-part_slot occlusion-class table cull.comp reads: 0 for
+    // a part whose mesh rungs carry any alpha-tested material (the ID pass
+    // has no discard, so rasterising such a part overstates occlusion and
+    // hides the sectors visible through its cutouts), 1 otherwise. Unknown
+    // stays 1 -- the pre-exclusion behaviour.
+    void rebuild_part_occluder_table();
     // Feeds the tier-1 compositor the two inputs only the renderer knows: the
     // bound detail tileset slots and the materialId -> (detail slot, fallback
     // albedo/ORM) table. vt_compositor.h requires the device to be idle with
@@ -2200,6 +2263,9 @@ private:
     VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline display_pipeline_ = VK_NULL_HANDLE;
     VkFormat display_pipeline_format_ = VK_FORMAT_UNDEFINED;
+    VkPipelineLayout overlay_line_layout_ = VK_NULL_HANDLE;
+    VkPipeline overlay_line_pipeline_ = VK_NULL_HANDLE;
+    matter::VkBufferResource overlay_line_vertices_;
     VkDescriptorSetLayout gi_temporal_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout gi_temporal_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline gi_temporal_pipeline_ = VK_NULL_HANDLE;
@@ -2333,6 +2399,11 @@ private:
     std::vector<matter::PartDrawOverrideEntry> part_draw_override_entries_;
     std::vector<matter::PartDrawOverrideGpu> part_draw_override_table_;
     bool part_draw_overrides_dirty_ = true;
+    // Per-part_slot occlusion class for the ID pass (see
+    // rebuild_part_occluder_table). Dirtied by part registration/release and
+    // by material-table changes, since MATERIAL_ALPHA_TESTED is what it reads.
+    std::vector<uint32_t> part_occluder_table_;
+    bool part_occluder_dirty_ = true;
     // Borrowed: the residency layer owns the filler. Null when the compositor
     // could not be created and the WP-E stub filler is standing in.
     vt::VtCompositor* vt_compositor_ = nullptr;

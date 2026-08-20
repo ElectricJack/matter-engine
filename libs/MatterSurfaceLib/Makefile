@@ -3,14 +3,20 @@
 # Both are deleted outright -- not migrated -- along with the GL renderer
 # path (MatterEngine3/src/render/renderer.*, raster_composer.*, gpu_culler.*).
 # What remains and still matters: shader_preprocessor, which regenerates
-# the COMMITTED shaders/raytrace_tlas_blas_processed.fs consumed by
-# MatterEngine3's embedded-shaders step through the MatterEngine3/shaders
-# junction (see the `shaders:`/`regen-shaders` targets below, and
+# the COMMITTED shaders/raytrace_tlas_blas_processed.fs consumed directly by
+# MatterEngine3's embedded-shaders step (MatterEngine3/Makefile's
+# MSL_SHADER_DIR points straight at this directory; the MatterEngine3/shaders
+# symlink that step used to go through is gone -- see CLAUDE.md "Code Sharing
+# Between Projects") (see the `shaders:`/`regen-shaders` targets below, and
 # tech-debt.md §9). Everything else here (CFLAGS/CXXFLAGS, the platform
 # detection block) is kept only because $(PREPROCESSOR) still needs
 # BUILD_DIR/CXXFLAGS; LDFLAGS/LDLIBS/raylib-build plumbing are now unused
 # by anything in this file but left in place rather than risk breaking the
 # platform-detection ifs for a variable that costs nothing idle.
+
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 CC = gcc
 CXX = g++
 RAYLIB_PATH = ../../third_party/raylib
@@ -172,7 +178,8 @@ shaders/raytrace_tlas_blas_processed.fs: shaders/raytrace_tlas_blas.fs shaders/b
 # NOTE: shaders/raytrace_tlas_blas_processed.fs is deliberately NOT removed.
 # It is a generated file (shader_preprocessor expands the #includes in
 # raytrace_tlas_blas.fs) but it is also COMMITTED, and MatterEngine3's
-# embedded-shaders step consumes it via the MatterEngine3/shaders junction.
+# embedded-shaders step consumes it directly from this directory (see the
+# module header comment above).
 # Deleting it breaks every downstream build until MatterSurfaceLib is rebuilt
 # to regenerate it -- which is impossible on a toolchain missing
 # x86_64-w64-mingw32-g++-posix, i.e. the default MSYS2 UCRT64 setup. Use

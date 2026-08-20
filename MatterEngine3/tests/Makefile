@@ -16,6 +16,9 @@
 # binaries ever collide on an object path. Per-recipe `rm -f *.o` cleanups
 # are gone; `clean` removes $(OBJDIR) wholesale.
 
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 # Detect platform
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
@@ -43,7 +46,7 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 # Compiler settings
-CC = g++
+CC = $(CCACHE) g++
 CFLAGS = -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -D$(PLATFORM) -D$(GRAPHICS)
 
 ifeq ($(UNAME_S),Darwin)
@@ -871,6 +874,38 @@ SEAMINTEGRATION_CPP    = seam_integration_tests.cpp ../src/seam_weld.cpp \
 SEAMINTEGRATION_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h \
                           ../src/terrain_mesher.h ../src/terrain_field.h
 
+# Contour seams (docs/contour-seam-design-2026-08-13.md) — the SHARED CONTOUR
+# foundation. Analytic field plus a marching-squares contour and nothing else:
+# no mesher, no field interpreter, no raylib, no GL. Deliberately zero
+# dependency on the code it exists to justify replacing.
+CONTOURSEAM_TARGET = build/contour_seam_tests
+CONTOURSEAM_CPP    = contour_seam_tests.cpp
+CONTOURSEAM_HEADERS = check.h
+
+# Contour seams, increment 2: the CONSTRAINED BORDER mesher. Surface nets over
+# tile-owned cells with border cells terminating on the canonical contour, and
+# the gates that decide whether the welder can be deleted -- manifold across the
+# seam, and zero coplanar overlap.
+CONTOURMESH_TARGET = build/contour_mesh_tests
+CONTOURMESH_CPP    = contour_mesh_tests.cpp
+CONTOURMESH_HEADERS = check.h
+
+# Contour seams, increment 3: the port, gated against the REAL mesher. The two
+# suites above run their own surface nets over an analytic field on purpose --
+# so they cannot pass by agreeing with the code they justify replacing -- and
+# both share one blind spot: a two-tile fixture cannot judge a cube EDGE, where
+# the tiles that would supply the other incident triangles are absent. This one
+# meshes closed 2x2x2 blocks through mesh_sector_tiled and gates their INTERIOR,
+# where every neighbour is present and nothing has to be excluded.
+#
+# Sets MATTER_CONTOUR_SEAMS itself, which is why it is a separate binary:
+# terrain_mesher_tests pins the WELDER path's bytes bitwise and a process cannot
+# be in both modes.
+CONTOURENGINE_TARGET = build/contour_engine_tests
+CONTOURENGINE_CPP    = contour_engine_tests.cpp ../src/terrain_field.cpp \
+                       ../src/terrain_mesher.cpp
+CONTOURENGINE_HEADERS = check.h ../src/terrain_mesher.h ../src/bake_mode.h
+
 # Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
 TERRAINVERB_TARGET = build/terrain_verb_tests
 TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
@@ -1409,6 +1444,9 @@ def_CPP_SRCS := $(sort \
     $(TERRAINFIELD_CPP) \
     $(TERRAINMESH_CPP) \
     $(SEAMWELD_CPP) \
+    $(CONTOURSEAM_CPP) \
+    $(CONTOURMESH_CPP) \
+    $(CONTOURENGINE_CPP) \
     $(SEAMINTEGRATION_CPP) \
     $(PARTSTORE_CPP))
 
@@ -1589,6 +1627,9 @@ MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
 TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
 TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
 SEAMWELD_OBJS     = $(call obj_list,def,$(SEAMWELD_CPP))
+CONTOURSEAM_OBJS  = $(call obj_list,def,$(CONTOURSEAM_CPP))
+CONTOURMESH_OBJS  = $(call obj_list,def,$(CONTOURMESH_CPP))
+CONTOURENGINE_OBJS = $(call obj_list,def,$(CONTOURENGINE_CPP))
 SEAMINTEGRATION_OBJS = $(call obj_list,def,$(SEAMINTEGRATION_CPP))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
@@ -1635,7 +1676,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1978,6 +2019,25 @@ $(SEAMWELD_TARGET): $(SEAMWELD_OBJS) $(SEAMWELD_HEADERS)
 
 run-seamweld: $(SEAMWELD_TARGET)
 	./$(SEAMWELD_TARGET)
+
+# Contour seams — pure CPU, pure geometry, same minimal link line.
+$(CONTOURSEAM_TARGET): $(CONTOURSEAM_OBJS) $(CONTOURSEAM_HEADERS)
+	$(CC) $(CONTOURSEAM_OBJS) -o $@ $(CFLAGS) -I../src -lm -lpthread
+
+run-contourseam: $(CONTOURSEAM_TARGET)
+	./$(CONTOURSEAM_TARGET)
+
+$(CONTOURMESH_TARGET): $(CONTOURMESH_OBJS) $(CONTOURMESH_HEADERS)
+	$(CC) $(CONTOURMESH_OBJS) -o $@ $(CFLAGS) -I../src -lm -lpthread
+
+run-contourmesh: $(CONTOURMESH_TARGET)
+	./$(CONTOURMESH_TARGET)
+
+$(CONTOURENGINE_TARGET): $(CONTOURENGINE_OBJS) $(CONTOURENGINE_HEADERS)
+	$(CC) $(CONTOURENGINE_OBJS) -o $@ $(CFLAGS) -I../src -lm -lpthread
+
+run-contourengine: $(CONTOURENGINE_TARGET)
+	./$(CONTOURENGINE_TARGET)
 
 # M0-WP6 — mesh + weld together. Same minimal link line as the welder suite:
 # the mesher and the field interpreter are pure CPU too, so no raylib, no GL,
@@ -2807,12 +2867,24 @@ SCENETRACKER_CPP    = scene_tracker_tests.cpp \
 SCENETRACKER_C      = $(FLECS_C)
 SCENETRACKER_OBJS   = $(call obj_list,def,$(SCENETRACKER_CPP)) $(call obj_list,flecsc,$(SCENETRACKER_C))
 
-# Generate the per-source compile rules for these sources (they are not in the
-# line-833 def_CPP_SRCS union, so without this the generic $(OBJDIR)/% mkdir
-# rule would wrongly create the .o paths as directories). flecs.c already has
-# its rule via flecsc_C_SRCS. Append-only; none of these sources collide with
-# def_CPP_SRCS entries.
-$(foreach s,$(SCENETRACKER_CPP),$(eval $(call objrule_cpp,def,$(s))))
+# Generate the per-source compile rules for these sources (they are not all in
+# the def_CPP_SRCS union, so without this the generic $(OBJDIR)/% mkdir rule
+# would wrongly create the .o paths as directories). flecs.c already has its
+# rule via flecsc_C_SRCS.
+#
+# 2026-08-14: this used to be unconditionally "Append-only; none of these
+# sources collide with def_CPP_SRCS entries" -- that stopped being true once
+# ../src/event/subscription.cpp and ../src/event/dispatch_context.cpp joined
+# def_CPP_SRCS elsewhere (both are genuinely also compiled under the "def"
+# flavor for other targets now), so this foreach was re-emitting the exact
+# same objrule_cpp rule for those two sources a second time. objrule_cpp is a
+# pure (flavor, source) -> recipe template with no other state, so the two
+# emissions were byte-identical -- harmless in practice, but "overriding
+# recipe for target .../subscription.cpp.o" / "ignoring old recipe" on every
+# build was still noise, and a future case where the two definitions actually
+# diverged would have silently picked whichever one make evaluates last.
+# filter-out keeps this append-only for anything that is genuinely new.
+$(foreach s,$(filter-out $(def_CPP_SRCS),$(SCENETRACKER_CPP)),$(eval $(call objrule_cpp,def,$(s))))
 
 $(SCENETRACKER_TARGET): $(SCENETRACKER_OBJS)
 	$(CC) $(SCENETRACKER_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread -lws2_32 -ldbghelp -lwinmm

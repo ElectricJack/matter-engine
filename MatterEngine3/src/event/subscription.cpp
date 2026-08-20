@@ -5,6 +5,7 @@
 // item 7. See matter/event/subscription.h and
 // matter/event/registration_error.h for the contracts implemented here.
 #include "matter/event/subscription.h"
+#include "matter/log.h"
 
 #include <atomic>
 #include <chrono>
@@ -30,7 +31,7 @@ namespace {
 std::atomic<uint32_t> g_next_lane_id{4};
 
 void default_fail_fast_handler(const char* what) {
-    std::fprintf(stderr, "evt: FATAL registration/lifetime error: %s\n", what);
+    MATTER_LOGE("evt", "FATAL registration/lifetime error: %s\n", what);
     std::fflush(stderr);
     std::abort();
 }

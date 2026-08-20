@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "matter/log.h"
 #include "vk_device_internal.h"
 #include "vk_resources.h"
 #include "streamline_bridge.h"
@@ -514,7 +515,7 @@ struct VulkanDevice::Impl {
     // launched from a console, and device-lost repros take hours — so the
     // report is also appended to a file beside the working directory.
     void emit_device_fault_report(const std::string& report) {
-        std::fprintf(stderr, "%s", report.c_str());
+        MATTER_LOGE("vk", "%s", report.c_str());
         std::FILE* file = std::fopen("vulkan_device_fault.log", "a");
         if (!file) return;
         char stamp[32] = "unknown time";
@@ -523,7 +524,7 @@ struct VulkanDevice::Impl {
             std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", local);
         std::fprintf(file, "==== %s ====\n%s", stamp, report.c_str());
         std::fclose(file);
-        std::fprintf(stderr,
+        MATTER_LOGI("vk",
                      "Device fault report appended to vulkan_device_fault.log\n");
     }
 
@@ -591,7 +592,7 @@ struct VulkanDevice::Impl {
                                                     std::memory_order_relaxed);
 #endif
         }
-        std::fprintf(stderr, "Vulkan %s %s: %s\n",
+        MATTER_LOGE("vk", "Vulkan %s %s: %s\n",
                      is_validation ? "validation" : "loader/general",
                      (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
                          ? "ERROR"
@@ -1307,8 +1308,8 @@ struct VulkanDevice::Impl {
                 features2.pNext = &robustness2;
                 extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
             }
-            std::fprintf(stderr,
-                         "[vk] MATTER_VK_ROBUSTNESS set: robustBufferAccess on"
+            MATTER_LOGI("vk",
+                         "MATTER_VK_ROBUSTNESS set: robustBufferAccess on"
                          ", robustness2 %s\n",
                          robustness2_available ? "on" : "UNAVAILABLE");
             std::fflush(stderr);
@@ -2272,7 +2273,7 @@ struct VulkanDevice::Impl {
 
     void cleanup() {
         if (preserve_external_work) {
-            std::fprintf(stderr,
+            MATTER_LOGW("vk",
                          "Vulkan cleanup intentionally preserving the logical "
                          "device and children because external work completion "
                          "is unproven\n");
@@ -2294,7 +2295,7 @@ struct VulkanDevice::Impl {
             bool device_lost = idle == VK_ERROR_DEVICE_LOST;
             if (device_lost) log_device_fault();
             if (!destruction_safe_after_wait(idle)) {
-                std::fprintf(stderr,
+                MATTER_LOGW("vk",
                              "Vulkan cleanup intentionally preserving the "
                              "logical device, WSI resources, and their parents "
                              "after %s; completion is unproven\n",
@@ -2303,8 +2304,8 @@ struct VulkanDevice::Impl {
                 return;
             }
             if (wsi_completion_ambiguous && !device_lost) {
-                std::fprintf(
-                    stderr,
+                MATTER_LOGW(
+                    "vk",
                     "Vulkan cleanup intentionally preserving the logical "
                     "device, ambiguous presentation resources, and their "
                     "parents; vkQueuePresentKHR completion is unproven\n");
@@ -2322,7 +2323,7 @@ struct VulkanDevice::Impl {
                         break;
                     }
                     if (waited != VK_SUCCESS) {
-                        std::fprintf(stderr,
+                        MATTER_LOGW("vk",
                                      "Vulkan cleanup intentionally preserving "
                                      "the logical device, WSI resources, and "
                                      "their parents after %s while waiting for "
@@ -2340,8 +2341,8 @@ struct VulkanDevice::Impl {
                 if (waited == VK_ERROR_DEVICE_LOST) {
                     device_lost = true;
                 } else if (waited != VK_SUCCESS) {
-                    std::fprintf(
-                        stderr,
+                    MATTER_LOGW(
+                        "vk",
                         "Vulkan cleanup intentionally preserving the logical "
                         "device, present fences/semaphores, swapchain, and their "
                         "parents after present completion failed: %s\n",
@@ -2352,7 +2353,7 @@ struct VulkanDevice::Impl {
                 }
             }
             if (device_lost) {
-                std::fprintf(stderr,
+                MATTER_LOGE("vk",
                              "Vulkan device was lost; destroying device objects "
                              "without further completion waits\n");
             }
@@ -2633,7 +2634,7 @@ bool detail::DeviceSubmitAccess::submit_and_wait(
 void VulkanDevice::wait_idle() {
     if (impl_->device == VK_NULL_HANDLE) return;
     if (impl_->device_poisoned) {
-        std::fprintf(stderr, "%s\n", impl_->poison_error.c_str());
+        MATTER_LOGE("vk", "%s\n", impl_->poison_error.c_str());
         return;
     }
     const VkResult result = impl_->streamline.device_wait_idle(impl_->device);
@@ -2641,7 +2642,7 @@ void VulkanDevice::wait_idle() {
         std::string error;
         vk_ok(result, "vkDeviceWaitIdle", error);
         impl_->poison_device(error, "wait_idle failed");
-        std::fprintf(stderr, "%s\n", error.c_str());
+        MATTER_LOGE("vk", "%s\n", error.c_str());
     }
 }
 

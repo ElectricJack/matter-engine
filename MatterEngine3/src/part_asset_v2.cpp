@@ -1,12 +1,14 @@
 #include "part_asset_v2.h"
 #include "matter/lod_contract.h"
 #include "version_vector.h"   // M4: the one fold site for cache keys
+#include "bake_mode.h"        // runtime A/B bake modes; salted into the same key
 #include "part_bundle.h"      // M4: the one file a part owns
 // The FLAT section IS part_flatten's output, so its identity is part_flatten's
 // business: active_ladder_shape_digest() names the ladder shape this process
 // bakes. Header-only (inline), so this costs no link dependency from the
 // serializer onto the baker.
 #include "part_flatten.h"     // active_ladder_shape_digest (flat identity)
+#include "matter/log.h"
 
 #include <cstdio>
 #include <cstring>
@@ -177,6 +179,14 @@ uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
     std::vector<uint64_t> sorted(child_hashes, child_hashes + child_count);
     std::sort(sorted.begin(), sorted.end()); // order-independent over children
     for (uint64_t c : sorted) fold(&c, sizeof(c));
+    // Runtime BAKE MODES (bake_mode.h). Not a version -- both rules stay valid
+    // and neither invalidates the other's artifacts -- but a mode that changes
+    // baked bytes has to separate them, or flipping an A/B flag against a warm
+    // cache serves the other mode's geometry and the comparison measures
+    // nothing. Folded only when non-zero, which is what keeps every key already
+    // on disk bit-identical while every mode is at its default.
+    if (const uint64_t mode = bake_mode::salt(); mode != 0ull)
+        fold(&mode, sizeof(mode));
     // M4: the version vector, folded here and nowhere else. This hash NAMES
     // every artifact a part owns on disk, so folding the vector into it is
     // what makes a version bump re-BAKE rather than merely re-resolve — the
@@ -531,7 +541,7 @@ static bool write_file_atomic(const std::string& path,
     if (!part_bundle::write_section(path, resolved_hash,
                                     bundle_tag_for_format(version),
                                     payload.data(), payload.size())) {
-        std::fprintf(stderr,
+        MATTER_LOGE("part",
                      "  save_v2: bundle section write failed for '%s' "
                      "(format %u, hash %016llx)\n",
                      path.c_str(), version,
@@ -592,7 +602,7 @@ static uint32_t read_and_validate_header(Reader& r,
         if (version == kFormatVersionFlat) {
             const uint64_t on_disk =
                 rhash_x ^ static_cast<uint64_t>(version) ^ expected_resolved_hash;
-            std::fprintf(stderr,
+            MATTER_LOGW("flatten",
                          "  part_asset: flat %016llx carries ladder shape "
                          "%016llx, this bake is %016llx; rejecting it as stale "
                          "(it will be re-flattened).\n",

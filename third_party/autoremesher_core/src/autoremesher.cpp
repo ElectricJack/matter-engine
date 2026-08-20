@@ -51,9 +51,23 @@
 #undef emit
 #endif
 
+// AUTOREMESHER_FORCE_SHIM (Makefile-defined): always take the legacy
+// tbb/*.h path, which our header-only shim (thirdparty/tbb_shim/include/)
+// satisfies. Without this, __has_include(<oneapi/tbb/...>) below finds a
+// REAL oneTBB install's headers whenever one happens to be on the system
+// include path (e.g. mingw-w64-ucrt-x86_64-tbb, pulled in as a ccache
+// dependency) and prefers them, which pulls tbb::detail::r1::* symbols
+// into the object files that libautoremesher_core.a has no way to provide
+// (it deliberately vendors no TBB runtime -- see the Makefile's TBB design
+// note). That link only fails much later, in whatever consumes the .a, so
+// pin the choice here instead of hoping no real TBB is ever installed.
+#if defined(AUTOREMESHER_FORCE_SHIM)
+#include <tbb/blocked_range.h>
+#include <tbb/mutex.h>
+#include <tbb/parallel_for.h>
 // oneAPI TBB (2021+) moved headers under <oneapi/tbb/>. Use __has_include where
 // available (clang + GCC) to pick the right path, falling back to the legacy path.
-#if defined(__has_include)
+#elif defined(__has_include)
 #if __has_include(<oneapi/tbb/blocked_range.h>)
 #include <oneapi/tbb/blocked_range.h>
 #else

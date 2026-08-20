@@ -1,4 +1,8 @@
 # Standalone mesh-charting utilities. Header-light, raylib-free.
+
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 CXX ?= g++
 CXXFLAGS = -Wall -Wextra -O2 -std=c++17 -Iinclude
 

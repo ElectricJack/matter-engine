@@ -19,6 +19,7 @@
 #include "imgui_impl_vulkan.h"
 #include "matter/vulkan_device.h"
 #include "matter/render_debug.h"
+#include "matter/log.h"
 #include "editor_props.h"
 #include "camera_orbit.h"
 
@@ -816,6 +817,96 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         return;
     }
 
+    if (!ImGui::BeginTabBar("##profiler_tabs")) {
+        ImGui::End();
+        return;
+    }
+
+    // ---- Memory tab --------------------------------------------------------
+    if (ImGui::BeginTabItem("Memory")) {
+        const auto mib = [](uint64_t bytes) {
+            return static_cast<double>(bytes) / (1024.0 * 1024.0);
+        };
+        const auto bar = [](double fraction) {
+            const float w = ImGui::GetContentRegionAvail().x * 0.35f;
+            ImGui::ProgressBar(static_cast<float>(
+                fraction > 1.0 ? 1.0 : (fraction < 0.0 ? 0.0 : fraction)),
+                ImVec2(w, 0.0f), "");
+        };
+
+        ImGui::TextDisabled("GPU Memory (tracked allocations)");
+        ImGui::Text("VRAM (device-local):  %.0f MiB", mib(s.gpu_device_local_bytes));
+        ImGui::Text("Staging (host):       %.0f MiB", mib(s.gpu_host_visible_bytes));
+        ImGui::Text("Total GPU:            %.0f MiB  (%llu allocations)",
+                    mib(s.gpu_total_alloc_bytes),
+                    static_cast<unsigned long long>(s.gpu_allocation_count));
+
+        ImGui::Separator();
+        ImGui::TextDisabled("System Memory");
+        ImGui::Text("Process working set:  %.0f MiB", mib(s.process_working_set_bytes));
+        ImGui::Text("Peak working set:     %.0f MiB", mib(s.process_peak_working_set_bytes));
+
+        ImGui::Separator();
+        ImGui::TextDisabled("GPU Breakdown");
+        const double total_gpu = mib(s.gpu_device_local_bytes);
+        const double vt_pool = mib(s.vt_pool_bytes);
+        const double vt_mesh = mib(s.vt_mesh_bytes);
+        const double vt_indir = mib(s.vt_indirection_bytes);
+        const double vol = mib(s.froxel_bytes);
+        const double cloud = mib(s.cloud_shadow_bytes);
+        const double impostor = mib(s.impostor_atlas_bytes);
+        const double accounted = vt_pool + vt_indir + vol + cloud + impostor;
+        const double other = total_gpu > accounted ? total_gpu - accounted : 0.0;
+
+        if (ImGui::BeginTable("mem_breakdown", 3,
+                              ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_BordersInnerV |
+                                  ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("subsystem");
+            ImGui::TableSetupColumn("MiB", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+            ImGui::TableSetupColumn("##bar", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            const double bar_max = total_gpu > 0.0 ? total_gpu : 1.0;
+
+            auto row = [&](const char* label, double val) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(label);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%.0f", val);
+                ImGui::TableSetColumnIndex(2);
+                bar(val / bar_max);
+            };
+
+            row("VT page pool",     vt_pool);
+            row("VT indirection",   vt_indir);
+            row("Volumetrics",      vol);
+            row("Cloud shadows",    cloud);
+            row("Impostor atlas",   impostor);
+            row("Other (buffers, images, RT)", other);
+
+            ImGui::EndTable();
+        }
+
+        ImGui::Separator();
+        ImGui::TextDisabled("VT Detail");
+        ImGui::Text("Pool:         %.0f / %.0f MiB  (%u/%u pages, %u pinned)",
+                    mib(s.vt_pool_bytes),
+                    mib(s.vt_pool_bytes),
+                    s.vt_pool_used, s.vt_pool_capacity, s.vt_pool_pinned);
+        ImGui::Text("Mesh (CPU):   %.0f / %.0f MiB",
+                    mib(s.vt_mesh_bytes), mib(s.vt_mesh_budget_bytes));
+        ImGui::Text("Indirection:  %.0f / %.0f MiB",
+                    mib(s.vt_indirection_bytes),
+                    mib(s.vt_indirection_capacity_bytes));
+
+        ImGui::EndTabItem();
+    }
+
+    // ---- Timing tab (existing profiler content) ----------------------------
+    if (ImGui::BeginTabItem("Timing")) {
+
     bool capture = prof::enabled();
     if (ImGui::Checkbox("Capture", &capture)) prof::set_enabled(capture);
     ImGui::SameLine();
@@ -1084,6 +1175,10 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         ImGui::TextDisabled("%s", dump_status);
     }
 
+    ImGui::EndTabItem();
+    }  // Timing tab
+
+    ImGui::EndTabBar();
     ImGui::End();
 }
 
@@ -1963,14 +2058,15 @@ bool Ui::ensure_streaming_anchor(matter::WorldSession& session) {
     if (!matter_viewer::attach_streaming(streaming_anchor_, world)) {
         matter_viewer::clear_anchor(streaming_anchor_);
         anchor_id_input_ = 0;
-        std::fprintf(stderr,
-                     "[streaming] failed to attach the sector streaming anchor\n");
+        MATTER_LOGE("streaming",
+                    "failed to attach the sector streaming anchor\n");
         return false;
     }
 
     anchor_id_input_ = streaming_anchor_.selected;
-    std::printf(
-        "[streaming] auto-attached sector streaming anchor entity %llu "
+    MATTER_LOGI(
+        "streaming",
+        "auto-attached sector streaming anchor entity %llu "
         "(world-kind session, sea level %.2f)\n",
         static_cast<unsigned long long>(streaming_anchor_.selected),
         static_cast<double>(sea_level));

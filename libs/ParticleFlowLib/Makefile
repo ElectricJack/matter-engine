@@ -1,6 +1,10 @@
 # ParticleFlowLib: generic agent-particle kernel + path recording.
 # Standalone build for dev/tests; MatterEngine3 compiles src/ directly
 # into libmatter_engine3.a (MatterSurfaceLib direct-source pattern).
+
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
+
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -g -O2 -I./include
 OBJ_DIR = build/obj
@@ -16,6 +20,12 @@ build/libparticleflow.a: $(OBJS)
 $(OBJ_DIR)/%.o: src/%.cpp $(HEADERS)
 	@mkdir -p $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+# -MMD -MP above already writes a .d file per object; nothing ever included
+# them, so this Makefile relied solely on the coarse $(HEADERS) prerequisite
+# above (any header change recompiles every .o, not just objects that use
+# it). Pick up the generated .d files too for precise tracking.
+-include $(wildcard $(OBJ_DIR)/*.d)
 
 TEST_FLAGS = -std=c++17 -Wall -Wextra -g -I./include -fsanitize=address,undefined
 

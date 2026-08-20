@@ -1,5 +1,6 @@
 #include "part_flatten.h"
 #include "matter/lod_contract.h"
+#include "matter/log.h"
 #include "bake_trace.h"        // Bake Lab task 1.5: flatten span + counters
 #include "bake_trace_names.h"  // kSpanFlatten
 
@@ -1103,7 +1104,7 @@ static FlattenResult flatten_static_lod_ladder(
     if (ladder_log) {
         ladder_line += " levels=" + std::to_string(levels.size()) +
                        " r=" + std::to_string(cluster_radius);
-        std::fprintf(stderr, "%s\n", ladder_line.c_str());
+        MATTER_LOGD("flatten", "%s\n", ladder_line.c_str());
     }
 
     fc.lods = std::move(lods);
@@ -1609,7 +1610,7 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
 
             if (ladder_log) {
                 ladder_line += " levels=" + std::to_string(level_metas.size());
-                std::fprintf(stderr, "%s\n", ladder_line.c_str());
+                MATTER_LOGD("flatten", "%s\n", ladder_line.c_str());
             }
 
             // Threshold fill: level i's threshold from level (i+1)'s eps; coarsest 0.
@@ -1994,7 +1995,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
                 std::snprintf(rec, sizeof(rec), " %g:%zu", (double)div, probe.size());
                 sweep += rec;
             }
-            std::fprintf(stderr, "%s\n", sweep.c_str());
+            MATTER_LOGD("flatten", "%s\n", sweep.c_str());
         }
 
         size_t prev_count = ctris.size();
@@ -2179,7 +2180,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         if (ladder_log) {
             ladder_line += " levels=" + std::to_string(level_metas.size());
             if (impostor_eps > 0.0f) ladder_line += " +impostor";
-            std::fprintf(stderr, "%s\n", ladder_line.c_str());
+            MATTER_LOGD("flatten", "%s\n", ladder_line.c_str());
         }
 
         // ctris/ctriex are no longer needed for this cluster; drop them before
@@ -2262,8 +2263,8 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         // Deltas in MB — big enough to be meaningful, small enough to skim.
         const double mb = 1.0 / (1024.0 * 1024.0);
         const size_t rss_exit = peak_rss_bytes();
-        std::fprintf(stderr,
-            "[flatten peak] root=%016llx tris=%zu clusters=%zu refs=%zu "
+        MATTER_LOGD("flatten",
+            "peak root=%016llx tris=%zu clusters=%zu refs=%zu "
             "rss_entry=%.1fMB rss_pre_save=%.1fMB rss_exit=%.1fMB "
             "delta=%.1fMB\n",
             (unsigned long long)root_hash, res.full_tris, n_clusters, refs.size(),
@@ -2301,7 +2302,7 @@ FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
     // gate cannot protect it. Nothing in the engine does this; say so out loud
     // rather than let a future caller discover it as wrong pixels.
     if (ladder_shape_digest(targets) != active_ladder_shape_digest()) {
-        std::fprintf(stderr,
+        MATTER_LOGW("flatten",
                      "  part_flatten: WARNING root=%016llx baked with per-call "
                      "ladder-shape overrides; the flat is stamped with the "
                      "AMBIENT shape and will not be rejected as stale. Drive "

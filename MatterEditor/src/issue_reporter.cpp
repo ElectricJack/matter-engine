@@ -225,7 +225,7 @@ void write_shot_json(std::ostream& out, const IssueShot& shot) {
         out << "      \"history_columns\": [\"frame_ms\",\"render_ms\","
                "\"build_ms\",\"gpu_ms\",\"triangles\",\"instances_drawn\","
                "\"resolve_ms\",\"draw_ms\",\"zone_vt_ms\",\"zone_cull_ms\","
-               "\"zone_skin_ms\",\"zone_comp_ms\",\"zone_casters_ms\"],\n";
+               "\"zone_skin_ms\",\"zone_comp_ms\"],\n";
     }
     out << "      \"frame_ms\": " << shot.frame_ms
         << ", \"instances_drawn\": " << shot.instances_drawn

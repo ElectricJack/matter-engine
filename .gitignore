@@ -31,10 +31,12 @@ ParticleDynamicsExample/particle_dynamics
 # Misc
 SurfaceLib/test_config
 *.ini
-# ...except issue-report layout sidecars, which are evidence rather than local
-# config: a shot's ImGui layout determines the viewport rect, so a replay
-# without it reproduces the window size and still frames the shot differently.
-!/issues/**/*.layout.ini
+# ImGui layout sidecars under issues/ are evidence, not local config (a shot's
+# layout determines the viewport rect), but they can't be re-included here: the
+# blanket `issues` rule below excludes the parent directory itself, and git
+# never descends into an excluded directory to evaluate negations against its
+# contents. A `!/issues/**/*.layout.ini` negation was here and never worked;
+# removed as dead (verified with `git check-ignore -v`).
 
 # User-scope property overrides (property-system design S5): per-machine
 # editor prefs, autosaved. projects/*/editor/*.json (Project/World scope) ARE
@@ -47,8 +49,15 @@ SurfaceLib/test_config
 .idea/
 *.swp
 
-# Claude Code / assistant tool state (regenerated locally)
-.claude/
+# Claude Code / assistant tool state: ignore everything under .claude/ by
+# default (runtime worktrees, local settings overrides, caches), but track the
+# project-shared permission allowlist and skills. `!.claude/skills/` re-includes
+# the directory itself so git walks its contents; without that, the `.claude/*`
+# exclusion would stop git from ever looking inside it, and a deeper negation
+# like `!.claude/skills/**` would have nothing to match.
+.claude/*
+!.claude/settings.json
+!.claude/skills/
 
 # Allow raylib's vendored static lib through the *.a exclusion (committed builds)
 !third_party/raylib/build/**/libraylib.a
@@ -90,7 +99,6 @@ libs/SpatialQueryLib/linux
 *.png.done
 MatterEngine3/tools/shots_task6/
 shots/
-# (no trailing slash: shaders is a symlink in fresh checkouts, a dir otherwise)
 
 # Local backups / imposter test outputs / world bake data
 *.bak
@@ -142,19 +150,6 @@ cache/
 # delete. Deliberately NOT ignored by pattern: any glob broad enough to catch a
 # random 8-char name also silently swallows legitimate files, and a stray file
 # visible in `git status` is a better failure than a real file silently ignored.
-
-# Junction guard (Windows). MatterEngine3/shaders, MatterEditor/shaders and
-# MatterEditor/shaders_gpu are tracked SYMLINKS (mode 120000). With
-# core.symlinks=false they exist in the working tree as NTFS junctions, so a
-# `git add <parent-dir>` descends INTO them and stages the target's files as new
-# blobs -- silently replacing each symlink with a directory of duplicates. The
-# skip-worktree bit does not prevent this (the new paths differ from the flagged
-# one). These trailing-slash rules match the DIRECTORY only, so git stops
-# descending; the already-tracked symlink entries are unaffected because ignore
-# rules never apply to tracked paths.
-/MatterEngine3/shaders/
-/MatterEditor/shaders/
-/MatterEditor/shaders_gpu/
 
 # Built in place by build-all.sh; not vendored (unlike box3d, negated above).
 /third_party/autoremesher_core/libautoremesher_core.a

@@ -6,9 +6,14 @@ namespace matter { class WorldSession; }
 
 namespace viewer {
 
-// Draw wireframe AABB outlines for all selected objects using ImGui draw lists.
-// Call this AFTER ImGui::NewFrame() and BEFORE ImGui::Render(), so lines appear
-// in the foreground over the 3D viewport.
+// Submit world-space selection wireframe lines to the session's overlay buffer.
+// Call BEFORE WorldSession::render() — the lines are drawn depth-tested into
+// the HDR composite during the render pass.
+void submit_selection_overlay_lines(const SelectionSet& selection,
+                                    matter::WorldSession& session);
+
+// Legacy ImGui path kept for the frozen-cull frustum and any future 2D-only
+// overlays. Call AFTER ImGui::NewFrame() and BEFORE ImGui::Render().
 void draw_selection_outlines(const SelectionSet& selection,
                              const matter::CameraDesc& camera,
                              int fb_width, int fb_height,

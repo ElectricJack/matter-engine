@@ -49,7 +49,16 @@
 // ensure_singletons_initialized(); constructing it per-call segfaults on the
 // second remesh() invocation (wjakob 2017 TBB doesn't survive
 // destroy-then-reinit sequences).
-#if defined(__has_include)
+// AUTOREMESHER_FORCE_SHIM (Makefile-defined): pull the shim's
+// task_scheduler_init.h unconditionally instead of probing for it. Real
+// oneTBB (2021+) dropped this header, so the __has_include probe already
+// resolves to the shim today -- but pin it explicitly so a future TBB that
+// re-adds a compat header (or a stray -I ahead of the shim's) can't cause
+// this one translation unit to disagree with autoremesher.cpp's forced
+// choice. See autoremesher.cpp for the fuller rationale.
+#if defined(AUTOREMESHER_FORCE_SHIM)
+#  include <tbb/task_scheduler_init.h>
+#elif defined(__has_include)
 #  if __has_include(<tbb/task_scheduler_init.h>)
 #    include <tbb/task_scheduler_init.h>
 #  endif

@@ -1,0 +1,38 @@
+# Pose set for seam_suite.sh, against the SeamLab world.
+#
+# The streaming anchor is FROZEN at the settle pose (0, 140, 0) before any of
+# these run, so the LOD ring boundaries are fixed spheres about that point:
+#
+#     level 0 / 1 at  48 m      level 1 / 2 at 112 m      level 2 / 3 at 240 m
+#
+# Every pose below is chosen to put at least one of those boundaries in frame,
+# and between them they cover the three viewing regimes a seam behaves
+# differently in: from ABOVE (a crack projects to its true width and the frame
+# is all terrain, which is what the background oracle wants), from a SHALLOW
+# angle (a crack is stretched along the view ray and is at its most visible),
+# and OBLIQUE across a tile corner (where three levels can meet).
+#
+# Do not renumber or reorder: the committed baseline in seam_baseline.json is
+# keyed by pose name.
+#
+# name    eye x y z        target x y z
+
+# All three ring boundaries at once, orthogonal to the surface. The frame is
+# entirely terrain, so every background pixel is a hole with no argument.
+down      0 300 0        0 0 0.5
+# The same view from lower down: rings 0/1 and 1/2 fill more of the frame, and
+# the 2 m voxel is resolved.
+down_lo   0 220 0        0 0 0.5
+# Looking inward across the 48 m boundary at ~35 degrees.
+r1        0 150 100      0 90 10
+# Across the 112 m boundary.
+r2        0 165 220      0 95 110
+# Across the 240 m boundary, where the coarse side is a 16 m voxel and a
+# residue is at its widest in metres.
+r3        0 200 420      0 100 240
+# Near-horizontal, crossing all three boundaries along the view ray. The pose
+# that stretches a crack furthest across the screen.
+graze     0 130 40       300 100 40
+# Diagonal, so the ring boundaries are crossed at a tile CORNER rather than
+# square to a face -- the configuration where three tiles meet on one plane.
+obliq     140 190 140    -40 70 -40

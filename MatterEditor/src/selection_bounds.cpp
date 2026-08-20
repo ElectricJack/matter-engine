@@ -27,16 +27,11 @@ void local_aabb_for_part(matter::WorldSession& session, uint64_t part_hash,
 bool bounds_for_object(const SelectedObject& obj, matter::WorldSession& session,
                        SelectionBounds& out) {
     if (obj.kind == SelectedObject::BakedRoot) {
-        const uint32_t count = session.instance_count();
-        for (uint32_t i = 0; i < count; ++i) {
-            matter::InstanceInfo info;
-            if (!session.instance_info(i, info)) continue;
-            if (info.part_hash != obj.id) continue;
-            std::copy(info.transform, info.transform + 16, out.world_matrix);
-            local_aabb_for_part(session, info.part_hash, 2.0f, out.local_min, out.local_max);
-            return true;
-        }
-        return false;
+        matter::InstanceInfo info;
+        if (!session.instance_info_by_hash(obj.id, info)) return false;
+        std::copy(info.transform, info.transform + 16, out.world_matrix);
+        local_aabb_for_part(session, info.part_hash, 2.0f, out.local_min, out.local_max);
+        return true;
     }
 
     bool found = false;

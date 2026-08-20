@@ -1,5 +1,7 @@
 #include "render/lod_trace.h"
 
+#include "matter/log.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -59,14 +61,14 @@ void latch() {
     if (path == nullptr || path[0] == '\0') return;
     s.out = std::fopen(path, "wb");
     if (s.out == nullptr) {
-        std::fprintf(stderr, "[lod-trace] cannot open %s for writing\n", path);
+        MATTER_LOGE("lod-trace", "cannot open %s for writing\n", path);
         return;
     }
     s.active = true;
     // A version line so a comparator can refuse a stream it does not
     // understand. Everything after the first space is free-form.
     std::fprintf(s.out, "V 1 lod-trace\n");
-    std::fprintf(stderr, "[lod-trace] recording to %s\n", path);
+    MATTER_LOGI("lod-trace", "recording to %s\n", path);
 }
 
 const char* rung_text(char (&buffer)[16], bool present, uint32_t lod) {
@@ -114,8 +116,8 @@ void submit_frame(uint64_t label, std::vector<Entry> entries) {
             ++s.zero_tokens;
             if (!s.zero_token_reported) {
                 s.zero_token_reported = true;
-                std::fprintf(stderr,
-                             "[lod-trace] FATAL: instance_token == 0 for "
+                MATTER_LOGE("lod-trace",
+                             "FATAL: instance_token == 0 for "
                              "cluster %u lod %u; the trace key is not an "
                              "instance identity\n",
                              entry.cluster_index, entry.lod);
@@ -217,8 +219,8 @@ void close() {
                  (unsigned long long)s.max_pairs,
                  (unsigned long long)s.zero_tokens,
                  (unsigned long long)s.duplicate_keys);
-    std::fprintf(stderr,
-                 "[lod-trace] %llu frames, %llu events, max %llu drawn pairs\n",
+    MATTER_LOGI("lod-trace",
+                 "%llu frames, %llu events, max %llu drawn pairs\n",
                  (unsigned long long)s.frames, (unsigned long long)s.events,
                  (unsigned long long)s.max_pairs);
     std::fclose(s.out);

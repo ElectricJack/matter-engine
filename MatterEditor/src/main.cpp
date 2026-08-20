@@ -21,10 +21,9 @@
 #include "issue_reporter.h"
 #include "profile.h"
 #include "shot_replay.h"
-// M1d fly-through determinism trace. Deliberately the only engine render header
-// main.cpp reaches for: it is Vulkan-free, so the editor gates the trace without
-// pulling VkSceneRenderer's surface into the app translation unit.
+// M1d fly-through determinism trace.
 #include "render/lod_trace.h"
+#include "render/vk_resources.h"
 #include "properties_panel.h"
 #include "properties_registry.h"
 #include "reveal_part.h"
@@ -33,6 +32,7 @@
 #include "selection_set.h"
 #include "toolbar_panel.h"
 #include "console_panel.h"
+#include "matter/log.h"
 #include "ui.h"
 #include "wireframe_controls.h"
 #include "session_binding.h"
@@ -41,6 +41,11 @@
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
 #include "matter/event/property.h"
+// QA timeline `wait_event`: subscribes directly against session->events()
+// (bake./stream.) and app_hub (cmd.*) by name, so the typed event structs
+// must be visible here (world_session.h only pulls in the legacy events.h).
+#include "matter/events/bake_events.h"
+#include "matter/events/stream_events.h"
 #include "viewport_pick.h"
 
 #include "imgui.h"
@@ -51,17 +56,20 @@
 #include "external/stb_image_write.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <memory>
 #include <new>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <unordered_set>
@@ -77,6 +85,45 @@
 #endif
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// Console log sink. Bridges the engine-wide matter::log facility into the
+// editor's Console panel: every MATTER_LOG* line (from the engine, its
+// libraries, or the editor itself) is mirrored into the ConsoleLog ring buffer
+// so the panel shows the same diagnostics that go to stderr. Fires on whatever
+// thread logged; ConsoleLog::push is thread-safe by design.
+void console_log_sink(matter::log::Level level, const char* tag,
+                      const char* message, void* user) {
+    auto* log = static_cast<viewer::ConsoleLog*>(user);
+    if (!log) return;
+    viewer::LogSeverity severity;
+    switch (level) {
+        case matter::log::Level::Warn:  severity = viewer::LogSeverity::Warning; break;
+        case matter::log::Level::Error: severity = viewer::LogSeverity::Error; break;
+        default:                        severity = viewer::LogSeverity::Info; break;
+    }
+    // Reproduce the tee's "[tag] message" shape so a copied console line reads
+    // the same as the terminal output it mirrors.
+    if (tag && tag[0] != '\0') {
+        log->push(severity, std::string("[") + tag + "] " + message);
+    } else {
+        log->push(severity, message);
+    }
+}
+
+// RAII guard: registers the console sink for its lifetime. Declared just AFTER
+// the ConsoleLog it targets so it destructs FIRST (locals unwind in reverse),
+// removing the sink before the ConsoleLog it points at is torn down -- no
+// worker thread can log into a half-destroyed buffer.
+struct ConsoleLogSinkGuard {
+    explicit ConsoleLogSinkGuard(viewer::ConsoleLog& log) : log_(&log) {
+        matter::log::add_sink(&console_log_sink, log_);
+    }
+    ~ConsoleLogSinkGuard() { matter::log::remove_sink(&console_log_sink, log_); }
+    ConsoleLogSinkGuard(const ConsoleLogSinkGuard&) = delete;
+    ConsoleLogSinkGuard& operator=(const ConsoleLogSinkGuard&) = delete;
+    viewer::ConsoleLog* log_;
+};
 
 // ---------------------------------------------------------------------------
 // Properties panel field access (Phase 5 Task 7, generalized by the property
@@ -548,8 +595,10 @@ static std::string resolve_asset_root(const char* name) {
 std::string examples_root() { return resolve_asset_root("projects"); }
 
 // Repo-root issues/ directory, resolved the same way as the asset roots above.
-// issues/ is committed (it carries README.md), so the direct lookup normally
-// wins; the MatterEditor/ fallback covers a tree where it has been deleted.
+// issues/ has been gitignored since 0cbb5e92 (untracked, not committed), so
+// the direct lookup wins only because the directory exists on disk for
+// developers who have generated reports into it; the MatterEditor/ fallback
+// covers a tree where it is absent.
 std::string issues_root() {
     if (std::string hit = resolve_asset_root("issues"); hit != "issues")
         return hit;
@@ -781,6 +830,11 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
 } // namespace
 
 int main() {
+    // Stamped before anything else so the device-fault auto-filer (see the
+    // post-loop seam near the end of main) can tell a vulkan_device_fault.log
+    // that THIS run just wrote from a stale one left by an earlier crash.
+    const std::filesystem::file_time_type process_start_time =
+        std::filesystem::file_time_type::clock::now();
     // Native Windows stdout is fully buffered when the harness redirects it;
     // MSYS `stdbuf` cannot alter the MSVCRT stream. FIFO automation consumes
     // exact acknowledgements as synchronization, so publish them immediately.
@@ -789,11 +843,11 @@ int main() {
     PerfRunConfig perf;
     std::string perf_error;
     if (!read_perf_run_config(perf, perf_error)) {
-        std::fprintf(stderr, "FATAL: %s\n", perf_error.c_str());
+        MATTER_LOGE("perf", "FATAL: %s\n", perf_error.c_str());
         return 1;
     }
     if (!glfwInit()) {
-        std::fprintf(stderr, "FATAL: glfwInit failed\n");
+        MATTER_LOGE("editor", "FATAL: glfwInit failed\n");
         return 1;
     }
     // Replay run (shot_replay.h): reproduce a recorded issue shot and exit.
@@ -802,7 +856,7 @@ int main() {
     // fact would reflow the docked panels and move the viewport.
     const viewer::ShotReplay replay = viewer::load_replay_from_env();
     if (!replay.valid && !replay.error.empty()) {
-        std::fprintf(stderr, "FATAL: MATTER_REPLAY: %s\n", replay.error.c_str());
+        MATTER_LOGE("replay", "FATAL: MATTER_REPLAY: %s\n", replay.error.c_str());
         glfwTerminate();
         return 1;
     }
@@ -815,7 +869,7 @@ int main() {
             ? static_cast<int>(replay.frame_height) : 720,
         "MatterEngine3 World Viewer", nullptr, nullptr);
     if (!window) {
-        std::fprintf(stderr, "FATAL: glfwCreateWindow failed\n");
+        MATTER_LOGE("editor", "FATAL: glfwCreateWindow failed\n");
         glfwTerminate();
         return 1;
     }
@@ -828,7 +882,7 @@ int main() {
         std::getenv("MATTER_VK_VALIDATION") != nullptr;
     auto vulkan = matter::VulkanDevice::create(window, enable_validation, error);
     if (!vulkan) {
-        std::fprintf(stderr, "FATAL: %s\n", error.c_str());
+        MATTER_LOGE("editor", "FATAL: %s\n", error.c_str());
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
@@ -864,7 +918,7 @@ int main() {
     engine_desc.render_device = vulkan.get();
     auto engine = matter::EngineContext::create(engine_desc, error);
     if (!engine) {
-        std::fprintf(stderr, "FATAL: %s\n", error.c_str());
+        MATTER_LOGE("editor", "FATAL: %s\n", error.c_str());
         vulkan.reset();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -873,7 +927,7 @@ int main() {
 
     viewer::Ui ui;
     if (!ui.setup(window, *vulkan, error)) {
-        std::fprintf(stderr, "FATAL: %s\n", error.c_str());
+        MATTER_LOGE("editor", "FATAL: %s\n", error.c_str());
         engine.reset();
         vulkan.reset();
         glfwDestroyWindow(window);
@@ -909,7 +963,7 @@ int main() {
         std::printf("  [%zu] %s  (%s)\n", i, worlds[i].label.c_str(),
                     worlds[i].project_dir.c_str());
     if (worlds.empty()) {
-        std::fprintf(stderr, "FATAL: no worlds found under %s\n",
+        MATTER_LOGE("editor", "FATAL: no worlds found under %s\n",
                      examples_root().c_str());
         ui.shutdown();
         engine.reset();
@@ -978,12 +1032,12 @@ int main() {
             std::printf("MATTER_CAM_PATH: %zu poses from %s\n", cam_path.size(),
                         value);
         } else {
-            std::fprintf(stderr, "FATAL: MATTER_CAM_PATH: cannot open %s\n",
+            MATTER_LOGE("editor", "FATAL: MATTER_CAM_PATH: cannot open %s\n",
                          value);
             return 1;
         }
         if (cam_path.empty()) {
-            std::fprintf(stderr, "FATAL: MATTER_CAM_PATH: %s has no poses\n",
+            MATTER_LOGE("editor", "FATAL: MATTER_CAM_PATH: %s has no poses\n",
                          value);
             return 1;
         }
@@ -1051,7 +1105,7 @@ int main() {
             }
         }
         if (!found) {
-            std::fprintf(stderr,
+            MATTER_LOGE("editor",
                          "FATAL: MATTER_WORLD '%s' is not a committed world\n",
                          value);
             ui.shutdown();
@@ -1133,7 +1187,7 @@ int main() {
         std::string world_error;
         auto result = engine->open_world(desc, world_error);
         if (!result) {
-            std::fprintf(stderr, "open_world: %s\n", world_error.c_str());
+            MATTER_LOGE("open-world", "open_world: %s\n", world_error.c_str());
             return result;
         }
         // Persisted streaming-LOD overrides (stream.lod, World scope) reach the
@@ -1169,6 +1223,9 @@ int main() {
     viewer::SelectionSet selection_set;
     matter::scene::SimulationControl sim_control;
     viewer::ConsoleLog console_log;
+    // Mirror the engine-wide matter::log stream into this panel for as long as
+    // console_log lives (guard removes the sink before console_log destructs).
+    ConsoleLogSinkGuard console_log_sink_guard(console_log);
     console_log.push(viewer::LogSeverity::Info,
                       "Connected to " + worlds[initial_world].world_name);
 
@@ -1716,7 +1773,7 @@ int main() {
         shot.preview_width = tw;
         shot.preview_height = th;
         if (!shot.preview && !preview_error.empty())
-            std::fprintf(stderr, "issue preview: %s\n", preview_error.c_str());
+            MATTER_LOGW("issue", "issue preview: %s\n", preview_error.c_str());
     };
     // Part Workbench (part-workbench.md W2): private isolation session, see
     // part_workbench.h's architecture note. cache/lab-scratch is entirely
@@ -1831,7 +1888,7 @@ int main() {
             value <= viewer::kToolbarMaxTimeScale)
             ui.set_sim_time_scale(value);
         else
-            std::fprintf(stderr, "MATTER_TIME_SCALE ignored: '%s' outside [%.2f, %.2f]\n",
+            MATTER_LOGW("editor", "MATTER_TIME_SCALE ignored: '%s' outside [%.2f, %.2f]\n",
                          scale, viewer::kToolbarMinTimeScale,
                          viewer::kToolbarMaxTimeScale);
     }
@@ -1878,12 +1935,121 @@ int main() {
     std::string stats_label;
     int shot_settle = 0;
     viewer::FifoPresentSequencer fifo_present;
+    // D-03: wall-clock deadman for a `shot`/`shot_now` that can never
+    // complete (a world where presents never succeed, or where
+    // instances_drawn never goes positive so shot_settle can never reach
+    // 0). Reset to "now" at every arm (reg_fifo_shot / reg_fifo_shot_now
+    // below); checked once per loop iteration right after registry.pump,
+    // BEFORE begin_frame, so it still fires even on iterations that never
+    // reach the end-of-frame write/quit resolution (the `continue` on a
+    // zero-sized-window begin_frame failure skips straight past that code).
+    // 30s comfortably exceeds the multi-frame settle window even under a
+    // slow bake.
+    constexpr double kFifoShotTimeoutSeconds = 30.0;
+    std::chrono::steady_clock::time_point fifo_shot_wait_start{};
+    // Same deadman shape for FIFO `issue capture` (see the dispatch-loop
+    // handler and the AwaitingCapture deadman check beside the shot one,
+    // both below): a world where readback never succeeds would otherwise
+    // leave issue_state stuck in AwaitingCapture and hang the timeline.
+    constexpr double kFifoIssueCaptureTimeoutSeconds = 30.0;
+    std::chrono::steady_clock::time_point fifo_issue_capture_wait_start{};
+    // True only while the CURRENT AwaitingCapture readback was armed by the
+    // FIFO `issue capture` verb (as opposed to an interactive F10 press) --
+    // gates the `issue: captured`/`issue: capture failed` prints below so
+    // interactive F10 use keeps its existing (unprefixed) log lines.
+    bool fifo_issue_capture_active = false;
+    // FIFO `issue file <note>`: parsed in the dispatch loop (which runs
+    // before begin_frame, too early for write_issue_report's IssueContext --
+    // frame.extent, camera, etc. are only settled later), so the parse just
+    // stages the note into issue_state.note and sets this flag; the actual
+    // write_issue_report call happens at the flag's consumption site further
+    // down (deliberately NOT nested in the `!hide_ui` block the "File
+    // report" button lives in -- a headless/MATTER_HIDE_UI run must be able
+    // to file too).
+    bool fifo_issue_file_pending = false;
+
+    // ---- QA timeline state (event-system.md-style FIFO blocking waits) ------
+    // Lines already split out of cmd_buffer but not yet dispatched. Blocking
+    // waits (wait_frames / wait_idle / wait_event / shot / shot_now) pause
+    // POPPING this queue -- reading more bytes/lines off the file above is
+    // always fine -- which is what turns a pre-written command file into a
+    // timeline script instead of "every buffered line lands in one frame"
+    // (the old drain-loop behavior). One-command-at-a-time external writers
+    // (tools/viewer_shots.sh) see identical behavior: nothing here holds a
+    // line back unless it, or one before it, is itself a blocking wait.
+    std::deque<std::string> fifo_pending_lines;
+    // D-02: `shot` blocks like the other waits below -- shot_settle > 0 or
+    // a queued fifo_present screenshot IS the in-flight condition, so this
+    // arm carries no extra state of its own (see the release check beside
+    // fifo_quit_pending's, after end_frame).
+    enum class FifoBlockKind {
+        None, WaitFrames, WaitIdle, WaitEvent, Shot, IssueCapture
+    };
+    FifoBlockKind fifo_block = FifoBlockKind::None;
+    // wait_idle <seconds> [timeout_seconds]: released once resident_sectors
+    // has held steady for `seconds` of wall-clock time AND the bake is
+    // ready. Mirrors the MATTER_CAM_PATH_SETTLE plateau logic above (wall
+    // time, not frame count, for the same reason: bake progress is
+    // rate-limited in wall time, not frames). D-04: the optional timeout
+    // mirrors wait_event's -- the script continues past an expired
+    // wait_idle, it does not quit.
+    double fifo_wait_idle_seconds = 0.0;
+    std::chrono::steady_clock::time_point fifo_wait_idle_start{};
+    std::chrono::steady_clock::time_point fifo_wait_idle_last_change{};
+    uint32_t fifo_wait_idle_last_resident = UINT32_MAX;
+    double fifo_wait_idle_timeout_s = 0.0;
+    // wait_event <name> [timeout_seconds]: `fired` is set from whatever
+    // thread emits the event (bake.*/stream.* fire on the bake worker thread;
+    // cmd.* always on the app thread, see command.cpp finalize_common) -- the
+    // main-thread release check only ever touches it through the atomic.
+    std::atomic<bool> fifo_wait_event_fired{false};
+    matter::evt::Subscription fifo_wait_event_sub;
+    std::string fifo_wait_event_name;
+    double fifo_wait_event_timeout_s = 0.0;
+    std::chrono::steady_clock::time_point fifo_wait_event_start{};
+    // bake./stream. events are session-scoped: if the world switches while
+    // we're waiting, the subscribed hub is about to die and the event we
+    // asked for will never come. cmd.* lives on app_hub, which outlives
+    // world switches, so it is never session-scoped.
+    bool fifo_wait_event_session_scoped = false;
+    uint64_t fifo_wait_event_session_id = 0;
+    uint64_t fifo_wait_event_generation = 0;
+    // Hub subscriber names must be unique per event type FOREVER (an
+    // unsubscribed record stays in the registry, just inactive), so repeated
+    // wait_event calls for the same name need a fresh name each time.
+    uint64_t fifo_wait_event_seq = 0;
+    // D-07: an arm generation, bumped on every fifo_begin_wait_event() call.
+    // Each subscribed callback below captures its own arm's stamp and only
+    // sets fifo_wait_event_fired while that stamp still matches the live
+    // generation. bake./stream. events fire on the bake worker thread, and
+    // fifo_wait_event_sub.reset() (in the release checks below) does not
+    // guarantee a concurrently-in-flight invocation of the PREVIOUS arm's
+    // callback observes the unsubscribe before it runs -- without this
+    // check, that stale callback can set `fired` for the wrong (later,
+    // still-arming-or-armed) wait_event.
+    std::atomic<uint64_t> fifo_wait_event_live_gen{0};
+    // `quit` is deferred until no FIFO screenshot capture is still in flight
+    // -- see the fifo_quit_pending resolution after end_frame below.
+    bool fifo_quit_pending = false;
+
     matter::RenderPath fifo_render_path = matter::RenderPath::GpuDriven;
     bool fifo_render_path_override = false;
     stats.session_status.native_rt_available =
         vulkan->ray_tracing_available();
     bool quit_requested = false;
     bool fatal_error = false;
+    // Captured only at the Vulkan/device-surfacing fatal sites (render(),
+    // end_frame(), the ImGui Vulkan backend prepare/end_frame calls, and
+    // exhausted screenshot-readback retries) -- see mark_device_fatal below.
+    // Left empty by non-device fatal exits (MATTER_REPLAY_STRICT mismatch,
+    // perf validation-error count), which is how the post-loop auto-filer
+    // (near the end of main) tells "a device fault" apart from "some other
+    // fatal condition" without string-matching error text.
+    std::string fatal_error_reason;
+    auto mark_device_fatal = [&](const std::string& reason) {
+        fatal_error = true;
+        if (fatal_error_reason.empty()) fatal_error_reason = reason;
+    };
     enum class PerfPhase { WaitingForBake, Warming, Sampling, Complete };
     PerfPhase perf_phase = PerfPhase::WaitingForBake;
     std::chrono::steady_clock::time_point perf_phase_start{};
@@ -2023,6 +2189,10 @@ int main() {
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoScreenshot& cmd) {
             shot_path = cmd.path;
             shot_settle = 3;
+            // D-03: (re)start the deadman clock on every arm, not just the
+            // first, so a slow-but-eventually-fine shot doesn't inherit a
+            // stale deadline from an earlier one.
+            fifo_shot_wait_start = std::chrono::steady_clock::now();
             return viewer::FifoScreenshot::Result::succeeded(true);
         });
     auto reg_fifo_render_path =
@@ -2070,6 +2240,8 @@ int main() {
             [&](const viewer::FifoScreenshotNow& cmd) {
                 fifo_present.queue_screenshot(cmd.path);
                 std::printf("shot_now: queued %s\n", cmd.path.c_str());
+                // D-03: same deadman clock `shot` uses -- see reg_fifo_shot.
+                fifo_shot_wait_start = std::chrono::steady_clock::now();
                 return viewer::FifoScreenshotNow::Result::succeeded(true);
             });
     auto reg_fifo_stats = registry.must_register_handler<viewer::FifoStatsLabel>(
@@ -2139,7 +2311,13 @@ int main() {
         });
     auto reg_fifo_quit = registry.must_register_handler<viewer::FifoQuit>(
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoQuit&) {
-            quit_requested = true;
+            // Deferred, not immediate: a `shot <path>` settles over a few
+            // frame iterations (shot_settle) and `shot_now` drains through
+            // fifo_present, so a timeline's `quit` line right after its last
+            // `shot` (no intervening wait) must not truncate that capture.
+            // Resolved once per frame after end_frame below, once nothing is
+            // still in flight.
+            fifo_quit_pending = true;
             return viewer::FifoQuit::Result::succeeded(true);
         });
     // Same SimulationControl calls the toolbar buttons make, so a FIFO-driven
@@ -2157,7 +2335,7 @@ int main() {
                 case Action::Stop: ok = sim_control.stop(session->ecs(), sim_err); break;
             }
             if (!ok) {
-                std::fprintf(stderr, "sim transport: %s\n", sim_err.c_str());
+                MATTER_LOGE("sim", "sim transport: %s\n", sim_err.c_str());
                 return viewer::FifoSimTransport::Result::failed(sim_err);
             }
             if (cmd.action == Action::Stop) {
@@ -2287,6 +2465,99 @@ int main() {
                 viewer::streaming_config_from(editor_props.streaming_prefs()));
         registry.execute(viewer::ViewerReload{});
     });
+
+    // `wait_event <name>` name -> subscription table (S I.11-style FIFO dev
+    // convenience, not a registered viewer::Fifo* command: it must NOT itself
+    // go through the registry, or its own cmd.completed would immediately
+    // satisfy a `wait_event cmd.completed` before any LATER command's
+    // completion could). bake./stream. subscribe on the session hub
+    // (immediate -- these fire on the bake worker thread, see
+    // matter_engine.cpp's execute_bake); cmd.* subscribe on app_hub (always
+    // the app thread, command.cpp finalize_common). Returns false for an
+    // unrecognized name; the caller does not block in that case.
+    auto fifo_begin_wait_event = [&](const std::string& name, double timeout_s) -> bool {
+        fifo_wait_event_name = name;
+        fifo_wait_event_timeout_s = timeout_s;
+        fifo_wait_event_start = std::chrono::steady_clock::now();
+        fifo_wait_event_session_scoped = false;
+        std::atomic<bool>* fired = &fifo_wait_event_fired;
+        // D-07: this arm's stamp. A callback only sets `fired` while its
+        // captured stamp still matches the live generation (see the member
+        // comment above fifo_wait_event_live_gen) -- guards against a
+        // callback from a PREVIOUS arm that was already mid-invocation (on
+        // the bake worker thread, for bake./stream. names) when this arm's
+        // fifo_wait_event_sub.reset() ran, and so did not observe the
+        // unsubscribe before delivering to the old closure.
+        std::atomic<uint64_t>* live_gen = &fifo_wait_event_live_gen;
+        const uint64_t my_gen =
+            fifo_wait_event_live_gen.fetch_add(1, std::memory_order_acq_rel) + 1;
+        // Clear `fired` only AFTER the generation bump: a straggler callback
+        // from the previous arm that already passed its generation check can
+        // no longer land a store(true) that this arm would mistake for its
+        // own event.
+        fifo_wait_event_fired.store(false, std::memory_order_release);
+        const std::string sub_name =
+            "qa.wait_event." + std::to_string(fifo_wait_event_seq++) + "." + name;
+        if (name == "bake.started") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakeStarted>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired, live_gen, my_gen](const matter::events::BakeStarted&) {
+                    if (live_gen->load(std::memory_order_acquire) == my_gen)
+                        fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "bake.finished") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakeFinished>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired, live_gen, my_gen](const matter::events::BakeFinished&) {
+                    if (live_gen->load(std::memory_order_acquire) == my_gen)
+                        fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "bake.part_done") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakePartDone>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired, live_gen, my_gen](const matter::events::BakePartDone&) {
+                    if (live_gen->load(std::memory_order_acquire) == my_gen)
+                        fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "bake.error") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakeError>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired, live_gen, my_gen](const matter::events::BakeError&) {
+                    if (live_gen->load(std::memory_order_acquire) == my_gen)
+                        fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "stream.refine_tile") {
+            fifo_wait_event_sub =
+                session->events().must_subscribe<matter::events::RefineTileDone>(
+                    sub_name.c_str(), matter::evt::immediate,
+                    [fired, live_gen, my_gen](const matter::events::RefineTileDone&) {
+                        if (live_gen->load(std::memory_order_acquire) == my_gen)
+                            fired->store(true, std::memory_order_release);
+                    });
+        } else if (name == "cmd.completed") {
+            fifo_wait_event_sub = app_hub.must_subscribe<matter::evt::CommandCompleted>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired, live_gen, my_gen](const matter::evt::CommandCompleted&) {
+                    if (live_gen->load(std::memory_order_acquire) == my_gen)
+                        fired->store(true, std::memory_order_release);
+                });
+        } else if (name == "cmd.failed") {
+            fifo_wait_event_sub = app_hub.must_subscribe<matter::evt::CommandFailed>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired, live_gen, my_gen](const matter::evt::CommandFailed&) {
+                    if (live_gen->load(std::memory_order_acquire) == my_gen)
+                        fired->store(true, std::memory_order_release);
+                });
+        } else {
+            return false;
+        }
+        if (name.rfind("bake.", 0) == 0 || name.rfind("stream.", 0) == 0) {
+            fifo_wait_event_session_scoped = true;
+            fifo_wait_event_session_id = binding.current_session_id();
+            fifo_wait_event_generation = binding.current_generation();
+        }
+        return true;
+    };
 
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
@@ -2427,6 +2698,21 @@ int main() {
                 std::string line = cmd_buffer.substr(0, newline);
                 cmd_buffer.erase(0, newline + 1);
                 if (!line.empty() && line.back() == '\r') line.pop_back();
+                fifo_pending_lines.push_back(std::move(line));
+            }
+        }
+        // Timeline semantics (QA timeline feature): a blocking wait
+        // (wait_frames / wait_idle / wait_event) pauses POPPING fifo_pending_lines
+        // until it releases, so a `set`/`shot`/etc. line written after a
+        // `wait_frames` in the file cannot dispatch before the wait completes.
+        // Reading more bytes into cmd_buffer above still happens every frame
+        // regardless -- only dispatch is gated. This loop can still drain
+        // several non-blocking lines in one frame (unchanged from before) --
+        // it only stops early when a blocking wait is (re)armed.
+        while (fifo_block == FifoBlockKind::None && !fifo_pending_lines.empty()) {
+            std::string line = std::move(fifo_pending_lines.front());
+            fifo_pending_lines.pop_front();
+            {
                 // MATTER_CMD_FIFO is a cross-thread command source (S II.3.4):
                 // parse each line into its typed command and dispatch() it so
                 // every external submission is named/traced/journaled and gets
@@ -2450,11 +2736,38 @@ int main() {
                     } else if (const auto* command =
                                    std::get_if<viewer::FifoWaitFrames>(
                                        &presentation_command.command)) {
-                        registry.dispatch(*command);
+                        const auto ticket = registry.dispatch(*command);
+                        // D-06: dispatch() can finalize the ticket
+                        // SYNCHRONOUSLY as a rejection (no handler / registry
+                        // shut down / queue full) before pump() ever runs the
+                        // handler -- ready() is non-blocking and only true in
+                        // that synchronous case. Arming the block
+                        // unconditionally there is a permanent hang: nothing
+                        // will ever satisfy a WaitFrames that was never
+                        // actually queued. A still-pending (queued-for-pump)
+                        // ticket reads not-ready here and is trusted exactly
+                        // as before.
+                        if (ticket.ready() &&
+                            ticket.status() != matter::evt::CommandStatus::Success) {
+                            std::printf("wait_frames: dispatch failed (%s)\n",
+                                        matter::evt::to_string(ticket.status()));
+                        } else {
+                            // Semantics upgrade: wait_frames now blocks every
+                            // later line, not just screenshots (the present-count
+                            // itself is still FifoPresentSequencer's, released
+                            // below in the completed_waits loop after advance()).
+                            fifo_block = FifoBlockKind::WaitFrames;
+                        }
                     } else if (const auto* command =
                                    std::get_if<viewer::FifoScreenshotNow>(
                                        &presentation_command.command)) {
                         registry.dispatch(*command);
+                        // D-02: shot_now blocks like `shot` -- see the release
+                        // check beside fifo_quit_pending's, after end_frame.
+                        // Recommended for consistency (control-surface.md):
+                        // neither spelling needs a trailing wait_frames to be
+                        // safe to follow with another timeline line.
+                        fifo_block = FifoBlockKind::Shot;
                     }
                 } else if (std::sscanf(line.c_str(), "cam %f %f %f %f %f %f",
                                 &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6) {
@@ -2465,6 +2778,14 @@ int main() {
                 } else if (std::sscanf(line.c_str(), "shot %255s", word) == 1) {
                     viewer::FifoScreenshot cmd; cmd.path = word;
                     registry.dispatch(cmd);
+                    // D-02: block subsequent timeline lines until this
+                    // shot's settle completes and its PNG + .done sidecar are
+                    // written (see the release check beside
+                    // fifo_quit_pending's, after end_frame) -- without this, a
+                    // `shot a.png` / `set X` / `shot b.png` sequence with no
+                    // intervening wait dispatches `set` before a.png is
+                    // captured, poisoning a.png with the post-set state.
+                    fifo_block = FifoBlockKind::Shot;
                 } else if (std::sscanf(line.c_str(), "stats %255s", word) == 1) {
                     viewer::FifoStatsLabel cmd; cmd.label = word;
                     registry.dispatch(cmd);
@@ -2575,6 +2896,155 @@ int main() {
                                : line == "step"  ? Action::Step
                                                  : Action::Stop;
                     registry.dispatch(cmd);
+                } else if (line.compare(0, 10, "wait_idle ") == 0 ||
+                           line == "wait_idle") {
+                    // wait_idle <seconds> [timeout_seconds]: blocks until
+                    // resident_sectors has held steady for <seconds> of
+                    // wall-clock time AND the bake is ready, or (D-04) until
+                    // the optional deadline expires -- mirrors wait_event's
+                    // timeout semantics: the script continues past an
+                    // expired wait_idle, it does not quit. Released in the
+                    // frame_stats-driven check below (mirrors
+                    // MATTER_CAM_PATH_SETTLE's plateau logic).
+                    std::istringstream input(line);
+                    std::string verb, seconds_text, timeout_text, extra;
+                    input >> verb >> seconds_text >> timeout_text;
+                    double seconds = 0.0;
+                    bool parse_ok = !seconds_text.empty();
+                    if (parse_ok) {
+                        try {
+                            size_t consumed = 0;
+                            seconds = std::stod(seconds_text, &consumed);
+                            parse_ok = consumed == seconds_text.size();
+                        } catch (...) {
+                            parse_ok = false;
+                        }
+                    }
+                    const bool has_timeout = !timeout_text.empty();
+                    double timeout_s = 0.0;
+                    if (parse_ok && has_timeout) {
+                        try {
+                            size_t consumed = 0;
+                            timeout_s = std::stod(timeout_text, &consumed);
+                            parse_ok = consumed == timeout_text.size() && timeout_s > 0.0;
+                        } catch (...) {
+                            parse_ok = false;
+                        }
+                    }
+                    if (input >> extra) parse_ok = false;
+                    if (!parse_ok) {
+                        std::printf(
+                            "wait_idle: expected `wait_idle <seconds> "
+                            "[timeout_seconds]`\n");
+                    } else if (seconds <= 0.0) {
+                        std::printf("wait_idle: <seconds> must be > 0\n");
+                    } else {
+                        fifo_wait_idle_seconds = seconds;
+                        fifo_wait_idle_start = std::chrono::steady_clock::now();
+                        fifo_wait_idle_last_change = fifo_wait_idle_start;
+                        fifo_wait_idle_last_resident = UINT32_MAX;  // force resync below
+                        fifo_wait_idle_timeout_s = has_timeout ? timeout_s : 0.0;
+                        fifo_block = FifoBlockKind::WaitIdle;
+                    }
+                } else if (line.compare(0, 11, "wait_event ") == 0 ||
+                           line == "wait_event") {
+                    // wait_event <name> [timeout_seconds]: blocks until the
+                    // named engine event fires (or the optional timeout
+                    // expires -- the script then continues, it does not
+                    // quit). Released in the check below.
+                    std::istringstream input(line);
+                    std::string verb, name, timeout_text, extra;
+                    input >> verb >> name >> timeout_text;
+                    bool has_timeout = !timeout_text.empty();
+                    double timeout_s = 0.0;
+                    bool parse_ok = true;
+                    if (has_timeout) {
+                        try {
+                            size_t consumed = 0;
+                            timeout_s = std::stod(timeout_text, &consumed);
+                            parse_ok = consumed == timeout_text.size() && timeout_s > 0.0;
+                        } catch (...) {
+                            parse_ok = false;
+                        }
+                    }
+                    if (input >> extra) parse_ok = false;
+                    if (name.empty() || !parse_ok) {
+                        std::printf(
+                            "wait_event: expected `wait_event <name> "
+                            "[timeout_seconds]`\n");
+                    } else if (!fifo_begin_wait_event(name, has_timeout ? timeout_s : 0.0)) {
+                        std::printf("wait_event: unknown event '%s'\n", name.c_str());
+                    } else {
+                        fifo_block = FifoBlockKind::WaitEvent;
+                    }
+                } else if (line.substr(0, line.find_first_of(" \t")) == "world" &&
+                           std::sscanf(line.c_str(), "world %255s", word) == 1) {
+                    // D-08: the verb-token check above (same
+                    // find_first_of(" \t") idiom parse_fifo_line uses for its
+                    // strict verbs, e.g. "wait_frames") is required because
+                    // sscanf's "world %255s" only requires the literal
+                    // "world" followed by >= 0 whitespace -- "worldfoo bar"
+                    // would otherwise match with word="foo".
+                    //
+                    // Same case-insensitive resolution as MATTER_WORLD, and
+                    // the same intent-recording path `reload` uses: the
+                    // actual session destroy/recreate runs at the post-frame
+                    // seam (SessionBinding::replace), never mid-parse. Not
+                    // itself a blocking wait -- pair it with wait_idle for a
+                    // multi-world sweep.
+                    std::string wanted(word);
+                    std::transform(wanted.begin(), wanted.end(), wanted.begin(),
+                                   [](unsigned char ch) { return std::tolower(ch); });
+                    int world_index = -1;
+                    for (size_t i = 0; i < worlds.size(); ++i) {
+                        std::string candidate = worlds[i].world_name;
+                        std::transform(candidate.begin(), candidate.end(),
+                                       candidate.begin(),
+                                       [](unsigned char ch) { return std::tolower(ch); });
+                        if (candidate == wanted) {
+                            world_index = static_cast<int>(i);
+                            break;
+                        }
+                    }
+                    if (world_index < 0) {
+                        std::printf("world: unknown '%s'\n", word);
+                    } else {
+                        viewer::ViewerSwitchWorld cmd;
+                        cmd.index = world_index;
+                        registry.dispatch(cmd);
+                    }
+                } else if (line == "issue capture") {
+                    // FIFO `issue capture`: reuses F10's viewport-capture
+                    // handshake (begin_viewport_capture + the AwaitingCapture
+                    // readback resolved after end_frame below), but blocking
+                    // -- FifoBlockKind::IssueCapture holds every later
+                    // timeline line until record_shot has actually run (see
+                    // the release check beside fifo_quit_pending's). Draft
+                    // shots accumulate exactly as F9/F10 do: this does not
+                    // reset issue_state, it only adds to whatever draft is
+                    // already open.
+                    viewer::begin_viewport_capture(issue_state);
+                    fifo_issue_capture_active = true;
+                    fifo_issue_capture_wait_start = std::chrono::steady_clock::now();
+                    fifo_block = FifoBlockKind::IssueCapture;
+                } else if (line.compare(0, 11, "issue file ") == 0 ||
+                           line == "issue file") {
+                    // `issue file <note>` -- the rest of the line, verbatim
+                    // (same idiom as `set`'s value), so the note can contain
+                    // spaces/punctuation. May be empty only when the draft
+                    // already has a shot -- issue_reporter_panel.cpp's
+                    // "File report" button enforces the identical rule
+                    // (can_file) in the UI layer; write_issue_report itself
+                    // has no such guard, so the FIFO path enforces it here.
+                    const std::string note =
+                        line.size() > 11 ? line.substr(11) : std::string();
+                    if (note.empty() && issue_state.shots.empty()) {
+                        std::printf("issue: file failed (empty draft)\n");
+                    } else {
+                        std::snprintf(issue_state.note, sizeof(issue_state.note),
+                                      "%s", note.c_str());
+                        fifo_issue_file_pending = true;
+                    }
                 } else if (!line.empty()) {
                     std::printf("cmd: unrecognized '%s'\n", line.c_str());
                 }
@@ -2585,6 +3055,43 @@ int main() {
         // and the camera snapshot — so a FIFO `cam`/`budget` applies to THIS
         // frame's render exactly as the old inline handling did.
         registry.pump(app_lane, 5.0);
+
+        // D-03: shot deadman. Checked every iteration (not gated on
+        // begin_frame succeeding) so a world where presents never succeed
+        // cannot hide a stuck shot from it -- the begin_frame failure branch
+        // below `continue`s straight past the end-of-frame write/quit
+        // resolution that would otherwise be the only place this clears.
+        if (const bool shot_in_flight =
+                shot_settle > 0 || !fifo_present.pending_screenshot_path().empty();
+            shot_in_flight &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          fifo_shot_wait_start)
+                    .count() >= kFifoShotTimeoutSeconds) {
+            const std::string abandoned_path =
+                shot_settle > 0 ? shot_path : fifo_present.pending_screenshot_path();
+            std::printf("shot: timeout, abandoned %s\n", abandoned_path.c_str());
+            shot_settle = 0;
+            fifo_present.cancel_pending_screenshot();
+            if (fifo_block == FifoBlockKind::Shot) fifo_block = FifoBlockKind::None;
+        }
+
+        // Same deadman shape for FIFO `issue capture`: a world where the
+        // AwaitingCapture readback (below, after end_frame) never resolves
+        // -- readback keeps failing and re-arming capture_settle -- would
+        // otherwise hang the timeline (and any `quit` after it) forever.
+        // Checked every iteration for the same reason the shot deadman is.
+        if (fifo_block == FifoBlockKind::IssueCapture &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          fifo_issue_capture_wait_start)
+                    .count() >= kFifoIssueCaptureTimeoutSeconds) {
+            std::printf("issue: capture timeout, abandoned\n");
+            // Abandon the stuck attempt so it cannot wedge a later F9/F10 or
+            // `issue capture` behind an AwaitingCapture that will never
+            // resolve on its own.
+            issue_state.phase = viewer::ReporterPhase::Idle;
+            fifo_issue_capture_active = false;
+            fifo_block = FifoBlockKind::None;
+        }
 
         if (test_resize && bake_ready && !resize_exercised) {
             glfwSetWindowSize(window, 960, 540);
@@ -2600,7 +3107,7 @@ int main() {
                 glfwWaitEventsTimeout(0.05);
                 continue;
             }
-            std::fprintf(stderr, "FATAL: begin_frame: %s\n", error.c_str());
+            MATTER_LOGE("editor", "FATAL: begin_frame: %s\n", error.c_str());
             break;
         }
 
@@ -2638,9 +3145,9 @@ int main() {
         // (see part_workbench.h's modal-isolation note).
         bake_lab.workbench().begin_frame();
         if (!ui_frame_ready) {
-            std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
+            MATTER_LOGE("editor", "FATAL: ImGui Vulkan prepare: %s\n",
                          error.c_str());
-            fatal_error = true;
+            mark_device_fatal(error);
         } else {
             camera_input_order.begin_ui();
             // E5c: no per-frame editor_model.refresh() — the scene tree is
@@ -2686,7 +3193,7 @@ int main() {
             if (!hide_ui) ui.prepare_viewport_rect();
             render_frame = ui.viewport_render_frame(frame, error);
             if (!error.empty()) {
-                std::fprintf(stderr, "viewport target: %s\n", error.c_str());
+                MATTER_LOGE("editor", "viewport target: %s\n", error.c_str());
                 error.clear();
             }
             if (!hide_ui) {
@@ -2695,22 +3202,22 @@ int main() {
                 if (toolbar.play_clicked) {
                     std::string sim_err;
                     if (!sim_control.play(session->ecs(), sim_err))
-                        std::fprintf(stderr, "play: %s\n", sim_err.c_str());
+                        MATTER_LOGE("sim", "play: %s\n", sim_err.c_str());
                 }
                 if (toolbar.pause_clicked) {
                     std::string sim_err;
                     if (!sim_control.pause(sim_err))
-                        std::fprintf(stderr, "pause: %s\n", sim_err.c_str());
+                        MATTER_LOGE("sim", "pause: %s\n", sim_err.c_str());
                 }
                 if (toolbar.step_clicked) {
                     std::string sim_err;
                     if (!sim_control.step(sim_err))
-                        std::fprintf(stderr, "step: %s\n", sim_err.c_str());
+                        MATTER_LOGE("sim", "step: %s\n", sim_err.c_str());
                 }
                 if (toolbar.stop_clicked) {
                     std::string sim_err;
                     if (!sim_control.stop(session->ecs(), sim_err)) {
-                        std::fprintf(stderr, "stop: %s\n", sim_err.c_str());
+                        MATTER_LOGE("sim", "stop: %s\n", sim_err.c_str());
                     } else {
                         selection_set.clear();
                         editor_model.clear_selection();
@@ -2877,6 +3384,41 @@ int main() {
             }
             camera_input_order.build_ui();
             camera_input_order.decide_capture(ui.camera_input_allowed());
+        }
+
+        // FIFO `issue file <note>`: same filing path the "File report"
+        // button uses (write_issue_report with the full IssueContext), but
+        // deliberately NOT nested inside the `if (!hide_ui)` block above --
+        // draw_issue_reporter() and its `file_issue` trigger only run in
+        // there, so a MATTER_HIDE_UI run would never reach the button path
+        // at all. Field-for-field the same IssueContext construction as the
+        // button's call site.
+        if (ui_frame_ready && fifo_issue_file_pending) {
+            fifo_issue_file_pending = false;
+            viewer::IssueContext context;
+            context.world = worlds[stats.world_current].world_name;
+            context.project_dir = worlds[stats.world_current].project_dir;
+            context.camera = camera;
+            context.sim_mode = sim_control.mode();
+            context.time_scale = ui.sim_time_scale();
+            context.frame_width = frame.extent.width;
+            context.frame_height = frame.extent.height;
+            context.props = &editor_props.registry();
+            const std::string filed = viewer::write_issue_report(
+                issue_state, context, stats, session->frame_stats(),
+                console_log);
+            if (filed.empty()) {
+                std::printf("issue: file failed (%s)\n",
+                            issue_state.status.c_str());
+                console_log.push(viewer::LogSeverity::Error,
+                                 "Issue report: " + issue_state.status);
+            } else {
+                std::printf("issue: filed %s\n", filed.c_str());
+                console_log.push(viewer::LogSeverity::Info,
+                                 "Issue report written to " + filed);
+                // Reset for the next one, same as the button flow.
+                reset_issue_state();
+            }
         }
 
         // MATTER_CAM_PATH: one pose per rendered frame. This sits immediately
@@ -3063,13 +3605,8 @@ int main() {
 
         selection_set.validate([&](const viewer::SelectedObject& obj) {
             if (obj.kind == viewer::SelectedObject::BakedRoot) {
-                const uint32_t count = session->instance_count();
-                for (uint32_t i = 0; i < count; ++i) {
-                    matter::InstanceInfo info;
-                    if (session->instance_info(i, info) && info.part_hash == obj.id)
-                        return true;
-                }
-                return false;
+                matter::InstanceInfo info;
+                return session->instance_info_by_hash(obj.id, info);
             }
             // Entity selections are keyed by SceneEntityId (the stable
             // authored-id hash), not by flecs entity id — resolve through the
@@ -3392,9 +3929,13 @@ int main() {
         }
         // Bake Lab/Workbench per-frame work plus the session event drain.
         phase.lab = phase_split();
+        if (!show_isolation)
+            viewer::submit_selection_overlay_lines(selection_set, *session);
+        else
+            render_session->submit_overlay_lines(nullptr, 0);
         if (!render_session->render(render_camera, render_frame, options, error)) {
-            std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
-            fatal_error = true;
+            MATTER_LOGE("editor", "FATAL: render: %s\n", error.c_str());
+            mark_device_fatal(error);
         } else if (!show_isolation) {
             camera_input_order.render_scene();
             matter::ResolvedAtmospherePresentationStatus committed{};
@@ -3479,6 +4020,61 @@ int main() {
             }
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
+        // QA timeline: wait_idle / wait_event release checks. Here (frame_stats
+        // just refreshed, and bake_ready reflects this frame's poll_event
+        // drain above) so both waits observe up-to-date state once per frame;
+        // wait_frames' own release is symmetric, after present, below.
+        if (fifo_block == FifoBlockKind::WaitIdle) {
+            const uint32_t resident = frame_stats.resident_sectors;
+            const auto now = std::chrono::steady_clock::now();
+            if (resident != fifo_wait_idle_last_resident) {
+                fifo_wait_idle_last_resident = resident;
+                fifo_wait_idle_last_change = now;
+            }
+            const double settled_for =
+                std::chrono::duration<double>(now - fifo_wait_idle_last_change).count();
+            if (bake_ready && settled_for >= fifo_wait_idle_seconds) {
+                const double elapsed =
+                    std::chrono::duration<double>(now - fifo_wait_idle_start).count();
+                std::printf("idle: settled after %.1fs\n", elapsed);
+                fifo_block = FifoBlockKind::None;
+            } else if (fifo_wait_idle_timeout_s > 0.0 &&
+                       std::chrono::duration<double>(now - fifo_wait_idle_start)
+                               .count() >= fifo_wait_idle_timeout_s) {
+                // D-04: explicit deadline expired without ever settling --
+                // mirrors wait_event's timeout branch below: print and
+                // release, the script continues rather than hanging.
+                std::printf("idle: timeout after %.1fs\n", fifo_wait_idle_timeout_s);
+                fifo_block = FifoBlockKind::None;
+            }
+        } else if (fifo_block == FifoBlockKind::WaitEvent) {
+            if (fifo_wait_event_fired.load(std::memory_order_acquire)) {
+                std::printf("event: %s\n", fifo_wait_event_name.c_str());
+                fifo_wait_event_sub.reset();
+                fifo_block = FifoBlockKind::None;
+            } else if (fifo_wait_event_session_scoped &&
+                       (binding.current_session_id() != fifo_wait_event_session_id ||
+                        binding.current_generation() != fifo_wait_event_generation)) {
+                // The session (and its hub) this subscription targeted is
+                // gone -- study SessionBinding's epoch sequence: quiesce_bridge
+                // only clears ITS OWN subs, not ours, and the old Hub is
+                // destroyed with the old session, so the event we're waiting
+                // for can never arrive. reset() is always safe (Subscription
+                // holds no pointer back into Hub) even though the hub is dead.
+                std::printf("event: %s aborted (session changed)\n",
+                            fifo_wait_event_name.c_str());
+                fifo_wait_event_sub.reset();
+                fifo_block = FifoBlockKind::None;
+            } else if (fifo_wait_event_timeout_s > 0.0 &&
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                      fifo_wait_event_start)
+                               .count() >= fifo_wait_event_timeout_s) {
+                std::printf("event: %s timeout after %.1fs\n",
+                            fifo_wait_event_name.c_str(), fifo_wait_event_timeout_s);
+                fifo_wait_event_sub.reset();
+                fifo_block = FifoBlockKind::None;
+            }
+        }
         // MATTER_SEAM_TRACE (declared above): app-thread poll of the seam
         // welder, change-only, stamped with the cam-path pose clock.
         if (seam_trace && bake_ready) {
@@ -3679,7 +4275,7 @@ int main() {
                     b->set_dirty(false);
                 }
             }
-            std::fprintf(stderr,
+            MATTER_LOGW("volumetric",
                          "volumetric froxel allocation rejected: requested %ux%ux%u "
                          "%.2f MiB; effective %ux%ux%u; %s\n",
                          stats.requested_froxel.width, stats.requested_froxel.height,
@@ -3701,14 +4297,31 @@ int main() {
         stats.vt_pool_pinned         = frame_stats.vt_pool_pinned;
         stats.vt_mesh_bytes          = frame_stats.vt_mesh_bytes;
         stats.vt_mesh_budget_bytes   = frame_stats.vt_mesh_budget_bytes;
+        stats.vt_pool_bytes          = frame_stats.vt_pool_bytes;
+        stats.vt_indirection_bytes   = frame_stats.vt_indirection_bytes;
+        stats.vt_indirection_capacity_bytes =
+            frame_stats.vt_indirection_capacity_bytes;
+        stats.impostor_atlas_bytes   = frame_stats.impostor_atlas_bytes;
+        {
+            const auto gpu = matter::gpu_memory_stats();
+            stats.gpu_device_local_bytes = gpu.device_local_bytes;
+            stats.gpu_host_visible_bytes = gpu.host_visible_bytes;
+            stats.gpu_total_alloc_bytes  = gpu.total_bytes;
+            stats.gpu_allocation_count   = gpu.allocation_count;
+        }
+        {
+            const auto proc = matter::process_memory_stats();
+            stats.process_working_set_bytes = proc.working_set_bytes;
+            stats.process_peak_working_set_bytes = proc.peak_working_set_bytes;
+        }
 
         bool ui_frame_completed = false;
         if (ui_frame_ready) {
             ui_frame_completed = ui.end_frame(frame, error);
             if (!ui_frame_completed) {
-                std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n",
+                MATTER_LOGE("editor", "FATAL: ImGui Vulkan backend: %s\n",
                              error.c_str());
-                fatal_error = true;
+                mark_device_fatal(error);
             }
         }
 
@@ -3736,15 +4349,19 @@ int main() {
         std::vector<uint8_t> rgba;
         if (capture && !session->readback_swapchain_rgba8(frame, rgba, error)) {
             ++screenshot_failures;
-            std::fprintf(stderr, "screenshot readback retry %d/5: %s\n",
+            MATTER_LOGW("screenshot", "screenshot readback retry %d/5: %s\n",
                          screenshot_failures, error.c_str());
             capture = false;
             if (issue_capture) { issue_capture = false; issue_state.capture_settle = 2; }
             else if (capture_path == screenshot_path) screenshot_settle = 1;
             else if (!fifo_immediate_capture) shot_settle = 2;
             if (screenshot_failures >= 5) {
-                std::fprintf(stderr, "FATAL: screenshot readback exhausted retries\n");
-                fatal_error = true;
+                MATTER_LOGE("screenshot", "FATAL: screenshot readback exhausted retries\n");
+                // `error` still holds the last readback failure's text (the
+                // retry loop above overwrites it each attempt) -- five
+                // consecutive readback failures is a plausible device-loss
+                // symptom, so this counts as a device fatal too.
+                mark_device_fatal(error);
             }
         }
         bool frame_presented = false;
@@ -3764,6 +4381,11 @@ int main() {
                         completed.count,
                         static_cast<unsigned long long>(
                             completed.frame_serial));
+            // QA timeline: release consumption gated by this wait_frames.
+            // Under the gated drain above at most one wait is ever in flight
+            // here, so any completion observed while blocked is this one.
+            if (fifo_block == FifoBlockKind::WaitFrames)
+                fifo_block = FifoBlockKind::None;
         }
         // end_frame() records the queue submit and present boundary. The
         // smoothed cadence below also feeds the HUD frame time on the next frame.
@@ -3842,8 +4464,11 @@ int main() {
             }
         }
         if (!frame_completed) {
-            std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
-            fatal_error = true;
+            MATTER_LOGE("editor", "FATAL: end_frame: %s\n", error.c_str());
+            // The primary device-fault seam: MATTER_VK_TEST_END_FRAME_FAULT
+            // (record/submit) and a real VK_ERROR_DEVICE_LOST from
+            // vkQueueSubmit2 both surface here.
+            mark_device_fatal(error);
         } else {
             if (ui_frame_completed && !fatal_error) {
                 camera_input_order.end_frame();
@@ -3872,7 +4497,7 @@ int main() {
                         rgba, frame.extent.width, frame.extent.height,
                         preview_error);
                     if (!issue_state.frozen_preview)
-                        std::fprintf(stderr, "issue freeze preview: %s\n",
+                        MATTER_LOGW("issue", "issue freeze preview: %s\n",
                                      preview_error.c_str());
                     issue_state.phase = viewer::ReporterPhase::SelectingRegion;
                     issue_state.drag_active = false;
@@ -3908,6 +4533,9 @@ int main() {
                         issue_state.status_is_error = true;
                         console_log.push(viewer::LogSeverity::Error,
                                          "Issue shot: " + issue_state.status);
+                        if (fifo_issue_capture_active)
+                            std::printf("issue: capture failed (%s)\n",
+                                        issue_state.status.c_str());
                     } else {
                         viewer::IssueShot shot;
                         shot.file = path.substr(path.find_last_of('/') + 1);
@@ -3931,12 +4559,17 @@ int main() {
                         attach_preview(shot, cropped, shot.width, shot.height);
                         viewer::record_shot(issue_state, shot);
                         std::printf("issue shot written to %s\n", path.c_str());
+                        if (fifo_issue_capture_active)
+                            std::printf("issue: captured %s\n", path.c_str());
                     }
                     issue_state.phase = viewer::ReporterPhase::Editing;
                     issue_state.window_open = true;
                 } else {
                     console_log.push(viewer::LogSeverity::Error,
                                      "Issue shot: " + issue_state.status);
+                    if (fifo_issue_capture_active)
+                        std::printf("issue: capture failed (%s)\n",
+                                    issue_state.status.c_str());
                     issue_state.phase = viewer::ReporterPhase::Editing;
                     issue_state.window_open = true;
                 }
@@ -3959,7 +4592,7 @@ int main() {
                     bool comparable = true;
                     if (replay.frame_width != frame.extent.width ||
                         replay.frame_height != frame.extent.height) {
-                        std::fprintf(stderr,
+                        MATTER_LOGW("replay",
                                      "replay WARNING: framebuffer is %ux%u but the "
                                      "shot recorded %ux%u; pixels are NOT comparable\n",
                                      frame.extent.width, frame.extent.height,
@@ -3985,7 +4618,7 @@ int main() {
                          actual_vp.w != replay.viewport.w ||
                          actual_vp.h != replay.viewport.h);
                     if (viewport_moved) {
-                        std::fprintf(stderr,
+                        MATTER_LOGW("replay",
                                      "replay WARNING: viewport is %dx%d at (%d,%d) but the "
                                      "shot recorded %dx%d at (%d,%d) — the panel layout "
                                      "differs (imgui.ini). The projection differs, so "
@@ -4034,19 +4667,19 @@ int main() {
                                                   replay.viewport_uv[3] * actual_vp.h),
                                 0, fbh);
                             rect = viewer::ShotRect{x0, y0, x1 - x0, y1 - y0};
-                            std::fprintf(stderr,
+                            MATTER_LOGI("replay",
                                          "replay: crop covered the 3D view; remapped "
                                          "through viewport_uv to %dx%d at (%d,%d)\n",
                                          rect.w, rect.h, rect.x, rect.y);
                         } else {
-                            std::fprintf(stderr,
+                            MATTER_LOGI("replay",
                                          "replay: crop is outside the 3D view (UI only); "
                                          "keeping absolute rect. Panel CONTENT at these "
                                          "pixels depends on the layout\n");
                         }
                     }
                     if (!comparable && std::getenv("MATTER_REPLAY_STRICT")) {
-                        std::fprintf(stderr,
+                        MATTER_LOGE("replay",
                                      "FATAL: MATTER_REPLAY_STRICT set and this replay "
                                      "cannot reproduce the recorded shot\n");
                         fatal_error = true;
@@ -4057,7 +4690,7 @@ int main() {
                     out_h = static_cast<uint32_t>(rect.h);
                 }
                 if (!write_png(capture_path, out_rgba, out_w, out_h)) {
-                    std::fprintf(stderr, "screenshot FAILED %s\n",
+                    MATTER_LOGE("screenshot", "screenshot FAILED %s\n",
                                  capture_path.c_str());
                     fatal_error = true;
                 } else {
@@ -4072,6 +4705,34 @@ int main() {
                     if (capture_path == screenshot_path) quit_requested = true;
                 }
             }
+        }
+
+        // QA timeline: resolve a deferred `quit` only once no FIFO screenshot
+        // capture is still in flight (see reg_fifo_quit above). shot_settle
+        // was decremented earlier this frame (before end_frame) and any
+        // capture it triggered has now been written above, so both checks
+        // reflect this frame's true state.
+        //
+        // D-02: the SAME condition also releases a `shot`/`shot_now` FIFO
+        // block -- quit was already waiting on exactly this in-flight state,
+        // so blocking timeline lines on it too costs nothing new.
+        const bool fifo_shot_settled =
+            shot_settle == 0 && fifo_present.pending_screenshot_path().empty();
+        if (fifo_block == FifoBlockKind::Shot && fifo_shot_settled)
+            fifo_block = FifoBlockKind::None;
+        if (fifo_quit_pending && fifo_shot_settled) quit_requested = true;
+
+        // FIFO `issue capture` release: the AwaitingCapture readback handshake
+        // above (F10-shaped: ensure_report_dir + crop + write + record_shot,
+        // or a failure branch) always resolves the phase away from
+        // AwaitingCapture by the end of the frame it fires in -- either to
+        // Editing (success or a logged failure) or, via the deadman above, to
+        // Idle. Checked here (same seam as the shot/quit release above) so a
+        // capture armed and settled within one frame iteration cannot race.
+        if (fifo_block == FifoBlockKind::IssueCapture &&
+            issue_state.phase != viewer::ReporterPhase::AwaitingCapture) {
+            fifo_block = FifoBlockKind::None;
+            fifo_issue_capture_active = false;
         }
 
         if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error) {
@@ -4107,11 +4768,11 @@ int main() {
                             perf_finish_counters, frame_stats, stats,
                             perf_start_dlss_resets,
                             validation_errors, perf_error)) {
-                        std::fprintf(stderr, "FATAL: perf: %s\n",
+                        MATTER_LOGE("perf", "FATAL: perf: %s\n",
                                      perf_error.c_str());
                         fatal_error = true;
                     } else if (validation_errors != 0) {
-                        std::fprintf(stderr,
+                        MATTER_LOGE("perf",
                                      "FATAL: perf observed %u Vulkan validation errors\n",
                                      validation_errors);
                         fatal_error = true;
@@ -4290,6 +4951,109 @@ int main() {
         }
     }
 
+    // ---- Auto-file an issue report on a fatal device/Vulkan error ---------
+    // docs/agent/issue-system.md says "there is no automatic filing" -- that
+    // stops being quite true here: a device fault means the user can no
+    // longer press F9/F10 themselves (the process is already on its way
+    // down), so this is the one path that files on its own. Narrowly scoped:
+    // fatal_error_reason is only ever set by mark_device_fatal (see its
+    // definition near `bool fatal_error`), which is wired to the Vulkan/
+    // device-surfacing fatal sites (render(), end_frame(), the ImGui Vulkan
+    // backend prepare/end_frame calls, and exhausted screenshot-readback
+    // retries) and deliberately NOT to the non-device fatal exits
+    // (MATTER_REPLAY_STRICT mismatch, a perf run's validation-error count) --
+    // those keep exiting exactly as before, without a report.
+    //
+    // Single seam, main thread only: this runs after the loop has already
+    // decided to terminate (fatal_error true), before ANY teardown below
+    // (session/vulkan/ui are all still alive), so every field the writer
+    // touches is exactly as valid as it is on every other frame's normal
+    // filing path. A background-thread device loss (e.g. inside a bake
+    // worker's own Vulkan calls, if it ever made any) would NOT reach this
+    // seam -- there is no clean rendezvous for that here, so it is out of
+    // scope; the only fault path this covers is one that surfaces through
+    // the main thread's own render/present calls, which is what
+    // MATTER_VK_TEST_END_FRAME_FAULT and a real VK_ERROR_DEVICE_LOST from
+    // vkQueueSubmit2 both do.
+    //
+    // Best-effort by construction: every filesystem/engine call below is
+    // wrapped in one try/catch, and nothing here can change `fatal_error` or
+    // the exit code decided further down. A failure while trying to record
+    // the original fault is swallowed, never escalated into a second one.
+    if (fatal_error && !fatal_error_reason.empty()) {
+        try {
+            viewer::IssueReporterState auto_state;
+            std::snprintf(auto_state.note, sizeof(auto_state.note),
+                          "auto-filed: device fault (%s)",
+                          fatal_error_reason.c_str());
+            if (viewer::ensure_report_dir(auto_state)) {
+                int fb_w = 0, fb_h = 0;
+                glfwGetFramebufferSize(window, &fb_w, &fb_h);
+                viewer::IssueContext context;
+                const int world_idx = stats.world_current;
+                if (world_idx >= 0 &&
+                    static_cast<size_t>(world_idx) < worlds.size()) {
+                    context.world = worlds[world_idx].world_name;
+                    context.project_dir = worlds[world_idx].project_dir;
+                }
+                context.camera = camera;
+                context.sim_mode = sim_control.mode();
+                context.time_scale = ui.sim_time_scale();
+                context.frame_width =
+                    fb_w > 0 ? static_cast<uint32_t>(fb_w) : 0;
+                context.frame_height =
+                    fb_h > 0 ? static_cast<uint32_t>(fb_h) : 0;
+                context.props = &editor_props.registry();
+                // No shots: a post-loss readback would either hang against a
+                // dead device or hand back garbage, and the whole point of
+                // this path is that nobody is left to press F9/F10.
+                const std::string filed = viewer::write_issue_report(
+                    auto_state, context, stats, session->frame_stats(),
+                    console_log);
+                if (!filed.empty()) {
+                    std::fprintf(
+                        stderr, "issue: auto-filed device fault report to %s\n",
+                        filed.c_str());
+                    // vulkan_device_fault.log: written by vk_context.cpp's
+                    // log_device_fault() only on a REAL VK_ERROR_DEVICE_LOST
+                    // -- the injected end_frame faults
+                    // MATTER_VK_TEST_END_FRAME_FAULT exercises never reach
+                    // that call (see the #ifdef guard around end_frame's
+                    // fault injection: it substitutes a different VkResult
+                    // before submit, it does not put the device itself into
+                    // the lost state vkGetDeviceFaultInfoEXT requires). Copy
+                    // the log in only if it exists AND was written during
+                    // THIS run, so a stale log left by an earlier crash is
+                    // never misattributed to this one.
+                    std::error_code fault_ec;
+                    const std::filesystem::path fault_log(
+                        "vulkan_device_fault.log");
+                    if (std::filesystem::exists(fault_log, fault_ec) &&
+                        !fault_ec) {
+                        const auto mtime = std::filesystem::last_write_time(
+                            fault_log, fault_ec);
+                        if (!fault_ec && mtime >= process_start_time) {
+                            std::filesystem::copy_file(
+                                fault_log,
+                                std::filesystem::path(filed) /
+                                    "vulkan_device_fault.log",
+                                std::filesystem::copy_options::overwrite_existing,
+                                fault_ec);
+                        }
+                    }
+                } else {
+                    MATTER_LOGW("issue", "issue: auto-file failed (%s)\n",
+                                 auto_state.status.c_str());
+                }
+            }
+        } catch (...) {
+            // Best-effort: the auto-filer must never become a second fatal
+            // error on top of the one it exists to record.
+            MATTER_LOGW("issue", "issue: auto-file threw while recording a "
+                                 "device fault; ignored\n");
+        }
+    }
+
     // Idempotent: a completed MATTER_CAM_PATH already closed it. This covers a
     // run that ended some other way (window closed, fatal error) so the trace
     // still gets its summary line rather than being silently truncated.
@@ -4311,7 +5075,7 @@ int main() {
             if (matter::profile::dump_chrome_trace(trace_path))
                 std::printf("profile: wrote trace to %s\n", trace_path);
             else
-                std::fprintf(stderr, "profile: could not write trace to %s\n",
+                MATTER_LOGW("profile", "profile: could not write trace to %s\n",
                              trace_path);
         }
     }
@@ -4343,7 +5107,7 @@ int main() {
     glfwDestroyWindow(window);
     glfwTerminate();
     if (validation_errors != 0) {
-        std::fprintf(stderr, "FATAL: Vulkan validation errors: %u\n",
+        MATTER_LOGE("editor", "FATAL: Vulkan validation errors: %u\n",
                      validation_errors);
         return 1;
     }

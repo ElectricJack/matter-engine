@@ -279,9 +279,12 @@ struct ViewerStats {
     // the world around a camera the cull cannot see.
     bool  freeze_cull_camera    = false;
     // Cull draws against the ID pass's mask (RenderOptions::
-    // occlusion_draw_cull): a sector that owned no pixel last frame is not
-    // rasterised at all this frame.
-    bool  occlusion_draw_cull   = false;
+    // occlusion_draw_cull): a sector that owned no pixel is not rasterised at
+    // all. ON by default since 2026-08-13, tracking the engine's own default --
+    // and it has to be changed HERE as well as there, because main.cpp copies
+    // this field into RenderOptions every frame, so the engine's default is
+    // whatever the editor last said rather than what world_session.h declares.
+    bool  occlusion_draw_cull   = true;
     // The camera pose captured when freeze_cull_camera last went on, kept so
     // the viewport overlay can draw that frustum. Reconstructed by the editor
     // rather than read back from the renderer: the overlay is a sketch of where
@@ -343,6 +346,17 @@ struct ViewerStats {
     uint32_t vt_pool_pinned = 0;
     uint64_t vt_mesh_bytes = 0;
     uint64_t vt_mesh_budget_bytes = 0;
+    // Memory tab fields.
+    uint64_t vt_pool_bytes = 0;
+    uint64_t vt_indirection_bytes = 0;
+    uint64_t vt_indirection_capacity_bytes = 0;
+    uint64_t impostor_atlas_bytes = 0;
+    uint64_t gpu_device_local_bytes = 0;
+    uint64_t gpu_host_visible_bytes = 0;
+    uint64_t gpu_total_alloc_bytes = 0;
+    uint64_t gpu_allocation_count = 0;
+    uint64_t process_working_set_bytes = 0;
+    uint64_t process_peak_working_set_bytes = 0;
 };
 
 // StreamingLodPrefs (the persisted, schema-described override) -> the engine

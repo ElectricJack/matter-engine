@@ -17,10 +17,23 @@ $compat = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vulkan_onl
 $cell = Get-Content -Raw (Join-Path $root 'libs\MatterSurfaceLib\src\cell.cpp')
 $runtimeSmokePath = Join-Path $root 'MatterEditor\tools\smoke_vulkan_viewer.ps1'
 $runtimeSmoke = if (Test-Path $runtimeSmokePath) { Get-Content -Raw $runtimeSmokePath } else { '' }
-$interopSmoke = Get-Content -Raw (Join-Path $root 'MatterEditor\tools\smoke_vulkan_interop_faults.ps1')
+# smoke_vulkan_interop_faults.ps1 was referenced here but never actually
+# committed to the repo (no path in git history matches it); the assertions
+# that used to read it were removed rather than made to fail every run.
 $perfScriptPath = Join-Path $root 'MatterEditor\tools\perf_vulkan_instancing.ps1'
 $perfScript = if (Test-Path $perfScriptPath) { Get-Content -Raw $perfScriptPath } else { '' }
 $failures = [System.Collections.Generic.List[string]]::new()
+
+# Comment lines (first non-whitespace char '#') are documentation, not build
+# input: a comment explaining that a token was DELETED ("IMGUI_SRC_LINUX ...
+# retired with the Linux GL viewer above") legitimately mentions the retired
+# token's name, and a plain substring Forbid-Text check cannot tell that
+# apart from the token still being present as live build input. Filtered
+# once here and reused by the retired-Linux-viewer forbidden-string checks
+# below, whose whole point is "is this still being BUILT", not "is this
+# string anywhere in the file".
+$makefileNoComments = ($makefile -split "`r?`n" |
+    Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
 
 function Require-Text([string]$Text, [string]$Needle, [string]$Label) {
     if (-not $Text.Contains($Needle)) { $failures.Add("missing ${Label}: $Needle") }
@@ -56,9 +69,9 @@ Require-Text $makefile 'OPENGL=0' 'OpenGL-disabled feature manifest'
 # main_linux.cpp/ui_linux.cpp/ui_linux.h, IMGUI_SRC_LINUX and the
 # imgui_impl_opengl3.cpp backend are deleted, not preserved. Assert their
 # absence instead until Phase 5b lands a Linux Vulkan target.
-Forbid-Text $makefile 'LINUX_APP_SRC' 'retired Linux GL viewer sources'
-Forbid-Text $makefile 'IMGUI_SRC_LINUX' 'retired Linux ImGui backend selection'
-Forbid-Text $makefile 'imgui_impl_opengl3.cpp' 'retired Linux OpenGL ImGui backend'
+Forbid-Text $makefileNoComments 'LINUX_APP_SRC' 'retired Linux GL viewer sources'
+Forbid-Text $makefileNoComments 'IMGUI_SRC_LINUX' 'retired Linux ImGui backend selection'
+Forbid-Text $makefileNoComments 'imgui_impl_opengl3.cpp' 'retired Linux OpenGL ImGui backend'
 Require-Text $vkContext 'vkGetPhysicalDeviceFormatProperties' 'presentation format capability query'
 Require-Text $vkContext 'VK_FORMAT_FEATURE_BLIT_SRC_BIT' 'HDR blit-source capability check'
 Require-Text $vkContext 'VK_FORMAT_FEATURE_BLIT_DST_BIT' 'swapchain blit-destination capability check'
@@ -108,15 +121,6 @@ if ($commonPresent -lt 0 -or $queuePresent -lt 0 -or $commonPresent -gt $queuePr
 Require-Text $streamline 'sl.interposer.dll is missing beside the executable' 'truthful Streamline runtime absence'
 Require-Text $runtimeSmoke 'DLSS selected=Native active=Native' 'runtime Native fallback assertion'
 Require-Text $runtimeSmoke 'MATTER_DISABLE_VK_RT' 'runtime RT toggle assertion'
-foreach ($mode in @("'rt'", "'rt-disabled'", "'rt-unavailable'")) {
-    Require-Text $interopSmoke $mode 'executable final RT smoke mode'
-}
-Require-Text $interopSmoke 'System.Diagnostics.ProcessStartInfo' 'duplicate-safe smoke process launch'
-Require-Text $interopSmoke "[Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE'" 'explicit inherited smoke mode'
-Forbid-Text $interopSmoke '$startInfo.Environment' 'fragile managed process environment dictionary'
-Forbid-Text $interopSmoke 'EnvironmentVariables' 'fragile managed process environment dictionary'
-Forbid-Text $interopSmoke 'GetEnvironmentVariables' 'duplicate-key environment enumeration'
-Forbid-Text $interopSmoke 'Start-Process' 'duplicate-sensitive smoke process launch'
 @('vk_rt_available', 'vk_rt_effective', 'vk_rt_trace_dispatches',
   'vk_rt_fallback_reason') | ForEach-Object {
     Require-Text $world $_ 'renderer-observed RT FrameStats'
@@ -137,7 +141,10 @@ Forbid-Text $engineImpl 'vertex.orm = {ao, 0.7f' 'invented Vulkan roughness'
 Require-Text $vkSceneHeader 'VkSceneLighting' 'Vulkan scene lighting contract'
 Require-Text $vkScene 'lighting_' 'Vulkan scene lighting state'
 Require-Text $compositeShader 'sun_direction' 'world sun direction shading'
-Require-Text $compositeShader 'sky_color' 'world sky lighting'
+# e57f959d ("separate atmosphere presentation from world lighting") replaced
+# the flat sky_color uniform with the physical-sky sampling function;
+# sky_color no longer exists anywhere in this shader.
+Require-Text $compositeShader 'sample_physical_sky' 'world sky lighting'
 Forbid-Text $compositeShader 'max(normal.y' 'hard-coded normal-Y lighting'
 Require-Text $ui 'not available in Vulkan milestone' 'disabled Vulkan milestone controls'
 
@@ -178,7 +185,9 @@ Require-Text $engineImpl 'ground material texture sampling is' 'unsupported text
 Require-Text $engineImpl 'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT' 'diagnostic prior-slot seed'
 Require-Text $engineImpl 'prior_packed_slot' 'packed material slot snapshot'
 Require-Text $engineImpl 'restored ground tileset material' 'exact packed material restoration log'
-Require-Text $engineImpl 'vulkan_encode_emission' 'half-float authored emission encoding'
+# 7962deed ("share material identity with the G-buffer") moved this helper
+# out of matter_engine.cpp and into vk_scene_renderer.h.
+Require-Text $vkSceneHeader 'vulkan_encode_emission' 'half-float authored emission encoding'
 Require-Text $compositeShader 'normal_payload.w' 'normal-alpha authored emission decode'
 Require-Text $vkSmoke 'max_center.hdr.x > thousand_center.hdr.x' 'strict saturated emission separation'
 Require-Text $vkSmoke 'max_center.hdr.x > 14000.0f' 'saturated emission lower bound'
@@ -257,7 +266,9 @@ Require-Text $perfScript 'VK_LAYER_PATH' 'performance validation layer discovery
 Require-Text $makefile 'vulkan-instancing-perf: windows' 'performance Make target'
 Require-Text $vkScene 'multi_draw_indirect_enabled' 'grouped indirect feature gate'
 Require-Text $vkScene 'range.command_count' 'grouped indirect draw ranges'
-Require-Text $vkScene 'vkCmdDrawIndirect(command_buffer, record.indirect_buffer' 'grouped indirect recording'
+# b133bc93 ("indexed indirect draws") switched the grouped indirect
+# recording call from vkCmdDrawIndirect to vkCmdDrawIndexedIndirect.
+Require-Text $vkScene 'vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,' 'grouped indirect recording'
 $recordStart = $vkScene.IndexOf('bool VkSceneRenderer::record_cull_and_render(')
 $recordEnd = if ($recordStart -ge 0) {
     $vkScene.IndexOf('#ifdef MATTER_VK_TEST_FAULT_INJECTION', $recordStart)

@@ -26,6 +26,7 @@
 #include "matrix_math.h"
 #include "engine_profile_zones.h"
 #include "vk_perf.h"
+#include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "matter/vt_budgets.h"
 #include "matter/world_definition.h"
@@ -1241,6 +1242,9 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
     const FrameMatrices& matrices, matter::Float3 camera_eye,
     float pixel_budget,
     const std::vector<VkAnimationBoundsInstance>& rejected_bounds) {
+    // The LOD pick below predicts what cull.comp will RASTER-select, and
+    // cull.comp selects with the cull eye -- frozen while the freeze is on.
+    camera_eye = lod_selection_eye(camera_eye);
     // The bridge can reject before it has a VkSkinSubmission.  Its explicit
     // full generational scope is consumed before the empty queue is
     // published, so culling cannot retain a prior animated record.
@@ -1416,7 +1420,7 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
         static std::string last_census;
         if (census != last_census) {
             last_census = census;
-            fprintf(stderr, "[skin-census] in=%zu out=%zu%s\n",
+            MATTER_LOGD("skin-census", "in=%zu out=%zu%s\n",
                     visible.size(), compacted.size(), census.c_str());
         }
     }
@@ -1736,6 +1740,10 @@ void VkSceneRenderer::destroy_pipeline() {
     part_draw_override_entries_.clear();
     part_draw_override_table_.clear();
     part_draw_overrides_dirty_ = true;
+    if (overlay_line_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, overlay_line_pipeline_, nullptr);
+    if (overlay_line_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, overlay_line_layout_, nullptr);
     if (display_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, display_pipeline_, nullptr);
     if (display_pipeline_layout_ != VK_NULL_HANDLE)
@@ -1901,11 +1909,14 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // and visibility_id.vert reads it -- which is what lets the ID pass reuse
     // this set instead of needing one of its own.
     //
+    // Binding 19: the per-part_slot occlusion class (1 = may occlude / be
+    // occlusion-tested, 0 = excluded), COMPUTE-only (cull.comp).
+    //
     // These sat at 17-19 while the HZB pyramid held 16. It went, and the hole
     // it left was not free: a default-constructed VkDescriptorSetLayoutBinding
     // has binding 0, so the array carried a DUPLICATE of binding 0 and layout
     // creation failed -- taking every cull smoke mode with it.
-    std::array<VkDescriptorSetLayoutBinding, 19> scene_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 20> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1949,6 +1960,8 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT);
     scene_bindings[18] = descriptor_binding(
         18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    scene_bindings[19] = descriptor_binding(
+        19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -2089,6 +2102,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     vkDestroyShaderModule(device, shader, nullptr);
 
     if (!create_raster_pipelines(error) || !create_display_pipeline(error) ||
+        !create_overlay_line_pipeline(error) ||
         !create_gi_temporal_pipeline(error) ||
         !create_gi_atrous_pipeline(error))
         return false;
@@ -3106,6 +3120,180 @@ bool VkSceneRenderer::create_display_pipeline(std::string& error) {
            fail_vk("vkCreateGraphicsPipelines(display)", result, error);
 }
 
+bool VkSceneRenderer::create_overlay_line_pipeline(std::string& error) {
+    const VkDevice device = vulkan_->device();
+    VkPushConstantRange push{};
+    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push.size = sizeof(float) * 16;
+    VkPipelineLayoutCreateInfo layout_ci{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_ci.pushConstantRangeCount = 1;
+    layout_ci.pPushConstantRanges = &push;
+    VkResult result = vkCreatePipelineLayout(device, &layout_ci, nullptr,
+                                             &overlay_line_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(overlay_line)", result, error);
+    VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "selection_line.vert.spv", vert, error) ||
+        !create_shader_module(device, "selection_line.frag.spv", frag, error)) {
+        if (vert != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, vert, nullptr);
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag;
+    stages[1].pName = "main";
+    VkVertexInputBindingDescription binding_desc{};
+    binding_desc.stride = sizeof(float) * 7;
+    binding_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attrs[2]{};
+    attrs[0].location = 0;
+    attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[0].offset = 0;
+    attrs[1].location = 1;
+    attrs[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attrs[1].offset = sizeof(float) * 3;
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &binding_desc;
+    vertex_input.vertexAttributeDescriptionCount = 2;
+    vertex_input.pVertexAttributeDescriptions = attrs;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_FALSE;
+    depth_stencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.blendEnable = VK_TRUE;
+    blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.colorBlendOp = VK_BLEND_OP_ADD;
+    blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                           VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT |
+                           VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo color_blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    color_blend.attachmentCount = 1;
+    color_blend.pAttachments = &blend;
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                             VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    const VkFormat color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkPipelineRenderingCreateInfo rendering{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &color_format;
+    rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    VkGraphicsPipelineCreateInfo create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    create.pNext = &rendering;
+    create.stageCount = 2;
+    create.pStages = stages;
+    create.pVertexInputState = &vertex_input;
+    create.pInputAssemblyState = &input_assembly;
+    create.pViewportState = &viewport_state;
+    create.pRasterizationState = &rasterization;
+    create.pMultisampleState = &multisample;
+    create.pDepthStencilState = &depth_stencil;
+    create.pColorBlendState = &color_blend;
+    create.pDynamicState = &dynamic;
+    create.layout = overlay_line_layout_;
+    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
+                                       nullptr, &overlay_line_pipeline_);
+    vkDestroyShaderModule(device, frag, nullptr);
+    vkDestroyShaderModule(device, vert, nullptr);
+    return result == VK_SUCCESS ||
+           fail_vk("vkCreateGraphicsPipelines(overlay_line)", result, error);
+}
+
+bool VkSceneRenderer::record_overlay_lines(
+    VkCommandBuffer cb, const float* vertex_data, uint32_t vertex_count,
+    const matter::Mat4f& world_to_clip, std::string& error) {
+    if (vertex_count < 2 || !vertex_data) return true;
+    if (overlay_line_pipeline_ == VK_NULL_HANDLE) return true;
+    if (!raster_attachments_ready_) return true;
+    const VkDeviceSize bytes = vertex_count * sizeof(float) * 7;
+    if (!ensure_buffer(overlay_line_vertices_, bytes,
+                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, error) ||
+        !matter::map_buffer(overlay_line_vertices_, error))
+        return false;
+    std::memcpy(overlay_line_vertices_.mapped, vertex_data, bytes);
+    transition_for_use(cb, hdr_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    transition_for_use(cb, depth_, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT);
+    VkRenderingAttachmentInfo color_att{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    color_att.imageView = hdr_.view;
+    color_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    color_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo depth_att{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth_att.imageView = depth_.view;
+    depth_att.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+    depth_att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depth_att.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = raster_extent_;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &color_att;
+    rendering.pDepthAttachment = &depth_att;
+    vkCmdBeginRendering(cb, &rendering);
+    const VkViewport viewport{
+        0.0f, static_cast<float>(raster_extent_.height),
+        static_cast<float>(raster_extent_.width),
+        -static_cast<float>(raster_extent_.height), 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, raster_extent_};
+    vkCmdSetViewport(cb, 0, 1, &viewport);
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      overlay_line_pipeline_);
+    const GpuMat4 gpu_mat = pack_glsl_mat4(world_to_clip);
+    vkCmdPushConstants(cb, overlay_line_layout_, VK_SHADER_STAGE_VERTEX_BIT,
+                       0, sizeof(gpu_mat), gpu_mat.elements);
+    const VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cb, 0, 1, &overlay_line_vertices_.buffer, &offset);
+    vkCmdDraw(cb, vertex_count, 1, 0, 0);
+    vkCmdEndRendering(cb);
+    return true;
+}
+
 void VkSceneRenderer::update_descriptor(
     VkDescriptorSet set, uint32_t binding, VkDescriptorType type,
     const matter::VkBufferResource& buffer) {
@@ -3264,8 +3452,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 3},
         // 27 for the scene/VT buffers above, +1 for the per-module
         // draw-override table at binding 14, +3 for the M4 ID pass's
-        // unfiltered command/transform lists and the visibility mask (17-19).
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 31},
+        // unfiltered command/transform lists and the visibility mask (17-19),
+        // +1 for the per-part occlusion-class table at binding 19.
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 32},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
              (120 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
@@ -3424,7 +3613,10 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(
                 frame.part_draw_overrides,
                 sizeof(matter::PartDrawOverrideGpu),
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.part_occluder_class,
+                                     sizeof(uint32_t),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
@@ -3567,6 +3759,9 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
     update_descriptor(frame.descriptor_sets[1], 14,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                       frame.part_draw_overrides);
+    update_descriptor(frame.descriptor_sets[1], 19,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                      frame.part_occluder_class);
     write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
     write_vt_descriptors_for_frame(frame);
 }
@@ -3599,8 +3794,8 @@ void VkSceneRenderer::probe_skin_raster_draws(
                 ++outside;
         }
         if (outside == 0) continue;
-        fprintf(stderr,
-                "[skin-probe] instance=%u gen=%u cluster=%u lod=%u "
+        MATTER_LOGD("skin-probe",
+                "instance=%u gen=%u cluster=%u lod=%u "
                 "outside=%u/%u indices=[%u,%u] window=[%u,%u)\n",
                 draw.instance_slot, draw.instance_generation, draw.cluster,
                 draw.lod, outside, draw.index_count, lowest, highest,
@@ -4281,8 +4476,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
             vt_unavailable_ = true;
             vt_unavailable_reason_ = "MATTER_VT_DISABLE is set";
             error = vt_unavailable_reason_;
-            std::fprintf(stderr,
-                         "[vk] chart-space VT disabled by MATTER_VT_DISABLE\n");
+            MATTER_LOGI("vk",
+                         "chart-space VT disabled by MATTER_VT_DISABLE\n");
             std::fflush(stderr);
             return false;
         }
@@ -4308,8 +4503,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
             vt_inputs_dirty_ = true;
         } else {
             vt_compositor_ = nullptr;
-            std::fprintf(stderr,
-                         "[vk] VT tier-1 compositor unavailable, falling back "
+            MATTER_LOGW("vk",
+                         "VT tier-1 compositor unavailable, falling back "
                          "to the flat stub filler: %s\n",
                          compositor_error.c_str());
             std::fflush(stderr);
@@ -4322,8 +4517,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     // real tier-2 configuration. MATTER_VT_ENRICH_PER_FRAME=0 keeps the
     // enricher loaded but drains nothing.
     if (!vulkan_->ray_tracing_available()) {
-        std::fprintf(stderr,
-                     "[vk] VT tier-2 enrichment off (no hardware ray "
+        MATTER_LOGI("vk",
+                     "VT tier-2 enrichment off (no hardware ray "
                      "tracing): %s\n",
                      vulkan_->ray_tracing_unavailable_reason().c_str());
         std::fflush(stderr);
@@ -4336,8 +4531,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
             runtime->set_enricher(std::move(enricher));
         } else {
             vt_enricher_ = nullptr;
-            std::fprintf(stderr,
-                         "[vk] VT tier-2 enrichment unavailable (tier-1 pages "
+            MATTER_LOGW("vk",
+                         "VT tier-2 enrichment unavailable (tier-1 pages "
                          "retained): %s\n",
                          enrich_error.c_str());
             std::fflush(stderr);
@@ -4350,8 +4545,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
         // the legacy path keeps rendering exactly as before.
         vt_unavailable_ = true;
         vt_unavailable_reason_ = error;
-        std::fprintf(stderr,
-                     "[vk] chart-space VT unavailable (legacy path retained): "
+        MATTER_LOGW("vk",
+                     "chart-space VT unavailable (legacy path retained): "
                      "%s\n",
                      error.c_str());
         std::fflush(stderr);
@@ -4359,8 +4554,8 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     }
     vt_ = std::move(runtime);
     const vt::VtResidency::Stats& started = vt_->stats();
-    std::fprintf(stderr,
-                 "[vk] chart-space VT online: %u page pool (%.0f MiB), "
+    MATTER_LOGI("vk",
+                 "chart-space VT online: %u page pool (%.0f MiB), "
                  "%u variant slots (MATTER_VT_MAX_VARIANTS, soft bound), "
                  "%.0f MiB indirection arena (MATTER_VT_INDIRECTION_MB, "
                  "exact-sized tables), %.0f MiB mesh budget "
@@ -4414,7 +4609,7 @@ void VkSceneRenderer::push_vt_compositor_inputs() {
     std::string tileset_error;
     if (!vt_compositor_->set_tilesets(slots, tileset::kMaxTilesetSlots,
                                       tileset_error)) {
-        std::fprintf(stderr, "[vk] VT compositor tileset bind failed: %s\n",
+        MATTER_LOGE("vk", "VT compositor tileset bind failed: %s\n",
                      tileset_error.c_str());
         std::fflush(stderr);
     }
@@ -4692,6 +4887,11 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
 void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
                                        float pixel_budget) {
     if (vt_deferred_parts_ == 0) return;
+    // This is the CPU mirror of cull.comp's rung pick, stamping wanted VT
+    // rungs for the draws that pick will emit -- so it has to select with
+    // the same (possibly frozen) eye, or the pages wanted stop matching the
+    // rungs drawn while the cull camera is frozen.
+    camera_eye = lod_selection_eye(camera_eye);
     // Re-read every pass rather than latched on the first one: both knobs live
     // in matter::VtResidencyBudgets now, and the demand pass is exactly the
     // per-frame consumer that makes them live-editable from Tunables. The
@@ -4946,8 +5146,8 @@ void VkSceneRenderer::dump_vt_route_census() const {
     if (total == 0) return;
     static uint64_t dumps = 0;
     if (++dumps % 60 != 1) return;   // ~1 line/second, not 1/frame
-    std::fprintf(stderr,
-                 "[vt-route] draws=%llu ok=%llu | no_slots=%llu cluster_oob=%llu "
+    MATTER_LOGD("vt-route",
+                 "draws=%llu ok=%llu | no_slots=%llu cluster_oob=%llu "
                  "lod_oob=%llu rung_oob=%llu unregistered=%llu tail_gate=%llu\n",
                  (unsigned long long)total,
                  (unsigned long long)vt_route_census_[kVtRouteOk].load(),
@@ -5036,6 +5236,40 @@ void VkSceneRenderer::rebuild_part_draw_overrides() {
         part_draw_override_table_.assign(1, matter::PartDrawOverrideGpu{});
 }
 
+void VkSceneRenderer::rebuild_part_occluder_table() {
+    part_occluder_dirty_ = false;
+    // Default 1 everywhere: an unknown class occludes, which is the
+    // pre-exclusion behaviour. Covers dead slots (never dispatched), parts
+    // registered before the first material upload, and out-of-range ids.
+    part_occluder_table_.assign(std::max<size_t>(parts_.size(), 1), 1u);
+    if (material_staging_.empty()) return;
+    for (size_t slot = 0; slot < parts_.size(); ++slot) {
+        const PartRecord& record = parts_[slot];
+        if (!record.live) continue;
+        bool alpha_tested = false;
+        for (const RtLodRecord& lod : record.rt_lods) {
+            // Billboard rungs are already outside the ID pass through
+            // GpuCluster::vis_mesh_lods; only the mesh rungs it can
+            // rasterise decide the class.
+            const uint32_t mesh_lods =
+                lod.cluster_index < record.rt_cluster_mesh_lods.size()
+                    ? record.rt_cluster_mesh_lods[lod.cluster_index]
+                    : 0u;
+            if (lod.lod_index >= mesh_lods) continue;
+            for (const uint32_t material_id : lod.material_ids) {
+                if (material_id < material_staging_.size() &&
+                    (material_staging_[material_id].flags_misc[0] &
+                     MATERIAL_ALPHA_TESTED) != 0u) {
+                    alpha_tested = true;
+                    break;
+                }
+            }
+            if (alpha_tested) break;
+        }
+        if (alpha_tested) part_occluder_table_[slot] = 0u;
+    }
+}
+
 void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
     if (frame.descriptor_sets[1] == VK_NULL_HANDLE || !vt_dummies_ready_)
         return;
@@ -5115,7 +5349,7 @@ void VkSceneRenderer::vt_begin_frame(FrameResources& frame,
                                   error)) {
             // Feedback is an optimization: without it nothing new becomes
             // resident, but every variant still samples its pinned tail.
-            std::fprintf(stderr, "[vk] VT feedback target unavailable: %s\n",
+            MATTER_LOGW("vk", "VT feedback target unavailable: %s\n",
                          error.c_str());
             std::fflush(stderr);
         }
@@ -5130,7 +5364,7 @@ void VkSceneRenderer::vt_record_pre_pass(VkCommandBuffer command_buffer) {
     if (!vt_ || !vt_->available()) return;
     std::string error;
     if (!vt_->record_frame(command_buffer, error)) {
-        std::fprintf(stderr, "[vk] VT frame record failed: %s\n",
+        MATTER_LOGE("vk", "VT frame record failed: %s\n",
                      error.c_str());
         std::fflush(stderr);
     }
@@ -5373,8 +5607,8 @@ bool VkSceneRenderer::create_impostor_atlas(std::string& error) {
     impostor_atlas_bytes_ = impostor::atlas_bytes();
     const double atlas_mib =
         double(impostor_atlas_bytes_) * double(kImpostorMaxSlots) / 1048576.0;
-    std::fprintf(stderr,
-                 "[vk] impostor atlas: %u slots x 2 layers of %ux%u RGBA8 "
+    MATTER_LOGI("vk",
+                 "impostor atlas: %u slots x 2 layers of %ux%u RGBA8 "
                  "(cell %u px) = %.0f MiB\n",
                  kImpostorMaxSlots, impostor_layer_px_, impostor_layer_px_,
                  impostor::cell_px(), atlas_mib);
@@ -5658,8 +5892,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         if (!create_impostor_atlas(create_error)) {
             if (!impostor_slots_exhausted_logged_) {
                 impostor_slots_exhausted_logged_ = true;
-                std::fprintf(stderr,
-                    "[vk] impostor atlas could not be created (%s); part "
+                MATTER_LOGE("vk",
+                    "impostor atlas could not be created (%s); part "
                     "%016llx's %zu impostor(s) will not draw\n",
                     create_error.c_str(),
                     static_cast<unsigned long long>(part.part_hash),
@@ -5675,8 +5909,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         // that such a state announces itself.
         if (!impostor_slots_exhausted_logged_) {
             impostor_slots_exhausted_logged_ = true;
-            std::fprintf(stderr,
-                "[vk] impostor atlas image does not exist; part %016llx's "
+            MATTER_LOGE("vk",
+                "impostor atlas image does not exist; part %016llx's "
                 "%zu impostor(s) will not draw\n",
                 static_cast<unsigned long long>(part.part_hash),
                 part.impostors.size());
@@ -5697,8 +5931,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         // fresh impostor::atlas_bytes(): those differ exactly when the
         // resolution changed after init, which is the case this catches.
         if (imp.atlas.size() != impostor_atlas_bytes_) {
-            std::fprintf(stderr,
-                "[vk] impostor atlas for part %016llx cluster %u is %zu bytes, "
+            MATTER_LOGE("vk",
+                "impostor atlas for part %016llx cluster %u is %zu bytes, "
                 "expected %zu (atlas built for cell %u px) -- this impostor "
                 "will not draw\n",
                 static_cast<unsigned long long>(part.part_hash), imp.cluster,
@@ -5720,8 +5954,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
             // white card, and never silent.
             if (!impostor_slots_exhausted_logged_) {
                 impostor_slots_exhausted_logged_ = true;
-                std::fprintf(stderr,
-                    "[vk] impostor atlas slots exhausted (%u of %u in use) at "
+                MATTER_LOGW("vk",
+                    "impostor atlas slots exhausted (%u of %u in use) at "
                     "part %016llx -- further impostors will not draw\n",
                     impostor_resident_, kImpostorMaxSlots,
                     static_cast<unsigned long long>(part.part_hash));
@@ -5768,8 +6002,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
                                error) ||
         !matter::map_buffer(staging, error)) {
-        std::fprintf(stderr,
-            "[vk] impostor atlas staging failed for part %016llx: %s -- "
+        MATTER_LOGE("vk",
+            "impostor atlas staging failed for part %016llx: %s -- "
             "%zu impostor(s) will not draw\n",
             static_cast<unsigned long long>(part.part_hash), error.c_str(),
             assigned.size());
@@ -5779,8 +6013,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     }
     std::memcpy(staging.mapped, staging_bytes.data(), staging_bytes.size());
     if (!matter::flush_buffer(staging, 0, staging_bytes.size(), error)) {
-        std::fprintf(stderr,
-            "[vk] impostor atlas flush failed for part %016llx: %s\n",
+        MATTER_LOGE("vk",
+            "impostor atlas flush failed for part %016llx: %s\n",
             static_cast<unsigned long long>(part.part_hash), error.c_str());
         std::fflush(stderr);
         for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
@@ -5803,8 +6037,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
                                   error,
                                   matter::ImmediateSubmitPhase::staging_upload,
                                   {staging.lifetime})) {
-        std::fprintf(stderr,
-            "[vk] impostor atlas upload failed for part %016llx: %s -- "
+        MATTER_LOGE("vk",
+            "impostor atlas upload failed for part %016llx: %s -- "
             "%zu impostor(s) will not draw\n",
             static_cast<unsigned long long>(part.part_hash), error.c_str(),
             assigned.size());
@@ -5836,8 +6070,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         // The atlas is resident but nothing references it: the ladder and the
         // vertex stream disagree, which is exactly the class of silent
         // mismatch this milestone exists to make impossible.
-        std::fprintf(stderr,
-            "[vk] part %016llx carries %zu impostor atlas(es) but no billboard "
+        MATTER_LOGE("vk",
+            "part %016llx carries %zu impostor atlas(es) but no billboard "
             "vertices -- the impostor rung is missing from the vertex stream\n",
             static_cast<unsigned long long>(part.part_hash), assigned.size());
         std::fflush(stderr);
@@ -5859,8 +6093,8 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
                 if (a > max_cov) max_cov = a;
                 if (a > 0) ++covered;
             }
-            std::fprintf(stderr,
-                "[vk] impostor part=%016llx cluster=%u ordinal=%u slot=%u "
+            MATTER_LOGD("vk",
+                "impostor part=%016llx cluster=%u ordinal=%u slot=%u "
                 "layers=%u/%u max_coverage=%u covered_texels=%u patched_verts=%zu\n",
                 static_cast<unsigned long long>(part.part_hash), imp.cluster,
                 imp.ordinal, assigned[k], assigned[k] * 2, assigned[k] * 2 + 1,
@@ -7095,8 +7329,8 @@ bool VkSceneRenderer::init(std::string& error) {
             // Volumetrics are optional, but a failed init must not be silent:
             // every downstream symptom (empty froxel volume, dead debug
             // views) is otherwise indistinguishable from "disabled".
-            std::fprintf(stderr,
-                         "[vk] volumetrics init FAILED (volumetrics disabled): %s\n",
+            MATTER_LOGE("vk",
+                         "volumetrics init FAILED (volumetrics disabled): %s\n",
                          vol_error.c_str());
             std::fflush(stderr);
         }
@@ -7453,6 +7687,11 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         cluster.lod_count = static_cast<uint32_t>(source.lods.size());
         cluster.part_slot = static_cast<uint32_t>(slot);
         cluster.cluster_index = static_cast<uint32_t>(i);
+        // The ID pass's rung ceiling: same trailing-billboard peel the RT
+        // lane uses, computed above from the same VkScenePart. A billboard
+        // proxy in the ID pass would rasterise in its baked orientation,
+        // solid -- see ClusterMeta.vis_mesh_lods in cull.comp.
+        cluster.vis_mesh_lods = record.rt_cluster_mesh_lods[i];
         for (uint32_t lod = 0; lod < kVkMaxLod; ++lod) {
             // M1: the GPU selects on switch DISTANCE, not projected size. The
             // stored value is normalized (unit radius, scale and dial); cull.comp
@@ -7489,6 +7728,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // A new slot lengthens the per-slot override table (and may itself carry
     // an override); no-op work when nothing is overridden.
     part_draw_overrides_dirty_ = true;
+    // Likewise for the occlusion-class table -- and the new part's own class
+    // has to be resolved against the current material table.
+    part_occluder_dirty_ = true;
     // Record the written ranges (interior when a freed range was reused, tail
     // otherwise) for the ranged upload path.
     if (record.cluster_count != 0)
@@ -7615,6 +7857,9 @@ bool VkSceneRenderer::update_materials(
     material_shading_revision_ = shading_revision;
     material_geometry_revision_ = geometry_revision;
     ++material_generation_;
+    // MATERIAL_ALPHA_TESTED is an input to the occlusion-class table; any
+    // accepted table change re-resolves it (cheap: deduped id lists per rung).
+    part_occluder_dirty_ = true;
     // WP-D/E: the compositor bakes albedo/ORM and the detail-slot binding into
     // pages, so a material table change has to reach it too. Deferred to the
     // next vt_begin_frame (the setter wants the device idle w.r.t. fills).
@@ -9602,6 +9847,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
                                             vt_invalidate_retire_serial());
     vt_draw_slots_dirty_ = true;
     part_draw_overrides_dirty_ = true;
+    part_occluder_dirty_ = true;
     if (record.vt_rung_mask != 0u && vt_deferred_parts_ != 0u)
         --vt_deferred_parts_;
     // The slot itself is never reused (cluster.part_slot values and rt_lods
@@ -9944,10 +10190,18 @@ bool VkSceneRenderer::update_instances(
         candidate_slots.push_back(instance.part_slot);
         candidate_max_clusters =
             std::max(candidate_max_clusters, part.cluster_count);
-        RtInstance rt{};
-        rt.part_hash = source.part_hash;
-        std::memcpy(rt.transform, source.object_to_world.m, sizeof(rt.transform));
-        candidate_rt.push_back(rt);
+        // `ray_traced` false means the instance is coincident with geometry
+        // already in the TLAS and can only shadow itself -- see VkSceneInstance.
+        // rt_instances_ is not index-aligned with instance_staging_ (it is
+        // filtered by part hash on release and carries its own count), so
+        // skipping an entry here is safe.
+        if (source.ray_traced) {
+            RtInstance rt{};
+            rt.part_hash = source.part_hash;
+            std::memcpy(rt.transform, source.object_to_world.m,
+                        sizeof(rt.transform));
+            candidate_rt.push_back(rt);
+        }
     }
     build_scope.stop();
     matter::profile::Scope compare_scope(engine_prof::id(engine_prof::kUiCompare));
@@ -10551,8 +10805,8 @@ bool VkSceneRenderer::upload_scene_buffers(
                 live_vertices += p.vertex_count;
                 live_indices += p.index_count;
             }
-            std::fprintf(stderr,
-                "[vk] STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead.\n"
+            MATTER_LOGW("vk",
+                "STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead.\n"
                 "     bytes    clusters %llu/%llu  vertices %llu/%llu  "
                 "indices %llu/%llu\n"
                 "     elements clusters staging %llu live %llu free %llu | "
@@ -10746,6 +11000,16 @@ bool VkSceneRenderer::upload_scene_buffers(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
         return poison(error);
     descriptors_changed |= replaced;
+    // The occlusion-class table: same shape, same unconditional upload, and
+    // the same capacity-padding contract as the two tables above.
+    if (part_occluder_dirty_) rebuild_part_occluder_table();
+    const VkDeviceSize part_occluder_bytes =
+        static_cast<VkDeviceSize>(part_occluder_table_.size()) *
+        sizeof(uint32_t);
+    if (!ensure_buffer(frame.part_occluder_class, part_occluder_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
     if (descriptors_changed) update_frame_descriptors(frame);
     // Both of these tables are read in cull.comp under a `slot <
     // buffer.length()` bound, and length() is the BUFFER's element count, not
@@ -10792,6 +11056,16 @@ bool VkSceneRenderer::upload_scene_buffers(
         frame.part_draw_overrides.size,
         static_cast<VkDeviceSize>(part_draw_override_table_.size()) *
             sizeof(matter::PartDrawOverrideGpu));
+    // Padded with 1 (occluder), the neutral class -- same reasoning as the
+    // neutral override entry above.
+    const size_t part_occluder_capacity =
+        static_cast<size_t>(frame.part_occluder_class.size) / sizeof(uint32_t);
+    if (part_occluder_capacity > part_occluder_table_.size())
+        part_occluder_table_.resize(part_occluder_capacity, 1u);
+    const VkDeviceSize part_occluder_upload_bytes = std::min<VkDeviceSize>(
+        frame.part_occluder_class.size,
+        static_cast<VkDeviceSize>(part_occluder_table_.size()) *
+            sizeof(uint32_t));
     if (vt_slot_upload_bytes != 0 &&
         !upload(frame.vt_draw_slots, vt_draw_slot_table_.data(),
                 vt_slot_upload_bytes))
@@ -10799,6 +11073,10 @@ bool VkSceneRenderer::upload_scene_buffers(
     if (part_override_upload_bytes != 0 &&
         !upload(frame.part_draw_overrides, part_draw_override_table_.data(),
                 part_override_upload_bytes))
+        return false;
+    if (part_occluder_upload_bytes != 0 &&
+        !upload(frame.part_occluder_class, part_occluder_table_.data(),
+                part_occluder_upload_bytes))
         return false;
     vt_slots_scope.stop();
 
@@ -11246,7 +11524,7 @@ void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
     if (!matter::readback_buffer(
             *vulkan_, frame.commands, commands.data(),
             commands.size() * sizeof(DrawCommand), 0, error)) {
-        std::fprintf(stderr, "[lod-trace] command readback failed: %s\n",
+        MATTER_LOGE("lod-trace", "command readback failed: %s\n",
                      error.c_str());
         return;
     }
@@ -11254,7 +11532,7 @@ void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
     if (!matter::readback_buffer(
             *vulkan_, frame.draw_transforms, transforms.data(),
             transforms.size() * sizeof(GpuDrawTransform), 0, error)) {
-        std::fprintf(stderr, "[lod-trace] transform readback failed: %s\n",
+        MATTER_LOGE("lod-trace", "transform readback failed: %s\n",
                      error.c_str());
         return;
     }
@@ -11376,8 +11654,15 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                .min_acceleration_structure_scratch_offset_alignment);
     {
         PROFILE_SCOPE("rt.geometry");
-        if (!build_ray_geometry(frame, camera_eye, pixel_budget,
-                                get_sizes, cmd_build,
+        // The CULL eye, not the live one: this selection must land on the
+        // same rung cull.comp draws, or the TLAS holds a different surface
+        // than the G-buffer the shadow rays start from. With the cull camera
+        // frozen the two eyes part company, terrain gets traced coarse while
+        // drawn fine (or vice versa), and every region where the traced rung
+        // sits proud of the drawn one goes black in sun visibility -- the
+        // scattered coarse-triangle splotches of issue eb0b1070.
+        if (!build_ray_geometry(frame, lod_selection_eye(camera_eye),
+                                pixel_budget, get_sizes, cmd_build,
                                 selected_geometry, pending, error))
             return false;
     }
@@ -11887,8 +12172,8 @@ void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
     rt_invalid_part_records_last_ = invalid;
     if (invalid == 0) return;
     rt_invalid_part_records_total_ += invalid;
-    std::fprintf(stderr,
-                 "[vk] RT rejected %u part record(s) last frame (%llu total) -- "
+    MATTER_LOGW("vk",
+                 "RT rejected %u part record(s) last frame (%llu total) -- "
                  "a rejected record is a stale or unwritten rt_parts slot\n",
                  invalid,
                  static_cast<unsigned long long>(
@@ -14187,6 +14472,87 @@ VkRasterAttachments VkSceneRenderer::raster_attachments() const {
             {depth_.image, depth_.format},
             {hdr_.image, hdr_.format},
             raster_extent_};
+}
+
+// ---------------------------------------------------------------------------
+// GPU pick: single-pixel readback of the identity attachment.
+// ---------------------------------------------------------------------------
+namespace {
+struct PickReadbackRecord {
+    matter::VkImageResource* image;
+    VkBuffer destination;
+    uint32_t x, y;
+};
+
+void record_pick_readback(VkCommandBuffer cb, void* user_data) {
+    const auto& r = *static_cast<PickReadbackRecord*>(user_data);
+    transition_for_use(cb, *r.image,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    VkBufferImageCopy copy{};
+    copy.bufferOffset = 0;
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageOffset = {static_cast<int32_t>(r.x),
+                        static_cast<int32_t>(r.y), 0};
+    copy.imageExtent = {1, 1, 1};
+    vkCmdCopyImageToBuffer(cb, r.image->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           r.destination, 1, &copy);
+    VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(cb, &dep);
+}
+}  // namespace
+
+bool VkSceneRenderer::readback_pick_identity(uint32_t x, uint32_t y,
+                                             uint32_t& instance_token,
+                                             std::string& error) {
+    error.clear();
+    instance_token = UINT32_MAX;
+    if (!raster_attachments_ready_) {
+        error = "raster attachments unavailable";
+        return false;
+    }
+    if (x >= raster_extent_.width || y >= raster_extent_.height ||
+        material_instance_.image == VK_NULL_HANDLE) {
+        error = "pick pixel outside rendered extent";
+        return false;
+    }
+    matter::VkBufferResource staging;
+    constexpr VkDeviceSize kIdentityBytes = 8;
+    if (!matter::create_buffer(
+            *vulkan_, kIdentityBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            staging, error)) {
+        return false;
+    }
+    PickReadbackRecord record{&material_instance_, staging.buffer, x, y};
+    std::vector<std::shared_ptr<void>> deps{
+        material_instance_.lifetime, staging.lifetime};
+    if (!matter::submit_immediate(
+            *vulkan_, record_pick_readback, &record, error,
+            matter::ImmediateSubmitPhase::compute_dispatch,
+            std::move(deps))) {
+        return false;
+    }
+    uint32_t identity[2]{};
+    if (!matter::readback_buffer(*vulkan_, staging,
+                                 identity, sizeof(identity), 0, error)) {
+        return false;
+    }
+    instance_token = identity[1];
+    return true;
 }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION

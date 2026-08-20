@@ -7,6 +7,7 @@
 #include "tlas_manager.hpp"       // TLASManager (required by load_v2 signature)
 #include "bvh.h"                  // BVHRay, Intersection, Tri, TriEx
 #include "material_registry.h"    // MaterialRegistryGet
+#include "matter/log.h"
 
 #include <algorithm>
 #include <cassert>
@@ -183,6 +184,8 @@ struct WorldTracer::Impl {
     ResidentSource resident_source_;
     size_t resident_hits_ = 0;
     size_t disk_loads_ = 0;
+    // part_hash → first expanded instance index (for O(1) lookup by hash)
+    std::unordered_map<uint64_t, size_t> hash_to_first_;
 
     // ---- Loading ----
 
@@ -337,7 +340,7 @@ struct WorldTracer::Impl {
                 expand_instance(cache_root, ci.child_resolved_hash,
                                 combined, depth + 1, err);
                 if (!err.empty()) {
-                    std::fprintf(stderr,
+                    MATTER_LOGW("tracer",
                         "world_tracer: warning expanding child 0x%llx of 0x%llx: %s\n",
                         (unsigned long long)ci.child_resolved_hash,
                         (unsigned long long)hash, err.c_str());
@@ -360,8 +363,8 @@ struct WorldTracer::Impl {
         ei.part_hash = hash;
         std::memcpy(ei.transform, world_xf, 64);
         if (!invert4x4(world_xf, ei.inv)) {
-            std::fprintf(stderr, "world_tracer: near-singular transform for hash %llu\n",
-                         (unsigned long long)hash);
+            MATTER_LOGW("tracer", "world_tracer: near-singular transform for hash %llu\n",
+                        (unsigned long long)hash);
         }
         ei.nm = &nm_pool_.back();
 
@@ -604,9 +607,15 @@ bool WorldTracer::build(const std::string& cache_root,
         im.expand_instance(cache_root, ti.part_hash, ti.transform, 0, err);
         // Non-fatal: warn on missing parts but keep going.
         if (!err.empty()) {
-            std::fprintf(stderr, "world_tracer: warning: %s\n", err.c_str());
+            MATTER_LOGW("tracer", "world_tracer: warning: %s\n", err.c_str());
             err.clear();
         }
+    }
+
+    // Build hash → first expanded index map for O(1) lookups.
+    im.hash_to_first_.reserve(im.expanded_.size());
+    for (size_t i = 0; i < im.expanded_.size(); ++i) {
+        im.hash_to_first_.emplace(im.expanded_[i].part_hash, i);
     }
 
     // Handle empty case
@@ -703,6 +712,17 @@ bool WorldTracer::expanded_instance(size_t idx, uint64_t& part_hash,
                                     float transform[16]) const {
     if (!impl_ || idx >= impl_->expanded_.size()) return false;
     const ExpandedInst& ei = impl_->expanded_[idx];
+    part_hash = ei.part_hash;
+    std::memcpy(transform, ei.transform, 64);
+    return true;
+}
+
+bool WorldTracer::expanded_instance_by_hash(uint64_t hash, uint64_t& part_hash,
+                                            float transform[16]) const {
+    if (!impl_) return false;
+    auto it = impl_->hash_to_first_.find(hash);
+    if (it == impl_->hash_to_first_.end()) return false;
+    const ExpandedInst& ei = impl_->expanded_[it->second];
     part_hash = ei.part_hash;
     std::memcpy(transform, ei.transform, 64);
     return true;

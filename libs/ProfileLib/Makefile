@@ -6,9 +6,12 @@
 #   make compileout run the compile-OUT proof (asserts on emitted object code)
 #   make check      test + compileout
 #
-# Windows/MSYS2 UCRT64: pass TMP/TEMP explicitly (MSYS make clobbers them),
-# matching the rest of the repo:
+# Windows/MSYS2 UCRT64: platform.mk (included below) derives a working
+# TMP/TEMP automatically now; passing them explicitly still works too:
 #   make -C libs/ProfileLib check TMP="C:/Users/.../Temp" TEMP="C:/Users/.../Temp"
+
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../platform.mk
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Iinclude

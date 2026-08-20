@@ -40,4 +40,13 @@ struct PartChildSummary {
     uint32_t    instance_count = 0;
 };
 
+// GPU identity-buffer pick result.
+enum class PickKind : uint8_t { None, StaticInstance, DynamicEntity };
+
+struct PickIdentity {
+    PickKind kind = PickKind::None;
+    uint64_t part_hash = 0;
+    uint64_t entity_id = 0;
+};
+
 } // namespace matter

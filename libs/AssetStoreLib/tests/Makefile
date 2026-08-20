@@ -15,6 +15,9 @@
 # Adding an ASan variant means teaching the child modes to run clean under it
 # first; that has not been done.
 
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../../platform.mk
+
 CXX = g++
 LIB_DIR = ..
 MEMLIB_DIR = ../../MemoryLib

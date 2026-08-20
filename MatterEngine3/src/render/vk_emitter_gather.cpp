@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "matter/log.h"
+
 namespace viewer {
 
 // ---------------------------------------------------------------------------
@@ -92,8 +94,8 @@ std::vector<GpuVolumeEmitter> VolumeEmitterGatherer::gather(
 
     if (candidates.size() > kMaxEmitters) {
         if (!overflow_logged_) {
-            fprintf(stderr,
-                    "[volumetrics] %zu emitters in range, capped to %u\n",
+            MATTER_LOGW("volumetrics",
+                    "%zu emitters in range, capped to %u\n",
                     candidates.size(),
                     static_cast<unsigned>(kMaxEmitters));
             overflow_logged_ = true;

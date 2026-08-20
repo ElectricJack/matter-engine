@@ -10,6 +10,9 @@
 #
 # Deliberately does NOT touch MatterEngine3/tests/Makefile.
 
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../../platform.mk
+
 CXX = g++
 ENGINE_INCLUDE = ../../../MatterEngine3/include
 CXXFLAGS = -std=c++17 -Wall -Wextra -g -I../include -I$(ENGINE_INCLUDE)

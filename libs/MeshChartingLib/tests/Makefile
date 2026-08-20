@@ -1,3 +1,6 @@
+# Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
+include ../../../platform.mk
+
 CXX ?= g++
 CXXFLAGS = -Wall -Wextra -O2 -std=c++17 -I../include
 
