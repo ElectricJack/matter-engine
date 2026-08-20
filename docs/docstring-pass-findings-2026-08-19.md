@@ -2,16 +2,44 @@
 
 The documentation pass over all 482 non-test sources changed **only comments**
 (proved by stripping every comment and diffing against HEAD). But reading all
-167,906 lines closely surfaced a pile of real defects and stale claims. None of
-them were fixed — this file is the backlog.
+167,906 lines closely surfaced a pile of real defects and stale claims. Nothing
+was fixed in the documentation commit itself; this file is the backlog, and
+items fixed since are marked inline.
 
 Ordered by how much they can hurt. Line numbers are as of `e7c19aae`.
+
+> **Status, 2026-08-19 (later the same day).** A first fix pass landed the items
+> marked **[FIXED]** below. One item originally listed here was withdrawn on
+> inspection — see "Not a bug after all". Everything unmarked is still open.
+
+---
+
+## 0. Not a bug after all
+
+**One bad skin binding kills the whole frame's skinning** — withdrawn.
+
+`AnimationSkinBridge::expand()` returning `false` when no LOD carries
+`input.part_hash` is deliberate, and
+`MatterEngine3/tests/animation_skin_bridge_tests.cpp` pins it:
+`test_stale_and_mismatched_bindings_fail_without_torn_work`, case *"part
+replacement cannot reuse an old mapping"*. It exists to catch an entity whose
+`PartInstance` was swapped while its skin binding still points at the old
+asset. The caller's all-or-nothing behaviour is equally deliberate and
+documented on `collect_animation_skinning`: `out` is left untouched on failure
+so the renderer can never receive a torn subset of a scene generation.
+
+Both halves are intentional, so the wide blast radius is a design tension
+(a per-entity authoring error fails the whole frame's skin queue), not a
+defect. Changing it means giving `expand()` a three-way result and reporting
+per-entity misconfiguration on the bridge error hub — a design change, not a
+fix. The `valid_animation_skinned_asset()` cost noted in §2 is still real and
+still open.
 
 ---
 
 ## 1. Wrong behaviour a user could hit
 
-### Authored `ConvexHullCollider` data is silently discarded
+### Authored `ConvexHullCollider` data is silently discarded  **[FIXED]**
 `MatterEngine3/src/ecs/scene_registry.cpp:819`
 
 ```cpp
@@ -31,7 +59,7 @@ the struct. And `ConvexHullCollider` is missing from the `EntitySnapshot`
 whitelist in `simulation_control.h:20`, so a hull collider does not survive
 Play → Stop even though the other three collider types do.
 
-### One bad skin binding kills the whole frame's skinning
+### One bad skin binding kills the whole frame's skinning  **[WITHDRAWN -- see §0]**
 `MatterEngine3/src/render/animation_skin_bridge.cpp:140`
 
 `expand()` returns `emitted`, so a valid asset with no `AnimationSkinnedLod`
@@ -54,7 +82,7 @@ Also `:227` — any manipulation writes back translation, rotation *and* scale
 (the result arrives as one matrix and is decomposed), so a pure translate drag
 rewrites the rotation quaternion and scale with round-tripped values.
 
-### `TLAS(blas, 0)` dereferences null
+### `TLAS(blas, 0)` dereferences null  **[FIXED]**
 `libs/SpatialQueryLib/src/bvh.cpp:536`
 
 `MALLOC64(0)` returns 0, so `tlasNode` is null, and the constructor's own
@@ -62,14 +90,14 @@ rewrites the rotation quaternion and scale with round-tripped values.
 Masked today only because `tlas_manager.cpp` guards with
 `if (!instance_ptrs.empty())`.
 
-### `mem::Arena::stats()` / `mem::Pool::stats()` return uninitialized memory
+### `mem::Arena::stats()` / `mem::Pool::stats()` return uninitialized memory  **[FIXED]**
 `libs/MemoryLib/include/memory.hpp:42` and `:69`
 
 Both do `MemStats s; mem_*_get_stats(handle, &s); return s;`, and both C getters
 early-return *without touching* `out` when the handle is null (moved-from, or a
 failed `create`). One-character fix: `MemStats s{};`.
 
-### `divisionPow == 0` divides by zero
+### `divisionPow == 0` divides by zero  **[FIXED]**
 `libs/MatterSurfaceLib/src/surface.c:569`
 
 `gridSize = 1 << volume.divisionPow;` then `cellSize = volume.size / (gridSize - 1)`.
@@ -79,7 +107,7 @@ Nothing in the file validates `divisionPow`.
 
 ## 2. Performance work that isn't happening
 
-### The GPU-pick reverse map rebuilds every frame despite its "gate"
+### The GPU-pick reverse map rebuilds every frame despite its "gate"  **[FIXED]**
 `MatterEngine3/src/matter_engine.cpp:10708`
 
 ```cpp
@@ -94,7 +122,7 @@ O(instances) hash rebuild runs unconditionally. This is the same shape as the
 already-known `instance_generation_` gate trap — a change-gate whose predicate
 is made true by the code just above it.
 
-### Every TLAS is built twice
+### Every TLAS is built twice  **[FIXED]**
 `libs/MatterSurfaceLib/src/tlas_manager.cpp:237`
 
 `make_unique<TLAS>(...)` runs `Build()` in the constructor, then `tlas_->Build()`
@@ -135,7 +163,7 @@ Called from both the outline overlay and the pick raycast.
 
 | Where | What |
 |---|---|
-| `libs/MatterSurfaceLib/src/tlas_manager.cpp:36` | `push_matrix` skips at depth ≥ 32 but the matching `pop_matrix` still pops — overflowing the cap discards a *caller's* outer transform |
+| `libs/MatterSurfaceLib/src/tlas_manager.cpp:36` **[FIXED]** | `push_matrix` skips at depth ≥ 32 but the matching `pop_matrix` still pops — overflowing the cap discards a *caller's* outer transform |
 | `libs/MatterSurfaceLib/src/cluster.cpp` | `rebuild_dirty_cells` caps `sh_query_box` at 4096/cell, `get_cells_in_region` caps `sh_query_radius` at 1000; surplus dropped with no diagnostic |
 | `animation_evaluator.cpp` | `forward_clip_root_delta` truncates at `kMaxSegments = 4096`; a partial root delta is indistinguishable from a complete one |
 | `world_tracer.cpp:319` | `expand_instance` drops subtrees past depth 8, nothing in `err` |
@@ -145,7 +173,7 @@ Called from both the outline overlay and the pick raycast.
 | `MatterEngine3/src/props/props_file.cpp:52` | both early `return false` paths leak `path + ".tmp"` |
 
 Also: `MatterEditor/src/main.cpp:5022` and `:5043` close the FIFO fd **twice**
-on POSIX.
+on POSIX. **[FIXED]**
 
 ---
 
@@ -227,7 +255,7 @@ Never produced: `Status::Locked` (AssetStoreLib), `LoadFailure::Open`
 (impostor_bake), `SectorStreamingState::Detaching`.
 
 Always zero: `TLASAnalysis::avg_instance_triangles` (`total_blas_triangles`
-never incremented), `physics_transform_marker_allocations_for_test`,
+never incremented) **[FIXED]**, `physics_transform_marker_allocations_for_test`,
 `SceneSnapshot::generation`, `world_flatten.h FlatInstance::stable_id`.
 
 Inert: `TLASManager::print_stats()` (entire body commented out),

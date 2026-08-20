@@ -217,7 +217,11 @@ class ALIGN(64) BVH
 	};
 public:
 	BVH() = default;
-	BVH( BvhMesh* mesh );
+	// Allocates the node pool and builds immediately. Pass
+	// subdiv_to_one_prim = true to split down to single-triangle leaves; it is
+	// applied BEFORE the build, so the tree is built once. (Setting the member
+	// afterwards and calling Build() again works too, but pays for two builds.)
+	BVH( BvhMesh* mesh, bool subdiv_to_one_prim = false );
 	// Install a previously-built BVH (from disk) without rebuilding. nodes/triIdx
 	// are copied; nodes_used is the live node count. mesh must outlive this BVH.
 	BVH( BvhMesh* mesh, const BVHNode* nodes, uint nodes_used, const uint* tri_idx );
@@ -244,6 +248,12 @@ public:
 	// into the top 12 bits of `hit.instPrim` and is otherwise unused, so a
 	// direct (non-TLAS) caller passes 0.
 	void Intersect( BVHRay& ray, uint instanceIdx );
+	// Triangle count of the mesh this BLAS indexes, or 0 when no mesh is
+	// attached (a default-constructed BVH). Read-only window onto the private
+	// back-pointer, for diagnostics that have a BVH but not its BvhMesh --
+	// `bvh_analyzer` needs it to report per-instance triangle totals. Defined
+	// out of line because BvhMesh is only forward-declared in this header.
+	uint TriangleCount() const;
 private:
 	// Build internals. `centroidMin`/`centroidMax` are in/out scratch threaded
 	// through the recursion rather than recomputed: `UpdateNodeBounds` writes
@@ -278,8 +288,8 @@ public:
 	BVHNode* bvhNode = 0;
 	// When set, `Subdivide` splits all the way down to single-triangle leaves
 	// instead of stopping on the SAH cost test. Set it *before* calling
-	// `Build()` — the mesh-taking constructor has already built by the time
-	// you can touch it, so `blas_manager` sets the flag and rebuilds.
+	// `Build()`; prefer the constructor's `subdiv_to_one_prim` argument, which
+	// does exactly that and avoids building the tree twice.
 	bool subdivToOnePrim = false; // for TLAS experiment
 	BuildJob buildStack[64];
 	int buildStackPtr;

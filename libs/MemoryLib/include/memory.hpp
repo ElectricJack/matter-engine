@@ -85,12 +85,12 @@ public:
     // reset() invalidates every pointer this Arena has handed out; it keeps
     // the largest block for reuse and does not zero it.
     //
-    // stats() is only meaningful when valid() is true: mem_arena_get_stats()
-    // returns without writing anything for a null handle, so calling stats()
-    // on a default-failed or moved-from Arena returns an uninitialized
-    // MemStats. Guard with valid().
+    // stats() on an invalid Arena (default-failed, or moved-from) reports all
+    // zeros: mem_arena_get_stats() returns without writing anything for a null
+    // handle, so the result is value-initialized here first. Zeros are the
+    // truthful answer for an arena that owns nothing.
     void reset() { mem_arena_reset(a_); }
-    MemStats stats() const { MemStats s; mem_arena_get_stats(a_, &s); return s; }
+    MemStats stats() const { MemStats s{}; mem_arena_get_stats(a_, &s); return s; }
     bool valid() const { return a_ != nullptr; }
 
 private:
@@ -128,11 +128,12 @@ public:
     // is not tracked, so a foreign or double free silently corrupts the free
     // list. Neither runs a constructor or destructor.
     //
-    // stats(), like Arena::stats(), returns an uninitialized MemStats when
-    // valid() is false, because the C getter skips a null handle.
+    // stats(), like Arena::stats(), reports all zeros when valid() is false:
+    // the C getter skips a null handle, so the result is value-initialized
+    // here first.
     void* alloc() { return mem_pool_alloc(p_); }
     void free(void* obj) { mem_pool_free(p_, obj); }
-    MemStats stats() const { MemStats s; mem_pool_get_stats(p_, &s); return s; }
+    MemStats stats() const { MemStats s{}; mem_pool_get_stats(p_, &s); return s; }
     bool valid() const { return p_ != nullptr; }
 
 private:

@@ -10,8 +10,8 @@
 // whether to run the fixed pipeline.
 //
 // Snapshot scope is a deliberate WHITELIST (see EntitySnapshot): identity,
-// parent, name, transform, PartInstance, RigidBody, PhysicsVelocity and the
-// box/sphere/capsule colliders. Components outside it — ConvexHullCollider,
+// parent, name, transform, PartInstance, RigidBody, PhysicsVelocity and all
+// four colliders (box/sphere/capsule/convex-hull). Components outside it —
 // SectorStreaming, anything gameplay adds — are not restored by stop().
 //
 // Threading: app-thread affine. Every method that takes a `flecs::world&`
@@ -59,6 +59,8 @@ struct EntitySnapshot {
     bool has_sphere_collider = false;
     physics::CapsuleCollider capsule_collider{};
     bool has_capsule_collider = false;
+    physics::ConvexHullCollider convex_hull_collider{};
+    bool has_convex_hull_collider = false;
 };
 
 // Complete scene snapshot taken at Play transition.

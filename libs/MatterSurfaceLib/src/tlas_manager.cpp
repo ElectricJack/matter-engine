@@ -80,18 +80,27 @@ mm::Mat4& TLASManager::get_current_matrix() {
 void TLASManager::push_matrix() {
     if (matrix_stack_.size() >= 32) { // Reasonable limit
         printf("Warning: Matrix stack overflow in TLAS manager\n");
+        // Remember the refusal so the matching pop_matrix() is refused too.
+        ++suppressed_pushes_;
         return;
     }
-    
+
     matrix_stack_.push(matrix_stack_.top());
 }
 
 void TLASManager::pop_matrix() {
+    // Unwind a refused push first: popping here would remove a level this
+    // pop's caller never pushed, quietly replacing an OUTER transform with an
+    // inner one instead of merely dropping the over-deep nesting.
+    if (suppressed_pushes_ > 0) {
+        --suppressed_pushes_;
+        return;
+    }
     if (matrix_stack_.size() <= 1) {
         printf("Warning: Matrix stack underflow in TLAS manager\n");
         return;
     }
-    
+
     matrix_stack_.pop();
 }
 
@@ -308,8 +317,9 @@ void TLASManager::build(const BLASManager& blas_manager) {
         for (BVHInstance* p : instance_ptrs) {
             instance_storage_.push_back(*p);
         }
+        // TLAS's constructor already calls Build(); a second explicit Build()
+        // here just rebuilt the whole top level a second time, every rebuild.
         tlas_ = std::make_unique<TLAS>(instance_storage_.data(), static_cast<int>(instance_storage_.size()));
-        tlas_->Build();
     }
 
     mark_dirty();

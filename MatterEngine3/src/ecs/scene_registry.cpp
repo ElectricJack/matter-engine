@@ -504,6 +504,38 @@ static bool extract_float_array(const std::string& json, const std::string& fiel
     return true;
 }
 
+// Variable-length sibling of extract_float_array, for arrays whose length is
+// authored rather than fixed by the schema (today: ConvexHullCollider's point
+// cloud). Reads up to `max` floats and stops at the closing ']', reporting how
+// many landed in `count`. Returns false when the field is missing or is not an
+// array; a well-formed but over-long array fills `max` and is reported as
+// truncated by `count == max` -- the caller decides whether that is an error.
+static bool extract_float_array_upto(const std::string& json,
+                                     const std::string& field,
+                                     float* out, size_t max, size_t& count) {
+    count = 0;
+    size_t pos = json.find("\"" + field + "\"");
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    if (pos >= json.size() || json[pos] != '[') return false;
+    ++pos;
+    while (count < max) {
+        while (pos < json.size() &&
+               (json[pos] == ' ' || json[pos] == '\t' || json[pos] == ',' ||
+                json[pos] == '\n' || json[pos] == '\r')) ++pos;
+        if (pos >= json.size() || json[pos] == ']') break;
+        char* end = nullptr;
+        out[count] = std::strtof(json.c_str() + pos, &end);
+        if (end == json.c_str() + pos) break;   // not a number: stop cleanly
+        pos = end - json.c_str();
+        ++count;
+    }
+    return true;
+}
+
 static bool extract_float_field(const std::string& json, const std::string& field,
                                 float& out) {
     size_t pos = json.find("\"" + field + "\"");
@@ -863,6 +895,8 @@ bool instantiate(flecs::world& world,
                 if (extract_float_field(sj, "density", f)) sc.properties.density = f;
                 if (extract_float_field(sj, "friction", f)) sc.properties.friction = f;
                 if (extract_float_field(sj, "restitution", f)) sc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(sj, "sensor", b)) sc.properties.sensor = b;
                 e.set<physics::SphereCollider>(sc);
                 break;
             }
@@ -876,6 +910,8 @@ bool instantiate(flecs::world& world,
                 if (extract_float_field(cj, "density", f)) cc.properties.density = f;
                 if (extract_float_field(cj, "friction", f)) cc.properties.friction = f;
                 if (extract_float_field(cj, "restitution", f)) cc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(cj, "sensor", b)) cc.properties.sensor = b;
                 e.set<physics::CapsuleCollider>(cc);
                 break;
             }
@@ -884,20 +920,44 @@ bool instantiate(flecs::world& world,
                 physics::BoxCollider bc{};
                 extract_float_array(bj, "center", &bc.center.x, 3);
                 extract_float_array(bj, "halfExtents", &bc.half_extents.x, 3);
+                float rot[4];
+                if (extract_float_array(bj, "rotation", rot, 4))
+                    bc.rotation = {rot[0], rot[1], rot[2], rot[3]};
                 float f;
                 if (extract_float_field(bj, "density", f)) bc.properties.density = f;
                 if (extract_float_field(bj, "friction", f)) bc.properties.friction = f;
                 if (extract_float_field(bj, "restitution", f)) bc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(bj, "sensor", b)) bc.properties.sensor = b;
                 e.set<physics::BoxCollider>(bc);
                 break;
             }
-            // Default-constructed: point_count stays 0 and no authored points
-            // are read out of the JSON, so a hull authored in a recipe arrives
-            // empty and physics rejects it with InvalidCollider until something
-            // else fills it in.
-            case ComponentKind::ConvexHullCollider:
-                e.set<physics::ConvexHullCollider>({});
+            case ComponentKind::ConvexHullCollider: {
+                std::string hj = extract_component_value_json(recipe.components_json, key);
+                physics::ConvexHullCollider hc{};
+                // `points` is a flat [x,y,z, x,y,z, ...] run, not an array of
+                // triples, matching how every other Float3 in this file is
+                // authored. The component's budget is a fixed 32 points, so a
+                // longer array is truncated rather than overflowing; the solver
+                // then hulls whatever arrived (or reports HullBuildFailed).
+                float pts[32 * 3];
+                size_t got = 0;
+                if (extract_float_array_upto(hj, "points", pts,
+                                             sizeof(pts) / sizeof(pts[0]), got)) {
+                    const size_t n = got / 3;   // ignore a trailing partial triple
+                    for (size_t i = 0; i < n; ++i)
+                        hc.points[i] = {pts[i * 3 + 0], pts[i * 3 + 1], pts[i * 3 + 2]};
+                    hc.point_count = static_cast<uint32_t>(n);
+                }
+                float f;
+                if (extract_float_field(hj, "density", f)) hc.properties.density = f;
+                if (extract_float_field(hj, "friction", f)) hc.properties.friction = f;
+                if (extract_float_field(hj, "restitution", f)) hc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(hj, "sensor", b)) hc.properties.sensor = b;
+                e.set<physics::ConvexHullCollider>(hc);
                 break;
+            }
             case ComponentKind::PartInstance: {
                 PartInstance pi{};
                 pi.part_hash = recipe.part_hash;

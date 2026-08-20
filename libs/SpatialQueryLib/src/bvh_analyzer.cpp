@@ -398,7 +398,13 @@ TLASAnalysis BVHAnalyzer::AnalyzeTLAS(const TLAS* tlas, const std::string& name)
             // For now, create a basic analysis
             BVHTreeAnalysis blas_analysis;
             blas_analysis.total_nodes = instance->bvh->nodesUsed;
-            // Note: We'd need mesh data to do full analysis
+            // The instance's BVH keeps a back-pointer to the mesh it indexes, so
+            // the triangle count IS reachable here. Accumulating it is what makes
+            // avg_instance_triangles below a real number: it divided by a total
+            // that nothing ever incremented, so it was always exactly 0.
+            blas_analysis.total_triangles =
+                static_cast<uint32_t>(instance->bvh->TriangleCount());
+            total_blas_triangles += blas_analysis.total_triangles;
             analysis.blas_analyses.push_back(blas_analysis);
         }
     }
@@ -430,61 +436,61 @@ TLASAnalysis BVHAnalyzer::AnalyzeTLAS(const TLAS* tlas, const std::string& name)
 std::string BVHAnalyzer::GenerateReport(const BVHTreeAnalysis& analysis, const std::string& tree_name) {
     std::ostringstream report;
     
-    report << "\\n=== BVH ANALYSIS REPORT: " << (tree_name.empty() ? "Unnamed Tree" : tree_name) << " ===\\n";
+    report << "\n=== BVH ANALYSIS REPORT: " << (tree_name.empty() ? "Unnamed Tree" : tree_name) << " ===\n";
     report << std::fixed << std::setprecision(2);
     
     // Overall quality
-    report << "Overall Quality Score: " << analysis.overall_quality_score << "/100\\n";
-    if (analysis.overall_quality_score >= 80) report << "Status: EXCELLENT\\n";
-    else if (analysis.overall_quality_score >= 60) report << "Status: GOOD\\n";
-    else if (analysis.overall_quality_score >= 40) report << "Status: FAIR\\n";
-    else report << "Status: POOR\\n";
+    report << "Overall Quality Score: " << analysis.overall_quality_score << "/100\n";
+    if (analysis.overall_quality_score >= 80) report << "Status: EXCELLENT\n";
+    else if (analysis.overall_quality_score >= 60) report << "Status: GOOD\n";
+    else if (analysis.overall_quality_score >= 40) report << "Status: FAIR\n";
+    else report << "Status: POOR\n";
     
-    report << "\\n--- STRUCTURE METRICS ---\\n";
-    report << "Total Nodes: " << analysis.total_nodes << "\\n";
-    report << "Leaf Nodes: " << analysis.leaf_nodes << "\\n";
-    report << "Internal Nodes: " << analysis.internal_nodes << "\\n";
-    report << "Total Triangles: " << analysis.total_triangles << "\\n";
+    report << "\n--- STRUCTURE METRICS ---\n";
+    report << "Total Nodes: " << analysis.total_nodes << "\n";
+    report << "Leaf Nodes: " << analysis.leaf_nodes << "\n";
+    report << "Internal Nodes: " << analysis.internal_nodes << "\n";
+    report << "Total Triangles: " << analysis.total_triangles << "\n";
     
-    report << "\\n--- DEPTH ANALYSIS ---\\n";
-    report << "Max Depth: " << analysis.max_depth << "\\n";
-    report << "Min Depth: " << analysis.min_depth << "\\n";
-    report << "Avg Depth: " << analysis.avg_depth << "\\n";
-    report << "Depth Std Dev: " << analysis.depth_std_deviation << "\\n";
+    report << "\n--- DEPTH ANALYSIS ---\n";
+    report << "Max Depth: " << analysis.max_depth << "\n";
+    report << "Min Depth: " << analysis.min_depth << "\n";
+    report << "Avg Depth: " << analysis.avg_depth << "\n";
+    report << "Depth Std Dev: " << analysis.depth_std_deviation << "\n";
     
-    report << "\\n--- BALANCE METRICS ---\\n";
-    report << "Balance Factor: " << analysis.balance_factor << " (1.0 = perfect)\\n";
-    report << "Tree Efficiency: " << analysis.tree_efficiency << " (1.0 = optimal)\\n";
-    report << "Node Utilization: " << (analysis.node_utilization * 100.0f) << "%\\n";
+    report << "\n--- BALANCE METRICS ---\n";
+    report << "Balance Factor: " << analysis.balance_factor << " (1.0 = perfect)\n";
+    report << "Tree Efficiency: " << analysis.tree_efficiency << " (1.0 = optimal)\n";
+    report << "Node Utilization: " << (analysis.node_utilization * 100.0f) << "%\n";
     
-    report << "\\n--- TRIANGLE DISTRIBUTION ---\\n";
-    report << "Max Triangles/Leaf: " << analysis.max_triangles_per_leaf << "\\n";
-    report << "Min Triangles/Leaf: " << analysis.min_triangles_per_leaf << "\\n";
-    report << "Avg Triangles/Leaf: " << analysis.avg_triangles_per_leaf << "\\n";
-    report << "Distribution Variance: " << analysis.triangle_distribution_variance << "\\n";
+    report << "\n--- TRIANGLE DISTRIBUTION ---\n";
+    report << "Max Triangles/Leaf: " << analysis.max_triangles_per_leaf << "\n";
+    report << "Min Triangles/Leaf: " << analysis.min_triangles_per_leaf << "\n";
+    report << "Avg Triangles/Leaf: " << analysis.avg_triangles_per_leaf << "\n";
+    report << "Distribution Variance: " << analysis.triangle_distribution_variance << "\n";
     
-    report << "\\n--- PERFORMANCE METRICS ---\\n";
-    report << "Estimated Traversal Cost: " << analysis.estimated_traversal_cost << "\\n";
-    report << "Memory Usage: " << (analysis.memory_usage_bytes / 1024.0f) << " KB\\n";
-    report << "Memory Efficiency: " << (analysis.memory_efficiency * 100.0f) << "%\\n";
+    report << "\n--- PERFORMANCE METRICS ---\n";
+    report << "Estimated Traversal Cost: " << analysis.estimated_traversal_cost << "\n";
+    report << "Memory Usage: " << (analysis.memory_usage_bytes / 1024.0f) << " KB\n";
+    report << "Memory Efficiency: " << (analysis.memory_efficiency * 100.0f) << "%\n";
     
     // Issues and recommendations
     if (!analysis.quality_issues.empty()) {
-        report << "\\n--- QUALITY ASSESSMENT ---\\n";
+        report << "\n--- QUALITY ASSESSMENT ---\n";
         for (const auto& issue : analysis.quality_issues) {
-            report << "• " << issue << "\\n";
+            report << "• " << issue << "\n";
         }
     }
     
     if (!analysis.recommendations.empty()) {
-        report << "\\n--- RECOMMENDATIONS ---\\n";
+        report << "\n--- RECOMMENDATIONS ---\n";
         for (const auto& rec : analysis.recommendations) {
-            report << "• " << rec << "\\n";
+            report << "• " << rec << "\n";
         }
     }
     
-    report << "\\nAnalysis completed in " << analysis.analysis_time_ms << " ms\\n";
-    report << "================================================\\n";
+    report << "\nAnalysis completed in " << analysis.analysis_time_ms << " ms\n";
+    report << "================================================\n";
     
     return report.str();
 }
@@ -493,20 +499,20 @@ std::string BVHAnalyzer::GenerateReport(const BVHTreeAnalysis& analysis, const s
 std::string BVHAnalyzer::GenerateTLASReport(const TLASAnalysis& analysis, const std::string& tlas_name) {
     std::ostringstream report;
     
-    report << "\\n=== TLAS ANALYSIS REPORT: " << (tlas_name.empty() ? "Unnamed TLAS" : tlas_name) << " ===\\n";
+    report << "\n=== TLAS ANALYSIS REPORT: " << (tlas_name.empty() ? "Unnamed TLAS" : tlas_name) << " ===\n";
     report << std::fixed << std::setprecision(2);
     
-    report << "TLAS Quality Score: " << analysis.tlas_quality_score << "/100\\n";
-    report << "Total Instances: " << analysis.total_instances << "\\n";
-    report << "TLAS Nodes: " << analysis.tlas_nodes << "\\n";
-    report << "Max TLAS Depth: " << analysis.max_tlas_depth << "\\n";
-    report << "TLAS Balance Factor: " << analysis.tlas_balance_factor << "\\n";
-    report << "Avg Instance Triangles: " << analysis.avg_instance_triangles << "\\n";
+    report << "TLAS Quality Score: " << analysis.tlas_quality_score << "/100\n";
+    report << "Total Instances: " << analysis.total_instances << "\n";
+    report << "TLAS Nodes: " << analysis.tlas_nodes << "\n";
+    report << "Max TLAS Depth: " << analysis.max_tlas_depth << "\n";
+    report << "TLAS Balance Factor: " << analysis.tlas_balance_factor << "\n";
+    report << "Avg Instance Triangles: " << analysis.avg_instance_triangles << "\n";
     
-    report << "\\nBLAS Instances: " << analysis.blas_analyses.size() << "\\n";
+    report << "\nBLAS Instances: " << analysis.blas_analyses.size() << "\n";
     
-    report << "\\nAnalysis completed in " << analysis.total_analysis_time_ms << " ms\\n";
-    report << "================================================\\n";
+    report << "\nAnalysis completed in " << analysis.total_analysis_time_ms << " ms\n";
+    report << "================================================\n";
     
     return report.str();
 }

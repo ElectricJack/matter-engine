@@ -5392,7 +5392,14 @@ int main() {
     print_seam_summary("shutdown");
 
 #ifndef _WIN32
-    if (cmd_fd >= 0) close(cmd_fd);
+    // Close once and disarm: the symmetric teardown further down (the partner
+    // of the Windows CloseHandle) also closes cmd_fd, and closing the same
+    // descriptor twice can take out an unrelated fd that the runtime handed
+    // out for the same number in between.
+    if (cmd_fd >= 0) {
+        close(cmd_fd);
+        cmd_fd = -1;
+    }
     if (fifo_path) unlink(fifo_path);
 #endif
     if (camera_capture) camera_controller.set_capture(window, false, false);

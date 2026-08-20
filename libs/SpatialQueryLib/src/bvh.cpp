@@ -196,12 +196,20 @@ TLAS::~TLAS()
 	delete[] nodeIdx;
 }
 
-BVH::BVH( BvhMesh* triMesh )
+BVH::BVH( BvhMesh* triMesh, bool subdiv_to_one_prim )
 {
 	mesh = triMesh;
 	bvhNode = (BVHNode*)MALLOC64( sizeof( BVHNode ) * mesh->triCount * 2 + 64 );
 	triIdx = new uint[mesh->triCount];
+	// Applied before the build so the caller that wants single-triangle leaves
+	// gets one build rather than a default build followed by a full rebuild.
+	subdivToOnePrim = subdiv_to_one_prim;
 	Build();
+}
+
+uint BVH::TriangleCount() const
+{
+	return mesh ? mesh->triCount : 0;
 }
 
 // Install a previously-serialised tree: allocates the same pool shape as the
@@ -742,16 +750,22 @@ TLAS::TLAS( BVHInstance* bvhList, int N )
 {
 	blas = bvhList;
 	blasCount = N;
-	tlasNode = (TLASNode*)MALLOC64( sizeof( TLASNode ) * N * 2 );
-	nodeIdx = new uint[N];
+	// Always allocate room for at least one node and one index. Build() writes
+	// tlasNode[0] even in the zero-instance case (the empty-box sentinel), and
+	// MALLOC64(0) returns null -- so sizing straight off N made TLAS(list, 0)
+	// dereference null instead of producing a valid empty tree.
+	const int nodeCapacity = N > 0 ? N * 2 : 1;
+	const int idxCapacity  = N > 0 ? N     : 1;
+	tlasNode = (TLASNode*)MALLOC64( sizeof( TLASNode ) * nodeCapacity );
+	nodeIdx = new uint[idxCapacity];
 	Build();
 }
 
 // Build the top-level tree over the instances `blas` points at. Two degenerate
 // cases short-circuit before the recursion, both leaving `nodesUsed == 1`: zero
-// instances writes a zero-sized box at the origin (and note MALLOC64(0) returns
-// null, so a 0-instance TLAS dereferences a null pool -- the header states N
-// must be >= 1), and one instance writes a single leaf.
+// instances writes a zero-sized box at the origin, and one instance writes a
+// single leaf. The constructor floors its allocation at one node so the
+// zero-instance write lands in real storage.
 //
 // Otherwise `nodesUsed` starts at 1 and `BuildRecursive` bumps it by 2 per
 // interior node, giving 2*blasCount-1 nodes for a full binary tree -- inside

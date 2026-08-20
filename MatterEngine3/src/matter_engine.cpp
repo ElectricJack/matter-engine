@@ -10944,6 +10944,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // (The reverse is not true — a rebuild that reproduces the same set still
     // bumps — which only costs a redundant rebuild here.)
     const uint64_t expansion = impl_->vk_instance_cache.expansion_count();
+    // Whether the mirror below actually re-projected this frame. The GPU-pick
+    // reverse map is a projection of the SAME span and is rebuilt on exactly
+    // the same frames, so it reads this rather than re-testing the counter:
+    // the mirror assigns vk_temporal_instances_expansion = expansion on the
+    // only path where they differ, so by the time the pick map is reached the
+    // two are always equal and a counter test there is unconditionally true.
+    bool instance_span_rebuilt = false;
     {
         // O(instances) rebuild, gated on the expansion counter above -- so this
         // is either ~free or the full projection, never in between. The counter
@@ -10953,6 +10960,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         if (impl_->vk_temporal_instances_expansion != expansion ||
             impl_->vk_temporal_instances.size() != instances.size()) {
             PROFILE_COUNT("build.mirror_rebuilds", 1);
+            instance_span_rebuilt = true;
             impl_->vk_temporal_instances.clear();
             impl_->vk_temporal_instances.reserve(instances.size());
             for (size_t index = 0; index < instances.size(); ++index) {
@@ -10982,8 +10990,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         }
     }
     // GPU pick reverse map: token → part_hash for the expanded instance set.
-    // Gated on the expansion counter so it only rebuilds when instances change.
-    if (impl_->vk_temporal_instances_expansion == expansion) {
+    // Rebuilt on exactly the frames the temporal mirror above re-projected,
+    // since both are projections of the same `instances` span. Skipping it
+    // otherwise is what keeps a steady-state frame off an O(instances) run of
+    // hash inserts.
+    if (instance_span_rebuilt) {
+        PROFILE_COUNT("build.pick_map_rebuilds", 1);
         impl_->pick_token_to_part_hash.clear();
         impl_->pick_token_to_part_hash.reserve(instances.size());
         for (const auto& inst : instances) {

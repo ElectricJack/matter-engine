@@ -261,16 +261,14 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
             }
         }
 
-        // Create BVH using the proper constructor
-        auto bvh = std::make_unique<BVH>(mesh.get());
+        // Create BVH using the proper constructor.
         // force_subdiv_one_prim: explicit flag requested by the caller.
         // Previously this was triggered heuristically by triangle_count==3, which
         // changed production behaviour for real 3-tri meshes (code-review smell fix).
-        if (force_subdiv_one_prim) {
-            bvh->subdivToOnePrim = true;
-            bvh->Build();
-        }
-        
+        // Passed to the constructor rather than set afterwards: setting the
+        // member and calling Build() again built the same tree twice.
+        auto bvh = std::make_unique<BVH>(mesh.get(), force_subdiv_one_prim);
+
         BLASHandle handle = next_handle_++;
 
         // Build tri_extra parallel array (empty when no triex provided).

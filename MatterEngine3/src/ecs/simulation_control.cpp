@@ -14,8 +14,8 @@
 // WHAT PLAY/STOP PRESERVE. `play()` snapshots every entity carrying a
 // `SceneEntityId` and an `ecs::LocalTransform`: its identity, parent, name,
 // transform and a WHITELIST of components (PartInstance, RigidBody,
-// PhysicsVelocity, and the box/sphere/capsule colliders — see EntitySnapshot).
-// Anything outside that list, ConvexHullCollider included, is not captured and
+// PhysicsVelocity, and all four colliders — see EntitySnapshot).
+// Anything outside that list is not captured and
 // therefore does not survive a Stop. `stop()` destroys every live
 // SceneEntityId entity and rebuilds the scene from the snapshot, so entities
 // created during Play disappear and entities deleted during Play come back.
@@ -164,6 +164,10 @@ bool SimulationControl::capture_snapshot(flecs::world& world) {
             snap.capsule_collider = *cc;
             snap.has_capsule_collider = true;
         }
+        if (const auto* hc = e.try_get<physics::ConvexHullCollider>()) {
+            snap.convex_hull_collider = *hc;
+            snap.has_convex_hull_collider = true;
+        }
         snapshot_.entities.push_back(std::move(snap));
     });
 
@@ -199,6 +203,8 @@ bool SimulationControl::restore_snapshot(flecs::world& world) {
         if (snap.has_box_collider) e.set<physics::BoxCollider>(snap.box_collider);
         if (snap.has_sphere_collider) e.set<physics::SphereCollider>(snap.sphere_collider);
         if (snap.has_capsule_collider) e.set<physics::CapsuleCollider>(snap.capsule_collider);
+        if (snap.has_convex_hull_collider)
+            e.set<physics::ConvexHullCollider>(snap.convex_hull_collider);
         if (!snap.name.empty()) e.set_name(snap.name.c_str());
         id_to_entity[snap.id.value] = e;
     }

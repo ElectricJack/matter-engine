@@ -230,6 +230,12 @@ private:
     mm::Mat4&       get_current_matrix();
 
     std::stack<mm::Mat4>    matrix_stack_;
+    // Pushes refused because the stack was already at its depth cap. pop_matrix
+    // burns one of these before touching the stack, so a push/pop pair that
+    // straddles the cap is balanced. Without it the refused push still got a
+    // matching pop, which silently discarded a CALLER'S transform level rather
+    // than just failing the nested one.
+    int                     suppressed_pushes_ = 0;
     std::vector<DrawRecord>  draw_records_;
     std::unique_ptr<TLAS>    tlas_;
     std::vector<BVHInstance> instance_storage_; // backing array owned by the manager; TLAS holds a raw pointer into it
