@@ -78,10 +78,15 @@ bool g32(const std::vector<uint8_t>&b,size_t&p,uint32_t&v){if(p>b.size()||b.size
 bool g64(const std::vector<uint8_t>&b,size_t&p,uint64_t&v){if(p>b.size()||b.size()-p<8)return false;v=0;for(int i=0;i<8;++i)v|=uint64_t(b[p++])<<(8*i);return true;}
 void fail(Diagnostics&d,const char*c){d.add(c,{},c);}
 // Structural check on the manifest's LOD signature list: at most 64 rungs,
-// no zero counts, `influence_count` no larger than 4 slots per vertex, and
-// every `indexed_vertex_signature` distinct (two LOD rungs hashing the same
-// would make the manifest unable to tell them apart).
-bool valid_lods(const std::vector<LodBindingSignature>& lods) { if(lods.size()>64)return false; std::unordered_set<uint64_t> identities; for(const auto& lod:lods){const uint64_t max_influences=uint64_t(lod.vertex_count)*4u; if(lod.indexed_vertex_signature==0||lod.vertex_count==0||lod.influence_count==0||uint64_t(lod.influence_count)>max_influences||!identities.insert(lod.indexed_vertex_signature).second)return false;}return true; }
+// no zero counts, `influence_slot_count` no larger than `kMaxSkinInfluences`
+// slots per vertex, and every `indexed_vertex_signature` distinct (two LOD
+// rungs hashing the same would make the manifest unable to tell them apart).
+//
+// The bound is deliberately an upper bound rather than the exact identity a
+// producer emits: this runs on a parsed manifest with no binding in hand.
+// The exact per-rung comparison is `manifest_matches_binding`, which both the
+// publish and the load path run once the binding is loaded.
+bool valid_lods(const std::vector<LodBindingSignature>& lods) { if(lods.size()>64)return false; std::unordered_set<uint64_t> identities; for(const auto& lod:lods){const uint64_t max_influence_slots=uint64_t(lod.vertex_count)*kMaxSkinInfluences; if(lod.indexed_vertex_signature==0||lod.vertex_count==0||lod.influence_slot_count==0||uint64_t(lod.influence_slot_count)>max_influence_slots||!identities.insert(lod.indexed_vertex_signature).second)return false;}return true; }
 // Prove that the geometry actually stored in the part file is the geometry
 // the binding was baked against — the check that stops a re-meshed part from
 // silently being skinned with stale weights.
@@ -208,12 +213,18 @@ struct PublicationLock {
         // Only the old directory sentinel can be removed, and only while it
         // is empty.  Any race or non-empty directory fails closed.
         if (g_test_replace_legacy_lock_directory_once) {
+            // Test injection: stand in for another process that replaced the
+            // legacy directory with a regular lock file in the window between
+            // our status check and the rmdir.  The replacement is left on disk
+            // (a migration must never unlink a file it did not create) and the
+            // migration reports failure unconditionally, so acquisition fails
+            // closed and the caller retries against the new regular lock.
             g_test_replace_legacy_lock_directory_once = false;
             if (!remove_empty_directory_only()) return false;
             FILE* replacement = std::fopen(path.string().c_str(), "wb");
             if (!replacement) return false;
-            const bool closed = std::fclose(replacement) == 0;
-            return false && closed;
+            std::fclose(replacement);
+            return false;
         }
         return remove_empty_directory_only();
     }
@@ -249,15 +260,15 @@ struct PublicationLock {
 std::unique_ptr<PublicationLock> g_test_held_publication_lock;
 // `MACM` commit-manifest codec. Layout: magic, u32 version (1), the identity
 // fields in declaration order, u32 LOD count, then 16 bytes per LOD
-// (signature/vertex_count/influence_count), and a trailing FNV-1a over
+// (signature/vertex_count/influence_slot_count), and a trailing FNV-1a over
 // everything before it.
 //
 // `parse_manifest` is fail-closed: wrong magic, bad checksum, unknown
 // version, >64 LODs, a count that cannot fit in the remaining bytes, trailing
 // slack, or a structurally invalid LOD list all return false without
 // reporting *why*. Callers turn that into `bundle.manifest`.
-bool make_manifest(const BundleIdentity&i,std::vector<uint8_t>&b){if(i.lods.size()>UINT32_MAX||!valid_lods(i.lods))return false;b.insert(b.end(),{'M','A','C','M'});u32(b,1);u64(b,i.resolved_hash);u64(b,i.nonce.high);u64(b,i.nonce.low);u64(b,i.part_body_checksum);u64(b,i.anim_body_checksum);u32(b,i.part_format_version);u32(b,i.animation_schema_version);u32(b,i.animation_bake_epoch);u32(b,i.target_abi_tag);u32(b,i.ozz_tag_hash);u32(b,i.compiler_identifier);u32(b,uint32_t(i.lods.size()));for(auto&l:i.lods){u64(b,l.indexed_vertex_signature);u32(b,l.vertex_count);u32(b,l.influence_count);}u64(b,fnv(b.data(),b.size()));return true;}
-bool parse_manifest(const std::filesystem::path&p,BundleIdentity&i){std::vector<uint8_t>b;if(!read(p,b)||b.size()<84||std::memcmp(b.data(),"MACM",4))return false;size_t x=b.size()-8;uint64_t sum=0;if(!g64(b,x,sum)||sum!=fnv(b.data(),b.size()-8))return false;x=4;uint32_t v=0,n=0;if(!g32(b,x,v)||v!=1||!g64(b,x,i.resolved_hash)||!g64(b,x,i.nonce.high)||!g64(b,x,i.nonce.low)||!g64(b,x,i.part_body_checksum)||!g64(b,x,i.anim_body_checksum)||!g32(b,x,i.part_format_version)||!g32(b,x,i.animation_schema_version)||!g32(b,x,i.animation_bake_epoch)||!g32(b,x,i.target_abi_tag)||!g32(b,x,i.ozz_tag_hash)||!g32(b,x,i.compiler_identifier)||!g32(b,x,n)||n>64||n>(b.size()-x-8)/16)return false;i.lods.resize(n);for(auto&l:i.lods)if(!g64(b,x,l.indexed_vertex_signature)||!g32(b,x,l.vertex_count)||!g32(b,x,l.influence_count))return false;return x==b.size()-8&&valid_lods(i.lods);}
+bool make_manifest(const BundleIdentity&i,std::vector<uint8_t>&b){if(i.lods.size()>UINT32_MAX||!valid_lods(i.lods))return false;b.insert(b.end(),{'M','A','C','M'});u32(b,1);u64(b,i.resolved_hash);u64(b,i.nonce.high);u64(b,i.nonce.low);u64(b,i.part_body_checksum);u64(b,i.anim_body_checksum);u32(b,i.part_format_version);u32(b,i.animation_schema_version);u32(b,i.animation_bake_epoch);u32(b,i.target_abi_tag);u32(b,i.ozz_tag_hash);u32(b,i.compiler_identifier);u32(b,uint32_t(i.lods.size()));for(auto&l:i.lods){u64(b,l.indexed_vertex_signature);u32(b,l.vertex_count);u32(b,l.influence_slot_count);}u64(b,fnv(b.data(),b.size()));return true;}
+bool parse_manifest(const std::filesystem::path&p,BundleIdentity&i){std::vector<uint8_t>b;if(!read(p,b)||b.size()<84||std::memcmp(b.data(),"MACM",4))return false;size_t x=b.size()-8;uint64_t sum=0;if(!g64(b,x,sum)||sum!=fnv(b.data(),b.size()-8))return false;x=4;uint32_t v=0,n=0;if(!g32(b,x,v)||v!=1||!g64(b,x,i.resolved_hash)||!g64(b,x,i.nonce.high)||!g64(b,x,i.nonce.low)||!g64(b,x,i.part_body_checksum)||!g64(b,x,i.anim_body_checksum)||!g32(b,x,i.part_format_version)||!g32(b,x,i.animation_schema_version)||!g32(b,x,i.animation_bake_epoch)||!g32(b,x,i.target_abi_tag)||!g32(b,x,i.ozz_tag_hash)||!g32(b,x,i.compiler_identifier)||!g32(b,x,n)||n>64||n>(b.size()-x-8)/16)return false;i.lods.resize(n);for(auto&l:i.lods)if(!g64(b,x,l.indexed_vertex_signature)||!g32(b,x,l.vertex_count)||!g32(b,x,l.influence_slot_count))return false;return x==b.size()-8&&valid_lods(i.lods);}
 }
 
 // M4: the animation link binds to the PART BODY, so this checksums the REP0

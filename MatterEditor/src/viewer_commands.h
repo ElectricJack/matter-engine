@@ -16,11 +16,11 @@
 // on the app lane); the cross-thread MATTER_CMD_FIFO source reaches them via
 // dispatch() (ticketed), pumped at the frame-loop's command point (S II.3.4).
 //
-// This header is intentionally NOT on the wide ui.h include chain: only
-// main.cpp (registration + FIFO dispatch) and session_binding.cpp include it,
-// so command.h stays out of the ~25 other viewer TUs. UI panels issue these
-// commands indirectly through the plain-std::function ViewerCommands bridge in
-// ui.h (same idiom as SceneCommands / FieldCommands).
+// This header is intentionally NOT on the wide ui.h include chain: main.cpp
+// (registration + FIFO dispatch) is the only editor TU that includes it, so
+// command.h stays out of the ~25 others. UI panels issue these commands
+// indirectly through the plain-std::function ViewerCommands bridge in ui.h
+// (same idiom as SceneCommands / FieldCommands).
 //
 // WHAT IS IN HERE, in file order:
 //   1. Command TYPES only — a name, a Result alias and the payload fields.

@@ -229,13 +229,10 @@ inline const matter::props::Group& viewer_atmosphere_status_group() {
 // are world-space metres, `pixel_budget`/`min_projected_size` are normalized
 // screen-size dials.
 //
-// NOTE on the sentence below: it predates several changes. There is no
-// resolver selector any more (the engine has one resolver — see the comment at
-// min_projected_size), and the panels write back the whole CONTROLS list
-// above, not one field.
-//
-// Read-only stats the HUD displays each frame; the resolver selector is the one
-// field the panel writes back. Everything else is filled by main/composer/provider.
+// Everything not in the CONTROLS list above is read-only telemetry the HUD
+// displays each frame, filled by main.cpp / the renderer / the provider. (There
+// is no resolver selector: the engine has one resolver — see the comment at
+// min_projected_size.)
 struct ViewerStats {
     ViewerSessionStatus session_status{};
     ViewerAtmosphereStatus atmosphere_status{};

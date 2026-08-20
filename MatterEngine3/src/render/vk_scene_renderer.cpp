@@ -11920,7 +11920,6 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.vis_params[1] = visibility_reduce_ ? 1u : 0u;
     constants.vis_params[2] = 0;
     constants.vis_params[3] = 0;
-    // Remember the matrix this frame's depth will be written with, so the
     return matter::upload_buffer(*vulkan_, frame.frame_constants, &constants,
                                  sizeof(constants), 0, error);
 }

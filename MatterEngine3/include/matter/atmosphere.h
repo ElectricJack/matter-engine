@@ -69,8 +69,16 @@ namespace matter {
 //
 // Rayleigh does not absorb, so kRayleighScattering doubles as its extinction
 // and is what the integral below uses. Mie does, which is why kMieExtinction
-// exists separately — and note that kMieScattering is NOT read anywhere in
-// this header; only the extinction terms enter a transmittance integral.
+// exists separately.
+//
+// kMieScattering has NO reader anywhere in the repo, and that is expected
+// rather than an oversight: only extinction terms enter a transmittance
+// integral, and this file computes nothing else. It is kept because these are
+// one published reference table and the pair carries the Mie single-scattering
+// albedo (scattering / extinction ~= 0.9), which is what an in-scattering or
+// multiple-scattering pass would need. Being `inline constexpr` it costs
+// nothing to keep. Do not delete it as dead code without also deciding the
+// table is no longer the reference.
 //
 // kExtraterrestrialSolarRgb is deliberately (1,1,1): the absolute solar
 // magnitude and colour are left to the caller's authored modifier and live

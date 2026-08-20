@@ -645,7 +645,18 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
             else { const Float3 rotated=qrotate(rotations[static_cast<size_t>(parent)], joints[index].local.translation); positions[index]={positions[static_cast<size_t>(parent)].x+rotated.x,positions[static_cast<size_t>(parent)].y+rotated.y,positions[static_cast<size_t>(parent)].z+rotated.z}; rotations[index]=qmul(rotations[static_cast<size_t>(parent)], joints[index].local.rotation); normalize_q(rotations[index]); }
         }
         beginVoxels(spacing);
-        if (has_error_) return;
+        // has_error_ is STICKY -- an error raised anywhere earlier in this
+        // build is still set here -- while beginVoxels only fails WITHOUT
+        // opening a session. So the flag being set does not mean the session
+        // is closed, and returning on it alone stranded an OPEN voxel session:
+        // every later brush in the build silently joined it, endVoxels never
+        // back-stamped its smoothing, and the next beginVoxels failed with the
+        // misleading "beginVoxels inside an open session". Close what we
+        // actually opened before leaving.
+        if (has_error_) {
+            if (session_ == Session::Voxels) endVoxels();
+            return;
+        }
         std::set<size_t> endpoints;
         for (size_t child : selected) {
             const size_t parent=static_cast<size_t>(find_joint(animation_->authored, joints[child].parent));

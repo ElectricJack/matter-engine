@@ -164,12 +164,14 @@ static_assert(offsetof(MaterialGpuRecord, flags_misc) == 128,
 //   Packed by MaterialRegistryPackRtForGPU / MaterialPackDetailMacroSlots
 //   (libs/MatterSurfaceLib/include/material_registry.h) from MaterialDef's
 //   groundTilesetSlot ("detail slot", runtime override via
-//   MaterialRegistrySetGroundTilesetSlot) and groundMacroSlot (runtime
-//   override via MaterialRegistrySetGroundMacroSlot). Decoded on the shader
-//   side by shaders_vk/tileset_common.glsl's tileset_detail_slot()/
-//   tileset_macro_slot(). The GL raster path never reads flags_misc at all
-//   (MaterialRegistryPackForGPU's separate 12-float table is frozen and
-//   carries only the detail slot, as a plain float, in slot [11]).
+//   MaterialRegistrySetGroundTilesetSlot) and groundMacroSlot. The macro slot
+//   has NO runtime override any more: the symmetric
+//   MaterialRegistrySetGroundMacroSlot() was deleted as unreachable in
+//   e7c19aae, so groundMacroSlot is whatever the material authored. Decoded on
+//   the shader side by shaders_vk/tileset_common.glsl's tileset_detail_slot()/
+//   tileset_macro_slot(). The frozen legacy 12-float table
+//   (MaterialRegistryPackForGPU) does not carry flags_misc at all -- it has
+//   only the detail slot, as a plain float, in slot [11].
 // flags_misc[2], flags_misc[3]: unused (reserved), always 0.
 static_assert(std::is_standard_layout<GpuRtPartRecord>::value,
               "GpuRtPartRecord must remain a standard-layout GPU record");

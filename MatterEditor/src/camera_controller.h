@@ -40,8 +40,9 @@ struct GLFWwindow;
 namespace viewer {
 
 // Editor camera preferences (Scope::User property group "camera.prefs"). These
-// are per-machine taste, not project data: a 20 km far plane is a choice about
-// this GPU, and fly speed is a choice about this mouse. main.cpp owns one
+// are per-machine taste, not project data: the far plane (10241 m by default)
+// is a choice about this GPU, and fly speed is a choice about this mouse.
+// main.cpp owns one
 // instance, pushes far_plane into the live CameraDesc each frame, and hands
 // move_speed to CameraController::update — the two values used to be a hand
 // slider in the LOD panel and a literal at the update call site.

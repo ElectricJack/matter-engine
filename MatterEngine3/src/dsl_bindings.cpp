@@ -257,10 +257,17 @@ static bool anim_type(JSContext* c, JSValueConst value, matter::AnimationValueTy
 // ---------------------------------------------------------------------------
 // Clip and motion verbs.
 //
-// All of these call `rig_source` first (the trailing `Error.stack` argument)
-// and size their arity with `anim_user_argc`, which drops it. Argument
-// validation is done here; session-state validation is done in
-// dsl_animation.cpp, which is why a verb can look like it accepts anything.
+// MOST of these call `rig_source` first (the trailing `Error.stack` argument)
+// and size their arity with `anim_user_argc`, which drops it. The exceptions
+// are the five clip SETTERS -- duration, sampleRate, loop, mode, at -- whose
+// wrappers in part_base.js.h deliberately do not append a stack, so they take
+// the raw argc. That pairing is load-bearing in both directions: adding a
+// stack to one of those wrappers without switching it to anim_user_argc would
+// make a no-argument `loop()` read the stack STRING as its boolean, and using
+// anim_user_argc on a wrapper that sends no stack would silently drop the
+// author's only argument. Argument validation is done here; session-state
+// validation is done in dsl_animation.cpp, which is why a verb can look like
+// it accepts anything.
 //
 // `j_generate` is the odd one out: it drives the whole sampling loop natively.
 // It asks `clip_sample_segments()` how many segments the clip's duration and
@@ -1291,17 +1298,6 @@ static JSValue j_slopeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
     if (!w.field) { st->set_error("slopeAt: no world field bound"); return JS_UNDEFINED; }
     return JS_NewFloat64(c, w.field->slope_at((float)argd(c, a[0]), (float)argd(c, a[1])));
 }
-// __habitatAt(x, z, out) — evaluate the world's habitat tape at a world (x, z)
-// and fill `out[i]` with channel i, returning the channel count.
-//
-// Fills a CALLER-OWNED array rather than returning a fresh object: this is the
-// scatter hot path (one call per candidate, thousands per 64 m cell), and
-// allocating an object per call would hand back a good part of what moving the
-// ecology native buys. The caller keeps one array and reuses it.
-//
-// One crossing replaces what was ~14 interpreted fbm calls (~105 us measured);
-// the native evaluation behind it is close to free -- __heightAt evaluating a
-// 4-octave field costs the same as __moistureAt reading a constant.
 // __hasHabitat() — is a habitat tape bound? A PREDICATE, not a failed read.
 //
 // habitatAt reports a missing tape by setting the DSL error, which is sticky
@@ -1313,6 +1309,17 @@ static JSValue j_hasHabitat(JSContext* c, JSValueConst, int, JSValueConst*) {
     DslState* st = state_of(c);
     return JS_NewBool(c, st->world().habitat != nullptr);
 }
+// __habitatAt(x, z, out) — evaluate the world's habitat tape at a world (x, z)
+// and fill `out[i]` with channel i, returning the channel count.
+//
+// Fills a CALLER-OWNED array rather than returning a fresh object: this is the
+// scatter hot path (one call per candidate, thousands per 64 m cell), and
+// allocating an object per call would hand back a good part of what moving the
+// ecology native buys. The caller keeps one array and reuses it.
+//
+// One crossing replaces what was ~14 interpreted fbm calls (~105 us measured);
+// the native evaluation behind it is close to free -- __heightAt evaluating a
+// 4-octave field costs the same as __moistureAt reading a constant.
 static JSValue j_habitatAt(JSContext* c, JSValueConst, int argc,
                            JSValueConst* a) {
     VerbTimer _vt(g_height_us, g_height_calls);

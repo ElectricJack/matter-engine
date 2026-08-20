@@ -708,8 +708,6 @@ bool AnimationSystems::apply_targets(flecs::world& world, AnimatorInstanceHandle
         if (!has_root_world) candidate[i].desired=runtime->second.desired_world[i];
         if(!smooth_animation_target(targets[i],candidate[i],delta_seconds,cadence)) return false;
     }
-    const ecs::AnimationFrameState frame{}; // frame serial is filled by caller's current snapshot path below.
-    (void)frame;
     runtime->second.targets=std::move(candidate);
     return true;
 }
@@ -1034,10 +1032,15 @@ bool resolve_world_target(const Mat4f& current_root_world,
     const float y = inverse_root.m[4] * point.x + inverse_root.m[5] * point.y + inverse_root.m[6] * point.z + inverse_root.m[7];
     const float z = inverse_root.m[8] * point.x + inverse_root.m[9] * point.y + inverse_root.m[10] * point.z + inverse_root.m[11];
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
-    out_root_relative = desired_world;
-    out_root_relative.translation = {x, y, z};
     Quaternion root{}; if(!matrix_rotation(current_root_world,root)) return false;
-    out_root_relative.rotation = multiply_quaternion({-root.x, -root.y, -root.z, root.w}, desired_world.rotation);
+    // Commit only once every step has succeeded: `matrix_rotation` can reject
+    // a root that `inverse` accepted (a near-degenerate basis column), and a
+    // caller that ignores the return -- run_fixed_post does -- must keep its
+    // previous value rather than a half-written one.
+    AnimationTransform resolved = desired_world;
+    resolved.translation = {x, y, z};
+    resolved.rotation = multiply_quaternion({-root.x, -root.y, -root.z, root.w}, desired_world.rotation);
+    out_root_relative = resolved;
     return true;
 }
 
@@ -1252,13 +1255,19 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
         queries.insert(queries.end(), pair.second.queries.begin(), pair.second.queries.end());
     (void)execute_fixed_world_queries(std::move(queries));
     trace(AnimationScheduleEvent::FixedSmoothTargets, fixed_delta);
+    // Refresh each enabled animator's root-relative target from its root's
+    // post-physics world transform. The work of this loop IS the write into
+    // `work.evaluated_target_root_relative` (which `capture_checkpoint` then
+    // records); a root with no WorldTransform, or one whose matrix cannot be
+    // inverted, simply keeps the value from the previous tick.
     for (auto& pair : fixed_work_) {
         AnimationFixedWork& work = pair.second;
         if (work.root_entity == 0 || !work.target_enabled) continue;
         const flecs::entity root = world.entity(work.root_entity);
         const ecs::WorldTransform* transform = root.try_get<ecs::WorldTransform>();
-        if (transform == nullptr || !resolve_world_target(transform->matrix, work.desired_target_world,
-                                                           work.evaluated_target_root_relative)) continue;
+        if (transform == nullptr) continue;
+        (void)resolve_world_target(transform->matrix, work.desired_target_world,
+                                   work.evaluated_target_root_relative);
     }
     for(const auto& pair:service_bindings_) {
         if (!pair.second.descriptor || !pair.second.descriptor->evaluation ||

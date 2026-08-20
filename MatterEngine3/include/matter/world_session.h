@@ -455,13 +455,15 @@ struct FrameStats {
 // part_bounds, pick_at_pixel, the LOD-inspector reads).
 class WorldSession {
 public:
-    // Tears down the world, its provider and its render resources. The
-    // VulkanDevice and the window must still be alive at this point (the "GL"
-    // wording below predates the Vulkan-only renderer).
-    ~WorldSession();   // releases session GL resources — destroy before CloseWindow
+    // Tears down the world, its provider and its render resources. Must run on
+    // the thread that owns the render device, and the VulkanDevice and the
+    // window must both still be alive at this point — the session releases GPU
+    // resources back to them here.
+    ~WorldSession();
 
     // Phase B: asynchronous — enqueues a bake and returns immediately. Progress
-    // arrives via poll_event(); GL-side work runs inside pump_gpu_jobs(). A new
+    // arrives via poll_event(); the GPU-side half of the work runs inside
+    // pump_gpu_jobs(), on the thread that owns the render device. A new
     // request_bake()/reload() supersedes (cancels) an in-flight bake.
     void request_bake();
 
@@ -473,14 +475,15 @@ public:
     flecs::world& ecs();
     const flecs::world& ecs() const;
 
-    // Resolve -> cull -> clear (kernel-derived sky color) -> draw into the
-    // currently bound framebuffer. Requires a live GL context on this thread.
-    //
-    // HISTORICAL: this overload is now an EMPTY STUB. Its definition in
-    // MatterEngine3/src/matter_engine.cpp draws nothing ("intentionally
-    // contains no legacy GL path") because the GL renderer was deleted. Use the
-    // VulkanFrame overload below; this one is kept only for source
-    // compatibility.
+    // DOES NOTHING. This overload used to be the GL path (resolve -> cull ->
+    // clear -> draw into the currently bound framebuffer); Phase 5a deleted
+    // that renderer outright, and the definition in
+    // MatterEngine3/src/matter_engine.cpp is now an empty body in every build
+    // configuration — it draws no pixels and updates no frame_stats(). It is
+    // retained only so the two legacy test callers still compile
+    // (MatterEngine3/tests/api_tests.cpp, world_stream_tests.cpp, both of
+    // which already assert the no-op outcome). Everything else must use the
+    // VulkanFrame overload below.
     void render(const CameraDesc& cam, int fb_width, int fb_height,
                 const RenderOptions& opts);
 
@@ -512,9 +515,10 @@ public:
                                   std::vector<uint8_t>& rgba,
                                   std::string& err);
 
-    // Phase B: run queued GL-thread bake work for up to ms_budget milliseconds.
-    // Call once per frame on the thread that owns the GL context. Whole jobs
-    // only (no mid-job slicing); always makes progress when work is queued.
+    // Phase B: run queued render-thread bake work for up to ms_budget
+    // milliseconds. Call once per frame on the thread that owns the render
+    // device. Whole jobs only (no mid-job slicing); always makes progress when
+    // work is queued.
     void pump_gpu_jobs(float ms_budget);
 
     // ---- Streaming LOD configuration (editor LOD Settings panel) ----------
@@ -637,7 +641,7 @@ public:
     void set_streaming_lod_overrides(const StreamingLodConfig& overrides);
     void clear_streaming_lod_overrides();
 
-    // True when no GL-thread job is queued. Lets the caller widen the pump
+    // True when no render-thread job is queued. Lets the caller widen the pump
     // budget only while a streaming backlog exists (sector publishes are
     // ~1 ms each; a fixed small budget drains a 5,000-sector fill at a
     // handful per frame).
@@ -879,7 +883,8 @@ public:
     SeamWeldStatus seam_weld_status() const;
 
     // Phase B: asynchronous — enqueues a bake and returns immediately. Progress
-    // arrives via poll_event(); GL-side work runs inside pump_gpu_jobs(). A new
+    // arrives via poll_event(); the GPU-side half of the work runs inside
+    // pump_gpu_jobs(), on the thread that owns the render device. A new
     // request_bake()/reload() supersedes (cancels) an in-flight bake. Fail-closed:
     // on error a BakeError event is emitted and render() no-ops until a later
     // request_bake()/reload() succeeds (the old world is torn down before rebaking).

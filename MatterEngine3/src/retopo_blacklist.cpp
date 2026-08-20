@@ -42,8 +42,6 @@
 
 #include <cinttypes>   // PRIx64 / SCNx64
 #include <cstdio>
-#include <cstring>
-#include <fcntl.h>
 #include <string>
 #ifndef _WIN32
 #include <unistd.h>    // fsync (POSIX only; Windows viewer skips crash-safe fsync)

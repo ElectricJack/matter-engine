@@ -72,7 +72,6 @@ struct EntitySnapshot {
 struct SceneSnapshot {
     std::vector<EntitySnapshot> entities;
     std::vector<animation::AnimatorCheckpoint> animator_checkpoints;
-    uint64_t generation = 0;  // reserved; capture_snapshot does not fill it
     bool valid = false;
 };
 

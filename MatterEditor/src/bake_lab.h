@@ -46,7 +46,8 @@ namespace viewer {
 struct WorldEntry;
 
 // Bake Lab window (part-workbench.md, superseding bake-lab.md SS-II.5): one
-// dockable "Bake Lab" window with a tab bar - Workbench, Timeline. The former
+// dockable "Bake Lab" window whose tab bar is, in draw order, Workbench,
+// Timeline, Events, Animation and the parked Settle placeholder. The former
 // Assets tab (AssetBrowser) was promoted to its own standalone top-level
 // pane (Ui::draw_asset_browser_panel) so it's usable outside Bake Lab too;
 // its "Open in Workbench" action now reaches this window through the

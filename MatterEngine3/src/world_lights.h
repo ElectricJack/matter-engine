@@ -40,15 +40,8 @@ namespace world_lights {
 // the authored form, and nothing here carries an angle or a separate intensity.
 // Note the ordering that follows from cosine space: cos_inner > cos_outer for a
 // well-formed cone, because a WIDER angle has a SMALLER cosine.
-// One resolved spot light, as produced from the authored `matter::WorldLight`
-// by the conversion in src/provider/local_provider.h: `dir` is normalized there,
-// the cone half-angles are converted from DEGREES to cosines, and the author's
-// separate `intensity` is multiplied into `color`. So nothing downstream needs
-// the authored form, and nothing here carries an angle or a separate intensity.
-// Note the ordering that follows from cosine space: cos_inner > cos_outer for a
-// well-formed cone, because a WIDER angle has a SMALLER cosine.
 struct SpotLight {
-    float pos[3];        // world-space position (same units as `range`)        // world-space position (same units as `range`)
+    float pos[3];        // world-space position (same units as `range`)
     float dir[3];        // normalized on parse
     float color[3];      // linear RGB intensity
     float range;         // hard distance cutoff (world units)
@@ -56,9 +49,6 @@ struct SpotLight {
     float cos_outer;     // cos(outer cone half-angle), zero outside
 };
 
-// A whole world's lighting environment: one directional sun, a flat sky ambient,
-// and any number of spot lights. This is what the resolve cache stores and what
-// the renderer reads; a value-copied aggregate, cheap except for `spots`.
 // A whole world's lighting environment: one directional sun, a flat sky ambient,
 // and any number of spot lights. This is what the resolve cache stores and what
 // the renderer reads; a value-copied aggregate, cheap except for `spots`.

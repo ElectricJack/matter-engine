@@ -11,9 +11,10 @@
 //    `WorldSession::render()`. The session clears its overlay buffer after
 //    each render, so this must be resubmitted every frame it should be
 //    visible.
-//  - `draw_frozen_cull_frustum` (and the now-empty `draw_selection_outlines`)
-//    paint straight onto ImGui's foreground draw list, so they go between
-//    ImGui::NewFrame and ImGui::Render and always sit on top.
+//  - `draw_frozen_cull_frustum` paints straight onto ImGui's foreground draw
+//    list, so it goes between ImGui::NewFrame and ImGui::Render and always
+//    sits on top. `draw_selection_outlines` shares that call slot but its body
+//    is EMPTY — it draws nothing at all today (see its declaration below).
 //
 // Geometry comes from selection_bounds.h, which the viewport pick raycast also
 // uses, so the drawn box and the clickable box are the same box. UI thread

@@ -55,6 +55,13 @@
 
 namespace vt {
 
+// This is the only translation unit that sees both headers, so it is where
+// the two independently-declared lane widths are tied together. A mismatch
+// would let the packer emit more lanes per vertex than GpuTri's wA/wB/wC rows
+// can hold, silently truncating the tail.
+static_assert(kVtMaxSurfaceLanes == kGpuTriLanesPerVertex,
+              "vt_surface_tape lane width must match GpuTri's per-vertex row");
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -105,13 +112,6 @@ static_assert(sizeof(VtParamsUbo) == 64, "VtParamsUbo layout");
 // cache's budget rather than a hard ceiling: a variant arriving past it is
 // served either by evicting an LRU entry or by a one-shot entry, so a fill is
 // never dropped for cache pressure alone.
-// Per-fill() caps, sized to the ring buffers allocated in init(). Requests
-// past kMaxRequestsPerFill, and a page whose candidate list would overrun
-// kMaxCandEntriesPerFill, are SKIPPED and counted in Stats::requests_skipped —
-// never silently truncated to a partial page. kMaxMeshEntries is the mesh
-// cache's budget rather than a hard ceiling: a variant arriving past it is
-// served either by evicting an LRU entry or by a one-shot entry, so a fill is
-// never dropped for cache pressure alone.
 constexpr uint32_t kMaxRequestsPerFill = 256;
 constexpr uint32_t kMaxCandEntriesPerFill = 65536;
 constexpr uint32_t kTilesetArraySize =
@@ -142,11 +142,6 @@ constexpr uint32_t kTapeArenaSlots =
 // at creation and never explicitly unmapped (freeing the memory in
 // destroy_raw_buffer unmaps it). `size` is the size that was requested, which
 // may be smaller than the allocation vkGetBufferMemoryRequirements asked for.
-// A buffer plus the device memory it exclusively owns. `mapped` is non-null
-// exactly when the buffer was created host-visible; the mapping is made once
-// at creation and never explicitly unmapped (freeing the memory in
-// destroy_raw_buffer unmaps it). `size` is the size that was requested, which
-// may be smaller than the allocation vkGetBufferMemoryRequirements asked for.
 struct RawBuffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -154,10 +149,6 @@ struct RawBuffer {
     VkDeviceSize size = 0;
 };
 
-// A device-local 2D ARRAY image, its memory, and one view covering all layers.
-// Always single-mip. The image layout is not tracked here — the caller's
-// barriers own it (see record_init, which parks the intermediates in GENERAL
-// for their whole life).
 // A device-local 2D ARRAY image, its memory, and one view covering all layers.
 // Always single-mip. The image layout is not tracked here — the caller's
 // barriers own it (see record_init, which parks the intermediates in GENERAL
@@ -396,11 +387,6 @@ void cmd_image_barrier(VkCommandBuffer cmd, VkImage image,
 // destroy(); `device` and `phys` are BORROWED handles. destroy() nulls
 // `device` when it finishes so a second call is a no-op. No member is guarded
 // by a lock — see the threading note on VtCompositor in vt_compositor.h.
-// Everything the compositor owns, and every rule about when it may be freed.
-// One instance per VtCompositor, built by create() and torn down by ~Impl ->
-// destroy(); `device` and `phys` are BORROWED handles. destroy() nulls
-// `device` when it finishes so a second call is a no-op. No member is guarded
-// by a lock — see the threading note on VtCompositor in vt_compositor.h.
 struct VtCompositor::Impl {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice phys = VK_NULL_HANDLE;
@@ -453,13 +439,6 @@ struct VtCompositor::Impl {
     // retired (see the lifetime model at the top of this file). The
     // intermediate images carry kBatchStride page layers, which is why one
     // fill() splits its requests into groups of kBatchStride.
-    // One batch's transient resources. kMaxBatchesInFlight of these rotate
-    // through ring_cursor. A fill() may overwrite a ring's host-visible
-    // request/cand buffers and reuse its intermediates and block buffers only
-    // because reaching the ring again means the batch that last used it has
-    // retired (see the lifetime model at the top of this file). The
-    // intermediate images carry kBatchStride page layers, which is why one
-    // fill() splits its requests into groups of kBatchStride.
     struct Ring {
         RawBuffer requests;              // host-visible
         RawBuffer cands;                 // host-visible
@@ -476,13 +455,6 @@ struct VtCompositor::Impl {
     Ring rings[kMaxBatchesInFlight];
     uint32_t ring_cursor = 0;
 
-    // The GPU streams for one (variant_hash, rung): the chart table, the
-    // chart-grouped triangle stream (both built by vt_chart_gpu.h) and the
-    // set-0 descriptor set that binds them. It owns all three, plus its arena
-    // slot; they are released by flush_mesh_retire(), evict_lru_mesh_entry()
-    // or Impl::destroy(). The handles are raw and the struct has no copy
-    // control, so entries are always MOVED between mesh_cache and
-    // mesh_retire[] — duplicating one would double-free.
     // The GPU streams for one (variant_hash, rung): the chart table, the
     // chart-grouped triangle stream (both built by vt_chart_gpu.h) and the
     // set-0 descriptor set that binds them. It owns all three, plus its arena
@@ -525,9 +497,6 @@ struct VtCompositor::Impl {
     uint64_t batch_counter = 0;
     std::deque<MeshEntry> mesh_retire[kMaxBatchesInFlight];
 
-    // Destroy everything parked for `ring_index`. Only correct at the moment
-    // fill() claims that ring again — the entries in it were retired at least
-    // kMaxBatchesInFlight batches ago — or during teardown.
     // Destroy everything parked for `ring_index`. Only correct at the moment
     // fill() claims that ring again — the entries in it were retired at least
     // kMaxBatchesInFlight batches ago — or during teardown.
@@ -670,29 +639,6 @@ struct VtCompositor::Impl {
     void record_init(VkCommandBuffer cmd);
 };
 
-// One-time CPU-side setup: descriptor set layouts, pipeline layouts, both
-// compute pipelines from embedded SPIR-V, the tileset sampler, the dummy
-// tileset image, the global material/params/tape-arena buffers (filled with
-// neutral defaults so an unset table still composes deterministically) and
-// every ring's transient resources and descriptor sets. Fails closed: any
-// failure returns false with `err` set, and the half-built Impl is destroyed
-// by its own destructor. GPU-side initialization is separate — see
-// record_init(), which needs a command buffer.
-//
-// The binding numbers below are a contract with the shaders; keep them in
-// step with shaders_vk/vt_composite.comp and shaders_vk/vt_bc_encode.comp:
-//   set 0  mesh_layout   (per MeshEntry): 0 charts SSBO, 1 tris SSBO
-//   set 1  batch_layout  (per Ring):      0 requests, 1 candidate charts,
-//                                         2 materials, 3 params UBO,
-//                                         4 tileset sampler array, indexed
-//                                           slot*4 + albedo|normal|orm|height,
-//                                         5-8 intermediate storage images
-//                                           (albedo, normal, orm, aux),
-//                                         9 tape-op arena
-//   set 0  encode_layout (per Ring):      0-2 the same three intermediates,
-//                                         3-5 the BC block output buffers
-// Push constants: composite takes 4 bytes (the request's index into the ring
-// request buffer), encode takes 8 (the group slot, written twice).
 // One-time CPU-side setup: descriptor set layouts, pipeline layouts, both
 // compute pipelines from embedded SPIR-V, the tileset sampler, the dummy
 // tileset image, the global material/params/tape-arena buffers (filled with
@@ -1017,11 +963,6 @@ void VtCompositor::Impl::write_ring_descriptors(Ring& r) {
 // inside a bound slot, resolves to the neutral 0.5-gray dummy image, so the
 // shader always has something valid to sample. This rewrites live descriptor
 // sets in place, so it must not run while a batch that uses them is unretired.
-// Publish the currently bound tileset views into binding 4 of EVERY ring's
-// batch set. A slot at or past tileset_slot_count, or a null channel view
-// inside a bound slot, resolves to the neutral 0.5-gray dummy image, so the
-// shader always has something valid to sample. This rewrites live descriptor
-// sets in place, so it must not run while a batch that uses them is unretired.
 void VtCompositor::Impl::write_tileset_descriptors() {
     VkDescriptorImageInfo infos[kTilesetArraySize];
     for (uint32_t slot = 0; slot < kMaxDetailSlots; ++slot) {
@@ -1047,21 +988,6 @@ void VtCompositor::Impl::write_tileset_descriptors() {
     vkUpdateDescriptorSets(device, kMaxBatchesInFlight, writes, 0, nullptr);
 }
 
-// Find — or build — the GPU streams for one (variant_hash, rung).
-//
-// Returns null on failure, with `why` pointed at a static reason string the
-// caller logs with the skipped request. On success the pointer is into either
-// mesh_cache or this ring's mesh_retire deque, and it is valid ONLY for the
-// batch currently being recorded: a later fill() may evict it, retire it, or
-// (for the retire path) destroy it outright. Never store it across calls.
-//
-// A cache HIT is a map lookup that stamps last_used_batch and returns. A MISS
-// is expensive and is where this module's measured hitches live: the optional
-// tape parse/pack, the O(triangles) chart/triangle repack, two host-visible
-// buffer allocations (with the incremental shed-and-retry loop when
-// host-visible memory is tight), the upload, and a descriptor set allocation.
-// `stats` is updated for each of those outcomes, including the fail-soft
-// mode-3 -> mode-2 tape fallbacks.
 // Find — or build — the GPU streams for one (variant_hash, rung).
 //
 // Returns null on failure, with `why` pointed at a static reason string the
@@ -1332,11 +1258,6 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
     return &inserted.first->second;
 }
 
-// One-time GPU-side initialization, recorded into the FIRST fill()'s command
-// buffer rather than done at create() time — the compositor is handed no
-// queue and never submits anything itself. The caller's promise to submit
-// command buffers in record order is what makes deferring it safe. Runs once
-// per compositor; init_recorded is the latch.
 // One-time GPU-side initialization, recorded into the FIRST fill()'s command
 // buffer rather than done at create() time — the compositor is handed no
 // queue and never submits anything itself. The caller's promise to submit

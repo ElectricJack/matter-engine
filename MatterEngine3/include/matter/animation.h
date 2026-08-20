@@ -102,7 +102,7 @@ struct AnimationInputHandle {
     AnimationCadence cadence = AnimationCadence::Invalid;
     bool valid() const {
         return slot_index != UINT32_MAX && schema_index != UINT32_MAX &&
-               static_cast<uint32_t>(value_type) <= static_cast<uint32_t>(AnimationValueType::Symbol) &&
+               is_animation_value_type(value_type) &&
                (cadence == AnimationCadence::Fixed || cadence == AnimationCadence::Frame);
     }
 };

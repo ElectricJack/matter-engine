@@ -151,18 +151,10 @@ std::string params_to_json(const Params& params);
 // SP-3 v1 only handles the shapes eval_requires emits (flat numbers/bools/strings).
 Params params_from_json(const std::string& json);
 
-// NOTE: nothing in the repo constructs or consumes this type today — the
-// resolve pass uses the file-local `InternalNode` in part_graph.cpp, and what
-// escapes an install is `BakeInputs` (via InstallResult::bake_plan).
-// Resolved node in the graph (one per unique (source_hash, canonical_params)).
-struct ResolvedNode {
-    uint64_t              resolved_hash = 0;
-    std::string           module;        // representative module name (for diagnostics)
-    std::string           source;        // module source bytes
-    Params                params;        // effective params
-    std::vector<uint64_t> child_hashes;  // direct children's resolved hashes (sorted by SP-1)
-    std::vector<uint64_t> child_keys;    // direct children's memo keys (for topo edges)
-};
+// (A `ResolvedNode` struct used to sit here, declared and never constructed by
+// anything. The resolve pass uses the file-local `InternalNode` in
+// part_graph.cpp, and what escapes an install is `BakeInputs` via
+// InstallResult::bake_plan.)
 
 // Bake policy controlling which nodes are actually baked during install().
 // All     = today's behavior: every reachable node is baked (or cache-hit).

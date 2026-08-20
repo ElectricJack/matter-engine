@@ -349,7 +349,7 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
 
         int op_idx = (int)out.ops.size();
         if (op_idx >= kMaxOps) {
-            err = "too many ops (max 64)";
+            err = "too many ops (max " + std::to_string(kMaxOps) + ")";
             return false;
         }
 
@@ -1450,7 +1450,7 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
 
     // Each mode fails closed on declaring nothing, for the same reason: a tape
     // with no outputs computed a pile of noise and threw it away, which is
-    // always a bug and never a intent.
+    // always a bug and never intentional.
     if (mode == TapeMode::Habitat) {
         if (out.channel_count == 0) {
             err = "habitat() declared no channels (missing 'channel' "

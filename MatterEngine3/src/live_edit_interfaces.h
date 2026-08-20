@@ -65,7 +65,11 @@ public:
     virtual std::vector<PartId> topo_order(const std::set<PartId>& subset) = 0;
     // The root part(s) whose subtree must re-flatten given the changed set.
     virtual std::vector<PartId> roots_over(const std::set<PartId>& changed) = 0;
-    // Recompute the folded resolved hash of `p` from current source.
+    // Recompute the folded resolved hash of `p` from current source. Returns
+    // the EMPTY STRING on any failure -- `p` is not in the graph, its source
+    // will not open, or one of its children has no resolved hash. The session
+    // treats that as Cause::ResolveFailed and stops the pass without calling
+    // the baker.
     virtual ResolvedHash reresolve(const PartId& p) = 0;
 };
 

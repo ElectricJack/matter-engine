@@ -514,6 +514,17 @@ void Coordinator::collect_streamer_evictions(
     }
 }
 
+// Retires the in-flight publications belonging to the CURRENT worker generation,
+// turning each into an eviction tag so nothing downstream is left holding a
+// sector this coordinator no longer tracks. Called on every teardown path.
+//
+// The lock covers `publishing_requests_` and `publication_candidates_`, which
+// are the handoff lists the caller thread also touches. `pending_evictions_` is
+// appended to inside the same critical section only because that is where the
+// loop lives — it is streaming-lane-only state (see the class comment in the
+// header) and mutex_ is NOT what makes those pushes safe. transfer_evictions()
+// and take_evictions() read and clear it unlocked for exactly that reason;
+// moving them under the lock would be pointless, not a fix.
 void Coordinator::invalidate_worker_publications() {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& request : publishing_requests_) {
@@ -843,6 +854,9 @@ bool Coordinator::transfer_evictions(
     return true;
 }
 
+// Unconditionally hands the whole eviction queue to the caller, leaving the
+// local one empty. Unlocked, like transfer_evictions: pending_evictions_ is
+// streaming-lane state and both are streaming-lane entry points.
 std::vector<TaggedEviction> Coordinator::take_evictions() {
     std::vector<TaggedEviction> result;
     result.swap(pending_evictions_);

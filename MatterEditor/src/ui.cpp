@@ -930,8 +930,10 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         ImGui::Separator();
         ImGui::TextDisabled("GPU Breakdown");
         const double total_gpu = mib(s.gpu_device_local_bytes);
+        // vt_mesh_bytes is deliberately absent from this GPU breakdown: it is
+        // the CPU-side mesh copies the filler holds, and it gets its own line
+        // in the VT Detail block below.
         const double vt_pool = mib(s.vt_pool_bytes);
-        const double vt_mesh = mib(s.vt_mesh_bytes);
         const double vt_indir = mib(s.vt_indirection_bytes);
         const double vol = mib(s.froxel_bytes);
         const double cloud = mib(s.cloud_shadow_bytes);
@@ -972,9 +974,17 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
 
         ImGui::Separator();
         ImGui::TextDisabled("VT Detail");
+        // vt_pool_bytes is the ALLOCATED pool — its capacity, fixed when the VT
+        // runtime starts. There is no separate "bytes in use" stat, so derive
+        // it from the page census: the pool is carved into pool_capacity
+        // equal-sized pages, so used bytes are exactly that fraction.
+        const double vt_pool_used_mib =
+            s.vt_pool_capacity > 0
+                ? vt_pool * static_cast<double>(s.vt_pool_used) /
+                      static_cast<double>(s.vt_pool_capacity)
+                : 0.0;
         ImGui::Text("Pool:         %.0f / %.0f MiB  (%u/%u pages, %u pinned)",
-                    mib(s.vt_pool_bytes),
-                    mib(s.vt_pool_bytes),
+                    vt_pool_used_mib, vt_pool,
                     s.vt_pool_used, s.vt_pool_capacity, s.vt_pool_pinned);
         ImGui::Text("Mesh (CPU):   %.0f / %.0f MiB",
                     mib(s.vt_mesh_bytes), mib(s.vt_mesh_budget_bytes));
@@ -1787,7 +1797,11 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // as "it does not work".
     ImGui::Checkbox("Occlusion culling", &s.occlusion_draw_cull);
     if (ImGui::IsItemHovered())
+        // "%s" wrapper, not a bare literal: SetTooltip is printf-style and this
+        // text contains literal per-cent signs ("-58% of ..."), which would
+        // otherwise be read as conversions and consume garbage varargs.
         ImGui::SetTooltip(
+            "%s",
             "Do not rasterise sectors that owned no pixel this frame.\n\n"
             "Underground most of what is in front of the camera is behind "
             "rock: on StreamCaverns this is -58% of draw batches and -49% of "

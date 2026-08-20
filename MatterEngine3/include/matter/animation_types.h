@@ -29,11 +29,11 @@ struct AnimationTransform {
 // `AnimationService::set()` overload is legal for a given input handle, and
 // which member of `AnimationRuntimeBindingLease::Value` carries the payload.
 //
-// THE ORDER IS LOAD-BEARING. `AnimationInputHandle::valid()` range-checks the
-// tag with `static_cast<uint32_t>(value_type) <= ...::Symbol`, so `Symbol`
-// must stay the LAST enumerator; a value appended after it would be silently
-// rejected as out of range. Targets are always `Transform`
-// (`AnimationTargetHandle::valid()` requires it).
+// The numeric ORDER is load-bearing for the on-disk runtime asset: the tag is
+// serialized as a raw u8 (animation_runtime_asset.cpp), so renumbering or
+// reordering existing entries invalidates every baked asset. APPENDING is
+// safe. Targets are always `Transform` (`AnimationTargetHandle::valid()`
+// requires it).
 enum class AnimationValueType {
     Bool,
     Number,
@@ -42,5 +42,26 @@ enum class AnimationValueType {
     Transform,
     Symbol,
 };
+
+// Is `type` one of the enumerators above (as opposed to the 0xff sentinel the
+// handle structs default to, or a garbage byte off disk)?
+//
+// The switch is deliberately exhaustive with NO `default:`, so appending an
+// enumerator above raises -Wswitch here rather than silently rejecting the new
+// type. That is the whole point of this function: the range check it replaced
+// was `<= AnimationValueType::Symbol`, which quietly treated anything added
+// after Symbol as invalid.
+constexpr bool is_animation_value_type(AnimationValueType type) noexcept {
+    switch (type) {
+    case AnimationValueType::Bool:
+    case AnimationValueType::Number:
+    case AnimationValueType::Float3:
+    case AnimationValueType::Quaternion:
+    case AnimationValueType::Transform:
+    case AnimationValueType::Symbol:
+        return true;
+    }
+    return false;
+}
 
 } // namespace matter

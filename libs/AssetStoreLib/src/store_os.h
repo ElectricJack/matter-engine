@@ -59,7 +59,12 @@ bool make_dirs(const std::string& path);         /* recursive */
 bool rename_over(const std::string& from, const std::string& to);
 /* Names (not paths) of entries in dir, files only. */
 std::vector<std::string> list_dir(const std::string& dir);
-/* Something that changes whenever the file is rewritten: (mtime, size). */
+/* Something that changes whenever the file is rewritten. Win32 mixes the
+ * 100 ns last-write time with the size; POSIX mixes the finest mtime the
+ * platform offers with the size AND the inode, because whole-second mtimes
+ * cannot separate two commits made in the same second. Callers treat an
+ * unchanged stamp as "the file did not change", so it must never repeat
+ * across a rewrite. */
 bool stamp_of(const std::string& path, uint64_t* out_stamp);
 
 /* Cross-process advisory lock held on an open file. */

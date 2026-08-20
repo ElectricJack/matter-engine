@@ -676,7 +676,7 @@ void BLASManager::reset_stats() {
     hash_to_entry_.clear();
     handle_to_index_.clear();
     next_handle_ = 1;
-    totals_dirty_ = true;
+    mark_dirty();
 }
 
 // Drop every entry regardless of reference count, freeing all meshes, BVHs and
@@ -692,8 +692,11 @@ void BLASManager::clear() {
     handle_to_index_.clear();
     next_handle_ = 1;
 
-    // Mark everything as dirty to force regeneration
-    totals_dirty_ = true;
+    // Mark everything as dirty to force regeneration. This goes through
+    // mark_dirty() so content_revision() moves too -- a wipe is the largest
+    // content change there is, and a consumer gating its GPU re-upload on
+    // content_revision() must observe it.
+    mark_dirty();
 
     printf("BLASManager: Cleared, ready for new BLAS registrations\n");
 }

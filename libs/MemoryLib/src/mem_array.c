@@ -22,10 +22,9 @@
  * by an earlier mem_array_push (and any cached copy of `data`) is invalidated
  * by a subsequent push or ensure. Store indices, not pointers.
  *
- * Thread-confined; no locking. Except for mem_array_get_stats, the functions
- * here dereference `arr` unconditionally, so a NULL array is a crash rather
- * than a no-op -- unlike mem_arena.c and mem_pool.c, which tolerate NULL
- * handles throughout.
+ * Thread-confined; no locking. Every function here tolerates a NULL `arr`,
+ * matching mem_arena.c and mem_pool.c: the void-returning ones do nothing,
+ * mem_array_ensure returns 0 and mem_array_push returns NULL.
  */
 #include "../include/mem_array.h"
 #include <stdlib.h>
@@ -34,8 +33,12 @@
 
 /* Zeroes the descriptor in place. There is no create/destroy pair -- the
  * caller owns the MemArray value. This does NOT free a previous buffer, so
- * calling it on a live array leaks it; pair it with mem_array_free instead. */
+ * calling it on a live array leaks it; pair it with mem_array_free instead.
+ * A NULL array is a no-op. */
 void mem_array_init(MemArray* arr, size_t elemSize) {
+    if (!arr) {
+        return;
+    }
     arr->data = NULL;
     arr->count = 0;
     arr->capacity = 0;
@@ -45,14 +48,17 @@ void mem_array_init(MemArray* arr, size_t elemSize) {
 
 /* Grows capacity to at least minCapacity ELEMENTS (not bytes). Returns 1 on
  * success, including the no-op case where capacity is already sufficient, and
- * 0 on refusal -- either elemSize is 0 or the byte count would overflow
- * size_t -- or on realloc failure. In every failure case `data`, `count` and
- * `capacity` are left untouched, so the array remains usable.
+ * 0 on refusal -- `arr` is NULL, elemSize is 0, or the byte count would
+ * overflow size_t -- or on realloc failure. In every failure case `data`,
+ * `count` and `capacity` are left untouched, so the array remains usable.
  *
  * Capacity never shrinks; there is no reserve-down or shrink-to-fit. A
  * successful grow bumps growCount, which is what MemStats reports as
  * totalAllocs. */
 int mem_array_ensure(MemArray* arr, size_t minCapacity) {
+    if (!arr) {
+        return 0;
+    }
     if (minCapacity <= arr->capacity) {
         return 1;
     }
@@ -78,10 +84,14 @@ int mem_array_ensure(MemArray* arr, size_t minCapacity) {
 }
 
 /* Appends one UNINITIALIZED slot and returns a pointer to it; the caller must
- * write it before reading. Returns NULL on out-of-memory (and at the SIZE_MAX
- * count ceiling) with `count` unchanged, so a failed push is not a partial
- * push. May realloc, invalidating every previously returned slot pointer. */
+ * write it before reading. Returns NULL for a NULL array, on out-of-memory
+ * and at the SIZE_MAX count ceiling, with `count` unchanged, so a failed push
+ * is not a partial push. May realloc, invalidating every previously returned
+ * slot pointer. */
 void* mem_array_push(MemArray* arr) {
+    if (!arr) {
+        return NULL;
+    }
     if (arr->count == SIZE_MAX) {
         return NULL;
     }
@@ -91,15 +101,23 @@ void* mem_array_push(MemArray* arr) {
     return (char*)arr->data + arr->count++ * arr->elemSize;
 }
 
+/* Drops every element but keeps the buffer and its capacity. A NULL array is
+ * a no-op. */
 void mem_array_clear(MemArray* arr) {
+    if (!arr) {
+        return;
+    }
     arr->count = 0;
 }
 
 /* Releases the buffer and resets the array to the empty state. elemSize is
  * preserved, so the array is immediately reusable without calling
  * mem_array_init again. Idempotent -- freeing twice is safe because `data` is
- * nulled. */
+ * nulled. A NULL array is a no-op. */
 void mem_array_free(MemArray* arr) {
+    if (!arr) {
+        return;
+    }
     free(arr->data);
     arr->data = NULL;
     arr->count = 0;
@@ -107,19 +125,18 @@ void mem_array_free(MemArray* arr) {
     /* growCount is a lifetime counter; survives free (consistent with arena totalAllocs) */
 }
 
-/* The only NULL-tolerant function in this file. Note what the shared MemStats
- * field names mean here (see ../include/mem_stats.h): totalAllocs is the
- * REALLOC count, not the push count, and peakBytes is derived from the
- * current capacity rather than a recorded high-water mark -- so it drops back
- * to 0 after mem_array_free rather than remembering the peak, unlike the
- * arena's and the pool's peakBytes. pageCount is left 0; arrays have no
- * paging. */
+/* Note what the shared MemStats field names mean here (see
+ * ../include/mem_stats.h): totalAllocs is the REALLOC count, not the push
+ * count, and peakBytes is derived from the current capacity rather than a
+ * recorded high-water mark -- so it drops back to 0 after mem_array_free
+ * rather than remembering the peak, unlike the arena's and the pool's
+ * peakBytes. pageCount is left 0; arrays have no paging. */
 void mem_array_get_stats(const MemArray* arr, MemStats* out) {
     if (!arr || !out) {
         return;
     }
     memset(out, 0, sizeof(*out));
     out->liveBytes = arr->count * arr->elemSize;
-    out->peakBytes = arr->capacity * arr->elemSize;   /* capacity never shrinks */
+    out->peakBytes = arr->capacity * arr->elemSize;   /* live capacity, not a high-water mark */
     out->totalAllocs = arr->growCount;
 }

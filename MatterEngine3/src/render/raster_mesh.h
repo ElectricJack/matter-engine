@@ -21,20 +21,18 @@
 // `dominant_mat` in stage_from_snapshot) so a re-baked coarse rung that lost
 // its per-triangle material does not fall through to the instance material.
 //
-// STALE-COMMENT NOTE: the wording below predates the Vulkan-only renderer. The
-// GL/raylib render path was deleted outright and no `RasterComposer` type
-// remains in the tree (only comments still name it), so "upload happens in
-// RasterComposer" no longer identifies a real call site. The channel MAPPING
-// it describes is still accurate.
 #include "indexed_part_geometry.h"   // IndexedPartGeometry, Tri, TriEx
 #include <cstdint>
 #include <vector>
 
 namespace viewer {
 
-// CPU-side vertex arrays for one LOD level, raylib-Mesh channel layout.
-// TriEx maps onto standard channels: normals <- N0/N1/N2, colors <- tint RGBA,
-// texcoords <- (materialId, per-vertex AO). GL-free: upload happens in RasterComposer.
+// CPU-side vertex arrays for one LOD level, in the legacy raylib-Mesh channel
+// layout: TriEx maps onto standard channels as normals <- N0/N1/N2,
+// colors <- tint RGBA, texcoords <- (materialId, per-vertex AO). That MAPPING
+// is still what the data carries; the raylib/GL renderer that named it is
+// gone, and the only uploader today is the Vulkan part builder. Nothing here
+// owns a GPU resource.
 using RasterMeshData = IndexedPartGeometry;
 
 RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int tri_count,

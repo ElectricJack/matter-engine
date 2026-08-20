@@ -23,13 +23,19 @@
 // must update all three.
 //
 // Layout. The entity list is drawn FLAT. `editor.rows()` already arrives in
-// hierarchy order with a `depth` per row, so nesting is faked with
+// PREORDER hierarchy order with a `depth` per row, so nesting is faked with
 // Indent/Unindent by `depth * kIndentWidth` rather than by nesting ImGui tree
 // nodes. A row with children or a Part is still a non-leaf node (so it pushes,
 // and the matching TreePop runs), but its children are drawn by later
 // iterations of the same flat loop rather than inside that push — only the
-// synthetic "[Part]" bullet is genuinely nested. Collapsing a row therefore
-// does not hide its children.
+// synthetic "[Part]" bullet is genuinely nested.
+//
+// Collapsing still works despite that, because preorder makes a subtree a
+// contiguous run: a closed row records its depth and the loop skips every
+// following row deeper than it (see draw_entities). Rows with children are
+// DefaultOpen so the panel looks the same on first sight as the flat list
+// always did. The skip is turned off while a text filter is active, because
+// the filtered row list is a match list rather than a whole tree.
 //
 // Filtering. The text box drives two different filters: `editor.set_filter`
 // (model-side, for entities) and a local lowercase substring test against the
@@ -183,7 +189,27 @@ void draw_entities(SceneTreeState& state, EditorModel& editor, TreeContext& ctx,
     constexpr float kIndentWidth = 16.0f;
     const bool play_mode = ctx.mode == matter::scene::SimulationMode::Play;
 
+    // Rows are a FLAT preorder list with a depth, drawn with manual
+    // indentation, so closing a parent's tree node does not by itself remove
+    // its descendants from the loop — they are separate iterations. Preorder
+    // is what makes that fixable: a node's subtree is exactly the run of
+    // following rows whose depth is GREATER than its own, so a closed node
+    // records its depth here and every deeper row is skipped until the list
+    // comes back out to that level.
+    //
+    // Disabled while a filter is active: `rows()` is then a match list, not a
+    // contiguous tree, and a match whose parent happens to be closed must not
+    // disappear from the search results.
+    const bool collapsing = editor.filter().empty();
+    int collapsed_at_depth = -1;  // -1 => nothing collapsed
+
     for (const auto& row : editor.rows()) {
+        const int depth = static_cast<int>(row.depth);
+        if (collapsed_at_depth >= 0) {
+            if (depth > collapsed_at_depth) continue;
+            collapsed_at_depth = -1;
+        }
+
         if (row.depth > 0) ImGui::Indent(row.depth * kIndentWidth);
 
         const bool is_runtime = authored_entity_ids != nullptr &&
@@ -195,6 +221,11 @@ void draw_entities(SceneTreeState& state, EditorModel& editor, TreeContext& ctx,
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow;
         if (row.child_count == 0 && !has_part) {
             flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        } else if (row.child_count != 0) {
+            // Default OPEN for real hierarchy, so the tree still shows every
+            // entity on first sight the way the flat list always did; the
+            // "[Part]" pseudo-child stays default-closed as before.
+            flags |= ImGuiTreeNodeFlags_DefaultOpen;
         }
         if (selected) flags |= ImGuiTreeNodeFlags_Selected;
 
@@ -285,6 +316,8 @@ void draw_entities(SceneTreeState& state, EditorModel& editor, TreeContext& ctx,
             if (row.child_count != 0 || has_part) {
                 ImGui::TreePop();
             }
+        } else if (collapsing && row.child_count != 0) {
+            collapsed_at_depth = depth;
         }
 
         if (row.depth > 0) ImGui::Unindent(row.depth * kIndentWidth);

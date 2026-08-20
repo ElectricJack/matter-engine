@@ -115,9 +115,11 @@ struct AtmosphereCommittedState {
     uint64_t generation_serial = 0;
 };
 
-// Owns the physical atmosphere lookup textures.  Task 6 deliberately stops at
-// producing these immutable resources; production lighting consumers bind them
-// in Task 7.
+// Owns the physical atmosphere lookup textures. This class only PRODUCES
+// them; binding is the renderer's job -- VkSceneRenderer's
+// `update_environment_descriptor` writes `sky_view()` and `irradiance_sh()`
+// into the per-frame environment set, and the composite, RT and volumetric
+// paths sample them from there.
 class VkAtmosphere {
 public:
     struct Candidate {

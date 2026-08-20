@@ -36,10 +36,17 @@ process partway through a real append and proves all of that end to end.
 
 ### Corruption is a miss, never a crash
 
-Every blob carries a CRC32 of its payload and of its own record header; the index
-and ref files carry a CRC32 of themselves. A damaged blob reads back as
-`Status::Corrupt` with a null pointer, and its neighbours in the same pack are
-unaffected. Callers treat `Corrupt` exactly as `Missing`: a cache miss, re-bake.
+Every blob carries a CRC32 of its payload, and the index and ref files carry a
+CRC32 of themselves. All three are verified on every read, so a damaged blob
+reads back as `Status::Corrupt` with a null pointer, and its neighbours in the
+same pack are unaffected. Callers treat `Corrupt` exactly as `Missing`: a cache
+miss, re-bake.
+
+Each blob record also carries a CRC32 of its own 32-byte header, but no read
+path checks it: reads seek straight to the payload offset the index names and
+never parse a header. It exists so a pack could be rebuilt by scanning if the
+index were ever lost — forensic metadata for a salvage tool, not a check that
+runs today.
 
 ### Concurrency
 

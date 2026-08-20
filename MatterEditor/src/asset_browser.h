@@ -59,8 +59,8 @@ struct ViewerStats;
 struct ViewerCommands;
 
 // Assets tab (MatterEngine3/docs/part-workbench.md, part II W1): a read-only
-// browser over every world project's worlds/objects/shared-lib, annotated
-// with content-hash-accurate baked state.
+// browser over every world project's scenes/, objects/ and shared-lib/,
+// annotated with content-hash-accurate baked state.
 //
 // Read-only guarantee: this class only ever calls script_host::ScriptHost::
 // resolve_hash and ::eval_requires (both explicitly documented as bake-free —
@@ -101,8 +101,8 @@ public:
 
     // What a source file appears to declare, decided by pattern-matching its
     // `class X extends ...` line -- no script is executed to classify (see
-    // classify_kind). Support is the catch-all: a helper authored under
-    // objects/ that is neither a Part nor a Tileset root.
+    // classify_kind). Support is the catch-all: a helper authored in either
+    // objects/ tier that is neither a Part nor a Tileset root.
     enum class Kind { Part, Tileset, Support };
 
 private:

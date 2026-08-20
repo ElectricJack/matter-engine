@@ -43,7 +43,8 @@ bool read_text(const std::string& path, std::string& out) {
 // place, so a crash mid-write cannot leave a truncated settings file.
 //
 // Returns false on any write or replace failure; the caller's in-memory state is
-// unaffected either way.
+// unaffected either way, and every failure path removes the temp file rather
+// than leaving it beside the settings file.
 bool save_scope_file(const Registry& r, Scope scope, const std::string& path) {
     jsondoc::Value doc;
     std::string existing;
@@ -64,17 +65,27 @@ bool save_scope_file(const Registry& r, Scope scope, const std::string& path) {
     if (target.has_parent_path()) fs::create_directories(target.parent_path(), ec);
 
     const std::string tmp = path + ".tmp";
+    // `ok` rather than an early return: the stream has to be CLOSED (end of this
+    // block) before the temp file can be removed on Windows, and every failure
+    // path must remove it or a half-written .tmp is left beside the settings
+    // file forever.
+    bool ok = true;
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f.good()) {
             fprintf(stderr, "[props] %s: cannot open temp file for write\n", tmp.c_str());
-            return false;
+            ok = false;
+        } else {
+            f << jsondoc::write_json(doc);
+            if (!f.good()) {
+                fprintf(stderr, "[props] %s: write failed\n", tmp.c_str());
+                ok = false;
+            }
         }
-        f << jsondoc::write_json(doc);
-        if (!f.good()) {
-            fprintf(stderr, "[props] %s: write failed\n", tmp.c_str());
-            return false;
-        }
+    }
+    if (!ok) {
+        fs::remove(tmp, ec);
+        return false;
     }
 
     if (part_asset::replace_file_atomic_detailed(tmp, path) ==

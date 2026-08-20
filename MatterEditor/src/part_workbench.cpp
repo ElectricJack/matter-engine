@@ -81,11 +81,10 @@ std::string read_file(const std::string& path, bool& ok) {
 
 // Truncating whole-file write, creating parent directories first.
 //
-// GOTCHA: the return value only reports whether the stream OPENED. The write
-// itself is not checked and the stream is not flushed before returning, so a
-// full disk or a failing device still reports success. write_lods_to_source()
-// — the one caller that writes to a real project file — compensates by
-// re-reading and re-verifying what actually landed on disk.
+// Returns true only when the bytes actually reached the file: the stream is
+// closed explicitly (rather than at scope exit, where a flush failure would be
+// unobservable) and its state is checked afterwards, so a full disk or a
+// failing device reports false instead of a silent success.
 bool write_file(const std::string& path, const std::string& text) {
     fs::path p(path);
     std::error_code ec;
@@ -93,7 +92,8 @@ bool write_file(const std::string& path, const std::string& text) {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f.good()) return false;
     f << text;
-    return true;
+    f.close();  // flushes; close() sets failbit if the flush fails
+    return f.good();
 }
 
 // Creates `link` as a directory alias for `target` (Windows NTFS junction /
@@ -1165,7 +1165,9 @@ void PartWorkbench::draw_lod_authoring_panel() {
         // estimation derives, which is the default the author edits from.
         ImGui::SameLine();
         bool has_at = L.at >= 0.0;
-        if (ImGui::Checkbox("at (m)", &has_at)) L.at = has_at ? (i == 0 ? 0.0 : 0.0) : -1.0;
+        // Ticking the box seeds 0 m for EVERY level (level 0 is not special
+        // here); unticking stores the -1 sentinel that means "unauthored".
+        if (ImGui::Checkbox("at (m)", &has_at)) L.at = has_at ? 0.0 : -1.0;
         if (has_at) {
             float at_f = static_cast<float>(L.at);
             ImGui::SameLine();

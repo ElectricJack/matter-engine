@@ -12,6 +12,28 @@ Ordered by how much they can hurt. Line numbers are as of `e7c19aae`.
 > marked **[FIXED]** below. One item originally listed here was withdrawn on
 > inspection — see "Not a bug after all". Everything unmarked is still open.
 
+## How this file is maintained
+
+This is a **living backlog**, not a report. Entries are annotated in place as
+they are resolved; nothing is deleted, so the record of what was believed and
+what turned out to be true stays readable.
+
+Mark an entry with one of:
+
+- **[FIXED]** — confirmed and corrected. Say what landed if it is not obvious
+  from the entry.
+- **[WITHDRAWN]** — the finding was wrong. Do **not** silently delete it: move
+  the reasoning into §0 "Not a bug after all" and leave a one-line
+  `[WITHDRAWN -- see §0]` stub where the entry was, so a later reader does not
+  rediscover it and "fix" working code. §0 exists precisely because that
+  already happened once.
+- **[DEFERRED]** — real, but correcting it means changing a documented contract
+  or an API shape. Record the recommendation; do not act unilaterally.
+
+An unmarked entry is still open. Confirm a finding against the code (and
+against any test that pins the current behaviour) before acting on it — these
+were written by reading, not by running.
+
 ---
 
 ## 0. Not a bug after all
@@ -222,9 +244,32 @@ rewritten; corrections were added alongside.
   GONE FROM THIS ENCODING".
 - **`CLAUDE.md` item 8** — "libs/MeshChartingLib … No consumers today".
   `MatterEngine3/Makefile:213` compiles it and `lod_bake.cpp:361`
-  (`build_chart_rung`) drives it.
+  (`build_chart_rung`) drives it. **[FIXED]** — item 8 now names the real
+  consumers and the `build_chart_rung` call chain.
 - **`libs/MemoryLib/README.md`** — the Consumers section names three projects
-  that do not exist in the tree.
+  that do not exist in the tree. **[ALREADY FIXED]** — the Consumers section in
+  the tree today lists the real `mem_pool.c` / `mem_arena.c` consumers and no
+  longer claims MatterSurfaceLib keeps a vendored copy.
+- **`libs/MatterSurfaceLib/README.md` was a verbatim copy of
+  `Prototypes/GPURayTraceExample`'s** — titled "GPU Ray Tracing Example",
+  documenting `build.bat` / `run.ps1` / `platform-status.sh` for an app
+  (`main.cpp` + `bvh_visualizer`) Phase 5a deleted, and listing an
+  "ObjectAllocator (copied from ObjectAllocatorLib)" dependency that
+  contradicts CLAUDE.md's no-copies rule. **[FIXED]** — rewritten to describe
+  the library, the `shaders`/`regen-shaders` targets that are the Makefile's
+  only live purpose, and the per-suite test targets.
+- **`libs/MeshChartingLib/README.md`** predated the 2026-07-29 WP-A additions
+  (no `pack_charts_paged`, `chart_average_normals`, `projection_distortion` or
+  the 32-bit index overloads). **[FIXED]**
+- **`MatterEditor/README.md`** — "Reuses, unmodified: the same `APP_SRC` /
+  `WIN_ME3_CPP` / `WIN_MSL_CPP` / `WIN_PIPELINE_C` … source lists". The three
+  `WIN_*` engine lists were deleted; both targets link an archive
+  MatterEngine3's `viewer-lib` target builds. The build command also still
+  carried the `TMP=`/`TEMP=` prefix `platform.mk` made unnecessary. **[FIXED]**
+- **`CLAUDE.md` item 7** — "Dependencies: MatterEngine3 (libmatter_engine3.a)"
+  and "`make -C MatterEditor` → `build/linux/editor`". `editor.exe` links
+  `libmatter_engine3_viewer.a`, and `.DEFAULT_GOAL := windows`, so a bare
+  `make -C MatterEditor` builds the Windows exe. **[FIXED]**
 
 Misplaced (not wrong, just attached to the wrong declaration):
 `dsl_bindings.cpp:1176` (`__habitatAt` docs sit above `j_hasHabitat`),
@@ -318,3 +363,98 @@ Row-major vs column-major matrices meeting in one codebase:
 `selection_outline.cpp` is column-major; same split between
 `animation_debug_overlay.cpp`'s local `Mat4` and `matter::Mat4f`. Neither pair
 meets today. Both are now labelled.
+
+---
+
+## 8. Test-suite triage, 2026-08-19
+
+A sweep of `MatterEngine3/tests/`, `MatterEditor/tests/`, `libs/*/tests/` and
+`libs/*/main.c` for suites that no longer apply.
+
+### Build-system defects (fixed)
+
+- **`run-physicsevents` did not link.** `PHYSICSEVENTS_CPP` listed
+  `../src/ecs/ecs_runtime.cpp` without the animation closure that TU
+  constructs, so the target died on `AnimationSystems::set_presentation_delta_seconds`,
+  `AnimationEvaluator`'s ctor/dtor, `PoseLodScheduler`'s ctor and the vtable for
+  `Box3DAnimationWorldQueries`. Every sibling that links `ecs_runtime.cpp`
+  (`ECS_CPP`, `PHYSICS_CPP`, `SCENE_REGISTRY_CPP`, `PROPERTIES_REGISTRY_CPP`,
+  `SIMULATION_CONTROL_CPP`, `ECS_ENTITY_BRIDGE_CPP`, and `DYNAMIC_BRIDGE_CPP`
+  by listing the same TUs by hand) already carries
+  `$(ANIMATION_ECS_RUNTIME_REQUIRED)`; this one did not. **[FIXED]** — added
+  that list plus `$(OZZ_OFFLINE_LIBS)` to the link line and prerequisites.
+  No other target has the same gap.
+- **A literal `\n` inside `def_CPP_SRCS`.** The `$(SUNANGLES_CPP)`/
+  `$(PROPS_CPP)`/`$(CLOUDLAYER_CPP)` line carried the two characters `\` `n`
+  where a line continuation belonged, so the word `\n` entered the source
+  union and had a compile rule generated for it. Harmless only because
+  `def_CPP_OBJS` feeds nothing but the unused `ALL_OBJS`. **[FIXED]** — exactly
+  the `sed`-over-heredoc hazard the fix contract warns about.
+- **Stale `stressforest` mentions.** `stress_forest_tests.cpp` is gone from the
+  tree and has no target; two comment blocks in `MatterEngine3/tests/Makefile`
+  still listed it in the sh-flavor family. **[FIXED]** — comments corrected.
+  Nothing else references the file.
+
+### A third pre-existing red suite (owner: atmosphere/volumetrics)
+
+`run-cloud-layers` fails 1 check, and has since 2026-08-10. The contract's
+Rule 6 lists two known-red suites; this is a third.
+
+`cloud_layer_tests.cpp`'s `test_task9_shared_density_and_optional_r16f_contract`
+ends by reading `../tools/atmosphere_cloud_shots.sh` and asserting on two
+strings inside it. Commit `ac1c04dc` ("Remove helper script that's not needed
+any longer") deleted that script, so the `ifstream` yields an empty string and
+`"Task 9 capture gates same-process static repeat while retaining Task7 as a
+diagnostic"` can never pass. The other two CHECKs in the same function read
+files that still exist and pass.
+
+The assertion is obsolete: it pins the contents of a deleted harness, not the
+behaviour of any shipped code. Deleting that third `CHECK` (and the
+`harness_file`/`harness` locals feeding only it) turns the suite green without
+losing coverage of anything that exists. Left for the owning area — it is a
+test-source change, not a Makefile one.
+
+### Orphans — deliberate, leave them
+
+- `MatterEngine3/tests/channels_at_bench.cpp` and `scatter_grid_bench.cpp` have
+  no Makefile target **on purpose**: both are one-off measurement harnesses
+  whose file headers carry their own `g++` command line, and
+  `MatterEngine3/src/scatter_grid_native.h` cites the second as the source of
+  its documented cost shape. Not dead code.
+- `libs/MatterSurfaceLib/tests/simp_perf_probe.cpp` is the same shape — a
+  hand-run benchmark, not a suite.
+
+### Orphans — genuinely unwired (owner: MatterSurfaceLib)
+
+- `libs/MatterSurfaceLib/tests/cell_tests.cpp` and `simple_cell_tests.cpp` are
+  referenced by no target in `libs/MatterSurfaceLib/tests/Makefile`. They are
+  older, larger siblings of `cell_bounds_tests.cpp` (`run-cell`) and of the
+  `minimal_cell_test.cpp` the default `run` target builds, and they still
+  `#include "raylib.h"` directly. Either wire one of them up or delete both;
+  not touched here because that Makefile and those sources belong to another
+  area.
+
+### Not found (checked, all clean)
+
+- **No dangling targets.** Every source path named in
+  `MatterEngine3/tests/Makefile`, `MatterEditor/Makefile`'s test rules and each
+  `libs/*/tests/Makefile` exists. `gpu_cull_tests.cpp` and
+  `release_part_tests.cpp` survive only inside comments recording their
+  retirement.
+- **No stale expected-test-counts.** Every suite prints a runtime-computed
+  `passed/total`; none hardcodes a total.
+- **No live raylib/GL or HZB test paths.** `api_tests.cpp:110` and
+  `world_stream_tests.cpp:226` still call `BeginDrawing()`, but both assertions
+  on render output are already `#ifndef MATTER_VULKAN_ONLY`-guarded with a
+  comment explaining that `WorldSession::render()` is the no-op stub. The
+  remaining `GpuCuller`/`RasterComposer` mentions in `viewer_logic_tests.cpp`,
+  `refine_loop_tests.cpp` and `shader_source_tests.cpp` are comments recording
+  deletions. Nothing in any suite references the removed HZB.
+- **`MatterEditor/tests/` has no Makefile**; its eight `test_*.cpp` are wired
+  from `MatterEditor/Makefile` and all eight are present and reachable.
+
+### Missing
+
+- **`MatterEngine3/README.md` does not exist**, though CLAUDE.md's "Project
+  Structure" section says each sub-project has one and `MatterEditor/README.md`
+  does. Not authored here.

@@ -87,11 +87,12 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& engine_shared_lib_dir);
 
 // Save a resolved payload to <cache_root>/cache/<world_name>.resolve.
-// Writes to a .tmp then renames (atomic on POSIX).
-// The publish is part_asset::replace_file_atomic, not std::rename: plain rename
-// FAILS on Windows when the target already exists, which once made every save
-// after the first a silent no-op.  See the note at the publish site in
-// resolve_cache.cpp.
+// Writes the whole payload to "<path>.tmp" and then publishes it in one step,
+// so a concurrent reader sees either the old file or the new one and never a
+// half-written one. The publish is part_asset::replace_file_atomic and NOT
+// std::rename: plain rename FAILS on Windows when the target already exists,
+// which once made every save after the first a silent no-op. See the note at
+// the publish site in resolve_cache.cpp.
 // Returns false on any write error (non-fatal — the runtime just won't have a
 // warm cache next launch).
 bool save(const std::string& cache_root,

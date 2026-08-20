@@ -57,10 +57,17 @@ struct PartPickerState {
 // assignment was refused (unknown hash, entity gone); `list_available_parts`
 // returns (part_hash, display name) pairs for the picker popup and is called
 // while the popup is open, so it should not be O(world) if it can help it.
-// Both may be empty — check before calling.
+//
+// `current_part_hash` reads the entity's PartInstance.part_hash at FULL 64-bit
+// width, which the generic FieldCommands::get_uint accessor cannot do — that
+// family is 32-bit and truncates (scene_registry.cpp documents the truncation
+// on field_get_uint). Returns false when the entity has no PartInstance.
+//
+// All three may be empty — check before calling.
 struct PartEditorCommands {
     std::function<bool(matter::scene::SceneEntityId, uint64_t new_hash)> assign_part;
     std::function<std::vector<std::pair<uint64_t, std::string>>()> list_available_parts;
+    std::function<bool(matter::scene::SceneEntityId, uint64_t& out_hash)> current_part_hash;
 };
 
 // --- Physics Editor ---

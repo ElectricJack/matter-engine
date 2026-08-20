@@ -578,10 +578,17 @@ JSValue define_material(JSContext* context,
 
     MaterialDef def{};
     MaterialRegistryDefaultDynamicDef(&def);
-    // Distinct dynamic materials must not share a merge group with each other
-    // or with a builtin (0..25), or the SDF mesher would blend them. Derived
-    // from the name so the group is stable across loads and independent of
-    // declaration order.
+    // Distinct dynamic materials must not share a MERGE GROUP with each other
+    // or with a builtin, or the SDF mesher would blend them into one surface.
+    // Builtin merge groups are the GROUP_* enum in
+    // libs/MatterSurfaceLib/src/material_registry.c, currently GROUP_RED = 0
+    // through GROUP_FOLIAGE_THIN = 25 — note these are group ids, NOT the
+    // builtin MATERIAL ids (0 .. MaterialRegistryStaticCount()-1, see the
+    // reset comment in load_world_definition). The 1000 floor below clears
+    // both ranges by a wide margin; it is the one number to raise if the
+    // GROUP_* enum ever grows past it.
+    // Derived from the name so the group is stable across loads and
+    // independent of declaration order.
     def.mergeGroup = 1000 + static_cast<int>(fnv1a32(name) % 1000000u);
 
     bool present = false;
@@ -721,7 +728,9 @@ bool extract_settings_object(JSContext* context,
 // roots, not an error. Each entry needs a string `module`; `params` (any
 // JSON-serializable value, canonicalized because it is hashed into the root's
 // content address), a 16-number row of `transform`, and the `expand` / `tileset`
-// booleans are optional and keep the WorldRoot default when absent.
+// booleans are optional and keep the WorldRoot default when absent — which for
+// `transform` is IDENTITY (see matter/world_definition.h), so a root that omits
+// it is placed at the origin unrotated rather than through a zero matrix.
 //
 // Runs FIRST among the extractors, which is what defines "too late" for
 // defineMaterial: a root's params may name a material handle, so materials must
@@ -2267,7 +2276,9 @@ bool load_world_definition(const WorldLoadDesc& desc,
     // Contract C3: the dynamic registry tail is per-world. Clearing it here (not
     // only at provider connect) is what makes handles deterministic — loading
     // the same world twice yields the same indices, and a second world never
-    // inherits the first world's materials. Builtin ids 0..29 are untouched.
+    // inherits the first world's materials. The frozen builtin MATERIAL ids
+    // [0, MaterialRegistryStaticCount()) are untouched — that count is the
+    // authority, not any literal written here.
     MaterialRegistryResetDynamic();
 
     std::string source;

@@ -187,12 +187,13 @@ struct SurfaceScratch {
     float        clip_max_radius;
 };
 
-// Legacy single-threaded API delegates here. Lazily created; freed by SurfaceLibCleanup.
-// NOTE (doc pass): SurfaceLibCleanup no longer exists in the tree, so nothing
-// destroys this scratch — it now lives for the life of the process. That is a
-// bounded, one-time allocation, not a growing leak, but it does mean the legacy
-// (non-scratch) entry points keep their pool and hashes resident forever, and
-// that they are NOT safe to call from more than one thread.
+// Legacy single-threaded API delegates here. Lazily created on first use and
+// never destroyed: nothing in the tree frees it, so it lives for the life of
+// the process. That is a bounded, one-time allocation, not a growing leak, but
+// it does mean the legacy (non-scratch) entry points keep their pool and hashes
+// resident forever, and that they are NOT safe to call from more than one
+// thread. Callers that need a bounded lifetime or thread safety must own their
+// own SurfaceScratch (CreateSurfaceScratch / DestroySurfaceScratch).
 static SurfaceScratch* g_defaultScratch = NULL;
 
 // Memory pool management functions
@@ -305,13 +306,6 @@ typedef struct {
     float*  scalarField;    // Scalar field values at grid points
     int*    materialField;  // Material IDs at grid points
 } VolumeData;
-
-// Vertex structure for isosurface mesh
-typedef struct {
-    MtVec3 position;
-    MtVec3 normal;
-    int     materialId;
-} IsosurfaceVertex;
 
 // Local function declarations
 static ScalarMaterialPair CalculateScalarAndMaterial(MtVec3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr);
@@ -864,8 +858,26 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
         } else {
             edgeKeys = (unsigned long long*)malloc(hashTableSize * sizeof(unsigned long long));
             globalEdgeVertexIndices = (int*)malloc(hashTableSize * sizeof(int));
+
+            // 8 MB + 4 MB in one go, and the init loop below writes both
+            // immediately -- so this must be checked like every other
+            // allocation here, not assumed. Nothing has been written into the
+            // mesh buffers yet, so bailing just frees what this !memory-reuse
+            // path allocated and returns the empty mesh.
+            if (!edgeKeys || !globalEdgeVertexIndices) {
+                printf("Failed to allocate memory for edge hash table\n");
+                free(edgeKeys);
+                free(globalEdgeVertexIndices);
+                free(data.scalarField);
+                free(data.materialField);
+                free(vertices);
+                free(normals);
+                free(materials);
+                free(triangles);
+                return mesh;
+            }
         }
-        
+
         // Initialize hash table to indicate no entries
         for (int i = 0; i < hashTableSize; i++) {
             edgeKeys[i] = 0;  // 0 means no edge stored
@@ -1491,7 +1503,15 @@ static ScalarMaterialPair CalculateScalarStaged(
                                              searchRadius, (void**)nearby, 128);
 
     // Per-stage accumulation of additive-sphere distances (bucketed by stage).
-    // STAGE_CAP bounds stack use; deeper stages fold via the field below.
+    // STAGE_CAP bounds stack use (STAGE_CAP*128 floats of stageVals below).
+    //
+    // WARNING: stages past the cap are not folded, they are DISCARDED. The
+    // clamp below lowers stageCount, and the `st >= stageCount` guard in the
+    // gather loop then remaps every particle authored into a dropped stage onto
+    // stage 0 -- so a Difference in stage 70 silently becomes part of stage 0's
+    // union. No diagnostic is emitted. Authoring more than STAGE_CAP ordered CSG
+    // stages on one merge group is therefore not supported; raise the cap (and
+    // the stack cost with it) or reject the input upstream before relying on it.
     enum { STAGE_CAP = 64 };
     if (stageCount > STAGE_CAP) stageCount = STAGE_CAP;
     float stageVals[STAGE_CAP][128];
@@ -1509,17 +1529,16 @@ static ScalarMaterialPair CalculateScalarStaged(
         float f = sqrtf(dx*dx + dy*dy + dz*dz) - pp->radius;
         if (f < bestF) { bestF = f; result.materialId = pp->materialId; }
 
-        // Resolve this particle's stage. particleStage is parallel to the hash's
-        // backing Particle array, so index = pp - particles base. We instead read
-        // it via the index encoded by the hash lookup is unavailable; the caller
-        // guarantees particleStage indexing matches pointer order from a single
-        // contiguous array, so recover the index by pointer arithmetic against the
-        // first found is unsafe. Use stage tag from the FieldStages map keyed by
-        // pointer offset supplied by the caller's particle base.
+        // Resolve this particle's stage. The spatial hash hands back the raw
+        // `&particles[i]` pointers it was given and carries no index, so the
+        // index is recovered by pointer arithmetic against the caller-supplied
+        // base: `stages->particleStage` is parallel to that one contiguous
+        // array. The caller must therefore pass `_particleBase`/`_particleCount`
+        // describing the exact array it inserted; the range check below is what
+        // keeps a mismatched base from indexing out of bounds (it falls back to
+        // stage 0 rather than reading garbage).
         int st = 0;
         if (stages && stages->particleStage && stages->stageCount > 1) {
-            // Pointer-difference against the caller's contiguous particle array.
-            // The hash stores &particles[i]; particleStage is indexed identically.
             long idx = (long)(pp - (Particle*)stages->_particleBase);
             if (idx >= 0 && idx < stages->_particleCount) st = stages->particleStage[idx];
         }

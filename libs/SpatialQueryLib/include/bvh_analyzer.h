@@ -24,8 +24,6 @@
 //   a dangling pointer that the next `UpdateAnalysis` will dereference.
 // - No locking anywhere. The registry is a plain `unordered_map` touched
 //   without a mutex, so registration/analysis must stay on one thread.
-// - Several declarations here have no definition in `src/bvh_analyzer.cpp`
-//   and will fail to link if called; they are flagged individually below.
 // - The scores are heuristics with hand-picked weights, not a measurement of
 //   anything. Treat them as relative signal between two builds of the same
 //   mesh, not as an absolute grade.
@@ -117,16 +115,15 @@ struct BVHTreeAnalysis {
 //
 // Returned by `BVHAnalyzer::AnalyzeTLAS`. Substantially less complete than
 // `BVHTreeAnalysis`:
-//   - `blas_analyses` gets one entry per instance with only `total_nodes`
-//     populated; the analyzer has no way to reach each instance's `BvhMesh`
-//     from a `TLAS`, so no per-BLAS depth or triangle metrics are computed.
-//   - `avg_instance_triangles` is consequently always 0 — the accumulator it
-//     divides is never incremented in `src/bvh_analyzer.cpp`.
-//   - `instance_distribution_variance`, `tlas_issues` and
-//     `tlas_recommendations` are declared but never written.
+//   - `blas_analyses` gets one entry per instance with only `total_nodes` and
+//     `total_triangles` populated; the analyzer has no way to reach each
+//     instance's `BvhMesh` from a `TLAS`, so no per-BLAS depth, surface-area
+//     or balance metrics are computed.
+//   - there is no per-instance issue/recommendation prose the way
+//     `BVHTreeAnalysis` has: `AnalyzeTLAS` computes numbers only.
 // The fields that are real: `total_instances`, `tlas_nodes`,
-// `max_tlas_depth`, `tlas_surface_area`, `tlas_balance_factor` and the
-// score derived from it.
+// `max_tlas_depth`, `tlas_surface_area`, `tlas_balance_factor`,
+// `avg_instance_triangles` and the score derived from the balance factor.
 struct TLASAnalysis {
     uint32_t total_instances = 0;
     uint32_t tlas_nodes = 0;
@@ -134,16 +131,13 @@ struct TLASAnalysis {
     float tlas_balance_factor = 0.0f;
     float avg_instance_triangles = 0.0f;
     float tlas_surface_area = 0.0f;
-    float instance_distribution_variance = 0.0f;
-    
+
     // Per-BLAS analysis summary
     std::vector<BVHTreeAnalysis> blas_analyses;
-    
+
     // Overall TLAS quality
     float tlas_quality_score = 0.0f;
-    std::vector<std::string> tlas_issues;
-    std::vector<std::string> tlas_recommendations;
-    
+
     float total_analysis_time_ms = 0.0f;
 };
 
@@ -160,8 +154,9 @@ public:
     // Full recursive walk of every node plus several passes over the per-depth
     // vectors — O(nodes), allocating, and not something to run per frame or
     // per mesh commit. Returns a default-constructed (all-zero) analysis if
-    // `bvh`, `bvh->bvhNode` or `mesh` is null; that is a normal outcome, not
-    // an error signal, so check `total_nodes` before trusting a result.
+    // `bvh`, `bvh->bvhNode` or `mesh` is null, or if the mesh holds no
+    // triangles at all; that is a normal outcome, not an error signal, so
+    // check `total_nodes` before trusting a result.
     // `name` is accepted for symmetry with the report functions and is not
     // used by the analysis itself.
     static BVHTreeAnalysis AnalyzeBVH(const BVH* bvh, const BvhMesh* mesh, const std::string& name = "");
@@ -173,29 +168,13 @@ public:
     static TLASAnalysis AnalyzeTLAS(const TLAS* tlas, const std::string& name = "");
     
     // Generate human-readable report
-    // Returns a multi-section text block. Note that the implementation emits
-    // the two-character sequence backslash-n rather than real newlines, so the
-    // result is one long line unless the consumer unescapes it.
+    // Returns a multi-section text block, newline-separated and ready to
+    // print. The recommendations it prints are the ones `AnalyzeBVH` wrote
+    // into `BVHTreeAnalysis::recommendations`; there is no separate
+    // recommendation generator.
     static std::string GenerateReport(const BVHTreeAnalysis& analysis, const std::string& tree_name = "");
     static std::string GenerateTLASReport(const TLASAnalysis& analysis, const std::string& tlas_name = "");
-    
-    // Generate detailed performance analysis
-    // Declared but never defined in `src/bvh_analyzer.cpp` — link error if
-    // called.
-    static std::string GeneratePerformanceReport(const BVHTreeAnalysis& analysis);
-    
-    // Compare multiple BVH trees
-    // Declared but never defined in `src/bvh_analyzer.cpp` — link error if
-    // called.
-    static std::string CompareBVHTrees(const std::vector<BVHTreeAnalysis>& analyses, 
-                                       const std::vector<std::string>& names);
-    
-    // Generate recommendations for BVH optimization
-    // Declared but never defined in `src/bvh_analyzer.cpp` — link error if
-    // called. The recommendations that DO get produced are written directly
-    // into `BVHTreeAnalysis::recommendations` by `AnalyzeBVH`.
-    static std::vector<std::string> GenerateOptimizationRecommendations(const BVHTreeAnalysis& analysis);
-    
+
 private:
     // Internal analysis helpers
     static void AnalyzeNodeRecursive(const BVH* bvh, uint32_t node_idx, uint32_t depth, 
@@ -254,11 +233,7 @@ public:
     // and is invalidated by the next `RegisterBVH`/`UnregisterBVH`/`Clear`.
     static const BVHTreeAnalysis* GetBVHAnalysis(const std::string& name);
     static const TLASAnalysis* GetTLASAnalysis(const std::string& name);
-    
-    // Declared but never defined in `src/bvh_analyzer.cpp` — link error if
-    // called.
-    static std::string GenerateSummaryReport();
-    
+
     // Unregister a single BVH by name (call before release_blas to avoid dangling)
     static void UnregisterBVH(const std::string& name);
 

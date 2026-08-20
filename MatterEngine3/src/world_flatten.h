@@ -61,11 +61,6 @@ struct FlatInstance {
 // but would otherwise hang); `max_instances` bounds the output vector. Exceeding
 // either aborts the flatten with a descriptive `err` — see flatten() below for
 // what happens to `out`.
-// Safety valves for the recursive walk. `max_depth` bounds the C++ stack (and is
-// the only backstop against a cyclic graph, which is contractually impossible
-// but would otherwise hang); `max_instances` bounds the output vector. Exceeding
-// either aborts the flatten with a descriptive `err` — see flatten() below for
-// what happens to `out`.
 struct FlattenLimits {
     uint32_t max_depth     = 32;
     uint32_t max_instances = 1000000;
@@ -76,17 +71,12 @@ struct FlattenLimits {
 // `err` (naming the offending part/path) if max_depth or max_instances is
 // exceeded. Leaf parts (no children) emit a FlatInstance; interior parts only
 // compose transforms.
-// `out` and `err` are cleared on entry. On failure `out` is NOT rolled back for
-// a limit breach — it holds the leaves emitted before the breach — so treat any
-// false return as "discard out". The one exception is an out-of-memory failure,
-// which is caught, reported through `err` (naming the root hash) and does clear
-// `out`, so a runaway world reports instead of taking the process down.
-// FlatInstance::stable_id is left at 0 for every emitted instance.
-// `out` and `err` are cleared on entry. On failure `out` is NOT rolled back for
-// a limit breach — it holds the leaves emitted before the breach — so treat any
-// false return as "discard out". The one exception is an out-of-memory failure,
-// which is caught, reported through `err` (naming the root hash) and does clear
-// `out`, so a runaway world reports instead of taking the process down.
+// `out` and `err` are cleared on entry, and `out` is cleared again on EVERY
+// failure — a limit breach and an out-of-memory alike — so a false return always
+// means "out is empty" and a partially flattened world can never be mistaken for
+// a complete one. An out-of-memory failure is caught and reported through `err`
+// (naming the root hash), so a runaway world reports instead of taking the
+// process down.
 // FlatInstance::stable_id is left at 0 for every emitted instance.
 bool flatten(const PartGraph& graph, uint64_t root, const FlattenLimits& limits,
              std::vector<FlatInstance>& out, std::string& err);

@@ -124,9 +124,11 @@ static void split_recursive_generic(std::vector<uint32_t>& order,
 // MatterEngine3/tests/part_flatten_tests.cpp keeps it as the reference the
 // streaming path is compared against.
 //
-// `triex` must be either empty or exactly parallel to `tris`. The assert below
-// is the only guard: a release build with a mismatched non-empty `triex` would
-// index out of range while applying the permutation.
+// `triex` must be either empty or exactly parallel to `tris`. A mismatched
+// non-empty `triex` is rejected fail-closed -- no clusters, and BOTH vectors
+// left exactly as the caller passed them -- rather than indexed out of range
+// while applying the permutation. The assert fires first in a debug build so a
+// test sees the programming error instead of an empty result.
 std::vector<Cluster> split_clusters(std::vector<Tri>& tris,
                                     std::vector<TriEx>& triex,
                                     uint32_t target_tris) {
@@ -136,6 +138,7 @@ std::vector<Cluster> split_clusters(std::vector<Tri>& tris,
     // Validate parallel sizes if triex is non-empty.
     const bool has_triex = !triex.empty();
     assert(!has_triex || triex.size() == tris.size());
+    if (has_triex && triex.size() != tris.size()) return {};
 
     // Build identity order vector.
     std::vector<uint32_t> order(n);

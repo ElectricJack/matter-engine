@@ -1563,12 +1563,23 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
         int src = std::min(C, E);
         if (nlev == 0) src = 0;
         else src = std::max(0, std::min(src, (int)nlev - 1));
-        eps_child_used = std::max(eps_child_used,
-                                  eps_child_local(src) * ref_scale);
+        // FLT_MAX is eps_child_local's sentinel for "this level is excluded"
+        // (no threshold recorded for it, or a non-positive one). Test it BEFORE
+        // the multiply: ref_scale destroys the sentinel -- the product is inf
+        // above 1 and a merely huge finite number below it -- so a check on the
+        // scaled value can essentially never fire, which is what the `==
+        // FLT_MAX` guard that used to sit after this loop was doing. An
+        // excluded source level contributes nothing to the coarse segment's
+        // error bound instead of pinning it at the sentinel.
+        const float eps_child = eps_child_local(src);
+        if (eps_child < FLT_MAX)
+            eps_child_used = std::max(eps_child_used, eps_child * ref_scale);
         RefPlan p; p.ref = &hr.ref; p.src = src; p.hash = hr.ref.child_resolved_hash;
         plans.push_back(p);
     }
-    if (eps_child_used == FLT_MAX) eps_child_used = 0.0f;   // safety (all-excluded)
+    // eps_child_used therefore starts at 0 and only ever takes finite values;
+    // "every ref excluded" simply leaves it at 0, which is what the old
+    // all-excluded fallback was reaching for.
 
     // 5. Trunk: materialize the full gathered trunk in identity order (the
     //    trunk is small by construction when hints exist).

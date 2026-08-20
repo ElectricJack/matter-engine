@@ -280,6 +280,10 @@ struct VtEnricher::Impl {
     // frame of its own, and stamping a retirement with anything older than the
     // last recorded batch would retire it before that batch can complete.
     uint64_t last_frame_index = 0;
+    // One-shot latch for get_or_build_variant's failure diagnostic. A failing
+    // variant is retried on every batch that wants it, so an unlatched message
+    // would be a per-frame flood; the FIRST reason is the diagnostic one.
+    bool build_failure_reported = false;
 
     // One batch's transient resources. kMaxBatchesInFlight of these rotate
     // through ring_cursor; overwriting a ring's host-visible request/cand
@@ -938,9 +942,13 @@ void VtEnricher::Impl::record_as_build(VkCommandBuffer cmd, VariantEntry& e) {
 // Find — or build — the cached entry for one (variant_hash, rung).
 //
 // Returns null on ANY failure (unusable chart streams, allocation failure,
-// acceleration-structure creation failure, descriptor exhaustion) with no
-// logging: the caller just counts the request as skipped, because a skipped
-// enrichment leaves a page tier-1 correct rather than broken. On success the
+// acceleration-structure creation failure, descriptor exhaustion): the caller
+// just counts the request as skipped, because a skipped enrichment leaves a
+// page tier-1 correct rather than broken. The FIRST such failure is reported
+// on stderr with its reason -- silently discarding the populated `err` made an
+// AS-build failure look identical to a world that simply never requested
+// enrichment. Later failures are latched off (build_failure_reported), since a
+// failing variant is retried by every batch that wants it. On success the
 // pointer is into the `variants` map and is valid only for the batch being
 // recorded — evict_lru() may move a later-unused entry into the graveyard.
 //
@@ -959,8 +967,25 @@ VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
         it->second.last_used = frame_index;
         return &it->second;
     }
-    if (!vt_build_chart_gpu_streams(*atlas, *ctx, scratch_charts, scratch_tris))
+    // Reports the first failure and swallows the rest. Always returns null so
+    // call sites read `return fail(...)`.
+    const auto fail = [&](const char* stage,
+                          const std::string& reason) -> VariantEntry* {
+        if (!build_failure_reported) {
+            build_failure_reported = true;
+            std::fprintf(stderr,
+                         "[vt.enrich] variant 0x%016llx rung %u cannot be "
+                         "enriched (%s): %s -- this and every later build "
+                         "failure leaves the page at tier 1\n",
+                         static_cast<unsigned long long>(variant_hash), rung,
+                         stage, reason.empty() ? "no reason reported"
+                                               : reason.c_str());
+        }
         return nullptr;
+    };
+    if (!vt_build_chart_gpu_streams(*atlas, *ctx, scratch_charts, scratch_tris))
+        return fail("chart streams", "vt_build_chart_gpu_streams rejected the "
+                                     "atlas rung or part context");
 
     evict_lru(frame_index, stats);
 
@@ -980,12 +1005,13 @@ VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                entry.tris, err) ||
         !matter::map_buffer(entry.tris, err))
-        return nullptr;
+        return fail("stream buffers", err);
     std::memcpy(entry.charts.mapped, scratch_charts.data(),
                 static_cast<size_t>(charts_bytes));
     std::memcpy(entry.tris.mapped, scratch_tris.data(),
                 static_cast<size_t>(tris_bytes));
-    if (!build_acceleration_structures(entry, ctx, err)) return nullptr;
+    if (!build_acceleration_structures(entry, ctx, err))
+        return fail("acceleration structures", err);
     entry.bytes += charts_bytes + tris_bytes;
     entry.last_used = frame_index;
 
@@ -995,7 +1021,9 @@ VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
     alloc.descriptorSetCount = 1;
     alloc.pSetLayouts = &variant_layout;
     if (vkAllocateDescriptorSets(device, &alloc, &entry.set) != VK_SUCCESS)
-        return nullptr;
+        return fail("descriptor set",
+                    "vkAllocateDescriptorSets failed -- the pool is sized "
+                    "as_cache_cap + 32, so this means the cache overran it");
     VkDescriptorBufferInfo charts_info{entry.charts.buffer, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo tris_info{entry.tris.buffer, 0, VK_WHOLE_SIZE};
     VkWriteDescriptorSetAccelerationStructureKHR as_write{
@@ -1081,10 +1109,6 @@ void VtEnricher::Impl::record_init(VkCommandBuffer cmd) {
 }
 
 // ---------------------------------------------------------------------------
-// M6.5 directional tier
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 VtEnricher::VtEnricher(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -1130,16 +1154,8 @@ void VtEnricher::invalidate_part(uint64_t variant_hash) {
     // graveyard-routed entry can have (kRetireFrames guarantees more).
     for (auto it = impl_->variants.begin(); it != impl_->variants.end();) {
         if (it->first.first == variant_hash) {
-            // Deferred, exactly as evict_lru does it. Destroying here instead
-            // was a GPU use-after-free: the caller's retirement horizon is
-            // measured from when the PART was released, but a variant can be
-            // (re)built after that -- a queued page request serviced in the
-            // intervening frames -- and such an entry is one frame old with an
-            // acceleration-structure build still writing its scratch. Device
-            // fault reports caught exactly that: an invalid WRITE to a buffer
-            // that had lived 27 ms and been freed 12 ms earlier, which no
-            // graveyard-routed entry could ever be (kRetireFrames guarantees
-            // several more frames of life).
+            // Deferred, exactly as evict_lru does it -- see the rationale on
+            // this function.
             impl_->graveyard.push_back(
                 Impl::Retired{std::move(it->second), impl_->last_frame_index});
             it = impl_->variants.erase(it);
@@ -1196,10 +1212,12 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     // The pool ORM image the write-back barriers at the end will cover. Every
     // accepted request overwrites these, so the barriers use the LAST accepted
     // request's image and layer count, while the per-page copies use their own
-    // rec.orm_image. That is only equivalent because the residency layer owns
-    // exactly one page pool and every request in a batch therefore names the
-    // same ORM image — a batch that mixed pools would copy into an image the
-    // barriers never transitioned.
+    // rec.orm_image. That is equivalent only while every request in the batch
+    // names the SAME ORM image — which holds because the residency layer owns
+    // exactly one page pool. The loop below no longer RELIES on that: a
+    // request naming a different image is skipped, because copying into an
+    // image the end-of-batch barriers never transitioned is a silent
+    // synchronisation bug rather than a missing page.
     VkImage orm_image = VK_NULL_HANDLE;
     uint32_t orm_layers = 0;
 
@@ -1210,6 +1228,14 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
             !pool->image[kVtChannelOrm] ||
             !pool->sampled_view[kVtChannelOrm] ||
             recs.size() >= kMaxRequestsPerBatch) {
+            ++stats_.requests_skipped;
+            continue;
+        }
+        // Enforce the single-ORM-image invariant the write-back barriers
+        // above depend on. Checked here, before anything in the batch state
+        // is mutated, so a skip costs nothing.
+        if (orm_image != VK_NULL_HANDLE &&
+            pool->image[kVtChannelOrm] != orm_image) {
             ++stats_.requests_skipped;
             continue;
         }

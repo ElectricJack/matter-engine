@@ -27,10 +27,9 @@ namespace tileset {
 
 // Load a baked part from cache_dir and fit its collision proxy.
 // cache_dir is the parts/ root parent (the directory that CONTAINS parts/).
-// resolved_hash identifies the part (the file is cache_dir/parts/<16-hex>.part).
-// CORRECTION: the extension above is stale. The path actually used is whatever
+// resolved_hash identifies the part; the file path is whatever
 // part_asset::cache_path_resolved() returns, which today is
-// parts/<16-hex>.bundle, loaded through part_asset::load_v2.
+// cache_dir/parts/<16-hex>.bundle, loaded through part_asset::load_v2.
 // override_kind is passed through to fit_collider (nullptr/"auto"/...); see tileset_collider.h.
 // Returns false + err (naming the hash and failure reason) on load failure or zero triangles.
 bool collider_for_part(const std::string& cache_dir, uint64_t resolved_hash,

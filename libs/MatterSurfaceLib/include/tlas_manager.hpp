@@ -69,27 +69,15 @@
 
 // TLASNode is now available from bvh.h in global namespace
 
-// Unused. Nothing in the tree references this type -- `TLASManager` stores
-// `BVHInstance` (from `bvh.h`) instead. Retained from the GPURayTraceExample
-// prototype this manager was lifted from; it is not the instance record the
-// TLAS is built over.
-struct LegacyBVHInstance {
-    mat4 transform;
-    mat4 invTransform;
-    uint32_t instanceId;
-    BVH* bvh;
-    aabb bounds;
-};
-
 // Records instance placements and builds the TLAS over them. Owns its matrix
 // stack, its `DrawRecord` list, the flattened `BVHInstance` backing array and
 // the built `TLAS` itself; all of it is plain CPU memory (no GPU or OS
 // handles), so destruction is cheap and unordered.
 //
 // Non-copyable, movable. Move is defaulted, which moves the vectors and the
-// `unique_ptr<TLAS>` together -- but `instance_array_` and the raw pointer the
-// TLAS holds are only valid while the moved-to object's storage is the live
-// one, so do not read a `get_tlas()` pointer obtained before a move.
+// `unique_ptr<TLAS>` together -- but the raw pointer the TLAS holds into
+// `instance_storage_` is only valid while the moved-to object's storage is the
+// live one, so do not read a `get_tlas()` pointer obtained before a move.
 //
 // Call order matters: `clear()` -> transform ops + `draw()`/`draw_batch()` ->
 // `build(blas_manager)`. `get_tlas()` before the first `build()` returns
@@ -211,9 +199,6 @@ public:
     const std::vector<DrawRecord>& get_draw_records() const { return draw_records_; }
 
     // Statistics and debugging
-    // Currently a NO-OP: the entire body in `src/tlas_manager.cpp` is
-    // commented out. Calling it prints nothing.
-    void print_stats() const;
     int  get_draw_record_count() const { return static_cast<int>(draw_records_.size()); }
     int  get_matrix_stack_depth() const { return static_cast<int>(matrix_stack_.size()); }
 
@@ -240,8 +225,6 @@ private:
     std::unique_ptr<TLAS>    tlas_;
     std::vector<BVHInstance> instance_storage_; // backing array owned by the manager; TLAS holds a raw pointer into it
     std::vector<std::unique_ptr<BVHInstance>> instances_; // Deprecated - kept for compatibility
-    BVHInstance*  instance_array_ = nullptr; // Contiguous array for TLAS
-    size_t        instance_array_size_ = 0;
     uint32_t      next_instance_id_;
     int           max_instances_;
 

@@ -293,7 +293,7 @@ obj_of = $(OBJDIR)/$(1)/$(call mangle,$(2)).o
 #
 # COMMON_MSL_FULL_SRC — full mesher + BLAS/TLAS; used by targets that invoke
 #   the marching-cubes / mesh-build pipeline: script, graph-integration, shlib,
-#   example, gallery, treebake, grasslod, stressforest,
+#   example, gallery, treebake, grasslod,
 #   viewer-logic, tilesetbake.
 #
 # COMMON_MSL_C     — full C-source set (surface.c et al.) used alongside
@@ -978,7 +978,7 @@ PARTSTORE_RACE_C   = $(PARTSTORE_C)
 
 # ===== flavor sh (script-host) =========================================
 # script_host_tests uses just def+QJS_INC (no MATTER_HAVE_SCRIPT_HOST). But
-# the graph_integration/example/gallery/treebake/grasslod/stressforest
+# the graph_integration/example/gallery/treebake/grasslod
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = build/script_host_tests
 SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
@@ -1428,7 +1428,9 @@ def_CPP_SRCS := $(sort \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
     $(BAKETRACE_CPP) \
-    $(SUNANGLES_CPP)     $(PROPS_CPP) \n    $(CLOUDLAYER_CPP) \
+    $(SUNANGLES_CPP) \
+    $(PROPS_CPP) \
+    $(CLOUDLAYER_CPP) \
     $(PROPERTY_EDITOR_CPP) \
     $(DRAWOVERRIDES_CPP) \
     $(TILESETGTEX_CPP) \
@@ -2903,14 +2905,22 @@ clean-scenetracker:
 # observer receives the per-entity gameplay events the pull stage now emits,
 # and the session hub trace records the aggregate phys.step. Headless,
 # Windows-runnable (physics engine + flecs + box3d + the event hub, no
-# GL/raylib) -- links like the physics target ($(LDFLAGS) $(BOX3D_LIB)).
+# GL/raylib) -- links like the scene-registry target (see the link rule below;
+# it uses -lm -lpthread rather than $(LDFLAGS), which carries Linux-only libs).
 # The physics engine sources already carry def rules (via PHYSICS_CPP in the
-# line-833 union) and the event sources carry def rules (via the scene_tracker
-# target above); only physicsevents_tests.cpp needs a fresh def rule. flecs.c
-# reuses the physicsc flavor object the physics target builds.
+# def_CPP_SRCS union) and the event sources carry def rules (via the
+# scene_tracker target above); only physicsevents_tests.cpp needs a fresh def
+# rule. flecs.c reuses the physicsc flavor object the physics target builds.
+#
+# ecs_runtime.cpp constructs AnimationSystems (and therefore AnimationEvaluator,
+# PoseLodScheduler and Box3DAnimationWorldQueries), so this closure needs
+# ANIMATION_ECS_RUNTIME_REQUIRED and the Ozz archives exactly like ECS_CPP /
+# PHYSICS_CPP / SCENE_REGISTRY_CPP do. Omitting it is a link error, not a
+# missing-coverage problem.
 # ---------------------------------------------------------------------------
 PHYSICSEVENTS_TARGET = build/physicsevents_tests
-PHYSICSEVENTS_CPP    = physicsevents_tests.cpp ../src/ecs/scene_registry.cpp \
+PHYSICSEVENTS_CPP    = physicsevents_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) \
+                       ../src/ecs/scene_registry.cpp \
                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
                        ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
@@ -2923,11 +2933,11 @@ PHYSICSEVENTS_OBJS   = $(call obj_list,def,$(PHYSICSEVENTS_CPP)) $(call obj_list
 
 $(eval $(call objrule_cpp,def,physicsevents_tests.cpp))
 
-# Links like the scene-registry target: box3d + the Windows flecs runtime libs
-# (ws2_32/dbghelp/winmm) flecs.c pulls in for its HTTP/OS layer, so the binary
-# actually runs headless on Windows (not just compiles).
-$(PHYSICSEVENTS_TARGET): $(PHYSICSEVENTS_OBJS) $(BOX3D_LIB)
-	$(CC) $(PHYSICSEVENTS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+# Links like the scene-registry target: box3d + Ozz + the Windows flecs runtime
+# libs (ws2_32/dbghelp/winmm) flecs.c pulls in for its HTTP/OS layer, so the
+# binary actually runs headless on Windows (not just compiles).
+$(PHYSICSEVENTS_TARGET): $(PHYSICSEVENTS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(PHYSICSEVENTS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-physicsevents: $(PHYSICSEVENTS_TARGET)
 	./$(PHYSICSEVENTS_TARGET)

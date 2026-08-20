@@ -31,13 +31,27 @@ static void write_bytes(const char* path, const std::vector<uint8_t>& bytes) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
+// These patch bytes into a file this suite just wrote. When an earlier step
+// fails, `read_bytes` hands back an EMPTY vector and the raw `bytes[offset]`
+// these used to do indexed out of range -- which, with libstdc++ assertions on,
+// abort()s the process and destroys every buffered FAIL line that explained the
+// real failure. Report the out-of-range patch as a failed check instead, so the
+// suite keeps running and prints its diagnosis.
+static bool patchable(const std::vector<uint8_t>& bytes, size_t offset, size_t width) {
+    const bool ok = offset + width <= bytes.size();
+    CHECK(ok, "byte patch target is within the buffer (an earlier step left the file missing or short)");
+    return ok;
+}
 static void put32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value) {
+    if (!patchable(bytes, offset, 4)) return;
     for (size_t i = 0; i < 4; ++i) bytes[offset + i] = uint8_t(value >> (8 * i));
 }
 static void put64(std::vector<uint8_t>& bytes, size_t offset, uint64_t value) {
+    if (!patchable(bytes, offset, 8)) return;
     for (size_t i = 0; i < 8; ++i) bytes[offset + i] = uint8_t(value >> (8 * i));
 }
 static void refresh_trailing_checksum(std::vector<uint8_t>& bytes) {
+    if (!patchable(bytes, 0, 8)) return;
     const uint64_t checksum = fnv(bytes, 0) ^ fnv(std::vector<uint8_t>{}, 0);
     // FNV must exclude the trailing checksum itself.
     uint64_t h = 1469598103934665603ull;
@@ -46,6 +60,7 @@ static void refresh_trailing_checksum(std::vector<uint8_t>& bytes) {
     (void)checksum;
 }
 static void refresh_manm_checksum(std::vector<uint8_t>& bytes) {
+    if (!patchable(bytes, 60, 8)) return;
     uint64_t h = 1469598103934665603ull;
     for (size_t i = 0; i < bytes.size(); ++i) {
         const uint8_t byte = (i >= 60 && i < 68) ? 0 : bytes[i];
@@ -325,6 +340,16 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     const auto committed_part_path = root / part_asset::cache_path_resolved(hash);
     const auto manifest_path = cache_path_anim_commit(root, hash);
     const std::vector<uint8_t> manifest = read_bytes(manifest_path.string().c_str());
+    // Every corruption case below patches bytes inside this manifest. If the
+    // publish above failed, the file does not exist and `read_bytes` returns an
+    // EMPTY vector -- the patches then index out of range and abort the process,
+    // which loses the buffered FAIL lines naming the real failure. Stop here
+    // with one clear check instead of dying mid-suite.
+    if (manifest.size() < 84) {
+        CHECK(false, "committed manifest exists before the manifest-corruption cases");
+        std::filesystem::remove_all(root);
+        return;
+    }
     CHECK(part_asset::save_v2(mismatched_part.string(), mismatched_blas, mismatched_tlas, nullptr, 0,
                               exact_lods, {}, link, hash), "rewrite mismatched geometry for committed-load test");
     std::filesystem::copy_file(mismatched_part, committed_part_path,
@@ -424,15 +449,26 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
           "publisher proceeds after held OS lock is released");
     std::filesystem::remove(stale_lock);
     std::filesystem::create_directory(stale_lock);
+    const size_t before_migration = diagnostics.items.size();
     CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 1}, contention_identity, diagnostics),
           "empty stale directory lock is migrated to a reusable regular lock file");
+    // Both this call and the injected-race call below fail; only the reported
+    // code says whether the lock was acquired, so pin it.  A successful
+    // migration must reach the injected pre-replace failure.
+    CHECK(diagnostics.items.size() > before_migration &&
+              diagnostics.items.back().code == "bundle.injected",
+          "migrated directory lock is acquired, so publish reaches the injected failure");
     CHECK(std::filesystem::is_regular_file(stale_lock),
           "directory-lock migration retains the stable regular lock file");
     std::filesystem::remove(stale_lock);
     std::filesystem::create_directory(stale_lock);
     set_animation_bundle_test_replace_legacy_lock_directory_once();
+    const size_t before_race = diagnostics.items.size();
     CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 1}, contention_identity, diagnostics),
           "directory-to-regular migration race fails lock acquisition closed");
+    CHECK(diagnostics.items.size() > before_race &&
+              diagnostics.items.back().code == "bundle.lock",
+          "migration race reports bundle.lock instead of acquiring the lock");
     CHECK(std::filesystem::is_regular_file(stale_lock),
           "directory-only migration never unlinks a replacement regular lock file");
     std::filesystem::remove(cache_path_anim_commit(root, hash));

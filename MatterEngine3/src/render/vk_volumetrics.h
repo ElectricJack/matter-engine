@@ -538,9 +538,8 @@ private:
         // Whether this bundle allocated the separate cloud-density volume and
         // selected the "enhanced" pipeline specializations. Latched from
         // `enhanced_clouds_requested_` when the bundle is built, so it can lag
-        // the requested setting until the next bundle swap. (The trailing note
-        // below predates that wiring.)
-        bool enhanced_clouds = false;  // reserved for Task 9; false in Task 8.
+        // the requested setting until the next bundle swap.
+        bool enhanced_clouds = false;
         matter::VkImageResource media;
         matter::VkImageResource scatter[2];
         matter::VkImageResource integrated;
@@ -605,11 +604,10 @@ private:
     matter::VkBufferResource cloud_ssbo_;
 
     // Samplers.
+    // Clamp-to-edge, used for every sampled volume including the scatter
+    // history: vol_scatter.comp clamps its reprojected UV into range and relies
+    // on the edge texel to fill newly exposed screen regions smoothly.
     VkSampler linear_clamp_sampler_ = VK_NULL_HANDLE;
-    // Created by create_samplers() but currently bound by no descriptor -- the
-    // scatter history sampler is linear_clamp_sampler_. See the note in
-    // create_samplers().
-    VkSampler linear_border_sampler_ = VK_NULL_HANDLE;
     VkSampler linear_repeat_sampler_ = VK_NULL_HANDLE;
 
     // Density pass resources.
@@ -637,9 +635,6 @@ private:
 
     // State.
     VkDevice device_ = VK_NULL_HANDLE;
-    // Vestigial: the live ping-pong index is FroxelBundle::ping_index, which is
-    // what record() flips and reads. This one is only ever zeroed by destroy().
-    uint32_t ping_index_ = 0;
     // Frames recorded since init; fed to the scatter shader as the seed for its
     // stochastic sampling. Wraps harmlessly.
     uint32_t frame_index_ = 0;

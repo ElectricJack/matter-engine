@@ -190,10 +190,13 @@ static uint64_t rigid_subpart_hash(uint64_t source_hash, uint32_t segment_ordina
 }
 
 // Half the AABB diagonal of the mesh's own vertices, in part-local metres —
-// the same definition LoadedPart::bound_radius uses everywhere else. Callers
-// pass only non-empty slices; an empty mesh would leave the seeded infinities
-// in place and return a non-finite radius.
+// the same definition LoadedPart::bound_radius uses everywhere else. An empty
+// mesh returns 0 rather than the NaN the seeded infinities would produce
+// (inf - inf): a zero radius reads as "a point", which every LOD and cull
+// consumer already handles, while a NaN radius poisons every comparison
+// downstream of it and fails no test on the way.
 static float subpart_bound_radius(const RasterMeshData& mesh) {
+    if (mesh.vertex_count <= 0) return 0.0f;
     float minimum[3] = {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()};
     float maximum[3] = {-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
     for (int index = 0; index != mesh.vertex_count; ++index) {
@@ -664,7 +667,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         // --- Step 1: Legacy whole-part view for the RT path (WorldComposer/TLAS). ---
         // IMPORTANT: lp.lod_mesh_data[0..max_lods-1] are the whole-part entries (parallel
         // to lp.lod_blas). Per-cluster mesh-data is appended AFTER these entries so that
-        // the RasterComposer's `lp.lod_mesh_data[level]` access remains correct.
+        // the whole-part `lp.lod_mesh_data[level]` access remains correct.
         //
         // Legacy level i = concatenation over clusters of level min(i, cluster.levels-1).
         //   When segmented: over COARSE clusters only (segment==1). That is the merged
@@ -1109,7 +1112,7 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // Bake the ladder into a PRIVATE manager, then adopt it into the shared one
     // in a single bounded step.
     //
-    // This is the seam for getting the load off the app/GL thread. Everything
+    // This is the seam for getting the load off the app/render thread. Everything
     // above already works on a local `scratch`, so `staging` makes the whole
     // expensive stretch -- decimation, TriEx reprojection, BVH construction --
     // touch no shared state at all. What is left against blas_ is adopt_from:
@@ -1736,7 +1739,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 loaded_.emplace(part_hash, std::move(flat));
 
                 // MATTER_PARTSTORE_PROFILE: split the flat path. This function
-                // runs inside the stream.publish GpuJob on the app/GL thread,
+                // runs inside the stream.publish GpuJob on the app/render thread,
                 // where it measured 3-6 s per sector while the Vulkan
                 // registration next to it took 0.4 ms -- so the whole streaming
                 // stall lives in here and nothing said which part of it.

@@ -60,13 +60,6 @@ using ResidentSource = std::function<bool(uint64_t hash, ResidentPart& out)>;
 // `dir` exactly as handed to trace(), which the tracer never normalizes. Pass a
 // unit direction and t is metres; pass an unnormalized one and t (and the
 // `max_t` bound) are in multiples of its length.
-// Result of a successful trace(). Only meaningful when trace() returned true;
-// on a miss the caller's Hit is left exactly as it was passed in.
-//
-// `t` is the ray PARAMETER, not a length: the hit point is origin + t * dir with
-// `dir` exactly as handed to trace(), which the tracer never normalizes. Pass a
-// unit direction and t is metres; pass an unnormalized one and t (and the
-// `max_t` bound) are in multiples of its length.
 struct Hit {
     float t = -1.0f;
     float normal[3] = {0,0,0};   // world-space geometric normal, faces the ray origin
@@ -76,23 +69,6 @@ struct Hit {
     uint32_t instance = 0xffffffffu;  // index into expanded instance table; 0xffffffff = miss
 };
 
-// CPU ray queries against a placed world.
-//
-// Lifecycle: default-construct, optionally set_scratch_dir() and
-// set_resident_source(), then build() with the instance list; after that
-// trace()/occluded() answer queries. build() may be called again and rebuilds
-// everything from scratch — it does not update incrementally, and it discards
-// the previous build's decoded parts, so re-building per sector publish on a
-// streaming world is the expensive pattern the resident source exists to avoid.
-//
-// Threading: build() is the sole mutator and is not safe against anything else.
-// Once it has returned, trace() and occluded() mutate no tracer state (all
-// traversal state is on the stack), so any number of threads may query one built
-// tracer concurrently.
-//
-// Lifetime: non-copyable in practice (it holds a unique_ptr Impl). The hard rule
-// is the resident-source one above — if a source manager can move or free an
-// entry, destroy the tracer BEFORE mutating it.
 // CPU ray queries against a placed world.
 //
 // Lifecycle: default-construct, optionally set_scratch_dir() and
@@ -128,18 +104,6 @@ public:
     //
     // Expensive: potentially one artifact decode per unique hash, on the calling
     // thread. Not safe to call while another thread is querying.
-    // Loads every referenced part (resident source first, then disk), expands
-    // compositional children, and builds the instance BVH.
-    //
-    // Returns true even when individual parts failed: per-instance errors are
-    // printed to stderr, `err` is cleared, and the world is traced without them.
-    // A true return therefore does NOT mean everything loaded — check
-    // expanded_instance_count() and the resident_hits()/disk_loads() counters if
-    // that matters. An empty world is a successful build whose trace() always
-    // misses.
-    //
-    // Expensive: potentially one artifact decode per unique hash, on the calling
-    // thread. Not safe to call while another thread is querying.
     bool build(const std::string& cache_root,
                const std::vector<TraceInstance>& instances, std::string& err);
     // Closest-hit query. `dir` need not be normalized; `max_t` and the returned
@@ -152,15 +116,6 @@ public:
     // a hit closer than 1e-4 does NOT count as occlusion, which is what lets a
     // shadow ray start on the surface it was spawned from.
     bool occluded(const float origin[3], const float dir[3], float max_t) const;
-    // Size of the post-expansion instance table — identical to
-    // expanded_instance_count() today; both return the same table's size. It is
-    // NOT the number of TraceInstances handed to build(): compositional children
-    // add entries, and parts that fail to load or carry no triangles drop out.
-    // Size of the post-expansion instance table — identical to
-    // expanded_instance_count() today; both return the same table's size. It is
-    // NOT the number of TraceInstances handed to build(): compositional children
-    // add entries, and parts that fail to load or carry no triangles drop out.
-    size_t instance_count() const;
 
     // Optional secondary artifact dir (streamed transient parts). Checked
     // FIRST, exactly like PartStore's scratch dir (same path construction:
@@ -177,6 +132,8 @@ public:
 
     // Post-expansion instance table (children expanded by the compositional
     // fallback get their own entries). Valid after build().
+    // NOT the number of TraceInstances handed to build(): compositional children
+    // add entries, and parts that fail to load or carry no triangles drop out.
     size_t expanded_instance_count() const;
     bool expanded_instance(size_t idx, uint64_t& part_hash, float transform[16]) const;
 

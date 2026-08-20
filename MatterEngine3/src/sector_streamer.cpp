@@ -802,10 +802,13 @@ int SectorStreamer::resident_level_over(int level, int64_t tx, int64_t ty,
 }
 
 void SectorStreamer::restrict_levels() {
-    // Cardinal-adjacent desired tiles must differ by at most one level: that is
-    // the premise the edge-mask snap relies on, and the mesher has no wider
-    // stitch. Monotone (only splits, levels bounded), so the fixpoint is
-    // iteration-order independent, exactly like the uniform 2:1 balance pass.
+    // Cardinal-adjacent desired tiles must differ by at most one level: the
+    // runtime seam welder (seam_weld.h) resolves exactly one level of
+    // difference, and the mesher has no wider stitch. (Before the edge mask was
+    // retired this same 2:1 premise was what the mask's snap relied on; the
+    // constraint outlived the mask.) Monotone (only splits, levels bounded), so
+    // the fixpoint is iteration-order independent, exactly like the uniform 2:1
+    // balance pass.
     //
     // With the default band table this is a no-op by construction -- every
     // annulus is wider than one tile of the coarser level -- but bands are
@@ -1209,9 +1212,10 @@ void SectorStreamer::update(float anchor_x, float anchor_y, float anchor_z) {
     for (uint64_t k : to_erase) sectors_.erase(k);
 
     // Terrain LOD ladder: assign per-sector heightfield LODs, balance to 2:1
-    // cardinal adjacency, compute edge masks, and repack desired_rung as a
-    // variant. Must run after the scatter hysteresis/eviction pass so it
-    // sees the final desired scatter tiers and the surviving entries.
+    // cardinal adjacency, and repack desired_rung as a variant (scatter tier +
+    // this tile's own terrain LOD; there is no edge mask any more -- see
+    // sector_streamer.h). Must run after the scatter hysteresis/eviction pass
+    // so it sees the final desired scatter tiers and the surviving entries.
     if (cfg_.terrain_lod_enabled) assign_terrain_lods();
 }
 

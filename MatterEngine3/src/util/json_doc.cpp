@@ -110,8 +110,11 @@ private:
         return true;
     }
 
-    // Reads a quoted string, decoding the six simple escapes (\n \t \r \" \\
-    // \/). Any OTHER escape drops the backslash and keeps the following
+    // Reads a quoted string, decoding the six simple escapes: \n, \t, \r,
+    // \" plus escaped backslash and escaped forward slash. (Note: a comment
+    // line here must not END on a backslash -- that would splice the next
+    // line into this comment, which -Wcomment flags and the smoke build's
+    // -Werror rejects.) Any OTHER escape drops the backslash and keeps the following
     // character verbatim: there is no \uXXXX support at all, so a \u escape
     // yields the literal text `u` followed by its four hex digits. Bytes are
     // otherwise copied through untouched, so UTF-8 in the source survives as

@@ -38,7 +38,12 @@
 //    `false` return can leave partially-registered BLAS entries behind. Treat
 //    the managers as unusable and rebuild from scratch on failure.
 //  - `DrawRecord::is_imposter` is NOT serialized; every instance comes back
-//    with the field at its default `false`.
+//    with the field at its default `false`. Adding it means a new field in the
+//    instance record and therefore a `kFormatVersion` bump, which invalidates
+//    every cached `.part` on disk — deliberately not done for a flag no
+//    consumer of THIS serializer reads (the engine's own part format is
+//    MatterEngine3/src/part_asset_v2). Fix it together with the next version
+//    bump, not on its own.
 //  - Only the FROZEN builtin material table is written (see the comment in
 //    `save()`), so per-world dynamic materials must be resolved at render time.
 

@@ -794,10 +794,19 @@ struct OwnedEvaluation {
 // v1 supports exactly one type: `"proceduralGait"` at Fixed cadence; anything
 // else fails the whole load. It collects the targets that name this
 // controller -- which must be exactly two, and whose ORDER in the target list
-// decides which is the left foot -- seeds each foot's predicted position from
-// the corresponding chain end effector's rest MODEL translation, and binds the
-// optional `speed` input by name (a `speed` input of the wrong type or cadence
-// is an error, its absence is not).
+// decides which becomes `left_target` -- seeds each foot's predicted position
+// from the corresponding chain end effector's rest MODEL translation, and
+// binds the optional `speed` input by name (a `speed` input of the wrong type
+// or cadence is an error, its absence is not).
+//
+// Nothing in the wire format marks anatomical side, and nothing here infers
+// one, so reordering the authored targets swaps the two slots. That is
+// deliberately harmless rather than a latent bug: `GaitController` uses
+// left/right only as the two half-cycle PHASE slots (`foot(..., index 0)` is
+// phase 0, index 1 is phase 0.5), and each slot's `*_predicted` rest position
+// is read from its own target, so the pairing never tears. The only visible
+// effect of a reorder is which foot leads the stride. Naming a real side
+// would need a new field in the encoded controller declaration.
 //
 // The controller is then constructed once through the v1 registry purely to
 // validate the parameter blob and learn its state footprint, which is added to

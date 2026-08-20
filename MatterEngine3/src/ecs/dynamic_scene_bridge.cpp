@@ -278,31 +278,58 @@ void DynamicSceneBridge::finish_frame(uint64_t completed_serial) { slots_.finish
 uint32_t DynamicSceneBridge::active_count() const { return slots_.active_count(); }
 
 // Map a renderer pick token back to a scene entity. Linear over every tracked
-// instance, and the token is a lossy fold of the entity id (see
-// fold_pick_token), so on a collision the first match in unordered-map order
-// wins — the result is not stable between frames in that case. A default-
-// constructed ScenePick (kind == None) means no live slot matched.
+// instance, because the token is a lossy fold of the entity id (see
+// fold_pick_token) and distinct entities CAN share one.
+//
+// On a collision the LOWEST (entity id, generation) wins. That tiebreak is the
+// whole point of scanning to the end instead of returning the first hit:
+// tracked_ is an unordered_map, so a first-hit answer would depend on bucket
+// order and could name a different entity from one frame to the next — the
+// selection would flicker between two entities while the user held a stable
+// pick. It is still an arbitrary choice between the two, but a STABLE one.
+//
+// A default-constructed ScenePick (kind == None) means no live slot matched.
 ScenePick DynamicSceneBridge::resolve_pick(uint32_t instance_token) const {
+    bool found = false;
+    uint64_t best_id = 0;
+    uint32_t best_generation = 0;
     for (const auto& pair : tracked_) {
         const auto& key = pair.first;
         if (!pair.second.slot.valid() || fold_pick_token(key.entity_id) != instance_token) continue;
-        return {ScenePickKind::DynamicEntity, {key.entity_id, key.entity_generation}, UINT32_MAX};
+        if (!found || key.entity_id < best_id ||
+            (key.entity_id == best_id && key.entity_generation < best_generation)) {
+            best_id = key.entity_id;
+            best_generation = key.entity_generation;
+            found = true;
+        }
     }
-    return {};
+    if (!found) return {};
+    return {ScenePickKind::DynamicEntity, {best_id, best_generation}, UINT32_MAX};
 }
 
-// Distinct scene entities with at least one tracked instance. Deduplicated by
-// linear search, so this is O(instances * distinct entities) and allocates —
-// fine for an editor/debug query, not for a per-frame path. Order follows the
-// unordered_map and is therefore arbitrary and unstable across frames.
+// Distinct scene entities with at least one tracked instance, sorted ascending
+// by (id, generation). O(instances log instances) and allocates — fine for an
+// editor/debug query, not for a per-frame path.
+//
+// The sort does double duty: it makes the dedup a linear adjacent-unique pass
+// instead of the quadratic find_if it used to be, and it gives the result a
+// deterministic order. tracked_ is an unordered_map, so the raw iteration order
+// varies with bucket layout and would reshuffle the list between frames.
 std::vector<SceneEntityId> DynamicSceneBridge::scene_entities() const {
     std::vector<SceneEntityId> out;
-    for (const auto& pair : tracked_) {
-        const SceneEntityId id{pair.first.entity_id, pair.first.entity_generation};
-        if (std::find_if(out.begin(), out.end(), [&id](SceneEntityId value) {
-            return value.value == id.value && value.generation == id.generation;
-        }) == out.end()) out.push_back(id);
-    }
+    out.reserve(tracked_.size());
+    for (const auto& pair : tracked_)
+        out.push_back({pair.first.entity_id, pair.first.entity_generation});
+    std::sort(out.begin(), out.end(), [](SceneEntityId a, SceneEntityId b) {
+        if (a.value != b.value) return a.value < b.value;
+        return a.generation < b.generation;
+    });
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](SceneEntityId a, SceneEntityId b) {
+                              return a.value == b.value &&
+                                     a.generation == b.generation;
+                          }),
+              out.end());
     return out;
 }
 

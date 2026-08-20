@@ -46,9 +46,21 @@ struct GizmoState {
 // Also returns false when the primary entity has no readable
 // LocalTransform.translation/rotation (a missing scale defaults to 1,1,1).
 //
-// Multi-selection: a TRANSLATE drag fans the primary's translation delta out
-// to every other selected entity, added to each one's own
-// LocalTransform.translation. Rotate and scale affect the primary only.
+// Hierarchy: the handle is placed at the entity's WORLD transform —
+// LocalTransform composed with the parent matrix from
+// FieldCommands::get_parent_world_matrix — and the manipulated result is
+// carried back through that parent's inverse, so only LOCAL values are ever
+// written. With that closure unset (or a singular parent matrix) the entity is
+// treated as parentless.
+//
+// A drag writes back only the field its operation edits: translate writes
+// LocalTransform.translation, rotate writes .rotation, scale writes .scale.
+// The other two are left exactly as authored.
+//
+// Multi-selection: a TRANSLATE drag fans the primary's WORLD-space translation
+// delta out to every other selected entity, converted into that entity's own
+// parent space and added to its LocalTransform.translation. Rotate and scale
+// affect the primary only.
 //
 // The viewport_* arguments are the 3D view's rect in ImGui display
 // coordinates, matching what ImGuizmo::SetRect expects.

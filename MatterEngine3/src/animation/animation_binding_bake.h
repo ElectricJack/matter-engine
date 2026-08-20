@@ -136,12 +136,13 @@ class BindingClaims {
 public:
     explicit BindingClaims(size_t joint_count);
     explicit BindingClaims(const CanonicalRig& rig);
-    bool claim_skin(const std::vector<JointIndex>& child_joints, bool decorative);
-    bool claim_rigid(const std::vector<JointIndex>& child_joints, bool decorative);
+    // One operation for every owner kind: a skin and a rigid segment claim
+    // segments identically, and ownership is tracked in a single map, so
+    // there is deliberately no per-kind entry point to imply otherwise.
+    bool claim(const std::vector<JointIndex>& child_joints, bool decorative);
 private:
     std::vector<bool> primary_;
     std::vector<bool> valid_children_;
-    bool claim(const std::vector<JointIndex>& child_joints, bool decorative);
 };
 
 // child_resolved is false for an unresolved/missing child. A committed child
@@ -164,8 +165,8 @@ bool build_skin_binding(const CanonicalRig& rig,
                         float falloff_scale, BindingBake& out);
 
 // Project a binding to the per-LOD fingerprints stored in the bundle
-// manifest. `LodBindingSignature::influence_count` is the number of
-// influence SLOTS (`vertices * kMaxSkinInfluences`), not non-zero weights.
+// manifest. `LodBindingSignature::influence_slot_count` counts influence
+// SLOTS (`vertices * kMaxSkinInfluences`), not non-zero weights.
 std::vector<LodBindingSignature> manifest_lod_signatures(const BindingBake& bake);
 bool manifest_matches_binding(const std::vector<LodBindingSignature>& manifest,
                               const BindingBake& bake);

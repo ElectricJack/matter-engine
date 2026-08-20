@@ -1326,9 +1326,10 @@ std::string ScriptHost::merge_json_shallow(const std::string& base_json,
 // child hashes). Returns 0 on ANY failure — no part class, a params parse
 // error, an unresolvable import — and callers treat 0 as "resolve failed".
 //
-// Note this folds through module_resolver::fold_sources directly rather than
-// fold_sources_cached, so it re-reads and re-folds the shared-lib set on every
-// call.
+// The fold goes through fold_sources_cached, like every other folding path on
+// this class, so a repeated resolve of the same source does not re-read the
+// shared-lib set. merge_params_canonical just above has already warmed that
+// cache entry for this exact source.
 uint64_t ScriptHost::resolve_hash(const std::string& source,
                                   const std::string& params_json,
                                   const uint64_t* child_hashes,
@@ -1347,7 +1348,7 @@ uint64_t ScriptHost::resolve_hash(const std::string& source,
     size_t      src_len   = source.size();
     if (!shared_lib_roots_.empty()) {
         std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_roots_, fr, ferr))
+        if (!fold_sources_cached(source, fr, ferr))
             return 0;   // fail-closed
         src_bytes = fr.folded.data();
         src_len   = fr.folded.size();

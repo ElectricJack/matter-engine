@@ -237,14 +237,12 @@ struct Config {
     // sector additionally gets a terrain LOD from `terrain_bands` (innermost
     // first, radius -> LOD; empty = the design-doc default profile scaled by
     // sector_size: 3S->5, 5S->4, 8S->3, 14S->2, 24S->1, 40S->0), the desired
-    // map is balanced so cardinal neighbors differ by at most one level, and
-    // the packed variant carries the four-bit coarser-neighbor edge mask.
+    // map is balanced so cardinal neighbors differ by at most one level.
     //
-    // CORRECTION: that last clause is stale. The edge mask was retired -- see
-    // "THE EDGE MASK IS GONE FROM THIS ENCODING" above; bits 7-10 are reserved
-    // and nothing is written there. What the packed variant carries with this
-    // flag on is the scatter tier and this tile's OWN terrain LOD, neither of
-    // which depends on a neighbour. Cross-level seams are built at runtime by
+    // The packed variant carries the scatter tier and this tile's OWN terrain
+    // LOD, neither of which depends on a neighbour: bits 7-10 are reserved and
+    // nothing is written there. There is no edge mask -- see "THE EDGE MASK IS
+    // GONE FROM THIS ENCODING" above. Cross-level seams are built at runtime by
     // the engine-side welder instead (seam_weld.h).
     bool terrain_lod_enabled = false;
     std::vector<Ring> terrain_bands;   // radius -> terrain LOD when enabled

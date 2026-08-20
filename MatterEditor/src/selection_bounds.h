@@ -12,6 +12,7 @@
 // thread only. Implementation in selection_bounds.cpp.
 
 #include "selection_set.h"
+#include <cstddef>
 #include <cstdint>
 
 namespace matter { class WorldSession; }
@@ -54,8 +55,21 @@ void local_aabb_for_part(matter::WorldSession& session, uint64_t part_hash,
 // Returns false and leaves `out` untouched when the object no longer resolves
 // (a baked-root hash with no instance in this world, or an entity id gone from
 // the ECS) — a normal outcome, not an error. The Entity path scans the whole
-// ECS, so this is O(entities) per call.
+// ECS, so this is O(entities) per call: use it for one-off lookups (the pick
+// raycast) and bounds_for_objects below for a whole selection.
 bool bounds_for_object(const SelectedObject& obj, matter::WorldSession& session,
                        SelectionBounds& out);
+
+// Batched form: resolves `count` objects in ONE ECS scan instead of one scan
+// each, which is what the per-frame selection overlay needs.
+//
+// `out` and `resolved` are caller-owned arrays of `count` entries. `resolved`
+// is fully written (no pre-clearing needed); `out[i]` is written only where
+// `resolved[i]` is true, with exactly the same meaning as the single-object
+// return value above. Matching an entity against the batch is a linear walk of
+// it, so this is sized for a selection, not for a scene.
+void bounds_for_objects(const SelectedObject* objects, size_t count,
+                        matter::WorldSession& session,
+                        SelectionBounds* out, bool* resolved);
 
 } // namespace viewer

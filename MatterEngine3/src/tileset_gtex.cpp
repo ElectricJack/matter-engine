@@ -113,13 +113,12 @@ static bool encode_png_rgb(std::vector<uint8_t>& out,
 }
 
 // stb_image_write does not support 16-bit PNG. We store height as a raw R16
-// blob (LE uint16) tagged as PNG-off in the format; readers detect it by the
-// channel id + PNG magic check.
-// CORRECTION to the sentence above, which describes a reader that was never
-// written: `load_gtex` does NOT probe for a PNG magic. It hard-codes the
-// treatment per channel id -- `CHAN_HEIGHT_R16` is always read as a raw
-// uint16 blob and only its `size == width*height*2` is validated, while the
-// other channel ids always go through stb. The channel id alone is the tag.
+// blob (LE uint16).
+//
+// THE CHANNEL ID ALONE IS THE TAG -- there is no magic probe anywhere.
+// `load_gtex` hard-codes the treatment per channel id: `CHAN_HEIGHT_R16` is
+// always read as a raw uint16 blob and only its `size == width*height*2` is
+// validated, while every other channel id always goes through stb.
 //
 // Always succeeds (it is a memcpy); the bool return exists only to match the
 // shape of `encode_png_rgb` at the call sites.

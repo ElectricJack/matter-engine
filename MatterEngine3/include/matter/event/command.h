@@ -341,11 +341,15 @@ public:
     // only OFF the handler's owner lane: blocking on the very thread that
     // must pump the command to complete it would deadlock, so calling it
     // from the owner lane is all-build fail-fast (S I.10).
+    // On an invalid (default-constructed / moved-from) ticket it returns a
+    // default Result immediately, matching status()/ready()'s tolerance.
     Result wait();
 
     // Non-blocking completion continuation, delivered on `ln` (queued onto
     // that lane; runs when the lane owner next pumps the registry). If the
     // ticket is already complete, the continuation is posted immediately.
+    // The callback is DROPPED, not invoked, when the ticket is invalid or
+    // when an already-complete ticket has no registry to post onto.
     void then(lane ln, std::function<void(const Result&)> cb);
 
 private:
@@ -668,6 +672,11 @@ void TicketState<Result>::finalize(Result r, double duration_ms, bool executed) 
     // Deliver then()-continuations on their target lanes (queued; the lane
     // owner runs them at pump). Read the now-visible result by value.
     if (registry) {
+        // Reading `result` outside `m` is safe here and only here: the
+        // exactly-once gate above means THIS thread is the only writer it will
+        // ever have, and it already published the value under the lock. Every
+        // other accessor takes `m` and only reads. Do not copy this pattern to
+        // any other member.
         const Result snapshot = result;
         for (auto& c : conts) {
             lane ln = c.first;
@@ -679,6 +688,22 @@ void TicketState<Result>::finalize(Result r, double duration_ms, bool executed) 
 
 template <class Result>
 Result CommandTicket<Result>::wait() {
+    // A default-constructed / moved-from ticket has nothing to wait on. Report
+    // the same "nothing to observe" answer status() and ready() give rather
+    // than dereferencing null.
+    if (!state_) return Result{};
+    // Already complete? Answer from the published result and return WITHOUT
+    // touching `registry`. That ordering is deliberate: `registry` is a raw
+    // back-pointer that is never cleared (see TicketStateBase), so a ticket
+    // outliving its registry — the normal state after shut_down(), which
+    // finalizes every pending ticket — would otherwise dereference a dangling
+    // pointer just to run a guard whose answer cannot matter. Waiting on a
+    // ticket that is still PENDING after its registry died remains a caller
+    // error; nothing here can make that case safe.
+    {
+        std::lock_guard<std::mutex> lk(state_->m);
+        if (state_->done) return state_->result;
+    }
     // Off-lane-only guard (S I.10): waiting on the handler's own owner lane
     // would deadlock (the command completes only when that thread pumps).
     if (state_->registry && state_->handler_lane.valid() &&
@@ -696,6 +721,10 @@ Result CommandTicket<Result>::wait() {
 
 template <class Result>
 void CommandTicket<Result>::then(lane ln, std::function<void(const Result&)> cb) {
+    // A default-constructed / moved-from ticket will never complete, so there
+    // is nothing to continue from. Drop the callback rather than dereference
+    // null — same tolerance as status()/ready() on an invalid ticket.
+    if (!state_) return;
     bool deliver_now = false;
     Result snapshot{};
     {

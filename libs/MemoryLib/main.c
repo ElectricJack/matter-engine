@@ -40,7 +40,7 @@ typedef struct TestObject {
 } TestObject;
 
 // Test that the allocator can be created and destroyed
-bool test_create_destroy() {
+bool test_create_destroy(void) {
     MemPool* allocator = mem_pool_create(sizeof(TestObject), 10);
     if (!allocator) {
         TEST_FAILED;
@@ -53,7 +53,7 @@ bool test_create_destroy() {
 }
 
 // Test basic allocation and deallocation
-bool test_alloc_free() {
+bool test_alloc_free(void) {
     MemPool* allocator = mem_pool_create(sizeof(TestObject), 10);
     if (!allocator) {
         TEST_FAILED;
@@ -88,11 +88,15 @@ bool test_alloc_free() {
 }
 
 // Test multiple allocations and deallocations
-bool test_multiple_alloc_free() {
+bool test_multiple_alloc_free(void) {
     const int NUM_OBJECTS = 25;
     MemPool* allocator = mem_pool_create(sizeof(TestObject), 10);
+    if (!allocator) {
+        TEST_FAILED;
+        return false;
+    }
     TestObject* objects[NUM_OBJECTS];
-    
+
     // Allocate multiple objects
     for (int i = 0; i < NUM_OBJECTS; i++) {
         objects[i] = (TestObject*)mem_pool_alloc(allocator);
@@ -145,8 +149,12 @@ bool test_multiple_alloc_free() {
 //   - freeing objects raises freeObjects but never lowers pageCount — pages
 //     are only released by mem_pool_destroy().
 // Test allocator statistics
-bool test_stats() {
+bool test_stats(void) {
     MemPool* allocator = mem_pool_create(sizeof(TestObject), 10);
+    if (!allocator) {
+        TEST_FAILED;
+        return false;
+    }
     MemStats st;
 
     // Check initial stats
@@ -160,6 +168,11 @@ bool test_stats() {
 
     // Allocate one object and check stats
     TestObject* obj1 = (TestObject*)mem_pool_alloc(allocator);
+    if (!obj1) {
+        TEST_FAILED;
+        mem_pool_destroy(allocator);
+        return false;
+    }
     mem_pool_get_stats(allocator, &st);
 
     if (st.pageCount != 1 || st.totalObjects != 10 || st.freeObjects != 9) {
@@ -174,6 +187,11 @@ bool test_stats() {
 
     for (int i = 1; i < 15; i++) {
         objects[i] = (TestObject*)mem_pool_alloc(allocator);
+        if (!objects[i]) {
+            TEST_FAILED;
+            mem_pool_destroy(allocator);
+            return false;
+        }
     }
 
     // Check stats after multiple allocations
@@ -209,7 +227,7 @@ bool test_stats() {
 }
 
 // Test edge cases
-bool test_edge_cases() {
+bool test_edge_cases(void) {
     // Test small object size
     MemPool* allocator1 = mem_pool_create(1, 10);
     if (!allocator1) {
@@ -272,14 +290,23 @@ bool test_edge_cases() {
 // "the original test" are explaining. Do not tighten this into an exact
 // address match — that couples the test to the free-list ordering.
 // Test reuse of freed objects
-bool test_reuse() {
+bool test_reuse(void) {
     MemPool* allocator = mem_pool_create(sizeof(TestObject), 10);
-    
+    if (!allocator) {
+        TEST_FAILED;
+        return false;
+    }
+
     // Allocate and free in a pattern to test reuse
     TestObject* obj1 = (TestObject*)mem_pool_alloc(allocator);
     TestObject* obj2 = (TestObject*)mem_pool_alloc(allocator);
     TestObject* obj3 = (TestObject*)mem_pool_alloc(allocator);
-    
+    if (!obj1 || !obj2 || !obj3) {
+        TEST_FAILED;
+        mem_pool_destroy(allocator);
+        return false;
+    }
+
     // Free objects in different order
     mem_pool_free(allocator, obj2);
     mem_pool_free(allocator, obj1);
@@ -287,7 +314,12 @@ bool test_reuse() {
     // Allocate again and check if we get the same memory
     TestObject* obj4 = (TestObject*)mem_pool_alloc(allocator);
     TestObject* obj5 = (TestObject*)mem_pool_alloc(allocator);
-    
+    if (!obj4 || !obj5) {
+        TEST_FAILED;
+        mem_pool_destroy(allocator);
+        return false;
+    }
+
     // Verify addresses for debugging
     // printf("obj1=%p, obj2=%p, obj3=%p, obj4=%p, obj5=%p\n", 
     //        (void*)obj1, (void*)obj2, (void*)obj3, (void*)obj4, (void*)obj5);
@@ -328,24 +360,31 @@ bool test_reuse() {
     return true;
 }
 
+// The registry the runner walks. Adding a test means adding one row here and
+// nothing else -- the total is derived from the array length, so the tally
+// cannot drift out of step with the tests that actually ran.
+static bool (*const kTests[])(void) = {
+    test_create_destroy,
+    test_alloc_free,
+    test_multiple_alloc_free,
+    test_stats,
+    test_edge_cases,
+    test_reuse,
+};
+
 // Returns 0 only if all tests pass, so the binary doubles as a CI gate.
-// `total` is hardcoded and must be bumped by hand whenever a test is added,
-// otherwise the pass/fail tally silently lies.
 // Run all tests
 int main() {
     printf("=== MemPool Tests ===\n");
-    
+
+    const int total = (int)(sizeof(kTests) / sizeof(kTests[0]));
     int passed = 0;
-    int total = 6;
-    
-    if (test_create_destroy()) passed++;
-    if (test_alloc_free()) passed++;
-    if (test_multiple_alloc_free()) passed++;
-    if (test_stats()) passed++;
-    if (test_edge_cases()) passed++;
-    if (test_reuse()) passed++;
-    
+
+    for (int i = 0; i < total; i++) {
+        if (kTests[i]()) passed++;
+    }
+
     printf("\n%d/%d tests passed\n", passed, total);
-    
+
     return (passed == total) ? 0 : 1;
 }

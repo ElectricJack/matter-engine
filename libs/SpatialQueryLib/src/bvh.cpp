@@ -131,8 +131,13 @@ float IntersectAABB_SSE( const BVHRay& ray, const __m128& bmin4, const __m128& b
 	__m128 t2 = _mm_mul_ps( _mm_sub_ps( _mm_and_ps( bmax4, mask4 ), ray.O4 ), ray.rD4 );
 	__m128 vmax4 = _mm_max_ps( t1, t2 ), vmin4 = _mm_min_ps( t1, t2 );
 	
-	// Extract components
-	float vmax[4], vmin[4];
+	// Extract components. `_mm_store_ps` REQUIRES a 16-byte-aligned
+	// destination -- a plain `float[4]` local only carries 4-byte alignment as
+	// far as the language is concerned, and an under-aligned store faults.
+	// x86-64 GCC happens to over-align 16-byte locals, which is why this never
+	// misbehaved; `alignas(16)` makes the requirement explicit and free.
+	alignas(16) float vmax[4];
+	alignas(16) float vmin[4];
 	_mm_store_ps(vmax, vmax4);
 	_mm_store_ps(vmin, vmin4);
 	
@@ -296,10 +301,20 @@ void BVH::Intersect( BVHRay& ray, uint instanceIdx )
 // sibling pair (2k, 2k+1) lands in one cache line. Anything reading the pool
 // must therefore never assume node 1 is meaningful.
 //
-// `buildStackPtr` is zeroed here and never read again; the recursion is plain
-// call recursion, and the BuildJob stack is vestigial (see bvh.h).
+// The one-off size check below is the only place the 20-bit primitive field of
+// `Intersection::instPrim` is defended. Past 2^20 triangles the leaf loop's
+// pack/unpack does not merely truncate: the overflow carries into the instance
+// field and mis-attributes hits to a different instance. There is nothing this
+// build can do about that, so it reports it once per build rather than letting
+// every subsequent trace be quietly wrong.
 void BVH::Build()
 {
+	if (mesh->triCount > (1 << 20))
+	{
+		fprintf( stderr, "[ERROR] BVH::Build: %d triangles exceeds the 20-bit primitive "
+		         "field of Intersection::instPrim (max %d); hits past that index will be "
+		         "mis-attributed to the wrong instance.\n", mesh->triCount, 1 << 20 );
+	}
 	// reset node pool
 	nodesUsed = 2;
 	memset( bvhNode, 0, mesh->triCount * 2 * sizeof( BVHNode ) );
@@ -315,7 +330,6 @@ void BVH::Build()
 	float3 centroidMin, centroidMax;
 	UpdateNodeBounds( 0, centroidMin, centroidMax );
 	// subdivide recursively
-	buildStackPtr = 0;
 	Subdivide( 0, 0, nodesUsed, centroidMin, centroidMax );
 }
 
@@ -362,17 +376,17 @@ void BVH::UpdateNodeBounds( uint nodeIdx, float3& centroidMin, float3& centroidM
 // exactly on a bin edge, and put them on the other side of the split from the
 // one the cost was computed for.
 //
-// KNOWN DEFECT in the degenerate-partition rescue. When the binned partition
-// leaves one side empty, `TryMedianSplit` re-partitions the range and reports a
-// new `leftCount` -- but the local `i`, which is the partition boundary the
-// right child's `leftFirst` is taken from, is NOT recomputed. It still holds
-// the degenerate boundary (the start or the end of the parent's range), so the
-// two children's triangle ranges end up overlapping or running past the parent.
-// This path is believed unreachable today: `FindBestSplitPlane` only proposes
-// candidates whose bin counts are non-empty on both sides, and the partition
-// re-derives the identical bin index, so a degenerate result should not occur.
-// It is recorded here because the rescue is silent -- if it ever does fire, the
-// symptom is duplicated and dropped triangles, not a crash.
+// The right child's range starts at `parentFirst + leftCount`, DERIVED from the
+// reported left-side size rather than read off the binned partition's boundary
+// cursor. On the binned path the two are identical by construction (`leftCount`
+// is defined as `i - parentFirst`), but on the `TryMedianSplit` rescue path they
+// are not: the rescue re-partitions the range and reports a new `leftCount`
+// without reporting a new boundary index, so taking the boundary from the stale
+// cursor would give the two children overlapping or out-of-range triangle
+// spans. That path is believed unreachable today -- `FindBestSplitPlane` only
+// proposes candidates whose bin counts are non-empty on both sides, and the
+// partition below re-derives the identical bin index -- but the rescue is
+// silent, so deriving the boundary costs nothing and removes the trap.
 void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMin, float3& centroidMax )
 {
 	BVHNode& node = bvhNode[nodeIdx];
@@ -410,6 +424,8 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 	}
 	
 	// in-place partition
+	const uint parentFirst = node.leftFirst;
+	const uint parentCount = node.triCount;
 	int i = node.leftFirst;
 	int j = i + node.triCount - 1;
 	float scale = BINS / (centroidMax.cell[axis] - centroidMin.cell[axis]);
@@ -424,8 +440,8 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 		}
 	}
 	// abort split if one of the sides is empty
-	uint leftCount = i - node.leftFirst;
-	if (leftCount == 0 || leftCount == node.triCount) {
+	uint leftCount = (uint)i - parentFirst;
+	if (leftCount == 0 || leftCount == parentCount) {
 		// Fallback: try spatial median split for better balance
 		if (TryMedianSplit(nodeIdx, axis, centroidMin, centroidMax, leftCount)) {
 			// Median split succeeded, continue with subdivision
@@ -433,13 +449,17 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 			return; // Cannot split this node
 		}
 	}
+	// Both split paths guarantee a strictly interior boundary; a violation here
+	// would mean an empty or out-of-range child range, so catch it in debug
+	// builds rather than building a silently corrupt tree.
+	assert( leftCount > 0 && leftCount < parentCount );
 	// create child nodes
 	int leftChildIdx = nodePtr++;
 	int rightChildIdx = nodePtr++;
-	bvhNode[leftChildIdx].leftFirst = node.leftFirst;
+	bvhNode[leftChildIdx].leftFirst = parentFirst;
 	bvhNode[leftChildIdx].triCount = leftCount;
-	bvhNode[rightChildIdx].leftFirst = i;
-	bvhNode[rightChildIdx].triCount = node.triCount - leftCount;
+	bvhNode[rightChildIdx].leftFirst = parentFirst + leftCount;
+	bvhNode[rightChildIdx].triCount = parentCount - leftCount;
 	node.leftFirst = leftChildIdx;
 	node.triCount = 0;
 	// recurse
@@ -594,8 +614,11 @@ float BVH::FindBestSplitPlane( BVHNode& node, int& axis, int& splitPos, float3& 
 // typically small ones. On a large node it would be the dominant cost of the
 // whole build.
 //
-// It reports a SIZE but not a partition INDEX, and the caller does not
-// recompute one -- see the defect note on `Subdivide`.
+// It reports a SIZE, not a partition INDEX. Both of its two paths leave the
+// boundary at `node.leftFirst + leftCount` (the spatial partition stops there by
+// construction; the count split halves a fully sorted range), which is exactly
+// what `Subdivide` derives -- so the two agree without the rescue having to
+// hand back a cursor.
 bool BVH::TryMedianSplit( uint nodeIdx, int axis, float3& centroidMin, float3& centroidMax, uint& leftCount )
 {
 	BVHNode& node = bvhNode[nodeIdx];

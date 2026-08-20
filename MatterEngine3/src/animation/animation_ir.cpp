@@ -45,26 +45,39 @@ void Diagnostics::sort() { std::sort(items.begin(), items.end(), DiagnosticLess{
 // Layout: one line per joint, then one `socket|...` line per socket, then one
 // line per target (fixed fields, then the chain joints), then a single
 // `graph|...` line of the topological node order, then `authored_state`
-// verbatim. Fields are `|`-separated with `,` inside a vector; the encoder
-// does not escape those characters, so it assumes authored names contain
-// neither `|` nor a newline.
+// verbatim. Fields are `|`-separated with `,` inside a vector.
+//
+// Authored names are written LENGTH-PREFIXED (`<bytes>:<text>`, the same
+// convention `append_string` uses for `authored_state` in
+// animation_validate.cpp) rather than verbatim. Nothing upstream rejects a
+// `|` or a newline inside a joint/socket/target name, so an unescaped name
+// could reproduce the delimiters and forge a record -- two different rigs
+// encoding to identical bytes, i.e. a determinism-hash collision. Joint names
+// in particular appear nowhere else: `authored_state` does not carry them, so
+// this encoding is their only fingerprint.
 std::string CanonicalAnimationBuild::encode() const {
     std::ostringstream output;
     output << std::setprecision(9);
+    const auto name = [&output](const std::string& value) -> std::ostringstream& {
+        output << value.size() << ':' << value;
+        return output;
+    };
     for (const CanonicalJoint& joint : rig.joints) {
-        output << joint.name << '|' << joint.parent << '|' << joint.subtree.begin << ':' << joint.subtree.end << '|'
+        name(joint.name) << '|' << joint.parent << '|' << joint.subtree.begin << ':' << joint.subtree.end << '|'
                << joint.local.translation.x << ',' << joint.local.translation.y << ',' << joint.local.translation.z << '|'
                << joint.local.rotation.x << ',' << joint.local.rotation.y << ',' << joint.local.rotation.z << ',' << joint.local.rotation.w << '|'
                << joint.local.scale.x << ',' << joint.local.scale.y << ',' << joint.local.scale.z << '|' << joint.radius << '\n';
     }
     for (const CanonicalSocket& socket : rig.sockets) {
-        output << "socket|" << socket.name << '|' << socket.joint << '|'
+        output << "socket|";
+        name(socket.name) << '|' << socket.joint << '|'
                << socket.local.translation.x << ',' << socket.local.translation.y << ',' << socket.local.translation.z << '|'
                << socket.local.rotation.x << ',' << socket.local.rotation.y << ',' << socket.local.rotation.z << ',' << socket.local.rotation.w << '|'
                << socket.local.scale.x << ',' << socket.local.scale.y << ',' << socket.local.scale.z << '\n';
     }
     for (const CanonicalTarget& target : targets) {
-        output << target.name << '|' << static_cast<int>(target.driver) << '|' << static_cast<int>(target.cadence) << '|' << target.controller << '|' << target.has_pole << '|' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << '|' << target.bend_axis.x << ',' << target.bend_axis.y << ',' << target.bend_axis.z << '|' << target.soften << '|' << target.twist << '|' << target.position_half_life << '|' << target.rotation_half_life << '|' << target.weight_half_life << '|' << target.enabled;
+        name(target.name) << '|' << static_cast<int>(target.driver) << '|' << static_cast<int>(target.cadence) << '|';
+        name(target.controller) << '|' << target.has_pole << '|' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << '|' << target.bend_axis.x << ',' << target.bend_axis.y << ',' << target.bend_axis.z << '|' << target.soften << '|' << target.twist << '|' << target.position_half_life << '|' << target.rotation_half_life << '|' << target.weight_half_life << '|' << target.enabled;
         for (JointIndex joint : target.chain) output << '|' << joint;
         output << '\n';
     }

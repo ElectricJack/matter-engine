@@ -38,9 +38,9 @@
  *   single large ensure() jumps straight to the requested capacity instead of
  *   stepping there 1.5x at a time.
  * - New slots are NOT zeroed; mem_array_push() returns uninitialized bytes.
- * - Except for mem_array_get_stats(), these functions dereference `arr`
- *   without a NULL check -- passing NULL is a crash, not a no-op. This is
- *   unlike the mem_arena and mem_pool APIs, which all tolerate NULL.
+ * - Every function tolerates a NULL `arr`, matching the mem_arena and
+ *   mem_pool APIs: the void-returning ones do nothing, mem_array_ensure()
+ *   returns 0 and mem_array_push() returns NULL.
  */
 
 #include <stddef.h>
@@ -72,11 +72,12 @@ typedef struct MemArray {
  * leaks it. elemSize is a byte count and is fixed for the array's lifetime.
  * mem_array_free() leaves the array reusable without re-init. */
 void  mem_array_init(MemArray* arr, size_t elemSize);
-int   mem_array_ensure(MemArray* arr, size_t minCapacity);  /* 1 ok, 0 OOM (data intact) */
+int   mem_array_ensure(MemArray* arr, size_t minCapacity);  /* 1 ok, 0 NULL/OOM (data intact) */
 /* Appends one uninitialized slot and returns a pointer to it. May realloc,
  * which invalidates every pointer previously returned by push and any cached
- * copy of `data`. Returns NULL on out-of-memory (count is left unchanged, so
- * the array is still usable) -- callers must check before writing. */
+ * copy of `data`. Returns NULL for a NULL array and on out-of-memory (count
+ * is left unchanged, so the array is still usable) -- callers must check
+ * before writing. */
 void* mem_array_push(MemArray* arr);                        /* new slot, NULL on OOM */
 void  mem_array_clear(MemArray* arr);                       /* count=0, keeps capacity */
 void  mem_array_free(MemArray* arr);
@@ -84,9 +85,11 @@ void  mem_array_free(MemArray* arr);
  * totalAllocs is the realloc count (growCount), not the push count. peakBytes
  * is derived from the CURRENT capacity rather than a recorded high-water
  * mark, so it is only meaningful while the buffer is alive: after
- * mem_array_free() it reports 0. pageCount, totalObjects and freeObjects are
- * pool-only and are zeroed here. Tolerates NULL arr/out (leaves *out
- * untouched if out is NULL). */
+ * mem_array_free() it reports 0 -- it is a live capacity reading, not a
+ * high-water mark, unlike the arena's and the pool's peakBytes. pageCount,
+ * totalObjects and freeObjects are pool-only and are zeroed here. A NULL arr
+ * or out leaves *out completely untouched -- do not read it after such a
+ * call. */
 void  mem_array_get_stats(const MemArray* arr, MemStats* out);
 
 #ifdef __cplusplus

@@ -140,14 +140,12 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 
 // ---- Chart-space virtual texturing (WP-A) ----------------------------------
 //
-// Charts a single rung mesh: normal-cone segmentation (MeshChartingLib),
-// per-chart planar projection at `texels_per_meter`, page-aligned shelf pack
-// (kVtPagePayload grid, kChartGutterTexels gutters, clamped to kVtMaxAtlasDim
-// by halving the density), then atlas UVs written into triex.uv0/1/2
-// normalized [0,1] over the atlas. Purely a TriEx.uv rewrite — positions,
-// normals, materials, tint, AO are untouched, and downstream vertex welding
-// (indexed_part_geometry keys on the UV) performs the vertex split between
-// charts automatically.
+// Three functions in source order: the MATTER_VT_UNIFY switch, the
+// chart_rung_unified funnel every ladder charts through, and the two things it
+// picks between — apply_chart_rung (adopt a base rung's parameterisation) and
+// build_chart_rung (segment and pack a fresh one). Each carries its own
+// contract; read build_chart_rung's for what a chart table actually is.
+
 bool unify_parameterisation_enabled() {
     // Read per call, NOT cached in a static — the same choice impostors_
     // enabled() makes in part_flatten, and for the same reason: a static
@@ -534,6 +532,18 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     return true;
 }
 
+// The selection threshold for rung `lvl`. BakeTargets/TerrainBakeTargets both
+// document `threshold` as being the same length as the ratio vector that drives
+// the ladder loop, and every caller in the tree uses the defaults, which are.
+// A caller that gets it wrong used to read past the end of the vector; reuse
+// the coarsest declared threshold instead. (An entirely empty threshold vector
+// yields 0.0f, which lod_select reads as "eligible at any projected size" —
+// the finest-rung clamp already makes that the practical outcome.)
+static float rung_threshold(const std::vector<float>& threshold, size_t lvl) {
+    if (threshold.empty()) return 0.0f;
+    return threshold[lvl < threshold.size() ? lvl : threshold.size() - 1];
+}
+
 // The prop/authored-part ladder. One iteration per entry in
 // targets.keep_ratio, pushing exactly one LodLevel (and one handle, and one
 // chart table when asked) per rung, so the outputs stay parallel and
@@ -701,7 +711,7 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                 t_decimate, t_reproject, t_register, t_indexscan);
         }
         LodLevel L;
-        L.screen_size_threshold = targets.threshold[lvl];
+        L.screen_size_threshold = rung_threshold(targets.threshold, lvl);
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
         if (out_charts) out_charts->push_back(std::move(rung_charts));
@@ -1041,7 +1051,7 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                 cascaded ? " cascaded" : "");
         }
         LodLevel L;
-        L.screen_size_threshold = targets.threshold[lvl];
+        L.screen_size_threshold = rung_threshold(targets.threshold, lvl);
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
         if (out_charts) out_charts->push_back(std::move(rung_charts));

@@ -36,7 +36,8 @@
 // (edge = 2*radius*sizeScale). No SDF, no grid, no scratch: pure per-particle
 // geometry. Orientation is seeded from the particle's quantized position so it
 // is stable across re-meshes. sizeScale / rotation jitter are read from the
-// MSL_CUBE_SIZE_SCALE / MSL_CUBE_ROT_JITTER env vars (defaults 1.0).
+// MSL_CUBE_SIZE_SCALE / MSL_CUBE_ROT_JITTER env vars (defaults 0.6 and 1.0
+// respectively; see the implementation's header comment).
 class OrientedCubeAlgorithm : public MeshingAlgorithm {
 public:
     GroupMeshResult generate(const MeshContext& ctx) const override;

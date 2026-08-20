@@ -113,8 +113,11 @@ void DrawOverrideResolver::clear_catalog() {
 //
 // part_hash 0 and an empty module name are both rejected as false. The memoised
 // hidden answer for the hash is always invalidated, and the GPU entry lane is
-// updated in place (kept sorted by hash) only when the new module carries a
-// GPU-visible override, so worlds with no overrides never touch it.
+// kept in sync for this hash alone (inserted, updated in place, or ERASED when
+// the hash's new module carries no GPU-visible override), so worlds with no
+// overrides never touch it. The erase matters because a hash CAN move between
+// modules: re-registering it under a neutral module must retire the cap/bias the
+// old module was applying, and only rebuild_gpu_entries() would otherwise do it.
 bool DrawOverrideResolver::add_module(uint64_t part_hash,
                                       const std::string& module) {
     if (part_hash == 0 || module.empty()) return false;
@@ -128,23 +131,29 @@ bool DrawOverrideResolver::add_module(uint64_t part_hash,
     // A hash whose module just changed (or appeared) must not keep a memoised
     // answer computed against the old one.
     hidden_memo_.erase(part_hash);
-    // Incremental: only a hash whose module actually carries a GPU-visible
-    // override touches the lane, so a world with no overrides never rebuilds.
+    // Incremental: touch exactly this hash's row in the lane.
     const ModuleDrawOverride* o = table_.find(module);
+    auto pos = std::lower_bound(
+        gpu_entries_.begin(), gpu_entries_.end(), part_hash,
+        [](const PartDrawOverrideEntry& e, uint64_t h) {
+            return e.part_hash < h;
+        });
+    const bool present = pos != gpu_entries_.end() && pos->part_hash == part_hash;
     if (o && draw_override_has_gpu_effect(*o)) {
         PartDrawOverrideEntry entry;
         entry.part_hash = part_hash;
         entry.value.max_draw_distance = o->max_draw_distance;
         entry.value.lod_bias = o->lod_bias;
-        auto pos = std::lower_bound(
-            gpu_entries_.begin(), gpu_entries_.end(), part_hash,
-            [](const PartDrawOverrideEntry& e, uint64_t h) {
-                return e.part_hash < h;
-            });
-        if (pos != gpu_entries_.end() && pos->part_hash == part_hash)
+        if (present)
             pos->value = entry.value;
         else
             gpu_entries_.insert(pos, entry);
+        gpu_dirty_ = true;
+    } else if (present) {
+        // The hash used to resolve to a module with a cap/bias and no longer
+        // does; leaving the row behind would keep applying the old module's
+        // max_draw_distance/lod_bias forever.
+        gpu_entries_.erase(pos);
         gpu_dirty_ = true;
     }
     return true;
@@ -193,12 +202,11 @@ void DrawOverrideResolver::rebuild_gpu_entries() {
             entry.value.lod_bias = o->lod_bias;
             next.push_back(entry);
         }
-        // catalog_ is a std::map keyed by hash, so `next` is already ascending.
-        std::sort(next.begin(), next.end(),
-                  [](const PartDrawOverrideEntry& a,
-                     const PartDrawOverrideEntry& b) {
-                      return a.part_hash < b.part_hash;
-                  });
+        // No sort: catalog_ is a std::map keyed by part_hash, so walking it in
+        // iteration order already appends `next` in ascending hash order —
+        // which is the order gpu_entries() promises and the renderer
+        // binary-searches. Swapping catalog_ for an unordered container would
+        // have to reinstate a sort here.
     }
     const bool changed =
         next.size() != gpu_entries_.size() ||

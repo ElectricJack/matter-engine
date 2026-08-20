@@ -40,11 +40,6 @@ namespace viewer {
 // instance rather than each keeping their own.
 struct Selection {
     matter::scene::SceneEntityId id{};
-    // World generation at the moment of selection, stamped by select() from
-    // last_generation_. Only the legacy poll path (refresh) ever advances that
-    // counter, so on the delta-driven viewer this stays 0; no code currently
-    // reads it back.
-    uint64_t world_generation = 0;
 };
 
 // A flattened row in the hierarchy tree (preorder traversal).
@@ -78,7 +73,9 @@ struct SceneCommands {
     // Linux-only). Left null on Windows (delta-driven).
     std::function<std::vector<matter::scene::SceneRecord>()> query_records;
     // Current world generation (legacy poll path; Linux-only). Left null on
-    // Windows.
+    // Windows, and no longer READ anywhere: the only consumer stamped
+    // Selection::world_generation, which nothing ever read back and which is
+    // gone. Kept as part of the poll-path shape the tests construct.
     std::function<uint64_t()> generation;
     // Mutation commands (Windows: each closure issues a SceneService command
     // through the registry; Linux: direct-ECS closures):
@@ -133,9 +130,8 @@ public:
     // viewer is delta-driven and never calls this.
     void refresh(const SceneCommands& commands);
 
-    // Filter the hierarchy by name/id substring.
-    // In practice the match is case-insensitive and against the row NAME only
-    // — the id is not searched. Reapplies the filter immediately; it does not
+    // Filter the hierarchy by a case-insensitive substring of the row NAME.
+    // The id is NOT searched. Reapplies the filter immediately; it does not
     // wait for a flush.
     void set_filter(const std::string& filter);
     const std::string& filter() const { return filter_; }
@@ -184,7 +180,6 @@ private:
     std::vector<HierarchyRow> filtered_rows_;
     Selection selection_{};
     std::string filter_;
-    uint64_t last_generation_ = 0;
 
     // Observable revision: a burst of deltas in one tick coalesces to a single
     // flush delivery (S I.9), whose observer re-flattens when `hierarchy_dirty_`

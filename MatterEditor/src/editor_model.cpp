@@ -93,13 +93,11 @@ void EditorModel::apply_remove(const std::vector<SceneEntityId>& ids) {
 }
 
 // Legacy poll path: re-query the entire record set and apply it as a snapshot,
-// i.e. a FULL re-flatten on every call. Both closures are optional — a null
-// `query_records` yields an empty snapshot, which clears the model rather than
-// leaving it alone.
+// i.e. a FULL re-flatten on every call. `query_records` is optional — a null
+// one yields an empty snapshot, which clears the model rather than leaving it
+// alone. `commands.generation` is NOT consulted: the counter it fed
+// (Selection::world_generation) was never read back and has been removed.
 void EditorModel::refresh(const SceneCommands& commands) {
-    if (commands.generation) {
-        last_generation_ = commands.generation();
-    }
     std::vector<SceneRecord> records;
     if (commands.query_records) {
         records = commands.query_records();
@@ -114,12 +112,9 @@ void EditorModel::set_filter(const std::string& filter) {
 
 // Records the selection unconditionally: `id` is NOT validated against the
 // store here (a selection that stops resolving is dropped by the next
-// rebuild_hierarchy_from_store). `world_generation` is stamped from
-// last_generation_, which only the legacy poll path (refresh) ever advances,
-// so on the delta-driven viewer it stays 0.
+// rebuild_hierarchy_from_store).
 void EditorModel::select(SceneEntityId id) {
     selection_.id = id;
-    selection_.world_generation = last_generation_;
 }
 
 void EditorModel::clear_selection() {
@@ -164,10 +159,9 @@ void EditorModel::rebuild_hierarchy_from_store() {
         std::sort(kids.begin(), kids.end());
     }
 
-    // Preorder DFS from roots, filling depth. child_count is filled in a
-    // second pass since a node's row is written before its children are
-    // known in full for nested structures — but since children_of already
-    // has full counts up front, we can fill it in the same pass.
+    // Preorder DFS from roots, filling depth. child_count needs no second
+    // pass: children_of was built with complete counts above, so a node's
+    // child count is already known when its own row is written.
     std::function<void(uint64_t, uint32_t)> visit = [&](uint64_t id, uint32_t depth) {
         const SceneRecord* record = by_id[id];
         HierarchyRow row;

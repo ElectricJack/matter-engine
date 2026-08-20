@@ -22,7 +22,16 @@ namespace live_edit {
 
 struct LiveEditConfig {
     long long debounce_ms = 150;   // coalesce saves within this window into one rebuild
-    long long bake_budget_ms = 2000; // dev time budget per bake (SP-2); <=0 = unbounded
+    // Forwarded verbatim to Baker::bake as its budget_ms argument; <=0 means
+    // unbounded. THE PRODUCTION BAKER IGNORES IT -- the dev time budget was
+    // retired, ProdBaker leaves BakeOptions.time_budget_ms at 0, and the engine
+    // passes 0 here (matter_engine.cpp). The parameter and
+    // LiveEditError::Cause::BudgetExceeded survive as part of the Baker seam:
+    // dev_live_edit_tests' BudgetBaker asserts the value arrives and returns
+    // that cause, which is what pins the session's fail-closed handling of it.
+    // So this default bounds nothing today; it is left non-zero only because
+    // it is what the seam's fakes have always been handed.
+    long long bake_budget_ms = 2000;
 };
 
 // Result of one processed rebuild pass (for test instrumentation).

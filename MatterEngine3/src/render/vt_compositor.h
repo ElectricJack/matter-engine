@@ -54,6 +54,7 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "terrain_field.h"   // kMaxSurfaceMaterials (the source of truth)
 #include "vt_types.h"
 
 namespace vt {
@@ -84,24 +85,6 @@ struct VtCompositorMaterial {
     int detail_slot = -1;                          // -1 = no detail tileset
 };
 
-// The tier-1 page filler itself. Behind its pimpl it owns every Vulkan object
-// the two compute passes need: both pipelines and their layouts, the
-// descriptor pool and sampler, the neutral dummy tileset image, the global
-// material/params buffers, the shared tape-op arena, the ring of per-batch
-// transient resources, and the cache of per-(variant, rung) chart/triangle
-// buffers.
-//
-// Lifetime: instances come only from create() — the constructor is private
-// and the type is neither copyable nor assignable. Everything it owns is
-// destroyed in ~VtCompositor, and nothing internally tracks GPU completion,
-// so the device must be idle with respect to work this compositor recorded
-// before the destructor runs. The VkDevice/VkPhysicalDevice handles passed to
-// create() are BORROWED and must outlive the compositor.
-//
-// Threading: there is no locking anywhere in the implementation. Treat an
-// instance as owned by the single thread that records fill() into command
-// buffers, and make every other call (set_tilesets / set_materials /
-// set_weight_mode / invalidate_part / stats) from that same thread.
 // The tier-1 page filler itself. Behind its pimpl it owns every Vulkan object
 // the two compute passes need: both pipelines and their layouts, the
 // descriptor pool and sampler, the neutral dummy tileset image, the global
@@ -153,18 +136,17 @@ class VtCompositor final : public VtPageFiller {
         kSurfaceTape = 2,        // WP-F: per-vertex tape weights (auto-selected)
         kSurfaceTapeGpu = 3,     // P2: per-texel GPU tape (auto-selected)
     };
-    // Per-vertex tape weights packed into the GPU triangle stream, 8 u8
-    // columns per vertex — must equal terrain_field::kMaxSurfaceMaterials.
-    static constexpr uint32_t kMaxSurfaceMaterials = 8;
+    // Per-vertex tape weights packed into the GPU triangle stream, one u8
+    // column per material. DERIVED from terrain_field's constant rather than
+    // restated: the two silently disagreeing mis-decodes every tape weight.
+    static constexpr uint32_t kMaxSurfaceMaterials =
+        static_cast<uint32_t>(terrain_field::kMaxSurfaceMaterials);
 
     // pipeline_cache may be VK_NULL_HANDLE. Fail-closed: nullptr + err.
     static std::unique_ptr<VtCompositor> create(VkDevice device,
                                                 VkPhysicalDevice physical_device,
                                                 VkPipelineCache pipeline_cache,
                                                 std::string& err);
-    // Destroys every Vulkan object the compositor owns. Nothing here waits on
-    // a fence, so the device must already be idle with respect to fills this
-    // compositor recorded.
     // Destroys every Vulkan object the compositor owns. Nothing here waits on
     // a fence, so the device must already be idle with respect to fills this
     // compositor recorded.
@@ -194,17 +176,18 @@ class VtCompositor final : public VtPageFiller {
                          float debug_blend_width_m = 1.0f);
 
     // Drop the cached GPU chart/mesh buffers for a variant (all rungs). Call
-    // on part unload / content-key change. Device must be idle w.r.t. fills.
+    // on part unload / content-key change.
     //
-    // SUPERSEDED, read the line above with care: nothing is destroyed in
-    // place any more. Matching entries are moved to the retire list of the
+    // The device does NOT have to be idle, and that is the point. Nothing is
+    // destroyed in place: matching entries are moved to the retire list of the
     // most recent batch's ring and freed only when that ring comes round
     // again, which buys the same kMaxBatchesInFlight window the one-shot mesh
-    // entries use. That is exactly why the call is safe with earlier frames'
-    // command buffers still executing, and it is used that way — from
-    // drain_vt_invalidations() inside vt_begin_frame(), on the render thread.
-    // See the long comment on VtCompositor::invalidate_part in
-    // vt_compositor.cpp for the device-lost bug that forced the change.
+    // entries use. So the call is safe with earlier frames' command buffers
+    // still executing, and it is used that way — from drain_vt_invalidations()
+    // inside vt_begin_frame(), on the render thread. Freeing in place is what
+    // produced VUID-vkFreeDescriptorSets-pDescriptorSets-00309 and
+    // VK_ERROR_DEVICE_LOST; see the long comment on
+    // VtCompositor::invalidate_part in vt_compositor.cpp.
     void invalidate_part(uint64_t variant_hash);
 
     // VtPageFiller. Requests with a null atlas/part_context or an
@@ -228,9 +211,6 @@ class VtCompositor final : public VtPageFiller {
     void fill(VkCommandBuffer cmd, const VtFillRequest* batch,
               size_t count) override;
 
-    // Monotonic lifetime counters; nothing resets them. They are incremented
-    // while fill() RECORDS, so pages_filled counts pages whose copies were
-    // recorded, not pages the GPU has finished writing.
     // Monotonic lifetime counters; nothing resets them. They are incremented
     // while fill() RECORDS, so pages_filled counts pages whose copies were
     // recorded, not pages the GPU has finished writing.

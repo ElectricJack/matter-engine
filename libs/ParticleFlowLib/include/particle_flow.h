@@ -199,10 +199,10 @@ struct FieldConfig {
 // (radius scaled by sqrt of a uniform draw), the ring samples the rim exactly;
 // both use a basis built from `axis`, which is normalized internally.
 //
-// Gotcha: only the first 16 attribute channels and the first 16 state channels
-// are initialized from `attr_init`/`state_init` — `Sim::run_emitters` stages
-// them through fixed 16-element buffers. Channels past that (and any channel
-// the vectors are too short for) start at 0.
+// `attr_init`/`state_init` may name every declared channel — there is no
+// channel-count ceiling. A vector shorter than the sim's channel list leaves
+// the remaining channels at 0, and entries past the sim's channel count are
+// ignored.
 struct EmitterConfig {
     int shape = 1;                // 0=point 1=disc 2=ring
     V3 center{0,0,0}, axis{0,1,0};
@@ -347,7 +347,9 @@ public:
     const SpatialHash& deposited_hash() const { return dep_hash_; }
     const SpatialHash& live_hash() const { return live_hash_; }
     // Outward surface normal estimate from the deposited neighborhood.
-    // *ok=false when no deposited points lie within radius. (Impl: Task 3.)
+    // *ok=false when no deposited points lie within radius. Note the estimate
+    // also degenerates to zero when p sits at the neighborhood's centroid, and
+    // that case still reports ok = true.
     V3 surface_normal(V3 p, float radius, bool* ok) const;
 
     // The live config, including any `set_field_weight` mutations.
@@ -365,7 +367,11 @@ private:
     void kill_slot(uint32_t i);
     void deposit(V3 p, V3 dir);
     float fade_mult(const FieldConfig& f, V3 p) const;
-    V3 attract_dir(uint32_t slot, V3 p);   // consumes attractors (Task 3)
+    // Attract steering for ONE configured Attract field. `f` is the field
+    // currently being evaluated, so several Attract fields with different
+    // influence / kill_radius / kill_on_consume each behave as configured.
+    // Mutates the sim: reaching an attractor consumes it and may kill `slot`.
+    V3 attract_dir(const FieldConfig& f, uint32_t slot, V3 p);
 
     SimConfig cfg_;
     Rng rng_;

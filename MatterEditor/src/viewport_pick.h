@@ -35,8 +35,10 @@ namespace viewer {
 // id spaces are unrelated.
 //
 // `distance` is metres along the view ray, but ONLY from the CPU fallback
-// path: the GPU identity pick returns before it is computed and leaves it 0.
-// Do not treat 0 as "on the camera".
+// path: the GPU identity pick has no depth to report (matter::PickIdentity
+// carries kind + ids and nothing else) and leaves it 0. Do not treat 0 as "on
+// the camera" — and note that NOTHING reads this field today, so filling it
+// properly means first adding a depth to the engine's pick result.
 struct PickResult {
     bool hit = false;
     SelectedObject object;

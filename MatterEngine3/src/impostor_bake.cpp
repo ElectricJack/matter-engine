@@ -803,6 +803,16 @@ bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
 // `reject` helper, so a caller never sees a half-populated PartImpostor. Note
 // that Absent covers "this part has no atlas at all", which is the normal case
 // for a part with no eligible cluster and not an error.
+//
+// Absent vs Open. part_bundle::read_section folds "no such section" and "the
+// bundle would not parse" into one false, and the first of those is routine
+// while the second is a damaged cache the operator wants to hear about. They
+// are told apart with a second, cheaper probe: read_section_prefix validates
+// only the bundle header and its directory (no payload checksum, and asking for
+// zero bytes reads none), so a tag that IS listed there and still will not come
+// back through read_section means the bundle's contents failed to verify --
+// this section's own checksum, or another section's, since parse() rejects the
+// whole container on either. That is Open; anything else is Absent.
 bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
           PartImpostor& out, LoadFailure* fail, std::string* reason) {
     out.clusters.clear();
@@ -816,8 +826,15 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
 
     std::vector<uint8_t> section;
     if (!part_bundle::read_section(path, part_hash,
-                                   part_bundle::kSectionImpostor, section))
+                                   part_bundle::kSectionImpostor, section)) {
+        std::vector<uint8_t> probe;
+        uint64_t declared = 0;
+        if (part_bundle::read_section_prefix(path, part_hash,
+                                             part_bundle::kSectionImpostor,
+                                             0, probe, declared))
+            return reject(LoadFailure::Open, load_failure_text(LoadFailure::Open));
         return reject(LoadFailure::Absent, load_failure_text(LoadFailure::Absent));
+    }
 
     Header h{};
     if (section.size() < sizeof(h))

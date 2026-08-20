@@ -13,9 +13,11 @@
 // hash. It deliberately does not cover the sharp edges (hash collisions
 // between distinct grid cells, signed-overflow-free hashing at extreme
 // coordinates, `initialCapacity` actually sizing the bucket table, or
-// `sh_query_first`). Those live in `tests/spatial_hash_tests.c`, built and run
-// under AddressSanitizer + UBSan by `make -C libs/SpatialQueryLib test`. Add
-// new regression coverage there, not here.
+// `sh_query_first`). Those live in `tests/spatial_hash_tests.c`, and the
+// BVH/TLAS/analyzer regressions live in `tests/bvh_tests.cpp`; `make -C
+// libs/SpatialQueryLib test` builds and runs both (with AddressSanitizer +
+// UBSan where the toolchain has them — mingw-w64 does not). Add new regression
+// coverage there, not here.
 //
 // Convention: each test returns bool and prints via the TEST_PASSED /
 // TEST_FAILED macros below; every failure path must destroy the hash it

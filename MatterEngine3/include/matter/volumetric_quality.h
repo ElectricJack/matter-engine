@@ -23,7 +23,6 @@
 // threading concerns. Lengths are metres; the froxel grid is measured in froxels
 // (not pixels).
 
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -113,9 +112,13 @@ inline uint64_t estimate_froxel_bytes(FroxelGridDimensions dimensions, bool enha
 }
 
 // ---------------------------------------------------------------------------
-// Declared here, DEFINED INLINE in matter/cloud_shadow_settings.h (which
-// includes this header) — including only volumetric_quality.h and calling one of
-// these is a link error, not a compile error.
+// Declared here, DEFINED in matter/cloud_shadow_settings.h (which includes this
+// header). The declarations are `inline` to MATCH those definitions: a
+// non-inline declaration followed by an inline definition made the symbol's
+// linkage depend on whether the current translation unit had pulled in
+// cloud_shadow_settings.h, so a TU that included only this header and called
+// one of these got an undefined reference at link time — with nothing in the
+// error pointing at the split. Include cloud_shadow_settings.h to call them.
 //
 //   enhanced_cloud_lighting            true when any of the local sun march,
 //                                      multiple scattering, the powder term or
@@ -130,10 +133,12 @@ inline uint64_t estimate_froxel_bytes(FroxelGridDimensions dimensions, bool enha
 //                                      button in the editor rather than to store
 //                                      state.
 // ---------------------------------------------------------------------------
-bool enhanced_cloud_lighting(const VulkanVolumetricsSettings&, const CloudShadowSettings&);
-void apply_volumetric_quality_preset(VolumetricQualityPreset,
-                                     VulkanVolumetricsSettings&, CloudShadowSettings&);
-VolumetricQualityPreset identify_volumetric_quality_preset(
+inline bool enhanced_cloud_lighting(const VulkanVolumetricsSettings&,
+                                    const CloudShadowSettings&);
+inline void apply_volumetric_quality_preset(VolumetricQualityPreset,
+                                            VulkanVolumetricsSettings&,
+                                            CloudShadowSettings&);
+inline VolumetricQualityPreset identify_volumetric_quality_preset(
     const VulkanVolumetricsSettings&, const CloudShadowSettings&);
 
 } // namespace matter

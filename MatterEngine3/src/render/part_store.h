@@ -147,9 +147,6 @@ struct LoadedCluster {
     std::vector<int>      lod_mesh;        // per level: index into lp.lod_mesh_data
 };
 
-// A part loaded into the shared BLASManager: one BLAS handle per LOD level
-// (regenerated via lod_bake, since .part stores only LOD0), plus the LOD
-// metadata the SectorResolver needs.
 // Per-rung surfaces() tape classification, computed ONCE on the bake worker and
 // carried with the part so the app thread never recomputes it.
 //
@@ -181,9 +178,12 @@ struct SurfaceClassCache {
     }
 };
 
-// One part resident in memory: its LOD ladder (a BLAS handle plus a CPU mesh
-// per rung), the per-cluster tables the GPU culler consumes, the baked
-// child-instance table for compositional parts, and the precomputed expansion.
+// One part resident in memory, loaded into the SHARED BLASManager: its LOD
+// ladder (one BLAS handle plus a CPU mesh per rung — the ladder is regenerated
+// by lod_bake, since a .part stores only LOD0), the LOD metadata the
+// SectorResolver needs, the per-cluster tables the GPU culler consumes, the
+// baked child-instance table for compositional parts, and the precomputed
+// expansion.
 // Created by PartStore::commit_staged / get_or_load, owned by
 // PartStore::loaded_, destroyed by PartStore::release — which also drops the
 // BLAS references (release_loaded_part_blas in part_store.cpp).
@@ -213,7 +213,9 @@ struct LoadedPart {
     // VT runtime (WP-E) lands.
     std::vector<chart_atlas::ChartAtlasRung> lod_charts;
     std::vector<part_asset::ChildInstance> children;   // baked child-instance table (may be empty)
-    std::vector<RasterMeshData> lod_mesh_data;  // parallel to lod_blas (CPU-only; GL upload is lazy)
+    // Parallel to lod_blas. CPU-only: the Vulkan part builder copies these
+    // into the renderer's staging arrays; nothing here owns a GPU resource.
+    std::vector<RasterMeshData> lod_mesh_data;
     // Immutable owner streams from a partitioned animation artifact.  The
     // root keeps only skin data above; rigid streams are materialized as
     // independent dynamic subparts without ever rejoining the root mesh.
@@ -294,8 +296,6 @@ void build_expansion(uint64_t root_hash,
                      const std::function<const LoadedPart*(uint64_t)>& getter,
                      std::vector<ExpandedNode>& out);
 
-// Owns one BLASManager shared across all loaded parts. Content-addressed and
-// durable: a .part baked on a prior run is found on disk under cache_root/parts/.
 // Warp field (VT Phase 2): the sector's world anchor for the warped ground
 // coordinate solve — {valid, tx * sector_size, tz * sector_size,
 // sector_size}. Only streaming callers can supply it (the part itself does
@@ -325,10 +325,6 @@ struct WarpAnchor {
 // by value and hands out interior pointers into loaded_, so it is never copied
 // or relocated. Read the threading split in this file's header comment before
 // calling anything from a worker thread — the safe set is small and explicit.
-//
-// (Note: the paragraph above `struct WarpAnchor` opens with a sentence that
-// describes THIS class, not WarpAnchor; it was left behind when the struct was
-// hoisted out of the class body.)
 class PartStore {
 public:
     explicit PartStore(std::string cache_root);
@@ -507,8 +503,8 @@ public:
     // straight through to lod_bake::bake_lods() inside get_or_load(). Null
     // (default) means the observer hooks are skipped there — production
     // sessions never call this setter. See matter/bake_observer.h for the
-    // thread contract; note get_or_load() runs inside a GL-thread publish
-    // job in the production pipeline, so on_rung_ready may fire on the GL
+    // thread contract; note get_or_load() runs inside a render-thread publish
+    // job in the production pipeline, so on_rung_ready may fire on the RENDER
     // thread here (unlike on_mesh_ready from bake_source, which fires on the
     // bake worker thread) — callers must not assume either.
     void set_bake_observer(BakeObserver* observer) { observer_ = observer; }
@@ -544,7 +540,7 @@ private:
     // (immutable after configure) and decodes into `out`'s own storage. That is
     // what makes it callable from a streaming worker -- the whole expensive
     // stretch of a sector load (decode, and the ladder bake that follows it into
-    // a private BLASManager) can then happen off the app/GL thread, leaving only
+    // a private BLASManager) can then happen off the app/render thread, leaving only
     // the bounded adopt+insert behind. The first shared mutation in the coherent
     // path is animation_assets_.insert, which sits deliberately AFTER this call.
     bool read_coherent_snapshot(uint64_t part_hash, CoherentSnapshot& out) const;

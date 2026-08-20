@@ -284,17 +284,6 @@ static uint64_t fold_str(uint64_t h, const std::string& s) {
     return h;
 }
 
-// The u32 counterpart of fold_str.  No caller in this file today.
-static uint64_t fold_u32(uint64_t h, uint32_t v) {
-    uint8_t buf[4];
-    for (int i = 0; i < 4; ++i) buf[i] = (uint8_t)(v >> (i * 8));
-    for (int i = 0; i < 4; ++i) {
-        h ^= (uint64_t)buf[i];
-        h *= 0x00000100000001B3ull;
-    }
-    return h;
-}
-
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------

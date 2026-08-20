@@ -329,6 +329,17 @@ static void test_bridge_scene_entities_query() {
 
     auto ids = bridge.scene_entities();
     CHECK(ids.size() == 3, "expected 3 tracked scene entities");
+    // tracked_ is an unordered_map, so the query has to impose its own order or
+    // the list reshuffles between frames. Ascending by (id, generation).
+    CHECK(ids[0].value == 0x100 && ids[1].value == 0x200 && ids[2].value == 0x300,
+          "scene_entities is sorted ascending by entity id");
+
+    // A second reconcile of the same world must produce the identical list.
+    bridge.reconcile(world, recorder.make(), err);
+    auto again = bridge.scene_entities();
+    CHECK(again.size() == ids.size() && again[0].value == ids[0].value &&
+              again[1].value == ids[1].value && again[2].value == ids[2].value,
+          "scene_entities is stable across frames");
 }
 
 static void test_bridge_resolve_pick() {

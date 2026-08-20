@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 
 #include "matrix_math.h"
@@ -83,9 +84,18 @@ FrameMatrices jitter_frame(const FrameMatrices& source, float x_pixels,
     }
     result.world_to_clip =
         mat4_mul(result.view_to_clip, result.world_to_view);
+    // Both failures leave the SOURCE's values in place rather than a partial
+    // rewrite: mat4_inverse does not touch its out-param on failure, and the
+    // plane extraction gets a scratch buffer because it can bail part-way
+    // through `planes`. A shear by a multiple of the w row cannot degenerate a
+    // frustum that was already valid, so neither path is expected to fire —
+    // but "keep the unjittered planes" is a sane frame, and half-normalized
+    // planes are not.
     (void)mat4_inverse(result.world_to_clip, result.clip_to_world);
-    (void)extract_frustum_planes_zo(result.world_to_clip,
-                                    result.frustum_planes);
+    float jittered_planes[6][4]{};
+    if (extract_frustum_planes_zo(result.world_to_clip, jittered_planes))
+        std::memcpy(result.frustum_planes, jittered_planes,
+                    sizeof(jittered_planes));
     result.jitter_pixels[0] = x_pixels;
     result.jitter_pixels[1] = y_pixels;
     return result;

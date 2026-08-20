@@ -51,8 +51,12 @@
 
 // Minimal JSON field extraction — operates on the canonical components_json
 // string from RawEntityRecipe. Full JSON parsing is NOT needed here; the
-// world_definition_loader already validated syntax. We only need to match
-// top-level component keys and their field values for type/range checking.
+// world_definition_loader already validated syntax. Two consumers need it and
+// neither type- nor range-checks anything: `validate` pulls out the top-level
+// component keys (plus PartInstance's "part" name) to look them up in the
+// schema, and `instantiate` pulls out scalar field values to fill components.
+// Both are deliberately tolerant — an absent or wrongly-shaped field leaves the
+// C++ default in place instead of failing.
 #include <sstream>
 
 namespace matter::scene {

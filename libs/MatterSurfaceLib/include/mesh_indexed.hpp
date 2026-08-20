@@ -58,8 +58,12 @@ struct MeshIndexed {
                                          // empty vector = TriEx not attached
 };
 
-// Weld tolerance for from_tri. Default matches mesh_simplifier's existing
-// internal weld (1e-4 world units).
+// Weld tolerance for from_tri. The 1e-4 default is this type's own choice and
+// is pinned by tests/mesh_indexed_tests.cpp; it is deliberately COARSER than
+// mesh_simplifier's internal weld, which quantizes onto a 1e-5 grid
+// (`* 100000.0` in src/mesh_simplifier.cpp). Passing a MeshIndexed welded here
+// into simplify_mesh_indexed is fine -- the finer grid never un-merges what
+// this already merged -- but the two are not the same tolerance.
 struct WeldOptions {
     // World units. Coordinates are quantized onto a grid of this spacing, so
     // it behaves as a snap size rather than a pairwise distance test — see

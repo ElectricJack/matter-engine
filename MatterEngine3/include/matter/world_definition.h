@@ -50,14 +50,20 @@ namespace matter {
 // canonical because it feeds the content hash, so two roots with equal params
 // share one bake.
 //
-// GOTCHA: `transform` is only written when the script supplies a 16-number
-// `transform` array, and the default Mat4f is all ZEROES, not identity (see
-// matter/math_types.h). The provider passes it straight through
-// (adapt_world_definition), so world scripts author an explicit identity row.
 struct WorldRoot {
     std::string module;
     std::string params_json = "{}";
-    Mat4f transform{};       // authored 4x4 placement, row-major 16 floats
+    // Authored 4x4 placement, row-major 16 floats. DEFAULTS TO IDENTITY, not
+    // to the all-zero Mat4f (`float m[16] = {}`, see matter/math_types.h):
+    // extract_roots only writes this when the script supplies a 16-number
+    // `transform` array, and the provider passes it straight through
+    // (adapt_world_definition -> root_transforms_ -> place()), so a zeroed
+    // default would collapse a root that omits `transform` to a degenerate
+    // zero-scale matrix at the origin instead of leaving it unplaced.
+    Mat4f transform{{1.0f, 0.0f, 0.0f, 0.0f,
+                     0.0f, 1.0f, 0.0f, 0.0f,
+                     0.0f, 0.0f, 1.0f, 0.0f,
+                     0.0f, 0.0f, 0.0f, 1.0f}};
     bool expand = false;     // promote the baked child-instance table to individual
                              // world instances (per-child LOD, culling, batching)
                              // instead of placing the root as one instance

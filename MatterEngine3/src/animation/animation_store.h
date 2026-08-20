@@ -102,12 +102,13 @@ struct AnimationRuntimeDefinition {
     // instantiate, saturates the result, and a definition that returns
     // `SIZE_MAX` is rejected outright rather than admitted at a huge cost.
     //
-    // Not a cheap accessor. It walks the whole binding - every clip's Ozz
-    // sample-context size, every graph node, every controller - and it
-    // actually constructs each declared native controller through
-    // `NativeControllerRegistry` to learn its state size, so each call
-    // allocates. Nothing is cached; the service calls it several times per
-    // create/replace.
+    // Not a cheap accessor, and nothing here is cached. It walks the whole
+    // binding - every clip's Ozz sample-context size, every graph node, every
+    // controller - and it actually constructs each declared native controller
+    // through `NativeControllerRegistry` to learn its state size, so each call
+    // allocates. Call it once and keep the answer: the service does exactly
+    // that, recording the charge on the animator's slot so the refund on
+    // replace/remove is the amount that was charged rather than a second walk.
     size_t mutable_bytes() const;
 };
 

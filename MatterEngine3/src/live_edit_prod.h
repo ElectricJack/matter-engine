@@ -79,6 +79,14 @@ public:
 private:
     part_graph_snapshot::Snapshot& snap_;
     script_host::ScriptHost&       host_;
+    // STORED AND NEVER READ. Both constructors take a schemas dir and keep it,
+    // but nothing here reconstructs a schema path: parts_for_file matches the
+    // snapshot's by_file keys byte for byte, and reresolve opens the node's own
+    // absolute `source_path`. It survives only because dropping it means
+    // changing this class's public signature at every call site (the engine's
+    // install path plus seven in live_edit_prod_tests). Do not add a use for it
+    // -- add the path to the snapshot instead, which is where every other path
+    // in this seam already lives.
     std::string                    schemas_dir_;
     std::vector<std::string>       shared_lib_dirs_;
     bool                           exact_shared_paths_ = false;

@@ -278,11 +278,6 @@ struct WeldBucket {
     std::vector<float> normals;    // 9 floats per triangle
 };
 
-// Positions are emitted relative to `origin_*`, which the caller sets before
-// calling (default 0 = world-absolute). Boundary records carry world `double`
-// positions precisely so the welder can rebase once, here, instead of inheriting
-// the tile-local float cancellation that bites at 10 km out; a weld spans two
-// tiles with two different origins, so it needs its own.
 // Per-triangle PROVENANCE, for diagnosis only (null in production).
 //
 // The winding gate (seam_integration [8]) can see that a triangle came out
@@ -322,13 +317,14 @@ struct WeldProvenance {
 
 // The welder's output buffer -- allocated, owned and reused by the caller.
 //
-// NOTE ON THE COMMENT ABOVE: the "Positions are emitted relative to `origin_*`"
-// paragraph documents THIS struct, not `WeldProvenance`; the provenance
-// side-channel was later inserted between the paragraph and the struct it
-// belongs to. The rule it states is unchanged -- set `origin_*` before calling
-// `weld_face` (the origin is preserved across the `clear_geometry()` that call
-// performs), and every value in `buckets` is a world position minus that
-// origin, narrowed to float.
+// Positions are emitted relative to `origin_*`, which the caller sets before
+// calling `weld_face` (default 0 = world-absolute; the origin is preserved
+// across the `clear_geometry()` that call performs). Every value in `buckets` is
+// therefore a world position minus that origin, narrowed to float. Boundary
+// records carry world `double` positions precisely so the welder can rebase
+// once, here, instead of inheriting the tile-local float cancellation that bites
+// at 10 km out; a weld spans two tiles with two different origins, so it needs
+// its own.
 struct WeldMesh {
     double origin_x = 0, origin_y = 0, origin_z = 0;
     std::vector<WeldBucket> buckets;

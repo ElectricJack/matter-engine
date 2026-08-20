@@ -422,12 +422,35 @@ std::vector<std::string> list_dir(const std::string& dir) {
 bool stamp_of(const std::string& path, uint64_t* out_stamp) {
     struct stat st;
     if (stat(path.c_str(), &st) != 0) return false;
-    /* st_mtime is whole seconds here, where the Win32 side gets 100 ns ticks,
-     * so the size term is doing real work: two rewrites inside one second are
-     * only distinguishable if the file also changed length.
-     * BlobStore::reload_index() reads an unchanged stamp as "nothing to do". */
-    uint64_t t = (uint64_t)st.st_mtime;
-    *out_stamp = t ^ ((uint64_t)st.st_size * 0x9E3779B97F4A7C15ull);
+    /* Three terms, because no single one of them is sufficient:
+     *
+     *  - st_ino. index.bin and refs.bin are only ever replaced by rename(2),
+     *    so every commit installs a DIFFERENT inode at the same path. This is
+     *    the term that makes two commits inside one second distinguishable
+     *    even when they produce an index of identical length -- the case the
+     *    old (mtime XOR size) stamp missed entirely, silently skipping the
+     *    reload in BlobStore::reload_index().
+     *  - the mtime at the finest resolution the platform offers. POSIX 2008
+     *    st_mtim.tv_nsec is used where available (the Win32 half gets 100 ns
+     *    ticks from the file time directly); otherwise this degrades to whole
+     *    seconds and the inode term carries the discrimination.
+     *  - st_size, which catches an in-place rewrite that somehow kept both the
+     *    inode and the timestamp.
+     *
+     * BlobStore::reload_index() reads an unchanged stamp as "nothing to do",
+     * so a stamp that fails to move is a stale read, not merely a slow one. */
+#if defined(__APPLE__)
+    uint64_t nsec = (uint64_t)st.st_mtimespec.tv_nsec;
+#elif defined(__linux__) || defined(__GLIBC__) || \
+      (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200809L)
+    uint64_t nsec = (uint64_t)st.st_mtim.tv_nsec;
+#else
+    /* No sub-second mtime here; the inode term below carries the work. */
+    uint64_t nsec = 0;
+#endif
+    uint64_t t = (uint64_t)st.st_mtime * 1000000000ull + nsec;
+    *out_stamp = t ^ ((uint64_t)st.st_size * 0x9E3779B97F4A7C15ull)
+                   ^ ((uint64_t)st.st_ino * 0xC2B2AE3D27D4EB4Full);
     return true;
 }
 

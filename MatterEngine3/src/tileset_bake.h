@@ -183,7 +183,10 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 // Settle-result cache: serialize/restore a SettledTorus to/from disk.
 // Cache file: <cache_root>/tileset/<key>.settle
 // key = FNV-1a over (script_source_hash, sorted child resolved_hashes,
-//                    kEngineBakeVersion, kBox3dVersion).
+//                    canonical root params), folded through
+//                    matter_version::fold(). The per-kind kEngineBakeVersion /
+//                    kBox3dVersion fields this used to append were replaced in
+//                    M4 by that single version-vector fold.
 // Plain little-endian binary with a version header; reject on version/key mismatch.
 bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out);
 bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s);

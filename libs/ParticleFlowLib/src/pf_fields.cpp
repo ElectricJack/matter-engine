@@ -209,18 +209,22 @@ V3 field_force(const Sim& s, const FieldConfig& f, uint32_t slot) {
 // unconsumed, unclaimed attractor inside `influence`, by linear scan with
 // ascending index as the deterministic tie-break.
 //
-// Gotcha: the parameters come from the FIRST `FieldType::Attract` entry in
-// `cfg_.fields`, whichever field index is currently being evaluated. Configuring
-// several Attract fields with different `influence`/`kill_radius` does not work
-// — they all behave like the first one.
+// `f` is the Attract field CURRENTLY being evaluated, passed down from
+// `Sim::integrate_slot`, so `influence`, `kill_radius` and `kill_on_consume`
+// are the ones that field was configured with. (It used to search `cfg_.fields`
+// for the first Attract entry and use that one's parameters no matter which
+// field index was being evaluated, which made every Attract field past the
+// first behave like the first.)
 //
-// Returns zero on: no Attract field configured, nothing left to attract to,
-// nothing in range, or the tick the attractor is consumed.
-V3 Sim::attract_dir(uint32_t slot, V3 p) {
-    const FieldConfig* fc = nullptr;
-    for (const auto& f : cfg_.fields)
-        if (f.type == FieldType::Attract) { fc = &f; break; }
-    if (!fc || attr_remaining_ == 0) return {0,0,0};
+// Note that the attractor ARRAY is still shared by every Attract field — there
+// is one set of attractors per Sim, not one per field — so two Attract fields
+// compete for the same targets and whichever evaluates first consumes them.
+//
+// Returns zero on: nothing left to attract to, nothing in range, or the tick
+// the attractor is consumed.
+V3 Sim::attract_dir(const FieldConfig& f, uint32_t slot, V3 p) {
+    const FieldConfig* fc = &f;
+    if (attr_remaining_ == 0) return {0,0,0};
     int best = -1; float best_d2;
     if (claim_of_[slot] != UINT32_MAX && !attr_consumed_[claim_of_[slot]]) {
         // Claimed target: beeline regardless of influence radius.

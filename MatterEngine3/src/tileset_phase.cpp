@@ -41,6 +41,7 @@
 #include "tileset_bake.h"    // settle_tileset, BakeInputs, SettledTorus
 #include "part_asset.h"      // fnv1a64 (settle cache key: script source hash)
 
+#include <algorithm>    // std::sort (settle cache key: sorted child hashes)
 #include <filesystem>   // object-root search path
 #include <fstream>
 #include <sstream>
@@ -218,8 +219,9 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_roots,
     // -----------------------------------------------------------------------
     // 6. Settle: cache check → on miss, physics + placement → save.
     //    Cache key: FNV-1a over (script_source_hash, sorted child hashes,
-    //    canonical root params, kEngineBakeVersion, kBox3dVersion) — same as
-    //    settle_cache_key().
+    //    canonical root params) folded through matter_version::fold() — same as
+    //    settle_cache_key(). (M4 replaced the per-kind kEngineBakeVersion /
+    //    kBox3dVersion fields with that one version-vector fold.)
     // -----------------------------------------------------------------------
     BakeInputs bi;
     bi.parts_cache_dir = parts_cache_dir;
@@ -305,10 +307,9 @@ bool run_tileset_phase_from_object_roots(
 } // namespace tileset
 
 // Stubs for builds without the script host, so a caller can link and fail with
-// a message instead of failing to link. Note the coverage is PARTIAL: only the
-// two `run_tileset_phase_from_objects` overloads have stubs here, so a
-// script-host-less build that calls `run_tileset_phase_from_object_roots` --
-// declared in the header unconditionally -- still fails at link time.
+// a message instead of failing to link. Coverage must stay COMPLETE: every entry
+// point tileset_phase.h declares unconditionally needs a stub here, or a
+// script-host-less build fails at link instead of at the call.
 #else // !MATTER_HAVE_SCRIPT_HOST
 
 namespace tileset {
@@ -323,6 +324,15 @@ bool run_tileset_phase_from_objects(const std::string&, const std::string&,
 
 bool run_tileset_phase_from_objects(
     const std::string&, const std::string&, const std::string&,
+    const std::string&, SettledTorus&, std::string& err,
+    const std::vector<std::string>&, std::vector<uint64_t>*)
+{
+    err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
+    return false;
+}
+
+bool run_tileset_phase_from_object_roots(
+    const std::vector<std::string>&, const std::string&, const std::string&,
     const std::string&, SettledTorus&, std::string& err,
     const std::vector<std::string>&, std::vector<uint64_t>*)
 {

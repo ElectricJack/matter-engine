@@ -44,17 +44,32 @@
 
 namespace matter {
 
+// The lighting defaults that BOTH structs below need: `VulkanLightingOverrides`
+// is the untouched live layer, `AtmosphereLightingSources` is the assembled
+// resolve input, and the resolve is only a no-op on an unedited session while
+// the two agree. They used to be independently spelled-out literals in each
+// struct; naming them here is what keeps them in step. The sun aim lives in
+// matter/sun_angles.h, which owns the direction <-> angles calibration.
+inline constexpr float kLightingSunMultiplierDefault = 1.67f;
+inline constexpr float kLightingSkyMultiplierDefault = 0.77f;
+inline constexpr float kLightingSkyIrradianceMultiplierDefault = 1.0f;
+inline constexpr float kLightingDayAmbientMultiplierDefault = 0.25f;
+inline constexpr float kLightingTwilightAmbientMultiplierDefault = 1.0f;
+inline constexpr float kLightingSunsetDirectRatioDefault = 0.25f;
+
 // The live lighting layer the user edits — one per session, sitting on top of
 // whatever the world authored. Plain data, no Vulkan handles.
 //
-// Several defaults here (sun_multiplier, sky_multiplier, the ambient
-// multipliers, sunset_direct_ratio, elevation) are SPELLED OUT AGAIN on
-// `AtmosphereLightingSources` below. Change one and change the other, or an
-// untouched session and an edited one resolve from different starting points.
+// MEMBER ORDER IS LOAD-BEARING. src/render/vk_lighting_controls.cpp
+// aggregate-initializes this POSITIONALLY as
+// `sanitize_vulkan_lighting_overrides({1, 1, 1, exposure_ev})`, which relies
+// on exposure_ev being the FOURTH declared member. Inserting or reordering a
+// field above it silently routes the EV into emission_multiplier instead, with
+// no compile error. Add new fields at the END.
 struct VulkanLightingOverrides {
     // Scalar gains on the resolved direct/sky terms.
-    float sun_multiplier = 1.67f;
-    float sky_multiplier = 0.77f;
+    float sun_multiplier = kLightingSunMultiplierDefault;
+    float sky_multiplier = kLightingSkyMultiplierDefault;
     float emission_multiplier = 1.0f;
     // Exposure in EV stops (negative darkens).
     float exposure_ev = -2.0f;
@@ -66,17 +81,18 @@ struct VulkanLightingOverrides {
     float sky_tint[3] = {1.0f, 1.0f, 1.0f};
     // Sky ambient gains at full day and at twilight; sky_ambient_ratio()
     // below blends between them by elevation.
-    float day_ambient_multiplier = 0.25f;
-    float twilight_ambient_multiplier = 1.0f;
-    float sky_irradiance_multiplier = 1.0f;
+    float day_ambient_multiplier = kLightingDayAmbientMultiplierDefault;
+    float twilight_ambient_multiplier =
+        kLightingTwilightAmbientMultiplierDefault;
+    float sky_irradiance_multiplier = kLightingSkyIrradianceMultiplierDefault;
     // Fraction of full direct light that survives at a 5-degree sun; see
     // direct_world_ratio() for the curve this anchors.
-    float sunset_direct_ratio = 0.25f;
+    float sunset_direct_ratio = kLightingSunsetDirectRatioDefault;
     // Sun aim in degrees. These defaults are the engine's default sun
     // direction {-0.45, -0.80, -0.35} expressed as angles — see
     // matter/sun_angles.h, which owns that conversion.
-    float sun_azimuth_deg = 127.874985f;
-    float sun_elevation_deg = 54.525963f;
+    float sun_azimuth_deg = kSunAzimuthDefaultDeg;
+    float sun_elevation_deg = kSunElevationDefaultDeg;
     // Angular DIAMETER of the sun disc, degrees (matter/sun_angles.h).
     float sun_angular_diameter_deg = kSunAngularDiameterDefaultDeg;
     // Shadow rays per shaded point for the sun's penumbra.
@@ -103,13 +119,14 @@ struct AtmosphereLightingSources {
     Float3 authored_irradiance_chroma_rgb{};
     Float3 live_sun_tint_rgb{1.0f, 1.0f, 1.0f};
     Float3 live_sky_tint_rgb{1.0f, 1.0f, 1.0f};
-    float sun_multiplier = 1.67f;
-    float sky_multiplier = 0.77f;
-    float sky_irradiance_multiplier = 1.0f;
-    float day_ambient_multiplier = 0.25f;
-    float twilight_ambient_multiplier = 1.0f;
-    float sunset_direct_ratio = 0.25f;
-    float elevation_deg = 54.525963f;
+    float sun_multiplier = kLightingSunMultiplierDefault;
+    float sky_multiplier = kLightingSkyMultiplierDefault;
+    float sky_irradiance_multiplier = kLightingSkyIrradianceMultiplierDefault;
+    float day_ambient_multiplier = kLightingDayAmbientMultiplierDefault;
+    float twilight_ambient_multiplier =
+        kLightingTwilightAmbientMultiplierDefault;
+    float sunset_direct_ratio = kLightingSunsetDirectRatioDefault;
+    float elevation_deg = kSunElevationDefaultDeg;
 };
 
 // The resolve output — what the renderer uploads. All linear RGB.
@@ -147,13 +164,20 @@ struct ResolvedAtmosphereLighting {
     float resolved_elevation_deg = 0.0f;
 };
 
-// Hermite smoothstep, clamped to [0,1]. NOTE it does not guard a == b: the
-// division would produce inf/NaN and std::clamp passes NaN straight through.
-// Every call site in this file passes distinct literal edges; keep it that
-// way, or guard at the call site.
+// Hermite smoothstep, clamped to [0,1], and TOTAL like the rest of this
+// header: no input produces a NaN.
+//
+// Degenerate or reversed edges (b <= a, or either edge non-finite) would
+// otherwise divide by zero or by NaN, and std::clamp passes NaN straight
+// through to the renderer's uniforms; they collapse to a hard step at `a`
+// instead. A NaN `x` yields 0. Every call site in this file passes distinct
+// finite literal edges, so the well-behaved path is unchanged.
 inline float atmosphere_lighting_smoothstep(float a, float b,
                                              float x) noexcept {
+    if (!(b > a) || !std::isfinite(a) || !std::isfinite(b))
+        return (std::isfinite(a) && x >= a) ? 1.0f : 0.0f;
     const float q = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
+    if (!std::isfinite(q)) return 0.0f;   // x was NaN
     return q * q * (3.0f - 2.0f * q);
 }
 
@@ -297,16 +321,27 @@ enum AtmosphereLightingChange : uint32_t {
 struct AtmosphereHistoryDecision {
     bool reset_diffuse_gi = false;
     bool reset_reflection_miss = false;
+    // NO lighting change currently sets this. It is the wired-up escape hatch
+    // for a future change class that does falsify the froxel history — the
+    // consumer side is live (vk_scene_renderer.cpp calls
+    // VkVolumetrics::invalidate_history() when it is true), so setting it in a
+    // new branch here is all a future change would need. Retaining volumetric
+    // history across every change class in the enum below is deliberate and
+    // pinned by test_atmosphere_history_decisions_are_narrow.
     bool reset_volumetric = false;
 };
 
 // Map a change mask onto history resets. `full_commit` forces the diffuse GI
 // history to reset regardless of the mask.
 //
-// Read the body before relying on this: as written, `reset_volumetric` is
-// never set by any branch, and `kAtmosphereChangeExposure` and
-// `kAtmosphereChangeShadow` are not tested at all — a mask containing only
-// those bits produces an all-false decision.
+// DELIBERATELY NARROW, and pinned by
+// MatterEngine3/tests/atmosphere_tests.cpp's
+// test_atmosphere_history_decisions_are_narrow:
+//   * kAtmosphereChangeExposure is display-side only (the tone map reads it
+//     after accumulation), and kAtmosphereChangeShadow only changes penumbra
+//     sample COUNT, so neither is tested here — a mask containing only those
+//     bits correctly yields an all-false decision;
+//   * no branch sets reset_volumetric (see the field's comment above).
 inline AtmosphereHistoryDecision atmosphere_history_decision(
     uint32_t change_mask, bool full_commit) noexcept {
     AtmosphereHistoryDecision result{};

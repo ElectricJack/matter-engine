@@ -27,7 +27,7 @@
 //
 // Coordinates and units: positions are cluster-local metres. `position_` /
 // `rotation_` place the cluster in the world; `local_to_world` applies them.
-// Note that `add_to_tlas` currently only applies the translation (see its TODO).
+// `add_to_tlas` bakes that same placement into every instance transform.
 #include "../include/cluster.h"
 #include "../include/cell.h"
 #include "../include/tlas_manager.hpp"
@@ -242,10 +242,10 @@ Cell* Cluster::find_or_create_cell(const mm::Vec3& cell_coords) {
 // CLEARED -- the TLAS is torn down and rebuilt in full.
 //
 // The transient hashes exist to avoid an O(dirty x total particles) scan and
-// are destroyed before the parallel phase. The per-cell query buffer is capped
-// at 4096 candidates; a cell overlapped by more particles than that silently
-// loses the surplus. Interior cells listed in `no_mesh_cells_` are cleared
-// rather than meshed.
+// are destroyed before the parallel phase. The per-cell query buffer is sized
+// to the worst case (every particle in one box), so a candidate set is never
+// truncated. Interior cells listed in `no_mesh_cells_` are cleared rather than
+// meshed.
 //
 // One uniform resolution is deliberate: marching-cubes grids only stay
 // watertight between same-resolution neighbours, so the globally finest detail
@@ -297,9 +297,17 @@ void Cluster::rebuild_dirty_cells() {
         }
     }
 
-    // Scratch buffer for sh_query_box results (reused per cell).
-    const int kMaxQueryResults = 4096;
-    std::vector<void*> query_buf(kMaxQueryResults);
+    // Scratch buffer for sh_query_box results (reused per cell). Sized to the
+    // WORST CASE -- every particle (or every carve particle) landing in one
+    // cell's query box -- because sh_query_box bails at `maxResults` in
+    // grid-scan order and returns an arbitrary subset with no way to tell that
+    // it truncated. Each particle is inserted into the hash exactly once, so
+    // this bound is exact. It also keeps the hashed path's result identical to
+    // the scan-everything fallback below, which is the semantics the rest of
+    // this function assumes. One allocation per rebuild, not per cell.
+    const int kMaxQueryResults =
+        (int)std::max(particles_.size(), carve_particles_.size());
+    std::vector<void*> query_buf((size_t)std::max(kMaxQueryResults, 1));
 
     // PHASE 1 - PRE (serial, main thread): per dirty non-interior cell, gather
     // particle indices + carve subset, release the old BLAS, and queue a CellJob.
@@ -460,9 +468,10 @@ float Cluster::compute_finest_detail() const {
 // a radius query around the region's bounding sphere -- so it over-fetches for
 // elongated regions -- refined by an exact box overlap test.
 //
-// The broad-phase result buffer is a fixed 1000 entries: a region covering
-// more cells than that returns a silently truncated set. Returned pointers are
-// borrowed from `cells_` and stay valid as long as the cluster does.
+// The broad-phase result buffer is sized to the cell count, so the query
+// cannot truncate (sh_query_radius bails at `maxResults` in grid-scan order
+// and gives no way to detect that it did). Returned pointers are borrowed from
+// `cells_` and stay valid as long as the cluster does.
 std::vector<Cell*> Cluster::get_cells_in_region(const mm::Vec3& min_bound, const mm::Vec3& max_bound) {
     std::vector<Cell*> result;
 
@@ -479,11 +488,15 @@ std::vector<Cell*> Cluster::get_cells_in_region(const mm::Vec3& min_bound, const
     };
     float search_radius = mm::length(region_size) * 0.5f;
     
-    void* query_results[1000];
-    int found_count = sh_query_radius(cell_spatial_hash_, 
+    // Every cell is inserted into the hash exactly once, so cells_.size() is an
+    // exact upper bound on what the broad phase can return.
+    if (cells_.empty()) return result;
+    std::vector<void*> query_results(cells_.size());
+    int found_count = sh_query_radius(cell_spatial_hash_,
                                      region_center.x, region_center.y, region_center.z,
-                                     search_radius, query_results, 1000);
-    
+                                     search_radius, query_results.data(),
+                                     (int)query_results.size());
+
     for (int i = 0; i < found_count; ++i) {
         Cell* cell = static_cast<Cell*>(query_results[i]);
         
@@ -507,10 +520,15 @@ void Cluster::accept(CellVisitor& visitor) const {
 // transform and appends draw records, so it expects to be called right after
 // `tlas_manager_.clear()` and before `tlas_manager_.build()`.
 //
-// Only the cluster translation is applied today; the rotation is not (see the
-// TODO below), so a rotated cluster's ray-traced geometry will not match its
-// rasterised geometry.
+// The instance transform is the full cluster placement -- rotate by `rotation_`
+// then translate by `position_`, the same composition `local_to_world()` applies
+// to a point -- so ray-traced geometry lines up with the rasterised geometry
+// even for a rotated cluster. There is no scale in a Cluster transform.
 void Cluster::add_to_tlas() const {
+    // Cluster placement is per-cluster, not per-cell, so build it once.
+    const mm::Mat4 cluster_xform =
+        mm::from_trs(position_, rotation_, mm::Vec3{1.0f, 1.0f, 1.0f});
+
     // Add all cell meshes to the TLAS for ray tracing
     for (const auto& cell : cells_) {
         if (cell->has_meshes) {
@@ -521,11 +539,7 @@ void Cluster::add_to_tlas() const {
                 BLASHandle blas_handle = blas_entry.second;
 
                 if (blas_handle > 0) {
-                    // TODO: Apply cluster transform (position + rotation)
-                    // For now, just add at identity transform
-                    tlas_manager_.load_identity();
-                    tlas_manager_.translate(position_.x, position_.y, position_.z);
-                    //tlas_manager.rotate_quaternion(rotation_);
+                    tlas_manager_.load_matrix(cluster_xform);
                     // The value packed as the instance material is a merge-group id,
                     // used only as a fallback because every real triangle carries its
                     // own per-triangle materialId.

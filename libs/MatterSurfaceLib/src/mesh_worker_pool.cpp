@@ -29,10 +29,11 @@
 //     and `results` is sized before dispatch, so result writes need no lock.
 //     The mutex guards only the batch handoff and the completion count.
 //   - `run()` is NOT reentrant and must not be called from a worker or from two
-//     threads at once. Likewise `resize()` and the destructor must not run
-//     while a batch is in flight: a worker that observes `stop_` returns
-//     WITHOUT decrementing `active_workers_`, which would leave an in-flight
-//     `run()` waiting forever.
+//     threads at once. `resize()` and the destructor still should not run while
+//     a batch is in flight — the batch's results are abandoned either way — but
+//     a worker that observes `stop_` before claiming the current batch releases
+//     its share of `active_workers_` on the way out, so an in-flight `run()`
+//     returns rather than deadlocking.
 //   - Job order is not deterministic across workers, but each job writes its
 //     own slot, so `results` is always in `jobs` order.
 //
@@ -120,7 +121,18 @@ void MeshWorkerPool::worker_loop(int worker_index) {
         {
             std::unique_lock<std::mutex> lk(m_);
             cv_start_.wait(lk, [&]{ return stop_ || batch_id_ != last_batch; });
-            if (stop_) return;
+            if (stop_) {
+                // A batch published but never claimed by this worker still
+                // counts it in active_workers_ (run() sets the count to the
+                // whole worker set up front). Give the count back before
+                // leaving, or the owner's cv_done_ wait never releases. When
+                // batch_id_ == last_batch this worker already decremented for
+                // the batch it drained, so there is nothing to release.
+                if (batch_id_ != last_batch && active_workers_ > 0) {
+                    if (--active_workers_ == 0) cv_done_.notify_one();
+                }
+                return;
+            }
             last_batch = batch_id_;
             jobs = jobs_;
             results = results_;

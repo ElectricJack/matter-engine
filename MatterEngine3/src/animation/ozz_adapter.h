@@ -58,10 +58,12 @@ public:
     OzzSkeleton& operator=(const OzzSkeleton&) = delete;
 
     // Out-of-range joints are answered, not asserted: `parent()` returns
-    // `kInvalidJoint` and `subtree()` returns a default `JointRange` --
-    // and note that default range is the same {kInvalidJoint, kInvalidJoint}
-    // value `local_to_model()` reads as "the whole skeleton", so a bad index
-    // fed straight through widens the operation instead of failing it.
+    // `kInvalidJoint`, and `subtree()` returns `{kInvalidJoint, 0}`. That is
+    // deliberately NOT the default `JointRange{}` -- {kInvalidJoint,
+    // kInvalidJoint} is the sentinel `local_to_model()` reads as "the whole
+    // skeleton", so returning it would let a bad index silently WIDEN the
+    // operation. `{kInvalidJoint, 0}` cannot be a real subtree and is rejected
+    // by `local_to_model()` and `solve_two_bone()`, so a bad index fails.
     std::size_t joint_count() const;
     JointIndex parent(JointIndex joint) const;
     JointRange subtree(JointIndex joint) const;

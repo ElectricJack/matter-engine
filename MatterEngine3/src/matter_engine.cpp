@@ -93,9 +93,8 @@
 // (same constants, same ordering, same comments) so that switching main.cpp to this
 // facade in Task 6 produces pixel-identical screenshots.
 //
-// Task 7 will implement raycast/instance_count/instance_info (currently stubs).
-// (Task 7 landed: raycast / instance_count / instance_info are implemented at
-// the bottom of this file, over the lazily built WorldTracer BVH.)
+// raycast / instance_count / instance_info are implemented at the bottom of
+// this file, over the lazily built WorldTracer BVH.
 
 #include "profile.h"
 #include "matter/engine_context.h"
@@ -984,8 +983,9 @@ struct WorldSession::Impl {
     void publish_graph_snapshot();
 
     // A request owns one fixed completion slot before sector bake begins.
-    // max_inflight is 16; twice that capacity leaves room for acknowledgements
-    // retained across a coordinator generation transition without allocating.
+    // max_inflight defaults to 64 (see make_streaming_profile); this pool is
+    // twice that, which leaves room for acknowledgements retained across a
+    // coordinator generation transition without allocating.
     // The life of one completion slot. A slot is claimed BEFORE the sector bake
     // starts and is only freed once the publication has been either committed
     // and acknowledged to the streamer, or rolled back — which is what makes a
@@ -11546,9 +11546,12 @@ bool WorldSession::readback_swapchain_rgba8(
 }
 #endif
 
-void WorldSession::render(const CameraDesc&, int, int, const RenderOptions&) {
-    // The Windows milestone artifact intentionally contains no legacy GL path.
-}
+// Deliberately empty in EVERY build configuration (note it sits outside the
+// MATTER_VULKAN_VIEWER #if above). Phase 5a deleted the GL renderer this
+// overload drove, and nothing replaced it: no pixels are produced and
+// frame_stats() is not touched. See the declaration in matter/world_session.h
+// for why the entry point still exists.
+void WorldSession::render(const CameraDesc&, int, int, const RenderOptions&) {}
 
 bool WorldSession::poll_event(Event& out) {
     // E3 compat shim (event-system.md S I.11 / S II.4 item 6): the worker/GL

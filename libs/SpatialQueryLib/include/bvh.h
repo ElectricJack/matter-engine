@@ -206,15 +206,6 @@ struct BVHNode
 // Expect trees that are flatter and deeper than a pure-SAH build.
 class ALIGN(64) BVH
 {
-	// Vestigial. `Subdivide` is plain recursion in `src/bvh.cpp`; nothing ever
-	// pushes a BuildJob. `buildStackPtr` is zeroed once in `Build()` and never
-	// read again, and `buildStack` is never touched at all — they survive only
-	// as ~1 KB of per-BVH padding.
-	struct BuildJob
-	{
-		uint nodeIdx;
-		float3 centroidMin, centroidMax;
-	};
 public:
 	BVH() = default;
 	// Allocates the node pool and builds immediately. Pass
@@ -239,9 +230,6 @@ public:
 	// after flipping `subdivToOnePrim`. Recomputes every `Tri::centroid` in
 	// the shared mesh, so it is not safe against a concurrent trace.
 	void Build();
-	// Declared but never defined anywhere in the repo — a link error if
-	// called. Kept from the upstream IGAD template.
-	void Refit();
 	// Trace one ray against this BLAS. Reads `ray.O/D/rD` and treats
 	// `ray.hit.t` as the incoming best distance, overwriting `ray.hit` only on
 	// a closer hit; a miss leaves `ray.hit` untouched. `instanceIdx` is packed
@@ -291,8 +279,6 @@ public:
 	// `Build()`; prefer the constructor's `subdiv_to_one_prim` argument, which
 	// does exactly that and avoids building the tree twice.
 	bool subdivToOnePrim = false; // for TLAS experiment
-	BuildJob buildStack[64];
-	int buildStackPtr;
 };
 
 // minimalist mesh class
@@ -317,9 +303,6 @@ class BvhMesh
 public:
 	BvhMesh() = default;
 	BvhMesh( uint primCount );
-	// Declared but never defined anywhere in the repo (the OBJ loader was not
-	// carried over from the upstream template) — a link error if called.
-	BvhMesh( const char* objFile, const char* texFile, const float scale = 1 );
 	// Owns tri and triEx (both MALLOC64). `bvh` is a back-pointer and is NOT
 	// owned -- BLASEntry holds the BVH through its own unique_ptr, so freeing it
 	// here would double-free. See ~BVH for why these destructors exist.
@@ -424,11 +407,11 @@ struct TLASNode
 // `std::vector<BVHInstance>` and must therefore drop the TLAS before mutating
 // that vector. Non-copyable.
 //
-// Preconditions: N must be >= 1. `MALLOC64(0)` returns null, so constructing
-// with N == 0 leaves `tlasNode` null and the empty-tree branch in `Build()`
-// dereferences it. Every instance must have had `SetTransform` called so its
-// `bounds` are valid; instances with the empty-bounds sentinel are skipped
-// when accumulating a node AABB.
+// N == 0 is valid: the constructor floors its allocation at one node and one
+// index, so an empty TLAS is a real empty tree (`nodesUsed == 1`, a zero-sized
+// box at the origin) rather than a null dereference. Every instance must have
+// had `SetTransform` called so its `bounds` are valid; instances with the
+// empty-bounds sentinel are skipped when accumulating a node AABB.
 //
 // `Intersect` is read-only and recurses into `BVHInstance::Intersect`, which
 // transforms the ray into each BLAS's local space. Its traversal stack is 64
@@ -456,10 +439,7 @@ private:
 	// `std::nth_element`s `nodeIdx[first..first+count)` about the middle by
 	// instance centroid, and recurses. O(N log N) overall.
 	void BuildRecursive( uint nodeIndex, uint first, uint count );
-	// Declared but never defined anywhere in the repo (leftover from the
-	// upstream agglomerative TLAS builder) — a link error if called.
-	int FindBestMatch( int N, int A );
-	
+
 public:
 	// Made public for direct access by visualization and manager classes
 	//   blas       non-owning pointer to `blasCount` contiguous instances

@@ -95,8 +95,9 @@
 //     their cache root.
 //
 // Header-only because part_asset_v2.cpp, the bakers and the store all need it
-// and it has no state worth a translation unit — see the note in bundle_lock()
-// for the one `inline` that is load-bearing rather than incidental.
+// and it has no state worth a translation unit — see the note at bundle_lock()'s
+// DEFINITION below for the one `inline` that is load-bearing rather than
+// incidental.
 
 namespace part_bundle {
 
@@ -155,6 +156,13 @@ bool has_section(const std::string& bundle_path, uint64_t resolved_hash,
 //
 // `full_length_out` receives the section's declared length, so a caller can
 // tell "short section" from "I asked for less".
+//
+// It applies every directory-level rule parse() does -- magic, bundle format,
+// version digest, resolved hash, entry count, directory checksum and the
+// strictly-ascending tag order -- and skips only the per-section payload
+// checksum. So a false here means the same thing a false from read_section
+// means, MINUS "the payload did not verify"; that difference is exactly what
+// impostor_bake::load uses to tell a part with no atlas from a damaged bundle.
 bool read_section_prefix(const std::string& bundle_path, uint64_t resolved_hash,
                          uint32_t tag, size_t max_bytes,
                          std::vector<uint8_t>& out, uint64_t& full_length_out);
@@ -171,7 +179,9 @@ bool remove_section(const std::string& bundle_path, uint64_t resolved_hash,
 std::vector<uint32_t> section_tags(const std::string& bundle_path);
 
 // ===========================================================================
-// Implementation. Header-only: see the note on `inline` above.
+// Implementation. Header-only; the one `inline` that is load-bearing rather
+// than incidental is bundle_lock()'s, and the reason is written at its
+// DEFINITION further down this file.
 // ===========================================================================
 inline std::mutex& bundle_lock();
 
@@ -469,6 +479,7 @@ inline bool read_section_prefix(const std::string& bundle_path,
     at = 0;
     uint64_t offset = 0, length = 0;
     bool found = false;
+    uint32_t previous_tag = 0;
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t entry_tag = 0, flags = 0;
         uint64_t off = 0, len = 0, content = 0;
@@ -477,6 +488,16 @@ inline bool read_section_prefix(const std::string& bundle_path,
             std::fclose(f);
             return false;
         }
+        // The same strictly-ascending rule parse() enforces, for the same
+        // reason: it makes a duplicate tag unrepresentable. Without it this
+        // probe silently took the LAST matching entry while read_section
+        // rejected the whole bundle, so the cheap path and the real path could
+        // disagree about a malformed directory.
+        if (i > 0 && entry_tag <= previous_tag) {
+            std::fclose(f);
+            return false;
+        }
+        previous_tag = entry_tag;
         if (entry_tag == tag) { offset = off; length = len; found = true; }
     }
     if (!found || offset < kHeaderBytes + dir_bytes) { std::fclose(f); return false; }

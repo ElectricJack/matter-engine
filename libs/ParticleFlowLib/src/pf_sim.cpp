@@ -28,8 +28,11 @@
 
 namespace pf {
 
-// Implemented in pf_fields.cpp. Bias/Drag land in Task 2; Curl/Adhere/Separate
-// in Task 3 (until then they contribute zero, which is valid field behavior).
+// Implemented in pf_fields.cpp: Bias, Curl, Adhere, Align and Separate as
+// steer directions, Bias, Curl and Drag as forces. A type/mode pair neither
+// switch covers returns {0,0,0}, which is a normal "nothing to say" result and
+// not an error. Attract is handled by Sim::attract_dir instead, because it
+// mutates sim state.
 V3 field_steer_dir(const Sim& s, const FieldConfig& f, uint32_t slot);
 V3 field_force(const Sim& s, const FieldConfig& f, uint32_t slot);
 
@@ -252,18 +255,32 @@ float Sim::fade_mult(const FieldConfig& f, V3 p) const {
 // then scales it by a second uniform draw, so the added speed is uniform in
 // [0, jitter] rather than always `jitter`.
 //
-// Gotcha: `attr_init`/`state_init` are staged through fixed 16-element stack
-// buffers, so only the first 16 attribute channels and first 16 state channels
-// can be initialized by an emitter — anything beyond starts at 0 with no
-// diagnostic.
+// `attr_init`/`state_init` are staged into two scratch vectors sized to the
+// sim's ACTUAL channel counts, so an emitter can initialize every channel it
+// declares — there is no channel-count ceiling. (There used to be: the staging
+// buffers were fixed 16-element stack arrays, and channels past the sixteenth
+// silently started at 0.) The staging is per emitter, not per particle: the
+// values do not depend on the particle, so a burst of emissions fills the same
+// two vectors once. An emitter that declares FEWER init values than the sim has
+// channels leaves the rest at 0, which is intended.
 //
 // On hitting `max_particles` the emitter zeroes its accumulator and stops for
 // this tick, so the backlog is discarded rather than bursting once space frees
 // up.
 void Sim::run_emitters() {
+    std::vector<float> attr_init, state_init;
     for (size_t e = 0; e < cfg_.emitters.size(); ++e) {
         const EmitterConfig& em = cfg_.emitters[e];
         emit_acc_[e] += em.rate;
+        if (emit_acc_[e] < 1.0f) continue;
+
+        attr_init.assign(attrs_.size(), 0.0f);
+        for (size_t c = 0; c < attrs_.size() && c < em.attr_init.size(); ++c)
+            attr_init[c] = em.attr_init[c];
+        state_init.assign(states_.size(), 0.0f);
+        for (size_t c = 0; c < states_.size() && c < em.state_init.size(); ++c)
+            state_init[c] = em.state_init[c];
+
         while (emit_acc_[e] >= 1.0f) {
             emit_acc_[e] -= 1.0f;
             V3 ax = normalize(em.axis);
@@ -279,15 +296,10 @@ void Sim::run_emitters() {
             }
             V3 v = ax * em.vel0;
             if (em.jitter > 0.0f) v = v + rng_.unit_sphere() * (em.jitter * rng_.next_unit());
-            float attrs[16] = {0};
-            size_t nc = std::min(attrs_.size(), (size_t)16);
-            for (size_t c = 0; c < nc; ++c)
-                attrs[c] = c < em.attr_init.size() ? em.attr_init[c] : 0.0f;
-            float states[16] = {0};
-            size_t ns = std::min(states_.size(), (size_t)16);
-            for (size_t c = 0; c < ns; ++c)
-                states[c] = c < em.state_init.size() ? em.state_init[c] : 0.0f;
-            if (emit_particle(p, v, attrs, states) == UINT32_MAX) { emit_acc_[e] = 0; break; }
+            if (emit_particle(p, v, attr_init.data(), state_init.data()) == UINT32_MAX) {
+                emit_acc_[e] = 0;
+                break;
+            }
         }
     }
 }
@@ -352,7 +364,7 @@ void Sim::integrate_slot(uint32_t i) {
         if (f.mode == FieldMode::Force) {
             force = force + field_force(*this, f, i) * w;
         } else {
-            V3 d = (f.type == FieldType::Attract) ? attract_dir(i, p)
+            V3 d = (f.type == FieldType::Attract) ? attract_dir(f, i, p)
                                                   : field_steer_dir(*this, f, i);
             steer = steer + d * w;
         }

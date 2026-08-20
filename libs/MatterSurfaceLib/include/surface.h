@@ -54,33 +54,14 @@
 // Phase 4 (Step 3) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
 // Bounds and ProbeFieldScalar's `point` param moved off raylib's Vector3 onto
 // matter_math_c.h's MtVec3. raylib.h stays included -- Mesh/Color (GenerateMesh's
-// return type, GetMaterialColor, ConvertMeshToBVHTriangles) are out of scope for
-// this phase (Mesh migration is deferred; see the Phase 4 brief).
+// return type, GetMaterialColor) are out of scope for this phase (Mesh migration
+// is deferred; see the Phase 4 brief).
 #include "raylib.h"
 #include "matter_math_c.h"   // MtVec3
 #include "particle.h"
 #include "fat_primitive.h"   // FatPrim (typed iso-primitives)
 #include "csg_stages.h"      // FieldStages (ordered CSG)
 #include <stdbool.h>
-
-// Plain-C vector and triangle records for handing geometry to a BVH builder.
-// Despite the comment below these are definitions, not forward declarations,
-// and neither type is referenced anywhere else in the tree today -- the
-// engine's BVH stores SpatialQueryLib's `Tri` / `TriEx` (`tri.h`) instead.
-// Treat them as a legacy interchange format, not as the current one.
-// Forward declaration for BVH Triangle
-typedef struct {
-    float x, y, z;
-} Vec3;
-
-typedef struct {
-    Vec3 v0, v1, v2;      // Triangle vertices
-    Vec3 n0, n1, n2;      // Per-vertex normals
-    Vec3 centroid;        // Pre-computed centroid for faster BVH building
-    Vec3 normal;          // Face normal (computed from vertices)
-    int  material_id;     // Material identifier
-} BVHTriangle;
-
 
 // The sampling volume for one mesh build. `center` and `size` are in the same
 // space as the `Particle` positions handed to the same call (cluster-local for

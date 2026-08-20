@@ -373,8 +373,9 @@ BindingClaims::BindingClaims(const CanonicalRig& rig)
 // checks the same shape rules but neither consults nor sets ownership, so
 // decorative geometry may deliberately overlap primary geometry.
 //
-// `claim_skin` and `claim_rigid` are the same operation under two names; the
-// distinction is for the caller's readability, not behaviour.
+// Skins and rigid segments claim through this one entry point: ownership is a
+// single map with no per-kind bookkeeping, so there is nothing for a
+// kind-specific overload to do.
 bool BindingClaims::claim(const std::vector<JointIndex>& children,bool decorative){
     std::vector<bool> seen(primary_.size(), false);
     for (JointIndex child : children) {
@@ -388,8 +389,6 @@ bool BindingClaims::claim(const std::vector<JointIndex>& children,bool decorativ
     }
     return true;
 }
-bool BindingClaims::claim_skin(const std::vector<JointIndex>& children,bool decorative){return claim(children,decorative);}
-bool BindingClaims::claim_rigid(const std::vector<JointIndex>& children,bool decorative){return claim(children,decorative);}
 
 // Bake skin weights for `lods` against `rig`.
 //
@@ -491,7 +490,7 @@ bool build_skin_binding(const CanonicalRig&rig,const std::vector<JointIndex>&chi
     return true;
 }
 // Project a binding down to the per-LOD fingerprints stored in the bundle
-// manifest. Note `influence_count` is the number of influence SLOTS
+// manifest. Note `influence_slot_count` counts influence SLOTS
 // (`vertices * kMaxSkinInfluences`), not the number of non-zero weights.
 // `manifest_matches_binding` is the exact-equality check used by both the
 // publish and the load validators.

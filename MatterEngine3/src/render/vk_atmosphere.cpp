@@ -497,8 +497,10 @@ bool VkAtmosphere::record(VkCommandBuffer command_buffer, float camera_world_y,
     const bool coefficients_dirty = coefficient_change_pending();
     const bool view_dirty = coefficients_dirty || view_change_pending(camera_world_y, to_sun);
     if (!view_dirty) return true;
-    // The physical set is only selected after all four images' copies and
-    // post-copy barriers have been recorded successfully.
+    // The physical set is only selected after all four images' compute
+    // dispatches and their post-dispatch layout transitions have been recorded
+    // successfully. (No copies are involved -- every LUT is written in place by
+    // its own dispatch.)
     if (!record_dispatches(command_buffer, coefficients_dirty, camera_world_y, to_sun, error)) return false;
     committed_settings_ = requested_settings_;
     committed_camera_world_y_ = camera_world_y;

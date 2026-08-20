@@ -55,11 +55,14 @@ namespace flecs { class world; }
 
 namespace matter::animation {
 
-// Mirror of the per-fixed-tick world-query hard cap. The runtime actually
-// enforces `AnimationBudgetConfig::max_world_queries_per_fixed_tick`; in
-// engine sources this constant is referenced only by the animation test
-// suites, which assert the cap using it.
-constexpr uint32_t kMaxAnimationWorldQueries = 2048;
+// The per-fixed-tick world-query cap the runtime enforces, which is always
+// `AnimationBudgetConfig::max_world_queries_per_fixed_tick` -- derived from
+// that default rather than restating the number, because the two used to be
+// independent literals that could drift apart silently. No engine source
+// reads this name; it exists so the animation test suites can assert the cap
+// without hard-coding it.
+constexpr uint32_t kMaxAnimationWorldQueries =
+    AnimationBudgetConfig{}.max_world_queries_per_fixed_tick;
 
 // One ray a controller wants cast during the fixed step. `origin` and
 // `direction` are world space, `max_distance` is metres, and `mask` is the

@@ -125,8 +125,12 @@ float BVHAnalyzer::CalculateQualityScore(const BVHTreeAnalysis& analysis) {
 // Interior children are read as `leftFirst` and `leftFirst + 1`, matching the
 // node layout documented on `BVHNode`. Out-of-range indices and a null pool are
 // silently ignored, so a malformed tree yields a small analysis rather than a
-// crash.
-void BVHAnalyzer::AnalyzeNodeRecursive(const BVH* bvh, uint32_t node_idx, uint32_t depth, 
+// crash. Children are bump-allocated after their parent, so `leftFirst` is
+// always greater than the parent's own index; the descent refuses anything that
+// is not, because a self- or backward-referencing interior node would otherwise
+// recurse until the stack ran out. The empty-mesh root (triCount 0, leftFirst 0,
+// i.e. a non-leaf pointing at itself) is exactly that case.
+void BVHAnalyzer::AnalyzeNodeRecursive(const BVH* bvh, uint32_t node_idx, uint32_t depth,
                                        BVHTreeAnalysis& analysis, std::vector<uint32_t>& depth_counts) {
     if (!bvh->bvhNode || node_idx >= bvh->nodesUsed) return;
     
@@ -165,7 +169,11 @@ void BVHAnalyzer::AnalyzeNodeRecursive(const BVH* bvh, uint32_t node_idx, uint32
         analysis.triangle_count_histogram[tri_count]++;
     } else {
         analysis.internal_nodes++;
-        
+
+        // Children always live later in the pool than their parent; anything
+        // else is a malformed tree and would recurse forever.
+        if (node.leftFirst <= node_idx) return;
+
         // Recurse to children
         AnalyzeNodeRecursive(bvh, node.leftFirst, depth + 1, analysis, depth_counts);
         AnalyzeNodeRecursive(bvh, node.leftFirst + 1, depth + 1, analysis, depth_counts);
@@ -249,10 +257,13 @@ void BVHAnalyzer::GenerateQualityAssessment(BVHTreeAnalysis& analysis) {
 // into averages, variances and derived ratios, and finally the scoring and
 // prose. Order matters -- every later step reads what an earlier one wrote.
 //
-// Guards only against null pointers, not against an EMPTY mesh: with
-// `triCount == 0` both `node_utilization` (divides by 2*total_triangles) and
-// `avg_node_surface_area` (divides by total_nodes) divide by zero and the score
-// propagates NaN. Check `total_triangles` before trusting a result.
+// Rejects an EMPTY mesh alongside the null pointers, returning the same
+// all-zero analysis. `triCount == 0` is not merely uninteresting: the tree
+// `Build()` leaves behind for it is a root marked interior (triCount 0) whose
+// `leftFirst` is 0, i.e. a node pointing at itself, and it would also divide by
+// zero in `node_utilization` (2*total_triangles) and, for a null-node tree, in
+// `avg_node_surface_area` (total_nodes). Check `total_nodes` on the result
+// before trusting it.
 //
 // `surface_area_ratio` is looser than its name suggests: it sums the average
 // area of every node at any depth that CONTAINS at least one leaf, times the
@@ -266,11 +277,11 @@ BVHTreeAnalysis BVHAnalyzer::AnalyzeBVH(const BVH* bvh, const BvhMesh* mesh, con
     
     BVHTreeAnalysis analysis;
     
-    if (!bvh || !bvh->bvhNode || !mesh) {
+    if (!bvh || !bvh->bvhNode || !mesh || mesh->triCount <= 0) {
         analysis.analysis_time_ms = GetTimeMs() - start_time;
         return analysis;
     }
-    
+
     // Basic setup
     analysis.total_nodes = bvh->nodesUsed;
     analysis.total_triangles = mesh->triCount;
@@ -327,7 +338,11 @@ BVHTreeAnalysis BVHAnalyzer::AnalyzeBVH(const BVH* bvh, const BvhMesh* mesh, con
     analysis.tree_efficiency = CalculateTreeEfficiency(analysis);
     analysis.node_utilization = static_cast<float>(bvh->nodesUsed) / 
                                 static_cast<float>(2 * analysis.total_triangles); // Rough upper bound
-    analysis.avg_node_surface_area = analysis.total_surface_area / static_cast<float>(analysis.total_nodes);
+    // total_nodes is bvh->nodesUsed, which a build always leaves >= 2 but the
+    // deserialising constructor takes verbatim from its caller.
+    if (analysis.total_nodes > 0) {
+        analysis.avg_node_surface_area = analysis.total_surface_area / static_cast<float>(analysis.total_nodes);
+    }
     
     // Surface area ratio (how much surface area is covered vs. leaf areas)
     float leaf_surface_area_sum = 0.0f;
@@ -356,14 +371,14 @@ BVHTreeAnalysis BVHAnalyzer::AnalyzeBVH(const BVH* bvh, const BvhMesh* mesh, con
 
 // TLAS analysis function
 // TLAS analysis. Populates the structural fields, then loops the instances
-// pushing a stub `BVHTreeAnalysis` carrying only `total_nodes` -- a full
-// per-instance analysis would need each instance's `BvhMesh`, which is not
-// reachable from a `TLAS`.
+// pushing a stub `BVHTreeAnalysis` carrying only `total_nodes` and
+// `total_triangles` -- a full per-instance analysis would need each instance's
+// `BvhMesh`, and only the triangle count of that mesh is reachable from a
+// `TLAS` (through `BVH::TriangleCount`).
 //
-// Consequence to be aware of when reading the result: `total_blas_triangles` is
-// declared and divided by, but never incremented anywhere in that loop, so
-// `avg_instance_triangles` is always exactly 0. The header lists the other
-// fields that are declared but never written.
+// `avg_instance_triangles` divides the accumulated triangle count by
+// `total_instances`, i.e. by every instance the TLAS holds -- including any
+// whose `bvh` was null and contributed nothing to the sum.
 //
 // `tlas_quality_score` is `60 * balance + 40 if any instances`, so an empty
 // TLAS scores 0 and any non-degenerate one starts at 40.
@@ -423,12 +438,8 @@ TLASAnalysis BVHAnalyzer::AnalyzeTLAS(const TLAS* tlas, const std::string& name)
 }
 
 // Generate human-readable report
-// Format the analysis as a multi-section text block.
-//
-// The line breaks are the two-character sequence backslash-n, not newlines --
-// the string literals below are escaped twice. The returned string is therefore
-// one long line unless the consumer unescapes it. Preserved as-is because
-// changing it would change every existing consumer's output.
+// Format the analysis as a multi-section text block, newline-separated and
+// ready to print as-is.
 //
 // Prints `min_depth` and `min_triangles_per_leaf` unconditionally, so an
 // unanalysed or empty tree reports them as 4294967295 (their UINT32_MAX

@@ -31,11 +31,19 @@
  *   one, never a mixture.
  *
  * Corruption
- *   Every blob carries a CRC32 of its payload and a CRC32 of its own record
- *   header; the index file carries a CRC32 of itself. A torn or bit-rotted blob
- *   reads back as Status::Corrupt with a null pointer. It is never a crash and
+ *   Every blob carries a CRC32 of its payload, and the index file carries a
+ *   CRC32 of itself. Both are verified on every read, so a torn or bit-rotted
+ *   blob reads back as Status::Corrupt with a null pointer -- never a crash,
  *   never garbage handed to the caller. Callers are expected to treat Corrupt
  *   exactly as they treat Missing: as a cache miss, and re-bake.
+ *
+ *   Each blob record ALSO carries a CRC32 of its own 32-byte header, but
+ *   nothing in this library verifies it. Reads seek straight to the payload
+ *   offset the index gives them and never parse a header at all -- the index,
+ *   not the pack, is the authority on where a blob is and how long it is. The
+ *   header checksum is there for an external salvage tool that has lost the
+ *   index and must rebuild it by scanning a pack; treat it as forensic
+ *   metadata, not as a check that runs.
  *
  * Where this sits
  *   Path: libs/AssetStoreLib/include/asset_store.h -- the library's ONLY
@@ -107,10 +115,15 @@ std::string hash_to_string(const BlobHash& h);
 
 /* --------------------------------------------------------------- statuses -- */
 
-/* Every outcome the library reports. Note that `Locked` is declared for
- * completeness but is returned by nothing in this library: a writer open that
- * cannot take the cross-process lock yields a null BlobStore and an error
- * string, not a Status. */
+/* Every outcome the library reports.
+ *
+ * `Locked` is DEAD: nothing in this library ever returns it. The one operation
+ * that can fail on the cross-process lock is BlobStore::open(), and that
+ * reports failure as a null unique_ptr plus an error string, because it has no
+ * Status to return. The enumerator is kept (and named by status_name()) so
+ * that persisted or logged Status values do not shift meaning if a future
+ * lock-aware entry point starts producing it; do not write a caller that
+ * compares against it expecting it to occur. */
 enum class Status {
     Ok = 0,
     Missing,   /* no such hash in the committed index */
@@ -139,8 +152,10 @@ struct StoreConfig {
      * one per reader thread. */
     bool read_only = false;
 
-    /* When non-zero, block on the writer lock instead of failing with
-     * Status::Locked. */
+    /* When true, a writer open blocks until the writer lock is free instead of
+     * giving up. Note the failure shape when it is false: open() returns null
+     * with *err set -- it does NOT return Status::Locked, which nothing in
+     * this library produces (see the note on the enum). */
     bool block_for_lock = false;
 
     /* Coalescing window for ReadBatch: two records whose extents are separated
@@ -216,11 +231,15 @@ public:
     /* Appends the bytes and returns their content hash. Deduplicating: storing
      * bytes already present is a no-op that returns the existing hash. The blob
      * is readable through THIS handle immediately, but is invisible to every
-     * other process, and is lost on a crash, until flush_index() commits it. */
-    /* `len` must be non-zero and must fit in 32 bits -- the record header
+     * other process, and is lost on a crash, until flush_index() commits it.
+     *
+     * `len` must be non-zero and must fit in 32 bits -- the record header
      * stores a u32 length -- otherwise nothing is written and this returns
-     * IoError. Whenever that length check passes, *out_hash is filled in,
-     * including on the dedup path. */
+     * IoError. That is a caller mistake reported through the IO status rather
+     * than a dedicated one, so do not read IoError from put() as "the disk
+     * failed"; check last_error(), or check `len` yourself first. Whenever the
+     * length check passes, *out_hash is filled in, including on the dedup
+     * path. */
     Status put(const void* data, size_t len, BlobHash* out_hash);
 
     /* Commits every pending put: writes a fresh index to <dir>/index.tmp,
@@ -251,13 +270,19 @@ public:
     bool locate(const BlobHash& h, BlobLocation* out) const;
     size_t size_of(const BlobHash& h) const;   /* 0 if absent */
 
-    /* Reads one blob into `arena`. On Missing/Corrupt/IoError *out_data is left
-     * null and nothing is allocated. */
-    /* Precisely: this builds a one-element ReadBatch, so on Corrupt the arena
-     * HAS still grown by the chunk that was read and checksummed -- it is the
-     * returned pointer that is null, not the arena that is untouched. On
-     * Missing nothing is read at all. There is no cheaper single-blob path
-     * than this one; batch whenever you can. */
+    /* Reads one blob into `arena`. On anything but Ok, *out_data is left null.
+     *
+     * Note what that does NOT promise about the arena. This builds a
+     * one-element ReadBatch, and a batch reads each chunk straight into the
+     * arena before checksumming it in place, so on Corrupt the arena HAS
+     * already grown by the bytes that were read: it is the returned pointer
+     * that is null, not the arena that is untouched. Same on an IoError that
+     * happens after the allocation. Only Missing allocates nothing, because
+     * nothing is read at all. Callers that reset an arena per batch never
+     * notice; callers that do not must not assume a failed read is free.
+     *
+     * There is no cheaper single-blob path than this one; batch whenever you
+     * can. */
     Status read(const BlobHash& h, MemArena* arena,
                 const uint8_t** out_data, size_t* out_len);
 

@@ -30,8 +30,9 @@
 //   - `simplify_mesh` returns a NEW mesh allocated with raylib's `MemAlloc`.
 //     Free it with `UnloadMesh` (main thread, if it was uploaded) or with
 //     `unload_cpu_mesh` from `mesh_build_utils.h` (any thread, if it was not).
-//   - The `MeshIndexed` overload round-trips through a raylib `Mesh`
-//     internally, so it costs a full conversion each way — see its comment.
+//   - The `MeshIndexed` overload is native: it builds its own welded topology
+//     and never goes through a raylib `Mesh`, so it is not subject to that
+//     type's 16-bit index cap.
 
 // Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
 // CellBounds moved off raylib's Vector3 onto matter_math.h's mm::Vec3 (C++-
@@ -76,10 +77,11 @@ Mesh simplify_mesh(const Mesh& input,
 
 #include "mesh_indexed.hpp"
 
-// MeshIndexed overload — same semantics as simplify_mesh(raylib::Mesh) above.
-// Internally converts to raylib::Mesh, calls the existing implementation, and
-// converts back. When lod_bake and other callers migrate to MeshIndexed
-// end-to-end (Task 11+), the intermediate raylib::Mesh round-trip goes away.
+// MeshIndexed overload — same semantics as simplify_mesh(raylib::Mesh) above,
+// but implemented natively: it welds MeshIndexed straight into the shared QEM
+// topology and unpacks the result back, with no raylib::Mesh in between. That
+// is what lifts the 65535-vertex cap the round-trip used to impose, which had
+// silently turned `{ simplify: X }` into a no-op on large voxel isosurfaces.
 MeshIndexed simplify(const MeshIndexed& in,
                      const SimplifyOptions& opts,
                      const CellBounds* bounds = nullptr);

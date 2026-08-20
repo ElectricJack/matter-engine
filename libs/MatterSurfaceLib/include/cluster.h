@@ -41,9 +41,9 @@
 //     headless bake does not drive Cluster at all; script_host.cpp includes
 //     this header only for StaticParticle. Treat Cluster as the interactive /
 //     prototype path.
-//   - add_to_tlas() is const but mutates the TLASManager, and it currently
-//     applies only the cluster's translation (see the TODO in cluster.cpp) --
-//     rotation_ is not baked into the instance transform.
+//   - add_to_tlas() is const but mutates the TLASManager. The instance
+//     transform it writes is the full cluster placement (rotation_ then
+//     position_), the same composition local_to_world() applies.
 //   - `no_mesh_cells_` is a memo of cells known to produce no geometry, keyed
 //     by packed integer cell coordinates; clear it when the field changes
 //     underneath it.
@@ -148,7 +148,8 @@ public:
     // it appends rather than replacing, so calling it twice duplicates every
     // instance. The instance material it packs is a merge-group id used purely
     // as a fallback; real triangles carry their own per-triangle materialId.
-    // Only the cluster's translation is applied (rotation_ is not).
+    // The instance transform is the full cluster placement (rotation_ then
+    // position_), matching local_to_world().
     void add_to_tlas() const;
     
     // Cell sizing

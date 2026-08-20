@@ -427,7 +427,6 @@ public:
     bool last_build_ran() const { return last_build_ran_; }
     const dsl::BuildBuffer& last_buffer() const { return last_buffer_; }
     const std::optional<matter::animation::CanonicalAnimationBuild>& last_animation_rig() const { return last_animation_rig_; }
-    const std::optional<matter::animation::CanonicalAnimationBuild>& last_animation_motion() const { return last_animation_rig_; }
     const std::optional<matter::animation::AnimationBuild>& last_animation_build() const { return last_animation_build_; }
     // Value of globalThis.__amb captured after the last build() (used by tests to
     // assert no ambient Date/require/fetch/os bindings exist). Empty if unset.

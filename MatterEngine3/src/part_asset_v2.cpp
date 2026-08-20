@@ -142,23 +142,12 @@ void put_canonical_tris(std::vector<uint8_t>& b, const Tri* tris, size_t count) 
     }
 }
 
-void ensure_parent_dir(const std::string& path) {
-    auto pos = path.find_last_of('/');
-    if (pos == std::string::npos) return;
-#ifdef _WIN32
-    mkdir(path.substr(0, pos).c_str()); // ignore EEXIST (Windows mkdir takes no mode)
-#else
-    mkdir(path.substr(0, pos).c_str(), 0755); // ignore EEXIST
-#endif
-}
-bool durable_flush(FILE* file) {
-    if (std::fflush(file) != 0) return false;
-#ifdef _WIN32
-    return _commit(_fileno(file)) == 0;
-#else
-    return fsync(fileno(file)) == 0;
-#endif
-}
+// (An `ensure_parent_dir` and a `durable_flush` used to live here. Neither had
+// a caller: every artifact write in this file goes out through
+// part_bundle::write_section, which does its own parent-directory creation and
+// its own atomic publish. part_bundle.h keeps the live ensure_parent_dir, and
+// the animation asset writers keep the live durable_flush.)
+
 // POSIX requires an explicit parent-directory fsync after rename.  Windows
 // uses MoveFileEx(..., MOVEFILE_WRITE_THROUGH) in replace_file_atomic instead.
 #ifndef _WIN32
@@ -481,12 +470,20 @@ static bool append_common_body(std::vector<uint8_t>& body,
             // content-addressed cache (the resolved-hash path re-bakes and expects
             // identical bytes). Zeroing the padding here normalizes that without
             // touching the read-only mesher.
+            //
+            // The staging buffer is raw bytes rather than a TriEx: TriEx has
+            // default member initializers (ao0/ao1/ao2 = 1), which makes its
+            // default constructor non-trivial, and memset-ing an object of such
+            // a type is exactly what -Wclass-memaccess (on under -Wall) flags.
+            // A byte array produces the identical bytes with no class-typed
+            // raw-memory call at all, so the determinism contract above is
+            // unchanged and the warning has nothing to fire on.
             constexpr size_t kTriExPad = 92; // bytes occupied by named members
             for (uint32_t t = 0; t < tri_count; ++t) {
-                TriEx staged;
-                std::memset(&staged, 0, sizeof(TriEx));
-                std::memcpy(&staged, &triex_src[t], kTriExPad);
-                put_bytes(body, &staged, sizeof(TriEx));
+                alignas(TriEx) unsigned char staged[sizeof(TriEx)];
+                std::memset(staged, 0, sizeof(staged));
+                std::memcpy(staged, &triex_src[t], kTriExPad);
+                put_bytes(body, staged, sizeof(staged));
             }
         }
         put_bytes(body, e->bvh->bvhNode, nodes_used * sizeof(BVHNode));

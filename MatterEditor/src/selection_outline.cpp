@@ -39,6 +39,7 @@
 #include "matter/world_session.h"
 
 #include <cmath>
+#include <memory>
 #include <vector>
 
 namespace viewer {
@@ -136,30 +137,9 @@ void emit_obb_edges(std::vector<float>& out,
     }
 }
 
-// CPU-projected box wireframe onto an ImGui draw list — the pre-overlay-buffer
-// way of drawing a selection box, kept as the 2D counterpart to
-// `emit_obb_edges`. It has no caller today: selection boxes now go through the
-// depth-tested engine overlay, and the frozen-cull frustum inlines its own
-// projection loop because its corners are not an OBB.
-void draw_obb_wireframe(ImDrawList* dl, const Mat4& vp, int fb_w, int fb_h,
-                        float off_x, float off_y,
-                        const float world_corners[8][3], ImU32 color) {
-    ImVec2 screen[8];
-    bool visible[8];
-    for (int i = 0; i < 8; ++i)
-        visible[i] = project(vp, fb_w, fb_h, off_x, off_y, world_corners[i], screen[i]);
-    static constexpr int edges[12][2] = {
-        {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
-    };
-    for (const auto& e : edges) {
-        if (visible[e[0]] && visible[e[1]])
-            dl->AddLine(screen[e[0]], screen[e[1]], color, 2.0f);
-    }
-}
-
 // Expand a local-space AABB into its 8 world-space corners through a ROW-major
-// matrix. Corner order is the contract `emit_obb_edges` and `draw_obb_wireframe`
-// both depend on: 0-3 walk the min-z face, 4-7 the matching max-z face.
+// matrix. Corner order is the contract `emit_obb_edges` depends on: 0-3 walk
+// the min-z face, 4-7 the matching max-z face.
 void make_obb_corners(const float mn[3], const float mx[3],
                       const float mat[16], float out[8][3]) {
     float local[8][3] = {
@@ -194,19 +174,27 @@ void submit_selection_overlay_lines(const SelectionSet& selection,
     std::vector<float> vertices;
     const SelectedObject* primary = selection.primary();
 
-    for (const auto& obj : selection.items()) {
-        const bool is_primary = primary && *primary == obj;
+    // ONE ECS scan for the whole selection — bounds_for_object would spend one
+    // per item, every frame (see selection_bounds.h).
+    const std::vector<SelectedObject>& items = selection.items();
+    std::vector<SelectionBounds> bounds(items.size());
+    // Not std::vector<bool>: that specialization has no contiguous bool*.
+    std::unique_ptr<bool[]> resolved(new bool[items.size()]);
+    bounds_for_objects(items.data(), items.size(), session, bounds.data(),
+                       resolved.get());
+
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (!resolved[i]) continue;
+        const bool is_primary = primary && *primary == items[i];
         const float r = is_primary ? 1.0f : 0.392f;
         const float g = is_primary ? 0.784f : 0.706f;
         const float b = is_primary ? 0.0f : 1.0f;
         const float a = is_primary ? 1.0f : 0.784f;
 
-        SelectionBounds sb;
-        if (bounds_for_object(obj, session, sb)) {
-            float corners[8][3];
-            make_obb_corners(sb.local_min, sb.local_max, sb.world_matrix, corners);
-            emit_obb_edges(vertices, corners, r, g, b, a);
-        }
+        float corners[8][3];
+        make_obb_corners(bounds[i].local_min, bounds[i].local_max,
+                         bounds[i].world_matrix, corners);
+        emit_obb_edges(vertices, corners, r, g, b, a);
     }
 
     const uint32_t vertex_count =

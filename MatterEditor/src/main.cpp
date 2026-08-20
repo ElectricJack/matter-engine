@@ -1,7 +1,8 @@
 // MatterEngine3 Vulkan world viewer. The production path creates a GLFW
 // NO_API window and presents genuine WorldSession data through VkSceneRenderer.
-// MATTER_CAM, MATTER_WORLD, MATTER_HIZ, MATTER_SCREENSHOT and FIFO commands are
-// retained from the legacy viewer.
+// MATTER_CAM, MATTER_WORLD, MATTER_SCREENSHOT and FIFO commands are retained
+// from the legacy viewer. MATTER_HIZ is recognised but IGNORED — the Hi-Z
+// buffer it selected is gone; see the note at its getenv below.
 //
 // MatterEditor/src/main.cpp
 //
@@ -497,6 +498,33 @@ bool field_set_quat(matter::WorldSession* session, matter::scene::SceneEntityId 
     if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
     if (!matter::scene::field_set_quat(buf.data(), *r.field, value)) return false;
     return component_store(r.entity, r.kind, buf.data());
+}
+
+// The one non-field entry in FieldCommands: the parent's accumulated
+// WorldTransform, which is what the transform gizmo needs to place a child
+// entity's handle where the renderer actually draws it.
+//
+// `out` is ALWAYS written — identity when the entity is a root, or when the
+// parent exists but has not been propagated yet (the transform systems only
+// write WorldTransform for entities they have visited). A false return means
+// the entity id itself did not resolve, and `out` is identity in that case too,
+// so a caller that ignores the result still gets the old parentless behaviour
+// rather than garbage.
+bool field_get_parent_world_matrix(matter::WorldSession* session,
+                                   matter::scene::SceneEntityId id,
+                                   matter::Mat4f& out) {
+    out = matter::Mat4f{};
+    out.m[0] = 1.0f; out.m[5] = 1.0f; out.m[10] = 1.0f; out.m[15] = 1.0f;
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    flecs::entity parent = e.parent();
+    if (!parent.is_valid()) return true;
+    const matter::ecs::WorldTransform* wt =
+        parent.try_get<matter::ecs::WorldTransform>();
+    if (!wt) return true;
+    out = wt->matrix;
+    return true;
 }
 
 // Adds a default-constructed component instance to a scene entity by name.
@@ -1226,11 +1254,21 @@ int main() {
         } else {
             std::fprintf(stderr, "FATAL: MATTER_CAM_PATH: cannot open %s\n",
                          value);
+            ui.shutdown();
+            engine.reset();
+            vulkan.reset();
+            glfwDestroyWindow(window);
+            glfwTerminate();
             return 1;
         }
         if (cam_path.empty()) {
             std::fprintf(stderr, "FATAL: MATTER_CAM_PATH: %s has no poses\n",
                          value);
+            ui.shutdown();
+            engine.reset();
+            vulkan.reset();
+            glfwDestroyWindow(window);
+            glfwTerminate();
             return 1;
         }
         // Hold the LOD trace closed until the path actually starts, so the
@@ -1319,9 +1357,6 @@ int main() {
     // silence: the Hi-Z occlusion buffer it selected no longer exists (it could
     // not work on tile-sized clusters) and the FIFO `hiz` verb prints the same
     // kind of notice, pointing at viewer.debug.occlusion_draw_cull.
-    // NOTE: the four-line banner at the very top of this file still lists
-    // MATTER_HIZ among the variables "retained from the legacy viewer", which
-    // now overstates it — it is retained as a no-op.
     if (std::getenv("MATTER_HIZ"))
         std::printf("MATTER_HIZ: not available in Vulkan milestone; ignored\n");
     float min_projected_size = 0.0f;
@@ -1500,6 +1535,11 @@ int main() {
     field_commands.set_quat = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, matter::Quaternion v) {
         return field_set_quat(session.get(), id, c, f, v);
     };
+    // Not a field: the parent's world matrix, so the transform gizmo can place
+    // its handle where a CHILD entity is actually drawn (see gizmo.cpp).
+    field_commands.get_parent_world_matrix = [&session](matter::scene::SceneEntityId id, matter::Mat4f& out) {
+        return field_get_parent_world_matrix(session.get(), id, out);
+    };
     viewer::ComponentCommands component_commands;
     component_commands.add_component = [&session](matter::scene::SceneEntityId id, const char* name) {
         return component_add(session.get(), id, name);
@@ -1523,6 +1563,15 @@ int main() {
             matter::scene::PartInstance copy = e.get<matter::scene::PartInstance>();
             copy.part_hash = new_hash;
             e.set<matter::scene::PartInstance>(copy);
+            return true;
+        };
+    specialized_editors.part_commands().current_part_hash =
+        [&session](matter::scene::SceneEntityId id, uint64_t& out_hash) {
+            out_hash = 0;
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            if (!e.is_valid() || !e.has<matter::scene::PartInstance>()) return false;
+            out_hash = e.get<matter::scene::PartInstance>().part_hash;
             return true;
         };
     specialized_editors.part_commands().list_available_parts =
@@ -1605,19 +1654,16 @@ int main() {
             e.remove<matter::streaming::SectorStreaming>();
             return true;
         };
-    specialized_editors.streaming_commands().set_follow_camera =
-        [](bool /*follow*/) {
-            // Stub: per-anchor follow-camera toggling isn't wired to
-            // matter_viewer::StreamingAnchorState yet (that controller
-            // currently tracks a single global anchor, not a per-entity
-            // flag). Follow-camera behavior today is still driven by
-            // Ui::update_sector_streaming / streaming_anchor_controller.
-        };
-    specialized_editors.streaming_commands().regenerate =
-        [](uint64_t /*seed*/) {
-            // Stub: no reseed entry point is exposed by
-            // matter::streaming::SectorStreaming / sector_streamer.cpp yet.
-        };
+    // set_follow_camera and regenerate are deliberately left NULL rather than
+    // assigned a do-nothing lambda. There is nothing behind either one yet —
+    // per-anchor follow-camera is not wired to
+    // matter_viewer::StreamingAnchorState (that controller tracks a single
+    // global anchor, not a per-entity flag; follow-camera behaviour today
+    // comes from Ui::update_sector_streaming / streaming_anchor_controller),
+    // and no reseed entry point is exposed by
+    // matter::streaming::SectorStreaming / sector_streamer.cpp. A null command
+    // is what the Properties panel greys the control out on, so the user is
+    // told the action is unavailable instead of clicking into a no-op.
 
     // -----------------------------------------------------------------------
     // Frame-loop state

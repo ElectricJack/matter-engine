@@ -87,7 +87,6 @@ using namespace part_graph;
 
 namespace viewer {
 
-// Deterministic splitmix64 (matches example_world's scatter exactly).
 namespace {
 // Filesystem portability shim: MinGW mkdir and realpath have different names.
 #ifdef _WIN32
@@ -95,25 +94,6 @@ bool fs_realpath(const char* in, char* out)        { return _fullpath(out, in, P
 #else
 bool fs_realpath(const char* in, char* out)        { return realpath(in, out) != nullptr; }
 #endif
-struct Rng64 {
-    uint64_t s;
-    explicit Rng64(uint64_t seed) : s(seed) {}
-    uint64_t next() {
-        s += 0x9e3779b97f4a7c15ull;
-        uint64_t z = s;
-        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-        return z ^ (z >> 31);
-    }
-    float range(float a, float b) {
-        return a + (float)((next() >> 11) * (1.0 / 9007199254740992.0)) * (b - a);
-    }
-};
-matter::Mat4f identity_transform() {
-    matter::Mat4f result{};
-    result.m[0] = result.m[5] = result.m[10] = result.m[15] = 1.0f;
-    return result;
-}
 // Row-major 4x4 multiply: result = a * b with both operands and the result in
 // the row-major float[16] convention used by every transform in this subsystem.
 // Argument order matters — compose_world applies it as
@@ -809,16 +789,28 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     // roots flagged `expand`, whose baked child-instance table is promoted to
     // individual world instances (per-child LOD, culling, and instanced
     // batching downstream). Tileset roots are handled separately below.
+    // install_to_orig_ maps install index -> original root index; this loop needs
+    // the inverse. Invert it ONCE instead of linear-scanning it per root, which
+    // made the placement pass O(roots^2). Entity-part roots appended after the
+    // manifest roots have no install_to_orig_ entry, so they simply never appear
+    // here — the same roots are skipped as before.
+    constexpr size_t kNoInstallIndex = static_cast<size_t>(-1);
+    std::vector<size_t> orig_to_install(roots_.size(), kNoInstallIndex);
+    for (size_t j = 0; j < install_to_orig_.size(); ++j) {
+        const size_t orig = install_to_orig_[j];
+        // First match wins, matching the old forward scan.
+        if (orig < orig_to_install.size() &&
+            orig_to_install[orig] == kNoInstallIndex)
+            orig_to_install[orig] = j;
+    }
     for (size_t i = 0; i < roots_.size(); ++i) {
         if (tileset_flags_[i]) {
             // Handled below via run_tileset_phase; not placed as a world instance.
             continue;
         }
         // Map back to the install index for this original root.
-        size_t k = 0; bool found = false;
-        for (size_t j = 0; j < install_to_orig_.size(); ++j)
-            if (install_to_orig_[j] == i) { k = j; found = true; break; }
-        if (!found) continue;  // (unreachable — every non-tileset root was installed)
+        const size_t k = orig_to_install[i];
+        if (k == kNoInstallIndex) continue;  // (unreachable — every non-tileset root was installed)
         // Task 7: skip roots that failed during install (root_hash == 0 → failed).
         if (ir_.root_hashes[k] == 0) continue;
         if (expand_flags_[i]) {
@@ -1460,14 +1452,12 @@ bool LocalProvider::restore_from_cache(
         append_entity_part_roots();
     }
 
-    // Apply root_params_json override (mirrors install_graph's merge step).
-    if (!cfg_.root_params_json.empty()) {
-        // We don't actually need to merge params into roots_ here because we're
-        // not re-resolving the graph — the cached root_hashes already reflect the
-        // override. We still populate roots_ for tileset phase which will re-eval
-        // its own script; tileset scripts don't use root_params_json.
-        (void)cfg_.root_params_json;
-    }
+    // NO root_params_json merge here, unlike install_graph. Deliberate, not an
+    // omission: this path does not re-resolve the graph, so the override has
+    // already been folded into the cached root_hashes below (it is part of the
+    // cache key). roots_ is still populated above for the tileset phase, which
+    // re-evaluates its own script — and tileset scripts do not read
+    // root_params_json.
 
     // Restore cache payload into ir_.
     ir_.ok          = true;

@@ -24,6 +24,18 @@
 //     the table trips that oracle on purpose — if you really mean to change
 //     it, update the shader and the oracle in the same commit.
 //
+// THE ORACLE ONLY GUARDS THIS SIDE. It hashes kDisplayDitherRanks, not the
+// GLSL, and nothing anywhere hashes or cross-checks the shader's literal. So:
+//   * editing THIS table alone -> atmosphere_tests.cpp goes red immediately;
+//   * editing the SHADER's `ranks[64]` alone -> every test stays green and the
+//     two silently disagree, and the symptom (a shifted dither pattern in
+//     8-bit gradients) is invisible in anything but a pixel-exact diff.
+// Any change to the pattern is therefore a THREE-part edit in one commit: this
+// table, the `ranks[64]` initializer in
+// MatterEngine3/shaders_vk/display_transform.frag, and the 0xdc0d948b oracle
+// in MatterEngine3/tests/atmosphere_tests.cpp. Remember that a shader edit
+// only reaches the binary through the SPIR-V embed step (see CLAUDE.md).
+//
 // Units and space: offsets are in DISPLAY CODE units normalized to [0,1]
 // (0.5/255 is half a code step at 8 bits). They apply to an already
 // tone-mapped, sRGB-ENCODED colour — never to linear HDR radiance, where a
@@ -39,8 +51,12 @@
 
 namespace matter {
 
-// Row-major 8x8 rank table, indexed as (y & 7) * 8 + (x & 7). Duplicated
-// verbatim in shaders_vk/display_transform.frag — keep them in sync.
+// Row-major 8x8 rank table, indexed as (y & 7) * 8 + (x & 7). These 64 values
+// appear again, in the same order, as the `const int ranks[64]` initializer
+// inside main() in MatterEngine3/shaders_vk/display_transform.frag, indexed
+// there as `ranks[(pixel.y & 7) * 8 + (pixel.x & 7)]` with
+// `pixel = ivec2(floor(gl_FragCoord.xy))`. Verified identical 2026-08-19.
+// Nothing checks that at build time — see the header comment above.
 inline constexpr std::array<uint8_t, 64> kDisplayDitherRanks{{
     37, 12, 54, 1, 46, 27, 61, 8,
     18, 43, 5, 58, 31, 50, 14, 40,

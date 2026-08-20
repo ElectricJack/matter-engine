@@ -519,18 +519,12 @@ struct VulkanDevice::Impl {
     // Teardown gates, all read by cleanup():
     //   device_poisoned          a failure latched `poison_error`; every entry
     //                            point now fails with that same text.
-    //   preserve_external_work   skip destruction entirely and only invalidate
-    //                            the access token, for the case where work
-    //                            outside this class may still touch the
-    //                            device. Read here but written NOWHERE in the
-    //                            current tree.
     //   wsi_completion_ambiguous vkQueuePresentKHR returned a result that says
     //                            nothing about whether the presentation engine
     //                            still owns the image, so the swapchain, its
     //                            sync objects and their parents are leaked
     //                            rather than destroyed.
     bool device_poisoned = false;
-    bool preserve_external_work = false;
     bool wsi_completion_ambiguous = false;
     detail::DeviceRetainedResource* retained_resources = nullptr;
     std::string poison_error;
@@ -2515,21 +2509,19 @@ struct VulkanDevice::Impl {
     // instance — in that order.
     //
     // Every early return here is a DELIBERATE LEAK of the logical device and
-    // everything under it, announced on stderr: preserved external work, an
-    // unproven idle, an ambiguous present, or a fence wait that neither
-    // succeeded nor reported device loss. In those cases the access token is
-    // invalidated instead, so DeviceLifetimeControl children see a null device
-    // and skip their own vkDestroy* calls. A LOST device is the exception:
-    // nothing is running on it, so destruction proceeds without further waits.
+    // everything under it, announced on stderr: an unproven idle, an ambiguous
+    // present, or a fence wait that neither succeeded nor reported device loss.
+    // In those cases the access token is invalidated instead, so
+    // DeviceLifetimeControl children see a null device and skip their own
+    // vkDestroy* calls. A LOST device is the exception: nothing is running on
+    // it, so destruction proceeds without further waits.
+    //
+    // There used to be a fourth gate, `preserve_external_work`, set by a public
+    // VulkanDevice::preserve_after_unproven_external_work(). That entry point
+    // was deleted as unreachable in e7c19aae, leaving a flag no code could ever
+    // set; the unproven-idle path below covers the same case (and is what
+    // MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN exercises).
     void cleanup() {
-        if (preserve_external_work) {
-            std::fprintf(stderr,
-                         "Vulkan cleanup intentionally preserving the logical "
-                         "device and children because external work completion "
-                         "is unproven\n");
-            if (device_lifetime) device_lifetime->invalidate();
-            return;
-        }
         if (device != VK_NULL_HANDLE) {
             VkResult idle = VK_SUCCESS;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION

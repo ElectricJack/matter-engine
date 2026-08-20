@@ -49,9 +49,10 @@ namespace matter::events {
 // Each counter is a SUM of two transition lists — contact begin + contact end
 // for `contacts`, sensor enter + sensor exit for `sensors` — so a pair that
 // both begins and ends inside one step contributes 2, and neither number is a
-// count of currently-touching pairs. The emit site aggregate-initializes this
-// positionally (`PhysStep{contacts, sensors}`), so reordering or inserting a
-// field here silently changes what the mirror reports.
+// count of currently-touching pairs. The emit site (physics_context.cpp's
+// pull()) assigns the two fields BY NAME rather than aggregate-initializing
+// positionally; keep it that way, or inserting a field here silently
+// re-assigns what the inspector reports.
 struct PhysStep {
     MT_EVENT_NAME("phys.step");
     uint32_t contacts = 0;

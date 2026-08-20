@@ -71,11 +71,14 @@ struct TriAdj { int nbr[3]; };
 // to the same value stay distinct and the edge between them reads as a
 // boundary. That is deliberate: it keeps the result deterministic.
 //
-// Well defined for manifold meshes only. An edge is matched to the FIRST
-// other triangle that claims it; if a third triangle shares the same edge it
-// overwrites one side of that pairing, leaving the adjacency asymmetric
-// (triangle A points at C while B still points at A). Nothing detects or
-// reports this, so non-manifold input yields a silently lopsided graph.
+// The result is always SYMMETRIC: nbr[i] == b on triangle a implies some
+// nbr[j] == a on triangle b. Non-manifold input does not break that. An edge
+// is consumed by the first two triangles to claim it (ascending triangle, then
+// edge slot); a third or later triangle on that same edge simply gets no
+// neighbour across it and reads as a boundary there. So a non-manifold mesh
+// yields MORE charts than its manifold equivalent would, never a lopsided
+// graph. Nothing reports that the condition occurred — a caller that needs to
+// know must detect non-manifold geometry itself.
 // Build triangle adjacency. Vertices are welded by EXACT position first.
 std::vector<TriAdj> build_adjacency(const float* positions, const unsigned short* indices,
                                     int triCount);
@@ -153,10 +156,9 @@ struct ChartPlacement { int ox, oy; };
 // packed.
 //
 // Returns false when 24 attempts still overflow the atlas, or for an empty
-// chart list or a non-positive atlas dimension. On failure `placements` and
-// `scale` hold the last rejected attempt rather than being cleared, so the
-// caller must not read them — this differs from pack_charts_paged below,
-// which clears its outputs up front.
+// chart list or a non-positive atlas dimension. On EVERY failure path
+// `placements` is left empty and `scale` is 0 — same contract as
+// pack_charts_paged below. Nothing partial from a rejected attempt escapes.
 // Shelf-pack chart rects into an atlasW x atlasH grid with `pad` gutter texels.
 bool pack_charts(const std::vector<ChartRect>& charts, int atlasW, int atlasH, int pad,
                  float& scale, std::vector<ChartPlacement>& placements);

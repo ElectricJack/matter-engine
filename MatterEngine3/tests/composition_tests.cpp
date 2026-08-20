@@ -351,6 +351,7 @@ static void test_depth_guard() {
     CHECK(!flatten(g, 1, lim, flat, err), "depth guard fires");
     CHECK(err.find("max_depth") != std::string::npos, "depth error message");
     CHECK(err.find("part") != std::string::npos, "depth error names offending part");
+    CHECK(flat.empty(), "depth-guard failure leaves no partial output");
 }
 
 static void test_budget_guard() {
@@ -362,6 +363,7 @@ static void test_budget_guard() {
     std::vector<FlatInstance> flat; std::string err;
     CHECK(!flatten(g, 1, lim, flat, err), "budget guard fires");
     CHECK(err.find("max_instances") != std::string::npos, "budget error message");
+    CHECK(flat.empty(), "budget-guard failure leaves no partial output");
 }
 
 static void test_sector_binning() {

@@ -88,8 +88,11 @@ struct WeldMap {
 
     // Returns existing value or -1 if absent.
     // Linear probing with no bound: the loop terminates on the first unused
-    // slot, so the table must never be allowed to reach 100% load. Both
-    // callers pre-size to ~4 slots per triangle, which guarantees that.
+    // slot, so the table must never be allowed to reach 100% load. Two things
+    // guarantee that. Both callers pre-size to ~4 slots per triangle against at
+    // most 3 unique vertices per triangle (a hard ceiling of 0.75 load), and
+    // `insert` grows the table past `kMaxLoadNum/kMaxLoadDen` regardless of how
+    // it was sized, so no future caller can wedge these loops.
     int find(const std::array<long long,3>& key) const {
         size_t mask = table.size() - 1;
         size_t idx  = hash3(key) & mask;
@@ -101,22 +104,28 @@ struct WeldMap {
         }
     }
 
-    // Insert key→value; caller guarantees key is absent and load < 75%.
+    // Insert key→value; caller guarantees the key is absent.
     void insert(const std::array<long long,3>& key, int value) {
         size_t mask = table.size() - 1;
         size_t idx  = hash3(key) & mask;
         while (table[idx].used) idx = (idx + 1) & mask;
         table[idx] = { key, value, true };
         ++count;
+        maybe_grow();
     }
 
-    // Grow by 2× when load factor hits 50%.
-    // Not called by anything today — both `buildTopology` and
-    // `buildTopologyIndexed` pre-size the table generously and say so inline.
-    // Kept as the rehash path a future caller with an unknown vertex count
-    // would need.
+    // Ceiling on load factor, chosen ABOVE the 0.75 both current callers can
+    // reach (4 slots per triangle, at most 3 unique verts per triangle) so
+    // their generous pre-sizing still never rehashes — a rehash re-fragments
+    // the heap, which is the whole reason this map exists. Its job is to bound
+    // the probe loops for any future caller that sizes less carefully.
+    static const size_t kMaxLoadNum = 7;
+    static const size_t kMaxLoadDen = 8;
+
+    // Grow by 2x once the table passes the load ceiling, so neither probe loop
+    // can run out of unused slots and spin forever.
     void maybe_grow() {
-        if (count * 2 >= table.size()) {
+        if (count * kMaxLoadDen >= table.size() * kMaxLoadNum) {
             WeldMap next;
             next.init(table.size() * 2);
             for (const Slot& s : table)

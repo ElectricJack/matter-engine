@@ -117,8 +117,10 @@ Mat4 multiply(const Mat4& a, const Mat4& b) {
 // flipped so the result is in ImGui's top-left-origin screen space.
 //
 // Returns false for anything at or behind the eye plane (w <= 1e-4) and for any
-// non-finite result; `out` is meaningless in that case. Callers must treat
-// false as "skip this primitive", not as an error.
+// non-finite result, leaving `out` UNTOUCHED on every failure path — so a
+// caller reusing one ImVec2 across a loop keeps its last good value rather
+// than a NaN. Callers must treat false as "skip this primitive", not as an
+// error.
 bool project(const Mat4& vp, int width, int height, float ox, float oy,
              const matter::Float3& p, ImVec2& out) {
     float x = vp.m[0] * p.x + vp.m[4] * p.y + vp.m[8] * p.z + vp.m[12];
@@ -128,9 +130,11 @@ bool project(const Mat4& vp, int width, int height, float ox, float oy,
     if (w <= 1e-4f || !std::isfinite(w)) return false;
     x /= w;
     y /= w;
-    out = {(x * 0.5f + 0.5f) * width + ox,
-           (1.0f - (y * 0.5f + 0.5f)) * height + oy};
-    return std::isfinite(out.x) && std::isfinite(out.y);
+    const float sx = (x * 0.5f + 0.5f) * width + ox;
+    const float sy = (1.0f - (y * 0.5f + 0.5f)) * height + oy;
+    if (!std::isfinite(sx) || !std::isfinite(sy)) return false;
+    out = {sx, sy};
+    return true;
 }
 
 // Affine transform of a point by a ROW-major matter::Mat4f (translation read

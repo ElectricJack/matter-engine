@@ -1754,12 +1754,9 @@ void VtResidency::refresh_budgets() {
         clamp_u32(b.tail_fills_per_frame, 1u, kMaxFillFlags);
     max_enrich_per_frame_ = clamp_u32(b.enrich_per_frame, 0u, 16u);
     max_queue_ = clamp_u32(b.queue_cap, 16u, 65536u);
-    // M6.5: the directional tier's own budget, read here rather than shared
-    // with the contact tier's. One budget for both would let a burst of fine
-    // pages consume the frame and leave the far field permanently unshadowed —
-    // and "permanently", for a bake that only runs on pages the camera has
-    // already moved away from, is not a transient.
-    //
+    // CPU mesh-copy budget, in bytes. Rejections past it fall back to the
+    // legacy per-material path, i.e. the authored surfaces() tape is ignored
+    // for that variant — so this is a quality dial, not a correctness one.
     mesh_budget_bytes_ =
         static_cast<size_t>(clamp_u32(b.mesh_budget_mb, 1u, 16384u)) * 1024u *
         1024u;
@@ -2082,6 +2079,14 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         for (size_t i = 0; i < queue_.size(); ++i) {
             if (batch_.size() >= kMaxFillFlags) break;
             const PendingFill& p = queue_[i];
+            // Bounds first, matching drain_enrich and the feedback drain. A
+            // layer past the table can only appear if the queue outlived the
+            // variant table (shutdown clears both today, so this is a guard,
+            // not a live path) — drop it rather than index out of range.
+            if (p.layer >= variants_.size()) {
+                taken[i] = 1;
+                continue;
+            }
             VariantRung& v = variants_[p.layer];
             if (!v.live) {
                 taken[i] = 1;   // dead entry: drop without dispatch

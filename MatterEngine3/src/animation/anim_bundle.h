@@ -43,15 +43,18 @@ namespace matter::animation {
 // re-meshed part can be detected without re-deriving the whole binding.
 // `indexed_vertex_signature` comes from
 // `viewer::indexed_part_geometry_signature` and is salted with the rung
-// index; `influence_count` is the number of influence SLOTS
-// (`vertices * kMaxSkinInfluences`), not the number of non-zero weights.
+// index; `influence_slot_count` counts influence SLOTS
+// (`vertices * kMaxSkinInfluences`), not non-zero weights — every vertex
+// stores the full four slots whether or not they all carry weight, so the
+// producer always emits exactly `vertex_count * kMaxSkinInfluences` here.
+// It was called `influence_count`, which read as a count of live influences.
 struct LodBindingSignature {
     uint64_t indexed_vertex_signature = 0;
     uint32_t vertex_count = 0;
-    uint32_t influence_count = 0;
+    uint32_t influence_slot_count = 0;
     bool operator==(const LodBindingSignature& v) const {
         return indexed_vertex_signature == v.indexed_vertex_signature &&
-               vertex_count == v.vertex_count && influence_count == v.influence_count;
+               vertex_count == v.vertex_count && influence_slot_count == v.influence_slot_count;
     }
 };
 // The commit manifest's contents — the single record that ties the part

@@ -206,7 +206,11 @@ bool validate_metadata(const std::vector<JointIndex>& parents, const std::vector
 struct OzzSampleContext::Impl { std::unique_ptr<ozz::animation::SamplingJob::Context> runtime; std::vector<ozz::math::SoaTransform> locals; };
 
 OzzSkeleton::OzzSkeleton() : impl_(new Impl) {} OzzSkeleton::~OzzSkeleton() = default; OzzSkeleton::OzzSkeleton(OzzSkeleton&&) noexcept = default; OzzSkeleton& OzzSkeleton::operator=(OzzSkeleton&&) noexcept = default;
-std::size_t OzzSkeleton::joint_count() const { return impl_->parents.size(); } JointIndex OzzSkeleton::parent(JointIndex joint) const { return joint < impl_->parents.size() ? impl_->parents[joint] : kInvalidJoint; } JointRange OzzSkeleton::subtree(JointIndex joint) const { return joint < impl_->subtrees.size() ? impl_->subtrees[joint] : JointRange{}; }
+std::size_t OzzSkeleton::joint_count() const { return impl_->parents.size(); } JointIndex OzzSkeleton::parent(JointIndex joint) const { return joint < impl_->parents.size() ? impl_->parents[joint] : kInvalidJoint; } // An out-of-range joint answers `{kInvalidJoint, 0}`, never the default
+// `JointRange{}`: that default is `local_to_model`'s "whole skeleton"
+// sentinel, so returning it here would turn a bad index into a silently wider
+// operation instead of a rejected one. See the declaration in ozz_adapter.h.
+JointRange OzzSkeleton::subtree(JointIndex joint) const { return joint < impl_->subtrees.size() ? impl_->subtrees[joint] : JointRange{kInvalidJoint, 0}; }
 bool OzzSkeleton::rest_local(JointIndex joint, AnimationTransform& out) const {
     if (joint >= impl_->rest_locals.size()) return false;
     out = impl_->rest_locals[joint];
@@ -385,14 +389,19 @@ bool local_to_model(const OzzSkeleton& skeleton, const std::vector<AnimationTran
 // Every precondition is checked and reported as a plain false: the three
 // joints are distinct, `mid`'s parent is `start` and `end`'s parent is `mid`,
 // `models` and `locals` are both joint_count() long, and `solve.affected`
-// equals `skeleton->subtree(start)`.  On failure `locals` is untouched.
-// `updated_models` may alias `models` -- `animation_targets.cpp` passes the
-// same vector for both.
+// equals `skeleton->subtree(start)`.  A rejected precondition, and a failing
+// `IKTwoBoneJob`, both leave `locals` untouched; only the trailing
+// `local_to_model` can fail after the corrections have been folded in.
+//
+// `updated_models` MAY alias `models` -- `animation_targets.cpp` passes the
+// same vector for both, so that the parent matrices outside the affected
+// subtree are the live ones.  The seeding copy below is therefore guarded
+// rather than relying on vector self-assignment being a silent no-op.
 bool solve_two_bone(const TwoBoneSolve& solve, const std::vector<Mat4f>& models, std::vector<AnimationTransform>& locals, std::vector<Mat4f>& updated_models) {
     if(!solve.skeleton || solve.start >= solve.skeleton->joint_count() || solve.mid >= solve.skeleton->joint_count() || solve.end >= solve.skeleton->joint_count() || solve.start == solve.mid || solve.mid == solve.end || solve.start == solve.end || solve.skeleton->parent(solve.mid) != solve.start || solve.skeleton->parent(solve.end) != solve.mid || models.size()!=solve.skeleton->joint_count()||locals.size()!=models.size()) { return false; }
     const JointRange expected_affected = solve.skeleton->subtree(solve.start);
     if (!(solve.affected == expected_affected)) return false;
-    const ozz::math::Float4x4 start=to_ozz_matrix(models[solve.start]),mid=to_ozz_matrix(models[solve.mid]),end=to_ozz_matrix(models[solve.end]);ozz::animation::IKTwoBoneJob job;job.target=ozz::math::simd_float4::Load3PtrU(&solve.target.x);job.pole_vector=ozz::math::simd_float4::Load3PtrU(&solve.pole_vector.x);job.mid_axis=ozz::math::simd_float4::Load3PtrU(&solve.mid_axis.x);job.twist_angle=solve.twist_angle;job.soften=solve.soften;job.weight=solve.weight;job.start_joint=&start;job.mid_joint=&mid;job.end_joint=&end;ozz::math::SimdQuaternion start_correction,mid_correction;job.start_joint_correction=&start_correction;job.mid_joint_correction=&mid_correction;if(!job.Run())return false;float values[4];ozz::math::StorePtrU(start_correction.xyzw,values);locals[solve.start].rotation=normalize(multiply(locals[solve.start].rotation,{values[0],values[1],values[2],values[3]}));ozz::math::StorePtrU(mid_correction.xyzw,values);locals[solve.mid].rotation=normalize(multiply(locals[solve.mid].rotation,{values[0],values[1],values[2],values[3]}));updated_models=models;return local_to_model(*solve.skeleton,locals,updated_models,expected_affected);
+    const ozz::math::Float4x4 start=to_ozz_matrix(models[solve.start]),mid=to_ozz_matrix(models[solve.mid]),end=to_ozz_matrix(models[solve.end]);ozz::animation::IKTwoBoneJob job;job.target=ozz::math::simd_float4::Load3PtrU(&solve.target.x);job.pole_vector=ozz::math::simd_float4::Load3PtrU(&solve.pole_vector.x);job.mid_axis=ozz::math::simd_float4::Load3PtrU(&solve.mid_axis.x);job.twist_angle=solve.twist_angle;job.soften=solve.soften;job.weight=solve.weight;job.start_joint=&start;job.mid_joint=&mid;job.end_joint=&end;ozz::math::SimdQuaternion start_correction,mid_correction;job.start_joint_correction=&start_correction;job.mid_joint_correction=&mid_correction;if(!job.Run())return false;float values[4];ozz::math::StorePtrU(start_correction.xyzw,values);locals[solve.start].rotation=normalize(multiply(locals[solve.start].rotation,{values[0],values[1],values[2],values[3]}));ozz::math::StorePtrU(mid_correction.xyzw,values);locals[solve.mid].rotation=normalize(multiply(locals[solve.mid].rotation,{values[0],values[1],values[2],values[3]}));if(&updated_models!=&models)updated_models=models;return local_to_model(*solve.skeleton,locals,updated_models,expected_affected);
 }
 
 } // namespace matter::animation

@@ -398,7 +398,18 @@ std::unique_ptr<BlobStore> BlobStore::open(const StoreConfig& cfg, std::string* 
 Status BlobStore::put(const void* data, size_t len, BlobHash* out_hash) {
     Impl& d = *d_;
     if (d.read_only) return Status::ReadOnly;
-    if (len == 0 || len > 0xFFFFFFFFull) return Status::IoError;
+    /* A rejected length is a caller mistake, not an IO failure, but Status has
+     * no argument-error member and adding one would change the public enum.
+     * Say so in last_error() instead, so an IoError from put() can at least be
+     * told apart from a disk that actually failed. */
+    if (len == 0) {
+        d.last_err = "put: zero-length blob";
+        return Status::IoError;
+    }
+    if (len > 0xFFFFFFFFull) {
+        d.last_err = "put: blob exceeds the 4 GiB record-header length limit";
+        return Status::IoError;
+    }
 
     BlobHash h = hash_bytes(data, len);
     if (out_hash) *out_hash = h;
@@ -513,12 +524,13 @@ bool BlobStore::flush_index() {
 }
 
 /* Cheap when nothing changed: one stat of index.bin, and the whole load is
- * skipped when the stamp matches. The stamp is derived from (mtime, size) --
- * see os::stamp_of -- and on POSIX st_mtime has one-second granularity, so two
- * commits inside the same second that happen to produce the same index length
- * are indistinguishable to this check. Returns true both for "reloaded" and
- * for "nothing to do"; false means the file was there but unreadable or failed
- * its CRC, in which case the previous index is retained. */
+ * skipped when the stamp matches. The stamp -- see os::stamp_of -- mixes the
+ * finest available mtime with the size, and on POSIX also with the inode,
+ * which the commit rename always changes; that inode term is what makes two
+ * commits inside one second visible here even when they produce an
+ * identically sized index. Returns true both for "reloaded" and for "nothing
+ * to do"; false means the file was there but unreadable or failed its CRC, in
+ * which case the previous index is retained. */
 bool BlobStore::reload_index() {
     Impl& d = *d_;
     uint64_t stamp = 0;

@@ -21,9 +21,7 @@
 // dropped before that vector is cleared or reallocated — `build()` does exactly
 // that, and any future edit must preserve the order. `instances_` (the
 // unique_ptr vector) is a deprecated parallel copy that `build()` still fills;
-// the `TLAS` does not point at it. `instance_array_` is vestigial: nothing in
-// this file ever allocates it, so the destructor/clear/build teardown blocks
-// for it are dead as written.
+// the `TLAS` does not point at it.
 //
 // This file is CPU-only — no Vulkan, no GL, no descriptor or buffer handling.
 // The GPU upload path consumes `get_draw_records()` / `get_tlas()` elsewhere and
@@ -49,20 +47,10 @@ TLASManager::TLASManager(int max_instances)
     draw_records_.reserve(max_instances);
 }
 
-// `instance_storage_`, `instances_` and `tlas_` clean themselves up. The
-// `instance_array_` teardown below is vestigial — nothing in this translation
-// unit ever assigns that pointer, and the member is private, so the branch
-// cannot be taken today. Left in place rather than removed.
-TLASManager::~TLASManager() {
-    // Clean up instance array
-    if (instance_array_) {
-        // Call destructors for existing instances
-        for (size_t i = 0; i < instance_array_size_; i++) {
-            instance_array_[i].~BVHInstance();
-        }
-        free(instance_array_);
-    }
-}
+// `instance_storage_`, `instances_` and `tlas_` clean themselves up, so there
+// is nothing to do here. Kept out-of-line (rather than `= default` in the
+// header) so `unique_ptr<TLAS>` only needs the complete type in this TU.
+TLASManager::~TLASManager() = default;
 
 const mm::Mat4& TLASManager::get_current_matrix() const {
     return matrix_stack_.top();
@@ -73,10 +61,11 @@ mm::Mat4& TLASManager::get_current_matrix() {
 }
 
 // Duplicate the top of the matrix stack. Depth is capped at 32; past that the
-// push is SKIPPED with only a printf, while the matching `pop_matrix` (or
-// `ScopedMatrix` destructor) still pops — so exceeding the cap does not just
-// lose the new level, it discards a caller's outer level too. Keep nesting
-// shallow, or hoist the transform.
+// push is SKIPPED with only a printf and recorded in `suppressed_pushes_`, so
+// the matching `pop_matrix` (or `ScopedMatrix` destructor) is refused too and
+// the caller's outer level survives. The over-deep nesting level is still lost:
+// anything drawn inside it uses the level-32 transform. Keep nesting shallow,
+// or hoist the transform.
 void TLASManager::push_matrix() {
     if (matrix_stack_.size() >= 32) { // Reasonable limit
         printf("Warning: Matrix stack overflow in TLAS manager\n");
@@ -217,26 +206,18 @@ void TLASManager::clear() {
     draw_records_.clear();
     next_instance_id_ = 1;
     
-    // Reset matrix stack to just identity
+    // Reset matrix stack to just identity. `suppressed_pushes_` goes with it:
+    // it only makes sense paired with the stack it was counted against, and
+    // leaving it set would make the next pop_matrix() a no-op.
     while (matrix_stack_.size() > 1) {
         matrix_stack_.pop();
     }
+    suppressed_pushes_ = 0;
     load_identity();
     
     // Clean up existing TLAS and instances
     tlas_.reset(nullptr);
     instances_.clear();
-    
-    // Clean up instance array
-    if (instance_array_) {
-        // Call destructors for existing instances
-        for (size_t i = 0; i < instance_array_size_; i++) {
-            instance_array_[i].~BVHInstance();
-        }
-        free(instance_array_);
-        instance_array_ = nullptr;
-        instance_array_size_ = 0;
-    }
     
     mark_dirty();
 }
@@ -265,17 +246,6 @@ void TLASManager::build(const BLASManager& blas_manager) {
     // Clean up existing TLAS and instances
     tlas_.reset(nullptr);
     instances_.clear();
-    
-    // Clean up previous instance array
-    if (instance_array_) {
-        // Call destructors for existing instances
-        for (size_t i = 0; i < instance_array_size_; i++) {
-            instance_array_[i].~BVHInstance();
-        }
-        free(instance_array_);
-        instance_array_ = nullptr;
-        instance_array_size_ = 0;
-    }
     
     // Create BVH instances from draw records (using unique_ptr approach for now)
     instances_.reserve(draw_records_.size());
@@ -334,23 +304,6 @@ int TLASManager::get_instance_count() const {
 
 int TLASManager::get_node_count() const {
     return tlas_ ? tlas_->nodesUsed : 0;
-}
-
-
-// No-op: the whole body is commented out. Kept so existing call sites compile
-// and so the printf set can be re-enabled during a debugging session.
-void TLASManager::print_stats() const {
-    // printf("=== TLAS Manager Statistics ===\n");
-    // printf("Draw records: %zu/%d\n", draw_records_.size(), max_instances_);
-    // printf("Matrix stack depth: %zu\n", matrix_stack_.size());
-    // printf("Next instance ID: %u\n", next_instance_id_);
-    
-    // if (tlas_) {
-    //     printf("Built TLAS: %d instances, %d nodes\n", 
-    //            tlas_->blasCount, tlas_->nodesUsed);
-    // } else {
-    //     printf("TLAS: Not built\n");
-    // }
 }
 
 // Scene building utilities implementation

@@ -25,8 +25,10 @@ RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int t
 // partially populated input still yields a well-formed soup mesh of the right
 // length rather than reading out of bounds. The optional channels differ:
 // surface_uvs, material_ids and baked_ao are emitted only when the input has
-// them (so they can come out SHORTER than vertex_count), and warp_uvs /
-// warp_frames are not copied at all.
+// them, so they can come out SHORTER than vertex_count. warp_uvs and
+// warp_frames follow the same rule: 2 entries per vertex, carried across only
+// when the input has them. (They used to be dropped outright, which silently
+// stripped a terrain sector rung's warp data on any round trip.)
 RasterMeshData expand_indexed(const RasterMeshData& in) {
     if (in.indices.empty()) return in;
     RasterMeshData out;
@@ -46,6 +48,8 @@ RasterMeshData expand_indexed(const RasterMeshData& in) {
         if (!in.surface_uvs.empty() && uv + 1 < in.surface_uvs.size()) out.surface_uvs.insert(out.surface_uvs.end(), {in.surface_uvs[uv], in.surface_uvs[uv+1]});
         if (!in.material_ids.empty() && idx < in.material_ids.size()) out.material_ids.push_back(in.material_ids[idx]);
         if (!in.baked_ao.empty() && idx < in.baked_ao.size()) out.baked_ao.push_back(in.baked_ao[idx]);
+        if (!in.warp_uvs.empty() && uv + 1 < in.warp_uvs.size()) out.warp_uvs.insert(out.warp_uvs.end(), {in.warp_uvs[uv], in.warp_uvs[uv+1]});
+        if (!in.warp_frames.empty() && uv + 1 < in.warp_frames.size()) out.warp_frames.insert(out.warp_frames.end(), {in.warp_frames[uv], in.warp_frames[uv+1]});
     }
     return out;
 }

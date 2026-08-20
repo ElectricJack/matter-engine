@@ -25,7 +25,8 @@
 // Runtime overrides: `g_slot_overrides` / `g_macro_overrides` are parallel to
 // the material ids and let the viewer bind a tileset slot without touching the
 // const table. -1 means "no override, use the table value". Both are consulted
-// only by the packing functions at the bottom.
+// only by the packing functions at the bottom. Only the DETAIL array has a
+// setter today (MaterialRegistrySetGroundTilesetSlot); see g_macro_overrides.
 //
 // Threading and lifetime: plain file-scope state with no locking. Define
 // dynamic materials and set overrides during world load, before the render and
@@ -54,7 +55,8 @@ enum {
 // Schema v4: groundMacroSlot is inserted right after groundTilesetSlot with a
 // fixed -1 (no macro layer) default baked into the macro body — every static
 // registry entry gets the default without touching each call site's argument
-// list. The viewer overrides it at runtime via MaterialRegistrySetGroundMacroSlot().
+// list. There is no runtime setter for it (see g_macro_overrides below); a
+// non-default macro slot has to come in on a dynamic material's MaterialDef.
 #define MATERIAL_DEF(R,G,B,ROUGH,METAL,EMIT,TRANSLUCENT,IOR,FLAT,GROUP,MESHER,SLOT, \
                      TRANSMIT,ER,EG,EB,AR,AG,AB,ADIST,THICK,SUBSURFACE,SR,SG,SB,SDIST,ANISO,FLAGS) \
     {{R,G,B}, ROUGH, METAL, EMIT, TRANSLUCENT, IOR, FLAT, GROUP, MESHER, SLOT, -1, \
@@ -124,6 +126,12 @@ static int g_slot_overrides[ME_MAX_SLOT_OVERRIDES] = {
 // Runtime macro-slot overrides (parallel to g_materials), mirroring
 // g_slot_overrides above. Schema v4 / Phase 3: -1 = no override; the value in
 // g_materials[i].groundMacroSlot wins (itself -1 by default for every entry).
+//
+// NOTE: nothing writes this array. The setter that did
+// (MaterialRegistrySetGroundMacroSlot) was deleted as uncalled in e7c19aae, and
+// MaterialRegistryResetDynamic only puts entries back to -1. It is kept as the
+// -1 identity so the pack path below keeps its shape and so restoring a setter
+// is a one-function change; until then the table value always wins.
 #define ME_MAX_MACRO_OVERRIDES 64
 static int g_macro_overrides[ME_MAX_MACRO_OVERRIDES] = {
     -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1,

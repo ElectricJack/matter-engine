@@ -15,8 +15,10 @@
 // to fixed-step controllers through `AnimationControllerContext`
 // (`animation/animation_controllers.h`).  The implementation must therefore
 // outlive the systems object.  Calls are issued from the fixed-step animation
-// tick, and a broker in `animation_systems.cpp` caps them at
-// `kMaxAnimationWorldQueries` per tick -- past the cap queries simply stop
+// tick, and a broker in `animation_systems.cpp` caps them at the configured
+// `AnimationBudgetConfig::max_world_queries_per_fixed_tick` per tick (whose
+// default the tests read as `kMaxAnimationWorldQueries`) -- past the cap
+// queries simply stop
 // reaching the implementation, so a controller must treat a miss as a normal
 // outcome.
 //

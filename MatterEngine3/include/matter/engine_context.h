@@ -49,31 +49,35 @@ struct EngineDesc {
     // an absolute path via std::filesystem::absolute before storing it.
     const char* cache_root = nullptr;
     const char* shader_dir = nullptr;  // nullptr = embedded (MATTER_SHADER_DIR env overrides)
-    // NOTE: the name and the trailing comment below are both historical and
-    // no longer describe what this flag does. Since the GL render path was
-    // deleted it means "headless kernel: no interactive renderer required" —
-    // EngineContext::create rejects a desc that has neither `render_device`
-    // nor this flag, and every headless test suite sets it. There is no GL
-    // version check left in create() at all. See the comment at the
-    // corresponding check in MatterEngine3/src/matter_engine.cpp.
-    bool allow_gl_lt_46 = false;       // true only for the ray-traced fallback path
+    // "Headless kernel: no interactive renderer required."
+    //
+    // THE NAME IS HISTORICAL AND MISLEADING — it has nothing to do with GL or
+    // with version 4.6 any more; the GL render path was deleted and create()
+    // contains no version check of any kind. What the flag actually does is
+    // waive the render_device requirement: create() rejects a desc that has
+    // neither `render_device` nor this flag. Every headless test suite sets
+    // it, and the bake pipeline null-checks render_device throughout, so a
+    // deviceless context bakes but cannot draw. Renaming it (to something like
+    // `headless`) is a mechanical but repo-wide change across the test suites
+    // and has been deliberately deferred; see the matching check in
+    // MatterEngine3/src/matter_engine.cpp.
+    bool allow_gl_lt_46 = false;
     VulkanDevice* render_device = nullptr; // non-owning; app owns window/device
 };
 
 class EngineContext {
 public:
-    // Requires a live GL context current on this thread (the app owns the
-    // window). Fails with a GL-version error if GL < 4.6 unless
-    // desc.allow_gl_lt_46. Returns nullptr + err on failure; no exceptions
-    // cross the API boundary.
-    // CORRECTION: the paragraph above predates the Vulkan-only migration and
-    // is no longer accurate — create() neither requires nor checks a GL
-    // context, and there is no GL-version failure path. What it actually
-    // does: registers the calling thread as the engine's render thread,
-    // applies `desc.shader_dir`, requires a non-empty `desc.cache_root`
-    // (canonicalized to an absolute path), and requires either a
-    // `desc.render_device` or `desc.allow_gl_lt_46`. The "returns nullptr +
-    // err, no exceptions cross the boundary" part still holds.
+    // Creates the process-wide context. In order, create():
+    //   * registers the calling thread as the engine's render thread (arms the
+    //     debug thread-affinity asserts) — so call it from the thread that
+    //     owns the window and the Vulkan device;
+    //   * applies `desc.shader_dir` (nullptr clears to env/embedded);
+    //   * requires a non-empty `desc.cache_root`, canonicalized to an absolute
+    //     path;
+    //   * requires either `desc.render_device` or `desc.allow_gl_lt_46`.
+    // There is no GL context requirement and no GL-version check — both were
+    // removed with the GL render path. Returns nullptr + err on failure; no
+    // exceptions cross the API boundary.
     static std::unique_ptr<EngineContext> create(const EngineDesc& desc,
                                                  std::string& err);
     ~EngineContext();

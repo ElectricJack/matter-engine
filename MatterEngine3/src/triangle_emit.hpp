@@ -54,6 +54,11 @@ struct Profile {
 };
 
 // Wall-stitch style at interior polyline vertices (the joinType cursor).
+//
+// TWO behaviours, not three: extrude() treats ROUND exactly as BEVEL, so it
+// produces the same flat chamfer band rather than an arc. The enumerator exists
+// so authored scripts naming "round" keep working (and keep their meaning if a
+// real arc is implemented); it is not a distinct shape today.
 enum class JoinType { MITER, BEVEL, ROUND };
 
 // Accumulates direct triangles as (Tri, TriEx) pairs. Triangles are literal
@@ -109,8 +114,11 @@ public:
                     const mat4& transform, int segments = 16,
                     float4 tint = make_float4(1,1,1,0));
     // capsule: constant-radius `r` cylindrical wall from a to b plus a HEMISPHERE
-    // cap (radius r) at each end. Smooth, watertight. `rings` is the number of
-    // latitude bands per hemisphere.
+    // cap (radius r) at each end. Watertight, and the SURFACE is smooth (the
+    // caps meet the wall tangentially) -- but the SHADING is not: capsule emits
+    // face normals like every generator except sphere(), so the cap facets are
+    // visible under lighting. `rings` is the number of latitude bands per
+    // hemisphere.
     void capsule(float3 a, float3 b, float r, int material_id,
                  const mat4& transform, int segments = 16, int rings = 6,
                  float4 tint = make_float4(1,1,1,0));
@@ -118,8 +126,9 @@ public:
     // Phase 3: sweep a 2D profile (concave, with holes) along a path (one segment
     // = 2 points, or a polyline). Emits a closed solid: ring-to-ring quad walls
     // (outer wound outward, holes wound inward), triangulated end caps on an open
-    // path (none on a closed loop), and join geometry (MITER/BEVEL/ROUND) at
-    // interior vertices. A rotation-minimizing (parallel-transport) frame carries
+    // path (none on a closed loop), and join geometry at interior vertices
+    // (MITER, or the BEVEL chamfer -- which is also what ROUND gets; see
+    // JoinType). A rotation-minimizing (parallel-transport) frame carries
     // the profile so it does not twist at bends. Baked under `transform` with the
     // per-triangle material + tint, exactly like line().
     void extrude(const Profile& profile, const float3* path, int path_n,

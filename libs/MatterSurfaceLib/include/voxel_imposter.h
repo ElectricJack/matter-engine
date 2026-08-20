@@ -62,7 +62,14 @@ constexpr uint32_t kFormatVersion = 1u;
 struct VoxGenParams {
     int   maxDim;       // resolution budget for the longest axis (e.g. 128)
     int   seed;         // reserved
-    float coverThresh;  // surface-fill threshold in [0,1] (default 0.5)
+    float coverThresh;  // surface-fill threshold in [0,1] (default 0.5).
+                        // RESERVED: bake_voxels() does not consult it -- coverage
+                        // is binary (see src/voxel_imposter.cpp). It is still
+                        // hashed by compute_vox_hash (the whole struct is), so
+                        // changing it invalidates every cached .vxi without
+                        // changing a single baked byte. Kept because dropping it
+                        // would resize this byte-hashed struct and invalidate the
+                        // caches anyway.
 };
 static_assert(sizeof(VoxGenParams) == 12, "VoxGenParams padding-free for byte hashing");
 

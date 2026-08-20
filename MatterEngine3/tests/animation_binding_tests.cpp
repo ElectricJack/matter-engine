@@ -87,19 +87,19 @@ void test_skin_binding_uses_only_the_selected_segments() {
 
 void test_primary_claims_and_animated_children_fail_closed() {
     matter::animation::BindingClaims claims(two_joint_rig());
-    CHECK(!claims.claim_skin({0}, false), "a binding claim cannot select the root");
-    CHECK(claims.claim_skin({1}, false), "primary skin claims segments");
-    CHECK(!claims.claim_rigid({1}, false), "overlapping primary binding is rejected");
-    CHECK(claims.claim_rigid({1}, true), "decorative overlap is explicit");
+    CHECK(!claims.claim({0}, false), "a binding claim cannot select the root");
+    CHECK(claims.claim({1}, false), "primary skin claims segments");
+    CHECK(!claims.claim({1}, false), "overlapping primary rigid binding is rejected");
+    CHECK(claims.claim({1}, true), "decorative overlap is explicit");
     CHECK(!matter::animation::validate_attachment(false, true), "nested committed animation is rejected");
     CHECK(matter::animation::validate_attachment(true, false), "static resolved child is accepted");
 }
 
 void test_duplicate_segment_claim_fails_closed() {
     matter::animation::BindingClaims claims(2);
-    CHECK(!claims.claim_skin({1, 1}, false),
+    CHECK(!claims.claim({1, 1}, false),
           "a primary binding cannot claim the same segment twice");
-    CHECK(claims.claim_rigid({1}, false),
+    CHECK(claims.claim({1}, false),
           "a rejected duplicate claim leaves the segment unclaimed");
 }
 

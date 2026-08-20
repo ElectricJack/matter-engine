@@ -178,37 +178,39 @@ public:
         const auto victim = bound_.find(r.evicted_key);
         if (victim != bound_.end()) {
             out.unbound = victim->second;
-            for (const int material : out.unbound) all_bound_.erase(material);
             bound_.erase(victim);
         }
         return out;
     }
 
     // Record the binding once the atlas actually loaded into its slot.
-    // Replaces any previous list for `key` wholesale. A material dropped from
-    // the list is NOT removed from all_bound_, so reset() can over-report it;
-    // that is harmless (unbinding an already-unbound material is a no-op) but
-    // it means all_bound_ is a superset, not an exact union.
+    // Replaces any previous list for `key` wholesale.
     void bind(uint64_t key, const std::vector<int>& materials) {
         bound_[key] = materials;
-        for (const int material : materials) all_bound_.insert(material);
     }
 
     // Drop a reservation whose atlas never loaded (headless cache miss): the
     // slot stays reserved so scheduling stays deterministic, but no material
     // points at it.
     void forget(uint64_t key) {
-        const auto found = bound_.find(key);
-        if (found == bound_.end()) return;
-        for (const int material : found->second) all_bound_.erase(material);
-        bound_.erase(found);
+        bound_.erase(key);
     }
 
     // Empty the pool and return every material that was bound, so the caller
-    // can unbind them all on world (re)connect.
+    // can unbind them all on world (re)connect. Ascending material order.
+    //
+    // The union is DERIVED from `bound_` here rather than maintained
+    // incrementally, and that is the whole point: a running total went wrong in
+    // both directions. bind() replaces a key's list wholesale, so a material
+    // dropped from the new list would have stayed in a maintained set forever
+    // (over-report); and one material can be bound by two atlases at once, so
+    // erasing on eviction/forget would drop it while the other atlas still
+    // points at it (under-report). `bound_` is the only authority.
     std::vector<int> reset() {
-        std::vector<int> out(all_bound_.begin(), all_bound_.end());
-        all_bound_.clear();
+        std::set<int> all;
+        for (const auto& kv : bound_)
+            all.insert(kv.second.begin(), kv.second.end());
+        std::vector<int> out(all.begin(), all.end());
         bound_.clear();
         allocator_.reset();
         return out;
@@ -217,7 +219,6 @@ public:
 private:
     SlotAllocator                        allocator_;
     std::map<uint64_t, std::vector<int>> bound_;      // gtex key -> material ids
-    std::set<int>                        all_bound_;  // union, for reset()
 };
 
 } // namespace tileset

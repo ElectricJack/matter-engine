@@ -727,7 +727,9 @@ bool VkVolumetrics::create_samplers(matter::VulkanDevice& vulkan,
     info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     info.maxLod = 0.0f;
 
-    // Clamp-to-edge for volume textures.
+    // Clamp-to-edge for volume textures, including the scatter history:
+    // vol_scatter.comp clamps its reprojected UV into [0,1] and wants the edge
+    // texel to fill newly exposed screen regions smoothly.
     info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -735,20 +737,6 @@ bool VkVolumetrics::create_samplers(matter::VulkanDevice& vulkan,
                                       &linear_clamp_sampler_);
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateSampler(clamp)", result, error);
-
-    // Currently unbound: no descriptor written by create_bundle_descriptors
-    // uses linear_border_sampler_ -- the scatter history (binding 2) is written
-    // with linear_clamp_sampler_. The note below therefore records the intent
-    // for this sampler, not the behaviour the history read has today.
-    // Clamp-to-border (transparent black) for history texture so edge
-    // samples return zero instead of smearing the edge texel.
-    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-    result = vkCreateSampler(device_, &info, nullptr, &linear_border_sampler_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateSampler(border)", result, error);
 
     // Repeat for noise texture.
     info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -1121,11 +1109,11 @@ void VkVolumetrics::update_settings(
     // else, so a hole at index 0 would silently render layer 1's parameters
     // as layer 0's. Callers that can create a hole call compact_clouds first;
     // this is the belt to that braces.
-    const int32_t requested =
-        fog.cloud_count < 0 ? 0
-                            : (fog.cloud_count > matter::kMaxCloudLayers
-                                   ? matter::kMaxCloudLayers
-                                   : fog.cloud_count);
+    //
+    // `fog.cloud_count` is NOT that prefix count -- it is the world's
+    // *requested* count and may be stale in either direction (see
+    // active_cloud_count's comment in world_definition.h). Its only remaining
+    // job is this one-shot overflow warning.
     if (fog.cloud_count > matter::kMaxCloudLayers && !cloud_overflow_warned_) {
         cloud_overflow_warned_ = true;
         std::fprintf(stderr,
@@ -1134,7 +1122,6 @@ void VkVolumetrics::update_settings(
                      "layers are ignored\n",
                      static_cast<int>(fog.cloud_count), matter::kMaxCloudLayers);
     }
-    (void)requested;
     cloud_count_ = next_cloud_count;
     for (int i = 0; i < matter::kMaxCloudLayers; ++i) cloud_layers_[i] = fog.clouds[i];
     settings_initialized_ = true;
@@ -1812,8 +1799,6 @@ void VkVolumetrics::destroy() {
     // Samplers.
     if (linear_clamp_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, linear_clamp_sampler_, nullptr);
-    if (linear_border_sampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, linear_border_sampler_, nullptr);
     if (linear_repeat_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, linear_repeat_sampler_, nullptr);
 
@@ -1838,13 +1823,11 @@ void VkVolumetrics::destroy() {
     environment_descriptor_set_ = VK_NULL_HANDLE;
     integrate_set_layout_ = VK_NULL_HANDLE;
     linear_clamp_sampler_ = VK_NULL_HANDLE;
-    linear_border_sampler_ = VK_NULL_HANDLE;
     linear_repeat_sampler_ = VK_NULL_HANDLE;
 
     device_ = VK_NULL_HANDLE;
     vulkan_ = nullptr;
     initialized_ = false;
-    ping_index_ = 0;
     frame_index_ = 0;
 }
 

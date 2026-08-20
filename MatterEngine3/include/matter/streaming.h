@@ -50,8 +50,17 @@ struct SectorStreamingError {
 //   PendingProfile    owner claimed, the world's stream profile not resolved yet
 //   PendingTransform  profile resolved, still waiting for an anchor transform
 //   Active            streaming; only in this state are the counters below filled
-//   Detaching         declared and reflected to scripts, but publish_snapshot
-//                     does not currently produce it
+//   Detaching         NEVER PRODUCED. It is declared here and reflected to
+//                     scripts (ecs_runtime.cpp registers it as a constant), so
+//                     a world script can compare against it, but no code path
+//                     ever writes it: the only writer of `state` is
+//                     Coordinator::publish_snapshot in
+//                     src/streaming/sector_streaming_coordinator.cpp, and
+//                     teardown goes straight from Active to Detached. Script
+//                     code testing for Detaching is dead as written. Do not
+//                     remove the enumerator without also removing the
+//                     reflected constant — the numeric values of the four
+//                     states above must not shift.
 enum class SectorStreamingState : uint8_t {
     Detached, PendingProfile, PendingTransform, Active, Detaching
 };

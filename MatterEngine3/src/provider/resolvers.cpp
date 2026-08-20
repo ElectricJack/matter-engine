@@ -56,15 +56,6 @@ static uint64_t child_stable_id(uint64_t parent, uint64_t part_hash,
     return hash == 0 ? 1 : hash;
 }
 
-static ResolvedInstance to_resolved(const WorldManifestEntry& e, int lod) {
-    ResolvedInstance r;
-    r.part_hash = e.part_hash;
-    r.stable_id = e.instance_id;
-    r.lod_level = lod;
-    std::memcpy(r.transform, e.transform, sizeof(r.transform));
-    return r;
-}
-
 std::vector<ResolvedInstance>
 SectorLodResolver::resolve(const WorldState& state,
                            const lod_select::PartLodTable& lods,

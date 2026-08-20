@@ -38,6 +38,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -202,7 +203,8 @@ void gpu_memory_track_free(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
 // checked. K32GetProcessMemoryInfo is resolved once from kernel32 so the
 // binary need not link psapi, and everything degrades to zeroes if it is
 // missing. Linux: resident pages from /proc/self/statm at an assumed 4 KiB
-// page size; there is no peak there, so `peak_working_set_bytes` stays 0.
+// page size, and the peak from /proc/self/status's `VmHWM` (high-water mark,
+// reported in KiB). Either read failing leaves its field at 0.
 ProcessMemoryStats process_memory_stats() noexcept {
     ProcessMemoryStats s;
 #ifdef _WIN32
@@ -242,6 +244,17 @@ ProcessMemoryStats process_memory_stats() noexcept {
             s.working_set_bytes = static_cast<uint64_t>(pages) * 4096;
         fclose(f);
     }
+    if (FILE* st = fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), st)) {
+            unsigned long kib = 0;
+            if (sscanf(line, "VmHWM: %lu kB", &kib) == 1) {
+                s.peak_working_set_bytes = static_cast<uint64_t>(kib) * 1024;
+                break;
+            }
+        }
+        fclose(st);
+    }
 #endif
     return s;
 }
@@ -263,7 +276,7 @@ std::string debug_describe_device_address(uint64_t address, uint64_t span) {
     const uint64_t frame = g_device_address_frame.load(std::memory_order_relaxed);
     std::ostringstream out;
     out << std::hex;
-    size_t matches = 0;
+    size_t live_matches = 0;
     std::lock_guard<std::mutex> lock(g_device_address_mutex);
     for (const auto& entry : g_live_device_addresses) {
         const DeviceAddressRange& range = entry.second;
@@ -272,12 +285,20 @@ std::string debug_describe_device_address(uint64_t address, uint64_t span) {
             << range.size << ") from +0x" << site_rva(range.site)
             << ", created " << std::dec << age_ms(range.created) << " ms ago ("
             << (frame - range.created_frame) << " frames)" << std::hex << "; ";
-        ++matches;
+        ++live_matches;
     }
     // Newest-first: with VA reuse the most recent tenant of the range is the
-    // interesting one.
+    // interesting one -- which is exactly why the freed history gets its OWN
+    // budget rather than sharing one running count with the live loop above.
+    // Sharing it meant a fault inside a heavily aliased region (16+ live
+    // matches) skipped the freed scan entirely and omitted the likeliest
+    // culprit.
+    constexpr size_t kMaxFreedReported = 16;
+    size_t freed_matches = 0;
     for (auto it = g_freed_device_addresses.rbegin();
-         it != g_freed_device_addresses.rend() && matches < 16; ++it) {
+         it != g_freed_device_addresses.rend() &&
+         freed_matches < kMaxFreedReported;
+         ++it) {
         if (!in_range(*it)) continue;
         out << "FREED " << it->kind << " [0x" << it->base << " +0x" << it->size
             << ") from +0x" << site_rva(it->site) << ", destroyed " << std::dec
@@ -287,9 +308,12 @@ std::string debug_describe_device_address(uint64_t address, uint64_t span) {
                    it->freed - it->created)
                    .count()
             << " ms" << std::hex << "; ";
-        ++matches;
+        ++freed_matches;
     }
-    if (matches == 0) {
+    if (freed_matches == kMaxFreedReported)
+        out << std::dec << "(freed matches capped at " << kMaxFreedReported
+            << ")" << std::hex << "; ";
+    if (live_matches + freed_matches == 0) {
         // A miss is only evidence if the ring actually still holds the window
         // the fault could have come from. Say how far back it reaches, and
         // whether anything was evicted, so "untracked memory" and "aged out"

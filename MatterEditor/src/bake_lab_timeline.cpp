@@ -45,10 +45,10 @@ constexpr float kRowHeight = 20.0f;  // px per tree level, before the gap
 constexpr float kRowGap = 1.0f;      // px of vertical separation between rows
 constexpr double kMinSpanMs = 0.001;  // smallest allowed zoomed-in view width
 
-// FNV-1a over the (stable, interned) span name pointer's bytes... spans share
-// interned name pointers from bake_trace_names.h, but hashing the string
-// contents (not the pointer) keeps the same name always mapping to the same
-// color even across sources/collectors.
+// FNV-1a over the span name's CHARACTERS, not over the pointer. Spans do share
+// interned name pointers from bake_trace_names.h, but hashing the contents is
+// what keeps the same name mapping to the same colour across sources and
+// collectors, where the pointers need not agree.
 uint32_t hash_name(const char* name) {
     if (!name) return 0;
     uint32_t h = 2166136261u;

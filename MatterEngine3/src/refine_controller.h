@@ -89,11 +89,18 @@ struct InstanceRef {
 struct TileRecord {
     uint64_t coarse_hash = 0;  // resolved_hash of the coarse variant; 0 = absent
     uint64_t full_hash   = 0;  // resolved_hash of the full-res variant; 0 = absent
-    // Stays {0,0,0} — indistinguishable from a real tile at the world origin —
-    // when coarse_hash is 0 or no instance in the manifest carried that hash.
-    // A graph/manifest mismatch therefore shows up as tiles piled at the origin
-    // (and so refined first), not as an error.
+    // Only meaningful when `placed` is true. Stays {0,0,0} otherwise, which is
+    // why `placed` exists: {0,0,0} is a perfectly ordinary world position, so
+    // the flag is the only thing that separates "tile at the origin" from "tile
+    // whose coarse variant is nowhere in the manifest".
     float    pos[3] = {0, 0, 0};  // tile world center (instance translation + TILE_SIZE/2)
+    // True once build() matched `coarse_hash` to a manifest instance and filled
+    // in pos/manifest_idx from it. False means the graph named a tile the world
+    // never placed: its pos would read as the origin (so next() would rank it
+    // first) and its manifest_idx would read as 0 (so a refine would swap a
+    // DIFFERENT instance's part hash). next() therefore skips unplaced tiles
+    // entirely -- they are not refinable, and there is nothing to evict.
+    bool     placed = false;
     // Coarse — only the coarse variant is placed.  The ONLY state next() will
     //          return, so a tile has to be moved out of it (normally to Queued)
     //          to stop being handed back again.
@@ -137,7 +144,8 @@ public:
     // Counts by scanning every tile; no running counter is maintained.
     size_t full_count() const;
 
-    // Highest-priority tile not yet Full/Queued, nearest to focus.
+    // Highest-priority PLACED tile not yet Full/Queued, nearest to focus.
+    // Tiles with placed == false are never returned (see TileRecord::placed).
     // Distance is 3D (includes y); for ground-plane tiles with pos[1]=0, caller must account
     // for camera height when comparing distances.
     // Returns false if none pending; sets *out to the record.

@@ -311,6 +311,18 @@ AnimationTransform forward_clip_root_delta(const RuntimeGraphClip& clip, float p
     // boundary always means the cycle START, so resolve it that way rather than
     // letting fmod round it to the far end and report a cycle of travel lost.
     bool cursor_on_boundary = on_loop_boundary(previous, clip.duration);
+    // Work cap, and the one place this function can return a WRONG answer
+    // rather than a partial one the caller can detect: a window spanning more
+    // than kMaxSegments whole cycles stops early and the shortfall is
+    // indistinguishable from a complete walk (the return type has no error
+    // channel). The window is one fixed step of GRAPH time, i.e.
+    // `fixed_delta_seconds * clip.rate`, so this bites only when
+    // `fixed_delta * rate > 4096 * duration` -- unreachable at rate 1 with a
+    // second-long clip, but reachable for a very short clip driven at a very
+    // large authored `rate`. Deliberately NOT converted into an evaluation
+    // failure: `evaluate` would then reject that instance on every tick
+    // forever (the window is a constant per-tick delta, so it never shrinks),
+    // freezing the animator instead of merely under-reporting its travel.
     constexpr uint32_t kMaxSegments = 4096;
     for (uint32_t segment = 0; cursor < current && segment < kMaxSegments; ++segment) {
         const float boundary = cursor_on_boundary
@@ -505,8 +517,13 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
     std::map<uint64_t,State::DefinitionShape> batch_shapes;
     std::set<uint64_t> conflicting_instances;
     bool all=true;
+    // First pass: conflict detection ONLY. An inadmissible request is skipped
+    // here without touching `all` or `stats_`, because the second pass below
+    // re-tests exactly these conditions and is the single place that both
+    // clears `all` and records the specific `AnimationFallbackReason`.
+    // Rejecting here as well would double-count the fallback.
     for(const auto& request:requests) {
-        if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition) || !within_budget(*request.definition,budget_.limits)) { all=false; continue; }
+        if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition) || !within_budget(*request.definition,budget_.limits)) continue;
         const uint64_t instance_key=key(request.instance); const State::DefinitionShape shape=shape_for(request);
         const auto [it,inserted]=batch_shapes.emplace(instance_key,shape);
         if(!inserted && !same_shape(it->second,shape)) conflicting_instances.insert(instance_key);

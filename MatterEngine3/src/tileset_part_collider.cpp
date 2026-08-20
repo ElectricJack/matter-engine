@@ -46,6 +46,17 @@ namespace tileset {
 // are not consulted: the triangles go into the fit exactly as stored, with no
 // placement transform applied.
 //
+// THAT IS SOUND, AND HERE IS THE INVARIANT IT RESTS ON. A part bundle's
+// internal draw records are all IDENTITY. `script_host.cpp` is the only caller
+// of `part_asset::save_v2` in the tree, and every one of its `tlas.draw()` sites
+// is preceded by `tlas.load_identity()`, so the transform column serialized in
+// the instance table is always the identity and re-applying it would be a no-op.
+// The one thing that IS placed -- `placeChild()` output -- is not in this BLAS
+// at all; it lives in the separate child-instance table and belongs to a
+// different part. If a second save_v2 producer ever records a non-identity draw,
+// this fit becomes wrong and must start walking `tlas.get_draw_records()` and
+// transforming each entry's triangles by `r.transform` (mm::transform_point).
+//
 // Vertices are NOT deduplicated, so a shared vertex is weighted once per
 // triangle that uses it. That biases the PCA frame toward densely tessellated
 // regions; it is accepted because the output is a settle-time proxy, not a

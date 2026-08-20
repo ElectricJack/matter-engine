@@ -79,11 +79,21 @@ struct PosKeyEq {
 // The `seen` map records the FIRST (triangle, edge slot) to claim each edge
 // and links the second one to it symmetrically.
 //
-// Consequence for non-manifold input: a third triangle on the same edge finds
-// the stale first claimant still in the map and re-links against it,
-// clobbering the earlier pairing on one side only. The result is an
-// asymmetric graph rather than an error — nothing here detects or reports the
-// condition, so callers must supply manifold meshes.
+// Non-manifold input: an edge is CONSUMED by the pair that claims it first.
+// Once two triangles are linked across an edge, the map entry is retired
+// (tri = -1) and any third or later triangle on that same edge gets no
+// neighbour there — its slot stays -1 and reads as a boundary. The retirement
+// is what makes the graph SYMMETRIC unconditionally: adj[a].nbr[i] == b
+// implies adj[b].nbr[j] == a for every input, manifold or not. (Without it a
+// third claimant re-linked against the stale first claimant and clobbered one
+// side of the earlier pairing, leaving A pointing at C while B still pointed
+// at A — a lopsided graph that segment_charts then flood-filled through in one
+// direction only.) Which two triangles win is first-come, i.e. ascending
+// triangle then edge-slot order, so it is still deterministic.
+//
+// Nothing here reports that it happened; the extra boundaries simply split the
+// mesh into more charts than a manifold version of it would produce. Callers
+// that must know about non-manifold geometry have to detect it themselves.
 //
 // The 16- and 32-bit public overloads both instantiate this template, so the
 // two index widths are guaranteed to behave identically.
@@ -105,7 +115,8 @@ std::vector<TriAdj> build_adjacency_impl(const float* positions, const IndexT* i
     std::vector<TriAdj> adj(triCount);
     for (auto& a : adj) { a.nbr[0]=a.nbr[1]=a.nbr[2]=-1; }
 
-    // edge (sorted welded id pair) -> first (tri, edgeSlot) that claimed it.
+    // edge (sorted welded id pair) -> the (tri, edgeSlot) waiting for a
+    // partner, or tri == -1 once the edge has been paired and retired.
     std::unordered_map<uint64_t, std::pair<int,int>> seen;
     seen.reserve((size_t)triCount * 3);
     for (int t=0;t<triCount;++t) {
@@ -117,11 +128,15 @@ std::vector<TriAdj> build_adjacency_impl(const float* positions, const IndexT* i
             auto it = seen.find(key);
             if (it == seen.end()) {
                 seen.emplace(key, std::make_pair(t,e));
-            } else {
+            } else if (it->second.first >= 0) {
                 int ot = it->second.first, oe = it->second.second;
                 adj[t].nbr[e]  = ot;
                 adj[ot].nbr[oe] = t;
+                it->second.first = -1;   // edge consumed; later claimants get -1
             }
+            // else: a third-or-later triangle on a non-manifold edge. Leaving
+            // its slot at -1 keeps the graph symmetric instead of clobbering
+            // the pairing that already exists.
         }
     }
     return adj;
@@ -303,18 +318,30 @@ static bool shelf_pack(const std::vector<ChartRect>& charts, int atlasW, int atl
 // resolution on the table. 24 attempts bottom out around 2% of the initial
 // guess, well past anything usable, so exhausting them means the input is
 // unpackable rather than merely awkward.
+//
+// Both outputs are cleared up front and left cleared on every failure path,
+// matching pack_charts_paged. shelf_pack writes `placements` as it goes and
+// leaves a rejected attempt's partial layout behind, so the final clear on the
+// exhausted-attempts path is what keeps a false return from handing the caller
+// coordinates that were never accepted.
 bool pack_charts(const std::vector<ChartRect>& charts, int atlasW, int atlasH, int pad,
                  float& scale, std::vector<ChartPlacement>& placements) {
+    scale = 0.0f;
+    placements.clear();
     if (charts.empty() || atlasW<=0 || atlasH<=0) return false;
     double area = 0.0;
     for (const auto& c : charts) area += (double)std::max(c.w,1e-6f) * std::max(c.h,1e-6f);
     if (area <= 0.0) return false;
     // Initial guess assumes 55% fill; iterate down if packing overflows.
-    scale = (float)std::sqrt(0.55 * (double)atlasW * (double)atlasH / area);
+    float s = (float)std::sqrt(0.55 * (double)atlasW * (double)atlasH / area);
     for (int attempt=0; attempt<24; ++attempt) {
-        if (shelf_pack(charts, atlasW, atlasH, pad, scale, placements)) return true;
-        scale *= 0.85f;
+        if (shelf_pack(charts, atlasW, atlasH, pad, s, placements)) {
+            scale = s;
+            return true;
+        }
+        s *= 0.85f;
     }
+    placements.clear();
     return false;
 }
 
@@ -322,12 +349,12 @@ bool pack_charts(const std::vector<ChartRect>& charts, int atlasW, int atlasH, i
 // Page-aligned packing
 // ---------------------------------------------------------------------------
 
-// Shelf pack of page-aligned blocks (all sizes in PAGES) into a fixed width;
-// returns the used height in pages (0 = a block was wider than the atlas).
-// Note the overloaded 0 return: it means "a block was wider than the atlas",
-// but an empty block list would also return 0 (shelfY + shelfH with nothing
-// placed). pack_charts_paged rejects the empty case before calling, so the
-// ambiguity is unreachable there; any new caller must do the same.
+// Shelf pack of page-aligned blocks (all sizes in PAGES) into a fixed width.
+// Returns the used height in pages, or -1 when a block is wider than the
+// atlas. The failure value is -1 rather than 0 so that it cannot be confused
+// with the legitimate 0 an empty block list produces; pack_charts_paged
+// rejects the empty case before calling, but the two outcomes are distinct
+// here so that a future caller cannot inherit that ambiguity.
 static int shelf_pack_pages(const std::vector<std::pair<int,int>>& blocks, // (wPages,hPages)
                             const std::vector<int>& order, int widthPages,
                             std::vector<std::pair<int,int>>& out /* (x,y) pages */) {
@@ -337,7 +364,7 @@ static int shelf_pack_pages(const std::vector<std::pair<int,int>>& blocks, // (w
     for (int oi=0; oi<n; ++oi) {
         const int i = order[oi];
         const int w = blocks[i].first, h = blocks[i].second;
-        if (w > widthPages) return 0;
+        if (w > widthPages) return -1;
         if (cursorX + w > widthPages) { shelfY += shelfH; cursorX = 0; shelfH = 0; }
         out[i] = {cursorX, shelfY};
         cursorX += w; if (h > shelfH) shelfH = h;

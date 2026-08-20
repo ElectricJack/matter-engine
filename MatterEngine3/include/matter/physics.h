@@ -309,15 +309,20 @@ struct PhysicsModule {
 // `ColliderProperties::category_bits`. `physics_overlap_sphere` returns an empty
 // vector both for "no module" and for "nothing overlapped".
 // ---------------------------------------------------------------------------
-const PhysicsEvents& physics_events(const flecs::world&);
-PhysicsStats physics_stats(const flecs::world&);
-bool physics_teleport(flecs::entity, Float3, Quaternion);
-bool physics_set_velocity(flecs::entity, Float3, Float3);
-bool physics_apply_force(flecs::entity, Float3);
-bool physics_apply_impulse(flecs::entity, Float3);
-bool physics_wake(flecs::entity);
-bool physics_ray_cast(flecs::world&, Float3, Float3, uint64_t, PhysicsRayHit&);
+const PhysicsEvents& physics_events(const flecs::world& world);
+PhysicsStats physics_stats(const flecs::world& world);
+bool physics_teleport(flecs::entity entity, Float3 position,
+                      Quaternion rotation);
+bool physics_set_velocity(flecs::entity entity, Float3 linear, Float3 angular);
+bool physics_apply_force(flecs::entity entity, Float3 force);
+bool physics_apply_impulse(flecs::entity entity, Float3 impulse);
+bool physics_wake(flecs::entity entity);
+// `translation` is the ray's full displacement, NOT a direction: the far end
+// is `origin + translation`, so passing a normalized direction casts exactly
+// one metre. See the block comment above.
+bool physics_ray_cast(flecs::world& world, Float3 origin, Float3 translation,
+                      uint64_t category_mask, PhysicsRayHit& hit);
 std::vector<flecs::entity_t> physics_overlap_sphere(
-    flecs::world&, Float3, float, uint64_t);
+    flecs::world& world, Float3 center, float radius, uint64_t category_mask);
 
 } // namespace matter::physics

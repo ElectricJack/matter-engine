@@ -308,18 +308,18 @@ public:
     // any handle still held elsewhere dangles -- and restarts handle issuance
     // at 1, so later handles reuse numbers already handed out.
     //
-    // Note: unlike the register_* and release_blas paths, clear() sets the
-    // totals-dirty flag directly instead of going through mark_dirty(), so
-    // content_revision() does NOT move. A consumer that gates its re-upload
-    // purely on content_revision() will not observe the wipe.
+    // Like the register_* and release_blas paths, clear() goes through
+    // mark_dirty(), so content_revision() moves and a consumer gating its
+    // re-upload on content_revision() observes the wipe.
     // Clear all BLAS entries (use with caution - invalidates all existing handles)
     void clear();
 
 private:
     // Mark data as dirty when BLAS changes
     // Invariant: every mark_dirty() call site is a change to the flattened
-    // content (an entry pushed in register_triangles/register_prebuilt, or an
-    // entry erased in release_blas). Ref-count-only paths deliberately do NOT
+    // content (an entry pushed in register_triangles/register_prebuilt, an
+    // entry erased in release_blas, or every entry dropped by
+    // clear()/reset_stats()). Ref-count-only paths deliberately do NOT
     // call it. content_revision_ is bumped here to stay 1:1 with that fact — if
     // a future call site invalidates caches WITHOUT changing content, split the
     // bump back out rather than letting the counter over-report.

@@ -865,7 +865,7 @@ void test_reconcile_only_revisits_dirty_bodies_and_fails_closed() {
           "retirement pass");
 }
 
-void test_dynamic_pull_uses_bridge_owned_pending_state_without_allocations() {
+void test_dynamic_pull_writeback_does_not_rebuild_bodies() {
     ecs_runtime::Runtime runtime;
     flecs::world& world = runtime.world();
     world.set<physics::PhysicsSettings>({{0.0f, 0.0f, 0.0f}, 1});
@@ -883,8 +883,20 @@ void test_dynamic_pull_uses_bridge_owned_pending_state_without_allocations() {
         physics::detail::context(world);
     runtime.tick({0.1f, 0.1f, 1});
     runtime.tick({0.1f, 0.1f, 1});
-    CHECK(context.physics_transform_marker_allocations_for_test() == 0,
-          "dynamic Pull records deferred transform ownership without heap marker inserts");
+    // Pull writes LocalTransform back onto every moved dynamic body. The
+    // transform observer would normally read that as an authored pose change
+    // and schedule a reconcile, which rebuilds the native body. The bridge's
+    // own `physics_transform_pending` bit is what suppresses it — so the
+    // observable proof is that two ticks of motion rebuild NOTHING.
+    const physics::PhysicsStats stats = context.stats();
+    CHECK(stats.bodies_created == 64,
+          "dynamic Pull's own transform write never rebuilds a body");
+    CHECK(stats.bodies_destroyed == 0,
+          "dynamic Pull's own transform write never retires a bridge");
+    CHECK(stats.live_bodies == 64,
+          "every dynamic body survives the pull-driven transform writes");
+    CHECK(stats.stale_events == 0,
+          "no move event fails to resolve back to its bridge");
 }
 
 bool near(float actual, float expected, float tolerance = 1.0e-3f) {
@@ -2245,7 +2257,7 @@ int main() {
     test_dynamic_replacement_preserves_box3d_state();
     test_hash_collision_cannot_hide_configuration_change();
     test_reconcile_only_revisits_dirty_bodies_and_fails_closed();
-    test_dynamic_pull_uses_bridge_owned_pending_state_without_allocations();
+    test_dynamic_pull_writeback_does_not_rebuild_bodies();
     test_dynamic_sphere_falls_onto_static_floor();
     test_static_and_kinematic_edits_push_before_step();
     test_dynamic_pose_velocity_and_descendant_pull_before_fixed_post_update();

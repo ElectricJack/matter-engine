@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>      // std::llround (was arriving transitively)
 #include <cstdint>
 #include <cstring>
 #include <unordered_map>

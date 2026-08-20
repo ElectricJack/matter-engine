@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "chart_atlas.h"
+#include "terrain_field.h"   // kMaxSurfaceMaterials (the source of truth)
 #include "vt_types.h"
 
 namespace vt {
@@ -86,9 +87,23 @@ struct GpuTri {
 };
 static_assert(sizeof(GpuTri) == 160, "GpuTri must match std430 layout");
 
-// Per-vertex tape weight columns packed into the triangle stream — must equal
-// terrain_field::kMaxSurfaceMaterials and the shader packing width.
-constexpr uint32_t kVtMaxSurfaceMaterials = 8;
+// Per-vertex tape weight columns packed into the triangle stream. DERIVED
+// from terrain_field::kMaxSurfaceMaterials rather than restated, because the
+// two silently disagreeing is a mis-decode of every tape weight; the shader
+// packing width must be changed with it.
+constexpr uint32_t kVtMaxSurfaceMaterials =
+    static_cast<uint32_t>(terrain_field::kMaxSurfaceMaterials);
+
+// MODE-3 f16 field lanes one vertex can carry, taken from GpuTri's own rows
+// rather than written out again: one 16 B row per vertex, two halves per u32.
+// vt_surface_tape.h's kVtMaxSurfaceLanes must agree -- vt_compositor.cpp,
+// which sees both headers, static_asserts that it does.
+// (Split in two so the division is not a `sizeof(array) / sizeof(type)`
+// idiom, which -Wsizeof-array-div flags because the element type differs.)
+constexpr uint32_t kGpuTriLaneBytesPerVertex =
+    static_cast<uint32_t>(sizeof(GpuTri::wA));
+constexpr uint32_t kGpuTriLanesPerVertex =
+    kGpuTriLaneBytesPerVertex / static_cast<uint32_t>(sizeof(uint16_t));
 
 // True when `ctx` carries a usable surfaces()-tape classification (WP-F).
 inline bool vt_context_has_tape(const VtPartContext& ctx) {
@@ -135,7 +150,7 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
     const bool has_tape = vt_context_has_tape(ctx);
     const uint32_t tape_cols = has_tape ? ctx.surface_material_count : 0;
     const bool pack_lanes = lanes != nullptr && lane_count > 0 &&
-                            lane_count <= 8u;
+                            lane_count <= kGpuTriLanesPerVertex;
 
     out_charts.resize(atlas.charts.size());
     out_tris.reserve(atlas.tri_order.size());

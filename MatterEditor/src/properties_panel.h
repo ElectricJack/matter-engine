@@ -62,6 +62,21 @@ struct FieldCommands {
     std::function<bool(matter::scene::SceneEntityId, const char*, const char*, matter::Float3)> set_float3;
     std::function<bool(matter::scene::SceneEntityId, const char*, const char*, matter::Quaternion&)> get_quat;
     std::function<bool(matter::scene::SceneEntityId, const char*, const char*, matter::Quaternion)> set_quat;
+    // Not a field accessor: the local->world matrix of the entity's PARENT,
+    // which is what turns a LocalTransform into a world placement. Written as
+    // matter::ecs::WorldTransform stores it — ROW-major with COLUMN-vector
+    // algebra, translation in m[3], m[7] and m[11].
+    //
+    // Writes IDENTITY and returns true for a root entity, or for one whose
+    // parent has no propagated WorldTransform yet; returns false only when the
+    // entity itself does not resolve. Callers must therefore treat "true" as
+    // "the matrix below is authoritative" and a false as "fall back to treating
+    // LocalTransform as a world transform".
+    //
+    // NULLABLE, unlike the accessors above: gizmo.cpp is the only consumer and
+    // degrades to the parentless interpretation when it is unset (which is what
+    // any harness constructing a partial FieldCommands gets).
+    std::function<bool(matter::scene::SceneEntityId, matter::Mat4f&)> get_parent_world_matrix;
 };
 
 // A single field's last-known value(s), used both as the live display value

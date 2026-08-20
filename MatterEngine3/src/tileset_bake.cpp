@@ -635,16 +635,13 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 // Settle-result cache — plain little-endian binary serialization.
 //
 // File header (fixed):
-//   uint32_t magic    = 0x544C5343  ('CSTL' = Cache SeTtLe)
-//   uint32_t version  = 1
+//   uint32_t magic    = kSettleCacheMagic   = 0x434C5453 ('STLC' little-endian)
+//   uint32_t version  = kSettleCacheVersion = 2
 //   uint64_t key                 (lookup key written at save time)
 //   uint64_t version_digest      (matter_version::digest(); M4)
 //
-// STALE ABOVE, corrected here rather than rewritten: the two literals in the
-// header sketch have drifted from the constants that actually implement it.
-// `kSettleCacheMagic` is 0x434C5453 ('STLC' little-endian), not 0x544C5343,
-// and `kSettleCacheVersion` is 2, not 1 -- both are defined immediately below
-// this block and are what save writes and load compares.
+// Both constants are defined immediately below this block; save writes them and
+// load compares against them, so this sketch has exactly one source of truth.
 //
 // Body (all little-endian):
 //   TileConfig cfg               (5 floats + 1 uint64 + 2 floats = fixed layout)

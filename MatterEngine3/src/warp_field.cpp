@@ -1503,13 +1503,15 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
     }
 
     // Assemble the output field.
+    //
+    // compute_stats runs BEFORE the move, against `mesh` itself. It used to run
+    // after, against a `SolveMesh view` rebuilt by COPYING out.positions and
+    // out.indices back -- two full vector copies per sector solve purely to
+    // reconstitute a shape that was intact one line earlier. `mesh.tri_area` is
+    // likewise left in place and read directly by the Jacobian loop below.
+    compute_stats(mesh, uv, out.stats);
     out.positions = std::move(mesh.positions);
     out.indices = std::move(mesh.indices);
-    SolveMesh view;  // stats/jacobians need the mesh shape back
-    view.positions = out.positions;
-    view.indices = out.indices;
-    view.tri_area = std::move(mesh.tri_area);
-    compute_stats(view, uv, out.stats);
 
     // Per-vertex uv + area-weighted Jacobian rows.
     out.verts.assign(out.positions.size(), VertexField{});
@@ -1521,7 +1523,7 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
         float3 gu, gv;
         tri_jacobian(out.positions[i[0]], out.positions[i[1]],
                      out.positions[i[2]], uv[i[0]], uv[i[1]], uv[i[2]], gu, gv);
-        const float w = view.tri_area[t];
+        const float w = mesh.tri_area[t];
         for (int c = 0; c < 3; ++c) {
             out.verts[i[c]].gu = out.verts[i[c]].gu + gu * w;
             out.verts[i[c]].gv = out.verts[i[c]].gv + gv * w;

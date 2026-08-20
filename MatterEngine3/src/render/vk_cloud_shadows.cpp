@@ -409,8 +409,9 @@ void VkCloudShadows::request_cloud_layers(const matter::FogSettings& fog) {
 }
 
 bool VkCloudShadows::create_emergency_images(std::string& error) {
+    // No lifetime list here: clear_images() collects its own from `images`
+    // and hands it to the immediate submit.
     std::vector<matter::VkImageResource*> images;
-    std::vector<std::shared_ptr<void>> lifetimes;
     for (auto& image : emergency_) {
         if (!matter::create_image(
                 *vulkan_, VK_IMAGE_TYPE_3D, VK_FORMAT_R16_SFLOAT, {1, 1, 1},
@@ -423,7 +424,6 @@ bool VkCloudShadows::create_emergency_images(std::string& error) {
             return false;
         }
         images.push_back(&image);
-        lifetimes.push_back(image.lifetime);
     }
     return clear_images(images, error);
 }

@@ -65,6 +65,11 @@ void merge_feature_bits(Features& destination, const Features& source) {
     // remaining member is VkBool32.  Preserve the caller-owned pNext chain.
     constexpr size_t kFirstFeature = sizeof(VkBaseOutStructure);
     static_assert(sizeof(Features) >= kFirstFeature);
+    // Catches the cheapest form of the hazard above: a member added after the
+    // header whose size or alignment leaves the tail no longer a whole number
+    // of VkBool32s. It cannot catch a 4-byte non-bool member.
+    static_assert((sizeof(Features) - kFirstFeature) % sizeof(VkBool32) == 0,
+                  "feature struct tail must be whole VkBool32s");
     auto* destination_bits = reinterpret_cast<VkBool32*>(
         reinterpret_cast<unsigned char*>(&destination) + kFirstFeature);
     const auto* source_bits = reinterpret_cast<const VkBool32*>(

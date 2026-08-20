@@ -74,8 +74,14 @@ struct HashKeyHash {
  *
  * `tick` is a monotonic counter, persisted in refs.bin and consumed by both
  * put() and lookup(); it is the LRU clock and has nothing to do with wall
- * time. `dirty` records that the in-memory table has diverged from the file --
- * note that no code currently reads it, so flush() rewrites unconditionally. */
+ * time.
+ *
+ * There is deliberately no `dirty` flag here, unlike BlobStore::Impl. flush()
+ * rewrites refs.bin unconditionally, which is what makes an explicit flush()
+ * on an untouched table still produce the file a fresh store does not have
+ * yet. A flag was carried here for a while, set by every mutator and read by
+ * nothing; it was removed rather than wired up, because gating flush() on it
+ * would turn that first flush() into a silent no-op. */
 struct RefTable::Impl {
     BlobStore* store = nullptr;
     RefTableConfig cfg;
@@ -87,7 +93,6 @@ struct RefTable::Impl {
     std::unordered_map<BlobHash, HashCount, HashKeyHash> by_hash;
 
     uint64_t tick = 1;
-    bool dirty = false;
 
     std::string refs_path() const { return join(dir, "refs.bin"); }
     std::string refs_tmp_path() const { return join(dir, "refs.tmp"); }
@@ -180,9 +185,16 @@ std::unique_ptr<RefTable> RefTable::open(BlobStore& store, const RefTableConfig&
 }
 
 /* Bind key -> blob, counting a fresh reference and stamping the LRU tick.
+ *
  * `size` comes from the caller and is never checked against the store, yet it
- * is what the budget is measured in; if two keys name the same blob with
- * different sizes, the last one written owns that blob's accounting. */
+ * is what the budget is measured in. If two keys name the same blob with
+ * DIFFERENT sizes the last one written owns that blob's accounting, and the
+ * two halves of the budget then disagree: live_bytes() sums by_hash (the
+ * last-written size) while evict_to_budget() subtracts the evicted REF's
+ * size, so evicting the ref that did not win leaves the running total off by
+ * the difference until the next reindex_hashes(). Pass the blob's real
+ * payload length -- for a content-addressed blob there is only one correct
+ * value, and disagreeing about it is a caller bug this layer cannot catch. */
 bool RefTable::put(const std::string& key, const BlobHash& h, uint32_t kind, uint64_t size) {
     Impl& d = *d_;
     if (!h.valid()) return false;
@@ -204,7 +216,6 @@ bool RefTable::put(const std::string& key, const BlobHash& h, uint32_t kind, uin
     HashCount& hc = d.by_hash[h];
     hc.size = size;
     hc.refs += 1;
-    d.dirty = true;
     return true;
 }
 
@@ -216,7 +227,6 @@ bool RefTable::lookup(const std::string& key, RefInfo* out) {
     auto it = d.refs.find(key);
     if (it == d.refs.end()) return false;
     it->second.last_access = d.tick++;
-    d.dirty = true;
     if (out) *out = it->second;
     return true;
 }
@@ -236,7 +246,6 @@ bool RefTable::erase(const std::string& key) {
     auto oh = d.by_hash.find(it->second.hash);
     if (oh != d.by_hash.end() && --oh->second.refs == 0) d.by_hash.erase(oh);
     d.refs.erase(it);
-    d.dirty = true;
     return true;
 }
 
@@ -286,7 +295,6 @@ EvictStats RefTable::evict_to_budget() {
         if (last_ref) { live -= sz; st.bytes_freed += sz; }
     }
     st.bytes_live_after = live;
-    d.dirty = true;
     return st;
 }
 
@@ -348,7 +356,6 @@ bool RefTable::flush() {
     os::close(f);
     if (!ok) { os::remove_file(tmp); return false; }
     if (!os::rename_over(tmp, d.refs_path())) { os::remove_file(tmp); return false; }
-    d.dirty = false;
     return true;
 }
 

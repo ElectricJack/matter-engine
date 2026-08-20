@@ -115,7 +115,10 @@ typedef unsigned short ushort;
 // load-bearing, not an oversight — `BVHNode` and `TLASNode` rely on a
 // `float3` leaving the fourth 4-byte slot of a 16-byte union free for a packed
 // integer. Adding ALIGN(16) to float3 would silently corrupt both layouts.
-// vector type placeholders, carefully matching OpenCL's layout and alignment
+// OpenCL-STYLE vector types. int2/uint2/float2/float4 do match OpenCL's layout
+// and alignment; `float3` deliberately does NOT — OpenCL's cl_float3 is a
+// 16-byte, 16-byte-aligned type, and this one is 12 bytes with no alignment
+// attribute, exactly so the BVH/TLAS node unions can reuse the fourth slot.
 struct ALIGN( 8 ) int2
 {
 	int2() = default;

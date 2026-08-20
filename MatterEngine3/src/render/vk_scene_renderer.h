@@ -104,7 +104,8 @@
 #include "vk_animation_bounds.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
-// For VkComputePipelineResource (the HZB pyramid's per-level build pipelines).
+// For VkComputePipelineResource (the visible-id reduce pass; the HZB pyramid
+// that used to be this header's other user was deleted in M4).
 #include "vk_pipeline.h"
 #include "vk_temporal.h"
 #include "vt_compositor.h"  // WP-D: tier-1 page compositor (the filler)
@@ -301,9 +302,9 @@ struct RasterDebugPushConstants {
     uint32_t impostor_parallax_enabled = 1;
 };
 // FIVE words now. The GLSL block is declared identically in BOTH gbuffer.frag
-// and raster.vert; all three must be changed together, and the shaders need
-// `make -C MatterEngine3 vulkan-spirv` -- a plain build silently keeps the old
-// SPIR-V and the new word reads as garbage.
+// and raster.vert; all three must be changed together. (The default
+// `make -C MatterEngine3` target rebuilds SPIR-V whenever a shader source
+// changes, so no separate shader target has to be remembered.)
 static_assert(sizeof(RasterDebugPushConstants) == 20,
               "raster debug push constants must remain five uint32_t words");
 
@@ -311,11 +312,15 @@ static_assert(sizeof(RasterDebugPushConstants) == 20,
 // variant must never produce a mixed fill/line frame, and must never leave the
 // push constant claiming wireframe while filled triangles are drawn.
 //
-// The reference branch carried a third member here for the far-field impostor
-// sidecar (a five-vertex LINE_STRIP perimeter rather than polygon-line over
-// the fill quad's diagonal). There is no impostor system on this base, so that
-// member and its perimeter contract are deliberately absent; add them back
-// with the impostor pipeline, not before.
+// There is no impostor member here even though this base HAS impostors
+// (M2.5: VkScenePartImpostor, impostor_atlas_, adopt_part_impostors,
+// lod_is_billboard). An impostor is two ordinary triangles on the same LOD
+// ladder, drawn through `static_mesh` and distinguished only by
+// impostor::kQuadMarker in the vertex `surface.x`, so it needs no pipeline of
+// its own. What IS absent is the reference branch's far-field impostor
+// SIDECAR pipeline -- a five-vertex LINE_STRIP perimeter, used in wireframe
+// instead of polygon-line over the fill quad's diagonal. Add that member back
+// with the sidecar, not before.
 struct RasterPipelineSet {
     VkPipeline static_mesh = VK_NULL_HANDLE;
     VkPipeline skinned_mesh = VK_NULL_HANDLE;
@@ -1915,9 +1920,11 @@ private:
     struct RtLodRecord {
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
-        // first_index is part-local (NOT rebased; stored this way so compaction
-        // in release_part does not invalidate surviving parts' rt_lods).
-        // Consumers address the per-part rt_index buffer directly via this offset.
+        // first_index is part-local and is NOT rebased, because there is
+        // nothing to rebase it against: RT indices live in the part's OWN
+        // rt_index buffer (PartRecord::rt_index), not in a shared arena the
+        // way the raster lane's index_staging_ works. Consumers address that
+        // buffer directly via this offset.
         uint32_t first_index = 0;    // part-local index into rt_index buffer
         uint32_t index_count = 0;    // 3 × triangle count
         uint32_t primitive_count = 0;
@@ -2711,9 +2718,10 @@ private:
 
     // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
     TilesetSlotGpu tileset_slots_[tileset::kMaxTilesetSlots]{};
-    // One dummy per distinct format among the 4 channels (albedo and ORM
-    // share R8G8B8A8_UNORM, so 3 dummies cover all 4 channel roles).
-    TilesetImage tileset_dummy_rgba8_;  // albedo, orm
+    // One dummy per distinct FORMAT, not per channel: the six
+    // kTilesetChannel* roles use only three formats, so 3 dummies cover all 6
+    // (see tileset_channel_view's switch, whose default is the RGBA8 one).
+    TilesetImage tileset_dummy_rgba8_;  // albedo, orm, horizon A/B
     TilesetImage tileset_dummy_rg8_;    // normal
     TilesetImage tileset_dummy_r16_;    // height
     VkSampler tileset_sampler_ = VK_NULL_HANDLE;
@@ -3106,10 +3114,14 @@ private:
     uint64_t command_generation_ = 1;
     // What the next upload_scene_buffers() owes the static cluster/vertex/
     // index buffers. kAppend is only valid while every mutation since the
-    // last upload was a pure tail-append (register_part); anything that
-    // rewrites existing bytes (release_part compaction, reset) must escalate
-    // to kFull, because in-flight frames read the live buffers and only a
-    // disjoint tail write is safe in place.
+    // last upload was a pure tail-append (register_part) or a write into a
+    // range the free lists have quarantined for a full in-flight window;
+    // anything that rewrites bytes an in-flight frame may still read must
+    // escalate to kFull, because kFull allocates NEW buffers and moves them
+    // in. Today the only escalation left is a static-capacity overflow in
+    // upload_scene_buffers -- release_part does NOT compact (it just returns
+    // ranges to the recyclers) and reset() idles the device and restarts from
+    // kClean.
     enum class StaticUpload : uint8_t { kClean, kAppend, kFull };
     // kCLEAN, not kFull. The buffers are RESERVED at init(), so seeding is just
     // an append of every registered range -- register_part is the only writer

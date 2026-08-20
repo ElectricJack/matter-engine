@@ -958,6 +958,74 @@ static void test_crc32_is_correct() {
     CHECK(missed == 0, "every single-bit flip changed the checksum (%d missed)", missed);
 }
 
+/* reload_index() skips the reload when os::stamp_of() reports the same stamp,
+ * so a stamp that can repeat across a real commit is a silent stale read.
+ *
+ * The narrowest way to make two DIFFERENT indexes the same length is a
+ * compact() that keeps everything: pack count and entry count are unchanged,
+ * so index.bin is byte-for-byte the same SIZE while its generation, offsets
+ * and CRC all move. Run back to back it also lands inside one second. That is
+ * exactly the case the old POSIX stamp -- whole-second st_mtime XOR size --
+ * could not see, leaving the reader pinned to a generation whose pack files
+ * had just been deleted. (Win32's 100 ns file time always caught it, so this
+ * test only ever went red on POSIX; it is here so it stays that way.)
+ *
+ * The check is on the effect, not on the stamp: after the writer commits, a
+ * reader that calls reload_index() must be able to read the blob. */
+static void test_reload_sees_a_same_size_commit(const std::string& root) {
+    printf("- reload: a same-second, same-length index commit is not missed\n");
+    std::string dir = root + "/reload";
+    rm_tree(dir);
+
+    std::string err;
+    std::vector<uint8_t> buf;
+    BlobHash h;
+
+    StoreConfig wcfg;
+    wcfg.dir = dir;
+    auto w = BlobStore::open(wcfg, &err);
+    CHECK(w != nullptr, "open writer: %s", err.c_str());
+    if (!w) return;
+    fill_payload(buf, 909090, 6000);
+    CHECK(w->put(buf.data(), buf.size(), &h) == Status::Ok, "put the blob");
+    CHECK(w->flush_index(), "commit the first index");
+
+    StoreConfig rcfg;
+    rcfg.dir = dir;
+    rcfg.read_only = true;
+    auto r = BlobStore::open(rcfg, &err);
+    CHECK(r != nullptr, "open reader: %s", err.c_str());
+    if (!r) return;
+    CHECK(r->generation() == w->generation(), "reader starts on the writer's generation");
+
+    uint64_t size_before = raw_file_size(dir + "/index.bin");
+
+    /* Keep everything: one pack, one entry, before and after. */
+    CompactStats cs;
+    CHECK(w->compact(&h, 1, &cs), "compact keeping every blob");
+    CHECK(cs.blobs_kept == 1, "the blob survived compaction");
+    CHECK(w->generation() == 1, "compaction started a new generation");
+
+    uint64_t size_after = raw_file_size(dir + "/index.bin");
+    CHECK(size_before == size_after,
+          "the two indexes really are the same length (%llu vs %llu) -- if this "
+          "fails the test is no longer exercising the stamp collision",
+          (unsigned long long)size_before, (unsigned long long)size_after);
+
+    CHECK(r->reload_index(), "reader reloads: %s", r->last_error().c_str());
+    CHECK(r->generation() == 1, "the reader picked up the new generation");
+
+    MemArena* arena = mem_arena_create(1 << 20);
+    const uint8_t* data = nullptr;
+    size_t len = 0;
+    Status st = r->read(h, arena, &data, &len);
+    CHECK(st == Status::Ok, "the reloaded reader can still read the blob (%s)",
+          status_name(st));
+    CHECK(len == buf.size() && data != nullptr && memcmp(data, buf.data(), buf.size()) == 0,
+          "and the bytes are the ones that were written");
+    mem_arena_destroy(arena);
+}
+
 /* A read-only handle must be read-only all the way down -- including the ref
  * table sitting on top of it, whose flush would otherwise stamp a reader's
  * private view over the writer's refs.bin. */
@@ -1062,6 +1130,7 @@ int main(int argc, char** argv) {
     test_determinism(root);
     test_batch_coalescing(root);
     test_arena_landing(root);
+    test_reload_sees_a_same_size_commit(root);
     test_read_only_cannot_write(root);
 
     rm_tree(root);

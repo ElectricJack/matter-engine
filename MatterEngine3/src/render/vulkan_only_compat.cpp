@@ -18,11 +18,18 @@
 // and MatterEditor/src confirmed zero remaining callers of any of them, so
 // they are deleted here rather than carried forward as decoration.
 //
-// What is left is genuinely load-bearing: MemAlloc/MemRealloc/MemFree back
-// mesh_simplifier.cpp's and mesh_build_utils.cpp's heap allocations, and
-// UnloadMesh is cell.cpp's UNCONDITIONAL (not #ifndef MATTER_VULKAN_ONLY
-// gated) CPU-side mesh free -- Cell::clear_meshes calls it on every mesh in
-// material_meshes regardless of platform, so removing it would leak.
+// What is left is genuinely load-bearing: MemAlloc backs
+// mesh_simplifier.cpp's output arrays and MemFree backs
+// mesh_build_utils.cpp's mesh teardown, and UnloadMesh is cell.cpp's
+// UNCONDITIONAL (not #ifndef MATTER_VULKAN_ONLY gated) CPU-side mesh free --
+// Cell::clear_meshes calls it on every mesh in material_meshes regardless of
+// platform, so removing it would leak.
+//
+// There is deliberately NO MemRealloc here: raylib declares one, but a
+// repo-wide grep finds no caller in MatterEngine3, MatterEditor or
+// libs/MatterSurfaceLib, so the link stays clean without it. If a future
+// caller appears the link will fail loudly rather than silently mixing
+// allocators -- add it here beside MemAlloc/MemFree at that point.
 #include "raylib.h"
 
 #include <atomic>

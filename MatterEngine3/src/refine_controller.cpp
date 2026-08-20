@@ -72,9 +72,12 @@ static std::pair<int, bool> extract_int_or_missing(const std::string& json, cons
 // is authored data and one malformed node should not take out the grid.
 //
 // World position and manifest index come from the COARSE instance only. A tile
-// whose coarse hash has no matching instance keeps pos (0,0,0), which makes its
-// distance to the camera meaningless rather than infinite — it will look very
-// close.
+// whose coarse hash has no matching instance keeps pos (0,0,0) and
+// manifest_idx 0 — both indistinguishable from a real tile that happens to sit
+// at the world origin and own manifest entry 0 — so it is marked `placed =
+// false` and next() skips it. Without that flag such a tile would rank FIRST
+// (zero distance from a camera near the origin) and its refine would rewrite
+// manifest instance 0, which belongs to something else entirely.
 void RefineController::build(span<const GraphNode> nodes,
                               span<const InstanceRef> instances) {
     tiles_.clear();
@@ -137,6 +140,7 @@ void RefineController::build(span<const GraphNode> nodes,
         rec.state       = TileRecord::State::Coarse;
         rec.pos[0] = rec.pos[1] = rec.pos[2] = 0.0f;
         rec.manifest_idx = 0;
+        rec.placed = false;
         rec.tile_tx = rec_tx;
         rec.tile_tz = rec_tz;
 
@@ -150,6 +154,7 @@ void RefineController::build(span<const GraphNode> nodes,
                 rec.pos[1] = ir.translation[1];
                 rec.pos[2] = ir.translation[2] + TILE_SIZE * 0.5f;
                 rec.manifest_idx = ir.manifest_idx;
+                rec.placed = true;
             }
         }
 
@@ -178,9 +183,13 @@ size_t RefineController::full_count() const {
     return n;
 }
 
-// Pick the Coarse tile nearest `focus` (world-space XYZ). Returns false and
-// leaves *out null when no tile is still Coarse — the normal "fully refined"
+// Pick the placed Coarse tile nearest `focus` (world-space XYZ). Returns false
+// and leaves *out null when no tile is still Coarse — the normal "fully refined"
 // outcome, not an error.
+//
+// Tiles with placed == false are skipped: their pos and manifest_idx are
+// defaults, not measurements (see build()), so refining one would target an
+// unrelated manifest entry.
 //
 // PURE QUERY: it does not change the tile's state, so a caller that does not
 // mark() the returned tile Queued/Full is handed the same tile again on the
@@ -193,6 +202,7 @@ bool RefineController::next(const float focus[3], TileRecord** out) {
 
     for (auto& t : tiles_) {
         if (t.state != TileRecord::State::Coarse) continue;
+        if (!t.placed) continue;
         float d2 = dist2(focus, t.pos);
         if (best == nullptr || d2 < best_d2) {
             best_d2 = d2;

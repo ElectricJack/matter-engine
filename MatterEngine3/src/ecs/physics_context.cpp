@@ -348,7 +348,6 @@ struct PhysicsContext::Impl {
     flecs::entity_t duplicate_overlap_participant_for_test = 0;
     bool fail_next_reconcile_mark_for_test = false;
     bool full_reconcile_required = false;
-    uint64_t physics_transform_marker_allocations_for_test = 0;
     uint64_t ray_query_candidate_attempts_for_test = 0;
     uint64_t overlap_query_candidate_attempts_for_test = 0;
     bool stepping = false;
@@ -1410,6 +1409,12 @@ void PhysicsContext::pull(flecs::world& world) {
     }
     impl_->fixed_step_trace.push_back(PhysicsSystemStage::Pull);
 
+    // The SECOND read of this step's move stream — capture_events() already
+    // walked it during step() to refresh the query proxies. That is safe and
+    // deliberate: b3World_GetBodyEvents is a non-consuming view onto the world's
+    // own bodyMoveEvents array, which is only refilled by the next b3World_Step,
+    // and no step runs between capture_events() and here. Splitting the two
+    // walks keeps proxy maintenance inside step() and ECS writes inside pull().
     const b3BodyEvents events = b3World_GetBodyEvents(impl_->world_id);
     for (int event_index = 0; event_index < events.moveCount; ++event_index) {
         const b3BodyMoveEvent event = events.moveEvents[event_index];
@@ -1471,8 +1476,16 @@ void PhysicsContext::pull(flecs::world& world) {
             events_.contact_begin.size() + events_.contact_end.size());
         const uint32_t sensors = static_cast<uint32_t>(
             events_.sensor_begin.size() + events_.sensor_end.size());
+        // An idle step is deliberately silent so it costs the inspector
+        // nothing; see matter/events/physics_events.h.
         if (contacts + sensors > 0) {
-            event_hub_->emit(matter::events::PhysStep{contacts, sensors});
+            // Field-by-field rather than PhysStep{contacts, sensors}: positional
+            // aggregate init would silently mis-assign if a field were ever
+            // inserted or reordered in the (two-uint32_t) payload.
+            matter::events::PhysStep step{};
+            step.contacts = contacts;
+            step.sensors = sensors;
+            event_hub_->emit(step);
         }
     }
 }
@@ -1620,12 +1633,6 @@ void PhysicsContext::fail_next_reconcile_mark_for_test() noexcept {
     if (impl_ != nullptr) {
         impl_->fail_next_reconcile_mark_for_test = true;
     }
-}
-
-uint64_t PhysicsContext::physics_transform_marker_allocations_for_test()
-    const noexcept {
-    return impl_ != nullptr
-        ? impl_->physics_transform_marker_allocations_for_test : 0;
 }
 
 uint64_t PhysicsContext::ray_query_candidate_attempts_for_test()

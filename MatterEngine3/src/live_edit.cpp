@@ -56,6 +56,21 @@ RebuildReport LiveEditSession::run_rebuild(const std::set<std::string>& paths) {
     // 4. Re-resolve + bake each in order under the dev budget (SP-2).
     for (const auto& p : order) {
         ResolvedHash h = g_.reresolve(p);
+        // An empty hash is reresolve's documented failure return -- unknown
+        // module, unreadable source, or a child that did not resolve. Stop on
+        // it here rather than handing "" to the baker: the baker can only say
+        // "invalid resolved hash ''" and names ITSELF as the culprit, which
+        // points a reader at the bake when the resolve is what broke. A Baker
+        // that did not happen to validate the string would be worse still --
+        // it would publish an artifact under an empty hash.
+        if (h.empty()) {
+            LiveEditError e{LiveEditError::Cause::ResolveFailed, p,
+                            "live-edit: could not re-resolve " + p, ""};
+            rep.succeeded = false;
+            rep.errors.push_back(e);
+            sink_.report(e);
+            return rep;                    // stop; last-good kept downstream
+        }
         BakeOutcome o = b_.bake(p, h, cfg_.bake_budget_ms);
         if (!o.ok) {                       // fail-closed
             rep.succeeded = false;

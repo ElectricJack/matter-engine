@@ -50,11 +50,6 @@
 extern "C" {
 #endif
 
-// A single material definition. This is the ONE place materials are defined;
-// both the CPU (meshing decisions) and the GPU (shading) consume this table.
-//
-// (Those two lines describe `MaterialDef` below, not the enum they sit on.)
-//
 // Per-material surface behaviour bits: OR-ed together into
 // MaterialDef.surfaceFlags and forwarded verbatim to the GPU as
 // MaterialGpuRecord.flags_misc[0]. Nothing in this module interprets the
@@ -104,8 +99,14 @@ typedef struct {
                              // atlas.
     int   groundMacroSlot;  // Schema v4: -1 = no macro layer, else the viewer tileset slot (in
                              // [0, MATERIAL_MAX_DETAIL_SLOTS)) sampled
-                             // as the coarse macro/frequency-split layer (Phase 3). Overridden at
-                             // runtime via MaterialRegistrySetGroundMacroSlot(). Vulkan-only: the
+                             // as the coarse macro/frequency-split layer (Phase 3). Unlike
+                             // groundTilesetSlot there is NO runtime override setter -- the
+                             // symmetric MaterialRegistrySetGroundMacroSlot() was deleted as
+                             // uncalled (e7c19aae) -- so this struct field is the only way in:
+                             // populate it on the MaterialDef you hand to
+                             // MaterialRegistryDefineDynamic(). Every static entry, and every
+                             // dynamic entry the world loader builds today, leaves it -1.
+                             // Vulkan-only: the
                              // GL path (MaterialRegistryPackForGPU, 12-float table) never reads
                              // this field; it flows solely through MaterialGpuRecord.flags_misc[1]
                              // (see MaterialRegistryPackRtForGPU and vk_gi_contract.h).
