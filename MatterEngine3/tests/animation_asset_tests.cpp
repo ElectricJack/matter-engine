@@ -2,6 +2,7 @@
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
 #include "check.h"
+#include "part_bundle.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -18,10 +19,30 @@ static uint64_t fnv(const std::vector<uint8_t>& bytes, size_t offset) {
     for (size_t i = offset; i < bytes.size(); ++i) { h ^= bytes[i]; h *= 1099511628211ull; }
     return h;
 }
-static uint64_t file_part_body_checksum(const char* path) {
-    std::ifstream in(path, std::ios::binary);
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), {});
-    return fnv(bytes, 40);
+// M4 (part_bundle.h, "PartBundle -- one file per part"): `part_asset::save_v2`
+// no longer writes a bare part body, it writes that body as the REP0 SECTION of
+// a `.bundle`. The part body is therefore the section payload, not the file --
+// hashing the file folds the 40-byte bundle header and the section directory
+// into what is supposed to be the part's own body, and never matches the
+// producer (`checksum_part` in src/animation/anim_bundle.cpp, which reads REP0).
+// The section payload is byte-for-byte the old file, so the FNV frame below --
+// skip the part body's own 40-byte header -- is unchanged.
+static std::vector<uint8_t> read_part_body(const std::string& path, uint64_t resolved_hash) {
+    std::vector<uint8_t> bytes;
+    part_bundle::read_section(path, resolved_hash, part_bundle::kSectionRep0, bytes);
+    return bytes;
+}
+static uint64_t file_part_body_checksum(const std::string& path, uint64_t resolved_hash) {
+    return fnv(read_part_body(path, resolved_hash), 40);
+}
+// Republish a mutated part body as REP0, so the corruption cases below still
+// reach the part loader instead of being rejected by the bundle directory's
+// own section checksum (which would make every such case pass vacuously).
+static void write_part_body(const std::string& path, uint64_t resolved_hash,
+                            const std::vector<uint8_t>& body) {
+    CHECK(part_bundle::write_section(path, resolved_hash, part_bundle::kSectionRep0,
+                                     body.data(), body.size()),
+          "rewrite the mutated part body as the bundle's REP0 section");
 }
 static std::vector<uint8_t> read_bytes(const char* path) {
     std::ifstream in(path, std::ios::binary);
@@ -249,7 +270,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     BundleIdentity identity;
     identity.resolved_hash = hash;
     identity.nonce = anim.nonce;
-    identity.part_body_checksum = file_part_body_checksum(candidate_part.string().c_str());
+    identity.part_body_checksum = file_part_body_checksum(candidate_part.string(), hash);
     identity.anim_body_checksum = anim_body_checksum(anim);
     identity.target_abi_tag = anim.target_abi_tag;
     identity.ozz_tag_hash = anim.ozz_tag_hash;
@@ -297,7 +318,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
                               extraneous_lods, {}, link, hash),
           "write PART candidate with an unowned LOD stream");
     BundleIdentity extraneous_identity = identity;
-    extraneous_identity.part_body_checksum = file_part_body_checksum(extraneous_part.string().c_str());
+    extraneous_identity.part_body_checksum = file_part_body_checksum(extraneous_part.string(), hash);
     CHECK(!publish_animation_bundle({extraneous_part, candidate_anim, root}, extraneous_identity, diagnostics),
           "reject PART LOD stream not owned by the MANM binding");
     BLASManager mismatched_blas;
@@ -316,14 +337,14 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     CHECK(part_asset::save_v2(mismatched_part.string(), mismatched_blas, mismatched_tlas, nullptr, 0,
                               exact_lods, {}, link, hash), "write mismatched geometry candidate");
     BundleIdentity mismatched_identity = identity;
-    mismatched_identity.part_body_checksum = file_part_body_checksum(mismatched_part.string().c_str());
+    mismatched_identity.part_body_checksum = file_part_body_checksum(mismatched_part.string(), hash);
     CHECK(!publish_animation_bundle({mismatched_part, candidate_anim, root}, mismatched_identity, diagnostics),
           "reject candidate whose PART geometry differs from its MANM binding");
     CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0, exact_lods, {}, link, hash),
           "rewrite coherent part after rejected geometry candidate");
     CHECK(save_anim_candidate(anim, candidate_anim, diagnostics),
           "rewrite coherent MANM after rejected geometry candidate");
-    identity.part_body_checksum = file_part_body_checksum(candidate_part.string().c_str());
+    identity.part_body_checksum = file_part_body_checksum(candidate_part.string(), hash);
     identity.anim_body_checksum = anim_body_checksum(anim);
     CHECK(publish_animation_bundle({candidate_part, candidate_anim, root}, identity, diagnostics),
           "publish coherent bundle with MACM last");
@@ -355,7 +376,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     std::filesystem::copy_file(mismatched_part, committed_part_path,
                                std::filesystem::copy_options::overwrite_existing);
     auto mismatched_manifest = manifest;
-    put64(mismatched_manifest, 32, file_part_body_checksum(committed_part_path.string().c_str()));
+    put64(mismatched_manifest, 32, file_part_body_checksum(committed_part_path.string(), hash));
     refresh_trailing_checksum(mismatched_manifest);
     write_bytes(manifest_path.string().c_str(), mismatched_manifest);
     const size_t last_good_blas_count = unused.live_count();
@@ -400,7 +421,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
               "rewrite candidate before injected publish failure");
         CHECK(save_anim_candidate(anim, failed_anim, diagnostics), "rewrite anim before injected publish failure");
         BundleIdentity failed_identity = identity;
-        failed_identity.part_body_checksum = file_part_body_checksum(failed_part.string().c_str());
+        failed_identity.part_body_checksum = file_part_body_checksum(failed_part.string(), hash);
         CHECK(!publish_animation_bundle({failed_part, failed_anim, root, stage}, failed_identity, diagnostics),
               "interrupted publication reports failure");
         CHECK(load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
@@ -414,7 +435,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
         CHECK(save_anim_candidate(anim, failed_anim, diagnostics),
               "rewrite anim before post-rename durability failure");
         BundleIdentity failed_identity = identity;
-        failed_identity.part_body_checksum = file_part_body_checksum(failed_part.string().c_str());
+        failed_identity.part_body_checksum = file_part_body_checksum(failed_part.string(), hash);
         CHECK(!publish_animation_bundle({failed_part, failed_anim, root, 0, replacement}, failed_identity, diagnostics),
               "post-rename durability uncertainty reports publication failure");
         CHECK(load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
@@ -428,7 +449,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
           "write candidate behind stale lock file");
     CHECK(save_anim_candidate(anim, locked_anim, diagnostics), "write anim behind stale lock file");
     BundleIdentity locked_identity = identity;
-    locked_identity.part_body_checksum = file_part_body_checksum(locked_part.string().c_str());
+    locked_identity.part_body_checksum = file_part_body_checksum(locked_part.string(), hash);
     CHECK(!publish_animation_bundle({locked_part, locked_anim, root, 1}, locked_identity, diagnostics),
           "stale lock file is recovered and publisher reaches deterministic injected failure");
     CHECK(std::filesystem::is_regular_file(stale_lock),
@@ -439,7 +460,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
           "write candidate for same-process lock contention");
     CHECK(save_anim_candidate(anim, contention_anim, diagnostics), "write anim for same-process lock contention");
     BundleIdentity contention_identity = identity;
-    contention_identity.part_body_checksum = file_part_body_checksum(contention_part.string().c_str());
+    contention_identity.part_body_checksum = file_part_body_checksum(contention_part.string(), hash);
     CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 0, 0, true}, contention_identity, diagnostics),
           "test holder acquires the publication lock");
     CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 1}, contention_identity, diagnostics),
@@ -524,7 +545,7 @@ static void test_rigid_only_bundle_accepts_geometry_bearing_part() {
     BundleIdentity identity;
     identity.resolved_hash = hash;
     identity.nonce = anim.nonce;
-    identity.part_body_checksum = file_part_body_checksum(candidate_part.string().c_str());
+    identity.part_body_checksum = file_part_body_checksum(candidate_part.string(), hash);
     identity.anim_body_checksum = anim_body_checksum(anim);
     identity.target_abi_tag = anim.target_abi_tag;
     identity.ozz_tag_hash = anim.ozz_tag_hash;
@@ -575,7 +596,7 @@ static void test_rigid_only_bundle_accepts_geometry_bearing_part() {
     BundleIdentity attachment_identity;
     attachment_identity.resolved_hash = attachment_hash;
     attachment_identity.nonce = attachment_anim.nonce;
-    attachment_identity.part_body_checksum = file_part_body_checksum(attachment_part.string().c_str());
+    attachment_identity.part_body_checksum = file_part_body_checksum(attachment_part.string(), attachment_hash);
     attachment_identity.anim_body_checksum = anim_body_checksum(attachment_anim);
     attachment_identity.target_abi_tag = attachment_anim.target_abi_tag;
     attachment_identity.ozz_tag_hash = attachment_anim.ozz_tag_hash;
@@ -606,11 +627,27 @@ static void test_anlk_malformed_and_static_compatibility() {
     TLASManager::DrawInstance instance{}; instance.blas_handle = handle; tlas.draw_batch({instance}); tlas.build(blas);
     constexpr uint64_t hash = 0xabcdef0123456789ull;
     CHECK(part_asset::save_v2(static_path.string(), blas, tlas, nullptr, 0, {}, hash), "write legacy static part");
-    const auto legacy_bytes = read_bytes(static_path.string().c_str());
-    // Fixed pre-A4 golden from d0be4f3f's static writer (not a second current
-    // write): the one-triangle/material-registry fixture must stay byte-stable.
-    CHECK(legacy_bytes.size() == 4944 && fnv(legacy_bytes, 0) == 0x7da5a4b8e5767282ull,
-          "legacy static part exactly matches the pre-A4 golden");
+    // The golden is the PART BODY, which M4 moved into the bundle's REP0
+    // section byte-for-byte (part_bundle.h: "A SECTION PAYLOAD IS EXACTLY WHAT
+    // THE OLD FILE CONTAINED"). Reading the file instead would compare the
+    // golden against the bundle header + directory too.
+    const auto legacy_bytes = read_part_body(static_path.string(), hash);
+    // Frozen golden (not a second current write): the one-triangle /
+    // material-registry fixture must stay byte-stable.
+    //
+    // RE-BASELINED from the pre-A4 value 0x7da5a4b8e5767282. The body LENGTH is
+    // unchanged (4944), so no field was added or removed; what moved is the
+    // per-entry BLAS content hash this body serializes (`put<uint32_t>(body,
+    // e->hash)` in part_asset_v2.cpp). 44c0f7b9 ("fix(blas): make geometry
+    // identity read real bytes") rewrote BLASManager::calculate_hash: it used to
+    // read nine CONSECUTIVE floats from &vertex0 -- covering Tri's union padding
+    // and missing vertex2.y/z -- and folded the tint through a strict-aliasing
+    // cast that GCC compiled into a read of sixteen never-written stack bytes.
+    // The old golden therefore pinned a hash computed partly from transient
+    // stack contents; this value is the first deterministic one, and it
+    // reproduces across runs.
+    CHECK(legacy_bytes.size() == 4944 && fnv(legacy_bytes, 0) == 0x318b0a8a265e2018ull,
+          "legacy static part exactly matches the frozen golden");
     std::optional<part_asset::PartAnimationLink> absent;
     CHECK(part_asset::load_animation_link(static_path.string(), hash, absent) && !absent, "old static part has no ANLK link");
     const part_asset::PartAnimationLink link{1, 1, hash, 3, 4};
@@ -624,10 +661,10 @@ static void test_anlk_malformed_and_static_compatibility() {
           "legacy load_v2 rejects linked ANLK part rather than silently treating it as static");
     std::optional<part_asset::PartAnimationLink> parsed;
     CHECK(part_asset::load_animation_link(linked_path.string(), hash, parsed) && parsed && parsed->nonce_low == 4, "ANLK round trip");
-    auto corrupt = read_bytes(linked_path.string().c_str());
+    auto corrupt = read_part_body(linked_path.string(), hash);
     put32(corrupt, corrupt.size() - 32, 2); // ANLK version
     put64(corrupt, 32, fnv(corrupt, 40)); // refresh ordinary part body checksum
-    write_bytes(linked_path.string().c_str(), corrupt);
+    write_part_body(linked_path.string(), hash, corrupt);
     CHECK(!part_asset::load_animation_link(linked_path.string(), hash, parsed), "reject malformed ANLK trailer");
     std::filesystem::remove_all(root);
 }
@@ -659,10 +696,10 @@ static void test_part_v2_preflight_boundary_and_no_side_effects() {
 
     // A syntactically valid common body followed by an unknown byte must fail
     // before it mutates a caller-owned BLAS manager.
-    auto suffix = read_bytes(static_path.string().c_str());
+    auto suffix = read_part_body(static_path.string(), hash);
     suffix.push_back(0x7f);
     refresh_part_body_checksum(suffix);
-    write_bytes(suffix_path.string().c_str(), suffix);
+    write_part_body(suffix_path.string(), hash, suffix);
     BLASManager legacy_blas;
     TLASManager legacy_tlas(1);
     std::vector<part_asset::ChildInstance> children;
@@ -682,10 +719,10 @@ static void test_part_v2_preflight_boundary_and_no_side_effects() {
     CHECK(animation_blas.live_count() == 0,
           "animation-aware malformed suffix leaves BLAS manager unchanged");
 
-    auto truncated_suffix = read_bytes(static_path.string().c_str());
+    auto truncated_suffix = read_part_body(static_path.string(), hash);
     truncated_suffix.insert(truncated_suffix.end(), {'E', 'M', 'I'});
     refresh_part_body_checksum(truncated_suffix);
-    write_bytes(suffix_path.string().c_str(), truncated_suffix);
+    write_part_body(suffix_path.string(), hash, truncated_suffix);
     CHECK(!part_asset::load_v2(suffix_path.string(), hash, animation_blas, animation_tlas,
                                children, lods, rejected_emitters, rejected_link),
           "animation-aware v2 rejects a truncated trailer");

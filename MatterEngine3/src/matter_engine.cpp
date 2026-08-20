@@ -9013,10 +9013,36 @@ bool WorldSession::Impl::ensure_tracer() const {
             const viewer::LoadedPart* lp = store->find(hash);
             if (!lp) return false;   // not resident -> let the disk path try
             // Coarsest rung: the same level the artifact path selects, and the
-            // cheapest geometry that still bounds the part correctly.
-            if (!lp->lod_blas.empty()) {
-                if (const auto* e = store->blas().get_entry(lp->lod_blas.back()))
-                    out.entries.push_back(e);
+            // cheapest geometry that still bounds the part correctly -- but
+            // NOT a billboard rung. Since M2.5 terminal impostors, the last
+            // whole-part rung merges every cluster's billboard quad (see
+            // `legacy_impostor` in part_store.cpp's flat ladder build), so it
+            // is two coplanar triangles per cluster that only become a picture
+            // once the vertex stage turns them to face the camera. Tracing
+            // that is what impostor::is_billboard_rung's docstring warns every
+            // ladder-as-GEOMETRY consumer about, and the query API was one of
+            // the consumers that never asked: on projects/primitive_demo it
+            // reduced the whole Gallery to 8 triangles lying in the plane
+            // z = 0, and every raycast -- api_tests', and the editor's picking
+            // -- missed. The canonical predicate only recognises a SINGLE
+            // cluster's rung (exactly 2 triangles), so the merged whole-part
+            // rung is tested the equivalent way: all-billboard, no mesh left.
+            // A mixed rung (only some clusters earned an impostor) is kept --
+            // its real geometry still traces.
+            const auto rung_is_all_billboards =
+                [](const BLASManager::BLASEntry* e) {
+                    if (!e || e->triangles.empty()) return false;
+                    if (e->tri_extra.size() != e->triangles.size()) return false;
+                    for (const auto& x : e->tri_extra)
+                        if (!(x.uv0.x >= impostor::kQuadMarker)) return false;
+                    return true;
+                };
+            for (size_t rung = lp->lod_blas.size(); rung-- > 0; ) {
+                const auto* e = store->blas().get_entry(lp->lod_blas[rung]);
+                if (!e) continue;
+                if (rung > 0 && rung_is_all_billboards(e)) continue;
+                out.entries.push_back(e);
+                break;
             }
             // A resident part's lod_blas carries only its OWN geometry, so a
             // compositional part still needs its children expanded -- exactly

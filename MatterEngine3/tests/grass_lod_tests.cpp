@@ -34,6 +34,7 @@
 
 #include "check.h"
 #include "portable_realpath.h"
+#include "test_sandbox.h"
 
 static std::vector<uint8_t> file_bytes(const std::string& path) {
     std::vector<uint8_t> b;
@@ -237,10 +238,8 @@ static void test_prefix_subset() {
 
 static void test_determinism() {
     printf("\n[test_determinism]\n");
-    const std::string cacheA = g_sandbox + "/cacheA";
-    const std::string cacheB = g_sandbox + "/cacheB";
-    system(("mkdir -p " + cacheA + "/parts").c_str());
-    system(("mkdir -p " + cacheB + "/parts").c_str());
+    const std::string cacheA = ensure_sandbox((g_sandbox + "/cacheA").c_str());
+    const std::string cacheB = ensure_sandbox((g_sandbox + "/cacheB").c_str());
     BakeRec r1 = bake_grass_in(0.3, cacheA);
     BakeRec r2 = bake_grass_in(0.3, cacheB);
     CHECK(!r1.written_path.empty() && !r2.written_path.empty(), "both bakes wrote a file");
@@ -275,10 +274,8 @@ static void test_triex_present_all_levels() {
 //   - two separate determinism runs agree (would catch any floating drift)
 static void test_full_budget_unchanged_geometry() {
     printf("\n[test_full_budget_unchanged_geometry]\n");
-    const std::string full1 = g_sandbox + "/full1";
-    const std::string full2 = g_sandbox + "/full2";
-    system(("mkdir -p " + full1 + "/parts").c_str());
-    system(("mkdir -p " + full2 + "/parts").c_str());
+    const std::string full1 = ensure_sandbox((g_sandbox + "/full1").c_str());
+    const std::string full2 = ensure_sandbox((g_sandbox + "/full2").c_str());
     BakeRec r1 = bake_grass_in(1.0, full1);
     BakeRec r2 = bake_grass_in(1.0, full2);
     CHECK(!r1.written_path.empty() && !r2.written_path.empty(),
@@ -315,9 +312,7 @@ int main() {
            g_grass_source.size(), grass_path.c_str());
 
     // Fresh sandbox for every run.
-    g_sandbox = abspath("/tmp/me3_grass_lod");
-    system(("rm -rf " + g_sandbox).c_str());
-    system(("mkdir -p " + g_sandbox + "/parts").c_str());
+    g_sandbox = make_sandbox("sandbox/me3_grass_lod");
 
     // Stay in g_sandbox so that cache_path_resolved("parts/<h>.part") works for
     // load helpers that re-use the written_path directly.

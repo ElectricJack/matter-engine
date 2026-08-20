@@ -9,9 +9,11 @@
 #include "animation/animation_systems.h"
 #include "animation/animation_world_queries.h"
 #include "blas_manager.hpp"
+#include "part_bundle.h"
 #include "check.h"
 #include "ecs/ecs_runtime.h"
 #include "script_host.h"
+#include "test_sandbox.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -128,9 +130,42 @@ std::string read_text(const fs::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+// Object lookup is a SEARCH PATH, not one directory: a scene owns its own
+// objects/ over the shared project tier (ebd226d6, "one folder per scene").
+// AnimatedRigGallery.js moved into scenes/AnimatedRigGallery/objects/ then,
+// while Crate.js stayed in the shared tier, so reading both from
+// projects/world_demo/objects returned an EMPTY gallery source -- the bake
+// then wrote nothing and fs::absolute("") threw
+// "cannot make absolute path: Invalid argument []" out of main.
+// Must be captured BEFORE a caller chdir()s into its bake sandbox: these are
+// relative to the test working directory.
+std::vector<fs::path> object_search_path() {
+    return {fs::absolute("../../projects/world_demo/scenes/AnimatedRigGallery/objects"),
+            fs::absolute("../../projects/world_demo/objects")};
+}
+
+std::string read_object_source(const std::vector<fs::path>& dirs, const char* module) {
+    for (const fs::path& dir : dirs) {
+        std::string source = read_text(dir / module);
+        if (!source.empty()) return source;
+    }
+    return {};
+}
+
 std::vector<uint8_t> read_bytes(const fs::path& path) {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+// M4: the part body is the bundle's REP0 section, not the whole file. Reading
+// the file folds the bundle directory and every sibling section into what is
+// supposed to be the part's own body -- and since only the SECTION ends with
+// the 16-byte build nonce, the "exact modulo nonce" normalisation below landed
+// on the wrong bytes and two identical bakes compared unequal.
+std::vector<uint8_t> read_part_body(const fs::path& bundle, uint64_t resolved_hash) {
+    std::vector<uint8_t> bytes;
+    part_bundle::read_section(bundle.string(), resolved_hash, part_bundle::kSectionRep0, bytes);
+    return bytes;
 }
 
 void put_u64(std::vector<uint8_t>& bytes, size_t offset, uint64_t value) {
@@ -148,7 +183,8 @@ struct GalleryBundleSnapshot {
     fs::path part_path;
     fs::path anim_path;
     fs::path commit_path;
-    std::vector<uint8_t> raw_part;
+    std::vector<uint8_t> raw_part;       // REP0 section (the part body)
+    std::vector<uint8_t> raw_part_file;  // the whole .bundle on disk
     std::vector<uint8_t> raw_anim;
     std::vector<uint8_t> raw_commit;
     std::vector<uint8_t> semantic_part;
@@ -158,7 +194,7 @@ struct GalleryBundleSnapshot {
 };
 
 GalleryBundleSnapshot bake_gallery_snapshot(const fs::path& sandbox) {
-    const fs::path objects = fs::absolute("../../projects/world_demo/objects");
+    const std::vector<fs::path> objects = object_search_path();
     const fs::path shared_lib = fs::absolute("../shared-lib");
     std::error_code error;
     fs::remove_all(sandbox, error);
@@ -173,17 +209,26 @@ GalleryBundleSnapshot bake_gallery_snapshot(const fs::path& sandbox) {
     host.set_shared_lib_root(shared_lib.string());
     script_host::BakeOptions options;
     options.parts_dir = ".";
-    const auto crate = host.bake_source(read_text(objects / "Crate.js"), "{}", options);
+    const auto crate = host.bake_source(read_object_source(objects, "Crate.js"), "{}", options);
     CHECK(crate.error.ok, "Phase B independently bakes the real gallery dependency");
     const uint64_t hashes[] = {crate.resolved_hash};
     const std::string modules[] = {"Crate"};
-    const auto gallery = host.bake_source(read_text(objects / "AnimatedRigGallery.js"), "{}", options,
+    const auto gallery = host.bake_source(read_object_source(objects, "AnimatedRigGallery.js"), "{}", options,
                                           hashes, 1, modules);
     CHECK(gallery.error.ok && !gallery.written_path.empty() && !gallery.written_anim_path.empty() &&
               !gallery.written_commit_path.empty(),
           "Phase B independently bakes a complete real gallery transaction");
 
     GalleryBundleSnapshot snapshot;
+    // Fail fast rather than abort: every path below assumes a real transaction
+    // on disk, and fs::absolute("") throws instead of reporting the CHECK that
+    // already recorded the failure.
+    if (gallery.written_path.empty() || gallery.written_anim_path.empty() ||
+        gallery.written_commit_path.empty()) {
+        std::printf("Phase B gallery bake wrote nothing: %s\n", gallery.error.message.c_str());
+        fs::current_path(previous, error);
+        return snapshot;
+    }
     snapshot.resolved_hash = gallery.resolved_hash;
     snapshot.part_path = fs::absolute(gallery.written_path);
     snapshot.anim_path = fs::absolute(gallery.written_anim_path);
@@ -194,7 +239,8 @@ GalleryBundleSnapshot bake_gallery_snapshot(const fs::path& sandbox) {
           "Phase B independently reloads the real committed gallery");
     CHECK(get_anim_binding_bake(snapshot.asset, snapshot.binding),
           "Phase B independently decodes the real gallery binding signatures");
-    snapshot.raw_part = read_bytes(snapshot.part_path);
+    snapshot.raw_part = read_part_body(snapshot.part_path, snapshot.resolved_hash);
+    snapshot.raw_part_file = read_bytes(snapshot.part_path);
     snapshot.raw_anim = read_bytes(snapshot.anim_path);
     snapshot.raw_commit = read_bytes(snapshot.commit_path);
     CHECK(snapshot.raw_part.size() >= 76 && snapshot.raw_anim.size() >= 68 &&
@@ -227,9 +273,10 @@ GalleryBundleSnapshot bake_gallery_snapshot(const fs::path& sandbox) {
 }
 
 void test_real_gallery_transaction_is_reproducible_and_recovers_last_good() {
-    const fs::path root = fs::temp_directory_path() / "me3_phase_b_gallery_transaction";
+    const fs::path root = local_fixture_root("sandbox/me3_phase_b_gallery_transaction");
     const GalleryBundleSnapshot first = bake_gallery_snapshot(root / "first");
     const GalleryBundleSnapshot second = bake_gallery_snapshot(root / "second");
+    if (first.part_path.empty() || second.part_path.empty()) return;
 
     CHECK(first.resolved_hash == second.resolved_hash,
           "Phase B independent real gallery bakes preserve the resolved identifier");
@@ -301,7 +348,7 @@ void test_real_gallery_transaction_is_reproducible_and_recovers_last_good() {
               "Phase B reloads the last-good real gallery after interruption");
         CHECK(live_blas.live_count() == last_good_blas_count && live_asset == last_good_asset,
               "Phase B interrupted real gallery publication preserves live geometry and animation state");
-        CHECK(read_bytes(committed_part) == first.raw_part &&
+        CHECK(read_bytes(committed_part) == first.raw_part_file &&
                   read_bytes(committed_anim) == first.raw_anim &&
                   read_bytes(committed_commit) == first.raw_commit,
               "Phase B interrupted real gallery publication preserves the exact last-good transaction");
@@ -315,9 +362,9 @@ struct GalleryFixture {
 };
 
 GalleryFixture bake_gallery() {
-    const fs::path objects = fs::absolute("../../projects/world_demo/objects");
+    const std::vector<fs::path> objects = object_search_path();
     const fs::path shared_lib = fs::absolute("../shared-lib");
-    const fs::path sandbox = fs::temp_directory_path() / "me3_phase_b_replay";
+    const fs::path sandbox = local_fixture_root("sandbox/me3_phase_b_replay");
     std::error_code error;
     fs::remove_all(sandbox, error);
     error.clear();
@@ -331,11 +378,11 @@ GalleryFixture bake_gallery() {
     host.set_shared_lib_root(shared_lib.string());
     script_host::BakeOptions options;
     options.parts_dir = ".";
-    const auto crate = host.bake_source(read_text(objects / "Crate.js"), "{}", options);
+    const auto crate = host.bake_source(read_object_source(objects, "Crate.js"), "{}", options);
     CHECK(crate.error.ok, "Phase B bakes AnimatedRigGallery's real Crate dependency");
     const uint64_t hashes[] = {crate.resolved_hash};
     const std::string modules[] = {"Crate"};
-    const auto gallery = host.bake_source(read_text(objects / "AnimatedRigGallery.js"), "{}", options,
+    const auto gallery = host.bake_source(read_object_source(objects, "AnimatedRigGallery.js"), "{}", options,
                                           hashes, 1, modules);
     if (!gallery.error.ok)
         std::printf("Phase B gallery bake diagnostic: %s\n", gallery.error.message.c_str());
@@ -378,7 +425,7 @@ GalleryFixture bake_gallery() {
     check_exact_gallery_ownership(
         "Phase B cold gallery bake admits exact geometry ownership");
     const auto warm_gallery = host.bake_source(
-        read_text(objects / "AnimatedRigGallery.js"), "{}", options, hashes, 1, modules);
+        read_object_source(objects, "AnimatedRigGallery.js"), "{}", options, hashes, 1, modules);
     CHECK(warm_gallery.error.ok && warm_gallery.resolved_hash == gallery.resolved_hash,
           "Phase B warm gallery bake resolves the same committed artifact");
     check_exact_gallery_ownership(
@@ -580,6 +627,9 @@ void test_10000_tick_authored_replay_is_exact_under_two_render_patterns() {
 } // namespace
 
 int main() {
+    // This suite can die inside <filesystem>; a block-buffered stdout would
+    // throw away every FAIL line printed before that.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     test_real_gallery_transaction_is_reproducible_and_recovers_last_good();
     test_10000_tick_authored_replay_is_exact_under_two_render_patterns();
     if (g_failures) return 1;

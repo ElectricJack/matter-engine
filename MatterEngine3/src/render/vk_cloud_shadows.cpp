@@ -50,18 +50,23 @@ namespace {
 
 struct ClearImagesRecord {
     const std::vector<matter::VkImageResource*>* images = nullptr;
+    // Folded into the SHADER_READ_ONLY transitions these records drive; see
+    // matter::ray_tracing_shader_stage.
+    VkPipelineStageFlags2 ray_tracing_stage = 0;
 };
 
 struct ReadTauRecord {
     matter::VkImageResource* image = nullptr;
     VkBuffer destination = VK_NULL_HANDLE;
     uint32_t x = 0, y = 0, z = 0;
+    VkPipelineStageFlags2 ray_tracing_stage = 0;
 };
 
 struct WriteTauRecord {
     matter::VkImageResource* image = nullptr;
     VkBuffer source = VK_NULL_HANDLE;
     uint32_t x = 0, y = 0, z = 0;
+    VkPipelineStageFlags2 ray_tracing_stage = 0;
 };
 
 struct GenerationRecord {
@@ -200,7 +205,7 @@ void record_clear_images(VkCommandBuffer command_buffer, void* user_data) {
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                record.ray_tracing_stage,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -228,7 +233,7 @@ void record_read_tau(VkCommandBuffer command_buffer, void* user_data) {
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            record.ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -253,7 +258,7 @@ void record_write_tau(VkCommandBuffer command_buffer, void* user_data) {
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            record.ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -430,7 +435,9 @@ bool VkCloudShadows::create_emergency_images(std::string& error) {
 
 bool VkCloudShadows::clear_images(
     const std::vector<matter::VkImageResource*>& images, std::string& error) {
-    ClearImagesRecord record{&images};
+    ClearImagesRecord record{&images,
+                             matter::ray_tracing_shader_stage(
+                                 vulkan_->ray_tracing_available())};
     std::vector<std::shared_ptr<void>> lifetimes;
     lifetimes.reserve(images.size());
     for (const auto* image : images) lifetimes.push_back(image->lifetime);
@@ -750,6 +757,14 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
     }
     if (!active_ || !direct_sun_visible_) return true;
 
+    // The cumulative volumes are sampled by fragment, compute AND ray-tracing
+    // shaders, but naming the ray-tracing stage in a barrier on a device
+    // without the feature is a validation error -- see
+    // matter::ray_tracing_shader_stage.
+    const VkPipelineStageFlags2 ray_tracing_stage =
+        matter::ray_tracing_shader_stage(vulkan_ &&
+                                         vulkan_->ray_tracing_available());
+
     auto& cloud_buffer = cloud_layer_ssbo_[prepared_frame_slot_];
     std::memcpy(cloud_buffer.mapped, packed_cloud_layers_.data(),
                 sizeof(packed_cloud_layers_));
@@ -810,7 +825,7 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
             command_buffer, output, VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                ray_tracing_stage,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -867,7 +882,7 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                ray_tracing_stage,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -976,7 +991,9 @@ bool VkCloudShadows::environment_image_is_clear_for_test(
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readback, error) ||
         !matter::map_buffer(readback, error)) return false;
-    ReadTauRecord request{&image, readback.buffer, 0, 0, 0};
+    ReadTauRecord request{&image, readback.buffer, 0, 0, 0,
+                          matter::ray_tracing_shader_stage(
+                              vulkan_->ray_tracing_available())};
     if (!matter::submit_immediate(
             *vulkan_, record_read_tau, &request, error,
             matter::ImmediateSubmitPhase::staging_readback,
@@ -1082,7 +1099,9 @@ bool VkCloudShadows::readback_voxel(
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readback, error) ||
         !matter::map_buffer(readback, error)) return false;
-    ReadTauRecord request{&image, readback.buffer, x, y, z};
+    ReadTauRecord request{&image, readback.buffer, x, y, z,
+                          matter::ray_tracing_shader_stage(
+                              vulkan_->ray_tracing_available())};
     if (!matter::submit_immediate(
             *vulkan_, record_read_tau, &request, error,
             matter::ImmediateSubmitPhase::staging_readback,
@@ -1128,7 +1147,9 @@ bool VkCloudShadows::write_cumulative_raw_for_test(
         !matter::map_buffer(upload, error)) return false;
     std::memcpy(upload.mapped, &raw, sizeof(raw));
     if (!matter::flush_buffer(upload, 0, sizeof(raw), error)) return false;
-    WriteTauRecord request{&image, upload.buffer, x, y, z};
+    WriteTauRecord request{&image, upload.buffer, x, y, z,
+                           matter::ray_tracing_shader_stage(
+                               vulkan_->ray_tracing_available())};
     return matter::submit_immediate(
         *vulkan_, record_write_tau, &request, error,
         matter::ImmediateSubmitPhase::staging_upload,

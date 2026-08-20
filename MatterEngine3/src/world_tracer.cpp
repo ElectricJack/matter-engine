@@ -40,6 +40,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -276,6 +277,23 @@ struct WorldTracer::Impl {
             }
         }
         ltp->ok = true;
+        // Same env switch as the [tracer.build] line in matter_engine.cpp: one
+        // line per distinct part hash, naming the geometry that was actually
+        // selected into `slices`. The selection is the coarsest ladder rung,
+        // so "the tracer sees a different mesh than the screen does" is the
+        // normal state and this is how you see which mesh that is.
+        if (std::getenv("MATTER_TRACER_PROFILE")) {
+            size_t tris = 0;
+            for (const BLASSlice& s : ltp->slices)
+                if (s.entry) tris += s.entry->triangles.size();
+            std::fprintf(stderr,
+                "[tracer.part] %016llx slices=%zu tris=%zu flat=%d children=%zu "
+                "bounds=(%.2f %.2f %.2f)..(%.2f %.2f %.2f)\n",
+                (unsigned long long)hash, ltp->slices.size(), tris,
+                (int)ltp->loaded_flat, ltp->children.size(),
+                ltp->local_mn[0], ltp->local_mn[1], ltp->local_mn[2],
+                ltp->local_mx[0], ltp->local_mx[1], ltp->local_mx[2]);
+        }
         LoadedTracePart* raw = ltp.get();
         parts_.emplace(hash, std::move(ltp));
         return raw;

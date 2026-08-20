@@ -589,8 +589,14 @@ TILESETMEADOWMANIFEST_CPP = tileset_meadow_manifest_tests.cpp ../src/part_graph.
 TILESETMEADOWMANIFEST_C   = $(MSL)/material_registry.c
 
 ISO_TARGET = build/iso_primitive_tests
+# dsl_state.cpp routes translate/rotate to clip_translate/clip_rotate while an
+# animation clip is open, so every target that compiles it needs dsl_animation.cpp
+# and its closure (same set DSLDET_CPP below carries) plus the Ozz archives.
 ISO_CPP = iso_primitive_tests.cpp field_probe.cpp \
           ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+          ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp \
+          ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp \
+          ../src/animation/animation_validate.cpp \
           ../src/part_asset_v2.cpp \
           $(COMMON_MSL_BLAS_SRC)
 ISO_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
@@ -2085,8 +2091,8 @@ run-scatterprof: $(SCATTERPROF_TARGET)
 	./$(SCATTERPROF_TARGET)
 
 # Phase 1 typed iso-primitives + ordered CSG.
-$(ISO_TARGET): $(ISO_OBJS)
-	$(CC) $(ISO_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+$(ISO_TARGET): $(ISO_OBJS) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ISO_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-iso: $(ISO_TARGET)
 	./$(ISO_TARGET)
@@ -2314,9 +2320,12 @@ run-tilesetplacement: build/tileset_placement_tests
 	./build/tileset_placement_tests
 
 # Tileset DSL root.
-$(TILESETDSL_TARGET): $(TILESETDSL_OBJS)
+# TILESETDSL_CPP is SCRIPT_CPP minus its own main, so it compiles the same
+# animation bake-host closure (dsl_animation/ozz_adapter/ozz_bake) and needs the
+# Ozz archives on the link line exactly like $(SCRIPT_TARGET) does.
+$(TILESETDSL_TARGET): $(TILESETDSL_OBJS) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(TILESETDSL_OBJS) -o $@ \
-	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-tilesetdsl: $(TILESETDSL_TARGET)
 	./$(TILESETDSL_TARGET)
@@ -2340,19 +2349,23 @@ $(TILESETBAKE_TARGET): $(TILESETBAKE_OBJS) $(BOX3D_DIR)/libbox3d.a
 run-tilesetbake: $(TILESETBAKE_TARGET)
 	./$(TILESETBAKE_TARGET)
 
-$(TILESETPARAMS_TARGET): $(TILESETPARAMS_OBJS) $(BOX3D_DIR)/libbox3d.a
+# Same source closure as $(TILESETBAKE_TARGET) (TILESETBAKE_CPP minus its main),
+# so it needs the same Ozz archives.
+$(TILESETPARAMS_TARGET): $(TILESETPARAMS_OBJS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 	$(CC) $(TILESETPARAMS_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a
+	      $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 
 run-tilesetparams: $(TILESETPARAMS_TARGET)
 	./$(TILESETPARAMS_TARGET)
 
 # Bake Lab task 5.4 — settle_bench headless benchmark CLI.
-$(SETTLEBENCH_TARGET): $(SETTLEBENCH_OBJS) $(BOX3D_DIR)/libbox3d.a
+# Same source closure as $(TILESETBAKE_TARGET) plus tileset_metrics.cpp, so it
+# needs the same Ozz archives.
+$(SETTLEBENCH_TARGET): $(SETTLEBENCH_OBJS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 	$(CC) $(SETTLEBENCH_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a
+	      $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 
 run-settlebench: $(SETTLEBENCH_TARGET)
 	./$(SETTLEBENCH_TARGET) --spec synthetic

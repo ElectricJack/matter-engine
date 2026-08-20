@@ -328,6 +328,24 @@ bool create_acceleration_structure(
     VkDeviceSize size, VkAccelerationStructureResource& output,
     std::string& error);
 
+// Ray tracing is an OPTIONAL device feature, and
+// VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR is ILLEGAL in a barrier
+// stage mask on a device that did not enable it -- see
+// VUID-VkImageMemoryBarrier2-srcStageMask-07946 and its dstStageMask twin.
+// Images that are conservatively transitioned "readable by every shader
+// stage" (the atmosphere LUTs, the cloud-shadow volumes) must therefore fold
+// the ray-tracing stage in through this helper rather than naming the bit
+// directly, passing `VulkanDevice::ray_tracing_available()`. On an RT-less
+// device the bit simply drops out: nothing can trace, so nothing needs the
+// dependency. `MATTER_VK_TEST_FORCE_RT_UNAVAILABLE` (the smoke suite's
+// `-nort` modes) makes that path the one under test.
+inline VkPipelineStageFlags2 ray_tracing_shader_stage(
+    bool ray_tracing_available) {
+    return ray_tracing_available
+               ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR
+               : VkPipelineStageFlags2{0};
+}
+
 // Records a single VkImageMemoryBarrier2 into `command_buffer` taking `image`
 // from its tracked `image.layout` to `new_layout`, and updates
 // `image.layout` immediately -- at RECORD time, not at execution time. Record

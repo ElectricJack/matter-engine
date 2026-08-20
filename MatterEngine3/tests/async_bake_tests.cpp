@@ -35,6 +35,7 @@
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -198,6 +199,13 @@ struct SkinBindingObservation {
     uint32_t first_index = 0;
     uint32_t index_count = 0;
     size_t influence_count = 0;
+    size_t lod_count = 0;
+    // AnimationSkinnedAsset::influences is ONE arena shared by every LOD, each
+    // LOD owning the window [influence_vertex, influence_vertex + vertex_count)
+    // (animation_skin_bridge.h; valid_lod() range-checks exactly that window).
+    // True when those windows tile the arena exactly: start at 0, no gap, no
+    // overlap, ending at influences->size().
+    bool influence_windows_tile_arena = false;
     bool visible = false;
 };
 
@@ -222,8 +230,46 @@ static SkinBindingObservation observe_skin_binding(
             observed.index_count = lod.index_count;
             observed.influence_count = binding.asset->influences
                 ? binding.asset->influences->size() : 0;
+            observed.lod_count = binding.asset->lods.size();
+            std::vector<std::pair<uint32_t, uint32_t>> windows;
+            windows.reserve(binding.asset->lods.size());
+            for (const auto& entry : binding.asset->lods)
+                windows.emplace_back(entry.influence_vertex, entry.vertex_count);
+            std::sort(windows.begin(), windows.end());
+            size_t cursor = 0;
+            bool tiled = !windows.empty();
+            for (const auto& window : windows) {
+                if (window.first != cursor) { tiled = false; break; }
+                cursor += window.second;
+            }
+            observed.influence_windows_tile_arena =
+                tiled && cursor == observed.influence_count;
         });
     return observed;
+}
+
+// The skin-reconciliation checks below are a ten-term conjunction; a bare FAIL
+// line says nothing about which term moved. Print the observation so the next
+// reader gets the numbers instead of having to re-instrument the suite.
+static void report_skin_binding(const char* label,
+                                const SkinBindingObservation& observed,
+                                uint32_t range_calls, uint64_t range_part,
+                                uint64_t expected_asset_identity) {
+    std::printf("  %s skin: count=%u part_hash=%016llx range_calls=%u "
+                "range_part=%016llx asset_identity=%016llx (expected %016llx) "
+                "source_vertex=%u influence_vertex=%u vertex_count=%u "
+                "influence_count=%zu lods=%zu tiled=%d first_index=%u "
+                "index_count=%u\n",
+                label, observed.count,
+                (unsigned long long)observed.part_hash, range_calls,
+                (unsigned long long)range_part,
+                (unsigned long long)observed.asset_identity,
+                (unsigned long long)expected_asset_identity,
+                observed.source_vertex, observed.influence_vertex,
+                observed.vertex_count, observed.influence_count,
+                observed.lod_count,
+                observed.influence_windows_tile_arena ? 1 : 0,
+                observed.first_index, observed.index_count);
 }
 
 static std::string ev_type_name(matter::EventType t) {
@@ -1631,13 +1677,26 @@ static bool test_production_animated_gallery_binding() {
         cold_snapshots.empty() ? 0 : cold_snapshots.front().asset.resolved_hash;
     const SkinBindingObservation cold_skin =
         observe_skin_binding(*cold);
+    report_skin_binding("cold", cold_skin, cold_range_calls, cold_range_part,
+                        cold_asset_hash);
     CHECK(cold_range_calls > 0 && cold_skin.count == 1 &&
               cold_range_part == cold_skin.part_hash &&
               cold_skin.asset_identity == cold_asset_hash &&
               cold_skin.source_vertex == 1200 &&
               cold_skin.influence_vertex == 0 &&
               cold_skin.vertex_count > 0 &&
-              cold_skin.influence_count == cold_skin.vertex_count &&
+              // NOT `influence_count == vertex_count`. The asset's `influences`
+              // is one arena shared by ALL of its LOD ranges, each owning the
+              // window [influence_vertex, influence_vertex + vertex_count)
+              // (animation_skin_bridge.h). Equality with the presentation LOD's
+              // vertex_count only held while the gallery shipped a single LOD;
+              // it now ships three rungs whose windows sum to 4683 against a
+              // 4190-vertex LOD0, so equality would be asserting "there is
+              // exactly one LOD", not coherence.
+              // The window tiling below is the coherence property, and it holds
+              // for any rung count.
+              cold_skin.lod_count >= 1 &&
+              cold_skin.influence_windows_tile_arena &&
               cold_skin.first_index == 3400 &&
               cold_skin.index_count > 0,
           "cold gallery uses production skin reconciliation with injected global raster ranges");
@@ -1677,13 +1736,19 @@ static bool test_production_animated_gallery_binding() {
           "warm restore republishes the entity-only shipped animation asset");
     const SkinBindingObservation warm_skin =
         observe_skin_binding(*warm);
+    report_skin_binding("warm", warm_skin, warm_range_calls, warm_range_part,
+                        cold_asset_hash);
     CHECK(warm_range_calls > 0 && warm_skin.count == 1 &&
               warm_range_part == warm_skin.part_hash &&
               warm_skin.asset_identity == cold_asset_hash &&
               warm_skin.source_vertex == 5600 &&
               warm_skin.influence_vertex == 0 &&
               warm_skin.vertex_count > 0 &&
-              warm_skin.influence_count == warm_skin.vertex_count &&
+              // Same arena-vs-LOD-window reasoning as the cold case above.
+              warm_skin.lod_count == cold_skin.lod_count &&
+              warm_skin.influence_windows_tile_arena &&
+              warm_skin.influence_count == cold_skin.influence_count &&
+              warm_skin.vertex_count == cold_skin.vertex_count &&
               warm_skin.first_index == 7800 &&
               warm_skin.index_count > 0,
           "warm gallery executes the same production skin reconciliation contract");

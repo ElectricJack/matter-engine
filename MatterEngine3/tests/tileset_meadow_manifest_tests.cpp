@@ -26,17 +26,30 @@ int main() {
     // Try both paths: relative to viewer/ (normal test run) and relative to
     // repo-root (build-all.sh).
     fs::path scenes_dir = "../../projects/world_demo/scenes";
+    fs::path engine_shared_lib = "../shared-lib";
     std::error_code ec;
     if (!fs::is_directory(scenes_dir, ec)) {
         scenes_dir = "projects/world_demo/scenes";
+        engine_shared_lib = "MatterEngine3/shared-lib";
     }
+    // A world's own `objects/` is never read here (no bake, no roots resolved),
+    // but its SHARED-LIB imports are: load_world_definition folds every
+    // `import ... from 'shared-lib/x'` before it evaluates the class, so a
+    // world that imports anything fails to load outright without these roots.
+    // StreamMountain has imported `shared-lib/alpine_ecology` since 2026-07-30
+    // (6e51d3c6), which is exactly how long this suite had been red.
+    const fs::path project_shared_lib = scenes_dir.parent_path() / "shared-lib";
+    auto fill_lib_roots = [&](matter::WorldLoadDesc& d) {
+        d.project_shared_lib_dir = project_shared_lib.string();
+        d.engine_shared_lib_dir = engine_shared_lib.string();
+    };
 
     const fs::path world_path = scenes_dir / "Meadow" / "Meadow.js";
     REQUIRE(fs::exists(world_path, ec));
 
     matter::WorldLoadDesc desc;
     desc.world_path = world_path.string();
-    // objects_dir and shared-lib dirs not needed for just parsing roots.
+    fill_lib_roots(desc);
 
     matter::WorldDefinition def;
     matter::WorldLoadError load_err;
@@ -65,6 +78,7 @@ int main() {
         matter::WorldLoadDesc legacy_desc;
         legacy_desc.world_path =
             (scenes_dir / fs::path(world).stem() / world).string();
+        fill_lib_roots(legacy_desc);
         if (!matter::load_world_definition(legacy_desc, legacy, legacy_err)) {
             std::fprintf(stderr, "  %s: %s\n", world, legacy_err.message.c_str());
             REQUIRE(false);
@@ -88,7 +102,7 @@ int main() {
     }
 
     // StreamMountain migrated to defineMaterial (chart-VT Phase 4): it declares
-    // four alpine materials AND keeps the deprecated `tileset: true` ForestFloor
+    // five alpine materials AND keeps the deprecated `tileset: true` ForestFloor
     // root. That combination is only sound because plan_detail_bakes() merges
     // the root with AlpineGround's identical `detail: "ForestFloor"` request —
     // one settle, one .gtex, one slot, two bound materials (16 + AlpineGround).
@@ -101,6 +115,7 @@ int main() {
         matter::WorldLoadDesc mountain_desc;
         mountain_desc.world_path =
             (scenes_dir / "StreamMountain" / "StreamMountain.js").string();
+        fill_lib_roots(mountain_desc);
         const bool mountain_ok = matter::load_world_definition(
             mountain_desc, mountain, mountain_err);
         if (!mountain_ok)
@@ -108,12 +123,22 @@ int main() {
                          mountain_err.message.c_str());
         REQUIRE(mountain_ok);
 
-        REQUIRE(mountain.materials.size() == 4);
-        const char* const expect_names[4] = {"AlpineGround", "AlpineRock",
-                                             "Scree", "AlpineSnow"};
-        const char* const expect_detail[4] = {"ForestFloor", "AlpineRockDetail",
-                                              "ScreeDetail", "AlpineSnowDetail"};
-        for (size_t i = 0; i < mountain.materials.size() && i < 4; ++i) {
+        // AlpineMeadow is the FIFTH and it is declared LAST on purpose:
+        // declaration order is the slot order, so a new material goes on the
+        // end and the existing four keep their indices (see the comment above
+        // its defineMaterial in StreamMountain.js). It arrived with its
+        // AlpineMeadowDetail tileset in 96b7859d (2026-07-30); this expectation
+        // list, written for the four that existed before it, is what went
+        // stale.
+        constexpr size_t kMountainMaterials = 5;
+        REQUIRE(mountain.materials.size() == kMountainMaterials);
+        const char* const expect_names[kMountainMaterials] = {
+            "AlpineGround", "AlpineRock", "Scree", "AlpineSnow", "AlpineMeadow"};
+        const char* const expect_detail[kMountainMaterials] = {
+            "ForestFloor", "AlpineRockDetail", "ScreeDetail", "AlpineSnowDetail",
+            "AlpineMeadowDetail"};
+        for (size_t i = 0;
+             i < mountain.materials.size() && i < kMountainMaterials; ++i) {
             REQUIRE(mountain.materials[i].name == expect_names[i]);
             REQUIRE(mountain.materials[i].detail_module == expect_detail[i]);
             REQUIRE(mountain.materials[i].detail_density == 0);
@@ -128,19 +153,20 @@ int main() {
 
         const std::vector<tileset::DetailBakeRequest> plan =
             tileset::plan_detail_bakes(mountain_roots, mountain.materials);
-        // 4 detail scenes, not 5: the root folded into AlpineGround's.
-        REQUIRE(plan.size() == 4);
-        if (plan.size() == 4) {
+        // One bake per DECLARED detail scene, not one more: the deprecated
+        // ForestFloor root folded into AlpineGround's identical request.
+        REQUIRE(plan.size() == kMountainMaterials);
+        if (plan.size() == kMountainMaterials) {
             REQUIRE(plan[0].module == "ForestFloor");
             REQUIRE(plan[0].from_tileset_root);
             REQUIRE(plan[0].materials.size() == 2);
             REQUIRE(plan[0].materials[0] ==
                     tileset::kDeprecatedTilesetRootMaterial);
             REQUIRE(plan[0].materials[1] == mountain.materials[0].index);
-            // ForestFloor first in the plan matters while the Alpine* detail
-            // scenes are still missing: run_tileset_deferred stops at the first
-            // settle failure, so the one scene that exists must be ahead of
-            // them.
+            // The merged ForestFloor request stays FIRST: run_tileset_deferred
+            // stops at the first settle failure, and this is the one entry that
+            // carries the deprecated material-16 binding the non-VT path still
+            // samples, so it must not be stranded behind another scene.
             for (size_t i = 1; i < plan.size(); ++i) {
                 REQUIRE(plan[i].module == expect_detail[i]);
                 REQUIRE(!plan[i].from_tileset_root);

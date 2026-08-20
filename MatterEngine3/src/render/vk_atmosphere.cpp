@@ -203,9 +203,16 @@ bool VkAtmosphere::create_candidate_images(Candidate& candidate,
 // is the only thing that ever writes them.
 bool VkAtmosphere::initialize_emergency(matter::VulkanDevice& vulkan,
                                         std::string& error) {
-    struct ClearRequest { std::array<matter::VkImageResource*, 4> images; };
+    struct ClearRequest {
+        std::array<matter::VkImageResource*, 4> images;
+        // Folded into the SHADER_READ_ONLY transition below; see
+        // matter::ray_tracing_shader_stage.
+        VkPipelineStageFlags2 ray_tracing_stage;
+    };
     ClearRequest request{{&emergency_transmittance_, &emergency_multiscatter_,
-                          &emergency_sky_view_, &emergency_irradiance_sh_}};
+                          &emergency_sky_view_, &emergency_irradiance_sh_},
+                         matter::ray_tracing_shader_stage(
+                             vulkan.ray_tracing_available())};
     const auto clear = [](VkCommandBuffer command_buffer, void* data) {
         auto& request = *static_cast<ClearRequest*>(data);
         for (uint32_t index = 0; index < request.images.size(); ++index) {
@@ -226,7 +233,7 @@ bool VkAtmosphere::initialize_emergency(matter::VulkanDevice& vulkan,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                    VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                    request.ray_tracing_stage,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         }
     };
@@ -424,6 +431,12 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
         error = "VkAtmosphere::record requires a command buffer";
         return false;
     }
+    // "and ray tracing" in the comment above is conditional: naming the
+    // ray-tracing stage on a device without the feature is a validation
+    // error, so it is folded in only when the device actually has it.
+    const VkPipelineStageFlags2 ray_tracing_stage =
+        matter::ray_tracing_shader_stage(vulkan_ &&
+                                         vulkan_->ray_tracing_available());
     struct PushConstants {
         float settings0[4]; // rayleigh, mie, anisotropy, ground albedo
         float settings1[4]; // sea level, ozone, observer world y, pad
@@ -450,7 +463,7 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
     matter::record_image_transition(command_buffer, transmittance_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
     matter::record_image_transition(command_buffer, multiscatter_, VK_IMAGE_LAYOUT_GENERAL,
@@ -471,7 +484,7 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
     matter::record_image_transition(command_buffer, sky_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
     matter::record_image_transition(command_buffer, irradiance_sh_, VK_IMAGE_LAYOUT_GENERAL,
@@ -482,7 +495,7 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
     matter::record_image_transition(command_buffer, irradiance_sh_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     return true;
 }
@@ -531,7 +544,12 @@ bool VkAtmosphere::readback_irradiance(
     struct Request {
         matter::VkImageResource* image;
         VkBuffer buffer;
-    } request{&image, readback.buffer};
+        // Folded into the SHADER_READ_ONLY transition below; see
+        // matter::ray_tracing_shader_stage.
+        VkPipelineStageFlags2 ray_tracing_stage;
+    } request{&image, readback.buffer,
+              matter::ray_tracing_shader_stage(
+                  vulkan_ && vulkan_->ray_tracing_available())};
     const auto copy = [](VkCommandBuffer command_buffer, void* opaque) {
         auto& value = *static_cast<Request*>(opaque);
         matter::record_image_transition(
@@ -554,7 +572,7 @@ bool VkAtmosphere::readback_irradiance(
             VK_ACCESS_2_TRANSFER_READ_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                value.ray_tracing_stage,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     };
