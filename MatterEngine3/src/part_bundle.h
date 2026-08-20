@@ -19,6 +19,7 @@
 #include <unistd.h>
 #endif
 
+// MatterEngine3/src/part_bundle.h
 // =============================================================================
 // PartBundle — one file per part, replacing the artifact zoo. (M4)
 // =============================================================================
@@ -75,6 +76,28 @@
 // every cache by construction (the version vector is folded into the part
 // hash), so a bundle and the files it replaced can never contend for the same
 // name. Two bakes that are not bit-identical must not share a cache identity.
+//
+// THREADING AND COST, which the layout above does not tell you:
+//   * The mutating calls (write_section, remove_section) take one process-wide
+//     mutex and are therefore safe from any bake thread. The reads take no lock
+//     and need none: a writer publishes by atomic rename, so a concurrent reader
+//     sees either the whole old file or the whole new one, never a torn one.
+//   * A write is READ-MERGE-WRITE of the WHOLE bundle — O(bundle bytes) per
+//     section written, several times per part per bake. That is the price of one
+//     file, and it is why the probe path exists.
+//   * read_section reads the whole file and verifies the section checksum;
+//     read_section_prefix reads a bounded head and does NOT. Use the latter for
+//     "is this artifact usable?" questions and the former to actually load.
+//   * Rejections are misses, never errors: a wrong magic, format version,
+//     version digest, resolved hash or checksum all make the bundle read as
+//     ABSENT, so the caller re-bakes. At most 64 sections; a part has a handful.
+//   * `path` is the cache-root-relative "parts/<hex>.bundle"; callers prepend
+//     their cache root.
+//
+// Header-only because part_asset_v2.cpp, the bakers and the store all need it
+// and it has no state worth a translation unit — see the note at bundle_lock()'s
+// DEFINITION below for the one `inline` that is load-bearing rather than
+// incidental.
 
 namespace part_bundle {
 
@@ -133,6 +156,13 @@ bool has_section(const std::string& bundle_path, uint64_t resolved_hash,
 //
 // `full_length_out` receives the section's declared length, so a caller can
 // tell "short section" from "I asked for less".
+//
+// It applies every directory-level rule parse() does -- magic, bundle format,
+// version digest, resolved hash, entry count, directory checksum and the
+// strictly-ascending tag order -- and skips only the per-section payload
+// checksum. So a false here means the same thing a false from read_section
+// means, MINUS "the payload did not verify"; that difference is exactly what
+// impostor_bake::load uses to tell a part with no atlas from a damaged bundle.
 bool read_section_prefix(const std::string& bundle_path, uint64_t resolved_hash,
                          uint32_t tag, size_t max_bytes,
                          std::vector<uint8_t>& out, uint64_t& full_length_out);
@@ -149,7 +179,9 @@ bool remove_section(const std::string& bundle_path, uint64_t resolved_hash,
 std::vector<uint32_t> section_tags(const std::string& bundle_path);
 
 // ===========================================================================
-// Implementation. Header-only: see the note on `inline` above.
+// Implementation. Header-only; the one `inline` that is load-bearing rather
+// than incidental is bundle_lock()'s, and the reason is written at its
+// DEFINITION further down this file.
 // ===========================================================================
 inline std::mutex& bundle_lock();
 
@@ -344,6 +376,10 @@ inline std::string cache_path_bundle(uint64_t resolved_hash) {
     return std::string("parts/") + hex + ".bundle";
 }
 
+// Read the current bundle, insert or replace exactly one section, and republish
+// the whole file atomically under the process lock. A bundle that parses but is
+// keyed on a different resolved hash or version digest is treated as ABSENT and
+// overwritten wholesale — that is a stale orphan, not something to merge into.
 inline bool write_section(const std::string& bundle_path, uint64_t resolved_hash,
                    uint32_t tag, const void* data, size_t length) {
     std::lock_guard<std::mutex> guard(bundle_lock());
@@ -443,6 +479,7 @@ inline bool read_section_prefix(const std::string& bundle_path,
     at = 0;
     uint64_t offset = 0, length = 0;
     bool found = false;
+    uint32_t previous_tag = 0;
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t entry_tag = 0, flags = 0;
         uint64_t off = 0, len = 0, content = 0;
@@ -451,6 +488,16 @@ inline bool read_section_prefix(const std::string& bundle_path,
             std::fclose(f);
             return false;
         }
+        // The same strictly-ascending rule parse() enforces, for the same
+        // reason: it makes a duplicate tag unrepresentable. Without it this
+        // probe silently took the LAST matching entry while read_section
+        // rejected the whole bundle, so the cheap path and the real path could
+        // disagree about a malformed directory.
+        if (i > 0 && entry_tag <= previous_tag) {
+            std::fclose(f);
+            return false;
+        }
+        previous_tag = entry_tag;
         if (entry_tag == tag) { offset = off; length = len; found = true; }
     }
     if (!found || offset < kHeaderBytes + dir_bytes) { std::fclose(f); return false; }

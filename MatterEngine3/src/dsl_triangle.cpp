@@ -1,3 +1,24 @@
+// MatterEngine3/src/dsl_triangle.cpp
+//
+// The triangle-buffer half of dsl::DslState (declared in dsl_state.h). It
+// implements: the constructor/destructor (which own the
+// tri_emit::TriangleBuildBuffer), the beginShape/vertex/endShape state
+// machine, POLYGON contour capture plus `extrude` and the lazy flat fill,
+// the session-polymorphic solid verbs (`sphere`, `box`, `capsule`,
+// `cylinder`, `cone`, `line`) whose voxel branch delegates to the
+// emit_voxel_* bodies in dsl_state.cpp, the modifier-region markers, and
+// `pushTerrainTriangle`.
+//
+// Conventions used throughout
+//   - `top_mat4()` converts the mm::Mat4 stack top into tri.h's `mat4`; both
+//     are row-major float[16], so it is a straight copy.
+//   - Every public entry point begins with the same two guards: reject the
+//     call outright while an animation `generate` callback is running, then
+//     dispatch on `session_`. Failures go through `set_error` (first error
+//     wins) and return without emitting -- nothing here throws.
+//   - Coordinates handed to the buffer are part-local; the transform captured
+//     at emit is what places them.
+//
 // DslState members that touch the direct-triangle mesh buffer live here, split
 // out of dsl_state.cpp. triangle_emit.hpp pulls in MSL's precomp.h, whose
 // `struct float3` collides with raymath.h's `float3`. Phase 3 moved the
@@ -315,6 +336,12 @@ void DslState::flush_retained_profile() {
     retained_.holes.clear();
 }
 
+// Terrain path: `pos`/`nrm` are 3 vertices x 3 floats, already in part-local
+// space, with the mesher's own gradient normals. This deliberately bypasses
+// the beginShape/vertex machinery (and therefore the face-normal computation,
+// the transform stack and the tint cursor): the triangle is pushed raw with a
+// neutral tint (alpha 0) and AO 1, so the material's own colour is what
+// shades it.
 void DslState::pushTerrainTriangle(const float pos[9], const float nrm[9], int material_id) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     Tri t;

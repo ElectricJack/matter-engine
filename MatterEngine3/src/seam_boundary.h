@@ -213,6 +213,19 @@ struct FaceRecord {
     // `emit_quad`'s call sites.)
     OverlapBand band;
 
+    // The vertex this face produced in cell (a, b), or null when that cell
+    // produced none.
+    //
+    // Binary search, so it REQUIRES `verts` sorted by (a, b) -- which is the
+    // mesher's export order and the same ordering the determinism gate rests
+    // on. An unsorted record does not fail loudly here; it silently misses.
+    //
+    // The returned pointer indexes this record's own storage, which is exactly
+    // what seam::WeldSide::at demands of a lookup: STABLE for the duration of
+    // the weld, and CANONICAL -- the same cell always yields the same address.
+    // The welder detects the 2:1 fan collapse by comparing resolved pointers,
+    // so a lookup that copied into a temporary would break the fan rather than
+    // merely being wasteful.
     const BoundaryVert* find(int64_t a, int64_t b) const {
         size_t lo = 0, hi = verts.size();
         while (lo < hi) {
@@ -233,6 +246,8 @@ struct FaceRecord {
 struct SectorBoundary {
     int      rung = 0;       // this tile's rung (finer = larger)
     int      cells = 0;      // cells per axis (n); with the tile size this fixes the lattice
+    // This tile's own grid indices, at this tile's `rung`. `ty` is meaningful
+    // only on the Y-tiled path -- see `y_tiled` immediately below.
     int64_t  tx = 0, ty = 0, tz = 0;
 
     // Which mesher regime produced this record (M2).

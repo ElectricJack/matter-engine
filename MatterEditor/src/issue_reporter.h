@@ -72,14 +72,6 @@ struct ShotRect {
     bool empty() const { return w <= 0 || h <= 0; }
 };
 
-// One captured frame, plus everything needed to take it again. This is the
-// difference between a report that is evidence and a report that is a test: an
-// agent can replay the shot (MATTER_REPLAY, see shot_replay.h), fix, replay
-// again, and diff the two PNGs instead of arguing about a description.
-//
-// World and the render toggles are PER SHOT, not per report: a world switch or
-// a DLSS change between two shots would otherwise be recorded wrong for one of
-// them, and both change what the pixels look like.
 // One frame in a shot's history ring. Deliberately small and POD: the ring is
 // pushed EVERY frame on the main thread, so anything that allocates or locks
 // here would perturb the very measurement it exists to take.
@@ -101,6 +93,18 @@ struct IssueFrameSample {
     float zone_comp_ms = 0.0f;    // composite to swapchain
 };
 
+// One captured frame, plus everything needed to take it again. This is the
+// difference between a report that is evidence and a report that is a test: an
+// agent can replay the shot (MATTER_REPLAY, see shot_replay.h), fix, replay
+// again, and diff the two PNGs instead of arguing about a description.
+//
+// World and the render toggles are PER SHOT, not per report: a world switch or
+// a DLSS change between two shots would otherwise be recorded wrong for one of
+// them, and both change what the pixels look like.
+//
+// The pixels themselves are NOT here — main.cpp writes the PNG at capture time
+// and this records its filename. `preview` is a borrowed ImagePreviewCache
+// handle, owned by that cache, not by the shot.
 struct IssueShot {
     std::string file;     // "shot-1.png", relative to the report directory
     std::string caption;  // editable in the report window, after the fact
@@ -175,6 +179,16 @@ enum class ReporterPhase : uint8_t {
     Editing            // report window up
 };
 
+// The whole reporter: current phase, the open (unfiled) report, the pending
+// capture, and the frozen-frame drag. main.cpp owns exactly one for the life of
+// the process and does everything with side effects — the readback, the PNG
+// writes, the preview uploads, the file-out. The dialog in
+// issue_reporter_panel.cpp only READS this and sets flags on it
+// (`selection_committed`, `phase`), because file IO and texture work do not
+// belong in a draw pass.
+//
+// An "open report" is `dir`/`id` plus `shots`: created lazily at the first
+// successful capture and cleared by main.cpp after a File or a Discard.
 struct IssueReporterState {
     ReporterPhase phase = ReporterPhase::Idle;
     bool window_open = false;
@@ -268,6 +282,12 @@ void record_shot(IssueReporterState& state, const IssueShot& shot);
 
 // Writes issue.md / state.json / log-tail.txt into the report directory.
 // Returns the directory path; on failure returns "" and sets state.status.
+//
+// Also writes one shot-N.png.layout.ini per shot that captured a layout, and a
+// best-effort profile_tail.json. Blocking file IO on the calling (main) thread,
+// and NOT atomic — a mid-way failure leaves the files already written in place.
+// Creates the report directory if no capture has done so yet, so a report that
+// is only a written note still files.
 std::string write_issue_report(IssueReporterState& state,
                                const IssueContext& context,
                                const ViewerStats& stats,

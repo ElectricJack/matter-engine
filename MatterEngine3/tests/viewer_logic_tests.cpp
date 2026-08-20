@@ -930,6 +930,28 @@ static void test_indexed_weld() {
     // First corner of tri 1 is 'b' = (1,0,0).
     CHECK(soup.vertices[9] == 1.0f && soup.vertices[10] == 0.0f,
           "expand_indexed: triangle order preserved");
+
+    // Warp channels survive the unweld. They are filled by a later pass than
+    // build_raster_mesh_data, so they are attached by hand here — exactly the
+    // shape a terrain-sector rung carries. Dropping them used to make a
+    // round-tripped sector silently fall back to world-XZ ground addressing.
+    auto warped = m;
+    warped.warp_uvs.assign(static_cast<size_t>(warped.vertex_count) * 2, 0.0f);
+    warped.warp_frames.assign(static_cast<size_t>(warped.vertex_count) * 2, 0u);
+    for (int v = 0; v < warped.vertex_count; ++v) {
+        warped.warp_uvs[static_cast<size_t>(v) * 2] = static_cast<float>(v);
+        warped.warp_frames[static_cast<size_t>(v) * 2 + 1] =
+            static_cast<uint32_t>(100 + v);
+    }
+    auto warped_soup = viewer::expand_indexed(warped);
+    CHECK(warped_soup.warp_uvs.size() == 12 &&
+              warped_soup.warp_frames.size() == 12,
+          "expand_indexed: warp channels are 2 per soup vertex");
+    // Soup vertex 3 is the first corner of tri 1, i.e. input vertex m.indices[3].
+    const uint32_t src = m.indices[3];
+    CHECK(warped_soup.warp_uvs[6] == static_cast<float>(src) &&
+              warped_soup.warp_frames[7] == 100u + src,
+          "expand_indexed: warp values follow their source vertex");
 }
 
 static void test_sector_lod_floor_cull() {
@@ -1044,8 +1066,13 @@ static void test_provider_regen_stale_v2_flat() {
 //  (b) the legacy lp.lod_blas / lp.thresholds are still populated (whole-part RT view),
 //  (c) legacy lod0 tri total == sum of cluster lod0 tri counts,
 //  (d) bound_radius > 0,
-//  (e) loading a v2 flat still works (produces 1 synthetic cluster + non-empty legacy view),
+//  (e) a v2 body written to the flat position still loads (1 synthetic cluster +
+//      non-empty legacy view). Post-M4 that body leaves no FLAT section, so the
+//      load necessarily comes up the compositional path -- see the note there,
 //  (f) the compositional path publishes one exact-bounds synthetic cluster.
+//
+// The fixture writes the canonical `.part` beside every flat it saves, because
+// a flat is only admitted as an acceleration of one (8d4291df).
 static void test_partstore_cluster_loading() {
     printf("=== test_partstore_cluster_loading ===\n");
 
@@ -1068,6 +1095,28 @@ static void test_partstore_cluster_loading() {
         set(t[0], P0, P1, P2);
         set(t[1], P0, P2, P3);
         return t;
+    };
+
+    // ---- Helper: the canonical .part a flat artifact accelerates. ----
+    // A flat is NOT an independently selectable cache entry. Since 8d4291df
+    // ("fix: reject static flat admission races") PartStore::get_or_load
+    // selects the `.part` root first, requires load_static_part_snapshot() to
+    // parse an ANLK-free canonical Part there, and only then admits that
+    // root's flat sibling -- so a linked part can never silently downgrade to
+    // a stale static flat. Production always satisfies that: part_flatten
+    // load_v2()s `cache_path_resolved(root_hash)` and writes
+    // `cache_path_flat(root_hash)` beside it, so the pair exists together.
+    // This fixture used to write the flat alone, which the admission gate now
+    // rejects; the load then fell through to the coherent loader, found no
+    // .part at all, and printed "coherent load failed".
+    auto write_canonical_part = [&](uint64_t hash, const std::vector<Tri>& tris) {
+        BLASManager canon; TLASManager canon_tlas(64);
+        canon.register_triangles(tris);
+        part_asset::LodLevels lods;
+        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
+        lods.push_back(L);
+        return part_asset::save_v2(root + "/" + part_asset::cache_path_resolved(hash),
+                                   canon, canon_tlas, nullptr, 0, lods, hash);
     };
 
     // Build a scratch BLASManager with 2 clusters (each one BLAS entry).
@@ -1096,6 +1145,11 @@ static void test_partstore_cluster_loading() {
             part_asset::LodLevel L; L.screen_size_threshold = 0.5f; L.blas_indices.push_back(bi1);
             clusters[1].lods.push_back(L);
         }
+
+        std::vector<Tri> canonical = t0;
+        canonical.insert(canonical.end(), t1.begin(), t1.end());
+        CHECK(write_canonical_part(kV3Hash, canonical),
+              "cluster test: canonical .part saved (the flat accelerates it)");
 
         const std::string flat_path = root + "/" + part_asset::cache_path_flat(kV3Hash);
         bool ok = part_asset::save_flat_v3(flat_path, scratch, scratch_tlas, clusters, kV3Hash);
@@ -1166,7 +1220,20 @@ static void test_partstore_cluster_loading() {
         const std::string flat_path2 = root + "/" + part_asset::cache_path_flat(kV2Hash);
         bool ok2 = part_asset::save_v2(flat_path2, scratch2, scratch_tlas2, nullptr, 0, lods, kV2Hash);
         CHECK(ok2, "cluster test: v2 flat saved");
-        CHECK(part_asset::peek_format_version(flat_path2) == 2, "cluster test: v2 flat is v2");
+        // This used to assert peek_format_version(flat_path2) == 2, i.e. "the
+        // file in the flat position holds a v2 body". Both halves of that
+        // retired in M4 (bd1fd2bf, 152cd596): cache_path_flat() and
+        // cache_path_resolved() now name the SAME part bundle, the kind is a
+        // section tag chosen by the save function, and peek_format_version
+        // answers "is there a FLAT section here" (kFormatVersionFlat) or 0 --
+        // not "what version is this file". save_v2 writes a PART section, so a
+        // v2 body in the flat position is unrepresentable, which is exactly
+        // what 152cd596 says: "a v2 body in the flat position was only ever a
+        // pre-Task-11 file, and the bundle makes that unrepresentable."
+        // The surviving property is that this bundle has no flat acceleration,
+        // so the load below must come up the compositional path.
+        CHECK(part_asset::peek_format_version(flat_path2) == 0,
+              "cluster test: a v2 body leaves no FLAT section to accelerate it");
     }
     {
         viewer::PartStore store2(root);

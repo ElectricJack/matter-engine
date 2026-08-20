@@ -78,6 +78,28 @@ static std::filesystem::path local_fixture_root(const char* name) {
     return ec ? std::filesystem::path(name) : root;
 }
 
+// Sandbox for the chdir()-based tests below. These used to be a hardcoded
+// "/tmp/<name>" plus system("rm -rf ...") / system("mkdir -p ..."), which is a
+// POSIX-shell assumption: system() runs cmd.exe on Windows, where neither
+// command exists, so the sandbox was never created and EVERY assertion
+// downstream of the chdir failed. Same semantics (wipe, then create
+// <root>/schemas and <root>/parts), expressed portably — and rooted next to the
+// other fixtures under the test working directory rather than in temp, for the
+// reason local_fixture_root() documents.
+static std::string make_sandbox(const char* name) {
+    const std::filesystem::path root = local_fixture_root(name);
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "schemas", ec);
+    std::filesystem::create_directories(root / "parts", ec);
+    return root.string();
+}
+
+static void destroy_sandbox(const std::string& root) {
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
+
 static matter::animation::AnimAsset rigid_asset(uint64_t hash,
                                                   matter::animation::BuildNonce nonce) {
     using namespace matter::animation;
@@ -433,10 +455,8 @@ static void test_scratch_linked_bundle_never_falls_back_to_cache() {
 static void test_install_with_placement() {
     namespace pg = part_graph;
 
-    const std::string root = "/tmp/me3_graph_place";
-    system(("rm -rf " + root).c_str());
+    const std::string root = make_sandbox("me3_graph_place");
     const std::string schemas = root + "/schemas";
-    system(("mkdir -p " + schemas + " " + root + "/parts").c_str());
 
     write_file(schemas + "/LeafX.js",
         "class LeafX extends Part {"
@@ -485,7 +505,7 @@ static void test_install_with_placement() {
     }
 
     if (prevcwd[0]) (void)chdir(prevcwd);
-    system(("rm -rf " + root).c_str());
+    destroy_sandbox(root);
 }
 
 // SP-3 Tasks 8/9: bake the REAL demo Tree (an L-system that places instanced Leaf
@@ -500,7 +520,7 @@ static void test_install_with_placement() {
 // (../../projects/world_demo/objects, ../shared-lib). The caller passes ABSOLUTE paths
 // resolved from the original cwd before any chdir, so resolution survives a chdir.
 // The real demo tree is a faithful port of MatterEngine2's three-mode system:
-//   Tree  -> voxel sphere-sweep trunk + instanced TreeBranch twigs
+//   Tree  -> particle-flow strand trunk + instanced TreeBranch twigs
 //   TreeBranch -> mesh line-tube twig + instanced Leaf blades
 //   Leaf  -> bezier triangle-fan blade (mesh)
 // This installs the on-disk schemas through the real graph and walks the whole
@@ -523,27 +543,22 @@ static void test_demo_tree_has_leaves(const std::string& schemas,
     CHECK(ir.root_hashes.size() == 1, "install returned the Tree root hash");
     if (ir.root_hashes.empty()) return;
 
-    // TreeBranch requires four Leaf variants ({shade:0..3}), each a distinct
-    // content hash; placeChild('Leaf',{shade:N}) selects among them. Recompute the
-    // four expected variant hashes the same way the graph bakes them (Leaf has no
-    // children, params fold into its own hash). The branch hash is NOT recomputed
-    // here (it folds all four variant hashes in graph order); instead it is read
-    // back from the Tree's own child placements below.
+    // TreeBranch requires ONE Leaf (`static requires = [{ module: 'Leaf' }]`,
+    // placed as `placeChild('Leaf')`), so there is a single expected child hash.
+    // The demo used to carry four {shade:0..3} Leaf variants; today's Leaf.js
+    // declares no params at all, so a shade sweep would only re-assert that a
+    // paramless part hashes the same four times. Recompute the one hash the same
+    // way the graph bakes it (Leaf has no children). The branch hash is NOT
+    // recomputed here (it folds the Leaf hash); instead it is read back from the
+    // Tree's own child placements below.
     const std::string leaf_src = read_file(schemas + "/Leaf.js");
-    uint64_t leaf_shade[4];
-    for (int s = 0; s < 4; ++s) {
-        char pj[24]; std::snprintf(pj, sizeof pj, "{\"shade\":%d}", s);
-        leaf_shade[s] = host.resolve_hash(leaf_src, pj);
-    }
-    auto is_leaf_variant = [&](uint64_t h) {
-        for (int s = 0; s < 4; ++s) if (leaf_shade[s] == h) return true;
-        return false;
-    };
+    const uint64_t leaf_hash = host.resolve_hash(leaf_src, "{}");
     uint64_t tree_hash   = ir.root_hashes[0];
-    // Trunk is a childless voxel leaf, so its hash is a plain source+params hash.
-    uint64_t trunk_hash  = host.resolve_hash(read_file(schemas + "/Trunk.js"), "{}");
 
-    // --- Tree: geometry-less assembler placing one Trunk + N TreeBranch ---
+    // --- Tree: particle-flow trunk geometry + N instanced TreeBranch ---
+    // (The separate Trunk part this test used to walk is gone: Tree.js grows its
+    // own trunk from the strand sim and `requires` only TreeBranch, so the trunk
+    // geometry is now part of the Tree artifact asserted right here.)
     BLASManager t_blas; TLASManager t_tlas(256);
     std::vector<part_asset::ChildInstance> t_children;
     part_asset::LodLevels t_lods;
@@ -551,32 +566,20 @@ static void test_demo_tree_has_leaves(const std::string& schemas,
                                         tree_hash, t_blas, t_tlas, t_children, t_lods);
     CHECK(t_loaded, "demo Tree .part reloads");
     CHECK(!t_children.empty(), "demo Tree placed children");
-    // Tree requires [Trunk, TreeBranch]; sort placements by which part they name.
-    // The branch hash folds all four Leaf variants, so it can't be recomputed here
-    // -- read it back from the (non-trunk) placements instead.
-    size_t trunk_placements = 0;
-    uint64_t branch_hash = 0;
-    for (const auto& c : t_children) {
-        if (c.child_resolved_hash == trunk_hash) ++trunk_placements;
-        else branch_hash = c.child_resolved_hash;   // all branches share one hash
-    }
-    CHECK(trunk_placements >= 1, "Tree placed the Trunk");
-    CHECK(branch_hash != 0, "Tree placed at least one TreeBranch");
-    printf("  demo Tree placed %zu child instance(s) (%zu trunk)\n",
-           t_children.size(), trunk_placements);
-
-    // --- Trunk: voxel geometry, no children ---
-    BLASManager k_blas; TLASManager k_tlas(64);
-    std::vector<part_asset::ChildInstance> k_children;
-    part_asset::LodLevels k_lods;
-    bool k_loaded = part_asset::load_v2(part_asset::cache_path_resolved(trunk_hash),
-                                        trunk_hash, k_blas, k_tlas, k_children, k_lods);
-    CHECK(k_loaded, "demo Trunk .part reloads");
-    CHECK(k_blas.get_unique_blas_count() >= 1, "Trunk registered voxel geometry");
-    { size_t tt = 0; for (const auto& e : k_blas.get_entries()) tt += e->triangles.size();
+    CHECK(t_blas.get_unique_blas_count() >= 1, "Tree registered trunk geometry");
+    { size_t tt = 0; for (const auto& e : t_blas.get_entries()) tt += e->triangles.size();
       // Geometry budget guard: the trunk voxel sweep once ballooned to >130k tris
       // (multi-second synchronous LOD bake per part at viewer startup). Keep it sane.
-      CHECK(tt < 400000, "Trunk triangle count within budget"); }
+      CHECK(tt < 400000, "Tree trunk triangle count within budget"); }
+    // Every placement is a TreeBranch, and they all share one hash (identical
+    // params) -- read it back rather than recomputing, since it folds the Leaf.
+    uint64_t branch_hash = t_children[0].child_resolved_hash;
+    bool one_branch_hash = true;
+    for (const auto& c : t_children)
+        if (c.child_resolved_hash != branch_hash) one_branch_hash = false;
+    CHECK(branch_hash != 0, "Tree placed at least one TreeBranch");
+    CHECK(one_branch_hash, "all TreeBranch placements share one content hash");
+    printf("  demo Tree placed %zu child instance(s)\n", t_children.size());
 
     // --- TreeBranch: mesh twig tubes + Leaf instances ---
     BLASManager b_blas; TLASManager b_tlas(256);
@@ -592,19 +595,19 @@ static void test_demo_tree_has_leaves(const std::string& schemas,
       // UV-sphere tubes. Guard the budget so it can't silently regress again.
       CHECK(bt < 150000, "TreeBranch twig triangle count within budget"); }
     printf("  demo TreeBranch placed %zu Leaf instance(s)\n", b_children.size());
-    // Every placed Leaf must resolve to one of the four real {shade:N} variant
-    // hashes -- this is the regression guard for parametric-child resolution.
+    // Every placed Leaf must resolve to the real Leaf hash -- this is the
+    // regression guard for child resolution through placeChild().
     bool all_variants = true;
     for (const auto& c : b_children)
-        if (!is_leaf_variant(c.child_resolved_hash)) all_variants = false;
-    CHECK(all_variants, "every placed Leaf is one of the four real shade variants");
+        if (c.child_resolved_hash != leaf_hash) all_variants = false;
+    CHECK(all_variants, "every placed Leaf resolves to the real Leaf artifact");
 
     // --- Leaf: bezier triangle-fan blade (mesh, no children) ---
     BLASManager l_blas; TLASManager l_tlas(64);
     std::vector<part_asset::ChildInstance> l_children;
     part_asset::LodLevels l_lods;
-    bool l_loaded = part_asset::load_v2(part_asset::cache_path_resolved(leaf_shade[0]),
-                                        leaf_shade[0], l_blas, l_tlas, l_children, l_lods);
+    bool l_loaded = part_asset::load_v2(part_asset::cache_path_resolved(leaf_hash),
+                                        leaf_hash, l_blas, l_tlas, l_children, l_lods);
     CHECK(l_loaded, "demo Leaf .part reloads");
     CHECK(l_blas.get_unique_blas_count() >= 1, "Leaf registered blade triangle mesh");
     CHECK(l_children.empty(), "Leaf is a mesh leaf with no children");
@@ -628,10 +631,8 @@ static void test_foreign_cwd_install() {
     char orig_cwd[4096];
     if (!getcwd(orig_cwd, sizeof orig_cwd)) orig_cwd[0] = '\0';
 
-    const std::string root = "/tmp/me3_foreign_cwd";
-    system(("rm -rf " + root).c_str());
+    const std::string root = make_sandbox("me3_foreign_cwd");
     const std::string schemas = root + "/schemas";
-    system(("mkdir -p " + schemas + " " + root + "/parts").c_str());
 
     write_file(schemas + "/ForeignBox.js",
         "class ForeignBox extends Part {\n"
@@ -664,7 +665,7 @@ static void test_foreign_cwd_install() {
 
     // Restore cwd so subsequent tests (lod_sidecar etc.) work correctly.
     if (orig_cwd[0]) (void)chdir(orig_cwd);
-    system(("rm -rf " + root).c_str());
+    destroy_sandbox(root);
     printf("  test_foreign_cwd_install done\n");
 }
 
@@ -680,10 +681,8 @@ static void test_foreign_cwd_install() {
 static void test_lod_variant_sidecar() {
     namespace pg = part_graph;
 
-    const std::string root = "/tmp/me3_lod_sidecar";
-    system(("rm -rf " + root).c_str());
+    const std::string root = make_sandbox("me3_lod_sidecar");
     const std::string schemas = root + "/schemas";
-    system(("mkdir -p " + schemas + " " + root + "/parts").c_str());
 
     // BudgetGrass: opted in, childless. build() emits n=ceil(lodBudget*4) strips.
     write_file(schemas + "/BudgetGrass.js",
@@ -728,7 +727,8 @@ static void test_lod_variant_sidecar() {
         std::string sidecar_path = std::string(".") + "/" + part_asset::cache_path_lods(root_hash);
 
         part_asset::LodVariants v;
-        CHECK(part_asset::load_lod_sidecar(sidecar_path, v), "lod_sidecar: sidecar loads");
+        CHECK(part_asset::load_lod_sidecar(sidecar_path, root_hash, v),
+              "lod_sidecar: sidecar loads");
         CHECK(v.anchor_size == 0.5, "lod_sidecar: anchor_size == 0.5");
         CHECK(v.budgets.size() == 2, "lod_sidecar: 2 budget entries");
         CHECK(v.hashes.size() == 2, "lod_sidecar: 2 hash entries");
@@ -750,13 +750,18 @@ static void test_lod_variant_sidecar() {
     pg::InstallResult ir3 = graph.install({ pg::ChildRequest{"PlainBox", pg::Params{}} });
     CHECK(ir3.ok, "lod_sidecar: PlainBox install ok");
     if (ir3.ok && ir3.root_hashes.size() == 1) {
+        // M4: "no sidecar" is no longer "no file" -- every cache_path_* helper
+        // names the part's ONE bundle, which exists here because PlainBox has a
+        // body. The absence to assert is the VARS section, which is exactly what
+        // load_lod_sidecar reports (and what the flatten path branches on).
         std::string nos = std::string(".") + "/" + part_asset::cache_path_lods(ir3.root_hashes[0]);
-        std::ifstream nosin(nos);
-        CHECK(!nosin.good(), "lod_sidecar: PlainBox has no sidecar");
+        part_asset::LodVariants nov;
+        CHECK(!part_asset::load_lod_sidecar(nos, ir3.root_hashes[0], nov),
+              "lod_sidecar: PlainBox has no sidecar");
     }
 
     if (prevcwd[0]) (void)chdir(prevcwd);
-    system(("rm -rf " + root).c_str());
+    destroy_sandbox(root);
     printf("  test_lod_variant_sidecar OK\n");
 }
 
@@ -767,18 +772,20 @@ static void test_lod_variant_sidecar() {
 // install pipeline calls it). Asserts:
 //   - parts/<root_hash>.static_lods sidecar has 3 levels
 //   - level 0 (no params/exclude) points at the root hash itself
-//   - level 1 (params) points at a DISTINCT, on-disk .part
+//   - level 1 (params) on a part WITH children keeps the root hash: a
+//     params-driven fresh build is unsupported there (it would have to re-place
+//     the children), so HostBaker falls back to decimation from LOD0 and says so
+//     -- see part_graph.h's bake_static_lods contract. The distinct-rebuild half
+//     of the contract is asserted on childless Bush below.
 //   - level 2 (exclude) keeps the root hash but sets a non-zero exclude mask,
-//     and the root .part's LMSK trailer reflects it (child excluded at level 2
-//     only)
+//     with the plan's level-major masks showing the child excluded at level 2
+//     only (M4 removed the LMSK body trailer that used to mirror them)
 // A second install (fully cached) leaves the sidecar and .part untouched.
 static void test_static_lods_end_to_end() {
     namespace pg = part_graph;
 
-    const std::string root = "/tmp/me3_static_lods_e2e";
-    system(("rm -rf " + root).c_str());
+    const std::string root = make_sandbox("me3_static_lods_e2e");
     const std::string schemas = root + "/schemas";
-    system(("mkdir -p " + schemas + " " + root + "/parts").c_str());
 
     // Leaf: a childless part placed by Tree so `exclude` has something to drop.
     write_file(schemas + "/Leaf.js",
@@ -827,17 +834,15 @@ static void test_static_lods_end_to_end() {
             std::string(".") + "/" + part_asset::cache_path_static_lods(root_hash);
 
         part_asset::StaticLodPlan plan;
-        CHECK(part_asset::load_static_lod_plan(sidecar_path, plan),
+        CHECK(part_asset::load_static_lod_plan(sidecar_path, root_hash, plan),
               "static_lods_e2e: sidecar loads");
         CHECK(plan.level_hashes.size() == 3, "static_lods_e2e: 3 authored levels");
         if (plan.level_hashes.size() == 3) {
             CHECK(plan.level_hashes[0] == root_hash,
                   "static_lods_e2e: level 0 (no params/exclude) == root hash");
-            CHECK(plan.level_hashes[1] != root_hash,
-                  "static_lods_e2e: level 1 (params) is a distinct rebuild");
-            std::ifstream in(part_asset::cache_path_resolved(plan.level_hashes[1]),
-                             std::ios::binary);
-            CHECK(in.good(), "static_lods_e2e: level 1's .part exists on disk");
+            CHECK(plan.level_hashes[1] == root_hash,
+                  "static_lods_e2e: level 1 (params) on a part with children "
+                  "falls back to decimation from LOD0");
             CHECK(plan.level_exclude_masks[1] == 0,
                   "static_lods_e2e: level 1 excludes nothing");
             CHECK(plan.level_hashes[2] == root_hash,
@@ -846,24 +851,32 @@ static void test_static_lods_end_to_end() {
                   "static_lods_e2e: level 2 has a non-zero exclude mask");
         }
 
-        // The root .part's LMSK trailer: the single child (Leaf) must be
-        // ABSENT at level 2 and PRESENT at levels 0/1.
+        // M4 removed the LMSK trailer that used to transpose these masks into
+        // the compositional body: nothing read it back (its only reader was a
+        // load_v2 overload with no production caller), and the plan section
+        // asserted above is where the flatten path actually reads the exclude
+        // information from. So the per-child expectation -- Leaf PRESENT at
+        // levels 0/1, ABSENT at level 2 -- is asserted against the plan's
+        // level-major masks (bit k = child k dropped at that level), and the
+        // root body is only required to reload with its single child intact.
+        if (plan.level_exclude_masks.size() == 3) {
+            CHECK((plan.level_exclude_masks[0] & (1u << 0)) == 0,
+                  "static_lods_e2e: Leaf present at level 0");
+            CHECK((plan.level_exclude_masks[1] & (1u << 0)) == 0,
+                  "static_lods_e2e: Leaf present at level 1");
+            CHECK((plan.level_exclude_masks[2] & (1u << 0)) != 0,
+                  "static_lods_e2e: Leaf ABSENT at level 2 (excluded)");
+        }
+
         BLASManager blas; TLASManager tlas(64);
         std::vector<part_asset::ChildInstance> kids;
         part_asset::LodLevels lods_out;
         std::vector<part_asset::VolumeEmitter> emitters;
-        std::vector<uint32_t> mask;
         const std::string part_path = part_asset::cache_path_resolved(root_hash);
         CHECK(part_asset::load_v2(part_path, root_hash, blas, tlas, kids, lods_out,
-                                  emitters, mask),
-              "static_lods_e2e: root .part reloads with LMSK-aware load_v2");
+                                  emitters),
+              "static_lods_e2e: root part body reloads");
         CHECK(kids.size() == 1, "static_lods_e2e: one Leaf placement");
-        CHECK(mask.size() == 1, "static_lods_e2e: LMSK trailer present (one child)");
-        if (mask.size() == 1) {
-            CHECK((mask[0] & (1u << 0)) != 0, "static_lods_e2e: Leaf present at level 0");
-            CHECK((mask[0] & (1u << 1)) != 0, "static_lods_e2e: Leaf present at level 1");
-            CHECK((mask[0] & (1u << 2)) == 0, "static_lods_e2e: Leaf ABSENT at level 2 (excluded)");
-        }
 
         // Re-install: everything cached, sidecar untouched, nothing re-baked.
         pg::InstallResult ir2 = graph.install({ pg::ChildRequest{"Tree", pg::Params{}} });
@@ -871,8 +884,43 @@ static void test_static_lods_end_to_end() {
         CHECK(ir2.baked.empty(), "static_lods_e2e: second install bakes nothing");
     }
 
+    // Bush: the childless half of the contract -- here a `params` level DOES
+    // bake a distinct artifact of its own (no children to re-place, so the
+    // fallback above does not apply).
+    write_file(schemas + "/Bush.js",
+        "class Bush extends Part {\n"
+        "  static params = { seed: 5, n: 3 };\n"
+        "  static lods = [ {}, { params: { n: 1 } } ];\n"
+        "  build(p) {\n"
+        "    this.beginVoxels(0.1); this.fill(1);\n"
+        "    for (let i = 0; i < p.n; ++i) this.sphere([i * 0.3, 0, 0], 0.1);\n"
+        "    this.endVoxels();\n"
+        "  }\n"
+        "}\n");
+    pg::InstallResult irb = graph.install({ pg::ChildRequest{"Bush", pg::Params{}} });
+    CHECK(irb.ok, "static_lods_e2e: Bush install ok");
+    if (!irb.ok) printf("  Bush install error: %s\n", irb.error.c_str());
+    if (irb.ok && irb.root_hashes.size() == 1) {
+        const uint64_t bush_hash = irb.root_hashes[0];
+        part_asset::StaticLodPlan bplan;
+        CHECK(part_asset::load_static_lod_plan(
+                  std::string(".") + "/" + part_asset::cache_path_static_lods(bush_hash),
+                  bush_hash, bplan),
+              "static_lods_e2e: Bush sidecar loads");
+        CHECK(bplan.level_hashes.size() == 2, "static_lods_e2e: Bush has 2 authored levels");
+        if (bplan.level_hashes.size() == 2) {
+            CHECK(bplan.level_hashes[0] == bush_hash,
+                  "static_lods_e2e: Bush level 0 == root hash");
+            CHECK(bplan.level_hashes[1] != bush_hash,
+                  "static_lods_e2e: Bush level 1 (params) is a distinct rebuild");
+            std::ifstream bin(part_asset::cache_path_resolved(bplan.level_hashes[1]),
+                              std::ios::binary);
+            CHECK(bin.good(), "static_lods_e2e: Bush level 1's part exists on disk");
+        }
+    }
+
     if (prevcwd[0]) (void)chdir(prevcwd);
-    system(("rm -rf " + root).c_str());
+    destroy_sandbox(root);
     printf("  test_static_lods_end_to_end OK\n");
 }
 
@@ -1123,11 +1171,10 @@ int main(int argc, char** argv) {
       if (realpath("../shared-lib", abs)) demo_sharedlib = abs; }
 
     // Fresh sandbox so parts/<hash>.part and the schemas live in a known place.
-    const std::string root = "/tmp/me3_graph_integration";
-    system(("rm -rf " + root).c_str());
+    const std::string root = make_sandbox("me3_graph_integration");
     const std::string schemas = root + "/schemas";
     const std::string parts   = root + "/parts";   // == <root>/parts; we chdir to <root>
-    system(("mkdir -p " + schemas + " " + parts).c_str());
+    (void)parts;
 
     // A two-part graph: Wall (leaf, no children) and Tower (parent that requires
     // two Wall instances with identical params -> dedup to ONE Wall artifact).
@@ -1180,7 +1227,7 @@ int main(int argc, char** argv) {
     CHECK(r2.hits == (int)r1.baked.size(), "second install reports a hit for every prior artifact");
 
     if (prevcwd[0]) (void)chdir(prevcwd);
-    system(("rm -rf " + root).c_str());
+    destroy_sandbox(root);
 
     // SP-3 Task 7: graph-driven placement (requires + placeChild) round-trip.
     test_install_with_placement();

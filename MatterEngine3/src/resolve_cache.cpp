@@ -1,3 +1,4 @@
+// MatterEngine3/src/resolve_cache.cpp
 // resolve_cache.cpp — resolve/manifest binary cache.
 // Saves and restores the full output of LocalProvider::install_graph() +
 // compose_world() so warm launches skip QuickJS script evaluation.
@@ -82,6 +83,33 @@
 //
 // "str" in the above means: u32 len, u8[len] bytes (UTF-8, no NUL).
 
+// ---------------------------------------------------------------------------
+// How it fits, and how to change it
+// ---------------------------------------------------------------------------
+// One file per world: <cache_root>/cache/<world_name>.resolve, written by the
+// resolve path (local_provider.cpp / matter_engine.cpp) once a world has been
+// composed and read on the next launch of the same world.  It holds INPUTS to
+// the bake — instances, lights, the part graph snapshot, the bake plan — never
+// baked geometry; the .part artifacts under <cache_root>/parts/ are a separate,
+// independently keyed cache.
+//
+// There is no forward or backward compatibility, by design.  load() rejects
+// anything whose magic, format version, cache key or version digest does not
+// match exactly, and a rejection is a normal outcome (the caller re-resolves).
+// So ANY change to the layout above must bump kResolveCacheVersion: an
+// unversioned layout change leaves old files passing the header check and then
+// decoding as garbage.
+//
+// The payload carries no checksum.  Integrity rests on the header match, the
+// per-field sanity caps, the strict "must be exactly at EOF" check at the end
+// of load(), and the fact that the file is published atomically so a reader
+// never sees a partial write.
+//
+// Nothing here verifies that the artifacts named by root_hashes / bake_plan
+// still exist on disk.  A hit restores part IDENTITIES verbatim and skips
+// script evaluation entirely, which is why every input that can move a part
+// hash has to reach compute_key() — see the bake-mode fold in step 4 there for
+// what going wrong looks like.
 #include "resolve_cache.h"
 #include "part_asset.h"    // fnv1a64
 #include "part_asset_v2.h" // replace_file_atomic (Windows-safe publish)
@@ -125,6 +153,13 @@ static constexpr uint32_t kResolveCacheVersion = 5u;  // M4: u32 ebv -> u64 vers
 
 namespace {
 
+// Write/read one scalar as sizeof(T) little-endian bytes.  The value goes
+// through a uint64_t by object representation (memcpy), so float and double
+// round-trip as their raw IEEE-754 bit patterns rather than as text — exact,
+// but it does mean the format assumes both ends share that representation.
+// T must be trivially copyable and at most 8 bytes wide (static_assert).
+// Both helpers return false as soon as the stream goes bad, which is how a
+// truncated file is detected: every call site propagates the false out.
 template <typename T>
 static bool write_le(std::ofstream& f, T val) {
     static_assert(sizeof(T) <= 8, "write_le: type too wide");
@@ -159,6 +194,9 @@ static bool write_str(std::ofstream& f, const std::string& s) {
     return true;
 }
 
+// Read a length-prefixed string.  A length above 256 MiB is rejected outright
+// as corruption; anything under that cap is resize()d before the read, so a
+// corrupt length can still make this allocate up to 256 MiB before it fails.
 static bool read_str(std::ifstream& f, std::string& out) {
     uint32_t len = 0;
     if (!read_le(f, len)) return false;
@@ -192,6 +230,14 @@ static std::vector<uint8_t> read_file_bytes(const std::string& path) {
 // paths (relative to `dir`, with '/' separators). On any opendir failure,
 // the entry is skipped (best-effort; key computation remains deterministic
 // for files that ARE readable).
+// The name overpromises: only the recursion order is sorted here (subdirectory
+// names), while the regular files of each directory are appended in readdir
+// order — compute_key() sorts the accumulated list itself, and that is where
+// the determinism actually comes from.
+//
+// Entries whose name starts with '.' are skipped at every level, so dotfiles
+// and dot-directories NEVER contribute to the cache key.  stat() follows
+// symlinks, so a symlinked file is hashed as a regular file.
 static void collect_files_sorted(const std::string& dir,
                                  const std::string& rel_prefix,
                                  std::vector<std::string>& out) {
@@ -218,6 +264,8 @@ static void collect_files_sorted(const std::string& dir,
         collect_files_sorted(dir + "/" + sub, rel_prefix.empty() ? sub : rel_prefix + "/" + sub, out);
 }
 
+// Fold a string into a running FNV-1a state: length first, then bytes, so that
+// concatenation cannot alias ("ab" + "c" folds differently from "a" + "bc").
 static uint64_t fold_str(uint64_t h, const std::string& s) {
     // Feed length then bytes into FNV fold (incremental).
     uint32_t len = (uint32_t)s.size();
@@ -236,22 +284,16 @@ static uint64_t fold_str(uint64_t h, const std::string& s) {
     return h;
 }
 
-static uint64_t fold_u32(uint64_t h, uint32_t v) {
-    uint8_t buf[4];
-    for (int i = 0; i < 4; ++i) buf[i] = (uint8_t)(v >> (i * 8));
-    for (int i = 0; i < 4; ++i) {
-        h ^= (uint64_t)buf[i];
-        h *= 0x00000100000001B3ull;
-    }
-    return h;
-}
-
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
+// Flat-layout overload: forwards with an empty scene tier, which the real
+// implementation then omits entirely rather than folding an empty tag — that
+// omission is what keeps a project with no scene objects producing exactly the
+// key it produced before the scene layout existed.
 uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
                      const std::string& objects_dir,
@@ -261,6 +303,15 @@ uint64_t compute_key(const std::string& world_path,
                        project_shared_lib_dir, engine_shared_lib_dir);
 }
 
+// Fold every input that can change the resolved graph into one u64 key.
+//
+// Cost: this READS every file under all four tiers, in full, on every call. It
+// hashes content, not mtimes — so a touched-but-unchanged file is still a hit,
+// and an edited file is always a miss.
+//
+// Returns 0 when the world source itself cannot be read; callers treat 0 as a
+// miss.  The numbered steps below are ordered, and the order is part of the
+// key: reordering them invalidates every existing cache file.
 uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
                      const std::string& scene_objects_dir,
@@ -346,6 +397,21 @@ static std::string resolve_cache_path(const std::string& cache_root,
     return cache_root + "/cache/" + world_name + ".resolve";
 }
 
+// Serialise `p` to <cache_root>/cache/<world_name>.resolve.
+//
+// Creates the cache/ directory if it is missing; an mkdir failure is ignored
+// here and surfaces as the ofstream failing to open instead.  Writes to
+// "<path>.tmp" and publishes it atomically, so a concurrent reader never sees a
+// half-written file, and any failure removes the temp rather than leaving one
+// behind.
+//
+// NOT byte-reproducible: bake_plan is an unordered_map, so entry order — and
+// with it the order of the source dedup table — varies between runs of the same
+// world.  Only the decoded content is stable; never diff two .resolve files
+// byte-wise.
+//
+// Returns false on any write error.  That is non-fatal: the only consequence is
+// a cold next launch.
 bool save(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           cache_key,
@@ -539,6 +605,19 @@ bool save(const std::string& cache_root,
     return true;
 }
 
+// Restore a payload previously written by save().  Fail-closed: false means
+// "no usable cache" for every reason there is — missing file, wrong magic,
+// wrong format version, key mismatch, version-digest mismatch, an unknown param
+// kind, a sanity cap exceeded, truncation, or trailing bytes — and is a normal,
+// expected outcome rather than an error to report.
+//
+// `out` is NOT left untouched on failure: the parse fills it incrementally and
+// returns at the first anomaly, so a false return leaves it partially
+// populated.  Callers must discard it, not inspect it.
+//
+// snapshot.by_file and snapshot.by_import are not stored in the file; they are
+// rebuilt here from each node's source_path / shared_source_paths /
+// shared_imports as the nodes are read.
 bool load(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           expected_key,

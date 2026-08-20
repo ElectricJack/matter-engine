@@ -15,6 +15,21 @@
 // BLASManager::register_triangles(tris, count, triex). There is NO separate
 // triangle BLAS and NO triangle render path. The VariationRecorder's children()
 // feed save_v2's child-instance table (SP-1). Triangles never enter the SDF.
+//
+// Ownership and threading: both classes are plain value types holding nothing
+// but std::vectors -- no GPU or OS resource, freely copyable, and destroyed
+// with the part build. They are not synchronized; one build buffer belongs to
+// the one thread evaluating that part's script.
+//
+// Conventions the whole file assumes:
+//   - Output is an unindexed triangle soup; `triangles()` and `tri_extra()`
+//     are a strictly parallel stream (index i of one describes index i of the
+//     other), which is what makes truncate()/appendTo() safe.
+//   - Vertices are authored in LOCAL space and baked through the supplied
+//     transform at emit time. Winding is outward, and a mirroring transform
+//     is compensated for rather than allowed to flip the surface.
+//   - Only sphere() produces smooth per-vertex normals; every other generator
+//     (capsule included) writes the triangle's face normal into TriEx.
 #include "tri.h"      // Tri, TriEx, mat4, float3, make_float3
 #include "part_asset_v2.h"  // SP-1: part_asset::ChildInstance, part_asset::compute_resolved_hash
 #include <vector>
@@ -39,18 +54,37 @@ struct Profile {
 };
 
 // Wall-stitch style at interior polyline vertices (the joinType cursor).
+//
+// TWO behaviours, not three: extrude() treats ROUND exactly as BEVEL, so it
+// produces the same flat chamfer band rather than an arc. The enumerator exists
+// so authored scripts naming "round" keep working (and keep their meaning if a
+// real arc is implemented); it is not a distinct shape today.
 enum class JoinType { MITER, BEVEL, ROUND };
 
 // Accumulates direct triangles as (Tri, TriEx) pairs. Triangles are literal
 // thin surfaces: transformed by the supplied matrix, tagged with a per-triangle
 // material id, carrying neutral tint (1,1,1,0) and a face-normal shading
 // fallback. NO SDF/field interaction. JS-free so it is unit-testable directly.
+//
+// One instance accumulates all of a part's direct geometry across the whole
+// script evaluation; it is never partially consumed. The only ordering rule is
+// the shape cursor: beginShape() opens it, vertex() appends only while it is
+// open, endShape() closes it. Every other method (line, sphere, box,
+// cappedCone, capsule, extrude, pushRaw) appends complete geometry
+// immediately and is independent of that cursor.
+//
+// Costs are not obvious from the names: these generators emit tens to hundreds
+// of triangles per call (a default capsule is segments*(2 + 4*rings) tris),
+// and a part that calls them in a loop pays for every one.
 class TriangleBuildBuffer {
 public:
     // tint defaults to neutral (1,1,1,0 = alpha 0 = no tint) so existing callers
     // are byte-identical; the DSL passes the tint cursor through (G4).
     void beginShape(ShapeType type, const mat4& transform, int material_id,
                     float4 tint = make_float4(1,1,1,0));
+    // vertex() outside an open shape is silently ignored, and endShape() drops
+    // trailing vertices that do not complete a primitive rather than reporting
+    // them -- an odd vertex count is a quiet no-op, not an error.
     void vertex(float3 position);   // local-space; transformed at endShape()
     void endShape();                // assembles pending vertices into Tri/TriEx
 
@@ -80,8 +114,11 @@ public:
                     const mat4& transform, int segments = 16,
                     float4 tint = make_float4(1,1,1,0));
     // capsule: constant-radius `r` cylindrical wall from a to b plus a HEMISPHERE
-    // cap (radius r) at each end. Smooth, watertight. `rings` is the number of
-    // latitude bands per hemisphere.
+    // cap (radius r) at each end. Watertight, and the SURFACE is smooth (the
+    // caps meet the wall tangentially) -- but the SHADING is not: capsule emits
+    // face normals like every generator except sphere(), so the cap facets are
+    // visible under lighting. `rings` is the number of latitude bands per
+    // hemisphere.
     void capsule(float3 a, float3 b, float r, int material_id,
                  const mat4& transform, int segments = 16, int rings = 6,
                  float4 tint = make_float4(1,1,1,0));
@@ -89,8 +126,9 @@ public:
     // Phase 3: sweep a 2D profile (concave, with holes) along a path (one segment
     // = 2 points, or a polyline). Emits a closed solid: ring-to-ring quad walls
     // (outer wound outward, holes wound inward), triangulated end caps on an open
-    // path (none on a closed loop), and join geometry (MITER/BEVEL/ROUND) at
-    // interior vertices. A rotation-minimizing (parallel-transport) frame carries
+    // path (none on a closed loop), and join geometry at interior vertices
+    // (MITER, or the BEVEL chamfer -- which is also what ROUND gets; see
+    // JoinType). A rotation-minimizing (parallel-transport) frame carries
     // the profile so it does not twist at bends. Baked under `transform` with the
     // per-triangle material + tint, exactly like line().
     void extrude(const Profile& profile, const float3* path, int path_n,
@@ -110,6 +148,9 @@ public:
     // direct triangles register as ONE BLAS.
     void appendTo(std::vector<Tri>& out_tris, std::vector<TriEx>& out_triex) const;
 
+    // Drops all accumulated geometry AND any shape left open. Note the
+    // asymmetry with truncate(), which only shortens the geometry stream and
+    // leaves the shape cursor alone.
     void clear();
 
 private:

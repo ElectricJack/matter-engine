@@ -1,5 +1,44 @@
 #pragma once
 
+// MatterEngine3/src/animation/animation_evaluator.h
+//
+// The runtime side of the animation pipeline: the compiled graph
+// representation an ANIM asset decodes into, and the evaluator that turns it
+// into skinning palettes.
+//
+// Pipeline position
+// -----------------
+//   authored IR (animation_ir.h)
+//     -> bake/encode (animation_runtime_asset.cpp)
+//       -> AnimationEvaluationDefinition (here)
+//         -> AnimationEvaluator -> AnimationPoseSnapshot -> skinning
+//
+// A definition is immutable and shared: `animation_runtime_asset.cpp` builds
+// one alongside the deserialized Ozz skeleton/animations and hands it out
+// behind a `shared_ptr` that keeps that Ozz storage alive. The evaluator
+// stores only a raw pointer to it in each request, so the definition must
+// outlive every instance evaluated against it.
+//
+// Clocks and cadence
+// ------------------
+// There are two: the FIXED simulation tick (graph time, clip advance, markers,
+// root motion, native controllers) and the render FRAME. Inputs declare which
+// clock they belong to (`RuntimeGraphInput::cadence`); fixed inputs are
+// interpolated at `accumulator_alpha`, frame inputs are sampled once and never
+// blended. A Fixed node may not depend on a Frame node -- the evaluator's
+// validator rejects that graph outright.
+//
+// Snapshot lifetime
+// -----------------
+// `AnimationPoseSnapshot` is a bundle of non-owning `ArrayView`s into the
+// evaluator's internal double-buffered pose storage. It is valid only until
+// the next successful publish for that instance (`evaluate`,
+// `begin_presentation`, `solve_targets`, `restore_checkpoint`) and is
+// invalidated outright by `forget`. Never retain one across a frame.
+//
+// Threading: nothing here locks. One evaluator instance belongs to one
+// thread; the fixed and presentation evaluators are separate objects.
+
 #include "animation/animation_ir.h"
 #include "animation/ozz_adapter.h"
 #include "animation/animation_targets.h"
@@ -27,6 +66,19 @@ struct ArrayView {
     bool empty() const { return count == 0; }
 };
 
+// A published pose for one instance, as borrowed views (see `ArrayView`
+// above). All five arrays have `skeleton->joint_count()` entries when the
+// snapshot is valid, and are all empty on a default-constructed one -- which
+// is what `AnimationEvaluator::snapshot` returns for an unknown instance.
+//
+// - `local_pose` -- per-joint transforms relative to the parent joint.
+// - `model_pose` -- per-joint joint-to-model matrices (row-major `Mat4f`).
+// - `skin_palette` -- `model_pose[i] * inverse_bind_model[i]`, what skinning
+//   actually consumes.
+// - the `previous_*` pair is the prior FIXED sample, kept for motion vectors.
+//   Frame-only work (`solve_targets`, `begin_presentation`) deliberately
+//   copies it forward rather than resampling, so a frame correction cannot
+//   fabricate velocity history.
 struct AnimationPoseSnapshot {
     AnimatorInstanceHandle instance{};
     uint64_t fixed_tick = 0;
@@ -157,6 +209,15 @@ struct RuntimeGraphInput {
     EvaluationCadence cadence = EvaluationCadence::Fixed;
 };
 
+// Node kinds of a compiled graph.
+// - Clip             -- samples one `RuntimeGraphClip`; no dependencies.
+// - Blend1D          -- blends 2+ dependencies by a Number input against
+//                       strictly ascending `thresholds` (one per dependency).
+// - Additive         -- dependency 0 is the base pose, dependency 1 must be an
+//                       additive (bind-relative delta) pose; `weight` applies.
+// - NativeController -- a pass-through in the evaluator; the actual controller
+//                       runs in `animation_systems` and writes IK targets.
+// - Output           -- exactly one, and it must be the LAST node.
 enum class RuntimeGraphNodeKind : uint8_t { Clip, Blend1D, Additive, NativeController, Output };
 struct RuntimeGraphNode {
     RuntimeGraphNodeKind kind = RuntimeGraphNodeKind::Output;
@@ -164,7 +225,10 @@ struct RuntimeGraphNode {
     std::vector<uint16_t> dependencies;
     uint16_t clip_index = UINT16_MAX;
     uint16_t input_index = UINT16_MAX;
+    // Blend1D only: one strictly ascending threshold per dependency, in the
+    // units of the driving Number input. Empty for every other node kind.
     std::vector<float> thresholds;
+    // Additive only: the additive layer's normalized 0-1 weight.
     float weight = 1.0f;
     EvaluationCadence cadence = EvaluationCadence::Fixed;
     // NativeController nodes retain their compiled descriptor index. Other
@@ -172,6 +236,18 @@ struct RuntimeGraphNode {
     uint16_t controller_index = UINT16_MAX;
 };
 
+// One compiled, immutable animation graph. Built by
+// `decode_animation_runtime_asset` and shared by every instance playing that
+// asset.
+//
+// Invariants (enforced by `valid_animation_evaluation_definition`, not by
+// construction): `nodes` is topologically ordered so every dependency index is
+// strictly less than its dependent; the last node is the single `Output`;
+// `inverse_bind_model` has exactly `skeleton->joint_count()` entries; and no
+// additive (bind-relative) pose reaches a consumer that expects a normal pose.
+//
+// `skeleton` and each clip's `animation` are borrowed Ozz objects owned by the
+// decoded asset, so this struct must not outlive it.
 struct AnimationEvaluationDefinition {
     const OzzSkeleton* skeleton = nullptr;
     std::vector<RuntimeGraphClip> clips;
@@ -208,6 +284,11 @@ struct AnimationEvaluationRequest {
     bool root_lock = false;
 };
 
+// Per-evaluator admission limits. `graph_nodes`/`controller_nodes` are the
+// TOTAL node counts the evaluator will admit across all instances in a single
+// `evaluate` call, whereas `limits` carries the per-asset and per-instance
+// caps. The constructor clamps the two counts to `limits`, so an
+// over-large budget cannot widen policy.
 struct AnimationEvaluationBudget {
     uint32_t graph_nodes = kMaxGraphNodes;
     uint32_t controller_nodes = kMaxControllers;
@@ -227,6 +308,34 @@ bool sample_graph_input(const AnimationEvaluationDefinition& definition,
                         uint16_t input_index,
                         AnimationValue& value);
 
+// Owns the mutable per-instance animation state and publishes pose snapshots.
+//
+// Ownership and lifetime
+// ----------------------
+// Constructed and destroyed by its owner (the animation service, or a test);
+// holds no GPU or OS resources. Per-instance state lives in `states_`, keyed by
+// a packed (slot_index, generation) handle, and is created lazily by
+// `evaluate` / `seed_presentation_clock` / `begin_presentation` /
+// `restore_checkpoint`. Only `forget` removes an entry -- there is no
+// expiry -- so a caller that drops instances without calling `forget` leaks
+// pose buffers for the evaluator's lifetime.
+//
+// Publish model
+// -------------
+// Each instance holds two pose buffers. A call solves into the back buffer and
+// only flips the front slot once everything succeeded, which is why every
+// entry point can fail without disturbing the currently visible pose. Any
+// snapshot handed out earlier is invalidated by the flip.
+//
+// Call order
+// ----------
+// Typical fixed use is `evaluate` per tick, then `fixed_graph_clips` /
+// `fixed_root_motion` to drain the tick's events, then optionally
+// `solve_targets` for IK. A separate presentation evaluator instead uses
+// `seed_presentation_clock` + `begin_presentation` to copy an already solved
+// fixed pose, and never advances graph clocks itself.
+//
+// Threading: no internal synchronization. One evaluator per thread.
 class AnimationEvaluator {
 public:
     explicit AnimationEvaluator(AnimationEvaluationBudget budget = {});
@@ -255,6 +364,11 @@ public:
                             const AnimationPoseSnapshot& current_fixed_pose,
                             float interpolation_alpha,
                             uint64_t frame_serial);
+    // Copies (not views) the instance's durable state into `out` for a
+    // play/stop transaction. An instance that exists but has never published a
+    // pose yields a valid checkpoint with empty pose vectors -- that is a
+    // normal outcome, not an error, and `restore_checkpoint` preserves it.
+    // Allocates and deep-copies five joint-sized vectors per call.
     bool capture_checkpoint(AnimatorInstanceHandle instance, AnimatorCheckpoint& out) const;
     bool validate_checkpoint(AnimatorInstanceHandle instance,
                              const AnimationEvaluationDefinition& definition,
@@ -283,6 +397,9 @@ private:
     struct State;
     AnimationEvaluationBudget budget_;
     AnimationBudgetRuntimeStats stats_;
+    // Per-instance state, keyed by (slot_index << 32) | generation. Held by
+    // pointer so the pose buffers a published `AnimationPoseSnapshot` points
+    // into keep a stable address across map rehashing/rebalancing.
     std::map<uint64_t, std::unique_ptr<State>> states_;
 };
 

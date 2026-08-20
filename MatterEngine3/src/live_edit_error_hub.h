@@ -35,6 +35,9 @@ public:
     }
 
 private:
+    // Held BY REFERENCE: the hub must outlive every sink bound to it. The sink
+    // carries no other state, so it is cheap to construct and cannot be
+    // re-pointed at a different hub after construction.
     matter::evt::Hub& hub_;
 };
 

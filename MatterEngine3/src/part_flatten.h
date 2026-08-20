@@ -1,11 +1,35 @@
 #pragma once
 
+// MatterEngine3/src/part_flatten.h
+//
 // Bake-time subtree flattening: merge a root part's whole child hierarchy
 // (transforms applied, TriEx carried) into ONE mesh, split it into spatial
 // clusters, build a per-cluster error-bounded LOD ladder, and save the result
 // as a v3 FLAT section of the part bundle at cache_path_flat(root_hash). The viewer
 // then renders the root as a single flat instance per cluster instead of
 // re-expanding hundreds of child instances every frame.
+//
+// WHO CALLS IT. `MatterEngine3/src/provider/local_provider.cpp`
+// (ensure_part_flattened) on the bake path and `src/live_edit_prod.cpp` on
+// re-edit, both with default `FlattenTargets`; the rest of the surface is
+// exercised by `MatterEngine3/tests/part_flatten_tests.cpp`. `flatten_part`
+// runs entirely on its caller's thread and owns no global state.
+//
+// WHAT THE IMPLEMENTATION DOES WITH THIS. part_flatten.cpp picks one of four
+// ladder builders per root: the budget-variant ladder (a `.lods` sidecar), the
+// authored `static lods` ladder (M3), the segmented fine/coarse ladder (a
+// child carrying an inline-below-px hint), or the default per-cluster QEM
+// ladder. Everything in `FlattenTargets` below feeds the last of those; the
+// first two build their levels from artifacts already on disk.
+//
+// TWO KINDS OF KNOB LIVE IN THIS STRUCT, and the difference matters. A SHAPE
+// knob (the divisor schedule, the benefit floor, the rung cap, the impostor
+// terminal and its distance) changes the BYTES a bake would write, so it is
+// folded into `ladder_shape_digest` below and a flat baked under a different
+// shape is rejected as stale. The rest (`max_depth`, `budget_tri_bytes`,
+// `cluster_target_tris`, the pixel dials) are not. Only AMBIENT shape —
+// compiled defaults overridden by env — reaches the digest; see the long note
+// above `ladder_shape_mix` for why a per-call override cannot.
 //
 // GL-free: consumes .part files from the cache and writes one back.
 
@@ -21,6 +45,15 @@
 
 namespace part_flatten {
 
+// Every dial the default per-cluster ladder is built from. Default-constructed
+// is THE shipped shape: every flat currently on disk was baked with exactly
+// these values, which is why `ladder_shape_digest` returns 0 (the "no
+// deviation" sentinel) for them.
+//
+// Callers are expected to pass this by default and drive the shape fields from
+// the env knobs below instead — `flatten_part` warns when a caller overrides a
+// shape field programmatically, because the artifact is still STAMPED with the
+// ambient shape and the staleness gate then cannot protect it.
 struct FlattenTargets {
     // eps_i = bound_radius / radius_divisor[i], finest ladder step first.
     // Level 0 is always the full cluster mesh (no decimation).
@@ -408,6 +441,12 @@ inline int cutover_level_index(float cutover_threshold, const FlattenTargets& t)
 //           instead of inlining its geometry.
 enum class FlattenDecision : uint8_t { INLINE = 0, BOUNDARY = 1 };
 
+// Outcome of one `flatten_part` call. `ok` is the only success test: on
+// failure `error` carries a human-readable reason (including the OOM case the
+// public entry point converts out of a thrown `std::bad_alloc`) and every
+// count below is unspecified. On success the counts are diagnostic only —
+// nothing in the engine branches on them; they feed the bake trace, the tests
+// and the ladder logs.
 struct FlattenResult {
     bool        ok = false;
     std::string error;
@@ -432,6 +471,16 @@ struct FlattenResult {
 // the REP0 sections under <cache_root>/parts/, writes the root bundle's FLAT section
 // (atomic). Idempotent and content-addressed: callers should skip the call when
 // the flat file already exists, since any subtree change changes root_hash.
+// Expensive and blocking: this loads the whole subtree from disk, decimates
+// every cluster once per admitted rung, and writes the artifact. It also
+// RECURSES into itself when a child must be flattened first (the segmented
+// path needs a child's own coarse LODs — see load_child_flat). Both outputs
+// (the .flat.part and, when a terminal impostor is baked, the .fimp sidecar)
+// are published by atomic rename, sidecar first, so a crash can never leave a
+// ladder whose billboard rung has no atlas.
+//
+// Never throws for out-of-memory: a `std::bad_alloc` from the merge/decimate
+// pipeline is caught at this boundary and returned as `FlattenResult::error`.
 FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
                            const FlattenTargets& targets = FlattenTargets());
 

@@ -1,3 +1,26 @@
+// MatterEngine3/src/render/vk_animation_skinning.cpp
+//
+// Implementation of the CPU-side GPU-skinning work queue declared in
+// vk_animation_skinning.h. Four things happen here:
+//
+//  1. Ordering and admission -- `less_submission` fixes the priority order,
+//     and the loop in `submit_visible` admits until either the work-item or
+//     the skinned-vertex budget is reached. Everything past that point
+//     becomes a `VkSkinFallback`, never a silent drop.
+//  2. Validation -- palette finiteness, palette/history size agreement, joint
+//     indices inside the palette, influence ranges inside the asset's arena,
+//     and overflow-checked offset arithmetic (`checked_add`). Every check
+//     runs BEFORE anything is published, which is what lets the publish step
+//     be infallible.
+//  3. Fence and dependency bookkeeping -- a retained fallback draw may point
+//     at an older frame slot's output buffer, so that slot gains a pending
+//     user until this frame is sealed, and then inherits this frame's fence.
+//  4. `vk_skin_vertex_cpu`, the CPU mirror of
+//     `shaders_vk/animation_skin.comp`, used as an ABI oracle by tests. It is
+//     not called on the production dispatch path.
+//
+// Nothing here touches Vulkan or takes a lock; it runs on the render thread
+// as part of frame preparation.
 #include "vk_animation_skinning.h"
 
 #include <algorithm>
@@ -8,6 +31,10 @@
 namespace viewer {
 namespace {
 
+// Budget-admission order: higher `render_priority` first, then nearer
+// `distance_bucket`, then instance slot and LOD purely to make the result
+// deterministic. Whatever sorts last is what gets demoted to a fallback when
+// the frame runs out of budget.
 bool less_submission(const VkSkinSubmission& left,
                      const VkSkinSubmission& right) noexcept {
     if (left.render_priority != right.render_priority)
@@ -55,6 +82,9 @@ bool finite_joint(const VkSkinJoint& value) noexcept {
     return finite_matrix(value.position) && finite_matrix(value.normal);
 }
 
+// A usable influence has at least one non-zero weight, and every non-zero
+// lane names a joint inside this submission's palette. Zero-weight lanes are
+// unused slots, so their joint index is deliberately not checked.
 bool valid_influence(const VkSkinInfluence& influence,
                      uint32_t palette_count) noexcept {
     uint32_t total_weight = 0;
@@ -224,6 +254,11 @@ bool VkAnimationSkinning::submit_visible(
         const auto asset = assets_.find(value.asset_key);
         uint32_t source_end = 0;
         uint32_t output_end = 0;
+        // Note the two `checked_add`s into the same `source_end`: the first
+        // only proves `source_vertex + vertex_count` does not wrap (the
+        // renderer-global source arena is bounds-checked by the caller), and
+        // the second overwrites it with the influence range, which is what
+        // gets compared against this asset's influence array.
         if (asset == assets_.end() || value.vertex_count == 0 ||
             value.lod > kVkSkinLodMax || value.cluster > kVkSkinClusterMax ||
             value.pose.current.empty() || value.pose.previous.size() != value.pose.current.size() ||
@@ -311,6 +346,9 @@ bool VkAnimationSkinning::submit_visible(
         else
             ++stats_.bind_pose_fallback_count;
     }
+    // Both offsets are running element cursors, in vertices and joints
+    // respectively -- each accepted item takes the next contiguous slice of
+    // the frame's output and palette arenas.
     uint32_t output_offset = 0;
     uint32_t palette_offset = 0;
     for (const VkSkinSubmission& value : accepted) {
@@ -367,6 +405,11 @@ bool VkAnimationSkinning::submit_visible(
     return true;
 }
 
+// Seals the slot against `fence` and, as the last step, promotes this frame's
+// own raster draws into `retained_outputs_`. That promotion is what makes a
+// later frame able to keep drawing this frame's skinned vertices when its own
+// pose is rejected -- so it must happen only once the work is genuinely
+// submitted, never at record time.
 bool VkAnimationSkinning::mark_submitted(uint32_t frame_slot, uint64_t fence) {
     if (frame_slot >= frames_.size()) return false;
     VkSkinFrameArenas& target = frames_[frame_slot];
@@ -496,6 +539,9 @@ uint64_t VkAnimationSkinning::instance_key(uint32_t slot,
     return (uint64_t(slot) << 32u) | generation;
 }
 
+// Drops this slot's not-yet-sealed references to other slots' output buffers.
+// Called when a slot is recycled or its queue is replaced, so an abandoned
+// queue cannot pin a producer slot forever.
 void VkAnimationSkinning::release_pending_dependencies(
     uint32_t frame_slot) noexcept {
     for (uint32_t source : pending_source_dependencies_[frame_slot]) {
@@ -543,6 +589,9 @@ bool vk_skin_vertex_cpu(const VkSkinSourceVertex& source,
             normal[component] += transformed[component] * weight;
         weight_sum += weight;
     }
+    // Positions are the raw weighted sum -- `weight_sum` is only tested for
+    // being non-zero, never divided out -- while the normal is renormalized.
+    // The compute shader must match this exactly for the oracle to hold.
     if (weight_sum == 0.0f || !finite3(current) || !finite3(previous) ||
         !finite3(normal)) return false;
     const float length = std::sqrt(normal[0] * normal[0] +

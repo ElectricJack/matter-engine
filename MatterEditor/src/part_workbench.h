@@ -36,13 +36,18 @@ struct PartWorkbenchScriptHostHolder;  // part_workbench.cpp; owns script_host::
 struct WorkbenchBakeObserver;  // part_workbench.cpp; W3 per-rung bake observer (implements ::BakeObserver)
 
 // One pinned parameter set for a part, persisted in the workbench manifest.
+//
+// A pin is a saved VARIATION, not a saved artifact: it stores the params and
+// the content hash they resolved to, and "Load" simply re-applies them. The
+// two measurement fields below are only written when a bake of exactly this
+// hash completes, so they stay 0 for a pin that has never been baked.
 struct WorkbenchPin {
     std::string name;         // auto-named ("seed=3 height=12") or user-renamed
     std::string params_json;  // canonical params for this variation
     std::string hash_hex;     // resolved-hash of {source, params_json} at pin time
     bool baked = false;       // hash_hex appears in the part record's baked_hashes
-    uint32_t last_tris = 0;
-    double last_bake_ms = 0.0;
+    uint32_t last_tris = 0;      // triangles at the last bake of this pin; 0 = never baked
+    double last_bake_ms = 0.0;   // wall-clock ms of that bake; 0 = never baked
 };
 
 // Per-part workbench bookkeeping, persisted in the manifest JSON.
@@ -52,6 +57,34 @@ struct WorkbenchPartRecord {
     std::vector<std::string> baked_hashes;  // hex resolved-hash, every set ever baked here
 };
 
+// The Part Workbench: a private, isolated bake environment for ONE part at a
+// time, drawn as a tab inside the Bake Lab window.
+//
+// Owns its own matter::EngineContext and matter::WorldSession pointed at a
+// generated single-root world under `cache/lab-scratch/<project>/`, so opening
+// a part cannot touch (or be invalidated by) the production world session or
+// its cache. The real project's `objects/` and `shared-lib/` directories are
+// aliased into the scratch project by junction/symlink rather than copied, so
+// the workbench always bakes the part's real source.
+//
+// Lifetime and ownership: exactly one instance, held by BakeLab, itself a
+// stack local of main(). Non-copyable in practice (it holds unique_ptrs to
+// engine/session). It borrows — never owns — the VulkanDevice handed to
+// configure(); main.cpp therefore calls close() explicitly during shutdown,
+// while that device is still alive.
+//
+// Threading: every method here is main/UI thread only. The one exception is
+// the bake observer it installs on its session, whose callbacks fire on the
+// bake worker (and, for the rung callback, on whichever thread runs the
+// publish job); that class does nothing but copy integers under a mutex, and
+// tick() is the only reader. See part_workbench.cpp.
+//
+// Call order per frame, from main(): begin_frame() (before the Bake Lab tab
+// bar is drawn) -> draw() only if the tab is focused -> tick() and
+// pump_gpu_jobs() unconditionally -> wants_viewport() decides whose render()
+// runs this frame -> apply_lod_inspector_options() before that render(). The
+// session keeps ticking and baking in the background even while another tab
+// is showing, which is what makes tab switching instant.
 class PartWorkbench {
 public:
     PartWorkbench();
@@ -75,6 +108,12 @@ public:
     // Opens (or re-opens) `module` found under `source_project_dir/objects`.
     void open_part(const std::string& source_project_dir,
                    const std::string& module);
+    // Tears down the isolation session and engine and clears the current
+    // module/status. Idempotent and safe to call when nothing is open. Called
+    // explicitly by main() at shutdown, BEFORE the shared VulkanDevice is
+    // destroyed — this object is a stack local that would otherwise be
+    // destroyed after it. The scratch project, its cache and the manifest all
+    // survive on disk, so re-opening the same part is a cache hit.
     void close();
     bool is_open() const { return session_ != nullptr; }
 

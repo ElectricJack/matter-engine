@@ -286,6 +286,21 @@ class FixtureWorld extends World {
               "expand flag extracted");
         CHECK(definition.roots[1].tileset && !definition.roots[1].expand,
               "tileset flag extracted");
+        // roots[1] authors no `transform`, so it keeps the WorldRoot default.
+        // That default is IDENTITY -- a zeroed Mat4f would hand the provider a
+        // degenerate zero-scale placement for every root that omits the field.
+        {
+            const float identity[16] = {1, 0, 0, 0,
+                                        0, 1, 0, 0,
+                                        0, 0, 1, 0,
+                                        0, 0, 0, 1};
+            bool is_identity = true;
+            for (int element = 0; element < 16; ++element)
+                is_identity = is_identity &&
+                    definition.roots[1].transform.m[element] == identity[element];
+            CHECK(is_identity,
+                  "root without an authored transform defaults to identity");
+        }
     }
     CHECK(definition.lights.size() == 1, "one light extracted");
     if (definition.lights.size() == 1) {
@@ -2000,6 +2015,31 @@ void test_slot_binder_reports_displaced_materials() {
     CHECK(binder.allocator().size() == 0, "reset empties the pool");
 }
 
+// reset() derives its material union from the live per-key lists rather than
+// maintaining a running set, so neither a rebind that SHRINKS a key's list nor a
+// material bound by two atlases at once can skew what it reports.
+void test_slot_binder_reset_union_is_exact() {
+    tileset::DetailSlotBinder binder(2);
+
+    binder.acquire(0x11u);
+    binder.bind(0x11u, {16, 17});
+    binder.bind(0x11u, {16});      // rebind DROPS 17
+
+    binder.acquire(0x22u);
+    binder.bind(0x22u, {16, 30});  // 16 is now bound by two atlases
+
+    const auto third = binder.acquire(0x33u);
+    CHECK(third.evicted && third.evicted_key == 0x11u,
+          "the LRU atlas is the victim");
+    binder.bind(0x33u, {31});
+
+    const std::vector<int> released = binder.reset();
+    CHECK(released.size() == 3 && released[0] == 16 && released[1] == 30 &&
+              released[2] == 31,
+          "reset reports the exact ascending union of the live bindings: 17 was "
+          "rebound away, and 16 survives its other atlas being evicted");
+}
+
 } // namespace
 
 int main() {
@@ -2049,5 +2089,6 @@ int main() {
     test_detail_bake_plan_ordering_and_merging();
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();
+    test_slot_binder_reset_union_is_exact();
     return check_summary();
 }

@@ -69,6 +69,33 @@ struct GpuCapabilities {
     std::string dlss_reason;
 };
 
+// The editor's property registry and everything around it: which schema groups
+// are bound to which live structs, at which scope, where each scope's file
+// lives, the User-scope autosave clock, and the panel-home bookkeeping that
+// keeps Tunables from duplicating a group another panel already draws.
+//
+// Ownership and lifetime. main.cpp owns exactly one. It constructs it before
+// the first world is opened, calls init() once with the four editor-owned
+// structs it binds BY REFERENCE, drives set_world() / on_world_connected() at
+// the world-switch seams, calls tick() once per frame, and calls shutdown()
+// BEFORE the session is destroyed — the world-props and draw-override groups
+// are session-owned and the Bindings hold bare pointers into them. It owns
+// none of the bound structs except streaming_prefs_, gpu_prefs_ and gpu_caps_.
+//
+// Reads never go through here. Panels and main.cpp keep reading the plain
+// structs (S3: "the registry is never on a read path"); the registry exists
+// for the generic paths — the property widgets, the scope files, the env
+// layer, the Tunables enumeration, and the headless FIFO commands
+// `set <group.path>.<field> <value>` / `get <group.path>.<field>`
+// (docs/agent/control-surface.md). That grammar takes ONE path token: the
+// field name is split off at the LAST dot, so a group path is never a separate
+// argument.
+//
+// Scopes in one line each: World persists to the scene's props.json, User to
+// editor_settings.json beside the working directory, Session is live-editable
+// and enumerable but never written to any file.
+//
+// Threading: main/UI thread only.
 class EditorProps {
 public:
     // Debounce for Scope::User autosave, seconds after the last edit.
@@ -96,6 +123,9 @@ public:
     void set_reload_request(std::function<void()> fn) { reload_request_ = std::move(fn); }
     const std::function<void()>& reload_request() const { return reload_request_; }
 
+    // The raw registry, for the generic paths only: Tunables enumeration, the
+    // FIFO set/get handlers in main.cpp, props::apply_env. Panels should use
+    // the named accessors below instead.
     matter::props::Registry& registry() { return registry_; }
     const matter::props::Registry& registry() const { return registry_; }
 
@@ -135,10 +165,21 @@ public:
     void adopt_draw_overrides(matter::props::DynamicGroup* draw_overrides);
 
     // Per-frame: drives the User-scope autosave debounce.
+    //
+    // ALSO advances the note_panel_home/panel_home double buffer, so it must
+    // run exactly once per frame and BEFORE any panel draws — see the ordering
+    // note above panel_home(). `dt` is seconds. It does nothing about
+    // World-scope edits; those are flushed by set_world() or by save_world_now().
     void tick(float dt);
 
+    // True when any World-scope binding holds an unsaved edit. Scans the whole
+    // registry, so it is O(bindings) rather than a cached flag.
     bool world_dirty() const;
     bool user_save_pending() const { return user_pending_; }
+    // Write the World scope to world_path() now (sparsely — only values that
+    // differ from their baseline) and clear the World dirty flags on success.
+    // Returns false without touching the disk when persistence is off or no
+    // world path has been set yet.
     bool save_world_now();
 
     const std::string& world_path() const { return world_path_; }
@@ -189,8 +230,6 @@ public:
     // vol_debug_view, edited by the raw Combo widgets in Viewer Debug. Same
     // reason as console().
     matter::props::Binding* viewer_debug();
-    matter::props::Binding* viewer_session_status();
-    matter::props::Binding* viewer_atmosphere_status();
 
     // ---- Tunables de-duplication (issue dd98763c) --------------------------
     //

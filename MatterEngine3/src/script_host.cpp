@@ -1,3 +1,68 @@
+// MatterEngine3/src/script_host.cpp
+//
+// The QuickJS-ng host for the authoring DSL: everything that turns a .js part,
+// tileset or world source into engine data. This is the only file that owns
+// JSRuntime / JSContext lifetimes for a bake, and the only place the restricted
+// bake intrinsic set is chosen.
+//
+// What lives here
+//   - ScriptHost::bake_source — the full part bake: fold -> context -> eval ->
+//     params merge -> build() -> mesh -> save. Writes one .part (plus an .anim
+//     bundle when the part authored a rig) and returns a BakeResult.
+//   - ScriptHost::resolve_hash and merge_params_canonical — identity without
+//     building, from the same folded source bytes and canonical merged params
+//     bake_source hashes, so the two always agree.
+//   - The no-build static probes that read one class field each:
+//     eval_requires, eval_lod_budgets, eval_lods, eval_no_impostor.
+//   - ScriptHost::eval_world — a World class turned into field / surface /
+//     habitat PROGRAM TEXT (see world_base.js.h), consumed by
+//     script/world_definition_loader and FieldProgram::parse.
+//   - ScriptHost::eval_tileset — a Tileset class turned into a TilesetSpec,
+//     with no artifact written.
+//   - fold_sources_cached / clear_fold_cache — the shared-lib module fold cache.
+//
+// Determinism is the contract. Every entry point builds a FRESH JSRuntime and a
+// context from JS_NewContextRaw with a hand-picked intrinsic set (see
+// new_bake_context): no Date, and no require/fetch/os bindings anywhere, so
+// authored code has no source of process entropy. The DSL's random stream is
+// seeded from the canonical merged params (derive_seed). Nothing touches the
+// filesystem during evaluation — shared-lib imports are pre-gathered by
+// module_resolver and served from an in-memory ModuleStore. That is what makes
+// "resolved_hash <-> serialized bytes" a stable pair, and it is why the mesh
+// path below goes to such lengths to zero struct padding before saving.
+//
+// Error policy is fail-closed throughout: a throw, a budget interrupt, a
+// malformed static, or a module-resolution failure aborts the operation and
+// leaves no committed artifact. The static probes go further and return an
+// EMPTY result on any problem, so a malformed `static lods` reads as "not opted
+// in" rather than as a half-honoured ladder.
+//
+// Threading
+//   - Bakes run on worker threads. Each call owns its own runtime, context and
+//     dsl::DslState, so two concurrent bakes share no VM state.
+//   - fold_cache_ (guarded by fold_mu_) is the only shared mutable state that
+//     is synchronised.
+//   - The last_* members (last_merged_params_, last_buffer_,
+//     last_animation_rig_, last_build_ran_, …) are NOT synchronised. They are a
+//     test / debug side channel belonging to whichever bake ran most recently;
+//     eval_tileset deliberately keeps its own local `merged` rather than
+//     reading one back.
+//
+// Gotchas
+//   - Class discovery is a REGEX over the source text (find_part_class_name and
+//     friends) plus an appended `globalThis.__partClass = <Name>;` trampoline,
+//     because a top-level `class` declaration is a lexical binding and never
+//     shows up as a property of globalThis.
+//   - eval_world can evaluate the world source TWICE — once in the
+//     static-params fallback merge, once for real — so anything a world does at
+//     module scope must be idempotent. That is why material handles resolve
+//     here instead of registering.
+//   - bake_source and eval_tileset use `goto done` / `goto ts_done` for their
+//     error paths, so anything declared between the first goto and the label
+//     must be declared before it.
+//   - std::bad_alloc from a runaway build() is caught at the bake_source and
+//     eval_tileset boundaries and turned into a BakeError, so an OOM on one
+//     part does not take the editor down with it.
 #include "script_host.h"
 extern "C" {
 #include "quickjs.h"
@@ -74,20 +139,32 @@ void report_animation_diagnostics(BakeResult& out,
     report_animation_diagnostics(out, diagnostics.items);
 }
 
-uint64_t part_body_checksum(const std::filesystem::path& path) {
-    FILE* f = std::fopen(path.string().c_str(), "rb");
-    if (!f) return 0;
-    std::fseek(f, 0, SEEK_END); const long size = std::ftell(f); std::fseek(f, 0, SEEK_SET);
-    std::vector<unsigned char> bytes(size > 40 ? size_t(size) : 0);
-    const bool ok = !bytes.empty() && std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
-    std::fclose(f); if (!ok) return 0;
-    uint64_t h=1469598103934665603ull; for (size_t i=40;i<bytes.size();++i) { h^=bytes[i]; h*=1099511628211ull; } return h;
+// Delegate to the animation bundle's own REP0-section checksum so the value
+// stored in BundleIdentity::part_body_checksum matches what the publish/load
+// validators recompute. This used to hash the whole candidate file from
+// offset 40, which was the part body only before the M4 bundle migration wrote
+// an MPBN wrapper around REP0 -- after M4 the producer and validator could
+// never agree, so every AnimatedRigGallery commit was rejected as
+// "bundle.candidate" and the world loaded with no rig (issue 55f61c18).
+uint64_t part_body_checksum(const std::filesystem::path& path, uint64_t resolved_hash) {
+    uint64_t out = 0;
+    return matter::animation::checksum_part(path, resolved_hash, out) ? out : 0;
 }
 
 // Resolve the authored direct-triangle claims while the original build stream
 // is still available.  The result is deliberately a partition, not a set of
 // overlapping draw hints: a triangle is owned by skin or exactly one rigid
 // segment before either side receives its independent LOD ladder.
+// Returns true with `out` empty when the part authored no rigid bindings — the
+// common case, not a failure. Returns false, adding no diagnostic of its own
+// (the caller supplies the message), on any violation: rigid bindings combined
+// with modifier regions, a range outside the direct-triangle tail, an unknown
+// joint name, a triangle claimed by two segments, or a segment left with no
+// ranges at all.
+//
+// Index spaces: authored ranges are relative to the DIRECT-triangle stream,
+// while the committed part's LOD0 puts the voxel/SDF triangles first. The
+// rebase by `direct_base` here is what converts one into the other.
 bool resolve_rigid_geometry(const dsl::DslState& state,
                             const matter::animation::CanonicalRig& rig,
                             size_t source_triangle_count,
@@ -135,6 +212,24 @@ bool resolve_rigid_geometry(const dsl::DslState& state,
     return true;
 }
 
+// Assemble the runtime animation asset plus its skin/rigid binding for a part
+// that authored a rig. `asset` and `binding` are outputs.
+//
+// `state` supplies the authored and canonicalized animation; `blas` supplies
+// fallback geometry. The three optional trailing pointers are the bake's
+// already-finalized LOD streams: when non-null they are used verbatim, and when
+// null the reference geometry is rebuilt here by concatenating every BLAS
+// entry's triangles into a single LOD0. bake_source always passes them.
+//
+// Works on a LOCAL COPY of the authored build, so a rig-only part (no clips, no
+// motion graph) can be given a synthesized `__bind_rest` clip and a two-node
+// output graph without mutating DSL-authored state. Materializing those runs
+// Ozz's offline builders — see the note below on why that is not gated.
+//
+// Returns false at the first problem. Most failure paths append to
+// `diagnostics`, but a few (a rejected rigid range, a failed skin binding)
+// return false with none, so a caller must be prepared to supply its own
+// message. `asset`/`binding` are partially filled on failure — discard them.
 bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::animation::BuildNonce nonce,
                           const BLASManager& blas, matter::animation::AnimAsset& asset,
                           matter::animation::BindingBake& binding,
@@ -490,6 +585,10 @@ static uint64_t derive_seed(const std::string& merged_json) {
 // global object. Instead the host appends a trampoline that assigns the named
 // class to globalThis.__partClass; this is generic over the class name (no
 // hardcoded "Empty"/"Rock") and deterministic.
+// Caveat: this is a text scan, not a parse. A `class X extends Part` written
+// inside a comment or a string literal matches just as well as a real
+// declaration, and only the FIRST match in the file is ever used — so a source
+// with two part classes silently bakes the first one.
 static std::string find_part_class_name(const std::string& source) {
     // Perf fix: compile the regex once (static const) instead of once per call.
     static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Part\\b");
@@ -508,6 +607,11 @@ static std::string find_tileset_class_name(const std::string& source) {
 }
 
 // Pulls the current exception into a BakeError (best-effort location).
+// Takes the pending exception — JS_GetException CLEARS it — so call this
+// exactly once per throw, and only when one is actually pending; afterwards the
+// context is exception-free. `source_location` is filled from the error's
+// `stack` property when there is one, so it holds a stack string rather than a
+// bare file:line.
 static BakeError harvest_exception(JSContext* ctx) {
     BakeError e; e.ok = false;
     JSValue ex = JS_GetException(ctx);
@@ -573,6 +677,18 @@ static ModuleStore store_from_fold(const module_resolver::FoldResult& fr) {
 // stringify to canonical JSON. Evals the class's `static params` but does NOT
 // instantiate or call build(). Shared by bake_source and resolve_hash so both
 // hash byte-identical params.
+// Side effects and cost worth knowing before calling this:
+//   - It writes last_merged_params_ on EVERY path, including the failure ones
+//     (where it stores "{}"), and returns that member's value. Two bakes running
+//     concurrently on one host clobber each other's copy — which is why
+//     eval_tileset keeps a local `merged` instead of reading the member back.
+//   - It builds and tears down a whole JSRuntime per call. bake_source
+//     deliberately does NOT call it: it repeats the same merge inline in the
+//     bake context to avoid the second runtime, and the two must stay
+//     byte-identical because resolved_hash is computed from the result.
+//   - A source with no `class ... extends Part` fails with err.message set to
+//     kNoPartClassMsg. Tileset and World callers compare against exactly that
+//     string as their expected case, so it cannot be reworded in isolation.
 std::string ScriptHost::merge_params_canonical(const std::string& source,
                                                const std::string& params_json,
                                                BakeError& err) {
@@ -1165,6 +1281,14 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
     return out;
 }
 
+// Shallow-merge two JSON objects (the override wins) and re-emit them as
+// canonical JSON — keys sorted, no whitespace — the same shape
+// merge_params_canonical produces, so results from the two are directly
+// comparable.
+//
+// Not a bake: it uses a plain JS_NewContext with the full default intrinsics
+// and no part-base or DSL bindings. It still builds and tears down an entire
+// JSRuntime per call. Returns "{}" if either side fails to parse.
 std::string ScriptHost::merge_json_shallow(const std::string& base_json,
                                            const std::string& override_json) {
     std::string out = "{}";
@@ -1197,6 +1321,15 @@ std::string ScriptHost::merge_json_shallow(const std::string& base_json,
     return out;
 }
 
+// A part's identity without building it: the same value bake_source computes,
+// from the same three inputs (folded source bytes, canonical merged params,
+// child hashes). Returns 0 on ANY failure — no part class, a params parse
+// error, an unresolvable import — and callers treat 0 as "resolve failed".
+//
+// The fold goes through fold_sources_cached, like every other folding path on
+// this class, so a repeated resolve of the same source does not re-read the
+// shared-lib set. merge_params_canonical just above has already warmed that
+// cache entry for this exact source.
 uint64_t ScriptHost::resolve_hash(const std::string& source,
                                   const std::string& params_json,
                                   const uint64_t* child_hashes,
@@ -1215,7 +1348,7 @@ uint64_t ScriptHost::resolve_hash(const std::string& source,
     size_t      src_len   = source.size();
     if (!shared_lib_roots_.empty()) {
         std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_roots_, fr, ferr))
+        if (!fold_sources_cached(source, fr, ferr))
             return 0;   // fail-closed
         src_bytes = fr.folded.data();
         src_len   = fr.folded.size();
@@ -1257,6 +1390,17 @@ static void ensure_triex(MeshIndexed& m, const TriEx& proto) {
 //     Tri/TriEx are ACCUMULATED across cells, welded into one indexed mesh
 //     (cross-cell seams become interior edges), run through the modifier
 //     stack, and registered as ONE BLAS entry.
+// `blas` and `tlas` are accumulated into, never cleared: bake_source calls this
+// once for the base op stream and once per modifier region, and every call adds
+// entries to the same managers.
+//
+// The cell grid is fixed at 1 world unit. Cells are created from the additive
+// particles' influence halo and from UNION-stage fat primitives only, and every
+// container in here is a std::map so iteration order — and therefore the byte
+// order of the saved artifact — is deterministic.
+//
+// Cost shape: allocation-heavy. One Cell per touched integer cell, a per-cell
+// carve list, and two freshly repacked triangle vectors per mesh group.
 static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
                          const std::vector<dsl::ModifierSpec>* stack,
                          const std::string& label,
@@ -1622,6 +1766,39 @@ private:
     }
 };
 
+// The part bake, end to end. Given a part's JS source, the caller's params
+// override, and the already-resolved child hashes, it:
+//   1. folds the shared-lib imports (through the fold cache),
+//   2. builds a fresh runtime plus restricted bake context and installs the DSL
+//      bindings over a local DslState,
+//   3. evaluates the class, merges `static params` with the override into
+//      canonical JSON, and computes resolved_hash from (folded source, merged
+//      params, child hashes) — byte-identical to resolve_hash's answer,
+//   4. constructs the class and calls build(params), which drives the DSL,
+//   5. meshes the recorded SDF ops per cell (and per modifier region) plus the
+//      direct-triangle stream into one BLASManager,
+//   6. writes the artifact: save_v2 for a static part, or isolated candidates
+//      plus an atomic bundle publish when the part authored a rig.
+//
+// Errors: every failure sets r.error.ok = false and leaves no committed
+// artifact. Causes stay distinguishable — a JS throw is harvested with its
+// stack, a deadline hit is reported as "time budget exceeded (interrupt)", and
+// DSL state left unbalanced by build() (an open session, rig, clip, motion or
+// modifier region; a pushMatrix with no popMatrix) is checked explicitly after
+// build() returns. std::bad_alloc is caught at this function's boundary and
+// reported as an OOM error instead of propagating.
+//
+// Side effects beyond the artifact: the host's last_* members are overwritten,
+// phase spans are emitted into the current BakeTrace collector (one is
+// installed locally if none is current), and MATTER_BAKE_PROFILE=1 prints one
+// [bake_profile] line per bake to stderr.
+//
+// opts.retain_geometry additionally hands the caller the in-memory geometry in
+// r.geometry, on the static path only — see BakeOptions in script_host.h.
+//
+// Control flow: the error paths are `goto done`, so anything declared between
+// the first goto and the label has to be declared before it. That is why the
+// collector guard and the phase tracker sit at the very top of the body.
 BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string& params_json,
                                    const BakeOptions& opts,
@@ -2307,7 +2484,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                  part_asset::save_v2(part_candidate.string(),blas,tlas,kids.empty()?nullptr:kids.data(),kids.size(),lods,emitters,link,r.resolved_hash) &&
                  matter::animation::save_anim_candidate(asset,anim_candidate,diagnostics);
             matter::animation::BundleIdentity identity; identity.resolved_hash=r.resolved_hash; identity.nonce=nonce;
-            identity.part_body_checksum=part_body_checksum(part_candidate); identity.anim_body_checksum=matter::animation::anim_body_checksum(asset);
+            identity.part_body_checksum=part_body_checksum(part_candidate,r.resolved_hash); identity.anim_body_checksum=matter::animation::anim_body_checksum(asset);
             identity.target_abi_tag=matter::animation::kAnimationTargetAbiTag; identity.ozz_tag_hash=matter::animation::kAnimationOzzTagHash;
             identity.lods=matter::animation::manifest_lod_signatures(binding);
             if (ok) ok=matter::animation::publish_animation_bundle({part_candidate,anim_candidate,root},identity,diagnostics);
@@ -2423,6 +2600,23 @@ done:
 // eval_world: evaluate a World-definition class, return the field program text
 // and biome table JSON. Mirrors eval_requires/eval_tileset structurally.
 // ---------------------------------------------------------------------------
+// Returns r.ok = false with a human-readable r.message on every failure;
+// nothing is written and no partial program is handed back.
+//
+// The output is TEXT. `field_program` is the op-line listing that FieldNode
+// accumulated on globalThis.__world_ops, followed by the directive lines
+// (height / density / moisture / relief / seaLevel / biome); surfaces() and
+// habitat() each contribute their own tape in the same form. FieldProgram::parse
+// is the consumer, so these exact bytes are a compatibility surface — note in
+// step 10 that the `density` directive is omitted when it equals `height`
+// precisely so heightfield worlds keep producing the text they always did.
+//
+// Gotcha: on the normal path merge_params_canonical rejects the source (a World
+// extends World, not Part), and the fallback in step 2 spins up a SECOND
+// runtime that evaluates kWorldBaseJS plus the world source just to read
+// `static params`. The world's module-scope code therefore runs twice per
+// eval_world call, which is why everything it does at that scope must be
+// idempotent — material declaration included (see install_material_handle).
 WorldEvalResult ScriptHost::eval_world(const std::string& source,
                                        const std::string& params_json) {
     WorldEvalResult r;
@@ -2947,6 +3141,21 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
 // module fold, hash, context creation, child-hash table, RNG seed) with the
 // differences described in the brief (enable_tileset, kTilesetBaseJS injection,
 // class extraction via `extends Tileset`, no mesher, no .part output).
+// After build() returns, the recorded state is validated in a fixed order: DSL
+// errors first, then tileset-verb errors, then "tile() was never called" — so a
+// verb-ordering mistake reports itself rather than being masked by the
+// no-tile() fallback.
+//
+// Only then does the variant() hook run: 16 times, once per Wang tile in torus
+// order, each with its own placement_seed'd rng. Everything a hook emits is
+// checked to stay edgeStripWidth clear of the tile bounds (content crossing an
+// edge would break tiling), and whatever it emitted is recorded as a
+// VariantRange over the shared op/child buffers.
+//
+// The variant function is stored as raw JSValue bits on TilesetState. It is
+// freed exactly once: by the loop on the happy path (which clears
+// variant_fn_set), or by the ts_done label / the bad_alloc handler when the
+// loop never ran.
 TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                                            const std::string& params_json,
                                            const BakeOptions& opts,
@@ -3441,6 +3650,21 @@ static uint64_t fold_key_fnv1a64(
     return h;
 }
 
+// Fold `source` together with its transitively imported shared-lib modules,
+// memoized on (source bytes, ordered root paths). Thread-safe: fold_cache_ is
+// guarded by fold_mu_, and `out` receives a COPY the caller may consume freely.
+//
+// With no shared-lib root configured it returns true and an EMPTY FoldResult,
+// which every caller reads as "this part imports nothing".
+//
+// The key does not include the shared-lib FILE CONTENTS, only the root paths —
+// so an edit to a shared-lib module on disk stays invisible to a warm cache
+// until clear_fold_cache() is called. Nothing evicts either: the cache grows
+// with the number of distinct part sources folded in this process.
+//
+// The fold itself runs OUTSIDE the lock, so two threads missing on the same key
+// concurrently will both do the work; the first to emplace wins and the other's
+// result is dropped (fold_misses_ counts only the insert that won).
 bool ScriptHost::fold_sources_cached(const std::string& source,
                                      module_resolver::FoldResult& out,
                                      std::string& err) {
@@ -3480,6 +3704,9 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
     return true;
 }
 
+// Drop every memoized fold. Needed after shared-lib sources change on disk,
+// because the cache key is (part source, root paths) and never sees file
+// content — see fold_sources_cached.
 void ScriptHost::clear_fold_cache() {
     std::lock_guard<std::mutex> lk(fold_mu_);
     fold_cache_.clear();

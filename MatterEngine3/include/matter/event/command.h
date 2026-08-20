@@ -94,12 +94,22 @@ const char* to_string(CommandStatus s);
 // ---------------------------------------------------------------------
 // Command scope (S I.10 "Session scope is part of the envelope").
 // ---------------------------------------------------------------------
+// App = valid for the whole process; ActiveSession = only valid inside the
+// currently-open session epoch, so entity ids in the command payload
+// cannot outlive the world they refer to.
 enum class CommandScope { App, ActiveSession };
 
+// The scope stamped onto a command at submit time and re-checked when it
+// runs. For an App command both ids are 0 and the check is skipped. For an
+// ActiveSession command the stamp is a copy of the registry's current
+// token; at run time it is valid ONLY if an epoch is still open AND both
+// session_id and generation still match. A close() or a rotation to a new
+// generation therefore completes the command StaleScope without ever
+// invoking the handler.
 struct CommandScopeToken {
     CommandScope kind = CommandScope::App;
-    uint64_t session_id = 0;
-    uint64_t generation = 0;
+    uint64_t session_id = 0;   // opaque session identity; 0 for App scope
+    uint64_t generation = 0;   // bumped on rebind; a mismatch means stale
 };
 
 // ---------------------------------------------------------------------
@@ -149,7 +159,7 @@ struct CommandRecord {
     uint64_t id = 0;
     const char* name = nullptr;
     CommandStatus status = CommandStatus::Pending;
-    double duration_ms = 0.0;
+    double duration_ms = 0.0;  // wall time spent inside the handler, ms
     CommandScopeToken scope;
     std::optional<uint64_t> coalesce_key;
     std::shared_ptr<void> inverse;  // opaque memento (nullable)
@@ -257,8 +267,16 @@ struct TicketStateBase {
     const char* name = nullptr;
     CommandScopeToken scope;
     lane handler_lane{};
+    // Non-owning back-pointer to the registry that created this ticket. It
+    // is used for finalization, for the wait() off-lane guard, and for
+    // posting then()-continuations; the registry fails every still-pending
+    // ticket in shut_down(), but the pointer itself is not cleared, so a
+    // ticket must not be used after its registry is destroyed.
     CommandRegistry* registry = nullptr;
 
+    // m guards `done`, the derived TicketState's `result`, and its pending
+    // `continuations`. cv is notified once, after finalization publishes
+    // the result.
     std::mutex m;
     std::condition_variable cv;
     bool done = false;
@@ -310,6 +328,9 @@ public:
         return state_->done;
     }
 
+    // Pending means "not finished yet" -- and also what a default-
+    // constructed (invalid) ticket reports, since there is nothing to
+    // observe. Any other value is terminal and will not change again.
     CommandStatus status() const {
         if (!state_) return CommandStatus::Pending;
         std::lock_guard<std::mutex> lk(state_->m);
@@ -320,11 +341,15 @@ public:
     // only OFF the handler's owner lane: blocking on the very thread that
     // must pump the command to complete it would deadlock, so calling it
     // from the owner lane is all-build fail-fast (S I.10).
+    // On an invalid (default-constructed / moved-from) ticket it returns a
+    // default Result immediately, matching status()/ready()'s tolerance.
     Result wait();
 
     // Non-blocking completion continuation, delivered on `ln` (queued onto
     // that lane; runs when the lane owner next pumps the registry). If the
     // ticket is already complete, the continuation is posted immediately.
+    // The callback is DROPPED, not invoked, when the ticket is invalid or
+    // when an already-complete ticket has no registry to post onto.
     void then(lane ln, std::function<void(const Result&)> cb);
 
 private:
@@ -362,7 +387,6 @@ public:
     void set_active_scope(CommandScopeToken token);
     void close_active_scope();
     CommandScopeToken active_scope() const;
-    bool active_scope_open() const;
 
     // ---- Lane ownership + pump ----------------------------------------
     // Register the calling thread as lane `ln`'s owner (required before
@@ -409,6 +433,17 @@ public:
     }
 
     // ---- execute (owner-lane, synchronous, typed) ---------------------
+    // Synchronous path. `C` must expand MT_COMMAND_NAME and define a
+    // nested `Result` type (a CommandResult<...> specialization). Runs the
+    // handler inline on the calling thread, which MUST be the owner of the
+    // lane the handler registered on -- calling it elsewhere is all-build
+    // fail-fast, not an assert.
+    //
+    // Always returns a fully terminal result, never blocks and never
+    // queues. With no handler registered it returns Rejected; with a stale
+    // ActiveSession epoch it returns StaleScope and the handler is not
+    // run. Both of those still emit the generic cmd.* notification, but
+    // only an executed command reaches the HistorySink.
     template <class C>
     typename C::Result execute(C cmd) {
         using Result = typename C::Result;
@@ -445,6 +480,15 @@ public:
     }
 
     // ---- dispatch (any-thread, queued, ticketed) ----------------------
+    // Queued path, callable from any thread, never blocks. The command is
+    // copied into a job that the handler's lane owner runs at pump() time;
+    // the returned ticket is always valid and carries a monotonic id.
+    //
+    // The ticket may already be terminal on return -- ShutDown (registry
+    // shut down), Rejected (no handler), or QueueFull (the bounded
+    // per-lane command channel refused it; nothing is silently dropped,
+    // the ticket is told). Otherwise it stays Pending until the lane owner
+    // pumps: a ticket on a live but un-pumped lane is never dropped.
     template <class C>
     CommandTicket<typename C::Result> dispatch(C cmd) {
         using Result = typename C::Result;
@@ -574,6 +618,16 @@ private:
     void track_ticket(const std::shared_ptr<TicketStateBase>& state);
     void assert_execute_lane(lane ln) const;
 
+    // hub_ is a reference to a hub this registry does not own; it must
+    // outlive the registry (every finalization emits on it). Mutex map:
+    //   handlers_mu_ guards handlers_ AND history_sink_ (keyed by the
+    //                command struct's mt_command_type_id()).
+    //   lanes_mu_    guards lanes_ (keyed by lane::id; each LaneState owns
+    //                a bounded RejectNewest command channel and an
+    //                unbounded continuation channel).
+    //   scope_mu_    guards active_scope_open_ and active_token_.
+    //   tickets_mu_  guards live_tickets_, the weak list swept by
+    //                shut_down() and opportunistically pruned on dispatch.
     Hub& hub_;
     HistorySink* history_sink_ = nullptr;  // set to NullHistorySink in ctor body
 
@@ -618,6 +672,11 @@ void TicketState<Result>::finalize(Result r, double duration_ms, bool executed) 
     // Deliver then()-continuations on their target lanes (queued; the lane
     // owner runs them at pump). Read the now-visible result by value.
     if (registry) {
+        // Reading `result` outside `m` is safe here and only here: the
+        // exactly-once gate above means THIS thread is the only writer it will
+        // ever have, and it already published the value under the lock. Every
+        // other accessor takes `m` and only reads. Do not copy this pattern to
+        // any other member.
         const Result snapshot = result;
         for (auto& c : conts) {
             lane ln = c.first;
@@ -629,6 +688,22 @@ void TicketState<Result>::finalize(Result r, double duration_ms, bool executed) 
 
 template <class Result>
 Result CommandTicket<Result>::wait() {
+    // A default-constructed / moved-from ticket has nothing to wait on. Report
+    // the same "nothing to observe" answer status() and ready() give rather
+    // than dereferencing null.
+    if (!state_) return Result{};
+    // Already complete? Answer from the published result and return WITHOUT
+    // touching `registry`. That ordering is deliberate: `registry` is a raw
+    // back-pointer that is never cleared (see TicketStateBase), so a ticket
+    // outliving its registry — the normal state after shut_down(), which
+    // finalizes every pending ticket — would otherwise dereference a dangling
+    // pointer just to run a guard whose answer cannot matter. Waiting on a
+    // ticket that is still PENDING after its registry died remains a caller
+    // error; nothing here can make that case safe.
+    {
+        std::lock_guard<std::mutex> lk(state_->m);
+        if (state_->done) return state_->result;
+    }
     // Off-lane-only guard (S I.10): waiting on the handler's own owner lane
     // would deadlock (the command completes only when that thread pumps).
     if (state_->registry && state_->handler_lane.valid() &&
@@ -646,6 +721,10 @@ Result CommandTicket<Result>::wait() {
 
 template <class Result>
 void CommandTicket<Result>::then(lane ln, std::function<void(const Result&)> cb) {
+    // A default-constructed / moved-from ticket will never complete, so there
+    // is nothing to continue from. Drop the callback rather than dereference
+    // null — same tolerance as status()/ready() on an invalid ticket.
+    if (!state_) return;
     bool deliver_now = false;
     Result snapshot{};
     {

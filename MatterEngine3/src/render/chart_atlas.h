@@ -37,6 +37,20 @@ constexpr float    kChartNormalConeDeg = 45.0f;
 // Version of the serialized chart section.
 constexpr uint32_t kChartAtlasVersion = 1;
 
+// One planar chart: an orthonormal (tangent, bitangent) frame anchored at
+// `origin`, plus the axis-aligned rect it occupies in the rung's virtual atlas.
+// The part-local-point to atlas-texel mapping is the formula in the file header
+// above.
+//
+// The rect is the OUTER block: lod_bake sizes it as the chart's content plus
+// kChartGutterTexels on all four sides, rounded up to the kVtPagePayload page
+// grid (libs/MeshChartingLib pack_charts_paged). That is why the mapping adds
+// the gutter to rect_x/rect_y, and why two charts' content is always at least
+// 2*kChartGutterTexels apart.
+//
+// Plain POD with no default member initializers — a bare `ChartEntry c;` holds
+// indeterminate values. Value-initialize it, or let a container do it (which is
+// what parse_chart_rungs relies on).
 struct ChartEntry {
     float origin[3];        // part-local plane origin
     float tangent[3];       // T — atlas U direction, unit
@@ -46,6 +60,13 @@ struct ChartEntry {
     uint32_t first_tri, tri_count;             // into the rung's chart-grouped triangle order
 };
 
+// The chart table for ONE LOD rung of a part. `tri_order` lists that rung's
+// triangle indices regrouped so each chart's triangles are contiguous; a
+// ChartEntry's first_tri/tri_count are a half-open window into tri_order, not
+// into the mesh's own triangle numbering.
+//
+// A rung with no charts (charts empty, atlas_w/atlas_h 0) is the legacy
+// chartless path, which is also what a part carrying no "CHRT" section gets.
 struct ChartAtlasRung {
     uint32_t atlas_w = 0, atlas_h = 0;         // finest-mip virtual dims, <= 8192
     std::vector<ChartEntry> charts;
@@ -111,6 +132,10 @@ inline uint64_t parameterisation_id(const ChartAtlasRung& atlas) {
 //     u32 tri_order_count, tri_order_count * u32
 // ---------------------------------------------------------------------------
 
+// Serializes `rungs` in the layout documented above, APPENDING to `out` — it
+// never clears, so the caller controls its own tag/size framing. Scalars are
+// written as raw host bytes, which is the little-endian encoding the layout
+// note describes on every platform this engine targets.
 inline void append_chart_rungs(std::vector<uint8_t>& out,
                                const std::vector<ChartAtlasRung>& rungs) {
     auto put_u32 = [&out](uint32_t v) {
@@ -144,6 +169,12 @@ inline void append_chart_rungs(std::vector<uint8_t>& out,
 // malformed count. An UNKNOWN version is not an error: rungs_out stays empty
 // (forward-compatible readers fall back to charts = 0) and true is returned —
 // the caller's size framing skips the payload it cannot interpret.
+// rungs_out is cleared on entry and only assigned on complete success, so a
+// truncated or malformed section leaves it empty rather than half-populated.
+// The rung_count / chart_count / order_count bounds tests are
+// allocation guards derived from the minimum bytes each record needs — they
+// stop a corrupt count from reserving gigabytes, they do not replace the
+// per-field truncation checks that follow.
 inline bool parse_chart_rungs(const uint8_t* p, const uint8_t* end,
                               std::vector<ChartAtlasRung>& rungs_out) {
     rungs_out.clear();

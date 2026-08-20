@@ -1,3 +1,41 @@
+// MatterEditor/src/property_editor.cpp
+//
+// The ImGui half of the generic property renderer declared in
+// property_editor.h. Everything in this file needs a live ImGui context; the
+// pure, testable decisions (widget kind, printf format, filter matching,
+// category headers, badge and lock rules) all live in the header so
+// MatterEngine3/tests/property_editor_tests.cpp can exercise them headlessly.
+//
+// What it draws:
+//  - `draw_group_fields` / `draw_group` — the generic one-row-per-Desc
+//    renderer used by every panel and by the whole Tunables listing.
+//  - `draw_draw_overrides_section` — draw.overrides folded into one compact
+//    row per module instead of three full-width rows.
+//  - `draw_cloud_layers_section` — render.clouds sliced into per-deck blocks.
+//  - `draw_lighting_contents` / `draw_tunables_contents` — the two window
+//    bodies; call them inside a Begin/End pair.
+//
+// How a field is written. Widgets never touch a settings struct directly. They
+// write through `prop_edit_target(binding)` — the live instance for a normal
+// group, the lazily allocated DRAFT for a RequiresReload one — and then
+// through the matter::props `set_*` accessors, so dirty tracking, sparse
+// persistence and baselines all observe the write. Only a LIVE edit marks the
+// binding dirty; a draft edit becomes persistable when Apply copies it across.
+//
+// Three reasons a field can be uneditable, all resolved in `draw_field`:
+// ReadOnly in the schema, env-forced at launch (`Desc::env`), and a per-field
+// machine veto supplied by the panel (`PropFieldVeto` — e.g. no ray-tracing
+// extensions on this GPU). The first two grey the widget; the explanation
+// always hangs off the small badge next to the field NAME, because a disabled
+// ImGui item does not report hover and a tooltip on the widget would never
+// appear in exactly the states that need it.
+//
+// Threading. UI thread only, between ImGui::NewFrame and Render. Nothing here
+// takes a lock. These are the same bindings the FIFO
+// `set <group.path.field> <value>` command writes
+// (docs/agent/control-surface.md), so a headless QA timeline and a mouse drag
+// are two doors onto the same state.
+
 #include "property_editor.h"
 
 #include "editor_props.h"
@@ -24,6 +62,12 @@ constexpr float kNameColumn = 178.0f;
 // (part_workbench.cpp draw_params_panel) — same visual language.
 const ImVec4 kModifiedColor(1.0f, 0.85f, 0.35f, 1.0f);
 
+// Replay every REGISTERED field of `target` into the binding through the props
+// setters, so a preset click looks exactly like the user having dragged each
+// slider — dirty tracking, baselines and sparse persistence all see it.
+// Members of the same struct that the schema does not describe are NOT copied,
+// so a preset can only move what is registered. Env-forced fields are skipped:
+// a launch-time override outranks a preset button.
 template <class T>
 void apply_registered_fields(Binding& binding, const T& target) {
     for (uint32_t i = 0; i < binding.schema().field_count; ++i) {
@@ -42,6 +86,13 @@ void apply_registered_fields(Binding& binding, const T& target) {
     }
 }
 
+// The four-button quality strip drawn above render.volumetrics. A button takes
+// a full copy of both settings structs, lets
+// matter::apply_volumetric_quality_preset rewrite them, and replays the result
+// through the bindings (see apply_registered_fields). The "Preset:" readout
+// underneath is re-derived from the CURRENT values every frame, so it drops to
+// "Custom" the moment any field is nudged off a preset. Does nothing at all
+// unless both the volumetrics and cloud-shadow bindings are registered.
 void draw_volumetric_quality_presets(EditorProps& props) {
     Binding* vol_binding = props.volumetrics();
     Binding* shadow_binding = props.cloud_shadows();
@@ -77,6 +128,12 @@ void draw_volumetric_quality_presets(EditorProps& props) {
     ImGui::TextDisabled("Preset: %s", selected_name);
 }
 
+// Read-only cost lines under the preset strip: the requested vs effective
+// froxel grid (they differ when the requested one did not fit), the froxel and
+// cloud-shadow allocations in MiB, and per-pass GPU times in milliseconds.
+// `stats.gpu_vol_ms` is printed as "combined"; "physical" adds the atmosphere
+// and cloud-shadow passes on top of it. Pure display — nothing here writes a
+// property.
 void draw_volumetric_readouts(const ViewerStats& stats) {
     ImGui::TextDisabled("Froxels requested/effective: %u x %u x %u / %u x %u x %u",
                         stats.requested_froxel.width, stats.requested_froxel.height,
@@ -99,6 +156,12 @@ void draw_volumetric_readouts(const ViewerStats& stats) {
                         stats.last_volumetric_allocation_error.c_str());
 }
 
+// Render a field's current value as display text — used by the ReadOnlyText
+// widget, which is both the ReadOnly-flag rendering and the fallback for types
+// with no editor (UInt64). An Enum shows its label when the schema supplies
+// one and the value is in range, and the raw integer otherwise. Bool and
+// String return directly; every other type formats into a 128-byte stack
+// buffer, so an unusually long formatted value would be truncated.
 std::string value_text(const void* inst, const Desc& d) {
     char buf[128];
     const std::string fmt = prop_format_for(d);

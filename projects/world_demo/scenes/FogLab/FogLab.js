@@ -42,14 +42,24 @@ class FogLab extends World {
     sky: { color: [0.42, 0.50, 0.66] },
   };
 
-  // A 40x40 m stone quad scaled to 1200x1200 m, so the fog has ground to sit
-  // on all the way to the horizon, plus a receding line of boxes: extinction
-  // is only legible against something whose distance you can read, and three
-  // identical crates at 60/180/420 m give the eye that ruler.
+  // A 40x40 m stone quad scaled to 6000x6000 m, so the fog has ground to sit
+  // on past the froxel far plane (VOL_FROXEL_FAR = 3000 m) in every direction,
+  // plus a receding line of boxes: extinction is only legible against
+  // something whose distance you can read, and three identical crates at
+  // 60/180/420 m give the eye that ruler.
+  //
+  // The floor MUST out-reach the froxel range. Ground fog is unbounded below
+  // its floor (vol_density.comp), so any camera ray that descends below the
+  // horizon and MISSES the floor integrates full-density fog all the way to
+  // the far plane and saturates the sky to a bright wedge (issue f1bc5107 --
+  // "artifact prevents the background from rendering", seen from a camera that
+  // looked off the old 1200 m floor's edge). A floor larger than the froxel
+  // reach means below-horizon rays always hit ground, so the void-fog wedge
+  // cannot form.
   static roots = [
     {
       module: "PlaygroundFloor",
-      transform: [30, 0, 0, 0,  0, 1, 0, 0,  0, 0, 30, 0,  0, 0, 0, 1],
+      transform: [150, 0, 0, 0,  0, 1, 0, 0,  0, 0, 150, 0,  0, 0, 0, 1],
     },
     { module: "Crate",
       transform: [8, 0, 0, 0,  0, 8, 0, 0,  0, 0, 8, 0,  -40, 12, 540, 1] },

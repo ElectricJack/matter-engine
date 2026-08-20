@@ -4,6 +4,22 @@
 // Resolves + installs the tileset root's child parts through PartGraph,
 // evaluates the tileset script, and settles it into a SettledTorus.
 // Intended as the SP-3 bridge from world definition to the GPU render phase.
+//
+// Where it sits: this is the top of the tileset bake pipeline. The
+// SettledTorus it produces is what assemble_torus_bvh (tileset_torus_bvh.h)
+// turns into BLAS/TLAS for the atlas bake, and what the .gtex bake renders
+// from. Callers live on the bake path (provider/local_provider.cpp uses the
+// object-roots form) plus the headless tileset test suites.
+//
+// Cost and threading: every entry point below is synchronous and does real
+// work -- it reads module source off disk, evaluates child scripts through
+// QuickJS, installs them via PartGraph, and then runs a box3d rigid-body
+// settle over the whole 4x4 torus (tileset_settle.h). The settle can be
+// served from the settle cache instead; `out.report.from_cache` tells the two
+// apart. None of this is render-thread work.
+//
+// All three entry points are wrappers over the same pipeline; they differ
+// only in how module sources are located and in what they hand back.
 
 #include "tileset_bake.h"       // SettledTorus, BakeInputs
 #include <cstdint>
@@ -27,6 +43,8 @@ namespace tileset {
 // Non-convergence is reported in SettledTorus::report.converged_all (not a hard error).
 // Project-layout entry point. Module sources are read directly from objects_dir;
 // no legacy WorldData/../schemas path convention is applied.
+// Simplest form: one objects directory, at most one shared-lib root, no root
+// params, and no resolved-child-hash readback.
 bool run_tileset_phase_from_objects(const std::string& objects_dir,
                                     const std::string& root_module,
                                     const std::string& parts_cache_dir,

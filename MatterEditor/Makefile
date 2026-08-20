@@ -659,6 +659,16 @@ build/windows/vulkan_compat_tests.exe: \
 # + VulkanDevice with validation), but a deliberately minimal TU list: the
 # compositor is standalone by contract, so the exe proves it links against
 # nothing beyond the device layer.
+#
+# ProfileLib is NOT optional here even though it looks like an extra: vt_
+# compositor.cpp does an unconditional `#include "profile.h"`. Without
+# -I$(PROFILE_DIR)/include that resolves to MSYS2's unrelated
+# /ucrt64/include/profile.h, which defines none of the PROFILE_* macros -- so
+# the TU compiled far enough to die on "'PROFILE_SCOPE' was not declared in
+# this scope" rather than on a missing header, and this target had been
+# unbuildable for as long as those zones have existed. ProfileLib is not
+# header-only, so profile.cpp is on the source list too (same as
+# vulkan_smoke_tests.exe above).
 build/windows/vt_compositor_tests.exe: \
         $(ME3_DIR)/tests/vt_compositor_tests.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
@@ -671,6 +681,7 @@ build/windows/vt_compositor_tests.exe: \
         $(ME3_DIR)/src/render/vk_context.cpp \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/streamline_bridge.cpp \
+        $(PROFILE_DIR)/src/profile.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vt_compositor_tests.cpp \
@@ -679,6 +690,7 @@ build/windows/vt_compositor_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
+	    $(PROFILE_DIR)/src/profile.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -Wno-unused-parameter \
@@ -690,6 +702,7 @@ build/windows/vt_compositor_tests.exe: \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I$(ME3_DIR)/src/render \
 	    -I$(ME3_DIR)/tests \
+	    -I$(PROFILE_DIR)/include \
 	    -I$(FLECS_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \

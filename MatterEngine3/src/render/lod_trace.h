@@ -43,6 +43,14 @@
 //     WHICH THE GATE IS SATISFIABLE BY RENDERING NOTHING — two runs that both
 //     draw an empty world diff identically. The comparator fails a trace whose
 //     census never rises above zero.
+// State, lifetime and threading. Everything here is free-function API over ONE
+// process-global state block (a function-local static in lod_trace.cpp): there
+// is one trace stream per process, not one per renderer, and none of it is
+// locked. The renderer thread is the only intended caller. enabled() latches
+// the environment on its first call, so setting MATTER_LOD_TRACE later in the
+// process has no effect, and close() is final for the run — after it,
+// submit_frame() silently does nothing. The stream is flushed after every
+// submitted frame, so a run that crashes still leaves a readable trace.
 namespace viewer::lod_trace {
 
 // One (instance, cluster) pair the cull dispatch emitted, with the rung it

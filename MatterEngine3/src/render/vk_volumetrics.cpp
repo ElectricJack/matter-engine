@@ -1,3 +1,41 @@
+// MatterEngine3/src/render/vk_volumetrics.cpp
+//
+// Implementation of the froxel volumetric-fog module declared in
+// vk_volumetrics.h. Roughly in file order:
+//
+//   - local helpers: SPIR-V module loading from the embedded blob, descriptor
+//     binding boilerplate, row->column-major matrix packing, half-float
+//     decoding for readbacks, and the 3D hash behind the noise texture;
+//   - resource construction: the noise texture, the emitter and cloud-layer
+//     SSBOs, samplers, and the three compute pipelines;
+//   - the froxel bundle lifecycle (create / describe / retire / swap);
+//   - `update_settings`, which latches UI and world state and decides when
+//     temporal history must be dropped;
+//   - `record`, the per-frame density -> scatter -> integrate chain with its
+//     image layout transitions;
+//   - `*_for_test` readbacks, which BLOCK on a submit and exist only for the
+//     numerical gates;
+//   - `destroy`.
+//
+// Two structural points worth knowing:
+//
+//  1. Cloud layers are a SPECIALIZATION, not a uniform. `vol_density.comp`
+//     declares `constant_id = 0` as the enabled layer count, and one pipeline
+//     is compiled per (count, enhanced) pair up front. Zero layers therefore
+//     compiles the entire cloud loop away, which is what makes a cloudless
+//     world pay nothing across ~1.8M froxels a frame. The count that selects
+//     the pipeline is the same count that bounds the upload, so a shader can
+//     never read an entry that was not written.
+//  2. Grid-sized images are never resized in place. `replace_froxel_bundle`
+//     builds a whole new `FroxelBundle`, parks the old one until the frame
+//     slot that could still be reading it has completed, and bumps
+//     `resource_generation_`. Allocation failure is transactional: the old
+//     bundle stays active and the frame continues.
+//
+// Everything here is render-thread-only. `record()` rewrites descriptor sets
+// in place, which is safe only because the per-frame-slot scatter sets are
+// kept separate ([frame_slot][ping]).
+
 // Keep windows.h (pulled in by vulkan_win32.h when VK_USE_PLATFORM_WIN32_KHR
 // is defined, e.g. the vulkan_smoke_tests build) from declaring GDI/USER
 // symbols (Rectangle, CloseWindow, ShowCursor) that collide with raylib.h,
@@ -80,6 +118,9 @@ VkDescriptorSetLayoutBinding make_binding(uint32_t binding,
     return result;
 }
 
+// Transpose on the way into a push constant. Every matrix crossing into GLSL
+// goes through here; passing a `matter::Mat4f` straight through would transpose
+// the transform silently.
 void pack_mat4_column_major(float out[16], const matter::Mat4f& m) {
     // matter::Mat4f is row-major; GLSL mat4 is column-major.
     for (int row = 0; row < 4; ++row)
@@ -87,6 +128,9 @@ void pack_mat4_column_major(float out[16], const matter::Mat4f& m) {
             out[col * 4 + row] = m.m[row * 4 + col];
 }
 
+// Decode an IEEE binary16 to float, handling subnormals and inf/NaN. Needed
+// because the volume textures are R16(G16B16A16)_SFLOAT and the test readbacks
+// copy their raw bits into a host buffer.
 float half_to_float(uint16_t value) {
     const uint32_t sign = static_cast<uint32_t>(value & 0x8000u) << 16;
     uint32_t exponent = (value >> 10) & 0x1fu;
@@ -197,6 +241,13 @@ bool VkVolumetrics::init(matter::VulkanDevice& vulkan,
 // Noise texture (32^3 RGBA8 procedural curl noise)
 // ---------------------------------------------------------------------------
 
+// Build the 32^3 RGBA8 detail-noise volume on the CPU and upload it once.
+//
+// Three independent hash channels plus opaque alpha; generated rather than
+// loaded so there is no asset dependency. Uploaded through a staging buffer on
+// a BLOCKING immediate submit, and left in SHADER_READ_ONLY_OPTIMAL -- the
+// tracked `layout` field is set by hand afterwards because the barriers here
+// are recorded directly rather than through record_image_transition.
 bool VkVolumetrics::create_noise_texture(matter::VulkanDevice& vulkan,
                                           std::string& error) {
     const uint32_t N = kVolNoiseSize;
@@ -297,6 +348,13 @@ bool VkVolumetrics::create_noise_texture(matter::VulkanDevice& vulkan,
 // Volume images
 // ---------------------------------------------------------------------------
 
+// Allocate every grid-sized image for `dimensions` plus the bundle's own
+// descriptor pool and sets.
+//
+// Requires the pipelines and set layouts to already exist -- the descriptor
+// sets are allocated against them. On ANY failure the partially built bundle
+// is destroyed and reset to {}, so a failed call never leaves a half-built
+// bundle behind; `error` carries the reason.
 bool VkVolumetrics::create_froxel_bundle(matter::VulkanDevice& vulkan,
                                          matter::FroxelGridDimensions dimensions,
                                          FroxelBundle& bundle, std::string& error) {
@@ -352,6 +410,10 @@ bool VkVolumetrics::create_froxel_bundle(matter::VulkanDevice& vulkan,
     return true;
 }
 
+// Destroy a bundle's pool (which frees its sets) and drop its images, then
+// zero the struct. Immediate: the caller is responsible for having established
+// that no in-flight frame still references it -- that is what
+// `RetiredBundle::protected_slot` is for.
 void VkVolumetrics::destroy_froxel_bundle(FroxelBundle& bundle) {
     if (bundle.descriptor_pool != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(device_, bundle.descriptor_pool, nullptr);
@@ -363,6 +425,22 @@ void VkVolumetrics::destroy_froxel_bundle(FroxelBundle& bundle) {
     bundle = {};
 }
 
+// Allocate and fully write the bundle's seven descriptor sets from one pool:
+//   [0]     density
+//   [1..4]  scatter, indexed [frame_slot][ping]
+//   [5..6]  integrate, indexed by ping
+//
+// The pool sizes above are exact for those seven sets, not padded -- adding a
+// binding to any of the three layouts means updating them or the allocation
+// fails at runtime.
+//
+// Everything except the scatter pass's depth texture (binding 3) and TLAS
+// (binding 4) is written here once, since only those two change per frame;
+// `record()` patches just them, and only on the set for the slot it is
+// recording, which is why the scatter sets are duplicated per frame slot.
+//
+// Note the ping-pong wiring: scatter set `i` writes `scatter[i]` at binding 1
+// and reads `scatter[1 - i]` as history at binding 2.
 bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
                                               std::string& error) {
     const VkDescriptorPoolSize sizes[] = {
@@ -499,6 +577,19 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
     return true;
 }
 
+// Retire what is now safe to free and, if the requested grid or cloud mode has
+// changed, swap in a freshly built bundle.
+//
+// `completed_frame_slot` is the slot whose previous submission has finished;
+// any retired bundle protected by it is destroyed now. The newly retired
+// bundle is protected by the OTHER slot, because the frame currently being
+// prepared for this slot is the last one that could still have referenced it.
+//
+// Returns true (having done nothing) when the requested configuration already
+// matches. On failure the ACTIVE BUNDLE IS UNCHANGED and still renderable --
+// the failure is latched into `allocation_rejected_`/`allocation_error_` for
+// the UI. A successful swap resets the ping index, drops temporal history and
+// bumps `resource_generation_`.
 bool VkVolumetrics::replace_froxel_bundle(uint32_t completed_frame_slot, std::string& error) {
     for (auto it = retired_bundles_.begin(); it != retired_bundles_.end();) {
         if (it->protected_slot == completed_frame_slot) {
@@ -548,6 +639,10 @@ bool VkVolumetrics::prepare_froxel_bundle(uint32_t frame_slot,
     return false;
 }
 
+// Recover the quality enum from the active grid's actual dimensions, so the UI
+// reports what is running rather than what was requested. The mapping is by
+// exact width/depth match; anything unrecognised reports the 1.0x / 128-slice
+// default rather than failing.
 matter::FroxelXyScale VkVolumetrics::effective_xy_scale() const {
     switch (active_bundle_.dimensions.width) {
         case 80: return matter::FroxelXyScale::X0_5;
@@ -632,7 +727,9 @@ bool VkVolumetrics::create_samplers(matter::VulkanDevice& vulkan,
     info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     info.maxLod = 0.0f;
 
-    // Clamp-to-edge for volume textures.
+    // Clamp-to-edge for volume textures, including the scatter history:
+    // vol_scatter.comp clamps its reprojected UV into [0,1] and wants the edge
+    // texel to fill newly exposed screen regions smoothly.
     info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -640,16 +737,6 @@ bool VkVolumetrics::create_samplers(matter::VulkanDevice& vulkan,
                                       &linear_clamp_sampler_);
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateSampler(clamp)", result, error);
-
-    // Clamp-to-border (transparent black) for history texture so edge
-    // samples return zero instead of smearing the edge texel.
-    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-    result = vkCreateSampler(device_, &info, nullptr, &linear_border_sampler_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateSampler(border)", result, error);
 
     // Repeat for noise texture.
     info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -944,6 +1031,20 @@ bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
 // update_settings
 // ---------------------------------------------------------------------------
 
+// Latch settings for subsequent frames. Pure bookkeeping -- it allocates
+// nothing and records nothing; a changed grid size only takes effect at the
+// next `prepare_froxel_bundle()`.
+//
+// Its other job is deciding when temporal history must be thrown away. Any
+// change that alters what the scatter pass computes (the cloud decks' shape or
+// packed parameters, the march steps/distance, the multiple-scattering or
+// powder terms, the phase g) clears `has_prev_matrices_`, because blending the
+// new result against the old one would smear the previous lighting across the
+// change. Values that only affect the blend itself (temporal_blend) do not.
+//
+// All inputs are sanitized here rather than at use: non-finite values become
+// 0 and everything is clamped, so no NaN from a world file or a UI field can
+// reach a push constant.
 void VkVolumetrics::update_settings(
     const matter::VulkanVolumetricsSettings& vol,
     const matter::FogSettings& fog,
@@ -1008,11 +1109,11 @@ void VkVolumetrics::update_settings(
     // else, so a hole at index 0 would silently render layer 1's parameters
     // as layer 0's. Callers that can create a hole call compact_clouds first;
     // this is the belt to that braces.
-    const int32_t requested =
-        fog.cloud_count < 0 ? 0
-                            : (fog.cloud_count > matter::kMaxCloudLayers
-                                   ? matter::kMaxCloudLayers
-                                   : fog.cloud_count);
+    //
+    // `fog.cloud_count` is NOT that prefix count -- it is the world's
+    // *requested* count and may be stale in either direction (see
+    // active_cloud_count's comment in world_definition.h). Its only remaining
+    // job is this one-shot overflow warning.
     if (fog.cloud_count > matter::kMaxCloudLayers && !cloud_overflow_warned_) {
         cloud_overflow_warned_ = true;
         std::fprintf(stderr,
@@ -1021,7 +1122,6 @@ void VkVolumetrics::update_settings(
                      "layers are ignored\n",
                      static_cast<int>(fog.cloud_count), matter::kMaxCloudLayers);
     }
-    (void)requested;
     cloud_count_ = next_cloud_count;
     for (int i = 0; i < matter::kMaxCloudLayers; ++i) cloud_layers_[i] = fog.clouds[i];
     settings_initialized_ = true;
@@ -1041,33 +1141,29 @@ void VkVolumetrics::set_lighting(const VkSceneLighting& lighting) {
 // update_emitters
 // ---------------------------------------------------------------------------
 
-void VkVolumetrics::update_emitters(
-    matter::VulkanDevice& vulkan,
-    const std::vector<GpuVolumeEmitter>& emitters) {
-    (void)vulkan;  // device handle comes from device_; kept for API symmetry
-    if (!initialized_ || emitter_ssbo_.buffer == VK_NULL_HANDLE) return;
-
-    const uint32_t count =
-        std::min(static_cast<uint32_t>(emitters.size()), kVolMaxEmitters);
-
-    // Write count at offset 0.
-    auto* base = static_cast<uint8_t*>(emitter_ssbo_.mapped);
-    std::memcpy(base, &count, sizeof(uint32_t));
-
-    // Write emitter array at offset 16 (std430 alignment).
-    if (count > 0) {
-        std::memcpy(base + 16, emitters.data(),
-                    count * sizeof(GpuVolumeEmitter));
-    }
-
-    std::string flush_error;
-    matter::flush_buffer(emitter_ssbo_, 0, emitter_ssbo_.size, flush_error);
-}
-
 // ---------------------------------------------------------------------------
 // record
 // ---------------------------------------------------------------------------
 
+// Record the frame's three compute dispatches into `cmd`.
+//
+// Returns true having recorded NOTHING when the module is uninitialized,
+// disabled, or the device has no ray query -- callers must not treat a true
+// return as proof that `vol_integrated()` was refreshed.
+//
+// The chain is density -> (barrier) -> scatter -> (barrier) -> integrate, with
+// every image left in the layout its next consumer needs; `integrated` ends in
+// SHADER_READ_ONLY_OPTIMAL for the composite fragment shader. The transitions
+// branch on the tracked `layout` field so the first frame, where images are
+// still UNDEFINED, uses TOP_OF_PIPE with no source access instead of claiming
+// a dependency on writes that never happened.
+//
+// Side effects at the end: the ping-pong index flips, `frame_index_` advances,
+// this frame's world_to_clip is stored for the next frame's reprojection, and
+// `prepared_frame_slot_` is cleared so the next frame must prepare again.
+//
+// `boundary` (may be empty) is called around each pass so the renderer can
+// place its own timestamp queries without this module knowing about them.
 bool VkVolumetrics::record(VkCommandBuffer cmd,
                            uint32_t frame_slot,
                            matter::VkImageResource& depth_image,
@@ -1407,6 +1503,10 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     return true;
 }
 
+// Count the full-size RGBA16F volumes in the active bundle -- media, both
+// scatter buffers and integrated, so 4 when everything is allocated at the
+// expected grid. A memory-footprint assertion for the tests; the 1^3 dummy and
+// the R16 cloud-density image are deliberately not counted.
 uint32_t VkVolumetrics::grid_rgba16f_volume_count_for_test() const {
     const auto is_grid_rgba16f = [&](const matter::VkImageResource& image) {
         const auto& d = active_bundle_.dimensions;
@@ -1439,6 +1539,14 @@ uint64_t VkVolumetrics::grid_bytes_for_test() const {
                                          active_bundle_.enhanced_clouds);
 }
 
+// Copy a single froxel out of the media and cloud-density volumes to the host.
+//
+// TEST ONLY. It allocates a staging buffer and BLOCKS on an immediate submit,
+// and it transitions both volumes to TRANSFER_SRC and back to
+// SHADER_READ_ONLY, so calling it while a frame is in flight will fight the
+// renderer's own transitions. Coordinates are froxel indices and must be inside
+// `dimensions()`. The two readback_*_voxel_for_test siblings below follow the
+// same pattern.
 bool VkVolumetrics::readback_density_voxel_for_test(
     uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
     float& cloud_density, std::string& error) {
@@ -1645,6 +1753,16 @@ bool VkVolumetrics::readback_scatter_voxel_for_test(
 // destroy
 // ---------------------------------------------------------------------------
 
+// Tear everything down and return to the pre-init state. Idempotent, and a
+// no-op when there is no device, so the destructor can call it unconditionally
+// after an explicit destroy().
+//
+// It destroys objects immediately, including retired bundles that were still
+// waiting on a frame slot, and does NOT wait for the device -- the caller must
+// have already made sure no submitted work references any of it. Images and
+// buffers go through their VkImageResource/VkBufferResource lifetimes, so
+// those are safe regardless; the raw pipeline, layout, sampler and pool
+// handles are not.
 void VkVolumetrics::destroy() {
     if (device_ == VK_NULL_HANDLE) return;
 
@@ -1681,8 +1799,6 @@ void VkVolumetrics::destroy() {
     // Samplers.
     if (linear_clamp_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, linear_clamp_sampler_, nullptr);
-    if (linear_border_sampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device_, linear_border_sampler_, nullptr);
     if (linear_repeat_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, linear_repeat_sampler_, nullptr);
 
@@ -1707,13 +1823,11 @@ void VkVolumetrics::destroy() {
     environment_descriptor_set_ = VK_NULL_HANDLE;
     integrate_set_layout_ = VK_NULL_HANDLE;
     linear_clamp_sampler_ = VK_NULL_HANDLE;
-    linear_border_sampler_ = VK_NULL_HANDLE;
     linear_repeat_sampler_ = VK_NULL_HANDLE;
 
     device_ = VK_NULL_HANDLE;
     vulkan_ = nullptr;
     initialized_ = false;
-    ping_index_ = 0;
     frame_index_ = 0;
 }
 

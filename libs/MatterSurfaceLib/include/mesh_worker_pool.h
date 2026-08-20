@@ -1,6 +1,51 @@
 #ifndef MESH_WORKER_POOL_H
 #define MESH_WORKER_POOL_H
 
+// libs/MatterSurfaceLib/include/mesh_worker_pool.h
+//
+// The persistent thread pool that MatterSurfaceLib meshes cells on, plus the
+// plain-data job and result structs that cross the thread boundary.
+//
+// Where it sits: MatterSurfaceLib. `Cluster` owns the pool and calls `run`
+// once per rebuild with one `CellJob` per cell; the job function is
+// `Cell::build_group_mesh`, which drives the `MeshingAlgorithm`
+// implementations declared in `meshing_algorithm.h`. Everything produced here
+// is CPU-side — the results are committed to GPU/BLAS state later, on the
+// main thread — which is why the pool sits below any Vulkan code.
+//
+// Lifecycle:
+//   MeshWorkerPool pool(n);        // spawns n threads + n SurfaceScratch
+//   pool.run(jobs, results, fn);   // blocks until every job is done
+//   pool.resize(m);                // only between rebuilds
+//   // destructor signals stop, joins every worker, destroys the scratches
+//
+// Threading rules:
+//   - `run` blocks the calling thread, and is single-caller: one `run` at a
+//     time, from one thread. There is no queue, no future, no way to poll
+//     progress.
+//   - Jobs are pulled off a shared atomic cursor, so distribution is dynamic.
+//     A job's index does not determine which worker executes it, and cheap
+//     and expensive cells balance out on their own — but do not rely on any
+//     execution order between jobs.
+//   - Each worker owns one `SurfaceScratch` for its entire lifetime and hands
+//     it to `fn`. `fn` therefore runs concurrently on N threads and must
+//     touch nothing shared and mutable beyond the scratch it is given and its
+//     own `results[i]` slot. `CellJob` carries an owned copy of the cell's
+//     carve subset for exactly this reason.
+//   - `resize` joins every worker and respawns from scratch, destroying and
+//     recreating all `SurfaceScratch` state. It is not safe while a batch is
+//     in flight.
+//
+// Gotchas:
+//   - Construction allocates one `SurfaceScratch` per worker and `abort()`s
+//     the process if any allocation fails; there is no failure return and no
+//     degraded mode.
+//   - `worker_count` is clamped up to 1 in both the constructor and `resize`,
+//     so a pool is never empty and `run` always makes progress.
+//   - Non-copyable and non-assignable — it owns threads.
+//   - `raylib.h` is included only for the POD `Mesh` type; nothing here
+//     touches GL.
+
 #include "raylib.h"          // Mesh
 #include "tri.h"             // Tri, TriEx
 #include <vector>
@@ -62,6 +107,12 @@ public:
 
     // Runs fn(jobs[i], worker_scratch, results[i]) for every i across the workers,
     // blocking until all jobs finish. `results` is resized to jobs.size().
+    //
+    // Single-caller: one `run` at a time on a pool, from one thread. `fn` is
+    // invoked concurrently on every worker, so the only per-job state it may
+    // write is its own `results[i]`. Job execution order is unspecified —
+    // work is claimed off a shared atomic cursor. An empty `jobs` returns
+    // immediately with `results` cleared and the workers left asleep.
     void run(std::vector<CellJob>& jobs, std::vector<CellMeshResult>& results, const JobFn& fn);
 
     // Join existing workers and respawn `worker_count` (clamped to >= 1). Only

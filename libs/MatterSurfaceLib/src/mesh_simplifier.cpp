@@ -1,3 +1,46 @@
+// libs/MatterSurfaceLib/src/mesh_simplifier.cpp
+//
+// Quadric-error-metric (Garland-Heckbert) edge-collapse mesh decimation. This
+// is the engine's only mesh simplifier; the LOD bake and the modifier stack
+// (`{ simplify: X }` in modifier-regions) both land here.
+//
+// Two entry points, one shared engine:
+//   - `simplify_mesh(const Mesh&, ...)` — legacy raylib `Mesh` in/out. The
+//     output uses raylib's 16-bit `unsigned short` indices, so it REFUSES to
+//     return a mesh with more than 65535 vertices: it logs to stderr and
+//     returns a zeroed (empty) Mesh instead.
+//   - `simplify(const MeshIndexed&, ...)` — native path, uint32 indices, no
+//     vertex cap. Preferred for anything that might exceed 65535 verts.
+// Both build the same internal `WVert`/`WTri` topology and call the same
+// `decimate()`.
+//
+// Why the internal re-weld. Marching-cubes cell meshes are an unwelded polygon
+// soup: adjacent triangles carry distinct co-located vertex copies. Collapsing
+// an edge in that representation moves one triangle's corner and leaves its
+// twins behind, tearing holes. `buildTopology` / `buildTopologyIndexed`
+// therefore weld by position onto a 1e-5 grid (llround(x * 100000)) regardless
+// of how the input was indexed, and drop triangles that welding made
+// degenerate. Note this is a FINER grid than `mesh_indexed.cpp`'s from_tri
+// default (1e-4).
+//
+// Boundary locking (`SimplifyOptions::lock_boundary`, default true) is what
+// makes per-cell / per-cluster decimation seam-safe: vertices on a supplied
+// `CellBounds` face plane and vertices on any edge with incidence != 2 are
+// frozen. Two neighbouring cells therefore decimate their shared cut edge to
+// bit-identical positions, and an LOD ladder keeps the same cut vertices at
+// every rung.
+//
+// Cost / threading. Everything here is CPU-only, allocation-heavy, and touches
+// no global or GPU state, so it is safe to run on a bake worker thread — the
+// engine does exactly that. The collapse loop is O(collapses * incident
+// triangles) with a priority queue on top; it is emphatically not a cheap call
+// on a large mesh. Output ordering is deterministic: `HeapEdge::operator<`
+// carries a full tie-break on (cost, vi, vj) so two runs over the same input
+// produce byte-identical results.
+//
+// Memory. `simplify_mesh` allocates its output arrays with raylib's `MemAlloc`,
+// so the result is safe to hand to `UploadMesh` / `UnloadMesh` and the caller
+// owns it. `input` is never mutated or freed.
 #include "mesh_simplifier.hpp"
 
 #include <vector>
@@ -44,6 +87,12 @@ struct WeldMap {
     }
 
     // Returns existing value or -1 if absent.
+    // Linear probing with no bound: the loop terminates on the first unused
+    // slot, so the table must never be allowed to reach 100% load. Two things
+    // guarantee that. Both callers pre-size to ~4 slots per triangle against at
+    // most 3 unique vertices per triangle (a hard ceiling of 0.75 load), and
+    // `insert` grows the table past `kMaxLoadNum/kMaxLoadDen` regardless of how
+    // it was sized, so no future caller can wedge these loops.
     int find(const std::array<long long,3>& key) const {
         size_t mask = table.size() - 1;
         size_t idx  = hash3(key) & mask;
@@ -55,18 +104,28 @@ struct WeldMap {
         }
     }
 
-    // Insert key→value; caller guarantees key is absent and load < 75%.
+    // Insert key→value; caller guarantees the key is absent.
     void insert(const std::array<long long,3>& key, int value) {
         size_t mask = table.size() - 1;
         size_t idx  = hash3(key) & mask;
         while (table[idx].used) idx = (idx + 1) & mask;
         table[idx] = { key, value, true };
         ++count;
+        maybe_grow();
     }
 
-    // Grow by 2× when load factor hits 50%.
+    // Ceiling on load factor, chosen ABOVE the 0.75 both current callers can
+    // reach (4 slots per triangle, at most 3 unique verts per triangle) so
+    // their generous pre-sizing still never rehashes — a rehash re-fragments
+    // the heap, which is the whole reason this map exists. Its job is to bound
+    // the probe loops for any future caller that sizes less carefully.
+    static const size_t kMaxLoadNum = 7;
+    static const size_t kMaxLoadDen = 8;
+
+    // Grow by 2x once the table passes the load ceiling, so neither probe loop
+    // can run out of unused slots and spin forever.
     void maybe_grow() {
-        if (count * 2 >= table.size()) {
+        if (count * kMaxLoadDen >= table.size() * kMaxLoadNum) {
             WeldMap next;
             next.init(table.size() * 2);
             for (const Slot& s : table)
@@ -84,6 +143,22 @@ static inline double dot(V3 a, V3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
 static inline double len(V3 a)       { return std::sqrt(dot(a, a)); }
 
 // --- accumulated quadric (Garland-Heckbert), used by the Task 2 engine ---
+// A quadric is the sum of squared distances to a set of planes, written as
+// v^T A v + 2 b.v + c with A symmetric 3x3. Each vertex accumulates one
+// `addPlane` per incident triangle (unit normal `n`, plane offset `d`), and
+// `add` merges two vertices' quadrics when their edge collapses — that sum is
+// what makes the collapse cost of a chain of collapses meaningful.
+//
+// `error(v)` is the collapse cost for placing the merged vertex at `v`; it is
+// clamped at 0 because accumulated rounding can drive a mathematically
+// non-negative form slightly negative. `optimal(out)` solves A v = -b for the
+// cost-minimizing position and returns false when A is singular (a flat or
+// symmetric neighbourhood, det < 1e-12), in which case `buildEdge` falls back
+// to the cheapest of the two endpoints and the midpoint.
+//
+// Doubles throughout, deliberately: the quadric coefficients are sums of
+// squared coordinates and lose too much precision in float on world-scale
+// geometry.
 struct Quadric {
     double a00=0,a01=0,a02=0,a11=0,a12=0,a22=0; // symmetric 3x3 A
     double b0=0,b1=0,b2=0;                       // vector b
@@ -120,6 +195,20 @@ struct Quadric {
     }
 };
 
+// Working topology, private to this file: the welded vertex/triangle graph the
+// decimator mutates in place. Both are dense arrays indexed by their own id;
+// nothing is ever erased mid-run, entries are only flagged.
+//
+// `removed`  — tombstone. A removed vertex was merged into a survivor; a
+//              removed triangle degenerated (or was already degenerate after
+//              welding). `buildMesh`/`buildMeshIndexed` compact them out.
+// `locked`   — frozen by boundary locking; never moved, never the merged-away
+//              endpoint of a collapse.
+// `version`  — bumped on every collapse touching this vertex. Heap entries
+//              record the versions they were built from; a popped entry whose
+//              versions no longer match is stale (its cost was computed against
+//              geometry that has since moved) and is discarded rather than
+//              recomputed.
 struct WVert {
     V3 pos {0,0,0};
     Quadric q;
@@ -185,6 +274,11 @@ static void buildTopology(const Mesh& m, std::vector<WVert>& verts, std::vector<
 
 // Compact surviving verts/tris into a new indexed Mesh with smooth
 // area-weighted vertex normals (matches the marching-cubes convention).
+// Allocates `vertices`/`normals`/`indices` with raylib's `MemAlloc`; the
+// caller owns them and may pass the result straight to UploadMesh/UnloadMesh.
+// Returns a zeroed Mesh (vertexCount == 0) for an empty result AND for the
+// over-65535-vertex refusal below — callers must treat vertexCount == 0 as
+// "no mesh", not as success.
 static Mesh buildMesh(const std::vector<WVert>& verts, const std::vector<WTri>& tris) {
     Mesh out = {0};
     std::vector<int> remap(verts.size(), -1);
@@ -306,6 +400,18 @@ static bool buildEdge(int p, int q, const std::vector<WVert>& verts, HeapEdge& e
 
 // QEM edge-collapse decimation: per-vertex quadrics, min-cost edge heap,
 // greedy collapse with boundary locking and triangle-flip/degeneracy rejection.
+//
+// Mutates `verts`/`tris` in place (flags, positions and quadrics); the caller
+// compacts afterwards. `inputTri` is the triangle count the target ratio is
+// measured against, passed separately because `tris.size()` already includes
+// triangles welding killed.
+//
+// The triangle target is a BEST EFFORT, not a guarantee. The loop stops early
+// when the cheapest remaining collapse costs more than `opts.max_error`, and
+// individual collapses are skipped when they would flip or degenerate an
+// incident triangle, so a mesh with a tight `max_error` or a lot of locked
+// boundary can finish well above `target_ratio * inputTri`. `bounds` may be
+// null, in which case only the topological boundary lock applies.
 static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
                      const SimplifyOptions& opts, const CellBounds* bounds, int inputTri) {
     int targetTri = (int)std::floor((double)opts.target_ratio * (double)inputTri);
@@ -457,6 +563,10 @@ static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
 
 } // anonymous namespace
 
+// Legacy raylib-Mesh entry point. Reads `input.indices` when present and
+// otherwise treats `input.vertices` as an unindexed soup. Output is capped at
+// 65535 vertices by raylib's 16-bit index type (see `buildMesh`); prefer the
+// `simplify(MeshIndexed)` overload below for anything that might exceed that.
 Mesh simplify_mesh(const Mesh& input, const SimplifyOptions& opts, const CellBounds* bounds) {
     if (input.vertexCount == 0 || input.triangleCount == 0 || !input.vertices) {
         Mesh empty = {0};
@@ -470,6 +580,14 @@ Mesh simplify_mesh(const Mesh& input, const SimplifyOptions& opts, const CellBou
     return buildMesh(verts, tris);
 }
 
+// ---------------------------------------------------------------------------
+// Native MeshIndexed path
+// ---------------------------------------------------------------------------
+// Everything below duplicates the build/unpack ends of the raylib path against
+// MeshIndexed instead, sharing the same `decimate()` in the middle. The include
+// sits here rather than at the top of the file to keep the raylib-Mesh section
+// above independent of MeshIndexed; do not "tidy" it upward without checking
+// that.
 #include "mesh_indexed.hpp"
 
 // Build the internal WVert/WTri topology from a MeshIndexed input WITHOUT

@@ -1,3 +1,34 @@
+// libs/MeshChartingLib/src/mesh_charting.cpp
+//
+// The whole implementation of MeshChartingLib. See ../include/mesh_charting.h
+// for the public contract, the shared input conventions (flat float3
+// positions, triCount * 3 indices, per-triangle chart ids) and the caveats
+// callers need; this file documents how the pieces work.
+//
+// Layout
+// ------
+// - An anonymous namespace holds a minimal float3 type and the two
+//   index-width-templated cores. build_adjacency and segment_charts each have
+//   a 16-bit and a 32-bit public overload that forward to the SAME template,
+//   so the two widths cannot drift apart — 32-bit exists because sector
+//   meshes exceed 64k vertices (WP-A, 2026-07-29).
+// - Two independent shelf packers follow: shelf_pack/pack_charts work in
+//   texels with a scale search, shelf_pack_pages/pack_charts_paged work in
+//   whole pages with a width search. They share the tallest-first shelf idea
+//   and nothing else.
+// - projection_distortion closes the file and stands alone.
+//
+// Determinism
+// -----------
+// Bake output depends on these results being reproducible, so the file is
+// written to avoid every common source of run-to-run variation: welded vertex
+// ids come from first-encounter order and the hash maps are only ever probed,
+// never iterated; both packers sort with an explicit tie-break because
+// std::sort is not stable; and no floating-point value is compared for
+// equality except against the documented degeneracy epsilons.
+//
+// No global or static mutable state anywhere, so independent calls on
+// independent data may run concurrently — bake workers rely on this.
 #include "../include/mesh_charting.h"
 #include <map>
 #include <array>
@@ -10,6 +41,15 @@
 
 namespace mesh_charting {
 namespace {
+// A private three-float vector and the handful of operations this file needs.
+// It exists so MeshChartingLib stays a leaf: SpatialQueryLib's float3 is the
+// engine's SIMD interchange type, and depending on it would pull the geometry
+// library into a lib that is deliberately dependency-free. Deliberately not
+// exported — nothing in the public header mentions it.
+//
+// Note norm3's degeneracy behaviour: a vector shorter than 1e-12 normalizes
+// to exactly (0,0,0) rather than producing NaNs. Callers below test for that
+// zero and substitute a fallback.
 struct float3c { float x,y,z; };
 static float3c v3(float x,float y,float z){ return {x,y,z}; }
 static float3c sub3(float3c a,float3c b){ return {a.x-b.x,a.y-b.y,a.z-b.z}; }
@@ -34,6 +74,29 @@ struct PosKeyEq {
     }
 };
 
+// Two hash passes, both O(triCount): weld corners to positional vertex ids,
+// then match edges by the sorted pair of welded ids packed into a uint64 key.
+// The `seen` map records the FIRST (triangle, edge slot) to claim each edge
+// and links the second one to it symmetrically.
+//
+// Non-manifold input: an edge is CONSUMED by the pair that claims it first.
+// Once two triangles are linked across an edge, the map entry is retired
+// (tri = -1) and any third or later triangle on that same edge gets no
+// neighbour there — its slot stays -1 and reads as a boundary. The retirement
+// is what makes the graph SYMMETRIC unconditionally: adj[a].nbr[i] == b
+// implies adj[b].nbr[j] == a for every input, manifold or not. (Without it a
+// third claimant re-linked against the stale first claimant and clobbered one
+// side of the earlier pairing, leaving A pointing at C while B still pointed
+// at A — a lopsided graph that segment_charts then flood-filled through in one
+// direction only.) Which two triangles win is first-come, i.e. ascending
+// triangle then edge-slot order, so it is still deterministic.
+//
+// Nothing here reports that it happened; the extra boundaries simply split the
+// mesh into more charts than a manifold version of it would produce. Callers
+// that must know about non-manifold geometry have to detect it themselves.
+//
+// The 16- and 32-bit public overloads both instantiate this template, so the
+// two index widths are guaranteed to behave identically.
 template <typename IndexT>
 std::vector<TriAdj> build_adjacency_impl(const float* positions, const IndexT* indices,
                                          int triCount) {
@@ -52,7 +115,8 @@ std::vector<TriAdj> build_adjacency_impl(const float* positions, const IndexT* i
     std::vector<TriAdj> adj(triCount);
     for (auto& a : adj) { a.nbr[0]=a.nbr[1]=a.nbr[2]=-1; }
 
-    // edge (sorted welded id pair) -> first (tri, edgeSlot) that claimed it.
+    // edge (sorted welded id pair) -> the (tri, edgeSlot) waiting for a
+    // partner, or tri == -1 once the edge has been paired and retired.
     std::unordered_map<uint64_t, std::pair<int,int>> seen;
     seen.reserve((size_t)triCount * 3);
     for (int t=0;t<triCount;++t) {
@@ -64,16 +128,40 @@ std::vector<TriAdj> build_adjacency_impl(const float* positions, const IndexT* i
             auto it = seen.find(key);
             if (it == seen.end()) {
                 seen.emplace(key, std::make_pair(t,e));
-            } else {
+            } else if (it->second.first >= 0) {
                 int ot = it->second.first, oe = it->second.second;
                 adj[t].nbr[e]  = ot;
                 adj[ot].nbr[oe] = t;
+                it->second.first = -1;   // edge consumed; later claimants get -1
             }
+            // else: a third-or-later triangle on a non-manifold edge. Leaving
+            // its slot at -1 keeps the graph symmetric instead of clobbering
+            // the pairing that already exists.
         }
     }
     return adj;
 }
 
+// Three phases: mesh centroid, per-face outward normals, then a greedy
+// depth-first flood fill (explicit `stack`, no recursion, so deep meshes
+// cannot blow the C stack).
+//
+// "Outward" is defined against the mesh centroid, not against winding order —
+// a face normal is flipped whenever it points back toward the centroid. This
+// makes the segmentation independent of how the source mesh was wound, but it
+// is only correct for roughly star-shaped geometry; chart_average_normals
+// repeats the identical rule so the two agree regardless.
+//
+// The cone test compares a candidate's normal against the chart's RUNNING
+// average (`sumN` accumulated unnormalized, normalized fresh at each test),
+// so a chart's acceptance cone drifts as it grows and the partition depends
+// on seed order — seeds are taken in ascending triangle index, which is what
+// makes the result reproducible. coneCos is precomputed from coneDeg, which
+// the header requires to be under 90 degrees; at or past 90 the cosine turns
+// non-positive and the test starts admitting back-facing neighbours.
+//
+// Every triangle is assigned, so the returned vector contains no -1 and
+// nCharts is the exact number of charts created.
 template <typename IndexT>
 std::vector<int> segment_charts_impl(const float* positions, const IndexT* indices,
                                      int triCount, const std::vector<TriAdj>& adj,
@@ -192,6 +280,15 @@ void plane_basis(const float n[3], float T[3], float B[3]) {
     B[0]=b.x; B[1]=b.y; B[2]=b.z;
 }
 
+// One packing attempt at a fixed `scale`. Rects are placed left to right into
+// horizontal shelves, opening a new shelf when the row is full; tallest-first
+// ordering keeps each shelf's wasted height down. `pad` is applied on BOTH
+// sides of every rect, so the recorded ox/oy is the padded box's corner and
+// two charts' content ends up at least 2*pad texels apart.
+//
+// Returns false as soon as anything does not fit, leaving `out` partially
+// written — pack_charts treats that as "retry smaller", so `out` is only
+// meaningful when this returns true.
 static bool shelf_pack(const std::vector<ChartRect>& charts, int atlasW, int atlasH,
                        int pad, float scale, std::vector<ChartPlacement>& out) {
     const int n = (int)charts.size();
@@ -214,18 +311,37 @@ static bool shelf_pack(const std::vector<ChartRect>& charts, int atlasW, int atl
     return true;
 }
 
+// Binary-search-free scale fit: guess a scale from the total chart area
+// assuming a 55% fill, then shrink 15% per failed attempt. Monotonic
+// downward, so it never overshoots into an over-scaled atlas, but equally it
+// never grows the guess — a run that succeeds on attempt 0 may be leaving
+// resolution on the table. 24 attempts bottom out around 2% of the initial
+// guess, well past anything usable, so exhausting them means the input is
+// unpackable rather than merely awkward.
+//
+// Both outputs are cleared up front and left cleared on every failure path,
+// matching pack_charts_paged. shelf_pack writes `placements` as it goes and
+// leaves a rejected attempt's partial layout behind, so the final clear on the
+// exhausted-attempts path is what keeps a false return from handing the caller
+// coordinates that were never accepted.
 bool pack_charts(const std::vector<ChartRect>& charts, int atlasW, int atlasH, int pad,
                  float& scale, std::vector<ChartPlacement>& placements) {
+    scale = 0.0f;
+    placements.clear();
     if (charts.empty() || atlasW<=0 || atlasH<=0) return false;
     double area = 0.0;
     for (const auto& c : charts) area += (double)std::max(c.w,1e-6f) * std::max(c.h,1e-6f);
     if (area <= 0.0) return false;
     // Initial guess assumes 55% fill; iterate down if packing overflows.
-    scale = (float)std::sqrt(0.55 * (double)atlasW * (double)atlasH / area);
+    float s = (float)std::sqrt(0.55 * (double)atlasW * (double)atlasH / area);
     for (int attempt=0; attempt<24; ++attempt) {
-        if (shelf_pack(charts, atlasW, atlasH, pad, scale, placements)) return true;
-        scale *= 0.85f;
+        if (shelf_pack(charts, atlasW, atlasH, pad, s, placements)) {
+            scale = s;
+            return true;
+        }
+        s *= 0.85f;
     }
+    placements.clear();
     return false;
 }
 
@@ -233,8 +349,12 @@ bool pack_charts(const std::vector<ChartRect>& charts, int atlasW, int atlasH, i
 // Page-aligned packing
 // ---------------------------------------------------------------------------
 
-// Shelf pack of page-aligned blocks (all sizes in PAGES) into a fixed width;
-// returns the used height in pages (0 = a block was wider than the atlas).
+// Shelf pack of page-aligned blocks (all sizes in PAGES) into a fixed width.
+// Returns the used height in pages, or -1 when a block is wider than the
+// atlas. The failure value is -1 rather than 0 so that it cannot be confused
+// with the legitimate 0 an empty block list produces; pack_charts_paged
+// rejects the empty case before calling, but the two outcomes are distinct
+// here so that a future caller cannot inherit that ambiguity.
 static int shelf_pack_pages(const std::vector<std::pair<int,int>>& blocks, // (wPages,hPages)
                             const std::vector<int>& order, int widthPages,
                             std::vector<std::pair<int,int>>& out /* (x,y) pages */) {
@@ -244,7 +364,7 @@ static int shelf_pack_pages(const std::vector<std::pair<int,int>>& blocks, // (w
     for (int oi=0; oi<n; ++oi) {
         const int i = order[oi];
         const int w = blocks[i].first, h = blocks[i].second;
-        if (w > widthPages) return 0;
+        if (w > widthPages) return -1;
         if (cursorX + w > widthPages) { shelfY += shelfH; cursorX = 0; shelfH = 0; }
         out[i] = {cursorX, shelfY};
         cursorX += w; if (h > shelfH) shelfH = h;
@@ -308,6 +428,11 @@ bool pack_charts_paged(const std::vector<PagedChartSize>& charts,
     return false;
 }
 
+// `worst` starts at 1.0 (isometric) and only ever rises, so a subset in which
+// every triangle is skipped as degenerate returns 1.0 — a perfect score, not
+// an error signal. Callers that care about coverage must count the triangles
+// themselves. Triangle indices in `tri_list` outside [0, triCount) are
+// skipped rather than treated as an error.
 float projection_distortion(const float* positions, const unsigned int* indices,
                             int triCount, const int* tri_list, int tri_list_count,
                             const float T[3], const float B[3]) {

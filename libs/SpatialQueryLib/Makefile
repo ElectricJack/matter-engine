@@ -46,14 +46,36 @@ $(OBJ_DIR)/src/mem_pool.o: $(MEMORY_LIB)/src/mem_pool.c $(MEMORY_LIB)/include/me
 clean:
 	rm -rf build
 
-# Test target: build and run spatial hash tests with AddressSanitizer + UBSan
-TEST_SRCS = tests/spatial_hash_tests.c src/spatial_hash.c $(MEMORY_LIB)/src/mem_pool.c
-TEST_FLAGS = -Wall -Wextra -g -I./include -I$(MEMORY_LIB)/include -fsanitize=address,undefined -lm
+# Test targets.
+#
+# The sanitizers are Linux-only here: MSYS2's mingw-w64 GCC ships no libasan /
+# libubsan, so passing -fsanitize=address,undefined makes the LINK fail with
+# "cannot find -lasan". platform.mk already detects Windows, so gate on that
+# rather than leaving the whole target unbuildable on the repo's main platform.
+ifeq ($(IS_WINDOWS),Windows_NT)
+SANITIZE_FLAGS =
+else
+SANITIZE_FLAGS = -fsanitize=address,undefined
+endif
 
-test: $(TEST_SRCS)
+TEST_SRCS = tests/spatial_hash_tests.c src/spatial_hash.c $(MEMORY_LIB)/src/mem_pool.c
+TEST_FLAGS = -Wall -Wextra -g -I./include -I$(MEMORY_LIB)/include $(SANITIZE_FLAGS) -lm
+
+# BVH / TLAS / analyzer regression tests (C++, headless, no GL and no files).
+CXX = g++
+BVH_TEST_SRCS = tests/bvh_tests.cpp src/bvh.cpp src/bvh_analyzer.cpp
+BVH_TEST_FLAGS = -Wall -Wextra -g -std=c++17 -I./include $(SANITIZE_FLAGS)
+
+test: test-hash test-bvh
+
+test-hash: $(TEST_SRCS)
 	$(CC) $(TEST_FLAGS) -o build/spatial_hash_tests $(TEST_SRCS)
 	./build/spatial_hash_tests
 
+test-bvh: $(BVH_TEST_SRCS) $(HEADERS)
+	$(CXX) $(BVH_TEST_FLAGS) -o build/bvh_tests $(BVH_TEST_SRCS)
+	./build/bvh_tests
+
 -include $(OBJS:.o=.d)
 
-.PHONY: all clean test
+.PHONY: all clean test test-hash test-bvh

@@ -1,3 +1,31 @@
+// MatterEditor/src/properties_panel.cpp
+//
+// How a frame of this panel works:
+//
+//   1. draw_properties_contents() classifies the selection. A mixed
+//      entity + baked-root selection is refused outright (they have nothing in
+//      common to show); an all-baked-root selection draws read-only info cards
+//      and returns; otherwise the selected entity ids and their HierarchyRows
+//      are gathered from the EditorModel.
+//   2. Only components present on EVERY selected entity are drawn, in
+//      PropertiesRegistry order, one CollapsingHeader each. Transform is
+//      exempt from that test because every scene entity has one.
+//   3. Each field is rendered by the per-WidgetKind function matching its
+//      registry entry. Those functions read through FieldCommands, cache the
+//      result, draw from the cache, and on edit fan the new value out to every
+//      selected id.
+//   4. Components with a specialized editor get their extra controls appended
+//      inside the same header; an "+ Add Component" footer closes the panel.
+//
+// The Play-mode rule shapes most of the code: while SimulationMode::Play is
+// active the ECS is NOT re-read (`live` is false) and every widget is wrapped
+// in ImGui::BeginDisabled, so the panel shows the last values captured before
+// Play started rather than a per-frame changing readout of the simulation.
+//
+// Everything here is main/UI thread only, and every mutation goes through the
+// FieldCommands/ComponentCommands callbacks — this file never touches flecs or
+// a WorldSession.
+//
 // Phase 5 Task 7 — Properties inspector panel implementation.
 // Task 9 — Baked root properties: read-only info card for BakedRoot
 // selections, sourced from the part_graph_snapshot::Snapshot.
@@ -93,6 +121,15 @@ std::string make_cache_key(const char* component, const char* field, uint64_t pr
 // fans the new value out to every selected entity.
 // ---------------------------------------------------------------------------
 
+// The seven field renderers below share one shape, and one convention worth
+// stating once: `ids[0]` is the PRIMARY entity — its value is what is shown
+// and cached, and the rest of the selection is consulted only to decide the
+// "(mixed)" label. An entity whose getter FAILS is skipped rather than
+// counted as disagreement, so a component present on some entities but not
+// all cannot make the field read as mixed (it would already have been
+// filtered out one level up, which only shows components common to all).
+// `live == false` (Play mode) skips the read entirely and draws whatever the
+// cache last held.
 void draw_float_field(PropertiesPanelState& state, const FieldCommands& fields,
                       const std::vector<SceneEntityId>& ids, const char* component,
                       const FieldWidget& fw, bool is_slider, bool live) {
@@ -393,6 +430,16 @@ void draw_field(PropertiesPanelState& state, const FieldCommands& fields,
 // is true. Multi-select: every action button fans out to every id in `ids`.
 // ---------------------------------------------------------------------------
 
+// PartInstance's specialized editor: shows the current part and opens a
+// filtered picker popup that assigns a new one to every selected entity.
+//
+// The hash is read at FULL 64-bit width through PartEditorCommands::
+// current_part_hash, NOT through FieldCommands::get_uint — that accessor
+// family is 32-bit and silently keeps only the low half of a part hash
+// (scene_registry.cpp says so on field_get_uint), which would both mislabel
+// the current part and make the name lookup below match the wrong entry. The
+// 32-bit getter is the documented fallback for a session that wired no
+// current_part_hash command, and is labelled as truncated when it is used.
 void draw_part_instance_editor(SpecializedEditors& specialized, const FieldCommands& fields,
                                const std::vector<SceneEntityId>& ids) {
     PartEditorCommands& part_cmds = specialized.part_commands();
@@ -401,22 +448,36 @@ void draw_part_instance_editor(SpecializedEditors& specialized, const FieldComma
     std::vector<std::pair<uint64_t, std::string>> available;
     if (part_cmds.list_available_parts) available = part_cmds.list_available_parts();
 
-    uint32_t current_hash = 0;
-    const bool have_hash = fields.get_uint &&
-        fields.get_uint(ids[0], "PartInstance", "part_hash", current_hash);
+    uint64_t current_hash = 0;
+    bool truncated = false;
+    bool have_hash = false;
+    if (part_cmds.current_part_hash) {
+        have_hash = part_cmds.current_part_hash(ids[0], current_hash);
+    } else if (fields.get_uint) {
+        uint32_t low = 0;
+        have_hash = fields.get_uint(ids[0], "PartInstance", "part_hash", low);
+        current_hash = low;
+        truncated = have_hash;
+    }
 
     std::string current_name = "(unknown)";
     if (have_hash) {
         current_name.clear();
         for (const auto& p : available) {
-            if (p.first == static_cast<uint64_t>(current_hash)) {
+            if (p.first == current_hash) {
                 current_name = p.second;
                 break;
             }
         }
         if (current_name.empty()) {
-            char buf[24];
-            std::snprintf(buf, sizeof(buf), "0x%08X", current_hash);
+            char buf[40];
+            if (truncated) {
+                std::snprintf(buf, sizeof(buf), "0x%08X (low 32 bits)",
+                              static_cast<unsigned>(current_hash));
+            } else {
+                std::snprintf(buf, sizeof(buf), "0x%016llX",
+                              static_cast<unsigned long long>(current_hash));
+            }
             current_name = buf;
         }
     }
@@ -438,7 +499,8 @@ void draw_part_instance_editor(SpecializedEditors& specialized, const FieldComma
         for (const auto& part : available) {
             if (filter[0] != '\0' &&
                 part.second.find(filter) == std::string::npos) continue;
-            const bool selected = have_hash && part.first == static_cast<uint64_t>(current_hash);
+            const bool selected = have_hash && !truncated &&
+                                  part.first == current_hash;
             char label[192];
             std::snprintf(label, sizeof(label), "%s##part_%llu", part.second.c_str(),
                          static_cast<unsigned long long>(part.first));
@@ -456,19 +518,48 @@ void draw_part_instance_editor(SpecializedEditors& specialized, const FieldComma
     }
 }
 
+// A button whose backing command may not exist. `available` false draws it
+// GREYED with an explanatory tooltip instead of drawing it live and dropping
+// the click on the floor — every SpecializedEditors command is documented as
+// possibly-empty (specialized_editors.h), and a control that looks clickable
+// but silently does nothing is the worst of the three options.
+bool command_button(const char* label, bool available, const char* why) {
+    if (available) return ImGui::Button(label);
+    ImGui::BeginDisabled(true);
+    ImGui::Button(label);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", why);
+    return false;
+}
+
+// RigidBody's specialized editor: four runtime actions, each fanned out to
+// every selected entity. `camera_position` is world-space metres and is what
+// "Teleport To Camera" writes into the transform.
+//
+// The impulse and target-velocity drag boxes are function-local `static`s —
+// one shared pair for the whole application, not per entity and not per panel.
+// Selecting a different entity therefore keeps whatever was last typed, which
+// is convenient for repeating a nudge and surprising if you expect it to
+// reset. Two of these actions are APPROXIMATIONS on the main.cpp side (the
+// closures wired there say which): "Apply Impulse" is a velocity delta with no
+// mass term, and "Wake" only reports whether the entity has a RigidBody.
 void draw_rigidbody_editor(SpecializedEditors& specialized,
                            const std::vector<SceneEntityId>& ids,
                            const matter::Float3& camera_position) {
     PhysicsEditorCommands& phys = specialized.physics_commands();
+    static const char* const kNoPhysics =
+        "Not available: this session wired no physics command for it.";
 
     ImGui::Spacing();
     ImGui::TextDisabled("Actions");
 
-    if (ImGui::Button("Wake") && phys.wake) {
+    if (command_button("Wake", static_cast<bool>(phys.wake), kNoPhysics)) {
         for (auto id : ids) phys.wake(id);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Teleport To Camera") && phys.teleport) {
+    if (command_button("Teleport To Camera", static_cast<bool>(phys.teleport),
+                       kNoPhysics)) {
         for (auto id : ids) phys.teleport(id, camera_position);
     }
 
@@ -476,7 +567,8 @@ void draw_rigidbody_editor(SpecializedEditors& specialized,
     ImGui::SetNextItemWidth(-120.0f);
     ImGui::DragFloat3("##impulse", &impulse.x, 0.1f);
     ImGui::SameLine();
-    if (ImGui::Button("Apply Impulse") && phys.apply_impulse) {
+    if (command_button("Apply Impulse", static_cast<bool>(phys.apply_impulse),
+                       kNoPhysics)) {
         for (auto id : ids) phys.apply_impulse(id, impulse);
     }
 
@@ -484,40 +576,69 @@ void draw_rigidbody_editor(SpecializedEditors& specialized,
     ImGui::SetNextItemWidth(-120.0f);
     ImGui::DragFloat3("##set_velocity", &target_velocity.x, 0.1f);
     ImGui::SameLine();
-    if (ImGui::Button("Set Velocity") && phys.set_linear_velocity) {
+    if (command_button("Set Velocity",
+                       static_cast<bool>(phys.set_linear_velocity),
+                       kNoPhysics)) {
         for (auto id : ids) phys.set_linear_velocity(id, target_velocity);
     }
 }
 
+// SectorStreaming's specialized editor. Attach/Remove are real; the rest are
+// only as real as the commands behind them, and anything with no command is
+// drawn disabled rather than live-but-inert (see command_button above).
+//
+// "Radius" is UI-ONLY and is drawn disabled for the same reason: sector
+// streaming config is global today, so there is no per-anchor radius to apply
+// (StreamingEditorState::radius exists only to hold the drag value).
 void draw_streaming_editor(SpecializedEditors& specialized,
                            const std::vector<SceneEntityId>& ids) {
     StreamingEditorCommands& stream_cmds = specialized.streaming_commands();
     StreamingEditorState& stream_state = specialized.streaming_state();
 
     ImGui::Spacing();
-    if (ImGui::Button("Remove Streaming") && stream_cmds.remove_streaming) {
+    if (command_button("Remove Streaming",
+                       static_cast<bool>(stream_cmds.remove_streaming),
+                       "Not available: no remove-streaming command is wired.")) {
         for (auto id : ids) stream_cmds.remove_streaming(id);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Attach Streaming") && stream_cmds.attach_streaming) {
+    if (command_button("Attach Streaming",
+                       static_cast<bool>(stream_cmds.attach_streaming),
+                       "Not available: no attach-streaming command is wired.")) {
         for (auto id : ids) stream_cmds.attach_streaming(id);
     }
 
+    ImGui::BeginDisabled(true);
     ImGui::DragFloat("Radius", &stream_state.radius, 1.0f, 0.0f, 100000.0f);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Sector streaming radius is a global setting today; "
+                          "there is no per-entity override to apply.");
 
+    const bool can_follow = static_cast<bool>(stream_cmds.set_follow_camera);
+    ImGui::BeginDisabled(!can_follow);
     bool follow = stream_state.follow_camera;
     if (ImGui::Checkbox("Follow Camera", &follow)) {
         stream_state.follow_camera = follow;
         if (stream_cmds.set_follow_camera) stream_cmds.set_follow_camera(follow);
     }
+    ImGui::EndDisabled();
+    if (!can_follow && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Not available: follow-camera is driven by the global "
+                          "streaming anchor, not per entity.");
 
+    const bool can_regenerate = static_cast<bool>(stream_cmds.regenerate);
+    ImGui::BeginDisabled(!can_regenerate);
     uint32_t seed = static_cast<uint32_t>(stream_state.seed);
     ImGui::SetNextItemWidth(-90.0f);
     if (ImGui::DragScalar("Seed", ImGuiDataType_U32, &seed, 1.0f)) {
         stream_state.seed = seed;
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Regenerate") && stream_cmds.regenerate) {
+    if (command_button("Regenerate", can_regenerate,
+                       "Not available: no reseed entry point is exposed by "
+                       "the sector streamer yet.")) {
         stream_cmds.regenerate(stream_state.seed);
     }
 }
@@ -542,6 +663,11 @@ void draw_specialized_editor(SpecializedEditors& specialized, const FieldCommand
     }
 }
 
+// The "+ Add Component" menu. Offers only components that are user-addable AND
+// absent from EVERY selected entity: the registry is probed with rows[0]'s
+// component list, then each candidate is rejected if any other selected row
+// already carries it. Adding fans out to all selected ids, so the menu can
+// never produce a partial add. Only drawn outside Play mode.
 void draw_add_component_footer(const PropertiesRegistry& registry,
                                const std::vector<SceneEntityId>& ids,
                                const std::vector<const HierarchyRow*>& rows,
@@ -589,6 +715,15 @@ const part_graph_snapshot::Node* find_node_by_hash(
     return nullptr;
 }
 
+// Read-only info card for one baked-root selection: module, source path,
+// resolved hash (with a clipboard copy), child count, and the resolved params
+// JSON. Nothing here is editable — a baked root is an output of the bake, not
+// a scene object.
+//
+// Handles both "no snapshot yet" (before the first bake) and "hash not in the
+// snapshot" with a message rather than a blank panel. "Open Source" hands the
+// node's source path to the OS default handler via os_open_file(), and is
+// disabled when the node carries no path.
 void draw_baked_root_card(const SelectedObject& obj,
                           const part_graph_snapshot::Snapshot* snapshot) {
     if (!snapshot) {

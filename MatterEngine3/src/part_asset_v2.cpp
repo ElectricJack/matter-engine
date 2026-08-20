@@ -1,3 +1,41 @@
+// MatterEngine3/src/part_asset_v2.cpp
+//
+// Implements part_asset_v2.h: everything that turns a baked part into bytes and
+// back. All of it lands in the part's single bundle (part_bundle.h); this file
+// owns what is INSIDE a section, the container owns the file.
+//
+// WHAT A GEOMETRY SECTION LOOKS LIKE
+//   40-byte header  magic, format version, the resolved hash scrambled with the
+//                   version (and, for a flat, the ladder-shape salt), the four
+//                   struct sizes it depends on, and an fnv1a64 of the body.
+//   common body     material schema + frozen material table, the BLAS table
+//                   (triangles, optional TriEx, BVH nodes, tri indices), the
+//                   internal draw instances, the child table, the top-level LOD
+//                   levels. Shared verbatim by v2 and flat bodies.
+//   flat extras     cluster table then the instance-ref table (flat only).
+//   trailers        optional and STRICTLY ORDERED: EMIT (volumetric emitters),
+//                   CHRT (byte-framed chart/VT sidecar), ANLK (animation link).
+//                   Each is written only when non-empty, so adding one leaves
+//                   every existing writer's bytes identical.
+//
+// THE TWO RULES EVERYTHING HERE SERVES
+//   1. DETERMINISM. The cache is content-addressed, so the same geometry under
+//      the same settings must produce the same bytes — in a different process,
+//      not just twice in one. That is why Tri and TriEx go out through zeroed
+//      staging (their union/alignment padding is never written by any producer
+//      and would otherwise carry allocator garbage) and why the static_asserts
+//      below pin those layouts.
+//   2. FAIL-CLOSED. Nothing throws and nothing partially publishes. A v2 load
+//      parses the entire body and trailer grammar into owned vectors FIRST and
+//      only then registers anything into the caller's BLAS/TLAS managers, so a
+//      malformed artifact cannot leave a half-populated manager behind. Every
+//      failure is "regenerate", reported as false plus an optional
+//      PartAssetLoadFailure/reason.
+//
+// Threading: free functions; the only process state is the one-shot test seam
+// g_test_fail_post_rename_once. Concurrent writes to one bundle are serialized
+// by part_bundle's lock.
+
 #include "part_asset_v2.h"
 #include "matter/lod_contract.h"
 #include "version_vector.h"   // M4: the one fold site for cache keys
@@ -104,23 +142,12 @@ void put_canonical_tris(std::vector<uint8_t>& b, const Tri* tris, size_t count) 
     }
 }
 
-void ensure_parent_dir(const std::string& path) {
-    auto pos = path.find_last_of('/');
-    if (pos == std::string::npos) return;
-#ifdef _WIN32
-    mkdir(path.substr(0, pos).c_str()); // ignore EEXIST (Windows mkdir takes no mode)
-#else
-    mkdir(path.substr(0, pos).c_str(), 0755); // ignore EEXIST
-#endif
-}
-bool durable_flush(FILE* file) {
-    if (std::fflush(file) != 0) return false;
-#ifdef _WIN32
-    return _commit(_fileno(file)) == 0;
-#else
-    return fsync(fileno(file)) == 0;
-#endif
-}
+// (An `ensure_parent_dir` and a `durable_flush` used to live here. Neither had
+// a caller: every artifact write in this file goes out through
+// part_bundle::write_section, which does its own parent-directory creation and
+// its own atomic publish. part_bundle.h keeps the live ensure_parent_dir, and
+// the animation asset writers keep the live durable_flush.)
+
 // POSIX requires an explicit parent-directory fsync after rename.  Windows
 // uses MoveFileEx(..., MOVEFILE_WRITE_THROUGH) in replace_file_atomic instead.
 #ifndef _WIN32
@@ -134,6 +161,13 @@ bool fsync_parent_directory(const std::string& path) {
     return ok && close_result == 0;
 }
 #endif
+// Bounds-checked forward cursor over an in-memory artifact section.
+//
+// `ok` LATCHES: once a read runs past `end` it stays false, get<T>() returns a
+// zero-initialized T and take() returns null, so a parser may run several reads
+// and check once at the point it matters instead of after every field. It never
+// throws and never reads out of bounds — which is the whole contract, since the
+// bytes come off disk and may be arbitrary.
 struct Reader {
     const uint8_t* p;
     const uint8_t* end;
@@ -436,12 +470,20 @@ static bool append_common_body(std::vector<uint8_t>& body,
             // content-addressed cache (the resolved-hash path re-bakes and expects
             // identical bytes). Zeroing the padding here normalizes that without
             // touching the read-only mesher.
+            //
+            // The staging buffer is raw bytes rather than a TriEx: TriEx has
+            // default member initializers (ao0/ao1/ao2 = 1), which makes its
+            // default constructor non-trivial, and memset-ing an object of such
+            // a type is exactly what -Wclass-memaccess (on under -Wall) flags.
+            // A byte array produces the identical bytes with no class-typed
+            // raw-memory call at all, so the determinism contract above is
+            // unchanged and the warning has nothing to fire on.
             constexpr size_t kTriExPad = 92; // bytes occupied by named members
             for (uint32_t t = 0; t < tri_count; ++t) {
-                TriEx staged;
-                std::memset(&staged, 0, sizeof(TriEx));
-                std::memcpy(&staged, &triex_src[t], kTriExPad);
-                put_bytes(body, &staged, sizeof(TriEx));
+                alignas(TriEx) unsigned char staged[sizeof(TriEx)];
+                std::memset(staged, 0, sizeof(staged));
+                std::memcpy(staged, &triex_src[t], kTriExPad);
+                put_bytes(body, staged, sizeof(staged));
             }
         }
         put_bytes(body, e->bvh->bvhNode, nodes_used * sizeof(BVHNode));
@@ -690,6 +732,10 @@ struct ParsedCommonBody {
     LodLevels lods;
 };
 
+// Sanity caps for the LOAD path, not statements about what a part may contain:
+// a count field read off disk is attacker/corruption-controlled, and these stop
+// a garbage value turning into a huge allocation before the (also-checked)
+// remaining-bytes test can reject it.
 constexpr uint32_t kMaxPartBlasEntries = 65536;
 constexpr uint32_t kMaxPartInternalInstances = 1u << 20;
 constexpr uint32_t kMaxPartChildren = 1u << 20;
@@ -819,6 +865,12 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
     return r.ok;
 }
 
+// The ONLY side-effecting half of a load: hand the validated body to the
+// caller's managers. Registers each parsed BLAS entry as prebuilt (no BVH is
+// rebuilt), remaps the draw instances onto the returned handles, and builds the
+// TLAS. Call it only after parse_common_body has accepted the whole section —
+// a failure here leaves the managers partially populated, which is why every
+// caller treats it as CorruptBody rather than retrying.
 static bool publish_common_body(const ParsedCommonBody& parsed,
                                 BLASManager& blas, TLASManager& tlas,
                                 std::vector<ChildInstance>& children_out,
@@ -901,6 +953,15 @@ static bool preflight_v2_file(const std::string& path, uint64_t expected_resolve
     return true;
 }
 
+// Consume the optional trailers after the common body, in their fixed order:
+// EMIT, then CHRT, then ANLK. The grammar is STRICT — anything left unconsumed
+// at the end is a failure, not an ignorable extension — which is what stops a
+// truncated or foreign artifact from loading as a valid part.
+//
+// `accept_animation_link == false` makes an ANLK-bearing (animated) part fail to
+// load; that is how the static load paths refuse a part they cannot represent.
+// A trailer that is absent simply leaves its out-param empty and is never an
+// error: chartless and emitterless parts are the common case.
 static bool parse_v2_suffix(const PartV2Preflight& input, uint64_t expected_resolved_hash,
                             bool accept_animation_link,
                             std::vector<VolumeEmitter>* emitters_out,
@@ -1249,6 +1310,22 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
     }
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// Flat artifacts (the bundle's FLAT section)
+//
+// Same common body as a v2 part but with an EMPTY child table and EMPTY
+// top-level LOD levels — a flat's ladder lives per CLUSTER — followed by the
+// cluster table and then the instance-ref table (children the flatten decision
+// left as instance boundaries rather than inlining). Both tables are always
+// written, even when empty; a reader that hits EOF before the ref count has a
+// malformed artifact.
+//
+// The three save overloads differ only in which trailers they append; the load
+// overloads only in which ones they hand back. A flat's identity carries the
+// ladder-shape salt, so a flat baked under different ladder knobs is rejected
+// here as stale and re-flattened.
+// ---------------------------------------------------------------------------
 
 bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   const TLASManager& tlas,

@@ -17,6 +17,8 @@
 
 namespace matter::evt {
 
+// Stable, human-readable names for logs and test assertions. Returns
+// "<unknown>" for a value outside the enum rather than asserting.
 const char* to_string(CommandStatus s) {
     switch (s) {
         case CommandStatus::Pending: return "Pending";
@@ -41,10 +43,19 @@ NullHistorySink& default_history_sink() {
 }
 }  // namespace
 
+// The registry keeps a REFERENCE to the hub for the whole of its life (it emits
+// cmd.completed / cmd.failed through it in finalize_common), so the hub must
+// outlive the registry. A new registry starts with the process-wide no-op
+// history sink installed.
 CommandRegistry::CommandRegistry(Hub& hub) : hub_(hub) {
     history_sink_ = &default_history_sink();
 }
 
+// Installs the undo/redo sink. NON-OWNING: the caller keeps the sink alive for
+// as long as it is installed, and passing null reinstalls the no-op default
+// rather than leaving a dangling pointer. Safe to call from any thread; a swap
+// races only with concurrent finalizations, each of which reads the pointer
+// under the same lock.
 void CommandRegistry::set_history_sink(HistorySink* sink) {
     std::lock_guard<std::mutex> lk(handlers_mu_);  // reuse a lock; sink swaps are rare
     history_sink_ = sink ? sink : &default_history_sink();
@@ -53,6 +64,11 @@ void CommandRegistry::set_history_sink(HistorySink* sink) {
 // ---------------------------------------------------------------------
 // Scope epochs (S II.4 item 5).
 // ---------------------------------------------------------------------
+// Opens (or rotates to) an ActiveSession epoch. The token's `kind` is forced to
+// ActiveSession regardless of what the caller passed; only session_id and
+// generation are taken from `token`. Rotating to a new generation implicitly
+// invalidates every command already stamped under the old one — they read
+// StaleScope at run time and their handlers never execute.
 void CommandRegistry::set_active_scope(CommandScopeToken token) {
     std::lock_guard<std::mutex> lk(scope_mu_);
     active_scope_open_ = true;
@@ -68,11 +84,6 @@ void CommandRegistry::close_active_scope() {
 CommandScopeToken CommandRegistry::active_scope() const {
     std::lock_guard<std::mutex> lk(scope_mu_);
     return active_token_;
-}
-
-bool CommandRegistry::active_scope_open() const {
-    std::lock_guard<std::mutex> lk(scope_mu_);
-    return active_scope_open_;
 }
 
 CommandScopeToken CommandRegistry::stamp_scope(CommandScope scope) const {
@@ -97,6 +108,14 @@ bool CommandRegistry::scope_valid(const CommandScopeToken& stamped) const {
 // ---------------------------------------------------------------------
 // Registration (all-build unique handler per command name).
 // ---------------------------------------------------------------------
+// Binds one handler to a command type. On success the returned Registration owns
+// the liveness of that binding: destroying it deactivates the handler, after
+// which this slot may be re-bound. On a duplicate (a LIVE handler already owns
+// `type_id`) it returns `duplicate=true` with an empty Registration and mutates
+// nothing — the incumbent keeps the name.
+//
+// `handler` is type-erased; the templated caller in command.h is responsible for
+// the shared_ptr actually pointing at the right handler type for `type_id`.
 CommandRegistry::RegisterResult CommandRegistry::register_generic(const void* type_id,
                                                                   const char* name,
                                                                   CommandScope scope, lane ln,
@@ -123,6 +142,12 @@ CommandRegistry::RegisterResult CommandRegistry::register_generic(const void* ty
     return RegisterResult{Registration(block), /*duplicate=*/false};
 }
 
+// Resolves a command type to its live handler. Returns a default-constructed
+// (found == false) lookup both when nothing was ever registered and when the
+// registration has since been dropped — the caller cannot tell those apart and
+// does not need to. The returned shared_ptrs keep the handler and its block
+// alive for the duration of the call that uses them, which is what lets a
+// handler be unregistered while a command is mid-flight.
 CommandRegistry::HandlerLookup CommandRegistry::lookup(const void* type_id) const {
     std::lock_guard<std::mutex> lk(handlers_mu_);
     auto it = handlers_.find(type_id);
@@ -144,6 +169,11 @@ CommandRegistry::HandlerLookup CommandRegistry::lookup(const void* type_id) cons
 // contract -- rejection completes the ticket QueueFull, S I.5) and an
 // unbounded continuation channel (then()-callbacks are never lost).
 // ---------------------------------------------------------------------
+// Lanes are created lazily on first use by ANY of claim_lane / post_command /
+// post_continuation / pump, so a lane exists before it has an owner. Returns a
+// reference into `lanes_`, which is only valid while lanes_mu_ is held — every
+// caller copies out the raw Channel pointers (the Channels themselves are
+// stable, heap-allocated and never replaced).
 CommandRegistry::LaneState& CommandRegistry::get_or_create_lane(lane ln) {
     // Caller holds lanes_mu_.
     auto it = lanes_.find(ln.id);
@@ -157,6 +187,9 @@ CommandRegistry::LaneState& CommandRegistry::get_or_create_lane(lane ln) {
     return res.first->second;
 }
 
+// Declares the calling thread as the owner of `ln` — required before execute()
+// or pump() on that lane, which assert against it in debug builds. Re-claiming
+// simply overwrites the owner; there is no unclaim.
 void CommandRegistry::claim_lane(lane ln) {
     std::lock_guard<std::mutex> lk(lanes_mu_);
     LaneState& st = get_or_create_lane(ln);
@@ -171,6 +204,9 @@ bool CommandRegistry::is_lane_owner_current_thread(lane ln) const {
     return it->second.owner == std::this_thread::get_id();
 }
 
+// Debug-only affinity check. Compiles to nothing under NDEBUG, so a release
+// build will happily run a handler off its lane — the asserts are the only
+// enforcement.
 void CommandRegistry::assert_execute_lane(lane ln) const {
 #ifndef NDEBUG
     std::lock_guard<std::mutex> lk(lanes_mu_);
@@ -185,6 +221,10 @@ void CommandRegistry::assert_execute_lane(lane ln) const {
 #endif
 }
 
+// Queues a command job onto a lane's BOUNDED channel. The result must be
+// checked: a full channel rejects the newest push, and the caller is then
+// responsible for completing that command's ticket QueueFull (S I.5) — nothing
+// downstream will ever run the job.
 PushResult CommandRegistry::post_command(lane ln, std::function<void()> job) {
     Channel<std::function<void()>>* ch = nullptr;
     {
@@ -194,6 +234,9 @@ PushResult CommandRegistry::post_command(lane ln, std::function<void()> job) {
     return ch->push(std::move(job));
 }
 
+// Queues a then()-callback onto a lane's UNBOUNDED continuation channel, which
+// is why there is no result to check: continuations are never dropped for
+// capacity. They can still be discarded by shut_down().
 void CommandRegistry::post_continuation(lane ln, std::function<void()> cont) {
     Channel<std::function<void()>>* ch = nullptr;
     {
@@ -203,6 +246,14 @@ void CommandRegistry::post_continuation(lane ln, std::function<void()> cont) {
     ch->push(std::move(cont));
 }
 
+// Runs queued work for one lane on the calling thread, which must be the lane's
+// owner (asserted in debug builds). Returns the number of jobs run, commands and
+// continuations combined.
+//
+// `ms_budget` is a soft budget in milliseconds: it gates further iterations but
+// never the first delivery, so a pump always makes progress. Commands are
+// drained before continuations and the continuation pass gets whatever budget
+// the command pass left, which may be zero.
 int CommandRegistry::pump(lane ln, double ms_budget) {
     Channel<std::function<void()>>* cmds = nullptr;
     Channel<std::function<void()>>* conts = nullptr;

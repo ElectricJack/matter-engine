@@ -470,6 +470,17 @@ static void test_vulkan_lighting_override_contract() {
     CHECK(clean.emission_multiplier == 1.0f,
           "invalid emission override uses default");
     CHECK(clean.exposure_ev == -2.0f, "invalid exposure uses default");
+
+    // "Uses default" means the STRUCT's default, for every field. sun and sky
+    // used to fall back to a hard-coded 1.0 while the struct ships 1.67/0.77,
+    // so a single NaN re-lit the scene at a brightness nothing had authored.
+    matter::VulkanLightingOverrides nan_gains{};
+    nan_gains.sun_multiplier = std::numeric_limits<float>::quiet_NaN();
+    nan_gains.sky_multiplier = std::numeric_limits<float>::quiet_NaN();
+    const auto clean_gains = viewer::sanitize_vulkan_lighting_overrides(nan_gains);
+    CHECK(clean_gains.sun_multiplier == defaults.sun_multiplier &&
+              clean_gains.sky_multiplier == defaults.sky_multiplier,
+          "invalid sun/sky overrides fall back to the struct defaults");
     CHECK(std::fabs(viewer::vulkan_exposure_scale(-2.0f) - 0.25f) < 1e-6f,
           "-2 EV maps to quarter exposure");
 

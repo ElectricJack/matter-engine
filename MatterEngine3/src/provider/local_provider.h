@@ -1,6 +1,52 @@
 #ifndef VIEWER_LOCAL_PROVIDER_H
 #define VIEWER_LOCAL_PROVIDER_H
 
+// MatterEngine3/src/provider/local_provider.h
+//
+// The in-process WorldProvider: turns a project on disk (JS object modules plus
+// a world script) into a WorldManifest of placed part instances, baking every
+// part it needs into a persistent content-addressed cache under
+// <project>/.cache/<world>/.
+//
+// How it fits
+// -----------
+// - Implements the `WorldProvider` interface from `world_source.h`, and is the
+//   only implementation today (a NetworkProvider would sit beside it).
+// - Sits above the script host (`script_host::ScriptHost`, QuickJS) and the
+//   part graph (`part_graph::PartGraph` / `HostBaker`), and below the publish
+//   pipeline in `MatterEngine3/src/matter_engine.cpp`, which drives it.
+// - Owns the detail-tileset slot LRU (`tileset::DetailSlotBinder`) and is what
+//   binds materials to `.gtex` atlas slots in the material registry.
+//
+// Lifecycle / call order
+// ----------------------
+// Two ways to drive it:
+//   sync   connect() == install_graph(BakePolicy::All) + compose_world()
+//          + eager per-root flatten + FlatInstanceRef expansion
+//          + run_tileset_deferred(). Used by tests and gallery_bake; on
+//          success the world is fully prepared.
+//   async  install_graph(BakePolicy::RootsOnly) -> compose_world() -> per-part
+//          ensure_part_baked() / ensure_part_flattened() from the publish
+//          loop -> run_tileset_deferred() after BakeFinished.
+// A warm run may substitute restore_from_cache() for install_graph().
+// compose_world() and every accessor of an `abs_*` path require one of those
+// two to have succeeded first — prepare_paths() runs inside them.
+//
+// Conventions and gotchas
+// -----------------------
+// - Transforms are row-major `float[16]` throughout (matching
+//   part_asset::ChildInstance and the TLAS DrawInstance layout).
+// - No member here is mutex-guarded. install_graph() and restore_from_cache()
+//   reset every member, so callers must serialize them against everything
+//   else; ensure_part_baked() is documented as safe from the bake worker only
+//   because the ScriptHost is idle once install_graph() has returned.
+// - MATTER_HAVE_SCRIPT_HOST gates every path that evaluates JS: without it
+//   install_graph(), ensure_part_baked(), run_tileset_deferred() and
+//   restore_from_cache() fail with an error string instead of doing partial
+//   work.
+// - The tileset phase is deliberately off the bake critical path (Task 15):
+//   its box3d settle is slow enough to dominate a cold world load.
+
 #include "world_source.h"
 #include "world_lights.h"
 #include "part_store.h"
@@ -35,6 +81,20 @@ struct BakeInputs;
 
 namespace viewer {
 
+// Everything LocalProvider needs to open one world of one project: where the
+// scripts live, where the cache goes, and the optional callbacks the host binds
+// to receive progress and to marshal GPU work.
+//
+// Normally built by for_project() below, which derives every directory from the
+// project root and picks the scene-vs-flat layout, then moved into the
+// provider's constructor. Every std::function member is optional: null means
+// "this capability is not available here" rather than an error, and each one
+// documents what its own null selects.
+//
+// Path fields need not be absolute — the provider absolutizes them into its own
+// abs_* members in prepare_paths(). cache_root is the exception worth knowing:
+// for_project() absolutizes it eagerly because downstream writers compose
+// output paths straight from it (see the comment in for_project's body).
 struct LocalProviderConfig {
     std::string project_dir;
     // The PROJECT-WIDE object tier: objects shared by every scene. Changing a
@@ -54,6 +114,11 @@ struct LocalProviderConfig {
     std::string project_shared_lib_dir;
     std::string engine_shared_lib_dir;
 
+    // Build a config for <project_dir>/scenes/<world_name>/<world_name>.js when
+    // that scene script exists, else for the legacy
+    // <project_dir>/worlds/<world_name>.js layout. The scene SCRIPT existing is
+    // what selects the layout, not the scenes/ directory. Probes the filesystem
+    // for existence only; creates nothing.
     static LocalProviderConfig for_project(
         const std::string& project_dir,
         const std::string& world_name,
@@ -236,6 +301,12 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     return cfg;
 }
 
+// The world script's output reshaped into what the provider consumes: four
+// index-parallel arrays over the manifest roots (the request, its placement
+// transform, and its `expand` / `tileset` flags) plus the runtime light block
+// and the settings. Produced by adapt_world_definition() from a
+// matter::WorldDefinition; LocalProvider indexes all four with one root index,
+// so they must stay the same length.
 struct ProviderWorldDefinition {
     std::vector<part_graph::ChildRequest> roots;
     std::vector<matter::Mat4f> root_transforms;
@@ -245,10 +316,14 @@ struct ProviderWorldDefinition {
     matter::WorldSettings settings;
 };
 
+// The sizing half of a world's settings, split out so the streaming/bake side
+// can bind a world without carrying the whole WorldSettings. apply() writes the
+// three numbers into a world binding; the two flags deliberately do NOT travel
+// with them — see each flag's own comment for why.
 struct ProceduralWorldProfile {
-    float sector_size = 16.0f;
-    float y_min = -64.0f;
-    float y_max = 192.0f;
+    float sector_size = 16.0f;   // level-0 tile edge, world units
+    float y_min = -64.0f;        // world-space vertical extent of the streamed
+    float y_max = 192.0f;        // region (see volumetric_sectors below)
     // Nested sector LOD: sector_size above is S_0, the LEVEL 0 tile, and a
     // streamed request may be a coarser level whose tile is S_0 << level. The
     // flag does not reach `apply` -- a world binding still gets one size, and
@@ -271,6 +346,9 @@ struct ProceduralWorldProfile {
     }
 };
 
+// Choose which WorldSettings the sizing comes from: the authored settings under
+// the project/scene layout, the legacy settings otherwise. The two flags ride
+// along from whichever one won.
 inline ProceduralWorldProfile select_procedural_world_profile(
     bool project_layout,
     const matter::WorldSettings& authored,
@@ -280,6 +358,13 @@ inline ProceduralWorldProfile select_procedural_world_profile(
             selected.nested_sectors, selected.volumetric_sectors};
 }
 
+// Convert a loaded matter::WorldDefinition into the provider's view of it.
+// Three conversions worth knowing, all of them one-way:
+//   - spot cone angles arrive in DEGREES and are stored as the COSINE of the
+//     half-angle (cos_inner / cos_outer);
+//   - light intensity is folded into the colour rather than kept separately;
+//   - light directions are normalized here, except a direction shorter than
+//     1e-8 which is passed through untouched.
 inline ProviderWorldDefinition adapt_world_definition(
     const matter::WorldDefinition& definition) {
     ProviderWorldDefinition out;
@@ -334,6 +419,19 @@ inline ProviderWorldDefinition adapt_world_definition(
     return out;
 }
 
+// The in-process WorldProvider for one opened world. Owns the ScriptHost, the
+// file module resolver and the shared HostBaker for that world, plus the
+// detail-tileset slot LRU and the bookkeeping that binds materials to slots.
+//
+// Constructed and destroyed by the engine facade (matter_engine.cpp), one per
+// opened world; a re-open builds a fresh instance. Neither copyable nor
+// movable in practice (it holds unique_ptrs to the host and baker).
+//
+// Threading: nothing here is internally synchronized. install_graph() and
+// restore_from_cache() reset every member, so they must not overlap anything
+// else. ensure_part_baked() / ensure_part_flattened() are called from the bake
+// worker only after install_graph() has returned, when the ScriptHost is idle.
+//
 // Drives the SP-3 install path over a persistent content-addressed cache and
 // scatters the example world (terrain/trees/grass) into a WorldManifest. Same
 // interface as a future NetworkProvider.
@@ -406,12 +504,25 @@ public:
         std::function<bool()> is_cancelled,
         std::string& err);
 
+    // Which part hashes in `manifest` the store still needs: the ones freshly
+    // baked this session (on disk, not yet in memory) and the ones the store
+    // has neither in memory nor on disk. Deduplicated, in manifest order.
+    // Cheap — it probes the store, it does not read part payloads.
     std::vector<uint64_t> reconcile(const WorldManifest& manifest,
                                     const PartStore& store) override;
+    // Load the wanted parts into `store`. LocalProvider already wrote them to
+    // the cache during install, so this is a load, not a download. Skip-and-
+    // continue: a part that fails to load is recorded in fetch_failed() and the
+    // loop goes on, so a `true` return does NOT mean every part is resident —
+    // inspect fetch_failed(). `err` is left untouched (no fatal path today).
     bool fetch_parts(const std::vector<uint64_t>& want,
                      PartStore& store, std::string& err) override;
     bool poll_deltas(WorldDelta& out) override;   // LocalProvider: always false (static world)
 
+    // Tallies for the current session: reset at install_graph() entry, then
+    // bumped by install-phase bakes and by demand bakes from
+    // ensure_part_baked() alike. baked_tileset_count_ counts detail tilesets
+    // that reached a bound slot, whether freshly baked or served from cache.
     int baked_count() const { return baked_count_; }
     int hit_count()   const { return hit_count_; }
     int baked_tileset_count() const { return baked_tileset_count_; }

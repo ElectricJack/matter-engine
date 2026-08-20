@@ -74,6 +74,12 @@ void copy_components(flecs::entity src, flecs::entity dst) {
 
 SceneService::SceneService(flecs::world& world) : world_(world) {}
 
+// Resolve a SceneEntityId by scanning every SceneEntityId-bearing entity.
+// flecs::world::each has no early exit, so the full set is visited even after a
+// match (and with duplicate ids the LAST match wins). Every entry point below
+// calls this at least once and allocate_id() calls it once per candidate, so a
+// single scene edit is O(live scene entities). id 0 is the "no id" sentinel and
+// resolves to an invalid entity without scanning.
 flecs::entity SceneService::find_entity(SceneEntityId id) const {
     if (id.value == 0) return flecs::entity();
     flecs::entity found;
@@ -104,6 +110,12 @@ SceneEditResult SceneService::create_empty(const std::string& name) {
     return result;
 }
 
+// Duplicates the entity ITSELF only — children are NOT copied. The result is a
+// sibling of the source: same display name, same parent link, and a value copy
+// of every SceneRecord component present on the source (copy_components above;
+// the SectorStreaming tag is re-added rather than copied, since it holds no
+// data). A source that is a root, or whose parent is an internal non-scene
+// entity, yields a root. The new id comes from allocate_id().
 SceneEditResult SceneService::duplicate(SceneEntityId src) {
     SceneEditResult result;
     flecs::entity source = find_entity(src);

@@ -1,4 +1,24 @@
 #pragma once
+// ---------------------------------------------------------------------------
+// MatterEngine3/src/dsl_rng.h
+//
+// The bake's random number source. Header-only, no dependencies.
+//
+// Who holds one: `DslState` owns the bake's generator (`DslState::rng()`), and
+// the `Math.random` override in `dsl_bindings.cpp` draws from it. The tileset
+// path creates its own short-lived instances per placement domain, seeded from
+// `tileset::placement_seed(...)`, so each domain's attribute stream is
+// independent and reproducible on its own.
+//
+// Not thread-safe and not meant to be shared: one `Rng` belongs to one bake or
+// one placement domain, and every draw mutates `state`.
+//
+// THE VALUE STREAM IS FROZEN. Every scattered instance in every world is
+// derived from these draws, so changing the constants, the shift amounts, or
+// even the NUMBER of draws a caller makes moves content. A zero seed is
+// remapped to the golden-ratio constant so an unseeded generator still
+// produces a usable stream rather than a degenerate one.
+// ---------------------------------------------------------------------------
 #include <cstdint>
 namespace dsl {
 // SplitMix64-backed [0,1) generator. Deterministic and seedable so a bake's

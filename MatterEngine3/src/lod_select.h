@@ -1,4 +1,20 @@
 #pragma once
+// MatterEngine3/src/lod_select.h
+//
+// Sector-granularity LOD selection on the CPU: given the streamed sector grid,
+// a per-part LOD table and the camera position, choose each part's ladder rung
+// per sector (or floor-cull it). The engine's resolvers use the result to
+// decide which rung's geometry to emit for a sector.
+//
+// The selection rule itself is NOT here -- it is render/lod_distance.h, the
+// one distance-valued rule the Vulkan cull shader also uses. This header is
+// the CPU entry point onto it; lod_select.cpp holds the mapping between the
+// two forms and the deliberate divergences.
+//
+// Units and conventions: distances and radii are world-space metres; a
+// "projected size" is the dimensionless bound_radius / distance (a tan-approx
+// angular radius), scaled by pixel_budget before comparison. Thresholds are on
+// that same scale and are ordered fine -> coarse, index 0 finest.
 #include "tri.h"
 #include "sector_grid.h"
 #include <cstdint>
@@ -40,6 +56,10 @@ struct PartLod {
 using PartLodTable = std::map<uint64_t, PartLod>;     // resolved_hash -> PartLod
 
 struct LodChoice {
+    // Index into the part's LodLevels, 0 = finest. -1 means floor-culled:
+    // the part is too small to be worth drawing here and resolvers emit
+    // nothing for it. Parts at or above the never-cull radius (terrain-tile
+    // sized) are clamped to their coarsest rung instead of ever reaching -1.
     int   level;
     // Distance from the camera to the sector's CLOSEST instance — the same `d`
     // selection used, handed to the caller so downstream decisions (the inline

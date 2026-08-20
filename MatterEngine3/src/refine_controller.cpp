@@ -2,6 +2,16 @@
 // Pure CPU data model for camera-driven tile refinement.
 // See refine_controller.h for design notes.
 
+// The whole class is a plain in-memory table: no I/O, no engine or GPU
+// dependency, and no thread affinity of its own — `matter_engine.cpp` owns the
+// single instance and drives it. It never bakes or evicts anything itself; it
+// only decides WHICH tile is next, and the caller performs the work and reports
+// back through mark().
+//
+// Terrain nodes are recognised by `module == "Terrain"` and paired by their
+// `tx`/`tz` params, with `res == "coarse"` selecting the coarse slot and ANY
+// other value the full slot. Params are read by scanning the canonical JSON
+// string (see the helpers below), never by parsing it.
 #include "refine_controller.h"
 #include <algorithm>
 #include <cctype>
@@ -52,6 +62,22 @@ static std::pair<int, bool> extract_int_or_missing(const std::string& json, cons
 // build()
 // ---------------------------------------------------------------------------
 
+// Rebuild the tile table from scratch. INVALIDATES everything handed out
+// before: `tiles_` is cleared, so any TileRecord* from a previous next() call
+// dangles and any tile index from evict_beyond() may now mean a different tile.
+// It also resets every tile to state Coarse, so refinement progress is not
+// carried across a rebuild.
+//
+// A Terrain node missing `tx`, `tz` or `res` is skipped silently — the snapshot
+// is authored data and one malformed node should not take out the grid.
+//
+// World position and manifest index come from the COARSE instance only. A tile
+// whose coarse hash has no matching instance keeps pos (0,0,0) and
+// manifest_idx 0 — both indistinguishable from a real tile that happens to sit
+// at the world origin and own manifest entry 0 — so it is marked `placed =
+// false` and next() skips it. Without that flag such a tile would rank FIRST
+// (zero distance from a camera near the origin) and its refine would rewrite
+// manifest instance 0, which belongs to something else entirely.
 void RefineController::build(span<const GraphNode> nodes,
                               span<const InstanceRef> instances) {
     tiles_.clear();
@@ -69,7 +95,9 @@ void RefineController::build(span<const GraphNode> nodes,
         uint64_t full_hash   = 0;
     };
 
-    // Use a map keyed by (tx*65536+tz) so pairs stay insertion-ordered.
+    // Use a map keyed by ((uint64_t)tx << 32) | tz so the two res-variants of
+    // one tile land in the same slot, and so tiles come out in a deterministic
+    // (tx, then tz) order — std::map iterates by key, not by insertion.
     // tx/tz range is 0..50 for the 51×51 Meadow Valley; no collisions.
     std::map<uint64_t, TileAccum> by_tile;
 
@@ -112,6 +140,7 @@ void RefineController::build(span<const GraphNode> nodes,
         rec.state       = TileRecord::State::Coarse;
         rec.pos[0] = rec.pos[1] = rec.pos[2] = 0.0f;
         rec.manifest_idx = 0;
+        rec.placed = false;
         rec.tile_tx = rec_tx;
         rec.tile_tz = rec_tz;
 
@@ -125,6 +154,7 @@ void RefineController::build(span<const GraphNode> nodes,
                 rec.pos[1] = ir.translation[1];
                 rec.pos[2] = ir.translation[2] + TILE_SIZE * 0.5f;
                 rec.manifest_idx = ir.manifest_idx;
+                rec.placed = true;
             }
         }
 
@@ -143,6 +173,8 @@ float RefineController::dist2(const float a[3], const float b[3]) {
     return dx*dx + dy*dy + dz*dz;
 }
 
+// O(tiles) — counts on every call, nothing is cached. Called per frame today,
+// which is fine at grid sizes in the thousands.
 size_t RefineController::full_count() const {
     size_t n = 0;
     for (const auto& t : tiles_) {
@@ -151,6 +183,18 @@ size_t RefineController::full_count() const {
     return n;
 }
 
+// Pick the placed Coarse tile nearest `focus` (world-space XYZ). Returns false
+// and leaves *out null when no tile is still Coarse — the normal "fully refined"
+// outcome, not an error.
+//
+// Tiles with placed == false are skipped: their pos and manifest_idx are
+// defaults, not measurements (see build()), so refining one would target an
+// unrelated manifest entry.
+//
+// PURE QUERY: it does not change the tile's state, so a caller that does not
+// mark() the returned tile Queued/Full is handed the same tile again on the
+// next call. The returned pointer points into `tiles_` and is invalidated by
+// the next build().
 bool RefineController::next(const float focus[3], TileRecord** out) {
     *out = nullptr;
     float best_d2 = -1.0f;
@@ -158,6 +202,7 @@ bool RefineController::next(const float focus[3], TileRecord** out) {
 
     for (auto& t : tiles_) {
         if (t.state != TileRecord::State::Coarse) continue;
+        if (!t.placed) continue;
         float d2 = dist2(focus, t.pos);
         if (best == nullptr || d2 < best_d2) {
             best_d2 = d2;
@@ -170,12 +215,20 @@ bool RefineController::next(const float focus[3], TileRecord** out) {
     return true;
 }
 
+// `tile_idx` indexes `tiles_` in the order build() produced (the same index
+// space evict_beyond returns). Out-of-range indices are ignored silently, so a
+// stale index from before a rebuild fails quietly rather than corrupting a
+// neighbour.
 void RefineController::mark(uint32_t tile_idx, TileRecord::State s) {
     if (tile_idx < tiles_.size()) {
         tiles_[tile_idx].state = s;
     }
 }
 
+// Every FULL tile whose center is farther than `radius` from `focus`, as tile
+// indices, sorted farthest-first so a caller with a budget can evict the worst
+// offenders and stop. Const and side-effect-free: the tiles stay in state Full
+// until the caller marks them.
 std::vector<uint32_t> RefineController::evict_beyond(const float focus[3],
                                                        float radius) const {
     float r2 = radius * radius;

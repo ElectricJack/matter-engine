@@ -194,6 +194,29 @@ static void test_dispatch_ticket_then_and_wait() {
 }
 
 // ===========================================================================
+// A default-constructed (or moved-from) ticket has no state. Every observer
+// on it must answer "nothing to see" rather than dereference null — wait()
+// and then() used to be the two that did not check.
+// ===========================================================================
+static void test_invalid_ticket_is_inert() {
+    printf("[test_invalid_ticket_is_inert]\n");
+    matter::evt::CommandTicket<CreateEntity::Result> t;
+    CHECK(!t.valid(), "a default-constructed ticket is invalid");
+    CHECK(t.id() == 0, "an invalid ticket carries no id");
+    CHECK(!t.ready(), "an invalid ticket is never ready");
+    CHECK(t.status() == CommandStatus::Pending, "an invalid ticket reports Pending");
+
+    CreateEntity::Result r = t.wait();
+    CHECK(!r.value.has_value(),
+          "wait() on an invalid ticket returns a default result, not a crash");
+
+    bool ran = false;
+    t.then(lane::app, [&](const CreateEntity::Result&) { ran = true; });
+    CHECK(!ran, "then() on an invalid ticket drops the callback, not a crash");
+    printf("ok invalid_ticket_is_inert\n");
+}
+
+// ===========================================================================
 // 3. all-build duplicate-handler rejection (RELEASE path).
 // ===========================================================================
 static void test_duplicate_handler_all_build() {
@@ -542,6 +565,7 @@ static void test_concurrent_dispatch() {
 int main() {
     test_execute_typed_result();
     test_dispatch_ticket_then_and_wait();
+    test_invalid_ticket_is_inert();
     test_duplicate_handler_all_build();
     test_scope_epochs_stale();
     test_ticket_exactly_once_all_outcomes();

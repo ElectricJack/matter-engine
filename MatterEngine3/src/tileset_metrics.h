@@ -35,6 +35,18 @@ struct PoseDeltaGate {
     float p95_orient_deg = 15.0f;  // weighted orientation delta, degrees
 };
 
+// Result of one baseline-vs-candidate comparison. MIND THE UNITS -- none of
+// these numbers is a distance:
+//   * `median`/`p95`/`max` are position deltas already DIVIDED by the pair's
+//     effective characteristic size (char_size * scale), so they are
+//     dimensionless multiples of the prop's own size. 1.0 means "moved by its
+//     whole characteristic size", which is what `teleports` counts.
+//   * `p95_orient_deg` is degrees MULTIPLIED BY `orient_weight`, so a
+//     near-isotropic shape (weight 0.5) contributes half its true angle and a
+//     sphere (weight 0) contributes no sample at all. It is not a raw angle and
+//     must not be reported as one.
+//   * `compared` + `skipped` account for every instance in the longer of the
+//     two runs; a non-zero `skipped` always forces `pass` false.
 struct PoseDeltaReport {
     float median = 0, p95 = 0, max = 0;  // normalized position delta
     float p95_orient_deg = 0;            // over pairs with orient_weight > 0

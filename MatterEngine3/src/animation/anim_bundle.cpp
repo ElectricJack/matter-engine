@@ -1,3 +1,52 @@
+// MatterEngine3/src/animation/anim_bundle.cpp
+//
+// The three-file publish transaction for an animated part, and its
+// symmetric validating loader.
+//
+// An animated part is only usable when three artefacts agree:
+//   1. the part file  `<cache_root>/parts/<hash>...` (part_asset v2, whose
+//      REP0 section carries the geometry the binding was baked against),
+//   2. the animation asset `<hash>.anim` (see anim_asset.cpp),
+//   3. the commit manifest `<hash>.anim.commit` (`MACM`, written here).
+// The manifest is the commit record: it stores the shared `BuildNonce`, the
+// body checksums of the other two, the four version/epoch/compiler stamps,
+// and the per-LOD binding signatures. Nothing reads a part's animation
+// unless the manifest exists and every one of those cross-checks passes.
+//
+// Publish order and durability
+// ---------------------------------------------------------------------------
+// `publish_animation_bundle` runs, in order:
+//   validate every candidate against the caller's `BundleIdentity` (a
+//   candidate that disagrees is rejected before anything on disk moves) ->
+//   take an exclusive `<manifest>.lock` -> write the manifest to a
+//   nonce-suffixed `.tmp` -> copy each existing live file to a
+//   nonce-suffixed `.backup` -> atomically replace part, then anim, then
+//   manifest -> delete backups and temporaries -> release the lock.
+// The manifest replace is the commit point: a crash before it leaves the
+// previous manifest (or none) in place, and readers still see the old state.
+// Any failed replace rolls back in reverse order from the backups; a failed
+// rollback is itself reported (`bundle.rollback`) rather than ignored.
+// Every write is fsynced (`durable_flush`) and, on POSIX, the containing
+// directory is fsynced too (`sync_parent`, a no-op on Windows).
+//
+// Locking
+// ---------------------------------------------------------------------------
+// `PublicationLock` is a regular file opened with no sharing (Windows) or
+// `flock(LOCK_EX|LOCK_NB)` (POSIX). It is NON-BLOCKING: a concurrent
+// publisher fails with `bundle.lock` rather than waiting. The lock file is
+// intentionally never unlinked — see the comment in `release()`.
+//
+// Diagnostics
+// ---------------------------------------------------------------------------
+// Failures are reported as `bundle.*` codes (`candidate`, `directory`,
+// `lock`, `publish`, `rollback`, `cleanup`, `manifest`, `part_checksum`,
+// `link`, `anim`, `binding`) and `bundle.injected` for the test fault
+// points. Both entry points return false without mutating the caller's
+// output on any failure.
+//
+// The `test_*` fields of `BundleCandidates` and the
+// `set_animation_bundle_test_*` helpers exist so the durability tests can
+// force a failure at each step; they are inert in normal operation.
 #include "animation/anim_bundle.h"
 #include "part_bundle.h"   // M4: the part body is the REP0 section
 #include "animation/animation_binding_bake.h"
@@ -28,7 +77,28 @@ void u64(std::vector<uint8_t>& b,uint64_t v){for(int i=0;i<8;++i)b.push_back(uin
 bool g32(const std::vector<uint8_t>&b,size_t&p,uint32_t&v){if(p>b.size()||b.size()-p<4)return false;v=0;for(int i=0;i<4;++i)v|=uint32_t(b[p++])<<(8*i);return true;}
 bool g64(const std::vector<uint8_t>&b,size_t&p,uint64_t&v){if(p>b.size()||b.size()-p<8)return false;v=0;for(int i=0;i<8;++i)v|=uint64_t(b[p++])<<(8*i);return true;}
 void fail(Diagnostics&d,const char*c){d.add(c,{},c);}
-bool valid_lods(const std::vector<LodBindingSignature>& lods) { if(lods.size()>64)return false; std::unordered_set<uint64_t> identities; for(const auto& lod:lods){const uint64_t max_influences=uint64_t(lod.vertex_count)*4u; if(lod.indexed_vertex_signature==0||lod.vertex_count==0||lod.influence_count==0||uint64_t(lod.influence_count)>max_influences||!identities.insert(lod.indexed_vertex_signature).second)return false;}return true; }
+// Structural check on the manifest's LOD signature list: at most 64 rungs,
+// no zero counts, `influence_slot_count` no larger than `kMaxSkinInfluences`
+// slots per vertex, and every `indexed_vertex_signature` distinct (two LOD
+// rungs hashing the same would make the manifest unable to tell them apart).
+//
+// The bound is deliberately an upper bound rather than the exact identity a
+// producer emits: this runs on a parsed manifest with no binding in hand.
+// The exact per-rung comparison is `manifest_matches_binding`, which both the
+// publish and the load path run once the binding is loaded.
+bool valid_lods(const std::vector<LodBindingSignature>& lods) { if(lods.size()>64)return false; std::unordered_set<uint64_t> identities; for(const auto& lod:lods){const uint64_t max_influence_slots=uint64_t(lod.vertex_count)*kMaxSkinInfluences; if(lod.indexed_vertex_signature==0||lod.vertex_count==0||lod.influence_slot_count==0||uint64_t(lod.influence_slot_count)>max_influence_slots||!identities.insert(lod.indexed_vertex_signature).second)return false;}return true; }
+// Prove that the geometry actually stored in the part file is the geometry
+// the binding was baked against — the check that stops a re-meshed part from
+// silently being skinned with stale weights.
+//
+// Per LOD rung it requires: one BLAS stream per owner (the skin, if any,
+// plus each rigid segment), all stream indices distinct, in range and
+// non-empty; the skin's stream re-derives to the same vertex count and the
+// same `indexed_part_geometry_signature`; and each rigid segment's stream
+// has exactly the recorded triangle count.
+//
+// A binding with no owners at all (attachments only) trivially matches.
+// Expensive: rebuilds indexed geometry for the skin stream of every rung.
 bool part_matches_binding(const BLASManager& blas, const part_asset::LodLevels& lods,
                           const BindingBake& binding) {
     const size_t owner_count = (binding.lods.empty() ? 0u : 1u) +
@@ -93,14 +163,10 @@ bool sync_parent(const std::filesystem::path& p) {
 // though there is no buffered payload to flush.
 bool flush_existing(const std::filesystem::path& p) { FILE* f=std::fopen(p.string().c_str(),"rb+");if(!f)return false;bool ok=durable_flush(f);bool closed=std::fclose(f)==0;return ok&&closed; }
 bool write(const std::filesystem::path&p,const std::vector<uint8_t>&b){FILE*f=std::fopen(p.string().c_str(),"wb");if(!f)return false;bool ok=std::fwrite(b.data(),1,b.size(),f)==b.size()&&durable_flush(f);bool closed=std::fclose(f)==0;return ok&&closed;}
-// M4: the animation link binds to the PART BODY, so this checksums the REP0
-// section rather than the whole file. It used to be "everything after the
-// 40-byte header", which was the body only while a part owned a file to
-// itself. In a bundle that would also cover the flat ladder and the impostor
-// atlas -- so flattening a linked part, or baking its impostor, would have
-// broken the animation commit it had nothing to do with. (Caught by
-// partstore_tests A8's co-located-flat case, which is exactly this shape.)
-bool checksum_part(const std::filesystem::path&p,uint64_t part_hash,uint64_t&out){std::vector<uint8_t>b;if(!part_bundle::read_section(p.string(),part_hash,part_bundle::kSectionRep0,b)||b.size()<40)return false;out=fnv(b.data()+40,b.size()-40);return true;}
+// Scratch paths are suffixed with the publishing run's nonce
+// (`<path>.<high><low>.tmp` / `.backup`), so two publishers that somehow ran
+// against the same target can never collide on, or clean up, each other's
+// scratch files.
 std::string nonce_suffix(const BuildNonce& n) { char out[40]; std::snprintf(out,sizeof out,".%016llx%016llx",(unsigned long long)n.high,(unsigned long long)n.low); return out; }
 std::filesystem::path tmp(const std::filesystem::path&p,const BuildNonce&n){return p.string()+nonce_suffix(n)+".tmp";}
 std::filesystem::path backup(const std::filesystem::path&p,const BuildNonce&n){return p.string()+nonce_suffix(n)+".backup";}
@@ -109,6 +175,19 @@ bool rollback(const std::filesystem::path& path,const BuildNonce& n, bool existe
 bool discard_backup(const std::filesystem::path& path,const BuildNonce& n) { std::error_code ec; const auto p=backup(path,n); const bool present=std::filesystem::exists(p,ec); if(ec)return false; return !present || (std::filesystem::remove(p,ec)&&!ec&&sync_parent(p)); }
 bool discard_backups(const std::filesystem::path& part,const std::filesystem::path& anim,const std::filesystem::path& manifest,const BuildNonce& n) { return discard_backup(part,n)&&discard_backup(anim,n)&&discard_backup(manifest,n); }
 bool discard_temporary(const std::filesystem::path& p) { std::error_code ec; const bool present=std::filesystem::exists(p,ec); if(ec)return false; return !present || (std::filesystem::remove(p,ec)&&!ec&&sync_parent(p)); }
+// Exclusive, non-blocking, cross-process lock on `<target>.lock`, held for
+// the duration of one publish. RAII: the destructor releases. Acquisition
+// FAILS rather than blocks when another process holds it, so a contended
+// publish reports `bundle.lock` and the caller retries later.
+//
+// The lock is a regular file (Windows: opened with share mode 0; POSIX:
+// `flock`). Earlier builds used an empty *directory* as the sentinel;
+// `migrate_legacy_empty_directory` removes such a leftover, and fails closed
+// on anything else it finds at that path.
+//
+// `release()` closes the handle but deliberately keeps the file — see the
+// comment inside; unlinking it would race an opener still holding the old
+// inode.
 struct PublicationLock {
     std::filesystem::path path;
     bool held = false;
@@ -134,12 +213,18 @@ struct PublicationLock {
         // Only the old directory sentinel can be removed, and only while it
         // is empty.  Any race or non-empty directory fails closed.
         if (g_test_replace_legacy_lock_directory_once) {
+            // Test injection: stand in for another process that replaced the
+            // legacy directory with a regular lock file in the window between
+            // our status check and the rmdir.  The replacement is left on disk
+            // (a migration must never unlink a file it did not create) and the
+            // migration reports failure unconditionally, so acquisition fails
+            // closed and the caller retries against the new regular lock.
             g_test_replace_legacy_lock_directory_once = false;
             if (!remove_empty_directory_only()) return false;
             FILE* replacement = std::fopen(path.string().c_str(), "wb");
             if (!replacement) return false;
-            const bool closed = std::fclose(replacement) == 0;
-            return false && closed;
+            std::fclose(replacement);
+            return false;
         }
         return remove_empty_directory_only();
     }
@@ -173,10 +258,48 @@ struct PublicationLock {
     ~PublicationLock() { release(); }
 };
 std::unique_ptr<PublicationLock> g_test_held_publication_lock;
-bool make_manifest(const BundleIdentity&i,std::vector<uint8_t>&b){if(i.lods.size()>UINT32_MAX||!valid_lods(i.lods))return false;b.insert(b.end(),{'M','A','C','M'});u32(b,1);u64(b,i.resolved_hash);u64(b,i.nonce.high);u64(b,i.nonce.low);u64(b,i.part_body_checksum);u64(b,i.anim_body_checksum);u32(b,i.part_format_version);u32(b,i.animation_schema_version);u32(b,i.animation_bake_epoch);u32(b,i.target_abi_tag);u32(b,i.ozz_tag_hash);u32(b,i.compiler_identifier);u32(b,uint32_t(i.lods.size()));for(auto&l:i.lods){u64(b,l.indexed_vertex_signature);u32(b,l.vertex_count);u32(b,l.influence_count);}u64(b,fnv(b.data(),b.size()));return true;}
-bool parse_manifest(const std::filesystem::path&p,BundleIdentity&i){std::vector<uint8_t>b;if(!read(p,b)||b.size()<84||std::memcmp(b.data(),"MACM",4))return false;size_t x=b.size()-8;uint64_t sum=0;if(!g64(b,x,sum)||sum!=fnv(b.data(),b.size()-8))return false;x=4;uint32_t v=0,n=0;if(!g32(b,x,v)||v!=1||!g64(b,x,i.resolved_hash)||!g64(b,x,i.nonce.high)||!g64(b,x,i.nonce.low)||!g64(b,x,i.part_body_checksum)||!g64(b,x,i.anim_body_checksum)||!g32(b,x,i.part_format_version)||!g32(b,x,i.animation_schema_version)||!g32(b,x,i.animation_bake_epoch)||!g32(b,x,i.target_abi_tag)||!g32(b,x,i.ozz_tag_hash)||!g32(b,x,i.compiler_identifier)||!g32(b,x,n)||n>64||n>(b.size()-x-8)/16)return false;i.lods.resize(n);for(auto&l:i.lods)if(!g64(b,x,l.indexed_vertex_signature)||!g32(b,x,l.vertex_count)||!g32(b,x,l.influence_count))return false;return x==b.size()-8&&valid_lods(i.lods);}
+// `MACM` commit-manifest codec. Layout: magic, u32 version (1), the identity
+// fields in declaration order, u32 LOD count, then 16 bytes per LOD
+// (signature/vertex_count/influence_slot_count), and a trailing FNV-1a over
+// everything before it.
+//
+// `parse_manifest` is fail-closed: wrong magic, bad checksum, unknown
+// version, >64 LODs, a count that cannot fit in the remaining bytes, trailing
+// slack, or a structurally invalid LOD list all return false without
+// reporting *why*. Callers turn that into `bundle.manifest`.
+bool make_manifest(const BundleIdentity&i,std::vector<uint8_t>&b){if(i.lods.size()>UINT32_MAX||!valid_lods(i.lods))return false;b.insert(b.end(),{'M','A','C','M'});u32(b,1);u64(b,i.resolved_hash);u64(b,i.nonce.high);u64(b,i.nonce.low);u64(b,i.part_body_checksum);u64(b,i.anim_body_checksum);u32(b,i.part_format_version);u32(b,i.animation_schema_version);u32(b,i.animation_bake_epoch);u32(b,i.target_abi_tag);u32(b,i.ozz_tag_hash);u32(b,i.compiler_identifier);u32(b,uint32_t(i.lods.size()));for(auto&l:i.lods){u64(b,l.indexed_vertex_signature);u32(b,l.vertex_count);u32(b,l.influence_slot_count);}u64(b,fnv(b.data(),b.size()));return true;}
+bool parse_manifest(const std::filesystem::path&p,BundleIdentity&i){std::vector<uint8_t>b;if(!read(p,b)||b.size()<84||std::memcmp(b.data(),"MACM",4))return false;size_t x=b.size()-8;uint64_t sum=0;if(!g64(b,x,sum)||sum!=fnv(b.data(),b.size()-8))return false;x=4;uint32_t v=0,n=0;if(!g32(b,x,v)||v!=1||!g64(b,x,i.resolved_hash)||!g64(b,x,i.nonce.high)||!g64(b,x,i.nonce.low)||!g64(b,x,i.part_body_checksum)||!g64(b,x,i.anim_body_checksum)||!g32(b,x,i.part_format_version)||!g32(b,x,i.animation_schema_version)||!g32(b,x,i.animation_bake_epoch)||!g32(b,x,i.target_abi_tag)||!g32(b,x,i.ozz_tag_hash)||!g32(b,x,i.compiler_identifier)||!g32(b,x,n)||n>64||n>(b.size()-x-8)/16)return false;i.lods.resize(n);for(auto&l:i.lods)if(!g64(b,x,l.indexed_vertex_signature)||!g32(b,x,l.vertex_count)||!g32(b,x,l.influence_slot_count))return false;return x==b.size()-8&&valid_lods(i.lods);}
 }
 
+// M4: the animation link binds to the PART BODY, so this checksums the REP0
+// section rather than the whole file. It used to be "everything after the
+// 40-byte header", which was the body only while a part owned a file to
+// itself. In a bundle that would also cover the flat ladder and the impostor
+// atlas -- so flattening a linked part, or baking its impostor, would have
+// broken the animation commit it had nothing to do with. (Caught by
+// partstore_tests A8's co-located-flat case, which is exactly this shape.)
+// Public (declared in the header) so the bake producer computes an identical
+// value; a private second copy silently diverged here post-M4 (issue 55f61c18).
+bool checksum_part(const std::filesystem::path&p,uint64_t part_hash,uint64_t&out){std::vector<uint8_t>b;if(!part_bundle::read_section(p.string(),part_hash,part_bundle::kSectionRep0,b)||b.size()<40)return false;out=fnv(b.data()+40,b.size()-40);return true;}
+
+// Atomically promote a validated (part candidate, anim candidate) pair to the
+// live cache paths and write the commit manifest that makes them visible.
+//
+// Everything is checked before anything moves: the identity's version/epoch/
+// compiler/ABI stamps must equal this build's constants, the nonce must be
+// non-zero, the `.anim` candidate must load and re-derive the recorded body
+// checksum and binding signatures, the part candidate must load as v2, carry
+// a `PartAnimationLink` with the same nonce, re-derive the recorded REP0
+// checksum, and its geometry must match the binding (`part_matches_binding`).
+// Any disagreement fails with `bundle.candidate` before a single file moves.
+//
+// Then: exclusive lock, manifest `.tmp`, backups, replace part -> anim ->
+// manifest, cleanup, unlock (see the file header for the durability and
+// rollback rules). Returns true only when all three are live and the
+// scratch files are gone.
+//
+// Cost: this loads both candidates in full and rebuilds indexed geometry per
+// LOD, so it is far from a cheap rename.
 bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,Diagnostics& d){
     AnimAsset a; uint64_t pc=0; std::optional<part_asset::PartAnimationLink> link;
     BLASManager candidate_blas; TLASManager candidate_tlas(1 << 20);
@@ -213,6 +336,20 @@ bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,
 }
 void release_animation_bundle_test_lock() { if(g_test_held_publication_lock){g_test_held_publication_lock->release();g_test_held_publication_lock.reset();} }
 void set_animation_bundle_test_replace_legacy_lock_directory_once() { g_test_replace_legacy_lock_directory_once = true; }
+// Load a committed bundle: the exact mirror of the publish-side validation,
+// re-run against the live files. Manifest -> part body checksum -> part v2
+// load and link nonce -> anim load, nonce and body checksum -> binding
+// decode, manifest match, and geometry match.
+//
+// `blas` and `out` are only assigned once every check has passed, so a
+// corrupt or half-published bundle leaves the caller's previous state
+// untouched (see the comment at the assignment). Both are move-assigned
+// from local candidates.
+//
+// Returns false with a `bundle.*` diagnostic naming the stage that failed.
+// Not cheap: it re-reads both files and rebuilds indexed geometry for every
+// LOD rung on every call, so callers should cache the result rather than
+// re-loading per frame.
 bool load_committed_animation_bundle(const std::filesystem::path& root,uint64_t hash,BLASManager& blas,AnimAsset&out,Diagnostics&d){
     BundleIdentity i;
     if (!parse_manifest(cache_path_anim_commit(root, hash), i) || i.resolved_hash != hash ||

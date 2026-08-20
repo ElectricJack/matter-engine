@@ -1,6 +1,8 @@
 #ifndef VIEWER_SESSION_BINDING_H
 #define VIEWER_SESSION_BINDING_H
 
+// MatterEditor/src/session_binding.h
+//
 // session_binding.{h,cpp} — the world-switch epoch lifecycle (event-system.md
 // S I.13, E4b). SessionBinding sits at the complete_world_switch / open_world
 // seam and centralizes the one place where switching a world recreates the
@@ -33,6 +35,19 @@
 // ordering hooks are load-bearing now, the concrete HUD/scene bridges land in
 // E5. The bridge builder is injected so E4b can wire it up empty (no behavior
 // change) while E5 fills it in without touching this file's ordering.
+//
+// Threading and timing. App thread only. `request_switch` / `request_reload`
+// are cheap and may be called from a command handler mid-frame; `replace` and
+// `reload` are the heavy operations and must run ONLY at main.cpp's post-frame
+// seam, because they destroy and recreate the session that panels hold
+// pointers into for the duration of a draw. The pending-intent pair exists to
+// bridge exactly that gap.
+//
+// Ownership. SessionBinding owns the ActiveSession epoch and the bridge
+// subscription handles, and nothing else. The session itself lives in the
+// caller's slot; the app hub, the command registry and that slot are all
+// references that must outlive this object. Its destructor quiesces the bridge
+// and closes the epoch but does not destroy the session.
 
 #include <cstdint>
 #include <functional>
@@ -49,6 +64,17 @@ namespace evt { class Hub; }
 
 namespace viewer {
 
+// The one owner of world-switch ORDER. Constructed once by main.cpp and held
+// for the process; non-copyable and non-movable (reference members and deleted
+// copy ops below). Everything policy-shaped is injected as a callback — how a
+// world is opened (`OpenFn`, per call), what "clear the app models" means
+// (`ClearModelsFn`), and which app<->session subscriptions make up the bridge
+// (`BridgeBuildFn`) — so this class contains sequencing and nothing else, and
+// the sequencing can be reasoned about (and reordered) without touching any of
+// the things being sequenced.
+//
+// Call order over a lifetime: construct -> `initialize()` once at startup ->
+// any number of `replace()` / `reload()` at the post-frame seam -> destruct.
 class SessionBinding {
 public:
     using SessionPtr = std::unique_ptr<matter::WorldSession>;
@@ -127,10 +153,13 @@ private:
     ClearModelsFn clear_models_;
     BridgeBuildFn build_bridge_;
 
+    // RAII handles for the app<->session bridge. Clearing this vector IS the
+    // unsubscribe, and it must happen while the OLD session hub is still alive
+    // (see quiesce_bridge / step 2 of the switch sequence).
     std::vector<matter::evt::Subscription> bridge_subs_;
-    uint64_t next_session_id_ = 1;
-    uint64_t current_session_id_ = 0;
-    uint64_t current_generation_ = 0;
+    uint64_t next_session_id_ = 1;    // monotonic id allocator; never reused
+    uint64_t current_session_id_ = 0; // 0 until initialize() opens the first epoch
+    uint64_t current_generation_ = 0; // bumped on every open_epoch, incl. the first
     // Pending world-switch/reload intent, recorded by the command handlers and
     // consumed at main.cpp's post-frame seam. -1 / false == nothing pending.
     int pending_switch_ = -1;

@@ -28,6 +28,17 @@ struct BakeInputs;
 // TLASManager::content_revision() are a landed but currently-unused
 // incremental-rebuild signal (tech-debt.md §6), not something a consumer
 // reads today.
+// Preconditions: `blas` and `tlas` must be EMPTY (the base heightfield is
+// registered as TLAS instance 0, and the function verifies the final
+// draw-record count against the instances it emitted), and every
+// SettledInstance::child_hash must already be baked under
+// inputs.parts_cache_dir. On failure both managers are left partially
+// populated and should be discarded rather than reused.
+//
+// Cost: CPU-only and not cheap. It tessellates the whole torus base
+// (kTorusN^2 * kSamplesPerTile^2 quads, ~131k triangles at the shipping
+// sample count), loads each distinct part off disk once, and builds a SAH TLAS
+// over every instance. Bake path only.
 bool assemble_torus_bvh(const SettledTorus& settled,
                         const BakeInputs& inputs,
                         BLASManager& blas,

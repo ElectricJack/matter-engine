@@ -1,3 +1,28 @@
+// MatterEngine3/src/part_graph.cpp
+//
+// Implementation of SP-3 (see part_graph.h for the layer's contract and for why
+// the resolver/baker seams exist).
+//
+// THE FILE IS IN TWO HALVES. Everything down to the first `} // namespace
+// part_graph` is compiled unconditionally: the canonical param encodings and
+// `PartGraph::install`, which is pure graph work over the two seams. The rest
+// is guarded by MATTER_HAVE_SCRIPT_HOST and holds the production seam
+// implementations, which are the only things here that know a script host
+// exists.
+//
+// THREE PARAM ENCODINGS, easy to confuse:
+//   serialize_params  "k=v;" — feeds the in-process MEMO KEY only.
+//   params_to_json    {"k":v} — the canonical form the host re-canonicalizes
+//                     for resolve_hash, and the form `placeChild`'s
+//                     JSON.stringify must match for parametric child selection.
+//                     This one reaches disk (child placement keys, snapshots).
+//   params_from_json  the inverse, for the child requests `eval_requires`
+//                     hands back as JSON.
+//
+// WHAT `install` GUARANTEES. Children are baked before their parents; a node
+// reached twice is baked once; a cycle is a hard error naming the path. What it
+// does NOT guarantee: that every part in the result exists — see the
+// skip-and-continue policy at the bake loop, and InstallResult's own comment.
 #include "part_graph.h"
 #include "matter/lod_contract.h"  // W5: kMaxSerializedLodLevels (exclude-mask bit width guard)
 #include "part_asset_v2.h"   // SP-1 (MatterEngine3, via -I../include): compute_resolved_hash,
@@ -18,6 +43,15 @@
 
 namespace part_graph {
 
+// "key=value;" over sorted keys — the input to the in-process memo key, and
+// nothing else. It is deliberately not the JSON form: nothing derived from this
+// string reaches disk or a hash the engine stores.
+//
+// It is canonical, not injective: string values are appended raw and the `=`
+// and `;` separators are never escaped, so a param whose string value contains
+// them could in principle encode like a different map. Fine for the memo (a
+// collision would merge two nodes within one install); do not reuse it as an
+// identity anywhere that matters.
 std::string serialize_params(const Params& params) {
     std::string out;
     for (const auto& kv : params) {          // std::map iterates in sorted key order
@@ -118,6 +152,12 @@ PartGraph::PartGraph(ModuleResolver& resolver, Baker& baker)
 
 namespace {
 
+// The resolve pass's node. It carries TWO different identities and they are not
+// interchangeable: `memo_key` is this process's DAG-dedup key (source bytes +
+// canonical params, computed here), while `resolved_hash` is the artifact's
+// name on disk and comes from the Baker seam — the host is the only thing that
+// can fold the merged params. Topo edges use memo keys; everything the bake and
+// the caller see uses resolved hashes.
 struct InternalNode {
     uint64_t              memo_key = 0;       // fnv1a64(source) folded with canonical params
     uint64_t              resolved_hash = 0;
@@ -143,6 +183,34 @@ uint64_t memo_key_of(const std::string& source, const std::string& canon_params)
 
 } // namespace
 
+// The whole graph pass, in phases:
+//
+//   1. RESOLVE (the `resolve` lambda). Depth-first from each root, memoized by
+//      memo key. `on_stack` catches back-edges as cycles and reports the module
+//      path. Recurses on the C stack with no depth cap of its own — a cycle is
+//      what bounds it, so a pathologically deep (but acyclic) hierarchy would
+//      recurse as deep as it is.
+//   2. ROOT LOOP. Two-tier error policy: a cycle or a missing module aborts the
+//      whole install; anything else (a hash-resolve failure, a script that
+//      throws) is recorded in `failed` and the SIBLING roots continue. The tier
+//      is decided by substring-matching the error text, so the two hard-error
+//      messages above are load-bearing strings.
+//   3. TOPO. DFS post-order over the reachable set = children-first order.
+//   4. BAKE PLAN and 5. SNAPSHOT, both filled from `memo` before any baking, so
+//      they are complete regardless of BakePolicy and regardless of which bakes
+//      later fail. The snapshot is keyed by MODULE NAME, one entry per module,
+//      first occurrence winning when the same module appears at several params.
+//   6. BAKE LOOP, children-first. RootsOnly skips non-roots entirely (they stay
+//      in bake_plan for LocalProvider::ensure_part_baked). A node whose child
+//      failed is skipped as "missing child" rather than baked against a hole.
+//      Exceptions out of Baker::bake are caught and treated exactly like a
+//      false return. Note the deliberate asymmetry after a successful bake:
+//      `bake_static_lods` failing is logged and tolerated, `bake_lod_variants`
+//      failing aborts the install.
+//   7. Zero `root_hashes[i]` for any root whose own node failed during bake, so
+//      the caller places nothing for it.
+//
+// Runs on the worker thread; the graph is not shared, so nothing locks.
 InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
                                   part_graph_snapshot::Snapshot* snap,
                                   BakePolicy policy) {
@@ -591,6 +659,18 @@ uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params
                               child_hashes.data(), child_hashes.size());
 }
 
+// NOT an existence check — a VALIDATION, and it does real I/O. A part counts as
+// cached only if its header is compatible with this hash and format version
+// AND its sibling state is coherent: a static part must read the same snapshot
+// fingerprint twice in a row, and an animated part's committed bundle must
+// still carry the same link nonce it advertised on the first read. Anything
+// less returns false and the graph rebakes, because the .part and its sibling
+// manifests are published independently and a probe that straddles a publish
+// would otherwise accept a torn generation.
+//
+// Root choice mirrors PartStore's runtime policy: if a scratch .part exists for
+// this hash, scratch is the ONLY root consulted — a transient artifact is never
+// silently satisfied from the persistent cache.
 bool HostBaker::cached(uint64_t resolved_hash) {
     // A scratch PART selects scratch as the artifact root for this hash.  This
     // intentionally mirrors PartStore's scratch-first root choice: a linked

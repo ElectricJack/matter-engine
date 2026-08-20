@@ -1,3 +1,26 @@
+// MatterEngine3/src/polygon_triangulate.cpp
+//
+// Implementation of poly_tri::triangulate (contract in the .hpp).
+//
+// TWO STAGES. First `triangulate` BRIDGES every hole into the outer contour:
+// holes are processed right-to-left by their rightmost vertex M, and M is
+// joined to the nearest outer-loop vertex at or to the right of it by a doubled
+// pair of edges (M ... M, v ... v), which turns the multiply-connected profile
+// into one simple loop. Then `ear_clip` clips that loop.
+//
+// Everything is index-tracked through `Pt::orig`, so reversing a contour for
+// winding or splicing a hole never disturbs the mapping back to the caller's
+// concatenated [outer, holes...] vertex list.
+//
+// COST. The reflex-vertex set is rebuilt after every clipped ear and every
+// pass, so this is superlinear in the vertex count by design — it is sized for
+// authored cross-section profiles of tens of vertices (POLYGON fills, extrude
+// end caps), not for mesh-scale input.
+//
+// TOLERANCES are absolute, not relative to the profile's extent: 1e-7 on the
+// inside-triangle test and 1e-6 on the coincident-position test. Profiles are
+// expected in ordinary world-unit scale; a profile authored at 1e-4 scale would
+// weld distinct vertices.
 #include "polygon_triangulate.hpp"
 #include <cmath>
 #include <algorithm>
@@ -59,6 +82,14 @@ bool ear_blocked(const std::vector<Pt>& loop, const std::vector<int>& next,
     return false;
 }
 
+// Ear-clip one simple loop (holes already bridged in). Takes `loop` BY VALUE
+// because it may reverse it to force CCW. Emits index triples in `orig` space.
+//
+// Each pass clips every independent ear it can find, refreshing the reflex set
+// after each clip so later candidates in the same pass see current neighbours;
+// the pass count is capped at n+2, and a pass that clips nothing breaks out.
+// That break is the non-simple-input path: the output is whatever was clipped
+// so far, never an error.
 std::vector<int> ear_clip(std::vector<Pt> loop) {
     std::vector<int> out;
     int n = (int)loop.size();

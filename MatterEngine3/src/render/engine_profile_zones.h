@@ -18,6 +18,21 @@
 
 namespace engine_prof {
 
+// The zone list. Two things are load-bearing here:
+//
+//   - The enum order and the name table inside id() are index-parallel. A new
+//     zone must be added to BOTH, in the same slot, before kZoneCount; adding
+//     one to only the enum silently returns another zone's id.
+//   - The NAMES are the public surface. They are what the Chrome trace, the
+//     in-editor Performance panel and the analysis scripts key on, and they
+//     were chosen to match the retired vk_build_profile table exactly so old
+//     captures stay comparable. Renaming one is an observable change; prefer
+//     adding.
+//
+// The prefixes group the region: `temporal.` / `settemporal.` for the temporal
+// resolve, `ui.` for the ImGui build, `pf.` for the per-frame publish/upload
+// steps, and `bake.` for work that runs on the bake worker rather than the
+// render thread.
 enum Zone {
     kTemporalAlign = 0,
     kTemporalFill,
@@ -52,6 +67,10 @@ enum Zone {
 #if MATTER_PROFILE_ENABLED
 // Register all zone names once, in enum order, and return stable ids. The names
 // match the former vk_build_profile::zone_name table exactly.
+// The ids come from a function-local static, so the registration happens on the
+// first call and is thread-safe by the usual static-initialization guarantee;
+// every later call is an array read. Ids are stable for the process lifetime,
+// which is what lets a caller cache one in a Scope without re-registering.
 inline int id(Zone z) {
     static const int ids[kZoneCount] = {
         ::matter::profile::register_zone("temporal.align"),

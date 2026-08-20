@@ -1,5 +1,21 @@
 // seam_weld.cpp — runtime cross-level seam welder. See seam_weld.h for the
 // algorithm, the winding derivation, and why this file has no engine includes.
+//
+// What is here, in order: `side_from_record` (the one-tile WeldSide adapter),
+// two file-local helpers that own ALL geometry emission, and `weld_face`, the
+// single entry point.
+//
+// Everything a caller can observe is either a triangle in the output WeldMesh
+// or a counter in WeldStats, and the counters are the acceptance surface:
+// seam_integration_tests.cpp asserts
+// `crossings == quads + tris + missing_landing + degenerate` on every weld it
+// performs, so any new early-`continue` added to the loop below must land in
+// exactly one of those four buckets. `band_tris` and `caps` are deliberately
+// outside that sum (seam_weld.h explains why).
+//
+// Allocation: the output mesh is reused across a whole weld pool, which is
+// what `WeldMesh::clear_geometry` exists for, so nothing here should introduce
+// a per-call container.
 
 #include "seam_weld.h"
 
@@ -7,6 +23,11 @@
 
 namespace seam {
 
+// The closure captures a RAW POINTER to `rec`, so the record must outlive both
+// the returned side and every weld_face call made with it. Copying the record
+// into the closure would not be a safer alternative -- it would break
+// WeldSide's canonical-pointer contract, since the fan collapse is detected by
+// comparing addresses.
 WeldSide side_from_record(int rung, const FaceRecord& rec) {
     WeldSide s;
     s.rung = rung;
@@ -17,6 +38,13 @@ WeldSide side_from_record(int rung, const FaceRecord& rec) {
 
 namespace {
 
+// Find-or-append the bucket for one material. A linear scan is right at the
+// handful of materials a single seam plane carries, and it is also why a
+// weld's buckets come out in first-touch order rather than sorted.
+//
+// The reference points into `m.buckets`, so a LATER bucket_for that appends
+// invalidates it. Callers must finish with one bucket before asking for
+// another; `weld_face` does, taking the reference and emitting immediately.
 WeldBucket& bucket_for(WeldMesh& m, uint32_t material) {
     for (WeldBucket& b : m.buckets)
         if (b.material == material) return b;

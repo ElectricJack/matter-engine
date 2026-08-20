@@ -1,3 +1,77 @@
+// MatterEngine3/src/script/world_definition_loader.cpp — evaluates a world's
+// .js source in a throwaway QuickJS runtime and extracts a WorldDefinition.
+//
+// This is the entry point of world loading. EngineContext::open_world builds a
+// WorldLoadDesc (the world .js path, the two shared-lib directories, the world
+// seed, and the canonical params JSON) and calls load_world_definition(), which
+// returns the declarative half of the world: roots, lights, settings (sun/sky,
+// fog and cloud decks, atmosphere, camera, streaming rings/bands, volumetrics,
+// cloud shadows), script-declared materials, `static props` specs, and the raw
+// entity recipes. Everything downstream (part baking, streaming, rendering)
+// consumes the WorldDefinition; nothing re-enters this file.
+//
+// SCRIPT SURFACE. A world declares `class <Name> extends World` and its data as
+// class STATICS (roots, lights, fog, camera, streaming, props, ...), plus an
+// optional buildEntities() for imperative entity emission. Statics are read
+// straight off the class object; an authored constructor is deliberately
+// bypassed — buildEntities() is invoked on a bare object built from the class
+// prototype.
+//
+// THE THREE BOUND GLOBALS ARE PHASED, deliberately:
+//   defineMaterial(name, spec) — legal only while the module evaluates (module
+//     scope and class statics). Once the roots have been read it is swapped for
+//     a throwing stub: a material declared later cannot have its detail-tileset
+//     bake scheduled.
+//   getProp(name) — the mirror image. A throwing stub until `static props` has
+//     been extracted, then the real accessor. It is definition-time only and
+//     returns the DECLARED DEFAULT (see get_prop).
+//   entity(record) — bound on the buildEntities() receiver; appends to the
+//     __matter_entities global array.
+//
+// PRELUDE. `base_source` inside load_world_definition() is the THIRD JS prelude
+// in this engine, alongside part_base.js.h and world_base.js.h. Any global a
+// shared-lib module may touch at MODULE SCOPE must exist in all three or world
+// load dies on import with a bare ReferenceError. It also defines the empty
+// `class World` that `extends World` resolves against, and sets Math.random to
+// undefined — world definition has to be deterministic.
+//
+// MODULES. Imports are resolved BEFORE any evaluation: gather_modules() walks
+// the import graph transitively and reads every module into an in-memory
+// ModuleStore, and QuickJS's loader hook then serves only from that store.
+// Only `shared-lib/<name>` specifiers are legal (flat namespace, no
+// subdirectories, no `..`), and the project's shared-lib shadows the engine's.
+// A world that imports nothing is evaluated as a plain global script, which is
+// why the Promise intrinsic is added only on the module path.
+//
+// DETERMINISM AND SIDE EFFECTS. The one global side effect is the material
+// registry's DYNAMIC tail: MaterialRegistryResetDynamic() runs on entry and
+// defineMaterial() writes through immediately, so the handle a script sees is
+// the id the renderer will index and loading the same world twice yields the
+// same ids. Anything that reaches a content address (root params, entity
+// components) is serialized through canonical_json's key-sorted stringify, so
+// byte-equal authoring hashes byte-equally.
+//
+// ERROR REPORTING. Every failure routes through fail(), filling WorldLoadError
+// with the world path and the AUTHORED property path ("roots[2].transform[5]",
+// "fog.clouds[0].maxHeight"). Object specs are strict — an unknown key in a
+// material spec or a prop spec is an error, not a silently ignored typo. On any
+// failure `definition` is reset to empty, so a partial world never escapes.
+//
+// GOTCHAS.
+//   - Every JSValue taken here must be freed, and the failure paths free by
+//     hand rather than through a scope guard: a new early return has to release
+//     everything the success path would have.
+//   - number_value() accepts whatever JS_ToFloat64 accepts, strings included,
+//     and hands back NaN for them. Callers that care check std::isfinite
+//     themselves.
+//   - Extractor ORDER matters and is not alphabetical: extract_fog runs before
+//     extract_volumetrics (which folds the deprecated fog multipliers into the
+//     already-parsed FogSettings), and apply_legacy_height_layer runs after
+//     both, outside the extractor chain.
+//   - The runtime, the context, the module store and the LoadCollector all live
+//     only for the duration of one call. There is no long-lived world JS
+//     context anywhere in this engine.
+
 #include "world_definition_loader.h"
 
 #include "module_resolver.h"
@@ -20,10 +94,19 @@ extern "C" {
 namespace matter {
 namespace {
 
+// Every shared-lib module source the world transitively imports, read from disk
+// up front by gather_modules() and keyed by CANONICAL specifier (no `.js`
+// suffix). It is handed to QuickJS as the module-loader opaque, so module
+// resolution during evaluation never touches the filesystem and can never pull
+// in a module the pre-pass did not vet. Lives on load_world_definition()'s
+// stack for the duration of the load.
 struct ModuleStore {
     std::map<std::string, std::string> sources;
 };
 
+// Strips a trailing `.js` so `shared-lib/foo` and `shared-lib/foo.js` are the
+// same key. Applied on the way into the store, on QuickJS's normalize hook and
+// on every lookup, so the three can never disagree.
 std::string canonical_specifier(std::string specifier) {
     if (specifier.size() >= 3 &&
         specifier.compare(specifier.size() - 3, 3, ".js") == 0) {
@@ -47,6 +130,17 @@ std::string join_path(const std::string& root, const std::string& leaf) {
     return root + ((last == '/' || last == '\\') ? "" : "/") + leaf;
 }
 
+// Reads every module the world transitively imports into `store`, before any JS
+// runs. Breadth-first over a worklist that grows as each module's own imports
+// are parsed, deduped by canonical specifier so an import cycle terminates.
+//
+// The specifier grammar is deliberately narrow and enforced here rather than at
+// evaluation time: `shared-lib/<name>` only — no other prefix, no subdirectory,
+// no `..`. Each name is looked up as `<name>.js` in desc.project_shared_lib_dir
+// first and desc.engine_shared_lib_dir second, so a project may shadow an
+// engine module. Any violation, or a module that resolves in neither directory,
+// returns false with an author-facing reason in `message`; the caller reports
+// it under the "imports" property path.
 bool gather_modules(const std::string& world_source,
                     const WorldLoadDesc& desc,
                     ModuleStore& store,
@@ -91,6 +185,18 @@ bool gather_modules(const std::string& world_source,
     return true;
 }
 
+// The two QuickJS module-loader hooks, installed together by
+// JS_SetModuleLoaderFunc with the ModuleStore as opaque.
+//
+// normalize_module ignores the importing module's name entirely — specifiers
+// are absolute `shared-lib/...` paths, never relative — and just canonicalizes.
+// The returned string must be allocated with js_malloc; QuickJS frees it.
+//
+// load_module compiles from the pre-gathered store and NEVER reads a file. A
+// specifier that gather_modules did not collect throws a ReferenceError rather
+// than being fetched, which is what makes the import allow-list actually
+// binding at runtime. Returning nullptr with an exception pending is the
+// documented failure form for this hook.
 char* normalize_module(JSContext* context, const char*, const char* name, void*) {
     const std::string canonical = canonical_specifier(name ? name : "");
     char* result = static_cast<char*>(js_malloc(context, canonical.size() + 1));
@@ -129,6 +235,13 @@ bool execute_jobs(JSRuntime* runtime, JSContext* context) {
     }
 }
 
+// Builds a deliberately MINIMAL context: JS_NewContextRaw plus exactly the
+// intrinsics a world definition is allowed to use. Notably absent are the host
+// facilities that would make a world non-deterministic or give it side effects
+// (no Date, no Proxy/Reflect, no host I/O of any kind); Math.random is then
+// removed by the prelude. Promise is added only for the module path, since
+// module evaluation and JS_ExecutePendingJob need it and a plain global script
+// does not.
 JSContext* new_world_context(JSRuntime* runtime, bool modules) {
     JSContext* context = JS_NewContextRaw(runtime);
     if (!context) return nullptr;
@@ -144,6 +257,10 @@ JSContext* new_world_context(JSRuntime* runtime, bool modules) {
     return context;
 }
 
+// Formats the context's pending exception as "message\nstack" (the stack is
+// appended only when it exists and differs from the message). CONSUMES the
+// exception — JS_GetException clears it — so call this exactly once per
+// failure, and only when one is actually pending.
 std::string exception_message(JSContext* context) {
     JSValue exception = JS_GetException(context);
     JSValue stack = JS_GetPropertyStr(context, exception, "stack");
@@ -161,6 +278,10 @@ std::string exception_message(JSContext* context) {
     return result;
 }
 
+// Fills `error` and returns false, so a validator can `return fail(...)` in one
+// line. `property_path` is the AUTHORED path the value came from, spelled the
+// way the script writes it ("roots[2].transform[5]"), which is what makes a
+// load failure actionable without a JS stack.
 bool fail(const WorldLoadDesc& desc,
           WorldLoadError& error,
           std::string property_path,
@@ -188,6 +309,12 @@ bool string_value(JSContext* context, JSValueConst value, std::string& output) {
     return true;
 }
 
+// Coerces via JS_ToFloat64, so it accepts far more than a JS number: a string
+// converts (yielding NaN for a non-numeric one) and only a throwing conversion
+// returns false. It does NOT reject NaN or infinity. Callers that need a real
+// number check std::isfinite on the result themselves — most of the extractors
+// below do, and the sun-angle site explains why the check was not pushed down
+// into here.
 bool number_value(JSContext* context, JSValueConst value, float& output) {
     double number = 0.0;
     if (JS_ToFloat64(context, &number, value) < 0) return false;
@@ -220,6 +347,12 @@ bool float3_array_value(JSContext* context, JSValueConst value, float output[3])
     return true;
 }
 
+// Stringifies `value` through the world context's canonicalizer closure (see
+// canonicalizer_source in load_world_definition): JSON with every object's keys
+// recursively sorted. Used for root params and entity components, whose strings
+// are hashed into content addresses — the sort is what makes two authorings
+// that differ only in key order produce the same address. Returns false when
+// the value is not JSON-serializable (a function, a cycle) or the call threw.
 bool canonical_json(JSContext* context,
                     JSValueConst canonicalizer,
                     JSValueConst value,
@@ -259,6 +392,12 @@ bool optional_number(JSContext* context,
     return ok;
 }
 
+// The `entity(record)` binding handed to buildEntities(). Appends the record to
+// the __matter_entities global array at its current length; extract_entities()
+// reads that array afterwards. It is defined on the instance as own,
+// non-writable and non-configurable, so an authored prototype cannot intercept
+// or suppress the append. The record is not validated here — extract_entities
+// does that, and reports failures with the authored index.
 JSValue append_entity(JSContext* context,
                       JSValueConst,
                       int argument_count,
@@ -439,10 +578,17 @@ JSValue define_material(JSContext* context,
 
     MaterialDef def{};
     MaterialRegistryDefaultDynamicDef(&def);
-    // Distinct dynamic materials must not share a merge group with each other
-    // or with a builtin (0..25), or the SDF mesher would blend them. Derived
-    // from the name so the group is stable across loads and independent of
-    // declaration order.
+    // Distinct dynamic materials must not share a MERGE GROUP with each other
+    // or with a builtin, or the SDF mesher would blend them into one surface.
+    // Builtin merge groups are the GROUP_* enum in
+    // libs/MatterSurfaceLib/src/material_registry.c, currently GROUP_RED = 0
+    // through GROUP_FOLIAGE_THIN = 25 — note these are group ids, NOT the
+    // builtin MATERIAL ids (0 .. MaterialRegistryStaticCount()-1, see the
+    // reset comment in load_world_definition). The 1000 floor below clears
+    // both ranges by a wide margin; it is the one number to raise if the
+    // GROUP_* enum ever grows past it.
+    // Derived from the name so the group is stable across loads and
+    // independent of declaration order.
     def.mergeGroup = 1000 + static_cast<int>(fnv1a32(name) % 1000000u);
 
     bool present = false;
@@ -578,6 +724,18 @@ bool extract_settings_object(JSContext* context,
            optional_number(context, object, "yMax", settings.y_max);
 }
 
+// World.roots -> definition.roots. Optional; absent means a world with no
+// roots, not an error. Each entry needs a string `module`; `params` (any
+// JSON-serializable value, canonicalized because it is hashed into the root's
+// content address), a 16-number row of `transform`, and the `expand` / `tileset`
+// booleans are optional and keep the WorldRoot default when absent — which for
+// `transform` is IDENTITY (see matter/world_definition.h), so a root that omits
+// it is placed at the origin unrotated rather than through a zero matrix.
+//
+// Runs FIRST among the extractors, which is what defines "too late" for
+// defineMaterial: a root's params may name a material handle, so materials must
+// already exist by the time this runs, and the binding is swapped for a
+// throwing stub once it has.
 bool extract_roots(JSContext* context,
                    JSValueConst world_class,
                    JSValueConst canonicalizer,
@@ -666,6 +824,13 @@ bool extract_roots(JSContext* context,
     return true;
 }
 
+// World.lights, which accepts TWO shapes:
+//   * an array of point lights, appended to definition.lights; or
+//   * an object with optional `sun` / `sky` / `spots` members, where sun and sky
+//     write renderer SETTINGS (definition.settings.sun_* / sky_color) rather
+//     than list entries, and only `spots` appends lights.
+// The array form returns early, so a world using it gets no sun/sky authoring
+// at all. Absent means "keep the compiled defaults".
 bool extract_lights(JSContext* context,
                     JSValueConst world_class,
                     const WorldLoadDesc& desc,
@@ -1050,6 +1215,11 @@ bool extract_fog(JSContext* context,
     return true;
 }
 
+// World.camera -> definition.settings.camera, and sets its `authored` flag so
+// the viewer knows to use it instead of its own default framing. Both position
+// and target are REQUIRED (unlike most optional statics here) and must be
+// finite and distinct — a degenerate view vector produces a broken view matrix
+// with no later opportunity to diagnose it.
 bool extract_camera(JSContext* context,
                     JSValueConst world_class,
                     const WorldLoadDesc& desc,
@@ -1099,6 +1269,19 @@ bool extract_camera(JSContext* context,
     return true;
 }
 
+// World.streaming -> the streaming half of WorldSettings: the `nestedSectors`
+// and `volumetricSectors` flags, the `rings` ladder ({radius, rung}) and the
+// heightfield `terrainBands` ladder ({radius, lod}).
+//
+// Both ladders share one ordering contract, enforced here rather than by the
+// streamer: strictly increasing positive radii, integral non-negative
+// levels, and each entry's level exactly one BELOW its predecessor's — i.e.
+// innermost first and finest first. Bands additionally cap lod at 5.
+//
+// Everything is optional and each part is independent; note in particular that
+// the flags and the bands are parsed OUTSIDE the rings block, for the reasons
+// spelled out at each site (a nested-LOD world can legitimately author bands
+// with no rings).
 bool extract_streaming(JSContext* context,
                        JSValueConst world_class,
                        const WorldLoadDesc& desc,
@@ -1424,6 +1607,15 @@ bool extract_atmosphere(JSContext* context,
     return true;
 }
 
+// World.cloudShadows -> definition.settings.cloud_shadows. Numeric fields are
+// validated for finiteness and range (coverages and filter scale positive,
+// updateFraction in [0,1]).
+//
+// GOTCHA on the four resolution/slice fields: the script authors the VALUE
+// (e.g. nearResolution: 256) but what is stored is that value's INDEX into the
+// small allow-list beside it (256 -> 1). The settings fields are enum-style
+// selectors, not pixel counts. Anything not in the list is rejected rather than
+// rounded, so a typo cannot silently pick a neighbouring quality level.
 bool extract_cloud_shadows(JSContext* context,
                            JSValueConst world_class,
                            const WorldLoadDesc& desc,
@@ -1663,6 +1855,15 @@ bool prop_spec_finite(JSContext* context, JSValueConst spec, const char* key,
     return ok;
 }
 
+// Parses one `static props` entry. `default` is mandatory and its literal TYPE
+// selects WorldPropSpec::Kind — boolean -> Bool, string -> String, number ->
+// Float, or number alongside `enum` labels -> Enum (the default is then the
+// label INDEX, and must be an in-range integer). Unknown keys are rejected.
+//
+// min/max must be authored together and only survive for the Float kind (a
+// range on a Bool or a String would clamp nothing and mislead the panel, so it
+// is dropped along with `step`). When a range is present the default must lie
+// inside it.
 bool extract_prop_spec(JSContext* context,
                        JSValueConst spec,
                        const std::string& path,
@@ -1906,6 +2107,11 @@ JSValue get_prop_too_early(JSContext* context, JSValueConst, int, JSValueConst*)
         "buildEntities()");
 }
 
+// The world's sector geometry: sectorSize / yMin / yMax. Two spellings are
+// accepted, `World.world` and `World.settings`, and both write into the same
+// WorldSettings — read in that order and each key only assigned when present,
+// so a world declaring both ends up with `settings` winning per key. A
+// non-object under either name is an error, not an ignored value.
 bool extract_settings(JSContext* context,
                       JSValueConst world_class,
                       const WorldLoadDesc& desc,
@@ -1926,6 +2132,11 @@ bool extract_settings(JSContext* context,
     return true;
 }
 
+// Copies the declarative `World.entities` static into the __matter_entities
+// global array at indices 0..n-1. Runs BEFORE buildEntities(), whose entity()
+// calls then append after them, so the static entries always come first in the
+// final recipe order. Records are not validated here — extract_entities does
+// that for both sources at once.
 bool append_static_entities(JSContext* context,
                             JSValueConst world_class,
                             const WorldLoadDesc& desc,
@@ -1952,6 +2163,13 @@ bool append_static_entities(JSContext* context,
     return true;
 }
 
+// Drains the __matter_entities global — the static `World.entities` block plus
+// everything buildEntities() emitted through entity() — into
+// definition.entities as RawEntityRecipes. `id` is required and must be a
+// string; `name` defaults to the id; `parent` is an optional authored id
+// resolved later, not here; `components` defaults to an empty object and is
+// stored as CANONICAL JSON because it feeds a content address. Called last, so
+// it sees both sources in authoring order.
 bool extract_entities(JSContext* context,
                       JSValueConst canonicalizer,
                       const WorldLoadDesc& desc,
@@ -2021,6 +2239,34 @@ bool extract_entities(JSContext* context,
 
 } // namespace
 
+// Loads one world. See the file header for the script surface and the phased
+// globals; the sequence, which is order-dependent throughout, is:
+//
+//   1. Reset `definition`/`error` and the material registry's dynamic tail.
+//   2. Read the world source; find its `class X extends World` name lexically
+//      (world_script_detail::find_world_class_name, shared with ScriptHost so
+//      both pick the same class).
+//   3. gather_modules(): read every transitively imported shared-lib module.
+//      Whether any exist decides module vs. global evaluation for the rest.
+//   4. Create the runtime + minimal context, install the prelude, bind
+//      __matter_params / __matter_world_seed, defineMaterial (live) and getProp
+//      (throwing stub).
+//   5. Evaluate the world source with a trailing assignment that publishes the
+//      class; on the module path also drain pending jobs and check the module
+//      promise for rejection, since a module's failure surfaces there rather
+//      than as a thrown exception.
+//   6. Run the extractor chain over the class statics, then sanitize the
+//      atmosphere and fold the legacy fog height layer into clouds[0].
+//   7. Swap the two globals: defineMaterial becomes the "too late" stub,
+//      getProp becomes readable now that `static props` is parsed.
+//   8. Build a bare instance from the class prototype (an authored constructor
+//      is intentionally NOT run), bind params/worldSeed/entity() on it, and
+//      call buildEntities() if the class declares one.
+//   9. extract_entities(), then free everything.
+//
+// Returns false with `error` filled on any failure, and `definition` is reset
+// to empty on every failure path so a partially built world is never returned.
+// The runtime, context and every JS value created here die before this returns.
 bool load_world_definition(const WorldLoadDesc& desc,
                            WorldDefinition& definition,
                            WorldLoadError& error) {
@@ -2030,7 +2276,9 @@ bool load_world_definition(const WorldLoadDesc& desc,
     // Contract C3: the dynamic registry tail is per-world. Clearing it here (not
     // only at provider connect) is what makes handles deterministic — loading
     // the same world twice yields the same indices, and a second world never
-    // inherits the first world's materials. Builtin ids 0..29 are untouched.
+    // inherits the first world's materials. The frozen builtin MATERIAL ids
+    // [0, MaterialRegistryStaticCount()) are untouched — that count is the
+    // authority, not any literal written here.
     MaterialRegistryResetDynamic();
 
     std::string source;

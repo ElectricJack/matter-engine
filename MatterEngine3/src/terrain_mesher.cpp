@@ -1,5 +1,30 @@
 // terrain_mesher.cpp — naive surface-nets sector mesher.
 // Pure CPU; no JS, no GL.
+//
+// LAYOUT OF THIS FILE, in order:
+//   1. Emission helpers -- `bucket_for`, `push_tri` (into the mesh) and
+//      `band_bucket_for`, `push_band_tri` (into a seam overlap band).
+//   2. THE CANONICAL SHARED CONTOUR: `kCanonicalVoxel`, `contour_tangent_axes`,
+//      `ContourVert`/`Contour`, and `trace_contour`. Opt-in, gated by
+//      `bake_mode::contour_seams()`, Y-tiled path only.
+//   3. `mesh_sector_impl` -- the whole mesher. Density lattice fill, dual
+//      vertex placement, quad emission under the ownership rule, the optional
+//      constrained border, and the boundary-record / overlap-band export.
+//   4. `mesh_sector` / `mesh_sector_tiled` -- thin regime-selecting wrappers.
+//
+// READ THIS FIRST IF YOU ARE ABOUT TO EDIT ARITHMETIC. Adjacent tiles are
+// watertight because both compute a shared lattice coordinate as
+// `origin + (index - 1) * voxel` in double, which is provably exact and
+// therefore bitwise identical from either side. That derivation is written out
+// at `oy` inside `mesh_sector_impl` and everything else here rests on it.
+// Rewriting such an expression -- even into something algebraically equal --
+// can move a coordinate by an ulp, which opens a seam and invalidates every
+// cached tile. The column path's mesh and boundary bytes are pinned in
+// terrain_mesher_tests.cpp precisely so that mistake fails loudly.
+//
+// THREADING. No file-scope mutable state; every buffer is a local of
+// `mesh_sector_impl`. Concurrent meshing of different tiles against one
+// read-only `FieldRuntime` is what the bake workers do.
 
 #include "terrain_mesher.h"
 #include "bake_mode.h"
@@ -14,15 +39,29 @@ namespace terrain_mesher {
 
 namespace {
 
+// A dual vertex: one surface-nets vertex belonging to one lattice cell.
+//   p  position, in the mesh's own frame -- x/z tile-local always, y
+//      world-absolute on the column path and tile-local on the Y-tiled path
+//      (see `cv.p` in mesh_sector_impl). Metres.
+//   n  unit outward surface normal, from the negated density gradient.
+// Consumers that need world coordinates (the boundary record, the overlap
+// band) add the tile origin back on themselves.
 struct V3 { float x, y, z; };
 struct CellVert { V3 p; V3 n; };
 
+// Find or append the bucket for `mat`. Linear scan -- worlds have a handful of
+// materials, so this is cheaper than a map. The returned reference is
+// invalidated by the next call that appends a bucket; never hold it across one.
 MaterialBucket& bucket_for(SectorMesh& m, uint32_t mat) {
     for (auto& b : m.buckets) if (b.material == mat) return b;
     m.buckets.push_back(MaterialBucket{mat, {}, {}});
     return m.buckets.back();
 }
 
+// Append one triangle: 9 position floats and 9 normal floats, in exactly the
+// argument order given. Winding is the caller's decision and is preserved
+// verbatim -- callers pass the vertices pre-swapped (see `flip` in emit_quad,
+// and `push_oriented` for the contour border).
 void push_tri(MaterialBucket& b,
               const CellVert& a, const CellVert& c, const CellVert& d) {
     const CellVert* vs[3] = {&a, &c, &d};
@@ -144,6 +183,12 @@ struct ContourVert {
     double  pa = 0, pb = 0;   // interpolated world position, tangential coords
 };
 
+// One face plane's shared curve: a vertex soup plus the segments joining them,
+// as produced by `trace_contour`. Both are in the canonical lattice's terms,
+// so two tiles of different rungs touching this plane build identical
+// contents. `segs` holds index pairs into `verts`; a vertex is emitted once and
+// reused by every segment that touches it, which is what lets the bridge pass
+// below find the segments meeting at a vertex.
 struct Contour {
     std::vector<ContourVert> verts;
     std::vector<std::pair<int, int>> segs;   // indices into verts

@@ -1,3 +1,48 @@
+// ---------------------------------------------------------------------------
+// MatterEngine3/src/dsl_bindings.cpp
+//
+// The QuickJS-ng <-> `dsl::DslState` bridge. Every native global a bake script
+// can reach is defined and registered here: the `__dsl_*` authoring verbs
+// (transform stack, CSG brushes, shapes/contours, modifiers, child placement,
+// rig/clip/motion, tileset), the world-field verbs (`__heightAt`, `__slopeAt`,
+// `__moistureAt`, `__biomeAt`, `__habitatAt`, `__candidatesInRect`,
+// `__planCandidates`), the terrain mesher verb (`__terrainVolumeTiled`) and the
+// profiling verbs (`__profSlot`/`__profBegin`/`__profEnd`).
+//
+// Layout: argument-coercion helpers, then one `static JSValue j_*` per verb
+// grouped by subsystem, then `install_bindings`, then the process-wide
+// `TerrainVerbCensus` and `script_profile` implementations whose contract lives
+// in `dsl_bindings.h`.
+//
+// Conventions that hold throughout:
+//   - `state_of(ctx)` is the context opaque cast to `DslState*`. The host must
+//     install it before evaluating a part; verbs dereference it unchecked.
+//   - Errors are reported through `DslState::set_error` / `set_rig_error`,
+//     which are STICKY and first-error-wins, and the verb returns
+//     `JS_UNDEFINED`. Bindings almost never raise a JS exception, so a failed
+//     verb does not stop the script — the bake checks `has_error()` afterwards.
+//     A JS try/catch therefore cannot see a DSL error.
+//   - Rig / clip / motion verbs receive an EXTRA trailing argument: the Part
+//     base wrapper appends `Error.stack`, which `rig_source` parses into a
+//     `SourceSpan` for diagnostics. `rig_user_argc` / `anim_user_argc` strip it
+//     before any arity check, so `argc` and the authored argument count differ.
+//   - Numbers cross as doubles (`argd`, which yields 0 rather than failing on a
+//     non-numeric argument); DSL state stores float unless noted.
+//   - QuickJS ownership: every `JS_GetPropertyStr` / `JS_Call` /
+//     `JS_JSONStringify` result must be freed on every path, including the
+//     error paths, and `JS_ToCString` results need `JS_FreeCString`.
+//
+// Threading: one JSContext and one DslState per bake worker, so the verbs
+// themselves need no synchronization. The only shared state in this file is the
+// diagnostic counter set — `TerrainVerbCensus`, `script_profile`, the
+// `__planCandidates` timers — all relaxed atomics, plus `script_profile`'s
+// name table behind a mutex.
+//
+// Determinism: `Math.random` is replaced with the seeded `Rng` draw
+// (`j_random`) so a bake's output bytes depend only on the part's params. Any
+// change to the draw ORDER inside a verb moves every placement downstream of
+// it; see the notes on `place_one_instance` and `__candidatesInRect`.
+// ---------------------------------------------------------------------------
 #include "dsl_state.h"
 #include "dsl_bindings.h"
 #include "pf_bindings.h"
@@ -44,6 +89,13 @@ static std::string normalize_params_json(const char* s, size_t len) {
     return part_graph::params_to_json(p);
 }
 
+// The one route from a JS call back to the bake state: the host installs the
+// `DslState*` as the context opaque before evaluating any part module. Every
+// verb assumes it is non-null.
+//
+// `argd` coerces with `JS_ToFloat64` and yields 0 for anything non-numeric
+// instead of failing, so a verb that must reject a bad argument has to
+// type-check it itself (`JS_IsNumber`, `rig_finite_number`, ...).
 static DslState* state_of(JSContext* ctx) {
     return static_cast<DslState*>(JS_GetContextOpaque(ctx));
 }
@@ -102,6 +154,17 @@ static bool array_floats(JSContext* c, JSValueConst value, int count, float* out
     for (int i=0; i<count; ++i) { JSValue item=JS_GetPropertyUint32(c,value,i); double number=0; const bool numeric=JS_IsNumber(item); const int ok=numeric ? JS_ToFloat64(c,&number,item) : -1; JS_FreeValue(c,item); if (ok < 0 || !std::isfinite(number)) return false; out[i]=static_cast<float>(number); }
     return true;
 }
+// Two authored spellings, one `AnimationTransform`.
+//
+// `rig_transform` takes position and rotation as SEPARATE array arguments (the
+// `root(name, pos, rot)` / `bone(name, end, rot)` shape) and leaves scale at
+// its default. `socket_transform` takes a single object
+// `{ position | translation, rotation, scale }` (the socket / key / offset
+// shape) and accepts any subset of those keys.
+//
+// Rotation arrays are xyzw. Both set `*ok = false` on a wrong-length or
+// non-finite array, and the partially filled result must not be used in that
+// case — callers turn `!ok` straight into a rig error.
 static matter::AnimationTransform rig_transform(JSContext* c, JSValueConst position, JSValueConst rotation, bool required_position, bool* ok) {
     matter::AnimationTransform result{}; *ok = !required_position && (JS_IsUndefined(position) || JS_IsNull(position));
     if (!*ok) *ok = array_floats(c,position,3,&result.translation.x);
@@ -119,6 +182,15 @@ static matter::AnimationTransform socket_transform(JSContext* c, JSValueConst va
     if (*ok && !JS_IsUndefined(s) && !JS_IsNull(s)) *ok=array_floats(c,s,3,&result.scale.x);
     JS_FreeValue(c,p); JS_FreeValue(c,r); JS_FreeValue(c,s); return result;
 }
+// Recover the authoring site for diagnostics and stash it on the DslState as
+// the current rig source span. The Part base wrapper appends `Error.stack` as
+// the LAST argument of every rig/clip/motion verb; this parses the first
+// authored frame out of it so a later `set_rig_error` can point at a
+// module:line:column instead of at the engine.
+//
+// Every rig/clip/motion binding calls this first, before its own argument
+// checks. Falls back to the `<part>` pseudo-module when the stack argument is
+// missing or unparseable, so diagnostics degrade rather than fail.
 static void rig_source(JSContext* c, int n, JSValueConst* a, const char* object) {
     matter::animation::SourceSpan source{"<part>", 0, 0, object};
     if (n > 0 && JS_IsString(a[n-1])) {
@@ -181,6 +253,31 @@ static bool anim_type(JSContext* c, JSValueConst value, matter::AnimationValueTy
     if (name == "symbol" || name == "enum") { out = matter::AnimationValueType::Symbol; return true; }
     return false;
 }
+
+// ---------------------------------------------------------------------------
+// Clip and motion verbs.
+//
+// MOST of these call `rig_source` first (the trailing `Error.stack` argument)
+// and size their arity with `anim_user_argc`, which drops it. The exceptions
+// are the five clip SETTERS -- duration, sampleRate, loop, mode, at -- whose
+// wrappers in part_base.js.h deliberately do not append a stack, so they take
+// the raw argc. That pairing is load-bearing in both directions: adding a
+// stack to one of those wrappers without switching it to anim_user_argc would
+// make a no-argument `loop()` read the stack STRING as its boolean, and using
+// anim_user_argc on a wrapper that sends no stack would silently drop the
+// author's only argument. Argument validation is done here; session-state
+// validation is done in dsl_animation.cpp, which is why a verb can look like
+// it accepts anything.
+//
+// `j_generate` is the odd one out: it drives the whole sampling loop natively.
+// It asks `clip_sample_segments()` how many segments the clip's duration and
+// sample rate imply, then for each phase calls `begin_clip_sample()`, invokes
+// the JS callback with the normalized phase, and calls
+// `capture_clip_sample(phase)` to turn the posed skeleton into one key per
+// joint. A looping clip walks `segments` phases, a non-looping one
+// `segments + 1`. The loop stops at the first callback exception or state
+// failure, with the rig error set.
+// ---------------------------------------------------------------------------
 static JSValue j_beginClip(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     rig_source(c,n,a,"beginClip"); int argc=anim_user_argc(n); int off=(argc>1&&JS_IsNumber(a[0]))?1:0; std::string name; if(argc<=off||!anim_string(c,a[off],name)){state_of(c)->set_rig_error("beginClip requires a name");return JS_UNDEFINED;} float duration=1,rate=30; bool loop=false,add=false; if(argc>off+1&&JS_IsObject(a[off+1])){JSValue v=JS_GetPropertyStr(c,a[off+1],"duration");if(JS_IsNumber(v))duration=(float)argd(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"sampleRate");if(JS_IsNumber(v))rate=(float)argd(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"loop");if(!JS_IsUndefined(v))loop=JS_ToBool(c,v)>0;JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"mode");if(JS_IsString(v))add=arg_string(c,v)=="additive";JS_FreeValue(c,v);} state_of(c)->begin_clip(name,duration,rate,loop,add); return JS_UNDEFINED;
 }
@@ -474,6 +571,14 @@ static JSValue j_endModifier(JSContext* c, JSValueConst, int n, JSValueConst* a)
     return JS_UNDEFINED;
 }
 
+// placeChild(module, params?, { instanced, inlineBelowPx }?) — record a
+// placement of a declared child at the current transform.
+//
+// The params handling below is the load-bearing part: a stringify failure, or
+// params that normalize to empty / "{}", deliberately degrade to the
+// bare-module lookup, while any other params object must match a declared
+// variant exactly. `instanced` with no `inlineBelowPx` takes the engine's
+// 64 px default.
 static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
     const char* m = JS_ToCString(c, a[0]);
     if (!m) return JS_UNDEFINED;
@@ -790,6 +895,26 @@ static bool place_one_instance(
     return true;
 }
 
+// layer(module, opts) — bake one scatter layer of a tileset at AUTHORING time.
+//
+// It does not scatter a tile on demand; it generates all 20 placement domains
+// up front: 4 edge strips (2 orientations x 2 edge colors) plus 16 interior
+// tiles, each with its own seed derived from
+// `placement_seed(master_seed, layer_index, domain_id)`. That is what lets any
+// tile of the set be assembled later while two tiles sharing an edge color
+// agree along their shared edge.
+//
+// `tile()` must have been called first (the layer reads its size, strip width
+// and corner clear radius). `density` is required and is passed straight to
+// `tileset::scatter`; `placement` selects uniform / poisson / cluster and is
+// fail-closed on an unknown or non-string value.
+//
+// DETERMINISM: per placement, attributes are drawn from `attr_rng` in a fixed
+// order (scale, y, quaternion, params — see `place_one_instance`). Adding,
+// removing or reordering a draw shifts every later placement in that domain.
+//
+// Errors leave no partial layer: the `LayerSpec` is only pushed after all 20
+// domains have been generated successfully.
 static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     tileset::TilesetState* ts = ts_of(c);
     if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
@@ -1173,17 +1298,6 @@ static JSValue j_slopeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
     if (!w.field) { st->set_error("slopeAt: no world field bound"); return JS_UNDEFINED; }
     return JS_NewFloat64(c, w.field->slope_at((float)argd(c, a[0]), (float)argd(c, a[1])));
 }
-// __habitatAt(x, z, out) — evaluate the world's habitat tape at a world (x, z)
-// and fill `out[i]` with channel i, returning the channel count.
-//
-// Fills a CALLER-OWNED array rather than returning a fresh object: this is the
-// scatter hot path (one call per candidate, thousands per 64 m cell), and
-// allocating an object per call would hand back a good part of what moving the
-// ecology native buys. The caller keeps one array and reuses it.
-//
-// One crossing replaces what was ~14 interpreted fbm calls (~105 us measured);
-// the native evaluation behind it is close to free -- __heightAt evaluating a
-// 4-octave field costs the same as __moistureAt reading a constant.
 // __hasHabitat() — is a habitat tape bound? A PREDICATE, not a failed read.
 //
 // habitatAt reports a missing tape by setting the DSL error, which is sticky
@@ -1195,6 +1309,17 @@ static JSValue j_hasHabitat(JSContext* c, JSValueConst, int, JSValueConst*) {
     DslState* st = state_of(c);
     return JS_NewBool(c, st->world().habitat != nullptr);
 }
+// __habitatAt(x, z, out) — evaluate the world's habitat tape at a world (x, z)
+// and fill `out[i]` with channel i, returning the channel count.
+//
+// Fills a CALLER-OWNED array rather than returning a fresh object: this is the
+// scatter hot path (one call per candidate, thousands per 64 m cell), and
+// allocating an object per call would hand back a good part of what moving the
+// ecology native buys. The caller keeps one array and reuses it.
+//
+// One crossing replaces what was ~14 interpreted fbm calls (~105 us measured);
+// the native evaluation behind it is close to free -- __heightAt evaluating a
+// 4-octave field costs the same as __moistureAt reading a constant.
 static JSValue j_habitatAt(JSContext* c, JSValueConst, int argc,
                            JSValueConst* a) {
     VerbTimer _vt(g_height_us, g_height_calls);
@@ -1836,6 +1961,22 @@ static JSValue j_emitVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) 
     return JS_UNDEFINED;
 }
 
+// Register every native verb as a global on `ctx`. Called once per context,
+// after the host has installed the `DslState*` opaque and before any part
+// module is evaluated; the JS prelude wraps these `__`-prefixed globals into
+// the authored `Part` API, so a verb bound here with no prelude wrapper is
+// reachable only as `globalThis.__name(...)`.
+//
+// The third `bind` argument is the declared arity. It is not just metadata:
+// QuickJS pads the argv it hands a C function up to that length with
+// `undefined`, and several verbs here read `a[i]` past the caller's own
+// argument count (`j_lookAt` reads `a[4]`/`a[5]` when four arguments were
+// passed). Lowering a declared arity can therefore turn a working verb into an
+// out-of-bounds read.
+//
+// Also replaces `Math.random` with the seeded draw (`j_random`) so authored
+// parts are reproducible, and chains to `install_pf_bindings` for the
+// particle-flow verbs.
 void install_bindings(JSContext* ctx) {
     JSValue g = JS_GetGlobalObject(ctx);
     auto bind=[&](const char* n, JSCFunction* f, int argc){ JS_SetPropertyStr(ctx,g,n,JS_NewCFunction(ctx,f,n,argc)); };

@@ -1,3 +1,44 @@
+// MatterEditor/src/editor_props.cpp
+//
+// The editor's property SCHEMA plus the layer machinery around it. Each
+// tunable struct gets one static `props::group<T>` describing its fields;
+// EditorProps::init() binds schema + live instance + scope into the registry;
+// the rest of the file moves values between the compiled defaults, the world
+// JS, the two override files, the environment and the panels.
+//
+// Reading order. Everything above EditorProps::init() is declarative: a group
+// names a struct, a path (`render.fog`), a display label, and one prop() per
+// field carrying its range, units, enum labels, env var and doc string. The
+// doc strings are the real documentation of what each value MEANS — many of
+// them record why a value is what it is — and they are also the tooltips the
+// panels show. Actual code starts at init().
+//
+// Layer order (S4) is listed in editor_props.h; this file realizes it:
+// registry_.bind() captures the compiled default as the baseline; set_world()
+// repoints at the incoming scene's file and rebuilds the RequiresReload groups
+// there, because those are INPUTS to the connect; on_world_connected()
+// re-captures the baseline for every other World group (so layer 2 is what the
+// world JS authored) and then applies the world file and the env layer;
+// tick() debounces the User-scope save.
+//
+// Where the files are: World overrides live in
+// <project>/scenes/<world>/props.json (the pre-scene-layout
+// editor/worlds/<world>.props.json is still honoured when there is no scene
+// folder), User overrides in ./editor_settings.json — relative to the cwd, and
+// the editor is always launched from MatterEditor/. Both are SPARSE: only
+// values differing from their baseline are written, which is why the baseline
+// rules above matter so much. Nothing is read or written at all when
+// persistence is off (a MATTER_REPLAY run).
+//
+// Adding a tunable: add a prop() row to the right group, or a new
+// props::group<T> plus a registry_.bind() in init() and an accessor in the
+// header. That alone makes the field visible in Tunables, persistable at its
+// scope, settable from env if it is given .env(), and reachable from the
+// headless FIFO command `set <group.path>.<field> <value>`
+// (docs/agent/control-surface.md) — no per-field plumbing anywhere else.
+//
+// Main/UI thread only.
+
 #include "editor_props.h"
 
 #include "animation_debug_overlay.h"
@@ -50,6 +91,11 @@ using matter::props::Scope;
 //     every frame from ViewerStats::debug_view_mode / vol_debug_view, so a
 //     persisted value would be a lie.
 
+// viewer.budget — Scope::User, bound to the editor's own ViewerStats. One
+// field, and it is the QA knob: `set viewer.budget.pixel_budget 0.8` in a FIFO
+// timeline is how a headless capture forces coarser LOD without touching the
+// world. It feeds LOD selection, whose single rule lives in
+// MatterEngine3/src/render/lod_distance.h.
 const auto s_budget = matter::props::group<ViewerStats>(
     "viewer.budget", "Viewer Budget",
     prop(&ViewerStats::pixel_budget, "pixel_budget")
@@ -144,6 +190,11 @@ const auto s_lighting = matter::props::group<matter::VulkanLightingOverrides>(
               "resolves into a penumbra with several rays. Costs GPU time "
               "linearly."));
 
+// render.atmosphere — Scope::World, bound to ViewerStats::atmosphere. The
+// physical sky model's coefficients. Every field carries an env name, which is
+// what lets a headless MATTER_REPLAY capture sweep them; the multipliers are
+// dimensionless scales on the model's own constants, while sea_level_y is a
+// world-space Y in metres (the altitude the density profile is measured from).
 const auto s_atmosphere = matter::props::group<matter::AtmosphereSettings>(
     "render.atmosphere", "Atmosphere",
     prop(&matter::AtmosphereSettings::sea_level_y, "sea_level_y")
@@ -227,6 +278,13 @@ const char* const kNearDepthLabels[] = {"16", "32", "48"};
 const char* const kFarResolutionLabels[] = {"64", "128", "256"};
 const char* const kFarDepthLabels[] = {"16", "24", "32"};
 
+// render.cloud_shadows — Scope::World, bound to ViewerStats::cloud_shadows.
+// Two cascades of a cloud-shadow volume, near and far, each with its own
+// resolution, depth-slice count and coverage radius in metres. The resolution
+// and slice rows are ENUMS over fixed label tables (kNear*/kFar* above), so
+// only the listed sizes can be selected — they are not free integers.
+// update_fraction runs from 1/16 to 1 and is the share of the volume the
+// frame refreshes.
 const auto s_cloud_shadows = matter::props::group<matter::CloudShadowSettings>(
     "render.cloud_shadows", "Cloud Shadows",
     prop(&matter::CloudShadowSettings::enabled, "enabled").label("Enable"),
@@ -255,6 +313,15 @@ const char* const kHorizonDebugLabels[] = {
     "Map (rt_shadow world XZ)", "|Map - March|", "|RT form - March|",
     "Map (world XZ, no lift)"};
 
+// render.pom — Scope::World, bound to ViewerStats::tileset_pom. Ground
+// parallax-occlusion mapping over the tileset's height channel: how deep the
+// relief goes (relief_cap_m / datum_bias_m), how far and in how many steps the
+// march runs (max_march_m / steps), out to what distance it is applied at all
+// (max_distance_m / fade_band_m), and how the baked horizon term shades the
+// result. Note that render.pom's reach is a COST boundary and is no longer
+// what sets the chart-VT near band — that is render.vt above, and the comment
+// there explains the split. horizon_debug is .no_serialize(): a diagnostic
+// view, never persisted.
 const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
     "render.pom", "Ground POM",
     prop(&matter::TilesetPomSettings::enabled, "enabled").label("Enable"),
@@ -505,6 +572,13 @@ static_assert(matter::kMaxCloudLayers == 4,
 #undef CLOUD_PROP
 #undef CLOUD_OFF
 
+// camera.prefs — Scope::User, bound to the editor's CameraPrefs
+// (camera_controller.h). Per-machine feel rather than project data: fly speed,
+// look sensitivity, and the step sizes the Camera panel's button pads use, so
+// it follows the user's machine and not the scene. The orbit_* fields are the
+// inputs to camera_orbit.h; orbit_selection chooses the pivot (the selection's
+// focus point rather than the view target), and it is the same field the
+// Camera panel's checkbox edits.
 const auto s_camera = matter::props::group<CameraPrefs>(
     "camera.prefs", "Camera",
     prop(&CameraPrefs::far_plane, "far_plane")
@@ -966,6 +1040,18 @@ const char* const kDlssModeLabels[4] = {
     kDlssModeLabelStorage[0], kDlssModeLabelStorage[1],
     kDlssModeLabelStorage[2], kDlssModeLabelStorage[3]};
 
+// Bind every static group, then run the User file layer and the env layer.
+//
+// Call exactly once, before the first world is opened. All four struct
+// references are BORROWED for the lifetime of this object: the registry stores
+// bare pointers into them, so every one of them must outlive the EditorProps.
+// Three engine-owned structs are bound here too (VT residency budgets, VT
+// enrich, stream runtime) — the engine keeps reading them directly and this
+// only adds UI, persistence and the env layer on top.
+//
+// World-scope groups are bound here but do NOT get their real values yet;
+// those arrive at on_world_connected(). The final loop clears every dirty flag
+// so a fresh launch does not present itself as having unsaved edits.
 void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
                        ToolbarState& toolbar, ConsolePanelState& console,
                        bool persist) {
@@ -1034,6 +1120,11 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
     for (size_t i = 0; i < registry_.size(); ++i) registry_.at(i).set_dirty(false);
 }
 
+// Release the two session-owned DynamicGroup bindings and flush a pending
+// User-scope autosave immediately — the debounce timer is abandoned, not
+// waited out. A pending WORLD save is NOT flushed here: that happens at the
+// world-switch seam in set_world(), the last point at which the outgoing
+// world's path is still current. Safe to call without init().
 void EditorProps::shutdown() {
     release_world_props();
     release_draw_overrides();
@@ -1044,6 +1135,12 @@ void EditorProps::shutdown() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Named accessors. Each returns null when its group was never bound (init()
+// not called). The Binding is owned by the registry — re-fetch it rather than
+// caching it, and that goes double for world_props()/draw_overrides(), which
+// are unbound and re-bound at every world connect.
+// ---------------------------------------------------------------------------
 matter::props::Binding* EditorProps::budget() { return registry_.get(budget_); }
 matter::props::Binding* EditorProps::lighting() { return registry_.get(lighting_); }
 matter::props::Binding* EditorProps::atmosphere() {
@@ -1124,13 +1221,6 @@ matter::props::Binding* EditorProps::animation_overlay() {
 matter::props::Binding* EditorProps::viewer_debug() {
     return registry_.get(viewer_debug_);
 }
-matter::props::Binding* EditorProps::viewer_session_status() {
-    return registry_.get(viewer_session_status_);
-}
-matter::props::Binding* EditorProps::viewer_atmosphere_status() {
-    return registry_.get(viewer_atmosphere_status_);
-}
-
 matter::props::Binding* EditorProps::world_props() {
     if (!world_props_) return nullptr;
     return registry_.get(world_props_->binding());

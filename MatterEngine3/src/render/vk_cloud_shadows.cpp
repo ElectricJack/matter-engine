@@ -1,3 +1,38 @@
+// MatterEngine3/src/render/vk_cloud_shadows.cpp
+//
+// Implementation of the cloud-shadow volumes declared in vk_cloud_shadows.h.
+// The pure math lives in matter/cloud_shadow_settings.h; this file is the
+// Vulkan half.
+//
+// Generation, per cascade level, all three passes sharing one descriptor set
+// bound once:
+//   1. reproject   3D dispatch over the whole volume in 4x4x4 groups. Reads
+//                  the previous cumulative image (bound as a sampled image
+//                  with a transparent-black border, so out-of-volume history
+//                  reads as no cloud) and writes the destination one.
+//   2. density     2D dispatch over XY in 8x8 groups -- each invocation owns
+//                  a whole w column -- writing `density`.
+//   3. integrate   the same 2D shape, prefix-integrating that column into the
+//                  destination cumulative image.
+// Barriers between them are explicit and part of the contract; the
+// destination image ends in SHADER_READ_ONLY_OPTIMAL, readable by fragment,
+// compute and ray-tracing stages.
+//
+// Two double-buffered axes are easy to confuse:
+//   * the FRAME SLOT (0/1) selects the constant buffer and cloud SSBO that
+//     this frame writes, so a frame in flight is never overwritten;
+//   * the PING (`active_index`) selects which of a level's two cumulative
+//     images is live for sampling. `generation_sets[frame_slot][destination]`
+//     is the cross product, which is why there are four sets per level.
+//
+// Resource lifetime: a layout change builds a whole new candidate pair before
+// touching the live one, so a failed allocation never destroys working
+// volumes. The outgoing pair is parked in `retired_bundles_` against the
+// opposite frame slot and destroyed when that slot returns.
+//
+// Failure policy throughout: soft. Allocation failures and degenerate sun
+// frames record a diagnostic, deactivate, and let the renderer carry on with
+// the emergency images.
 #include "vk_cloud_shadows.h"
 
 #include <algorithm>
@@ -15,18 +50,23 @@ namespace {
 
 struct ClearImagesRecord {
     const std::vector<matter::VkImageResource*>* images = nullptr;
+    // Folded into the SHADER_READ_ONLY transitions these records drive; see
+    // matter::ray_tracing_shader_stage.
+    VkPipelineStageFlags2 ray_tracing_stage = 0;
 };
 
 struct ReadTauRecord {
     matter::VkImageResource* image = nullptr;
     VkBuffer destination = VK_NULL_HANDLE;
     uint32_t x = 0, y = 0, z = 0;
+    VkPipelineStageFlags2 ray_tracing_stage = 0;
 };
 
 struct WriteTauRecord {
     matter::VkImageResource* image = nullptr;
     VkBuffer source = VK_NULL_HANDLE;
     uint32_t x = 0, y = 0, z = 0;
+    VkPipelineStageFlags2 ray_tracing_stage = 0;
 };
 
 struct GenerationRecord {
@@ -36,6 +76,16 @@ struct GenerationRecord {
     std::string error;
 };
 
+// The uniform block all three generation shaders read. Fixed at 192 bytes by
+// the static_assert below; the GLSL declaration must match field for field.
+//   current_uvw_to_world / previous_world_to_uvw  column-major, packed by
+//       `pack_mat4_column_major` from Matter's row-major Mat4f.
+//   dimensions_level   {width, height, depth, level index}.
+//   scheduling         {update_fraction, frame_time, voxel_depth_m,
+//                       history_valid ? 1 : 0}.
+//   controls           {frame_index, density override mode, NaN slice,
+//                       cloud layer count}.
+//   density_override   test-only sigmas and slice indices.
 struct alignas(16) GenerationConstants {
     float current_uvw_to_world[16]{};
     float previous_world_to_uvw[16]{};
@@ -92,10 +142,16 @@ bool create_compute_pipeline(VkDevice device, const char* name,
     result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
                                       &pipeline_info, nullptr, &pipeline);
     vkDestroyShaderModule(device, module, nullptr);
+    // `vk_fail` always returns false after filling `error`, so this reads as
+    // "true on success, otherwise false with a diagnostic" -- not as a
+    // fallback attempt.
     return result == VK_SUCCESS ||
            vk_fail("vkCreateComputePipelines(cloud shadow)", result, error);
 }
 
+// Transposes Matter's row-major `Mat4f` into the column-major order a GLSL
+// `mat4` expects. Every matrix crossing into the generation constants goes
+// through here (or through the equivalent transpose in `environment_block`).
 void pack_mat4_column_major(float out[16], const matter::Mat4f& matrix) {
     for (uint32_t row = 0; row < 4; ++row)
         for (uint32_t column = 0; column < 4; ++column)
@@ -125,6 +181,10 @@ float half_to_float(uint16_t value) {
     return result;
 }
 
+// Clears optical depth to zero -- fully lit -- and leaves every image in
+// SHADER_READ_ONLY_OPTIMAL. Used both for the emergency images at init and for
+// every newly allocated cascade pair, so a volume is never sampled before it
+// has been written.
 void record_clear_images(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<ClearImagesRecord*>(user_data);
     const VkClearColorValue clear_tau{{0.0f, 0.0f, 0.0f, 0.0f}};
@@ -145,7 +205,7 @@ void record_clear_images(VkCommandBuffer command_buffer, void* user_data) {
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                record.ray_tracing_stage,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -173,7 +233,7 @@ void record_read_tau(VkCommandBuffer command_buffer, void* user_data) {
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            record.ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -198,7 +258,7 @@ void record_write_tau(VkCommandBuffer command_buffer, void* user_data) {
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            record.ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -208,6 +268,10 @@ bool same_desc(const matter::CloudShadowLevelDesc& a,
            a.depth == b.depth && a.coverage_m == b.coverage_m;
 }
 
+// Angle in degrees between two frames' light axes. Feeds
+// `cloud_shadow_requires_full_invalidation`: a big enough sun swing makes
+// reprojection meaningless, because the previous volume no longer overlaps
+// the new one along the light direction.
 float frame_angle_degrees(const matter::CloudShadowFrame& a,
                           const matter::CloudShadowFrame& b) {
     const float dot = std::fmax(-1.0f, std::fmin(
@@ -236,6 +300,11 @@ bool VkCloudShadows::init(matter::VulkanDevice& vulkan, std::string& error) {
     return true;
 }
 
+// Builds everything shared by all levels: the two mapped cloud-layer SSBOs
+// (zero-filled so a first frame without layers is well defined), the NEAREST
+// sampler with a transparent-black border -- which is what makes an
+// out-of-volume history read return zero optical depth -- the five-binding
+// descriptor layout, the pipeline layout, and the three compute pipelines.
 bool VkCloudShadows::create_generation_resources(std::string& error) {
     const VkDeviceSize cloud_bytes =
         sizeof(matter::GpuCloudLayer) * matter::kMaxCloudLayers;
@@ -345,8 +414,9 @@ void VkCloudShadows::request_cloud_layers(const matter::FogSettings& fog) {
 }
 
 bool VkCloudShadows::create_emergency_images(std::string& error) {
+    // No lifetime list here: clear_images() collects its own from `images`
+    // and hands it to the immediate submit.
     std::vector<matter::VkImageResource*> images;
-    std::vector<std::shared_ptr<void>> lifetimes;
     for (auto& image : emergency_) {
         if (!matter::create_image(
                 *vulkan_, VK_IMAGE_TYPE_3D, VK_FORMAT_R16_SFLOAT, {1, 1, 1},
@@ -359,14 +429,15 @@ bool VkCloudShadows::create_emergency_images(std::string& error) {
             return false;
         }
         images.push_back(&image);
-        lifetimes.push_back(image.lifetime);
     }
     return clear_images(images, error);
 }
 
 bool VkCloudShadows::clear_images(
     const std::vector<matter::VkImageResource*>& images, std::string& error) {
-    ClearImagesRecord record{&images};
+    ClearImagesRecord record{&images,
+                             matter::ray_tracing_shader_stage(
+                                 vulkan_->ray_tracing_available())};
     std::vector<std::shared_ptr<void>> lifetimes;
     lifetimes.reserve(images.size());
     for (const auto* image : images) lifetimes.push_back(image->lifetime);
@@ -375,6 +446,15 @@ bool VkCloudShadows::clear_images(
         matter::ImmediateSubmitPhase::staging_upload, std::move(lifetimes));
 }
 
+// Allocates one level's constant buffers and its four descriptor sets, and
+// writes them once -- the sets are immutable for the level's lifetime.
+//
+// The four sets are the [frame_slot][destination] cross product. Note the
+// `destination ^ 1u` on binding 1: the set that WRITES cumulative[d] SAMPLES
+// cumulative[d ^ 1] as history, which is the whole ping-pong. Bindings are
+// 0 density (storage), 1 previous cumulative (sampled), 2 destination
+// cumulative (storage), 3 cloud layers (storage buffer, per frame slot),
+// 4 generation constants (uniform, per frame slot).
 bool VkCloudShadows::create_level_descriptors(
     CloudShadowLevelBundle& level, std::string& error) {
     for (auto& constants : level.generation_constants) {
@@ -455,6 +535,15 @@ bool VkCloudShadows::create_level_descriptors(
     return true;
 }
 
+// Allocates a complete candidate cascade pair -- three 3D R16_SFLOAT images
+// per level plus descriptors -- and clears them. Built off to the side, so the
+// caller only swaps it in once it fully succeeded and a failure cannot damage
+// the live volumes.
+//
+// On failure it records the partially created images' lifetime handles in
+// `failed_candidate_lifetimes_` before destroying them, which is what
+// `failed_candidate_destroyed_for_test` later checks: the leak test needs
+// proof the partial candidate was actually released, not merely dropped.
 bool VkCloudShadows::create_level_pair(
     const std::array<matter::CloudShadowLevelDesc, 2>& descs,
     LevelPair& pair, std::string& error) {
@@ -521,6 +610,10 @@ void VkCloudShadows::destroy_level_pair(LevelPair& pair) {
     }
 }
 
+// Parks the live cascade pair instead of destroying it, because the other
+// in-flight frame may still be sampling it. Note the `^ 1u`: it is protected
+// until `collect_retired` runs for the OPPOSITE slot, i.e. one full slot
+// alternation later. The subsystem becomes inactive immediately.
 void VkCloudShadows::retire_active(uint32_t completed_frame_slot) {
     if (!active_) return;
     retired_bundles_.push_back(
@@ -545,6 +638,10 @@ bool VkCloudShadows::requested_layout_matches_active() const {
            same_desc(active_levels_[1].desc, requested_levels_[1]);
 }
 
+// Builds the sticky `allocation_error()` string: the requested near and far
+// dimensions plus the total size the pair would have taken (three R16 volumes
+// per level, two bytes per voxel), so an out-of-memory can be diagnosed from
+// a log without reproducing it.
 std::string VkCloudShadows::allocation_diagnostic(
     const std::string& detail) const {
     char diagnostic[384]{};
@@ -578,6 +675,9 @@ bool VkCloudShadows::prepare_frame(
         error = "cloud-shadow descriptor frame slot is out of range";
         return false;
     }
+    // A generation recorded last frame but never committed did not run, so
+    // its destination volume holds nothing usable -- drop it and invalidate
+    // history rather than reprojecting from garbage.
     if (generation_pending_) discard_generation();
     collect_retired(frame_slot);
     prepared_frame_slot_ = frame_slot;
@@ -595,6 +695,11 @@ bool VkCloudShadows::prepare_frame(
     }
     if (request_failed_) return true;
 
+    // Reallocation path. Build the candidate first, and only retire the live
+    // pair once it succeeded; on failure the old pair is retired anyway and
+    // the subsystem goes inactive with a sticky diagnostic, because the
+    // requested layout is the one the renderer now expects. Any new pair
+    // starts with no history.
     if (!requested_layout_matches_active()) {
         LevelPair candidate{};
         std::string detail;
@@ -628,6 +733,8 @@ bool VkCloudShadows::prepare_frame(
                 "non-finite sun-space coordinate frame");
             return true;
         }
+        // With no previous frame to compare against, 180 degrees forces the
+        // full-invalidation path -- the safe answer for a first frame.
         const float sun_delta = level.current_frame.valid
             ? frame_angle_degrees(level.current_frame, next) : 180.0f;
         level.previous_frame = level.current_frame;
@@ -649,6 +756,14 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
         return false;
     }
     if (!active_ || !direct_sun_visible_) return true;
+
+    // The cumulative volumes are sampled by fragment, compute AND ray-tracing
+    // shaders, but naming the ray-tracing stage in a barrier on a device
+    // without the feature is a validation error -- see
+    // matter::ray_tracing_shader_stage.
+    const VkPipelineStageFlags2 ray_tracing_stage =
+        matter::ray_tracing_shader_stage(vulkan_ &&
+                                         vulkan_->ray_tracing_available());
 
     auto& cloud_buffer = cloud_layer_ssbo_[prepared_frame_slot_];
     std::memcpy(cloud_buffer.mapped, packed_cloud_layers_.data(),
@@ -689,6 +804,11 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
         if (!matter::flush_buffer(constant_buffer, 0, sizeof(constants), error))
             return false;
 
+        // The density image's previous use differs between the first
+        // generation (freshly cleared, left SHADER_READ_ONLY_OPTIMAL) and
+        // every later one (left in GENERAL by the last integrate pass), so
+        // the source stage and access are chosen from its tracked layout
+        // rather than assumed.
         matter::record_image_transition(
             command_buffer, level.density, VK_IMAGE_LAYOUT_GENERAL,
             level.density.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
@@ -705,7 +825,7 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
             command_buffer, output, VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                ray_tracing_stage,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -716,6 +836,8 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 generation_pipeline_layout_, 0, 1, &set,
                                 0, nullptr);
+        // Pass 1, reproject: 3D over the whole volume in 4x4x4 groups. One
+        // descriptor set is bound here and reused by all three passes.
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                           reproject_pipeline_);
         vkCmdDispatch(command_buffer, (level.desc.width + 3u) / 4u,
@@ -731,6 +853,9 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
+        // Pass 2, density: 2D over XY in 8x8 groups, one invocation per
+        // column walking the whole depth. Only the columns this frame's phase
+        // selected are actually rewritten.
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                           density_pipeline_);
         vkCmdDispatch(command_buffer, (level.desc.width + 7u) / 8u,
@@ -743,6 +868,9 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
+        // Pass 3, integrate: same 2D column shape, prefix-integrating density
+        // along the light axis into the destination cumulative image, which
+        // this pass leaves ready for sampling.
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                           integrate_pipeline_);
         vkCmdDispatch(command_buffer, (level.desc.width + 7u) / 8u,
@@ -754,10 +882,13 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                ray_tracing_stage,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
+    // Recorded, not executed. The flag only means "a commit or discard is now
+    // owed"; `environment_block()` reads it to publish the ping this frame is
+    // writing rather than the one still live.
     generation_pending_ = true;
     return true;
 }
@@ -805,6 +936,10 @@ const matter::VkImageResource& VkCloudShadows::environment_image(
     return emergency_[std::min(index, 3u)];
 }
 
+// Packs the shader-facing uniform payload documented on the declaration. Two
+// details worth keeping in mind: the matrices are transposed here into
+// column-major GLSL order, and the identity matrices plus a zero enable flag
+// written up front are what an inactive or sunless subsystem publishes.
 std::array<float, 40> VkCloudShadows::environment_block() const {
     std::array<float, 40> block{};
     for (uint32_t matrix = 0; matrix < 2; ++matrix) {
@@ -856,7 +991,9 @@ bool VkCloudShadows::environment_image_is_clear_for_test(
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readback, error) ||
         !matter::map_buffer(readback, error)) return false;
-    ReadTauRecord request{&image, readback.buffer, 0, 0, 0};
+    ReadTauRecord request{&image, readback.buffer, 0, 0, 0,
+                          matter::ray_tracing_shader_stage(
+                              vulkan_->ray_tracing_available())};
     if (!matter::submit_immediate(
             *vulkan_, record_read_tau, &request, error,
             matter::ImmediateSubmitPhase::staging_readback,
@@ -898,6 +1035,11 @@ void VkCloudShadows::clear_density_override_for_test(
     if (invalidate_history) force_history_invalidation_ = true;
 }
 
+// Test-only synchronous generation: prepare, record into a private immediate
+// command buffer, block on it, then commit -- collapsing the whole frame
+// protocol into one blocking call. It pins every touched resource's lifetime
+// for the submit and discards the generation on either failure. Not for the
+// frame path.
 bool VkCloudShadows::generate_for_test(
     uint32_t frame_slot, const matter::Float3& camera,
     const matter::Float3& sun_direction, float frame_time,
@@ -940,6 +1082,9 @@ bool VkCloudShadows::generate_for_test(
     return true;
 }
 
+// Copies one voxel to the host and decodes the R16_SFLOAT half. Allocates a
+// staging buffer and blocks on an immediate submit, and returns both the
+// decoded float and the raw bits so a test can assert on the exact encoding.
 bool VkCloudShadows::readback_voxel(
     matter::VkImageResource& image, uint32_t x, uint32_t y, uint32_t z,
     float& value, uint16_t& raw, std::string& error) {
@@ -954,7 +1099,9 @@ bool VkCloudShadows::readback_voxel(
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readback, error) ||
         !matter::map_buffer(readback, error)) return false;
-    ReadTauRecord request{&image, readback.buffer, x, y, z};
+    ReadTauRecord request{&image, readback.buffer, x, y, z,
+                          matter::ray_tracing_shader_stage(
+                              vulkan_->ray_tracing_available())};
     if (!matter::submit_immediate(
             *vulkan_, record_read_tau, &request, error,
             matter::ImmediateSubmitPhase::staging_readback,
@@ -1000,7 +1147,9 @@ bool VkCloudShadows::write_cumulative_raw_for_test(
         !matter::map_buffer(upload, error)) return false;
     std::memcpy(upload.mapped, &raw, sizeof(raw));
     if (!matter::flush_buffer(upload, 0, sizeof(raw), error)) return false;
-    WriteTauRecord request{&image, upload.buffer, x, y, z};
+    WriteTauRecord request{&image, upload.buffer, x, y, z,
+                           matter::ray_tracing_shader_stage(
+                               vulkan_->ray_tracing_available())};
     return matter::submit_immediate(
         *vulkan_, record_write_tau, &request, error,
         matter::ImmediateSubmitPhase::staging_upload,

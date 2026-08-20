@@ -269,6 +269,27 @@ static void test_array_ensure_overflow(void) {
     printf("  MemArray overflow guard tests passed!\n");
 }
 
+/* mem_array's entry points tolerate a NULL array, matching mem_arena and
+ * mem_pool. This pins that contract down: the void-returning functions must
+ * do nothing, ensure must report failure and push must return NULL, and none
+ * of them may dereference the pointer (ASan would catch it if they did). */
+static void test_array_null_tolerance(void) {
+    printf("Testing mem_array NULL tolerance...\n");
+    mem_array_init(NULL, sizeof(int));
+    assert(mem_array_ensure(NULL, 16) == 0);
+    assert(mem_array_push(NULL) == NULL);
+    mem_array_clear(NULL);
+    mem_array_free(NULL);
+
+    /* get_stats leaves *out untouched for a NULL array, so a caller must not
+     * read it -- assert only that it does not write. */
+    MemStats st;
+    st.liveBytes = 12345;
+    mem_array_get_stats(NULL, &st);
+    assert(st.liveBytes == 12345);
+    printf("  mem_array NULL tolerance tests passed!\n");
+}
+
 int main() {
     printf("Running MemPool tests...\n");
     printf("max_align_t alignment: %zu bytes\n\n", _Alignof(max_align_t));
@@ -288,6 +309,8 @@ int main() {
     test_array_growth_policy();
     printf("\n");
     test_array_ensure_overflow();
+    printf("\n");
+    test_array_null_tolerance();
 
     printf("\nAll tests passed!\n");
     return 0;

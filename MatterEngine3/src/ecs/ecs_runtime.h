@@ -1,4 +1,32 @@
 #pragma once
+// MatterEngine3/src/ecs/ecs_runtime.h
+//
+// Runtime: the object that owns a flecs world and everything hanging off it.
+//
+// INTERNAL header. It is deliberately not part of MatterEngine's public include
+// surface (matter/world_session.h is), which is why test-only and session-only
+// seams such as streaming_coordinator() and animation_systems() are exposed
+// here without apology.
+//
+// What a Runtime owns:
+//   - the flecs world, with CoreModule / PhysicsModule / StreamingModule
+//     imported and the fixed + frame pipelines built (see ecs_runtime.cpp for
+//     the phase graph);
+//   - PhysicsContext (Box3D), the streaming Coordinator, and AnimationSystems,
+//     each published into the world as a *ContextRef singleton so systems can
+//     find them without a global.
+// It BORROWS the AnimationService (attach_animation_service): the caller keeps
+// its lifetime and must detach with nullptr before destroying it.
+//
+// Threading. Everything is tick-thread only, with exactly one exception:
+// enqueue_world_state() takes a mutex and may be called from any thread. Note
+// that construction and destruction are also tick-thread operations with
+// ordering constraints — the destructor nulls the context singletons before
+// releasing the objects, because flecs observers survive until world
+// finalization.
+//
+// Non-copyable and non-movable (deleted copy; the flecs world and the raw
+// back-pointers held by systems make relocation unsafe).
 
 #include <map>
 #include <memory>
@@ -50,6 +78,12 @@ namespace matter::render { struct AnimationRigidAsset; struct AnimationSkinnedAs
 
 namespace matter::ecs_runtime {
 
+// What one tick() actually did. `fixed_steps` is how many fixed pipeline runs
+// happened; `dropped_steps` is how many whole steps were banked but discarded
+// after max_fixed_steps was reached (the spiral-of-death guard, so a nonzero
+// value means simulation time is deliberately falling behind wall time);
+// `invalid` means the TickDesc was rejected and NOTHING ran, not that a step
+// failed.
 struct TickResult {
     uint32_t fixed_steps = 0;
     uint32_t dropped_steps = 0;
@@ -59,6 +93,10 @@ struct TickResult {
     double interpolation_alpha = 0.0;
 };
 
+// A world-status transition queued from outside the tick thread (world loading
+// is asynchronous). Applied at the top of the next tick(), in enqueue order.
+// Ready additionally bumps the world's content generation and, if `entities` is
+// non-empty, bootstraps those recipes transactionally.
 enum class WorldStateCommandKind { Loading, Ready, Failed };
 
 struct WorldStateCommand {
@@ -67,6 +105,9 @@ struct WorldStateCommand {
     scene::PartResolver part_resolver;      // optional; resolves module name → hash
 };
 
+// Owner of one flecs world and its native subsystems. See the file header for
+// what it owns, the threading rule, and the construction/destruction ordering
+// constraints. One per WorldSession; created and destroyed on the tick thread.
 class Runtime {
 public:
     Runtime();
@@ -113,7 +154,14 @@ public:
                                           uint32_t lod = 0,
                                           bool visible = true);
     void detach_animation_skinned_binding(flecs::entity entity);
+    // Thread-safe: the only method on Runtime callable off the tick thread.
+    // Queues the command under a mutex; it takes effect at the start of the next
+    // tick(), not here.
     void enqueue_world_state(WorldStateCommand command);
+    // Advance the world by one frame: drain commands, audit animation bindings,
+    // run the fixed pipeline off the accumulator, then the frame pipeline once.
+    // Returns invalid (and does nothing) for a non-finite or negative frame
+    // delta, a non-positive fixed delta, or max_fixed_steps == 0.
     TickResult tick(const TickDesc& desc);
 
     // E6: connect the owning session's evt::Hub so the physics pull stage can
@@ -137,9 +185,11 @@ private:
     AnimationService* bound_animation_service_ = nullptr;
     flecs::entity fixed_pipeline_;
     flecs::entity frame_pipeline_;
+    // Unspent simulation time, in seconds. Survives across ticks; frozen (not
+    // reset) while advance_fixed is false, and also feeds interpolation_alpha.
     double accumulator_seconds_ = 0.0;
-    std::mutex world_state_mutex_;
-    std::vector<WorldStateCommand> world_state_commands_;
+    std::mutex world_state_mutex_;                        // guards the queue below
+    std::vector<WorldStateCommand> world_state_commands_;  // producer: any thread
     scene::SceneGeneration scene_generation_{};
 };
 
