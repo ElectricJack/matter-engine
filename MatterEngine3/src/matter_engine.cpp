@@ -9023,8 +9023,16 @@ bool WorldSession::Impl::ensure_tracer() const {
             // ladder-as-GEOMETRY consumer about, and the query API was one of
             // the consumers that never asked: on projects/primitive_demo it
             // reduced the whole Gallery to 8 triangles lying in the plane
-            // z = 0, and every raycast -- api_tests', and the editor's picking
-            // -- missed. The canonical predicate only recognises a SINGLE
+            // z = 0, so every WorldSession::raycast missed.
+            //
+            // Scope of the damage, since it is narrower than it looks: the
+            // four queries below (raycast / instance_count / instance_info /
+            // the tracer-backed pick) are the only consumers of this path.
+            // MatterEditor's viewport picking is NOT affected -- it uses the
+            // GPU identity buffer (`pick_at_pixel`) and falls back to a
+            // ray-OBB test against `part_bounds`, which is built from
+            // `LoadedPart::clusters` AABBs and never touches this ladder.
+            // The canonical predicate only recognises a SINGLE
             // cluster's rung (exactly 2 triangles), so the merged whole-part
             // rung is tested the equivalent way: all-billboard, no mesh left.
             // A mixed rung (only some clusters earned an impostor) is kept --
