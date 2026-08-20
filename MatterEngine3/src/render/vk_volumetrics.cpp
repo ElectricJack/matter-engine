@@ -1041,29 +1041,6 @@ void VkVolumetrics::set_lighting(const VkSceneLighting& lighting) {
 // update_emitters
 // ---------------------------------------------------------------------------
 
-void VkVolumetrics::update_emitters(
-    matter::VulkanDevice& vulkan,
-    const std::vector<GpuVolumeEmitter>& emitters) {
-    (void)vulkan;  // device handle comes from device_; kept for API symmetry
-    if (!initialized_ || emitter_ssbo_.buffer == VK_NULL_HANDLE) return;
-
-    const uint32_t count =
-        std::min(static_cast<uint32_t>(emitters.size()), kVolMaxEmitters);
-
-    // Write count at offset 0.
-    auto* base = static_cast<uint8_t*>(emitter_ssbo_.mapped);
-    std::memcpy(base, &count, sizeof(uint32_t));
-
-    // Write emitter array at offset 16 (std430 alignment).
-    if (count > 0) {
-        std::memcpy(base + 16, emitters.data(),
-                    count * sizeof(GpuVolumeEmitter));
-    }
-
-    std::string flush_error;
-    matter::flush_buffer(emitter_ssbo_, 0, emitter_ssbo_.size, flush_error);
-}
-
 // ---------------------------------------------------------------------------
 // record
 // ---------------------------------------------------------------------------

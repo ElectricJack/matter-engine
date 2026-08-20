@@ -199,16 +199,6 @@ void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out);
 // [-1, MATERIAL_MAX_DETAIL_SLOTS-1].
 void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot);
 
-// Runtime override: bind material `materialId` to viewer macro tileset slot
-// `slot` (Phase 3 frequency-split ground layer). Pass slot < 0 to clear.
-// Mirrors MaterialRegistrySetGroundTilesetSlot's semantics and validation but
-// is independent: a material can carry a detail slot, a macro slot, both, or
-// neither. Values persist for the life of the process. Consumed only by
-// MaterialRegistryPackRtForGPU (Vulkan MaterialGpuRecord.flags_misc[1]); the
-// GL path's MaterialRegistryPackForGPU never reads it.
-// Silently no-op on materialId out of range OR slot outside
-// [-1, MATERIAL_MAX_DETAIL_SLOTS-1].
-void MaterialRegistrySetGroundMacroSlot(int materialId, int slot);
 
 #ifdef __cplusplus
 }

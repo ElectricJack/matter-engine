@@ -84,7 +84,6 @@ struct SettleWorld::Impl {
     void wrap_bodies();
     void sync_groups_step(bool force_snap);
     void refresh_poses();
-    int count_awake() const;
 };
 
 SettleWorld::SettleWorld(float torus_size, const HeightField& base, const SettleParams& params) {
@@ -485,13 +484,6 @@ void SettleWorld::Impl::refresh_poses() {
         out_poses.push_back(Pose{ p.x * inv, p.y * inv, p.z * inv,
                                   q.v.x, q.v.y, q.v.z, q.s });
     }
-}
-
-int SettleWorld::Impl::count_awake() const {
-    int n = 0;
-    for (const TrackedBody& tb : bodies)
-        if (b3Body_IsAwake(tb.id)) ++n;
-    return n;
 }
 
 } // namespace tileset

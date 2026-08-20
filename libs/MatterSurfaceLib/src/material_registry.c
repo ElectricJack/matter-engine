@@ -236,12 +236,6 @@ void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot) {
     g_slot_overrides[materialId] = slot;
 }
 
-void MaterialRegistrySetGroundMacroSlot(int materialId, int slot) {
-    if (materialId < 0 || materialId >= ME_MAX_MACRO_OVERRIDES) return;
-    if (slot < -1 || slot >= MATERIAL_MAX_DETAIL_SLOTS) return;
-    g_macro_overrides[materialId] = slot;
-}
-
 void MaterialRegistryPackForGPU(float* out) {
     // Pack as three vec4s (std140-friendly):
     //   [albedo.xyz, roughness]

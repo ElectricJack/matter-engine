@@ -43,8 +43,6 @@ void begin_attempt(uint64_t hash);
 // input, timeout) will not be blacklisted.
 void end_attempt(uint64_t hash);
 
-// Number of blacklisted hashes (for stats / test hooks).
-uint64_t blacklist_size();
 
 // Reset in-memory state (for tests). Does NOT touch the on-disk files.
 void reset_for_tests();

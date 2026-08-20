@@ -116,24 +116,6 @@ void Cell::add_particle_index_unchecked(uint32_t particle_index, uint32_t materi
     is_dirty = true;
 }
 
-void Cell::remove_particle_index(uint32_t particle_index, uint32_t material_id) {
-    uint32_t group = (uint32_t)MaterialMergeGroup((int)material_id);
-    auto material_it = material_particle_indices.find(group);
-    if (material_it != material_particle_indices.end()) {
-        auto& material_particles = material_it->second;
-        auto it = std::find(material_particles.begin(), material_particles.end(), particle_index);
-        if (it != material_particles.end()) {
-            material_particles.erase(it);
-            is_dirty = true;
-            
-            // Clean up empty material entries
-            if (material_particles.empty()) {
-                material_particle_indices.erase(material_it);
-            }
-        }
-    }
-}
-
 void Cell::clear_particle_indices() {
     material_particle_indices.clear();
     is_dirty = true;
@@ -502,13 +484,4 @@ void Cell::clear_meshes(BLASManager* blas_manager) {
 
 void Cell::accept(CellVisitor& visitor) const {
     visitor.visit_cell(*this);
-}
-
-void Cell::accept_transformed(CellRenderVisitor& visitor, const mm::Mat4& transform) const {
-    visitor.visit_cell_transformed(*this, transform);
-}
-
-float Cell::get_diagonal_length() const {
-    mm::Vec3 size = mm::sub(max_bound, min_bound);
-    return mm::length(size);
 }

@@ -52,18 +52,12 @@ public:
 
     // Transform particles between local and world space
     mm::Vec3 local_to_world(const mm::Vec3& local_pos) const;
-    mm::Vec3 world_to_local(const mm::Vec3& world_pos) const;
 
     // Particle management
     uint32_t add_particle(const mm::Vec3& local_position, float radius = 1.0f, uint32_t material_id = 0);
     uint32_t add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id, const mm::Vec4& tint);
     uint32_t add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id,
                           const mm::Vec4& tint, float detail_size);
-    bool remove_particle(uint32_t particle_id);
-    bool update_particle_position(uint32_t particle_id, const mm::Vec3& new_local_position);
-    // Drop all additive particles (cells/BLAS are reclaimed by the next
-    // force_rebuild_all_cells). Used to re-emit the scene with new parameters.
-    void clear_particles();
     
     // Get particles in local space
     const std::vector<StaticParticle>& get_particles() const { return particles_; }
@@ -76,8 +70,6 @@ public:
     
     // Visitor pattern support
     void accept(CellVisitor& visitor) const;
-    void visit_cells(CellRenderVisitor& visitor) const;
-    void visit_all_cells(CellVisitor& visitor) const;  // Visit all cells regardless of mesh status
     
     // TLAS integration
     void add_to_tlas() const;
@@ -86,13 +78,7 @@ public:
     void set_smallest_cell_size(float size) { smallest_cell_size_ = size; }
     float get_smallest_cell_size() const { return smallest_cell_size_; }
     
-    // Single-resolution rebuild of every cell (used after a full scene change).
-    void force_rebuild_all_cells();
 
-    // Skip-meshing: cells whose packed integer coordinate is in this set are
-    // created/tracked but never meshed (they hold no mesh, register no BLAS).
-    // Coordinates use the same floor(local/cell_size) basis as get_cell_coordinates.
-    void set_no_mesh_cells(const std::vector<mm::Vec3>& coords);
     void clear_no_mesh_cells() { no_mesh_cells_.clear(); }
 
     // Subtractive carve particles (smooth-CSG). Distributed per-cell by the same
@@ -118,15 +104,7 @@ public:
     void set_max_division_pow(int p) { max_division_pow_ = p; }
     int get_max_division_pow() const { return max_division_pow_; }
 
-    // Number of CPU mesh worker threads. Resizing is only applied between
-    // rebuilds (call from the UI before the next rebuild_dirty_cells).
-    void set_mesh_worker_count(int n);
-    int  get_mesh_worker_count() const;
 
-    // Enables post-meshing per-vertex AO baking against `occ` (borrowed, must
-    // outlive the cluster). Pass occ=nullptr to disable. `grid` maps cluster-local
-    // positions to occupancy slots; see AoGrid.
-    void set_ao_baker(const Occupancy* occ, AoGrid grid, AoParams params);
 
     // Statistics
     uint32_t get_cell_count() const;
@@ -169,7 +147,6 @@ private:
     // Helper methods
     mm::Vec3 get_cell_coordinates(const mm::Vec3& local_position) const;
     Cell* find_or_create_cell(const mm::Vec3& cell_coords);
-    void clear_all_cells();
 
     // Finest detail_size across all particles (seeded with base_detail_size_).
     // Drives a single uniform mesh resolution for every meshed cell.

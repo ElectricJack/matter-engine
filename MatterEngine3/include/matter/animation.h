@@ -177,7 +177,6 @@ public:
     bool set(AnimationInputHandle, const Float3&);
     bool set(AnimationInputHandle, const Quaternion&);
     bool set(AnimationInputHandle, const AnimationTransform&);
-    bool set_symbol(AnimationInputHandle, uint32_t declared_symbol);
     bool set_enabled(AnimationTargetHandle, bool);
     bool set_weight(AnimationTargetHandle, float);
     bool set_transform(AnimationTargetHandle, const AnimationTransform&);

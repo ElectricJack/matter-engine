@@ -90,10 +90,6 @@ void end_attempt(uint64_t hash) {
     append_journal(g_success_path, hash);
 }
 
-uint64_t blacklist_size() {
-    return g_blacklist.size();
-}
-
 void reset_for_tests() {
     g_blacklist.clear();
     g_pending_path.clear();

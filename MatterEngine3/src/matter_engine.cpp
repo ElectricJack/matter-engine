@@ -11634,24 +11634,6 @@ bool WorldSession::instance_info_by_hash(uint64_t hash, InstanceInfo& out) {
     return true;
 }
 
-uint32_t WorldSession::root_instance_count() const {
-    if (!impl_->connected) return 0;
-    return static_cast<uint32_t>(impl_->state.entries().size());
-}
-
-bool WorldSession::root_instance_info(uint32_t idx, InstanceInfo& out) const {
-    if (!impl_->connected) return false;
-    const auto& entries = impl_->state.entries();
-    if (idx >= entries.size()) return false;
-    const auto& entry = entries[idx];
-    out.part_hash = entry.part_hash;
-    std::memcpy(out.transform, entry.transform, sizeof(out.transform));
-    out.module_name = nullptr;
-    if (!entry.module.empty())
-        out.module_name = entry.module.c_str();
-    return true;
-}
-
 #ifdef MATTER_VULKAN_VIEWER
 bool WorldSession::pick_at_pixel(float cursor_x, float cursor_y,
                                  int fb_width, int fb_height,

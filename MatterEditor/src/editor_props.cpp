@@ -1124,13 +1124,6 @@ matter::props::Binding* EditorProps::animation_overlay() {
 matter::props::Binding* EditorProps::viewer_debug() {
     return registry_.get(viewer_debug_);
 }
-matter::props::Binding* EditorProps::viewer_session_status() {
-    return registry_.get(viewer_session_status_);
-}
-matter::props::Binding* EditorProps::viewer_atmosphere_status() {
-    return registry_.get(viewer_atmosphere_status_);
-}
-
 matter::props::Binding* EditorProps::world_props() {
     if (!world_props_) return nullptr;
     return registry_.get(world_props_->binding());

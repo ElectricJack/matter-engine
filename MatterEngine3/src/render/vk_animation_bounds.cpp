@@ -280,10 +280,6 @@ void VkAnimationBounds::remove_instance(uint32_t instance_slot,
         dynamic_bounds_.end());
 }
 
-void VkAnimationBounds::clear_frame() noexcept {
-    dynamic_bounds_.clear();
-}
-
 std::vector<VkAnimationBoundsGpuRecord> VkAnimationBounds::gpu_records() const {
     std::vector<VkAnimationBoundsGpuRecord> records;
     records.reserve(dynamic_bounds_.size());

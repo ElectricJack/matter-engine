@@ -407,43 +407,6 @@ void sh_get_stats(SpatialHash* hash, int* bucketCount, int* objectCount,
     }
 }
 
-// Query objects at an exact position (within small tolerance)
-int sh_query_point(SpatialHash* hash, float x, float y, float z, void** results, int maxResults) {
-    if (!hash || !results || maxResults <= 0) return 0;
-
-    // Use a very small tolerance for "exact" position matching
-    const float POINT_TOLERANCE = 0.001f;
-
-    int found = 0;
-    float toleranceSq = POINT_TOLERANCE * POINT_TOLERANCE;
-
-    // Convert position to grid coordinates and check only the exact cell
-    GridCoord coord = world_to_grid(x, y, z, hash->cellSize);
-    unsigned int mask = (unsigned int)hash->bucketCount - 1u;
-    unsigned int bucketIndex = hash_coord(coord, mask);
-
-    // Check all objects in this exact bucket; filter by coord to skip colliders
-    BucketEntry* entry = hash->buckets[bucketIndex].head;
-    while (entry && found < maxResults) {
-        if (entry->coord.x == coord.x &&
-            entry->coord.y == coord.y &&
-            entry->coord.z == coord.z) {
-            float fdx = entry->x - x;
-            float fdy = entry->y - y;
-            float fdz = entry->z - z;
-            float distSq = fdx*fdx + fdy*fdy + fdz*fdz;
-
-            if (distSq <= toleranceSq) {
-                results[found++] = entry->object;
-            }
-        }
-
-        entry = entry->next;
-    }
-
-    return found;
-}
-
 // Query for the first object within a radius (optimized for single-object lookups)
 void* sh_query_first(SpatialHash* hash, float x, float y, float z, float radius) {
     if (!hash) return NULL;

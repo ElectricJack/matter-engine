@@ -23,7 +23,5 @@ struct WorldLights {
     std::vector<SpotLight> spots;
 };
 
-// FNV-1a over the packed float values (sun, sky, then spots in file order).
-uint64_t lights_fingerprint(const WorldLights& l);
 
 } // namespace world_lights

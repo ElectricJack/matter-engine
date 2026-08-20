@@ -297,9 +297,6 @@ public:
                          const matter::FogSettings& fog,
                          const matter::CloudShadowSettings& shadows);
 
-    // Upload the gathered emitter list for the current frame.
-    void update_emitters(matter::VulkanDevice& vulkan,
-                         const std::vector<GpuVolumeEmitter>& emitters);
 
     // Called while the renderer has acquired this frame slot but before any
     // scene descriptor is bound. A successful swap is therefore visible to

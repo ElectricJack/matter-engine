@@ -436,44 +436,6 @@ void BVHReportManager::UpdateAnalysis(const std::string& name) {
     }
 }
 
-std::string BVHReportManager::GenerateFullReport() {
-    std::ostringstream report;
-    
-    report << "\\n=== COMPREHENSIVE BVH ANALYSIS REPORT ===\\n";
-    auto now = std::chrono::high_resolution_clock::now();
-    auto duration = now.time_since_epoch();
-    double current_time = std::chrono::duration<double, std::milli>(duration).count();
-    report << "Generated at: " << current_time << "\\n";
-    
-    // Update all analyses
-    UpdateAllAnalyses();
-    
-    // Generate BVH reports
-    for (const auto& pair : bvh_registry_) {
-        report << BVHAnalyzer::GenerateReport(pair.second.analysis, pair.first);
-    }
-    
-    // Generate TLAS reports
-    for (const auto& pair : tlas_registry_) {
-        report << BVHAnalyzer::GenerateTLASReport(pair.second.analysis, pair.first);
-    }
-    
-    return report.str();
-}
-
-void BVHReportManager::UpdateAllAnalyses() {
-    for (auto& pair : bvh_registry_) {
-        if (pair.second.needs_update) {
-            UpdateAnalysis(pair.first);
-        }
-    }
-    for (auto& pair : tlas_registry_) {
-        if (pair.second.needs_update) {
-            UpdateAnalysis(pair.first);
-        }
-    }
-}
-
 const BVHTreeAnalysis* BVHReportManager::GetBVHAnalysis(const std::string& name) {
     auto it = bvh_registry_.find(name);
     if (it != bvh_registry_.end()) {
@@ -494,17 +456,6 @@ const TLASAnalysis* BVHReportManager::GetTLASAnalysis(const std::string& name) {
         return &it->second.analysis;
     }
     return nullptr;
-}
-
-std::vector<std::string> BVHReportManager::GetRegisteredNames() {
-    std::vector<std::string> names;
-    for (const auto& pair : bvh_registry_) {
-        names.push_back(pair.first + " (BVH)");
-    }
-    for (const auto& pair : tlas_registry_) {
-        names.push_back(pair.first + " (TLAS)");
-    }
-    return names;
 }
 
 // B11 fix: remove a single entry so the registry doesn't hold dangling pointers

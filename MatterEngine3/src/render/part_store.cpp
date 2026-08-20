@@ -366,11 +366,6 @@ bool PartStore::build_rigid_segment_subparts(
     return true;
 }
 
-std::string PartStore::disk_path(uint64_t part_hash) const {
-    // cache_path_resolved returns the RELATIVE "parts/<hash>.bundle"; prefix cache_root_.
-    return cache_root_ + "/" + part_asset::cache_path_resolved(part_hash);
-}
-
 // Task 2: resolve the actual disk path, checking scratch dir first, then cache.
 static std::string resolve_artifact_path(uint64_t part_hash, const std::string& scratch_dir,
                                          const std::string& cache_root) {

@@ -72,7 +72,6 @@ public:
                const std::vector<TraceInstance>& instances, std::string& err);
     bool trace(const float origin[3], const float dir[3], float max_t, Hit& hit) const;
     bool occluded(const float origin[3], const float dir[3], float max_t) const;
-    void world_bounds(float mn[3], float mx[3]) const;   // valid after build
     size_t instance_count() const;
 
     // Optional secondary artifact dir (streamed transient parts). Checked
@@ -92,7 +91,6 @@ public:
     // fallback get their own entries). Valid after build().
     size_t expanded_instance_count() const;
     bool expanded_instance(size_t idx, uint64_t& part_hash, float transform[16]) const;
-    bool expanded_instance_by_hash(uint64_t hash, uint64_t& part_hash, float transform[16]) const;
 
 private:
     struct Impl;

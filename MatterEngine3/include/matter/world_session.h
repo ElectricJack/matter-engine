@@ -804,10 +804,6 @@ public:
     bool instance_info(uint32_t idx, InstanceInfo& out);
     bool instance_info_by_hash(uint64_t part_hash, InstanceInfo& out);
 
-    // Lightweight root-entry iteration — reads directly from world state
-    // without building the CPU tracer. Safe to call while streaming.
-    uint32_t root_instance_count() const;
-    bool root_instance_info(uint32_t idx, InstanceInfo& out) const;
 
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
 

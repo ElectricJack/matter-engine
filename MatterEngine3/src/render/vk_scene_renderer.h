@@ -1111,7 +1111,6 @@ public:
     uint64_t volumetrics_resource_generation() const;
     bool volumetrics_allocation_rejected() const;
     const std::string& volumetrics_allocation_error() const;
-    void set_fail_next_froxel_bundle_creation_for_test(bool enabled);
     void set_fail_next_froxel_bundle_descriptor_allocation_for_test(bool enabled);
     uint32_t volumetrics_grid_rgba16f_volume_count_for_test() const;
     bool volumetrics_cloud_density_allocated_for_test() const;

@@ -108,8 +108,6 @@ float ProbeFieldScalar(SurfaceScratch* scratch, Particle* particles, float parti
 // (byte-identical to the uncarved path).
 Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
-// Enhanced API function with configuration options
-Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
 // Recompute per-vertex shading normals in place as the analytic SDF gradient of
 // the (smooth-min) union-of-spheres field. With blendWidth 0 each normal is the
@@ -128,8 +126,6 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
 // Create default configuration
 MeshGenerationConfig GetDefaultMeshConfig(void);
 
-// Cleanup function to release memory pool resources
-void SurfaceLibCleanup(void);
 
 // Utility function to create color based on material ID
 Color GetMaterialColor(int materialId);
@@ -137,11 +133,7 @@ Color GetMaterialColor(int materialId);
 // Utility function to generate unique edge key for marching cubes
 unsigned long long GetEdgeKey(int x, int y, int z, int edgeIndex);
 
-// Convert raylib Mesh to BVH Triangle array with per-vertex normals
-BVHTriangle* ConvertMeshToBVHTriangles(Mesh mesh, int* triangleCount);
 
-// Free BVH triangle array
-void FreeBVHTriangles(BVHTriangle* triangles);
 
 #ifdef __cplusplus
 }

@@ -62,7 +62,6 @@ public:
     // Drops memos for sources absent from `resolved`, bounding the map to the
     // live set (a streaming world would otherwise accumulate evicted sectors).
     void prune_sources(const std::vector<ResolvedInstance>& resolved);
-    uint64_t source_expansion_count() const noexcept;
     size_t source_memo_size() const noexcept;
 
 private:

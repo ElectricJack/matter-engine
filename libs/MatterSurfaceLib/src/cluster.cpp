@@ -75,11 +75,6 @@ mm::Vec3 Cluster::local_to_world(const mm::Vec3& local_pos) const {
     return mm::add(position_, rotated);
 }
 
-mm::Vec3 Cluster::world_to_local(const mm::Vec3& world_pos) const {
-    mm::Vec3 relative = mm::sub(world_pos, position_);
-    return mm::rotate(relative, mm::quat_invert(rotation_));
-}
-
 uint32_t Cluster::add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id) {
     uint32_t particle_id = next_particle_id_++;
     
@@ -108,55 +103,6 @@ uint32_t Cluster::add_particle(const mm::Vec3& local_position, float radius, uin
     particles_.emplace_back(local_position, radius, material_id, tint, detail_size);
     mark_cells_dirty_around_particle(local_position, radius);
     return particle_id;
-}
-
-bool Cluster::remove_particle(uint32_t particle_id) {
-    if (particle_id >= particles_.size()) {
-        return false;
-    }
-    
-    // Mark cells dirty around the particle being removed
-    const StaticParticle& particle = particles_[particle_id];
-    mark_cells_dirty_around_particle(particle.position, particle.radius);
-    
-    // Remove particle using swap-and-pop for efficiency
-    if (particle_id != particles_.size() - 1) {
-        particles_[particle_id] = particles_.back();
-        
-        // Update all cells that reference the moved particle
-        for (auto& cell : cells_) {
-            for (auto& material_entry : cell->material_particle_indices) {
-                auto& indices = material_entry.second;
-                for (auto& idx : indices) {
-                    if (idx == particles_.size() - 1) {
-                        idx = particle_id;
-                    }
-                }
-            }
-        }
-    }
-    
-    particles_.pop_back();
-    
-    printf("Removed particle %u from cluster %u\n", particle_id, cluster_id_);
-    return true;
-}
-
-bool Cluster::update_particle_position(uint32_t particle_id, const mm::Vec3& new_local_position) {
-    if (particle_id >= particles_.size()) {
-        return false;
-    }
-    
-    StaticParticle& particle = particles_[particle_id];
-    
-    // Mark cells dirty around old and new positions
-    mark_cells_dirty_around_particle(particle.position, particle.radius);
-    mark_cells_dirty_around_particle(new_local_position, particle.radius);
-    
-    // Update position
-    particle.position = new_local_position;
-    
-    return true;
 }
 
 void Cluster::mark_cells_dirty_around_particle(const mm::Vec3& local_position, float radius) {
@@ -226,29 +172,6 @@ Cell* Cluster::find_or_create_cell(const mm::Vec3& cell_coords) {
     cells_.push_back(std::move(new_cell));
     
     return cell_ptr;
-}
-
-void Cluster::set_no_mesh_cells(const std::vector<mm::Vec3>& coords) {
-    no_mesh_cells_.clear();
-    no_mesh_cells_.reserve(coords.size());
-    for (const mm::Vec3& c : coords) {
-        no_mesh_cells_.insert(pack_slot(SlotCoord{
-            (int)lroundf(c.x), (int)lroundf(c.y), (int)lroundf(c.z)}));
-    }
-}
-
-void Cluster::set_mesh_worker_count(int n) {
-    if (mesh_pool_) mesh_pool_->resize(n);
-}
-
-int Cluster::get_mesh_worker_count() const {
-    return mesh_pool_ ? mesh_pool_->size() : 0;
-}
-
-void Cluster::set_ao_baker(const Occupancy* occ, AoGrid grid, AoParams params) {
-    ao_occ_ = occ;
-    ao_grid_ = grid;
-    ao_params_ = params;
 }
 
 void Cluster::rebuild_dirty_cells() {
@@ -493,30 +416,6 @@ void Cluster::accept(CellVisitor& visitor) const {
     visitor.visit_cluster(*this);
 }
 
-void Cluster::visit_cells(CellRenderVisitor& visitor) const {
-    // Create transform matrix for cluster world position
-    mm::Mat4 cluster_transform = mm::translation(position_);
-    
-    uint32_t cells_with_meshes = 0;
-    for (const auto& cell : cells_) {
-        if (cell->has_meshes) {
-            cells_with_meshes++;
-            cell->accept_transformed(visitor, cluster_transform);
-        }
-    }
-    
-    // static int debug_counter = 0;
-    // if (debug_counter++ % 60 == 0) { // Print every 60 frames
-    //     printf("Cluster render: %u/%zu cells have meshes\n", cells_with_meshes, cells_.size());
-    // }
-}
-
-void Cluster::visit_all_cells(CellVisitor& visitor) const {
-    for (const auto& cell : cells_) {
-        cell->accept(visitor);
-    }
-}
-
 void Cluster::add_to_tlas() const {
     // Add all cell meshes to the TLAS for ray tracing
     for (const auto& cell : cells_) {
@@ -555,49 +454,4 @@ uint32_t Cluster::get_dirty_cell_count() const {
         }
     }
     return count;
-}
-
-void Cluster::force_rebuild_all_cells() {
-    printf("Cluster %u: Force rebuilding all cells\n", cluster_id_);
-
-    // Clear all existing cells
-    clear_all_cells();
-
-    // Every cell mesh is regenerated below, so wipe the BLAS manager to reclaim
-    // entries from the previous build (they otherwise leak: cell destructors run
-    // without a manager handle, and re-meshing yields fresh content hashes that
-    // dedup can't match).
-    blas_manager_.clear();
-
-    // Mark all particles as needing new cell assignment
-    for (const auto& particle : particles_) {
-        mark_cells_dirty_around_particle(particle.position, particle.radius);
-    }
-    
-    // Rebuild all dirty cells
-    rebuild_dirty_cells();
-}
-
-void Cluster::clear_particles() {
-    particles_.clear();
-    next_particle_id_ = 0;
-}
-
-void Cluster::clear_all_cells() {
-    printf("Cluster %u: Clearing all %zu cells\n", cluster_id_, cells_.size());
-    
-    // Clear cells vector (this will call destructors and free mesh memory)
-    cells_.clear();
-    
-    // Clear spatial hash
-    if (cell_spatial_hash_) {
-        // The spatial hash entries will be cleared when cells are destroyed
-        // But we need to reset the spatial hash structure
-        sh_destroy(cell_spatial_hash_);
-        cell_spatial_hash_ = sh_create(smallest_cell_size_, 1000);
-        
-        if (!cell_spatial_hash_) {
-            printf("Warning: Failed to recreate spatial hash for cluster %u after clearing cells\n", cluster_id_);
-        }
-    }
 }

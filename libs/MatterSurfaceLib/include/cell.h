@@ -117,18 +117,14 @@ struct Cell {
     // Fast variant used during rebuild_dirty_cells: caller guarantees particle_index
     // has not already been added to this cell (skips the O(n) std::find check).
     void add_particle_index_unchecked(uint32_t particle_index, uint32_t material_id);
-    void remove_particle_index(uint32_t particle_index, uint32_t material_id);
     void clear_particle_indices();
     
     // Visitor pattern support
     void accept(CellVisitor& visitor) const;
-    void accept_transformed(CellRenderVisitor& visitor, const mm::Mat4& transform) const;
 
     // BLAS access
     const std::map<uint32_t, BLASHandle>& get_material_blas() const { return material_blas; }
 
-    // Utilities
-    float get_diagonal_length() const;
     mm::Vec3 get_size() const { return mm::Vec3{actual_size, actual_size, actual_size}; }
     
 private:

@@ -44,14 +44,6 @@ void* MemAlloc(unsigned int size) {
 #endif
     return ptr;
 }
-void* MemRealloc(void* ptr, unsigned int size) {
-    if (!ptr) return MemAlloc(size);
-    if (size == 0) {
-        MemFree(ptr);
-        return nullptr;
-    }
-    return std::realloc(ptr, size);
-}
 void MemFree(void* ptr) {
     if (!ptr) return;
     std::free(ptr);

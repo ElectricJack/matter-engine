@@ -417,7 +417,6 @@ public:
     }
 
 private:
-    std::string disk_path(uint64_t part_hash) const;   // cache_root_ + "/parts/<hash>.part"
 
     // Load a bake-time flattened artifact (<hash>.flat.part) if present: uses its
     // stored LOD ladder directly (no re-bake) and leaves children empty. Returns

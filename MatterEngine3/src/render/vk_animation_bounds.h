@@ -159,7 +159,6 @@ public:
         const std::vector<VkAnimationBoundsInstance>& instances);
     void remove_instance(uint32_t instance_slot, uint32_t instance_generation) noexcept;
     bool unregister_asset(uint64_t asset_key) noexcept;
-    void clear_frame() noexcept;
 
     const std::vector<VkAnimationDynamicClusterBound>& dynamic_bounds() const noexcept {
         return dynamic_bounds_;

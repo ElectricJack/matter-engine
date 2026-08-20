@@ -133,14 +133,11 @@ public:
     
     // Update analysis for registered BVH/TLAS
     static void UpdateAnalysis(const std::string& name);
-    static void UpdateAllAnalyses();
     
     // Get analysis results
     static const BVHTreeAnalysis* GetBVHAnalysis(const std::string& name);
     static const TLASAnalysis* GetTLASAnalysis(const std::string& name);
     
-    // Generate comprehensive report
-    static std::string GenerateFullReport();
     static std::string GenerateSummaryReport();
     
     // Unregister a single BVH by name (call before release_blas to avoid dangling)
@@ -149,8 +146,6 @@ public:
     // Clear all registered BVHs
     static void Clear();
     
-    // Get list of registered BVH names
-    static std::vector<std::string> GetRegisteredNames();
     
 private:
     struct BVHEntry {

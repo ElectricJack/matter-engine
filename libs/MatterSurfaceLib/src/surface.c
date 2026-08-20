@@ -283,11 +283,6 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
     return GenerateMeshInternal(DefaultScratch(), particles, particleRadius, particleCount, volume, blendWidth, config, NULL, NULL, 0, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
 }
 
-// Public API function with custom configuration
-Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
-    return GenerateMeshInternal(DefaultScratch(), particles, particleRadius, particleCount, volume, blendWidth, config, NULL, NULL, 0, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
-}
-
 // Scratch-aware mesh generation: lets a caller supply (and reuse) its own
 // SurfaceScratch so the spatial hash built here can be reused for downstream
 // per-triangle nearest-particle lookups (see SurfaceScratchHash).
@@ -352,11 +347,6 @@ void ComputeSurfaceNormalsWithScratch(SurfaceScratch* scratch, Mesh* mesh, Parti
 }
 
 SpatialHash* SurfaceScratchHash(SurfaceScratch* scratch) { return scratch ? scratch->hash : NULL; }
-
-// Cleanup function to release memory pool resources
-void SurfaceLibCleanup(void) {
-    if (g_defaultScratch) { DestroySurfaceScratch(g_defaultScratch); g_defaultScratch = NULL; }
-}
 
 // Ensure scratch->hash holds exactly `particles` at `cellSize`, reusing storage
 // when possible. Recreates only when cellSize changes (the AABB query is correct
@@ -1665,90 +1655,4 @@ Color GetMaterialColor(int materialId) {
     if (index < 0) index += colorCount;
     
     return colors[index];
-}
-
-// Convert raylib Mesh to BVH Triangle array with per-vertex normals
-BVHTriangle* ConvertMeshToBVHTriangles(Mesh mesh, int* triangleCount) {
-    if (!mesh.vertices || !mesh.normals || !mesh.indices || mesh.triangleCount == 0) {
-        *triangleCount = 0;
-        return NULL;
-    }
-    
-    *triangleCount = mesh.triangleCount;
-    BVHTriangle* bvhTriangles = (BVHTriangle*)malloc(mesh.triangleCount * sizeof(BVHTriangle));
-    if (!bvhTriangles) {
-        *triangleCount = 0;
-        return NULL;
-    }
-    
-    // Convert each triangle
-    for (int i = 0; i < mesh.triangleCount; i++) {
-        BVHTriangle* tri = &bvhTriangles[i];
-        
-        // Get vertex indices for this triangle
-        int idx0 = mesh.indices[i * 3 + 0];
-        int idx1 = mesh.indices[i * 3 + 1];
-        int idx2 = mesh.indices[i * 3 + 2];
-        
-        // Set vertices
-        tri->v0.x = mesh.vertices[idx0 * 3 + 0];
-        tri->v0.y = mesh.vertices[idx0 * 3 + 1];
-        tri->v0.z = mesh.vertices[idx0 * 3 + 2];
-        
-        tri->v1.x = mesh.vertices[idx1 * 3 + 0];
-        tri->v1.y = mesh.vertices[idx1 * 3 + 1];
-        tri->v1.z = mesh.vertices[idx1 * 3 + 2];
-        
-        tri->v2.x = mesh.vertices[idx2 * 3 + 0];
-        tri->v2.y = mesh.vertices[idx2 * 3 + 1];
-        tri->v2.z = mesh.vertices[idx2 * 3 + 2];
-        
-        // Set per-vertex normals
-        tri->n0.x = mesh.normals[idx0 * 3 + 0];
-        tri->n0.y = mesh.normals[idx0 * 3 + 1];
-        tri->n0.z = mesh.normals[idx0 * 3 + 2];
-        
-        tri->n1.x = mesh.normals[idx1 * 3 + 0];
-        tri->n1.y = mesh.normals[idx1 * 3 + 1];
-        tri->n1.z = mesh.normals[idx1 * 3 + 2];
-        
-        tri->n2.x = mesh.normals[idx2 * 3 + 0];
-        tri->n2.y = mesh.normals[idx2 * 3 + 1];
-        tri->n2.z = mesh.normals[idx2 * 3 + 2];
-        
-        // Compute centroid
-        tri->centroid.x = (tri->v0.x + tri->v1.x + tri->v2.x) / 3.0f;
-        tri->centroid.y = (tri->v0.y + tri->v1.y + tri->v2.y) / 3.0f;
-        tri->centroid.z = (tri->v0.z + tri->v1.z + tri->v2.z) / 3.0f;
-        
-        // Compute face normal using cross product
-        Vec3 edge1 = {tri->v1.x - tri->v0.x, tri->v1.y - tri->v0.y, tri->v1.z - tri->v0.z};
-        Vec3 edge2 = {tri->v2.x - tri->v0.x, tri->v2.y - tri->v0.y, tri->v2.z - tri->v0.z};
-        
-        tri->normal.x = edge1.y * edge2.z - edge1.z * edge2.y;
-        tri->normal.y = edge1.z * edge2.x - edge1.x * edge2.z;
-        tri->normal.z = edge1.x * edge2.y - edge1.y * edge2.x;
-        
-        // Normalize face normal
-        float length = sqrtf(tri->normal.x * tri->normal.x + 
-                            tri->normal.y * tri->normal.y + 
-                            tri->normal.z * tri->normal.z);
-        if (length > 0.0001f) {
-            tri->normal.x /= length;
-            tri->normal.y /= length;
-            tri->normal.z /= length;
-        }
-        
-        // Set default material ID
-        tri->material_id = 0;
-    }
-    
-    return bvhTriangles;
-}
-
-// Free BVH triangle array
-void FreeBVHTriangles(BVHTriangle* triangles) {
-    if (triangles) {
-        free(triangles);
-    }
 }

@@ -691,14 +691,6 @@ bool WorldTracer::occluded(const float origin[3], const float dir[3],
     return did_hit && hit.t > 1e-4f && hit.t < max_t;
 }
 
-void WorldTracer::world_bounds(float mn[3], float mx[3]) const {
-    if (!impl_ || !impl_->built_) {
-        mn[0]=mn[1]=mn[2]=-0.5f; mx[0]=mx[1]=mx[2]=0.5f; return;
-    }
-    mn[0]=impl_->world_mn_[0]; mn[1]=impl_->world_mn_[1]; mn[2]=impl_->world_mn_[2];
-    mx[0]=impl_->world_mx_[0]; mx[1]=impl_->world_mx_[1]; mx[2]=impl_->world_mx_[2];
-}
-
 size_t WorldTracer::instance_count() const {
     return impl_ ? impl_->expanded_.size() : 0;
 }
@@ -711,17 +703,6 @@ bool WorldTracer::expanded_instance(size_t idx, uint64_t& part_hash,
                                     float transform[16]) const {
     if (!impl_ || idx >= impl_->expanded_.size()) return false;
     const ExpandedInst& ei = impl_->expanded_[idx];
-    part_hash = ei.part_hash;
-    std::memcpy(transform, ei.transform, 64);
-    return true;
-}
-
-bool WorldTracer::expanded_instance_by_hash(uint64_t hash, uint64_t& part_hash,
-                                            float transform[16]) const {
-    if (!impl_) return false;
-    auto it = impl_->hash_to_first_.find(hash);
-    if (it == impl_->hash_to_first_.end()) return false;
-    const ExpandedInst& ei = impl_->expanded_[it->second];
     part_hash = ei.part_hash;
     std::memcpy(transform, ei.transform, 64);
     return true;

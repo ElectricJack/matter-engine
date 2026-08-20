@@ -888,7 +888,6 @@ bool AnimationService::set(AnimationInputHandle h, float v) { animation::StoredV
 bool AnimationService::set(AnimationInputHandle h, const Float3& v) { animation::StoredValue value; value.type = AnimationValueType::Float3; value.float3 = v; return impl_->set(h, value, value.type); }
 bool AnimationService::set(AnimationInputHandle h, const Quaternion& v) { animation::StoredValue value; value.type = AnimationValueType::Quaternion; value.quaternion = v; return impl_->set(h, value, value.type); }
 bool AnimationService::set(AnimationInputHandle h, const AnimationTransform& v) { animation::StoredValue value; value.type = AnimationValueType::Transform; value.transform = v; return impl_->set(h, value, value.type); }
-bool AnimationService::set_symbol(AnimationInputHandle h, uint32_t v) { animation::StoredValue value; value.type = AnimationValueType::Symbol; value.symbol = v; return impl_->set(h, value, value.type); }
 bool AnimationService::set_enabled(AnimationTargetHandle h, bool v) { return impl_->set_enabled(h, v); }
 bool AnimationService::set_weight(AnimationTargetHandle h, float v) { return impl_->set_weight(h, v); }
 bool AnimationService::set_transform(AnimationTargetHandle h, const AnimationTransform& v) { return impl_->set_transform(h, v); }

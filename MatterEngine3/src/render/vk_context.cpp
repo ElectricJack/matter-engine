@@ -2706,9 +2706,6 @@ uint32_t VulkanDevice::validation_error_count() const {
     return impl_->validation_errors.load(std::memory_order_relaxed);
 }
 
-void VulkanDevice::preserve_after_unproven_external_work() noexcept {
-    impl_->preserve_external_work = true;
-}
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 bool VulkanDevice::test_present_result_was_presented(VkResult result) {
     return present_result_was_presented(result);

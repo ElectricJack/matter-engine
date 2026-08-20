@@ -362,7 +362,6 @@ public:
     void set_active_scope(CommandScopeToken token);
     void close_active_scope();
     CommandScopeToken active_scope() const;
-    bool active_scope_open() const;
 
     // ---- Lane ownership + pump ----------------------------------------
     // Register the calling thread as lane `ln`'s owner (required before

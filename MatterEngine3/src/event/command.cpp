@@ -70,11 +70,6 @@ CommandScopeToken CommandRegistry::active_scope() const {
     return active_token_;
 }
 
-bool CommandRegistry::active_scope_open() const {
-    std::lock_guard<std::mutex> lk(scope_mu_);
-    return active_scope_open_;
-}
-
 CommandScopeToken CommandRegistry::stamp_scope(CommandScope scope) const {
     if (scope == CommandScope::App) return CommandScopeToken{CommandScope::App, 0, 0};
     std::lock_guard<std::mutex> lk(scope_mu_);

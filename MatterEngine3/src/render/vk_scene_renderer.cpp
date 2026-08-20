@@ -9457,10 +9457,6 @@ const std::string& VkSceneRenderer::volumetrics_allocation_error() const {
     static const std::string empty;
     return volumetrics_ ? volumetrics_->allocation_error() : empty;
 }
-void VkSceneRenderer::set_fail_next_froxel_bundle_creation_for_test(bool enabled) {
-    if (volumetrics_) volumetrics_->set_fail_next_bundle_creation_for_test(enabled);
-}
-
 void VkSceneRenderer::set_fail_next_froxel_bundle_descriptor_allocation_for_test(
         bool enabled) {
     if (volumetrics_)

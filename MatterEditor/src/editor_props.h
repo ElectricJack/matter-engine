@@ -189,8 +189,6 @@ public:
     // vol_debug_view, edited by the raw Combo widgets in Viewer Debug. Same
     // reason as console().
     matter::props::Binding* viewer_debug();
-    matter::props::Binding* viewer_session_status();
-    matter::props::Binding* viewer_atmosphere_status();
 
     // ---- Tunables de-duplication (issue dd98763c) --------------------------
     //

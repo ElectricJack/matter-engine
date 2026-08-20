@@ -115,10 +115,6 @@ void VulkanInstanceCache::prune_sources(
     sources_ = std::move(kept);
 }
 
-uint64_t VulkanInstanceCache::source_expansion_count() const noexcept {
-    return source_expansion_count_;
-}
-
 size_t VulkanInstanceCache::source_memo_size() const noexcept {
     return sources_.size();
 }
