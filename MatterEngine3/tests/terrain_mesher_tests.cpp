@@ -1,12 +1,18 @@
 // MatterEngine3/tests/terrain_mesher_tests.cpp — Task 5: native surface nets
 #include "check.h"
 #include "../src/terrain_field.h"
+#include "../src/terrain_river_overlay.h"
+#include "../src/hydrology/river_geometry.h"
 #include "../src/terrain_mesher.h"
 #include "../src/bake_mode.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <vector>
 
 using namespace terrain_field;
 using namespace terrain_mesher;
@@ -50,6 +56,46 @@ int main() {
     // than re-pinning a second set of bytes.
     bake_mode::forced_contour_seams() = 0;
 
+    // The mesher must consume the same overlaid FieldRuntime surface as direct
+    // field queries; the overlay is terrain, not a hidden wall/dam mesh.
+    {
+        matter::RiverNetworkDefinition network{};
+        network.cell_size_m = 1.0f;
+        network.seed = 77u;
+        network.first_section_river = "main";
+        network.first_section = {20.0f, 4.0f, 0.8f, 32u, 256u, 4096u};
+        matter::RiverDefinition river{};
+        river.name = "main";
+        river.inlet = {{0.0f, 12.0f, 8.0f}, 1.0f};
+        river.spline = {{0.0f, 12.0f, 8.0f}, {16.0f, 11.0f, 8.0f},
+                        {32.0f, 10.0f, 8.0f}};
+        river.reaches = {{32.0f, -0.03f, 0.0f}};
+        river.channel = {6.0f, 2.0f, 0.35f};
+        river.boulders = {0.0f, {0.5f, 1.0f}};
+        network.rivers.push_back(river);
+        hydrology::RiverGeometry geometry{};
+        std::string error;
+        CHECK(hydrology::build_river_geometry(network, geometry, error),
+              error.c_str());
+        std::shared_ptr<const RiverHeightOverlay> overlay;
+        CHECK(RiverHeightOverlay::build(geometry, river.channel, overlay, error),
+              error.c_str());
+        FieldProgram program;
+        CHECK(FieldProgram::parse(
+                  "const 20\nconst 0.5\nconst 0.2\n"
+                  "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n",
+                  program, error), error.c_str());
+        FieldRuntime field(std::move(program), overlay);
+        SectorMesh mesh;
+        CHECK(mesh_sector(field, 0, 0, 0, 16.0f, -8.0f, 32.0f,
+                          mesh, nullptr, error), error.c_str());
+        float minimum_y = std::numeric_limits<float>::infinity();
+        for (const auto& bucket : mesh.buckets)
+            for (std::size_t i = 1; i < bucket.positions.size(); i += 3)
+                minimum_y = std::min(minimum_y, bucket.positions[i]);
+        CHECK(minimum_y < 13.0f,
+               "terrain meshing carves the shared river overlay below the base field");
+    }
     // --- flat field, rung 0: counts, height, orientation -------------------
     {
         FieldRuntime f = make(kFlat5);

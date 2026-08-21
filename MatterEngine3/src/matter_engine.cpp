@@ -77,6 +77,8 @@ namespace viewer { struct VkScenePart; }
 // Runtime-owned sector streaming coordinator and world profile.
 #include "streaming/sector_streaming_coordinator.h"
 #include "terrain_field.h"
+#include "terrain_river_overlay.h"
+#include "hydrology/river_geometry.h"
 // Volumetric-sectors M0-WP3b: the runtime cross-level seam welder. Pure
 // geometry (see seam_weld.h); this file supplies the two WeldSide lookups over
 // the drawn sector map and owns the resulting weld pool.
@@ -1230,6 +1232,9 @@ struct WorldSession::Impl {
     // World-kind field runtime (owned; lives for the session generation).
     // Null for closed-world sessions or before install completes.
     std::unique_ptr<terrain_field::FieldRuntime> world_field;
+    std::shared_ptr<const terrain_field::RiverHeightOverlay>
+        world_river_height_overlay;
+    hydrology::RiverGeometry world_river_geometry;
 
     // WP-F: compiled surfaces() classifier tape (null when the world defines
     // no surfaces()). Feeds sector registrations (ensure_vulkan_part's
@@ -2739,6 +2744,8 @@ void WorldSession::Impl::worker_loop() {
                     // The old profile has been cleared and every tagged app
                     // eviction completed before private field destruction.
                     world_field.reset();
+                    world_river_height_overlay.reset();
+                    world_river_geometry = {};
                     world_initial_load_done = false;
                 }
                 bake_active.store(true, std::memory_order_release);
@@ -4147,7 +4154,22 @@ bool WorldSession::Impl::install_world(
         err = "install_world: FieldProgram::parse failed: " + perr;
         return false;
     }
-    world_field = std::make_unique<terrain_field::FieldRuntime>(std::move(prog));
+    hydrology::RiverGeometry installed_river_geometry{};
+    std::shared_ptr<const terrain_field::RiverHeightOverlay> installed_overlay;
+    if (!provider->build_river_height_overlay(
+            installed_river_geometry, installed_overlay, perr)) {
+        err = "install_world: river terrain overlay failed: " + perr;
+        return false;
+    }
+    if (installed_overlay && !prog.is_heightfield) {
+        err = "install_world: river terrain overlay requires a heightfield "
+              "field program; general 3D density is unsupported in this slice";
+        return false;
+    }
+    world_field = std::make_unique<terrain_field::FieldRuntime>(
+        std::move(prog), installed_overlay);
+    world_river_geometry = std::move(installed_river_geometry);
+    world_river_height_overlay = std::move(installed_overlay);
 
     // 3b. WP-F: parse the surfaces() tape -> SurfaceRuntime (optional).
     //     Fail-closed on a malformed tape or an unknown material handle; a

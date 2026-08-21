@@ -852,11 +852,13 @@ MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
 
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
 TERRAINFIELD_TARGET = build/terrain_field_tests
-TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp
+TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp \
+                      ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # Phase C Task 5 — terrain mesher (pure CPU: terrain_field + terrain_mesher, no JS, no GL).
 TERRAINMESH_TARGET = build/terrain_mesher_tests
-TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp
+TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+                     ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # M0-WP3 — cross-level seam welder (pure geometry: seam_boundary.h + seam_weld,
 # no terrain_field, no raylib, no GL, no JS). The suite builds its FaceRecords
@@ -3068,7 +3070,8 @@ run-vt-enrich:
 
 # Staged river Task 2 -- deterministic CPU centreline and boulder geometry.
 RIVER_GEOMETRY_TARGET = build/river_geometry_tests
-RIVER_GEOMETRY_CPP = river_geometry_tests.cpp ../src/hydrology/river_geometry.cpp
+RIVER_GEOMETRY_CPP = river_geometry_tests.cpp ../src/hydrology/river_geometry.cpp \
+                     ../src/terrain_river_overlay.cpp
 
 $(RIVER_GEOMETRY_TARGET): $(RIVER_GEOMETRY_CPP) \
         ../src/hydrology/river_geometry.h ../include/matter/bounds.h \

@@ -5,9 +5,12 @@
 
 #include <string>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace terrain_field {
+
+class HeightOverlay;
 
 // Hard cap on emitted (deduplicated) tape ops. THE authority for the surfaces
 // tape: terrain_field.cpp's kMaxOps and vt_compositor.cpp's kTapeSlotOps are
@@ -117,6 +120,7 @@ private:
 class FieldRuntime {
 public:
     explicit FieldRuntime(FieldProgram p);
+    FieldRuntime(FieldProgram p, std::shared_ptr<const HeightOverlay> overlay);
 
     // The SURFACE height. Every heightfield consumer in the engine goes through
     // here — scatter placement, biome_at, material_at, slope_at, curvature_at,
@@ -173,10 +177,14 @@ public:
     Material material_at(float x, float z) const;       // slope/height/biome rules
 
     float sea_level() const { return prog_.sea_level; }
-    uint64_t hash() const   { return prog_.hash(); }
+    uint64_t hash() const;
+    const std::shared_ptr<const HeightOverlay>& height_overlay() const {
+        return overlay_;
+    }
 
 private:
     FieldProgram prog_;
+    std::shared_ptr<const HeightOverlay> overlay_;
 
     // (No private kMaxOps here. There was a third `= 96` at this spot that
     // nothing referenced — the parser and evaluator both use the file-scope

@@ -5,11 +5,13 @@
 #include <atomic>
 #include <chrono>
 #include "terrain_field.h"
+#include "terrain_river_overlay.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <stdexcept>
 #include <algorithm>
 #include <unordered_map>
 
@@ -575,6 +577,27 @@ FieldRuntime::FieldRuntime(FieldProgram p)
     : prog_(std::move(p))
 {}
 
+FieldRuntime::FieldRuntime(FieldProgram p,
+                           std::shared_ptr<const HeightOverlay> overlay)
+    : prog_(std::move(p)), overlay_(std::move(overlay))
+{
+    if (overlay_ && !prog_.is_heightfield)
+        throw std::invalid_argument(
+            "HeightOverlay requires a heightfield FieldProgram");
+}
+
+uint64_t FieldRuntime::hash() const {
+    uint64_t result = prog_.hash();
+    if (!overlay_) return result;
+    uint64_t overlay_hash = overlay_->hash();
+    constexpr uint64_t prime = UINT64_C(1099511628211);
+    for (unsigned byte = 0; byte < sizeof(overlay_hash); ++byte) {
+        result ^= static_cast<unsigned char>(overlay_hash >> (byte * 8u));
+        result *= prime;
+    }
+    return result;
+}
+
 // Evaluate all registers 0..(count-1) into regs[] for world position (x, y, z).
 void FieldRuntime::eval_regs(float regs[], int count, float x, float y, float z) const {
     const auto& ops = prog_.ops;
@@ -704,10 +727,12 @@ float FieldRuntime::height_at(float x, float z) const {
     // here cannot reach the result.
     if (!g_field_probe_timing) {
         g_field_height_calls.fetch_add(1, std::memory_order_relaxed);
-        return eval_reg(prog_.height_reg, x, 0.0f, z);
+        const float base = eval_reg(prog_.height_reg, x, 0.0f, z);
+        return overlay_ ? overlay_->height_at(x, z, base) : base;
     }
     const auto t0 = std::chrono::steady_clock::now();
-    const float v = eval_reg(prog_.height_reg, x, 0.0f, z);
+    const float base = eval_reg(prog_.height_reg, x, 0.0f, z);
+    const float v = overlay_ ? overlay_->height_at(x, z, base) : base;
     g_field_height_calls.fetch_add(1, std::memory_order_relaxed);
     g_field_height_ns.fetch_add((unsigned long long)std::chrono::duration_cast<
         std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
@@ -747,6 +772,9 @@ void FieldRuntime::eval_column(ColumnCache& cache, float x, float z) const {
     // y-INDEPENDENT slot can be wrong, which holds because a y-independent op
     // cannot read a y-dependent one without becoming y-dependent itself.
     eval_regs(cache.regs, count, x, 0.0f, z);
+    if (prog_.is_heightfield && overlay_)
+        cache.regs[prog_.height_reg] = overlay_->height_at(
+            x, z, cache.regs[prog_.height_reg]);
 }
 
 float FieldRuntime::density_at(ColumnCache& cache, float y) const {

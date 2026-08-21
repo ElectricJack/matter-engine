@@ -15,6 +15,8 @@
 #include "bake_trace_names.h"  // kSpanTileset
 #include "material_registry.h"
 #include "matter/log.h"
+#include "hydrology/river_geometry.h"
+#include "terrain_river_overlay.h"
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
 #include "mesh_retopo.hpp"     // retopo() TBB warm-up (see install_graph() below)
@@ -200,6 +202,38 @@ std::string class_name_from_source(const std::string& source) {
 } // namespace
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
+
+bool LocalProvider::build_river_height_overlay(
+    hydrology::RiverGeometry& geometry,
+    std::shared_ptr<const terrain_field::RiverHeightOverlay>& overlay,
+    std::string& error) const {
+    if (!river_network_) {
+        geometry = {};
+        overlay.reset();
+        error.clear();
+        return true;
+    }
+    hydrology::RiverGeometry built_geometry{};
+    if (!hydrology::build_river_geometry(*river_network_, built_geometry,
+                                         error))
+        return false;
+    const auto river = std::find_if(
+        river_network_->rivers.begin(), river_network_->rivers.end(),
+        [&](const matter::RiverDefinition& candidate) {
+            return candidate.name == river_network_->first_section_river;
+        });
+    if (river == river_network_->rivers.end()) {
+        error = "LocalProvider: first-section river was not found";
+        return false;
+    }
+    std::shared_ptr<const terrain_field::RiverHeightOverlay> built_overlay;
+    if (!terrain_field::RiverHeightOverlay::build(
+            built_geometry, river->channel, built_overlay, error))
+        return false;
+    geometry = std::move(built_geometry);
+    overlay = std::move(built_overlay);
+    return true;
+}
 
 std::string LocalProvider::resolve_object_path(const std::string& module) const {
     namespace fs = std::filesystem;

@@ -1,7 +1,11 @@
 // MatterEngine3/tests/terrain_field_tests.cpp
 #include "check.h"
 #include "../src/terrain_field.h"
+#include "../src/terrain_river_overlay.h"
+#include "../src/hydrology/river_geometry.h"
 #include <cmath>
+#include <memory>
+#include <stdexcept>
 #include <string>
 
 using namespace terrain_field;
@@ -12,7 +16,85 @@ static FieldRuntime make(const std::string& text) {
     return FieldRuntime(std::move(p));
 }
 
+static matter::RiverNetworkDefinition overlay_network(std::uint64_t seed = 101u) {
+    matter::RiverNetworkDefinition network{};
+    network.cell_size_m = 1.0f;
+    network.seed = seed;
+    network.first_section_river = "main";
+    network.first_section = {100.0f, 4.0f, 0.8f, 32u, 256u, 65536u};
+    matter::RiverDefinition river{};
+    river.name = "main";
+    river.inlet = {{0.0f, 30.0f, 0.0f}, 1.0f};
+    river.spline = {{0.0f, 30.0f, 0.0f}, {64.0f, 26.0f, 0.0f},
+                    {128.0f, 24.0f, 0.0f}};
+    river.reaches = {{64.0f, -0.04f, 0.1f},
+                     {128.0f, -0.015f, 0.4f}};
+    river.channel = {10.0f, 2.5f, 0.45f};
+    river.boulders = {0.0f, {0.5f, 1.5f}};
+    network.rivers.push_back(river);
+    return network;
+}
+
+static std::shared_ptr<const RiverHeightOverlay> make_overlay(
+    const matter::RiverNetworkDefinition& network) {
+    hydrology::RiverGeometry geometry{};
+    std::string error;
+    if (!hydrology::build_river_geometry(network, geometry, error))
+        printf("geometry err: %s\n", error.c_str());
+    std::shared_ptr<const RiverHeightOverlay> overlay;
+    if (!RiverHeightOverlay::build(geometry, network.rivers[0].channel,
+                                   overlay, error))
+        printf("overlay err: %s\n", error.c_str());
+    return overlay;
+}
+
 int main() {
+    // --- immutable height overlays compose through every field query -------
+    {
+        auto overlay = make_overlay(overlay_network());
+        FieldProgram program; std::string error;
+        CHECK(FieldProgram::parse(
+                  "const 80\nconst 0.5\nconst 0.2\n"
+                  "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n",
+                  program, error), error.c_str());
+        FieldRuntime field(std::move(program), overlay);
+        CHECK(field.height_overlay().get() == overlay.get(),
+              "FieldRuntime retains the exact shared immutable overlay instance");
+        const float x = 48.0f, z = 0.0f;
+        const float h = field.height_at(x, z);
+        FieldRuntime::ColumnCache column{};
+        field.eval_column(column, x, z);
+        CHECK(field.density_at(x, h - 0.25f, z) > 0.0f &&
+              field.density_at(x, h + 0.25f, z) < 0.0f,
+              "heightfield density observes the overlaid surface");
+        CHECK(field.density_at(column, h) == 0.0f,
+              "column density uses the same single overlaid height");
+        CHECK(field.slope_at(x, z) > 0.0f &&
+              std::isfinite(field.curvature_at(x, z, 2.0f)),
+              "slope and curvature observe the overlay");
+        CHECK(field.hash() != make(
+                  "const 80\nconst 0.5\nconst 0.2\n"
+                  "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n").hash(),
+              "the overlay revision participates in the field hash");
+    }
+    // --- first-slice overlays fail closed for general 3D density -----------
+    {
+        auto overlay = make_overlay(overlay_network());
+        FieldProgram program; std::string error;
+        CHECK(FieldProgram::parse(
+                  "const 0\nconst 0.5\nnoise3 7 0.03 2 0.5 2\n"
+                  "height r0\ndensity r2\nmoisture r1\nrelief r1\n"
+                  "seaLevel -100\nbiome 0.65 0.35\n",
+                  program, error), error.c_str());
+        bool rejected = false;
+        try {
+            FieldRuntime invalid(std::move(program), overlay);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        CHECK(rejected,
+              "a height overlay cannot be attached to general 3D density");
+    }
     // --- constant program: height 5 everywhere -----------------------------
     {
         FieldRuntime f = make(

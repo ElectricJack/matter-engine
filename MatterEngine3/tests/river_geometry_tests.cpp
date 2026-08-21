@@ -1,9 +1,12 @@
 #include "check.h"
 #include "../src/hydrology/river_geometry.h"
+#include "../src/terrain_river_overlay.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <string>
 
 namespace {
@@ -93,6 +96,113 @@ bool centreline_crosses(const hydrology::RiverGeometry& geometry) {
         }
     }
     return false;
+}
+
+std::shared_ptr<const terrain_field::RiverHeightOverlay> build_overlay(
+    const matter::RiverNetworkDefinition& network,
+    hydrology::RiverGeometry& geometry) {
+    std::string error;
+    CHECK(hydrology::build_river_geometry(network, geometry, error), error.c_str());
+    std::shared_ptr<const terrain_field::RiverHeightOverlay> overlay;
+    CHECK(terrain_field::RiverHeightOverlay::build(
+              geometry, network.rivers[0].channel, overlay, error),
+          error.c_str());
+    return overlay;
+}
+
+void test_height_overlay_grade_ravine_boulders_and_hash() {
+    matter::RiverNetworkDefinition network = straight_response_network();
+    network.rivers[0].boulders.density = 0.0f;
+    hydrology::RiverGeometry geometry{};
+    const auto overlay = build_overlay(network, geometry);
+    CHECK(overlay != nullptr, "approved river builds an immutable height overlay");
+    if (!overlay || geometry.centreline.empty()) return;
+
+    bool monotonic = true;
+    float previous = overlay->height_at(
+        geometry.centreline.front().position_m.x,
+        geometry.centreline.front().position_m.z, 80.0f);
+    const float first_height = previous;
+    for (std::size_t i = 1; i < geometry.centreline.size(); ++i) {
+        const auto& sample = geometry.centreline[i];
+        const float height = overlay->height_at(
+            sample.position_m.x, sample.position_m.z, 80.0f);
+        monotonic = monotonic &&
+                    height <= std::nextafter(previous,
+                                             std::numeric_limits<float>::infinity());
+        previous = height;
+    }
+    CHECK(monotonic,
+          "smoothed thalweg never rises downstream by more than one float ULP");
+    CHECK(first_height - previous > 2.0f,
+          "compact smoothing preserves a measurable downstream grade");
+    const auto& broad_upstream =
+        geometry.centreline[geometry.centreline.size() / 4u];
+    const auto& broad_downstream =
+        geometry.centreline[geometry.centreline.size() * 3u / 4u];
+    const float broad_offset = network.rivers[0].channel.width_m * 0.9f;
+    const float upstream_terrain = overlay->height_at(
+        broad_upstream.position_m.x + broad_upstream.lateral.x * broad_offset,
+        broad_upstream.position_m.z + broad_upstream.lateral.z * broad_offset,
+        80.0f);
+    const float downstream_terrain = overlay->height_at(
+        broad_downstream.position_m.x +
+            broad_downstream.lateral.x * broad_offset,
+        broad_downstream.position_m.z +
+            broad_downstream.lateral.z * broad_offset,
+        80.0f);
+    CHECK(upstream_terrain - downstream_terrain > 0.5f,
+          "broad terrain around the ravine follows the downstream grade");
+
+    const auto& middle = geometry.centreline[geometry.centreline.size() / 2u];
+    const float bank_offset = network.rivers[0].channel.width_m * 0.45f;
+    const float left = overlay->height_at(
+        middle.position_m.x + middle.lateral.x * bank_offset,
+        middle.position_m.z + middle.lateral.z * bank_offset, 80.0f);
+    const float right = overlay->height_at(
+        middle.position_m.x - middle.lateral.x * bank_offset,
+        middle.position_m.z - middle.lateral.z * bank_offset, 80.0f);
+    CHECK(std::fabs(left - right) > 0.1f,
+          "authored asymmetry produces different bank heights");
+    const float bed = overlay->height_at(middle.position_m.x,
+                                         middle.position_m.z, 80.0f);
+    const float ray_height = bed + network.rivers[0].channel.depth_m * 0.75f;
+    CHECK(left < ray_height || right < ray_height,
+          "a lateral ray from the thalweg reaches sky over at least one bank");
+
+    matter::RiverNetworkDefinition boulder_network = network;
+    boulder_network.rivers[0].boulders = {1.0f, {0.7f, 1.1f}};
+    hydrology::RiverGeometry boulder_geometry{};
+    const auto boulder_overlay = build_overlay(boulder_network, boulder_geometry);
+    bool all_solid = !boulder_geometry.boulders.empty();
+    for (const auto& boulder : boulder_geometry.boulders) {
+        const float projected_bed = overlay->height_at(
+            boulder.center_m.x, boulder.center_m.z, 80.0f);
+        const float projected_center_y = projected_bed + boulder.radius_m;
+        all_solid = all_solid &&
+            boulder_overlay->height_at(
+                boulder.center_m.x, boulder.center_m.z, 80.0f) >
+                projected_center_y;
+    }
+    CHECK(all_solid,
+          "Task 2 boulder XZ/radius selections project onto the carved bed as solid");
+
+    hydrology::RiverGeometry changed_spline{};
+    matter::RiverNetworkDefinition spline_network = network;
+    spline_network.rivers[0].spline[1].z += 2.0f;
+    const auto spline_overlay = build_overlay(spline_network, changed_spline);
+    hydrology::RiverGeometry changed_grade{};
+    matter::RiverNetworkDefinition grade_network = network;
+    grade_network.rivers[0].reaches[0].base_grade -= 0.005f;
+    const auto grade_overlay = build_overlay(grade_network, changed_grade);
+    hydrology::RiverGeometry changed_seed{};
+    matter::RiverNetworkDefinition seed_network = network;
+    ++seed_network.seed;
+    const auto seed_overlay = build_overlay(seed_network, changed_seed);
+    CHECK(overlay->hash() != spline_overlay->hash() &&
+          overlay->hash() != grade_overlay->hash() &&
+          overlay->hash() != seed_overlay->hash(),
+          "overlay hash changes with spline, grade, and seed-derived geometry");
 }
 
 void test_arc_length_reaches_and_hard_controls() {
@@ -455,6 +565,7 @@ int main() {
     test_sub_epsilon_distinct_spline_fails_closed_or_keeps_two_points();
     test_revision_changes_when_geometry_bounds_change();
     test_boulders_are_deterministic_bounded_and_reserve_cross_sections();
+    test_height_overlay_grade_ravine_boulders_and_hash();
     test_generated_intersection_is_deterministically_attenuated();
     test_generated_intersection_exhaustion_rejects_unchanged();
     return check_summary();

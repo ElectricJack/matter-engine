@@ -33,6 +33,9 @@ struct SettledTorus;
 struct BakeInputs;
 }
 
+namespace hydrology { struct RiverGeometry; }
+namespace terrain_field { class RiverHeightOverlay; }
+
 namespace viewer {
 
 struct LocalProviderConfig {
@@ -482,6 +485,14 @@ public:
     const std::optional<matter::RiverNetworkDefinition>& river_network() const {
         return river_network_;
     }
+    // Build the canonical first-section geometry and its immutable terrain
+    // overlay together. The provider owns the authored network; callers own
+    // the resulting shared overlay and must pass that exact instance to the
+    // world's sole FieldRuntime.
+    bool build_river_height_overlay(
+        hydrology::RiverGeometry& geometry,
+        std::shared_ptr<const terrain_field::RiverHeightOverlay>& overlay,
+        std::string& error) const;
     // World.props declarations (property-system S9). Empty when the world
     // declares none. Runtime tunables only — nothing here reaches a bake key.
     const std::vector<matter::WorldPropSpec>& world_prop_specs() const {
