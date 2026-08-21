@@ -18,6 +18,8 @@
 #include "hydrology/river_geometry.h"
 #include "terrain_river_overlay.h"
 
+#include <algorithm>
+
 #if defined(MATTER_HAVE_AUTOREMESHER)
 #include "mesh_retopo.hpp"     // retopo() TBB warm-up (see install_graph() below)
 #include "mesh_indexed.hpp"

@@ -48,7 +48,75 @@ static std::shared_ptr<const RiverHeightOverlay> make_overlay(
     return overlay;
 }
 
+class CountingTransformOverlay final : public HeightOverlay {
+public:
+    explicit CountingTransformOverlay(std::shared_ptr<int> calls)
+        : calls_(std::move(calls)) {}
+
+    float height_at(float x, float z, float base_height) const override {
+        ++*calls_;
+        return base_height * 2.0f + x * x * 0.25f + z * 0.5f;
+    }
+
+    std::uint64_t hash() const override { return UINT64_C(0x4f5645524c415931); }
+
+private:
+    const std::shared_ptr<int> calls_;
+};
+
 int main() {
+    // --- non-idempotent overlay: exactly-once and cache lifecycle ----------
+    {
+        const char* program_text =
+            "const 5\nconst 0.5\nconst 0.2\n"
+            "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n";
+        FieldProgram program; std::string error;
+        CHECK(FieldProgram::parse(program_text, program, error), error.c_str());
+        auto calls = std::make_shared<int>(0);
+        auto overlay = std::make_shared<const CountingTransformOverlay>(calls);
+        FieldRuntime field(std::move(program), overlay);
+
+        *calls = 0;
+        CHECK(std::fabs(field.height_at(2.0f, 3.0f) - 12.5f) < 1e-6f &&
+              *calls == 1,
+              "direct height_at applies a non-idempotent overlay exactly once");
+
+        *calls = 0;
+        CHECK(std::fabs(field.density_at(2.0f, 4.0f, 3.0f) - 8.5f) < 1e-6f &&
+              *calls == 1,
+              "direct density_at applies the height overlay exactly once");
+
+        *calls = 0;
+        FieldRuntime::ColumnCache column{};
+        field.eval_column(column, 2.0f, 3.0f);
+        const float first_density = field.density_at(column, 4.0f);
+        const float second_density = field.density_at(column, 9.0f);
+        CHECK(std::fabs(first_density - 8.5f) < 1e-6f &&
+              std::fabs(second_density - 3.5f) < 1e-6f && *calls == 1,
+              "eval_column applies once and cached density never reapplies");
+
+        field.eval_column(column, 4.0f, -1.0f);
+        CHECK(std::fabs(field.density_at(column, 6.0f) - 7.5f) < 1e-6f &&
+              *calls == 2,
+              "re-evaluating a ColumnCache replaces stale base and overlay state once");
+
+        *calls = 0;
+        CHECK(std::fabs(field.slope_at(4.0f, 1.0f) - std::sqrt(4.25f)) <
+                  1e-5f &&
+              *calls == 4,
+              "slope_at is the exact central difference of the overlaid height");
+        *calls = 0;
+        CHECK(std::fabs(field.curvature_at(4.0f, 1.0f, 2.0f) - 0.5f) < 1e-5f &&
+              *calls == 5,
+              "curvature_at is the exact ring deficit of the overlaid height");
+
+        FieldRuntime base = make(program_text);
+        *calls = 0;
+        CHECK(base.material_at(4.0f, 1.0f) == FieldRuntime::MatGrass &&
+              field.material_at(4.0f, 1.0f) == FieldRuntime::MatRock &&
+              *calls == 4,
+              "material_at changes when overlay-driven slope crosses rock threshold");
+    }
     // --- immutable height overlays compose through every field query -------
     {
         auto overlay = make_overlay(overlay_network());
