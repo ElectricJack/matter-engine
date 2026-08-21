@@ -248,6 +248,8 @@ bool LocalProvider::load_authored_world(std::string& err) {
     world_module_.clear();
     authored_lights_ = world_lights::WorldLights{};
     world_settings_ = matter::WorldSettings{};
+    hydrology_settings_.reset();
+    river_network_.reset();
     authored_entities_.clear();
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
@@ -281,6 +283,8 @@ bool LocalProvider::load_authored_world(std::string& err) {
     tileset_flags_ = std::move(adapted.tileset_flags);
     authored_lights_ = std::move(adapted.lights);
     world_settings_ = adapted.settings;
+    hydrology_settings_ = std::move(adapted.hydrology);
+    river_network_ = std::move(adapted.river_network);
     authored_entities_ = definition.entities;
     // defineMaterial() already installed these in the global registry while the
     // world script evaluated (chart-VT contract C3); what we keep here is the

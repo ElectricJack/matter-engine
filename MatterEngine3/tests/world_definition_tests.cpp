@@ -2074,6 +2074,196 @@ class Bad extends World { static get hydrology() { return {}; } }
           "a hydrology accessor is not a hermetic plain-data declaration");
 }
 
+void test_world_loader_rejects_every_unknown_hydrology_property() {
+    const auto rejects = [](const char* name, const char* declaration) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            name, std::string("class Bad extends World { static hydrology = ") +
+                      declaration + "; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "every own hydrology property must be allow-listed");
+        CHECK(error.property_path.rfind("hydrology", 0) == 0,
+              "unknown hydrology properties are reported at the declaration");
+    };
+    rejects("SymbolHydrologyKey.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384,
+      [Symbol("hidden")]: 1
+    })JS");
+    rejects("AllowedNameSymbolHydrologyKey.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384,
+      [Symbol("enabled")]: 1
+    })JS");
+    rejects("HiddenHydrologyKey.js", R"JS((() => {
+      const h = {
+        enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+        dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+        inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+      };
+      Object.defineProperty(h, "hidden", { value: 1 });
+      return h;
+    })())JS");
+}
+
+void test_world_loader_rejects_uint32_overflow_before_narrowing() {
+    const auto rejects_during_integer_parsing = [](const char* name,
+                                                    const char* declaration) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            name, std::string("class Bad extends World { static hydrology = ") +
+                      declaration + "; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "out-of-range integer fields must reject the declaration");
+        CHECK(error.message.find("complete finite typed values") != std::string::npos,
+              "uint32 overflow must reject before narrowing into the typed domain");
+    };
+    rejects_during_integer_parsing("DimensionUInt32Overflow.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [4294967296, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+    })JS");
+    rejects_during_integer_parsing("StepUInt32Extreme.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 1e100, maxSteps: 16384
+    })JS");
+}
+
+void test_world_loader_builds_imperative_river_network() {
+    Fixture fixture;
+    const fs::path path = fixture.write("River.js", R"JS(
+class River extends World {
+  hydrology() {
+    const network = riverNetwork({
+      cellSize: 0.5,
+      seed: this.worldSeed ^ 0x52495645,
+    });
+    const main = network.river("main")
+      .inlet([0, 18, 0], { flow: 1.0 })
+      .spline([[0, 18, 0], [34, 14, 11], [72, 9, -9], [128, 3, 5]])
+      .reach({ until: 64, baseGrade: -0.035, meander: 0.15 })
+      .reach({ until: 128, baseGrade: -0.012, meander: 0.65 })
+      .channel({ width: 7, depth: 2.5, asymmetry: 0.35 })
+      .boulders({ density: 0.08, radius: [0.5, 2.0] });
+    network.firstSection(main, {
+      minimumLength: 100, dryMargin: 4, batchSteps: 256, maxSteps: 65536,
+      crestWetFraction: 0.80, stableWetSteps: 32,
+    });
+    network.build();
+  }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.river_network.has_value(),
+          "hydrology() publishes one canonical river network");
+    if (!definition.river_network) return;
+    CHECK(definition.river_network->rivers.size() == 1u &&
+              definition.river_network->rivers[0].name == "main",
+          "the loader retains the canonical named river");
+    CHECK(definition.river_network->rivers[0].reaches.size() == 2u &&
+              definition.river_network->rivers[0].reaches[1].meander == 0.65f,
+          "the loader retains two ordered reaches including gentle meander");
+    CHECK(definition.river_network->first_section.minimum_length_m == 100.0f &&
+              definition.river_network->first_section.batch_steps == 256u,
+          "the loader retains first-section length and work settings");
+    CHECK(!definition.river_network->canonical_text.empty() &&
+              definition.river_network->canonical_hash != 0u,
+          "the loader publishes canonical bytes and their deterministic key");
+    const auto adapted = viewer::adapt_river_network_definition(definition);
+    CHECK(adapted.has_value() &&
+              adapted->canonical_text ==
+                  definition.river_network->canonical_text &&
+              adapted->canonical_hash ==
+                  definition.river_network->canonical_hash,
+          "the provider adapter preserves canonical river bytes and key unchanged");
+}
+
+void test_world_loader_rejects_imperative_river_failures() {
+    const auto rejects = [](const char* filename, const std::string& body,
+                            const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            filename, "class Bad extends World { hydrology() { " + body +
+                          " } }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              filename);
+        CHECK(error.property_path == expected_path, filename);
+        CHECK(!definition.river_network.has_value(), filename);
+    };
+    rejects("MissingBuild.js",
+            "const n=riverNetwork({cellSize:.5,seed:1});",
+            "hydrology.build");
+    rejects("RepeatedBuild.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      const r=n.river("main")
+        .inlet([0,1,0],{flow:1})
+        .spline([[0,1,0],[100,0,0]])
+        .reach({until:100,baseGrade:-.01,meander:.2})
+        .channel({width:5,depth:2,asymmetry:0})
+        .boulders({density:.1,radius:[.5,1]});
+      n.firstSection(r,{minimumLength:100,dryMargin:4,crestWetFraction:.8,
+                        stableWetSteps:32,batchSteps:256,maxSteps:65536});
+      n.build(); n.build();
+    )JS", "hydrology.build");
+    rejects("Nonfinite.js",
+            "const n=riverNetwork({cellSize:Infinity,seed:1}); n.build();",
+            "hydrology.cellSize");
+    rejects("DecreasingReach.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      const r=n.river("main");
+      r.reach({until:64,baseGrade:-.02,meander:.2});
+      r.reach({until:32,baseGrade:-.01,meander:.3});
+    )JS", "hydrology.main.reach[1].until");
+    rejects("ShortSpline.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.river("main").spline([[0,0,0]]);
+    )JS", "hydrology.main.spline");
+    rejects("JoinsReserved.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      const main=n.river("main");
+      n.river("side").joins(main);
+    )JS", "hydrology.side.joins");
+    rejects("DuplicateRiver.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.river("main"); n.river("main");
+    )JS", "hydrology.main.name");
+}
+
+void test_world_loader_rejects_dual_hydrology_configuration() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Dual.js", R"JS(
+class Dual extends World {
+  static hydrology = {
+    enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+    dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+    inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+  };
+  hydrology() {
+    const n = riverNetwork({ cellSize: 0.5, seed: 1 });
+    n.build();
+  }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "legacy static and imperative hydrology are mutually exclusive");
+    CHECK(error.property_path == "hydrology",
+          "dual hydrology configuration reports the shared declaration path");
+}
+
 } // namespace
 
 int main() {
@@ -2126,5 +2316,10 @@ int main() {
     test_world_loader_reads_static_hydrology();
     test_world_loader_leaves_hydrology_empty_when_absent();
     test_world_loader_rejects_invalid_static_hydrology();
+    test_world_loader_rejects_every_unknown_hydrology_property();
+    test_world_loader_rejects_uint32_overflow_before_narrowing();
+    test_world_loader_builds_imperative_river_network();
+    test_world_loader_rejects_imperative_river_failures();
+    test_world_loader_rejects_dual_hydrology_configuration();
     return check_summary();
 }

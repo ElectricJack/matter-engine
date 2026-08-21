@@ -243,7 +243,19 @@ struct ProviderWorldDefinition {
     std::vector<bool> tileset_flags;
     world_lights::WorldLights lights;
     matter::WorldSettings settings;
+    std::optional<matter::HydrologyWorldSettings> hydrology;
+    std::optional<matter::RiverNetworkDefinition> river_network;
 };
+
+inline std::optional<matter::HydrologyWorldSettings>
+adapt_hydrology_definition(const matter::WorldDefinition& definition) {
+    return definition.hydrology;
+}
+
+inline std::optional<matter::RiverNetworkDefinition>
+adapt_river_network_definition(const matter::WorldDefinition& definition) {
+    return definition.river_network;
+}
 
 struct ProceduralWorldProfile {
     float sector_size = 16.0f;
@@ -296,6 +308,8 @@ inline ProviderWorldDefinition adapt_world_definition(
     }
 
     out.settings = definition.settings;
+    out.hydrology = adapt_hydrology_definition(definition);
+    out.river_network = adapt_river_network_definition(definition);
     out.lights.sun_dir[0] = definition.settings.sun_direction.x;
     out.lights.sun_dir[1] = definition.settings.sun_direction.y;
     out.lights.sun_dir[2] = definition.settings.sun_direction.z;
@@ -462,6 +476,12 @@ public:
     const matter::WorldSettings& world_settings() const {
         return world_settings_;
     }
+    const std::optional<matter::HydrologyWorldSettings>& hydrology_settings() const {
+        return hydrology_settings_;
+    }
+    const std::optional<matter::RiverNetworkDefinition>& river_network() const {
+        return river_network_;
+    }
     // World.props declarations (property-system S9). Empty when the world
     // declares none. Runtime tunables only — nothing here reaches a bake key.
     const std::vector<matter::WorldPropSpec>& world_prop_specs() const {
@@ -524,6 +544,8 @@ private:
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
     std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
     std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
+    std::optional<matter::HydrologyWorldSettings> hydrology_settings_;
+    std::optional<matter::RiverNetworkDefinition> river_network_;
     std::vector<FetchFailed> fetch_failed_; // Task 7 fix: per-part load failures from fetch_parts()
     part_graph_snapshot::Snapshot graph_snapshot_;  // Task 9: live-edit graph snapshot
 

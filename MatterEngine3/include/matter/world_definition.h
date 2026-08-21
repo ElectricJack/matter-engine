@@ -5,6 +5,7 @@
 #include "cloud_shadow_settings.h"
 #include "hydrology.h"
 #include "math_types.h"
+#include "river_network.h"
 #include "sun_angles.h"
 #include "volumetric_quality.h"
 
@@ -464,6 +465,7 @@ struct WorldDefinition {
     // Static, typed bake input. The engine intentionally leaves it inert until
     // the hydrology runtime owns its artifact lifecycle.
     std::optional<HydrologyWorldSettings> hydrology;
+    std::optional<RiverNetworkDefinition> river_network;
 };
 
 struct WorldLoadDesc {

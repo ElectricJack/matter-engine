@@ -2,6 +2,7 @@
 #include "matter/log.h"
 
 #include "../hydrology/hydrology_settings.h"
+#include "../hydrology/river_network_builder.h"
 #include "module_resolver.h"
 
 extern "C" {
@@ -14,6 +15,7 @@ extern "C" {
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -305,7 +307,342 @@ JSValue append_entity(JSContext* context,
 struct LoadCollector {
     std::vector<WorldMaterial>* materials = nullptr;
     const std::vector<WorldPropSpec>* props = nullptr;
+    std::unique_ptr<hydrology::RiverNetworkBuilder> river_builder;
+    std::optional<RiverNetworkDefinition> finished_river_network;
+    std::string river_error_path;
+    bool river_network_created = false;
+    bool river_network_built = false;
 };
+
+struct RiverNetworkHandle {
+    LoadCollector* collector = nullptr;
+};
+
+struct RiverHandle {
+    LoadCollector* collector = nullptr;
+    std::size_t river = 0;
+};
+
+JSClassID river_network_class_id = 0;
+JSClassID river_class_id = 0;
+
+void river_network_finalizer(JSRuntime*, JSValueConst value) {
+    delete static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque(value, river_network_class_id));
+}
+
+void river_finalizer(JSRuntime*, JSValueConst value) {
+    delete static_cast<RiverHandle*>(JS_GetOpaque(value, river_class_id));
+}
+
+bool install_river_classes(JSRuntime* runtime) {
+    if (river_network_class_id == 0)
+        JS_NewClassID(runtime, &river_network_class_id);
+    if (river_class_id == 0) JS_NewClassID(runtime, &river_class_id);
+    const JSClassDef network_class = {
+        "MatterRiverNetwork", river_network_finalizer, nullptr, nullptr, nullptr};
+    const JSClassDef river_class = {
+        "MatterRiver", river_finalizer, nullptr, nullptr, nullptr};
+    return (JS_IsRegisteredClass(runtime, river_network_class_id) ||
+            JS_NewClass(runtime, river_network_class_id, &network_class) == 0) &&
+           (JS_IsRegisteredClass(runtime, river_class_id) ||
+            JS_NewClass(runtime, river_class_id, &river_class) == 0);
+}
+
+std::string error_path(const std::string& error) {
+    const std::size_t separator = error.find(':');
+    return separator == std::string::npos ? "hydrology" : error.substr(0, separator);
+}
+
+JSValue river_failure(JSContext* context, LoadCollector* collector,
+                      const std::string& error) {
+    if (collector) collector->river_error_path = error_path(error);
+    return JS_ThrowTypeError(context, "%s", error.c_str());
+}
+
+bool required_float(JSContext* context, JSValueConst object, const char* key,
+                    float& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    double number = 0.0;
+    const bool ok = JS_IsNumber(value) &&
+                    JS_ToFloat64(context, &number, value) == 0 &&
+                    number >= -std::numeric_limits<float>::max() &&
+                    number <= std::numeric_limits<float>::max();
+    if (ok) output = static_cast<float>(number);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+bool required_uint32(JSContext* context, JSValueConst object, const char* key,
+                     std::uint32_t& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    double number = 0.0;
+    const bool ok = JS_IsNumber(value) &&
+                    JS_ToFloat64(context, &number, value) == 0 &&
+                    std::isfinite(number) && number >= 0.0 &&
+                    std::floor(number) == number &&
+                    number <= std::numeric_limits<std::uint32_t>::max();
+    if (ok) output = static_cast<std::uint32_t>(number);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+bool required_float2(JSContext* context, JSValueConst object, const char* key,
+                     Float2& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    std::uint32_t length = 0;
+    bool ok = array_length(context, value, length) && length == 2u;
+    float* components[] = {&output.x, &output.y};
+    for (std::uint32_t index = 0; index < 2u && ok; ++index) {
+        JSValue item = JS_GetPropertyUint32(context, value, index);
+        double number = 0.0;
+        ok = JS_IsNumber(item) && JS_ToFloat64(context, &number, item) == 0 &&
+             number >= -std::numeric_limits<float>::max() &&
+             number <= std::numeric_limits<float>::max();
+        if (ok) *components[index] = static_cast<float>(number);
+        JS_FreeValue(context, item);
+    }
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+JSValue river_inlet(JSContext* context, JSValueConst this_value,
+                    int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    RiverInlet inlet{};
+    if (argument_count < 2 ||
+        !float3_value(context, arguments[0], inlet.position_m) ||
+        !JS_IsObject(arguments[1]) ||
+        !required_float(context, arguments[1], "flow", inlet.flow_m3s)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.inlet: inlet(position, {flow}) requires finite values");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_inlet(handle->river, inlet, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue river_spline(JSContext* context, JSValueConst this_value,
+                     int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    std::uint32_t count = 0;
+    std::vector<Float3> spline;
+    if (argument_count < 1 || !array_length(context, arguments[0], count))
+        return river_failure(context, handle->collector,
+                             "hydrology.spline: spline(points) requires an array");
+    spline.reserve(count);
+    for (std::uint32_t point = 0; point < count; ++point) {
+        JSValue value = JS_GetPropertyUint32(context, arguments[0], point);
+        Float3 position{};
+        const bool ok = float3_value(context, value, position);
+        JS_FreeValue(context, value);
+        if (!ok)
+            return river_failure(context, handle->collector,
+                                 "hydrology.spline: every point must contain three numbers");
+        spline.push_back(position);
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_spline(handle->river, spline, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue river_reach(JSContext* context, JSValueConst this_value,
+                    int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    RiverReach reach{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "until", reach.until_m) ||
+        !required_float(context, arguments[0], "baseGrade", reach.base_grade) ||
+        !required_float(context, arguments[0], "meander", reach.meander)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.reach: reach requires until/baseGrade/meander");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->add_reach(handle->river, reach, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue river_channel(JSContext* context, JSValueConst this_value,
+                      int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    RiverChannel channel{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "width", channel.width_m) ||
+        !required_float(context, arguments[0], "depth", channel.depth_m) ||
+        !required_float(context, arguments[0], "asymmetry", channel.asymmetry)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.channel: channel requires width/depth/asymmetry");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_channel(handle->river, channel, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue river_boulders(JSContext* context, JSValueConst this_value,
+                       int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    RiverBoulders boulders{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "density", boulders.density) ||
+        !required_float2(context, arguments[0], "radius", boulders.radius_m)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.boulders: boulders requires density/radius");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_boulders(handle->river, boulders,
+                                                         error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue river_joins(JSContext* context, JSValueConst this_value,
+                    int, JSValueConst*) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    std::string error;
+    handle->collector->river_builder->reserve_join(handle->river, error);
+    return river_failure(context, handle->collector, error);
+}
+
+JSValue make_river_object(JSContext* context, LoadCollector* collector,
+                          std::size_t river) {
+    JSValue object = JS_NewObjectClass(context, river_class_id);
+    if (JS_IsException(object)) return object;
+    JS_SetOpaque(object, new RiverHandle{collector, river});
+    JS_SetPropertyStr(context, object, "inlet",
+                      JS_NewCFunction(context, river_inlet, "inlet", 2));
+    JS_SetPropertyStr(context, object, "spline",
+                      JS_NewCFunction(context, river_spline, "spline", 1));
+    JS_SetPropertyStr(context, object, "reach",
+                      JS_NewCFunction(context, river_reach, "reach", 1));
+    JS_SetPropertyStr(context, object, "channel",
+                      JS_NewCFunction(context, river_channel, "channel", 1));
+    JS_SetPropertyStr(context, object, "boulders",
+                      JS_NewCFunction(context, river_boulders, "boulders", 1));
+    JS_SetPropertyStr(context, object, "joins",
+                      JS_NewCFunction(context, river_joins, "joins", 1));
+    return object;
+}
+
+JSValue network_river(JSContext* context, JSValueConst this_value,
+                      int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque2(context, this_value, river_network_class_id));
+    if (!handle) return JS_EXCEPTION;
+    std::string name;
+    if (argument_count < 1 || !string_value(context, arguments[0], name))
+        return river_failure(context, handle->collector,
+                             "hydrology.river.name: river(name) requires a string");
+    std::size_t river = 0;
+    std::string error;
+    if (!handle->collector->river_builder->add_river(name, river, error))
+        return river_failure(context, handle->collector, error);
+    return make_river_object(context, handle->collector, river);
+}
+
+JSValue network_first_section(JSContext* context, JSValueConst this_value,
+                              int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque2(context, this_value, river_network_class_id));
+    if (!handle) return JS_EXCEPTION;
+    RiverHandle* river = argument_count > 0
+        ? static_cast<RiverHandle*>(JS_GetOpaque(arguments[0], river_class_id))
+        : nullptr;
+    RiverFirstSection section{};
+    if (!river || river->collector != handle->collector || argument_count < 2 ||
+        !JS_IsObject(arguments[1]) ||
+        !required_float(context, arguments[1], "minimumLength",
+                        section.minimum_length_m) ||
+        !required_float(context, arguments[1], "dryMargin", section.dry_margin_m) ||
+        !required_float(context, arguments[1], "crestWetFraction",
+                        section.crest_wet_fraction) ||
+        !required_uint32(context, arguments[1], "stableWetSteps",
+                         section.stable_wet_steps) ||
+        !required_uint32(context, arguments[1], "batchSteps", section.batch_steps) ||
+        !required_uint32(context, arguments[1], "maxSteps", section.max_steps)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.firstSection: invalid river or section settings");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_first_section(river->river, section,
+                                                              error))
+        return river_failure(context, handle->collector, error);
+    return JS_UNDEFINED;
+}
+
+JSValue network_build(JSContext* context, JSValueConst this_value,
+                      int, JSValueConst*) {
+    RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque2(context, this_value, river_network_class_id));
+    if (!handle) return JS_EXCEPTION;
+    RiverNetworkDefinition definition;
+    std::string error;
+    if (!handle->collector->river_builder->finish(definition, error))
+        return river_failure(context, handle->collector, error);
+    handle->collector->finished_river_network = std::move(definition);
+    handle->collector->river_network_built = true;
+    return JS_UNDEFINED;
+}
+
+JSValue river_network(JSContext* context, JSValueConst,
+                      int argument_count, JSValueConst* arguments) {
+    LoadCollector* collector =
+        static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector)
+        return JS_ThrowInternalError(context, "river network collector unavailable");
+    if (collector->river_network_created)
+        return river_failure(context, collector,
+                             "hydrology.riverNetwork: only one network may be created");
+    float cell_size = 0.0f;
+    JSValue seed_value = argument_count > 0 && JS_IsObject(arguments[0])
+        ? JS_GetPropertyStr(context, arguments[0], "seed") : JS_UNDEFINED;
+    double seed_number = 0.0;
+    const bool seed_ok = JS_IsNumber(seed_value) &&
+                         JS_ToFloat64(context, &seed_number, seed_value) == 0 &&
+                         std::isfinite(seed_number) && seed_number >= 0.0 &&
+                         std::floor(seed_number) == seed_number &&
+                         seed_number <= 9007199254740991.0;
+    JS_FreeValue(context, seed_value);
+    if (argument_count < 1 || !JS_IsObject(arguments[0])) {
+        return river_failure(context, collector,
+                             "hydrology.riverNetwork: options object is required");
+    }
+    if (!required_float(context, arguments[0], "cellSize", cell_size))
+        return river_failure(context, collector,
+                             "hydrology.cellSize: cellSize must be a finite number");
+    if (!seed_ok)
+        return river_failure(context, collector,
+                             "hydrology.seed: seed must be a nonnegative safe integer");
+    collector->river_network_created = true;
+    collector->river_builder = std::make_unique<hydrology::RiverNetworkBuilder>(
+        cell_size, static_cast<std::uint64_t>(seed_number));
+    JSValue object = JS_NewObjectClass(context, river_network_class_id);
+    if (JS_IsException(object)) return object;
+    JS_SetOpaque(object, new RiverNetworkHandle{collector});
+    JS_SetPropertyStr(context, object, "river",
+                      JS_NewCFunction(context, network_river, "river", 1));
+    JS_SetPropertyStr(context, object, "firstSection",
+                      JS_NewCFunction(context, network_first_section,
+                                      "firstSection", 2));
+    JS_SetPropertyStr(context, object, "build",
+                      JS_NewCFunction(context, network_build, "build", 0));
+    return object;
+}
 
 std::uint32_t fnv1a32(const std::string& text) {
     std::uint32_t hash = 2166136261u;
@@ -2259,6 +2596,11 @@ bool load_world_definition(const WorldLoadDesc& desc,
         JS_FreeRuntime(runtime);
         return fail(desc, error, "runtime", "unable to create JavaScript context");
     }
+    if (!install_river_classes(runtime)) {
+        JS_FreeContext(context);
+        JS_FreeRuntime(runtime);
+        return fail(desc, error, "runtime", "unable to install river builder classes");
+    }
     auto cleanup = [&]() {
         JS_FreeContext(context);
         JS_FreeRuntime(runtime);
@@ -2319,6 +2661,8 @@ class World {}
     // readable once `static props` has been extracted, below.
     JS_SetPropertyStr(context, global, "getProp",
                       JS_NewCFunction(context, get_prop_too_early, "getProp", 1));
+    JS_SetPropertyStr(context, global, "riverNetwork",
+                      JS_NewCFunction(context, river_network, "riverNetwork", 1));
     JS_FreeValue(context, global);
 
     const std::string wrapped = source +
@@ -2442,6 +2786,80 @@ class World {}
     JS_DefinePropertyValueStr(
         context, instance, "entity",
         JS_NewCFunction(context, append_entity, "entity", 1), 0);
+
+    JSValue hydrology_method = JS_GetPropertyStr(context, instance, "hydrology");
+    if (JS_IsException(hydrology_method)) {
+        const std::string message = exception_message(context);
+        definition = WorldDefinition{};
+        JS_FreeValue(context, hydrology_method);
+        JS_FreeValue(context, instance);
+        JS_FreeValue(context, canonicalizer);
+        JS_FreeValue(context, world_class);
+        cleanup();
+        return fail(desc, error, "hydrology", message);
+    }
+    if (!JS_IsUndefined(hydrology_method)) {
+        if (!JS_IsFunction(context, hydrology_method)) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, hydrology_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "hydrology",
+                        "World.hydrology must be a function when declared on an instance");
+        }
+        if (definition.hydrology.has_value()) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, hydrology_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "hydrology",
+                        "static World.hydrology and instance hydrology() are mutually exclusive");
+        }
+        load_collector.river_error_path.clear();
+        JSValue result = JS_Call(context, hydrology_method, instance, 0, nullptr);
+        if (JS_IsException(result)) {
+            const std::string message = exception_message(context);
+            const std::string path = load_collector.river_error_path.empty()
+                ? "hydrology" : load_collector.river_error_path;
+            definition = WorldDefinition{};
+            JS_FreeValue(context, result);
+            JS_FreeValue(context, hydrology_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, path, message);
+        }
+        JS_FreeValue(context, result);
+        if (!load_collector.river_network_created ||
+            !load_collector.river_network_built ||
+            !load_collector.finished_river_network.has_value()) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, hydrology_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "hydrology.build",
+                        "hydrology() must call exactly one network.build()");
+        }
+        definition.river_network =
+            std::move(load_collector.finished_river_network);
+    } else if (load_collector.river_network_created) {
+        definition = WorldDefinition{};
+        JS_FreeValue(context, hydrology_method);
+        JS_FreeValue(context, instance);
+        JS_FreeValue(context, canonicalizer);
+        JS_FreeValue(context, world_class);
+        cleanup();
+        return fail(desc, error, "hydrology",
+                    "riverNetwork() may only be used from hydrology()");
+    }
+    JS_FreeValue(context, hydrology_method);
 
     JSValue build = JS_GetPropertyStr(context, instance, "buildEntities");
     if (JS_IsException(build)) {

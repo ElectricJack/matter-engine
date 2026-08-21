@@ -584,6 +584,8 @@ TILESETMEADOWMANIFEST_TARGET = build/tileset_meadow_manifest_tests
 TILESETMEADOWMANIFEST_CPP = tileset_meadow_manifest_tests.cpp ../src/part_graph.cpp \
                             ../src/part_asset_v2.cpp \
                             ../src/script/world_definition_loader.cpp \
+                            ../src/hydrology/river_network_builder.cpp \
+                            ../src/hydrology/hydrology_settings.cpp \
                             ../src/module_resolver.cpp \
                             $(COMMON_MSL_BLAS_SRC)
 TILESETMEADOWMANIFEST_C   = $(MSL)/material_registry.c
@@ -948,6 +950,8 @@ SCATTERPROF_TARGET = build/sector_scatter_profile
 # eval_world fails with "not registered" and no habitat tape ever compiles.
 SCATTERPROF_CPP = sector_scatter_profile.cpp \
                   ../src/script/world_definition_loader.cpp \
+                  ../src/hydrology/river_network_builder.cpp \
+                  ../src/hydrology/hydrology_settings.cpp \
                   $(filter-out sector_bake_tests.cpp,$(SECTORBAKE_CPP))
 SCATTERPROF_C = $(COMMON_MSL_C)
 
@@ -1030,7 +1034,7 @@ EXAMPLE_TARGET = build/example_world
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/script/world_definition_loader.cpp \
+              ../src/script/world_definition_loader.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
               ../src/impostor_bake.cpp \
               ../src/retopo_blacklist.cpp \
@@ -1119,11 +1123,17 @@ TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
 WORLD_DEFINITION_TARGET = build/world_definition_tests
 WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
+                       ../src/hydrology/river_network_builder.cpp \
                        ../src/module_resolver.cpp \
                        ../src/hydrology/hydrology_settings.cpp
 # defineMaterial (chart-VT Phase 3) makes the loader call into the material
 # registry, so the registry TU joins this otherwise QuickJS-only link.
 WORLD_DEFINITION_C   = $(MSL)/material_registry.c
+
+RIVER_NETWORK_TARGET = build/river_network_tests
+RIVER_NETWORK_CPP = river_network_tests.cpp \
+                    ../src/hydrology/river_network_builder.cpp
+RIVER_NETWORK_OBJS = $(call obj_list,def,$(RIVER_NETWORK_CPP))
 
 # Visual river Task 1 — standalone validation and canonical key contract.
 HYDROLOGY_SETTINGS_TARGET = build/hydrology_settings_tests
@@ -1132,11 +1142,14 @@ HYDROLOGY_SETTINGS_CPP = hydrology_settings_tests.cpp \
 HYDROLOGY_SETTINGS_OBJS = $(call obj_list,def,$(HYDROLOGY_SETTINGS_CPP))
 
 $(foreach s,$(HYDROLOGY_SETTINGS_CPP),$(eval $(call objrule_cpp,def,$(s))))
+$(foreach s,$(RIVER_NETWORK_CPP),$(eval $(call objrule_cpp,def,$(s))))
 
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
 PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
                             ../src/script/world_definition_loader.cpp \
+                            ../src/hydrology/river_network_builder.cpp \
+                            ../src/hydrology/hydrology_settings.cpp \
                             ../src/module_resolver.cpp
 PHYSICS_PLAYGROUND_C      = $(MSL)/material_registry.c
 
@@ -1159,7 +1172,9 @@ EVALWORLD_C = $(COMMON_MSL_C)
 # resulting program); see cavern_probe.cpp for what it reports and why.
 CAVERNPROBE_TARGET = build/cavern_probe
 CAVERNPROBE_CPP = $(subst eval_world_tests.cpp,cavern_probe.cpp,$(EVALWORLD_CPP)) \
-                  ../src/script/world_definition_loader.cpp
+                  ../src/script/world_definition_loader.cpp \
+                  ../src/hydrology/river_network_builder.cpp \
+                  ../src/hydrology/hydrology_settings.cpp
 CAVERNPROBE_C = $(COMMON_MSL_C)
 
 # Phase C Task 1: fold cache in ScriptHost (sh flavor).
@@ -1313,7 +1328,7 @@ GPU_RENDER_CPP = \
 
 GPU_PIPELINE_CPP = \
     ../src/part_graph.cpp \
-    ../src/script_host.cpp ../src/script/world_definition_loader.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+    ../src/script_host.cpp ../src/script/world_definition_loader.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
     ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
     ../src/script_rng_binding.cpp \
     ../src/polygon_triangulate.cpp \
@@ -1686,6 +1701,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
 .PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-river-network run-physics-playground run-terrainmesh run-seamweld run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-worldstream-unpark run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2012,6 +2028,12 @@ run-hydrology-settings: $(HYDROLOGY_SETTINGS_TARGET)
 
 run-world-definition: $(WORLD_DEFINITION_TARGET)
 	./$(WORLD_DEFINITION_TARGET)
+
+$(RIVER_NETWORK_TARGET): $(RIVER_NETWORK_OBJS)
+	$(CC) $(RIVER_NETWORK_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-river-network: $(RIVER_NETWORK_TARGET)
+	./$(RIVER_NETWORK_TARGET)
 
 $(PHYSICS_PLAYGROUND_TARGET): $(PHYSICS_PLAYGROUND_OBJS)
 	$(CC) $(PHYSICS_PLAYGROUND_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
