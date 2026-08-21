@@ -3071,7 +3071,8 @@ RIVER_GEOMETRY_TARGET = build/river_geometry_tests
 RIVER_GEOMETRY_CPP = river_geometry_tests.cpp ../src/hydrology/river_geometry.cpp
 
 $(RIVER_GEOMETRY_TARGET): $(RIVER_GEOMETRY_CPP) \
-        ../src/hydrology/river_geometry.h ../include/matter/river_network.h \
+        ../src/hydrology/river_geometry.h ../include/matter/bounds.h \
+        ../include/matter/river_network.h \
         ../include/matter/math_types.h check.h | build
 	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 \
 	    -I../include -I../src -o $@ $(RIVER_GEOMETRY_CPP) -lm

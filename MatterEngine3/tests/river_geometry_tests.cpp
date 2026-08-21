@@ -62,6 +62,39 @@ float lateral_range(const hydrology::RiverGeometry& geometry,
     return maximum - minimum;
 }
 
+float planar_orientation(matter::Float3 a, matter::Float3 b,
+                         matter::Float3 c) {
+    return (b.x - a.x) * (c.z - a.z) -
+           (b.z - a.z) * (c.x - a.x);
+}
+
+bool proper_planar_crossing(matter::Float3 a, matter::Float3 b,
+                            matter::Float3 c, matter::Float3 d) {
+    const float ab_c = planar_orientation(a, b, c);
+    const float ab_d = planar_orientation(a, b, d);
+    const float cd_a = planar_orientation(c, d, a);
+    const float cd_b = planar_orientation(c, d, b);
+    return ((ab_c > 0.0f && ab_d < 0.0f) ||
+            (ab_c < 0.0f && ab_d > 0.0f)) &&
+           ((cd_a > 0.0f && cd_b < 0.0f) ||
+            (cd_a < 0.0f && cd_b > 0.0f));
+}
+
+bool centreline_crosses(const hydrology::RiverGeometry& geometry) {
+    const auto& samples = geometry.centreline;
+    for (std::size_t first = 0; first + 1 < samples.size(); ++first) {
+        for (std::size_t second = first + 2;
+             second + 1 < samples.size(); ++second) {
+            if (proper_planar_crossing(samples[first].position_m,
+                                       samples[first + 1].position_m,
+                                       samples[second].position_m,
+                                       samples[second + 1].position_m))
+                return true;
+        }
+    }
+    return false;
+}
+
 void test_arc_length_reaches_and_hard_controls() {
     const matter::RiverNetworkDefinition network = approved_network();
     hydrology::RiverGeometry geometry{};
@@ -150,15 +183,19 @@ void test_inverse_grade_response_is_deterministic_and_curvature_bounded() {
     CHECK(identical && first.revision == same.revision,
           "same seed produces byte-identical sampled offsets and revision");
 
-    bool seed_changes_offset = first.revision != changed_seed.revision;
+    bool seed_changes_offset = first.centreline.size() !=
+                               changed_seed.centreline.size();
     const std::size_t common = std::min(first.centreline.size(),
                                         changed_seed.centreline.size());
-    for (std::size_t i = 0; !seed_changes_offset && i < common; ++i)
+    for (std::size_t i = 0; i < common; ++i)
         seed_changes_offset =
+            seed_changes_offset ||
             first.centreline[i].position_m.x != changed_seed.centreline[i].position_m.x ||
             first.centreline[i].position_m.z != changed_seed.centreline[i].position_m.z;
     CHECK(seed_changes_offset,
           "changing the network seed changes deterministic lateral offsets");
+    CHECK(first.revision != changed_seed.revision,
+          "changing the network seed changes geometry revision identity");
 
     float maximum_curvature = 0.0f;
     for (std::size_t i = 1; i + 1 < first.centreline.size(); ++i) {
@@ -192,6 +229,31 @@ void test_self_intersection_is_rejected() {
     CHECK(!hydrology::build_river_geometry(network, geometry, error) &&
               error.find("self-intersection") != std::string::npos,
           "non-neighbour spline segment intersections reject geometry");
+}
+
+void test_sub_epsilon_distinct_spline_fails_closed_or_keeps_two_points() {
+    matter::RiverNetworkDefinition network = approved_network();
+    network.rivers[0].spline = {{0.0f, 18.0f, 0.0f},
+                               {0.00005f, 18.0f, 0.0f}};
+    network.rivers[0].reaches = {{1.0f, -0.01f, 0.0f}};
+    network.rivers[0].boulders.density = 0.0f;
+
+    hydrology::RiverGeometry geometry{};
+    geometry.centreline.push_back({{91.0f, 92.0f, 93.0f}});
+    geometry.revision = 0xfeedu;
+    std::string error;
+    const bool built = hydrology::build_river_geometry(network, geometry, error);
+
+    const bool valid_two_point_result =
+        built && geometry.centreline.size() >= 2u &&
+        geometry.centreline.back().distance_m > 0.0f;
+    const bool named_unchanged_rejection =
+        !built && error.find("spline is too short") != std::string::npos &&
+        geometry.centreline.size() == 1u &&
+        geometry.centreline[0].position_m.x == 91.0f &&
+        geometry.revision == 0xfeedu;
+    CHECK(valid_two_point_result || named_unchanged_rejection,
+          "a distinct sub-epsilon spline returns two points or fails closed without changing output");
 }
 
 void test_revision_changes_when_geometry_bounds_change() {
@@ -278,13 +340,54 @@ void test_boulders_are_deterministic_bounded_and_reserve_cross_sections() {
           "maximum authored density selects more deterministic candidates");
 }
 
+void test_generated_intersection_is_deterministically_rejected() {
+    matter::RiverNetworkDefinition network = approved_network();
+    network.cell_size_m = 2.0f;
+    network.seed = 34u;
+    network.rivers[0].spline = {
+        {20.0f, 10.0f, 0.0f}, {14.0f, 9.0f, 14.0f},
+        {0.0f, 8.0f, 20.0f}, {-14.0f, 7.0f, 14.0f},
+        {-20.0f, 6.0f, 0.0f}, {-14.0f, 5.0f, -14.0f},
+        {0.0f, 4.0f, -20.0f}, {14.0f, 3.0f, -14.0f},
+        {19.9f, 2.0f, -2.0f}};
+    network.rivers[0].reaches = {{200.0f, -0.005f, 1.0f}};
+    network.rivers[0].channel.width_m = 20.0f;
+    network.rivers[0].boulders.density = 0.0f;
+
+    matter::RiverNetworkDefinition base_network = network;
+    base_network.rivers[0].reaches[0].meander = 0.0f;
+
+    hydrology::RiverGeometry base{};
+    hydrology::RiverGeometry rejected{};
+    rejected.centreline.push_back({{81.0f, 82.0f, 83.0f}});
+    rejected.revision = 0xcafeu;
+    std::string error;
+    CHECK(hydrology::build_river_geometry(base_network, base, error),
+          error.c_str());
+    error.clear();
+    const bool built = hydrology::build_river_geometry(network, rejected, error);
+    if (base.centreline.empty()) return;
+
+    CHECK(!centreline_crosses(base),
+          "the authored large-radius base fixture does not self-intersect");
+    CHECK(!built &&
+              error.find("generated meander self-intersection") !=
+                  std::string::npos &&
+              rejected.centreline.size() == 1u &&
+              rejected.centreline[0].position_m.x == 81.0f &&
+              rejected.revision == 0xcafeu,
+          "a full-scale seeded meander crossing is rejected without publishing geometry");
+}
+
 } // namespace
 
 int main() {
     test_arc_length_reaches_and_hard_controls();
     test_inverse_grade_response_is_deterministic_and_curvature_bounded();
     test_self_intersection_is_rejected();
+    test_sub_epsilon_distinct_spline_fails_closed_or_keeps_two_points();
     test_revision_changes_when_geometry_bounds_change();
     test_boulders_are_deterministic_bounded_and_reserve_cross_sections();
+    test_generated_intersection_is_deterministically_rejected();
     return check_summary();
 }

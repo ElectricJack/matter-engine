@@ -360,7 +360,8 @@ std::vector<RiverCentrelineSample> resample(
     result.push_back(first);
     for (std::size_t step = 1; step <= full_steps; ++step)
         append(static_cast<float>(step) * spacing_m, dense_index, result);
-    if (total - result.back().distance_m > 1.0e-4f)
+    if (result.size() == 1u ||
+        total - result.back().distance_m > 1.0e-4f)
         append(total, dense_index, result);
 
     for (std::size_t i = 0; i < result.size(); ++i) {
@@ -535,8 +536,8 @@ bool build_river_geometry(const matter::RiverNetworkDefinition& network,
 
     const std::vector<DensePoint> base =
         build_dense_base(*river, network.cell_size_m);
-    if (base.size() < 2u || base.back().base_distance_m <= 0.0f)
-        return fail(error, "spline has zero arc length");
+    if (base.size() < 2u || base.back().base_distance_m <= 1.0e-4f)
+        return fail(error, "spline is too short to sample safely");
     if (has_self_intersection(base.size(),
                               [&](std::size_t i) { return base[i].base; }))
         return fail(error, "spline has a non-neighbour self-intersection");
@@ -548,10 +549,8 @@ bool build_river_geometry(const matter::RiverNetworkDefinition& network,
         const std::vector<matter::Float3> displaced =
             displace_dense(network, *river, base, meander_scale);
         if (has_self_intersection(displaced.size(),
-                                  [&](std::size_t i) { return displaced[i]; })) {
-            meander_scale *= 0.5f;
-            continue;
-        }
+                                  [&](std::size_t i) { return displaced[i]; }))
+            return fail(error, "generated meander self-intersection");
         result.centreline = resample(*river, displaced,
                                      network.cell_size_m * 0.5f);
         if (maximum_curvature(result.centreline) <= kMaximumCurvaturePerM) {

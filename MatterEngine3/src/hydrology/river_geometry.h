@@ -1,21 +1,11 @@
 #pragma once
 
+#include "matter/bounds.h"
 #include "matter/river_network.h"
 
 #include <cstdint>
 #include <string>
 #include <vector>
-
-namespace matter {
-
-// Minimal engine-space bounds value used by the staged river geometry. The
-// repository did not previously expose a matter::Aabb type.
-struct Aabb {
-    Float3 minimum{};
-    Float3 maximum{};
-};
-
-} // namespace matter
 
 namespace hydrology {
 
