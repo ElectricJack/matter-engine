@@ -545,12 +545,16 @@ bool build_river_geometry(const matter::RiverNetworkDefinition& network,
     RiverGeometry result{};
     float meander_scale = 1.0f;
     bool accepted = false;
+    bool every_candidate_intersected = true;
     for (int attempt = 0; attempt < 9; ++attempt) {
         const std::vector<matter::Float3> displaced =
             displace_dense(network, *river, base, meander_scale);
         if (has_self_intersection(displaced.size(),
-                                  [&](std::size_t i) { return displaced[i]; }))
-            return fail(error, "generated meander self-intersection");
+                                  [&](std::size_t i) { return displaced[i]; })) {
+            meander_scale *= 0.5f;
+            continue;
+        }
+        every_candidate_intersected = false;
         result.centreline = resample(*river, displaced,
                                      network.cell_size_m * 0.5f);
         if (maximum_curvature(result.centreline) <= kMaximumCurvaturePerM) {
@@ -559,6 +563,9 @@ bool build_river_geometry(const matter::RiverNetworkDefinition& network,
         }
         meander_scale *= 0.5f;
     }
+    if (!accepted && every_candidate_intersected)
+        return fail(error,
+                    "generated meander self-intersection after attenuation");
     if (!accepted)
         return fail(error, "spline exceeds the bounded curvature limit");
 

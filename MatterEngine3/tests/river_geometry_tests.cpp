@@ -340,9 +340,9 @@ void test_boulders_are_deterministic_bounded_and_reserve_cross_sections() {
           "maximum authored density selects more deterministic candidates");
 }
 
-void test_generated_intersection_is_deterministically_rejected() {
+void test_generated_intersection_is_deterministically_attenuated() {
     matter::RiverNetworkDefinition network = approved_network();
-    network.cell_size_m = 2.0f;
+    network.cell_size_m = 32.0f;
     network.seed = 34u;
     network.rivers[0].spline = {
         {20.0f, 10.0f, 0.0f}, {14.0f, 9.0f, 14.0f},
@@ -356,27 +356,94 @@ void test_generated_intersection_is_deterministically_rejected() {
 
     matter::RiverNetworkDefinition base_network = network;
     base_network.rivers[0].reaches[0].meander = 0.0f;
+    matter::RiverNetworkDefinition half_scale_network = network;
+    half_scale_network.rivers[0].reaches[0].meander = 0.5f;
 
     hydrology::RiverGeometry base{};
+    hydrology::RiverGeometry generated{};
+    hydrology::RiverGeometry half_scale{};
+    std::string error;
+    CHECK(hydrology::build_river_geometry(base_network, base, error),
+          error.c_str());
+    error.clear();
+    CHECK(hydrology::build_river_geometry(network, generated, error),
+          error.c_str());
+    error.clear();
+    CHECK(hydrology::build_river_geometry(half_scale_network, half_scale, error),
+          error.c_str());
+    if (base.centreline.empty() || generated.centreline.empty() ||
+        half_scale.centreline.empty()) return;
+
+    CHECK(!centreline_crosses(base),
+          "the authored large-radius base fixture does not self-intersect");
+    CHECK(!centreline_crosses(generated),
+          "intersection attenuation publishes only a non-crossing centreline");
+
+    bool matches_half_scale =
+        generated.centreline.size() == half_scale.centreline.size();
+    const std::size_t common = std::min(generated.centreline.size(),
+                                        half_scale.centreline.size());
+    for (std::size_t i = 0; i < common; ++i)
+        matches_half_scale = matches_half_scale &&
+            spatial_distance(generated.centreline[i].position_m,
+                             half_scale.centreline[i].position_m) < 1.0e-5f;
+    CHECK(matches_half_scale,
+          "known full-scale crossing retries at the deterministic half scale");
+
+    float maximum_curvature = 0.0f;
+    for (std::size_t i = 1; i + 1 < generated.centreline.size(); ++i) {
+        const auto& before = generated.centreline[i - 1].tangent;
+        const auto& after = generated.centreline[i + 1].tangent;
+        const float before_length = std::hypot(before.x, before.z);
+        const float after_length = std::hypot(after.x, after.z);
+        if (before_length <= 0.0f || after_length <= 0.0f) continue;
+        const float cosine = std::clamp(
+            (before.x * after.x + before.z * after.z) /
+                (before_length * after_length),
+            -1.0f, 1.0f);
+        const float span = generated.centreline[i + 1].distance_m -
+                           generated.centreline[i - 1].distance_m;
+        maximum_curvature = std::max(maximum_curvature,
+                                     std::acos(cosine) / span);
+    }
+    CHECK(maximum_curvature <= 0.20f,
+          "intersection-attenuated centreline still satisfies curvature bounds");
+}
+
+void test_generated_intersection_exhaustion_rejects_unchanged() {
+    matter::RiverNetworkDefinition network = approved_network();
+    network.cell_size_m = 32.0f;
+    network.seed = 34u;
+    network.rivers[0].spline = {
+        {20.0f, 10.0f, 0.0f}, {14.0f, 9.0f, 14.0f},
+        {0.0f, 8.0f, 20.0f}, {-14.0f, 7.0f, 14.0f},
+        {-20.0f, 6.0f, 0.0f}, {-14.0f, 5.0f, -14.0f},
+        {0.0f, 4.0f, -20.0f}, {14.0f, 3.0f, -14.0f},
+        {19.9f, 2.0f, -2.0f}};
+    network.rivers[0].reaches = {{200.0f, -0.005f, 1.0f}};
+    network.rivers[0].channel.width_m = 6400.0f;
+    network.rivers[0].boulders = {0.0f, {0.5f, 2.0f}};
+
+    matter::RiverNetworkDefinition base_network = network;
+    base_network.rivers[0].reaches[0].meander = 0.0f;
+    hydrology::RiverGeometry base{};
     hydrology::RiverGeometry rejected{};
-    rejected.centreline.push_back({{81.0f, 82.0f, 83.0f}});
-    rejected.revision = 0xcafeu;
+    rejected.centreline.push_back({{71.0f, 72.0f, 73.0f}});
+    rejected.revision = 0xbeefu;
     std::string error;
     CHECK(hydrology::build_river_geometry(base_network, base, error),
           error.c_str());
     error.clear();
     const bool built = hydrology::build_river_geometry(network, rejected, error);
-    if (base.centreline.empty()) return;
-
-    CHECK(!centreline_crosses(base),
-          "the authored large-radius base fixture does not self-intersect");
+    CHECK(!base.centreline.empty() && !centreline_crosses(base),
+          "exhaustion fixture starts from a valid non-crossing base spline");
     CHECK(!built &&
-              error.find("generated meander self-intersection") !=
+              error.find("generated meander self-intersection after attenuation") !=
                   std::string::npos &&
               rejected.centreline.size() == 1u &&
-              rejected.centreline[0].position_m.x == 81.0f &&
-              rejected.revision == 0xcafeu,
-          "a full-scale seeded meander crossing is rejected without publishing geometry");
+              rejected.centreline[0].position_m.x == 71.0f &&
+              rejected.revision == 0xbeefu,
+          "intersection at every allowed scale rejects without changing output");
 }
 
 } // namespace
@@ -388,6 +455,7 @@ int main() {
     test_sub_epsilon_distinct_spline_fails_closed_or_keeps_two_points();
     test_revision_changes_when_geometry_bounds_change();
     test_boulders_are_deterministic_bounded_and_reserve_cross_sections();
-    test_generated_intersection_is_deterministically_rejected();
+    test_generated_intersection_is_deterministically_attenuated();
+    test_generated_intersection_exhaustion_rejects_unchanged();
     return check_summary();
 }
