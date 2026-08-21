@@ -2407,6 +2407,14 @@ bool reject_unknown_hydrology_keys(JSContext* context, JSValueConst value,
         return false;
     bool ok = true;
     for (std::uint32_t index = 0; index < count && ok; ++index) {
+        JSValue atom_value = JS_AtomToValue(context, properties[index].atom);
+        const bool is_symbol = JS_IsSymbol(atom_value);
+        JS_FreeValue(context, atom_value);
+        if (is_symbol) {
+            unknown = "<symbol>";
+            ok = false;
+            break;
+        }
         const char* text = JS_AtomToCString(context, properties[index].atom);
         if (!text) {
             ok = false;
