@@ -3066,6 +3066,24 @@ run-vt-enrich:
 	cd ../../MatterEditor/build/windows && \
 	    MATTER_VK_SMOKE_MODE=vt-enrich-nort ./vulkan_smoke_tests.exe
 
+# Staged river Task 2 -- deterministic CPU centreline and boulder geometry.
+RIVER_GEOMETRY_TARGET = build/river_geometry_tests
+RIVER_GEOMETRY_CPP = river_geometry_tests.cpp ../src/hydrology/river_geometry.cpp
+
+$(RIVER_GEOMETRY_TARGET): $(RIVER_GEOMETRY_CPP) \
+        ../src/hydrology/river_geometry.h ../include/matter/river_network.h \
+        ../include/matter/math_types.h check.h | build
+	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 \
+	    -I../include -I../src -o $@ $(RIVER_GEOMETRY_CPP) -lm
+
+run-river-geometry: $(RIVER_GEOMETRY_TARGET)
+	./$(RIVER_GEOMETRY_TARGET)
+
+.PHONY: run-river-geometry clean-river-geometry
+clean: clean-river-geometry
+clean-river-geometry:
+	rm -f $(RIVER_GEOMETRY_TARGET)
+
 # ---------------------------------------------------------------------------
 # RT PBR Phase 1 — microfacet (frosted) transmission GPU test: the
 # rt-transmission smoke mode (frosted-slab-over-checker fixture; roughness
