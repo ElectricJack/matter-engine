@@ -146,7 +146,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           $(PFL_DIR)/src/pf_fields.cpp $(PFL_DIR)/src/pf_path_recorder.cpp \
           src/pf_bindings.cpp \
           src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
-          src/csg_lowering.cpp src/module_resolver.cpp src/script/world_definition_loader.cpp src/script_rng_binding.cpp \
+          src/csg_lowering.cpp src/module_resolver.cpp src/script/world_definition_loader.cpp src/hydrology/hydrology_settings.cpp src/script_rng_binding.cpp \
           src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
           src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \

@@ -1,6 +1,7 @@
 #include "world_definition_loader.h"
 #include "matter/log.h"
 
+#include "../hydrology/hydrology_settings.h"
 #include "module_resolver.h"
 
 extern "C" {
@@ -1927,6 +1928,204 @@ bool extract_settings(JSContext* context,
     return true;
 }
 
+// Hydrology is deliberately a narrow, plain-data static. It is not a general
+// configuration object: later bake stages key the exact values below, so a
+// getter, function, inherited value, or unknown key would make definition-time
+// evaluation non-hermetic or silently change the frozen contract.
+bool hydrology_plain_data(JSContext* context, JSValueConst value,
+                          unsigned depth = 0) {
+    if (depth > 8 || JS_IsFunction(context, value) || JS_IsProxy(value))
+        return false;
+    if (!JS_IsObject(value)) return true;
+    JSPropertyEnum* names = nullptr;
+    std::uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(context, &names, &count, value,
+                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) != 0)
+        return false;
+    bool ok = true;
+    for (std::uint32_t index = 0; index < count && ok; ++index) {
+        JSPropertyDescriptor property{};
+        if (JS_GetOwnProperty(context, &property, value, names[index].atom) != 1 ||
+            (property.flags & JS_PROP_GETSET)) {
+            ok = false;
+        } else {
+            ok = hydrology_plain_data(context, property.value, depth + 1);
+        }
+        JS_FreeValue(context, property.value);
+        JS_FreeValue(context, property.getter);
+        JS_FreeValue(context, property.setter);
+    }
+    JS_FreePropertyEnum(context, names, count);
+    return ok;
+}
+
+bool hydrology_own_data_value(JSContext* context, JSValueConst object,
+                              const char* key, JSValue& value, bool& present) {
+    JSAtom atom = JS_NewAtom(context, key);
+    JSPropertyDescriptor property{};
+    const int found = JS_GetOwnProperty(context, &property, object, atom);
+    JS_FreeAtom(context, atom);
+    if (found != 1) {
+        present = false;
+        value = JS_UNDEFINED;
+        return found == 0;
+    }
+    present = true;
+    if (property.flags & JS_PROP_GETSET) {
+        JS_FreeValue(context, property.value);
+        JS_FreeValue(context, property.getter);
+        JS_FreeValue(context, property.setter);
+        value = JS_UNDEFINED;
+        return false;
+    }
+    value = property.value;
+    JS_FreeValue(context, property.getter);
+    JS_FreeValue(context, property.setter);
+    return true;
+}
+
+bool hydrology_number(JSContext* context, JSValueConst value, float& output) {
+    if (!JS_IsNumber(value)) return false;
+    double number = 0.0;
+    if (JS_ToFloat64(context, &number, value) != 0 || !std::isfinite(number) ||
+        number < -std::numeric_limits<float>::max() ||
+        number > std::numeric_limits<float>::max())
+        return false;
+    output = static_cast<float>(number);
+    return true;
+}
+
+bool hydrology_float_array(JSContext* context, JSValueConst value,
+                           std::uint32_t expected, float* output) {
+    std::uint32_t length = 0;
+    if (!array_length(context, value, length) || length != expected) return false;
+    for (std::uint32_t index = 0; index < expected; ++index) {
+        JSValue item = JS_GetPropertyUint32(context, value, index);
+        const bool ok = hydrology_number(context, item, output[index]);
+        JS_FreeValue(context, item);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+bool hydrology_dimensions(JSContext* context, JSValueConst value,
+                          matter::HydrologyDomainSettings& domain) {
+    float dimensions[3]{};
+    if (!hydrology_float_array(context, value, 3, dimensions)) return false;
+    std::uint32_t* out[] = {&domain.nx, &domain.ny, &domain.nz};
+    for (unsigned index = 0; index < 3; ++index) {
+        if (dimensions[index] < 0.0f || std::floor(dimensions[index]) != dimensions[index] ||
+            dimensions[index] > static_cast<float>(std::numeric_limits<std::uint32_t>::max()))
+            return false;
+        *out[index] = static_cast<std::uint32_t>(dimensions[index]);
+    }
+    return true;
+}
+
+bool extract_hydrology(JSContext* context,
+                       JSValueConst world_class,
+                       const WorldLoadDesc& desc,
+                       WorldDefinition& definition,
+                       WorldLoadError& error) {
+    JSValue value = JS_UNDEFINED;
+    bool present = false;
+    if (!hydrology_own_data_value(context, world_class, "hydrology", value, present))
+        return fail(desc, error, "hydrology", "World.hydrology must be a plain data value");
+    if (!present) return true;
+    if (!JS_IsObject(value) || JS_IsArray(value) || !hydrology_plain_data(context, value)) {
+        JS_FreeValue(context, value);
+        return fail(desc, error, "hydrology",
+                    "World.hydrology must be a plain data object without accessors or functions");
+    }
+
+    static constexpr const char* kHydrologyKeys[] = {
+        "enabled", "origin", "dimensions", "cellSize", "dt", "gravity",
+        "downstream", "residualGrade", "inletFlow", "inletHead", "outletHead",
+        "batchSteps", "maxSteps",
+    };
+    std::string unknown;
+    if (!reject_unknown_keys(context, value, kHydrologyKeys,
+                             sizeof(kHydrologyKeys) / sizeof(kHydrologyKeys[0]),
+                             unknown)) {
+        JS_FreeValue(context, value);
+        return fail(desc, error, "hydrology" + (unknown.empty() ? std::string{} : "." + unknown),
+                    unknown.empty() ? "World.hydrology keys could not be read"
+                                    : "World.hydrology contains an unknown key");
+    }
+
+    matter::HydrologyWorldSettings settings{};
+    bool ok = true;
+    const auto required = [&](const char* key, JSValue& output) {
+        bool key_present = false;
+        const bool found = hydrology_own_data_value(context, value, key, output, key_present);
+        return found && key_present;
+    };
+    JSValue field = JS_UNDEFINED;
+    if (!required("enabled", field) || !JS_IsBool(field)) ok = false;
+    if (ok) settings.enabled = JS_ToBool(context, field) != 0;
+    JS_FreeValue(context, field);
+
+    float origin[3]{};
+    field = JS_UNDEFINED;
+    if (ok && (!required("origin", field) || !hydrology_float_array(context, field, 3, origin))) ok = false;
+    JS_FreeValue(context, field);
+    settings.domain.origin_m = {origin[0], origin[1], origin[2]};
+
+    field = JS_UNDEFINED;
+    if (ok && (!required("dimensions", field) || !hydrology_dimensions(context, field, settings.domain))) ok = false;
+    JS_FreeValue(context, field);
+
+    const struct { const char* key; float* target; } numbers[] = {
+        {"cellSize", &settings.domain.cell_size_m}, {"dt", &settings.dt_s},
+        {"gravity", &settings.gravity_mps2}, {"inletFlow", &settings.inlet_flow_m3s},
+        {"inletHead", &settings.inlet_head_m}, {"outletHead", &settings.outlet_head_m},
+    };
+    for (const auto& item : numbers) {
+        field = JS_UNDEFINED;
+        if (ok && (!required(item.key, field) || !hydrology_number(context, field, *item.target))) ok = false;
+        JS_FreeValue(context, field);
+    }
+
+    float downstream[2]{};
+    field = JS_UNDEFINED;
+    if (ok && (!required("downstream", field) || !hydrology_float_array(context, field, 2, downstream))) ok = false;
+    JS_FreeValue(context, field);
+    settings.downstream_xz = {downstream[0], downstream[1]};
+
+    float residual_grade[2]{};
+    field = JS_UNDEFINED;
+    if (ok && (!required("residualGrade", field) || !hydrology_float_array(context, field, 2, residual_grade))) ok = false;
+    JS_FreeValue(context, field);
+    settings.residual_head_gradient_xz = {residual_grade[0], residual_grade[1]};
+
+    const struct { const char* key; std::uint32_t* target; } steps[] = {
+        {"batchSteps", &settings.batch_steps}, {"maxSteps", &settings.max_steps},
+    };
+    for (const auto& item : steps) {
+        float number = 0.0f;
+        field = JS_UNDEFINED;
+        if (ok && (!required(item.key, field) || !hydrology_number(context, field, number) ||
+                   number < 0.0f || std::floor(number) != number ||
+                   number > static_cast<float>(std::numeric_limits<std::uint32_t>::max()))) {
+            ok = false;
+        } else if (ok) {
+            *item.target = static_cast<std::uint32_t>(number);
+        }
+        JS_FreeValue(context, field);
+    }
+    JS_FreeValue(context, value);
+    if (!ok)
+        return fail(desc, error, "hydrology",
+                    "World.hydrology must contain complete finite typed values");
+
+    hydrology::HydrologyBakeDescription canonical{};
+    std::string validation_error;
+    if (!hydrology::validate_and_key(settings, 0, canonical, validation_error))
+        return fail(desc, error, "hydrology", validation_error);
+    definition.hydrology = settings;
+    return true;
+}
+
 bool append_static_entities(JSContext* context,
                             JSValueConst world_class,
                             const WorldLoadDesc& desc,
@@ -2181,6 +2380,7 @@ class World {}
     bool ok = extract_roots(context, world_class, canonicalizer, desc,
                             definition, error) &&
               extract_settings(context, world_class, desc, definition, error) &&
+              extract_hydrology(context, world_class, desc, definition, error) &&
               extract_lights(context, world_class, desc, definition, error) &&
               extract_atmosphere(context, world_class, desc, definition, error) &&
               extract_fog(context, world_class, desc, definition, error) &&

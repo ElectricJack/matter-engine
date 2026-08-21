@@ -1119,10 +1119,19 @@ TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
 WORLD_DEFINITION_TARGET = build/world_definition_tests
 WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
-                       ../src/module_resolver.cpp
+                       ../src/module_resolver.cpp \
+                       ../src/hydrology/hydrology_settings.cpp
 # defineMaterial (chart-VT Phase 3) makes the loader call into the material
 # registry, so the registry TU joins this otherwise QuickJS-only link.
 WORLD_DEFINITION_C   = $(MSL)/material_registry.c
+
+# Visual river Task 1 — standalone validation and canonical key contract.
+HYDROLOGY_SETTINGS_TARGET = build/hydrology_settings_tests
+HYDROLOGY_SETTINGS_CPP = hydrology_settings_tests.cpp \
+                         ../src/hydrology/hydrology_settings.cpp
+HYDROLOGY_SETTINGS_OBJS = $(call obj_list,def,$(HYDROLOGY_SETTINGS_CPP))
+
+$(foreach s,$(HYDROLOGY_SETTINGS_CPP),$(eval $(call objrule_cpp,def,$(s))))
 
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
@@ -1994,6 +2003,12 @@ $(CAVERNPROBE_TARGET): $(CAVERNPROBE_OBJS)
 
 $(WORLD_DEFINITION_TARGET): $(WORLD_DEFINITION_OBJS)
 	$(CC) $(WORLD_DEFINITION_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
+
+$(HYDROLOGY_SETTINGS_TARGET): $(HYDROLOGY_SETTINGS_OBJS)
+	$(CC) $(HYDROLOGY_SETTINGS_OBJS) -o $@ $(CFLAGS) -lm
+
+run-hydrology-settings: $(HYDROLOGY_SETTINGS_TARGET)
+	./$(HYDROLOGY_SETTINGS_TARGET)
 
 run-world-definition: $(WORLD_DEFINITION_TARGET)
 	./$(WORLD_DEFINITION_TARGET)

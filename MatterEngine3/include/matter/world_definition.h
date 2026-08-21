@@ -3,6 +3,7 @@
 #include "atmosphere.h"
 #include "cloud_layers.h"
 #include "cloud_shadow_settings.h"
+#include "hydrology.h"
 #include "math_types.h"
 #include "sun_angles.h"
 #include "volumetric_quality.h"
@@ -10,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -459,6 +461,9 @@ struct WorldDefinition {
     // World.props declaration order. Empty when the world declares none.
     std::vector<WorldPropSpec> props;
     WorldSettings settings{};
+    // Static, typed bake input. The engine intentionally leaves it inert until
+    // the hydrology runtime owns its artifact lifecycle.
+    std::optional<HydrologyWorldSettings> hydrology;
 };
 
 struct WorldLoadDesc {

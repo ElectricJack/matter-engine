@@ -2000,6 +2000,80 @@ void test_slot_binder_reports_displaced_materials() {
     CHECK(binder.allocator().size() == 0, "reset empties the pool");
 }
 
+void test_world_loader_reads_static_hydrology() {
+    Fixture fixture;
+    const fs::path path = fixture.write("RiverHydrology.js", R"JS(
+class RiverHydrology extends World {
+  static hydrology = {
+    enabled: true,
+    origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+    dt: 0.005, gravity: 9.81, downstream: [1, 0],
+    residualGrade: [-0.01, 0],
+    inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5,
+    batchSteps: 256, maxSteps: 16384
+  };
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.hydrology.has_value(),
+          "a complete static hydrology declaration is retained");
+    CHECK(definition.hydrology && definition.hydrology->domain.nx == 96,
+          "hydrology dimensions are parsed as typed domain extents");
+}
+
+void test_world_loader_leaves_hydrology_empty_when_absent() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Dry.js", "class Dry extends World {}\n");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(!definition.hydrology.has_value(),
+          "worlds without static hydrology preserve the existing no-hydrology path");
+}
+
+void test_world_loader_rejects_invalid_static_hydrology() {
+    const auto rejects = [](const char* name, const char* declaration) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            name, std::string("class Bad extends World { static hydrology = ") +
+                      declaration + "; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid static hydrology must reject the world definition");
+        CHECK(error.property_path.rfind("hydrology", 0) == 0,
+              "hydrology validation identifies its static declaration");
+    };
+    rejects("Nonfinite.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: Infinity,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+    })JS");
+    rejects("FractionalDimension.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96.5, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+    })JS");
+    rejects("UnknownHydrologyKey.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384,
+      misspelled: 1
+    })JS");
+    Fixture fixture;
+    const fs::path accessor = fixture.write("AccessorHydrology.js", R"JS(
+class Bad extends World { static get hydrology() { return {}; } }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(accessor), definition, error),
+          "a hydrology accessor is not a hermetic plain-data declaration");
+}
+
 } // namespace
 
 int main() {
@@ -2049,5 +2123,8 @@ int main() {
     test_detail_bake_plan_ordering_and_merging();
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();
+    test_world_loader_reads_static_hydrology();
+    test_world_loader_leaves_hydrology_empty_when_absent();
+    test_world_loader_rejects_invalid_static_hydrology();
     return check_summary();
 }
