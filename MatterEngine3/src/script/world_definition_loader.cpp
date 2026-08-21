@@ -312,6 +312,7 @@ struct LoadCollector {
     std::string river_error_path;
     bool river_network_created = false;
     bool river_network_built = false;
+    bool river_hydrology_active = false;
 };
 
 struct RiverNetworkHandle {
@@ -358,6 +359,12 @@ JSValue river_failure(JSContext* context, LoadCollector* collector,
                       const std::string& error) {
     if (collector) collector->river_error_path = error_path(error);
     return JS_ThrowTypeError(context, "%s", error.c_str());
+}
+
+JSValue river_phase_failure(JSContext* context, LoadCollector* collector) {
+    return river_failure(
+        context, collector,
+        "hydrology.phase: river builders are only available inside hydrology()");
 }
 
 bool required_float(JSContext* context, JSValueConst object, const char* key,
@@ -411,6 +418,8 @@ JSValue river_inlet(JSContext* context, JSValueConst this_value,
     RiverHandle* handle = static_cast<RiverHandle*>(
         JS_GetOpaque2(context, this_value, river_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     RiverInlet inlet{};
     if (argument_count < 2 ||
         !float3_value(context, arguments[0], inlet.position_m) ||
@@ -430,6 +439,8 @@ JSValue river_spline(JSContext* context, JSValueConst this_value,
     RiverHandle* handle = static_cast<RiverHandle*>(
         JS_GetOpaque2(context, this_value, river_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     std::uint32_t count = 0;
     std::vector<Float3> spline;
     if (argument_count < 1 || !array_length(context, arguments[0], count))
@@ -457,6 +468,8 @@ JSValue river_reach(JSContext* context, JSValueConst this_value,
     RiverHandle* handle = static_cast<RiverHandle*>(
         JS_GetOpaque2(context, this_value, river_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     RiverReach reach{};
     if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
         !required_float(context, arguments[0], "until", reach.until_m) ||
@@ -476,6 +489,8 @@ JSValue river_channel(JSContext* context, JSValueConst this_value,
     RiverHandle* handle = static_cast<RiverHandle*>(
         JS_GetOpaque2(context, this_value, river_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     RiverChannel channel{};
     if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
         !required_float(context, arguments[0], "width", channel.width_m) ||
@@ -495,6 +510,8 @@ JSValue river_boulders(JSContext* context, JSValueConst this_value,
     RiverHandle* handle = static_cast<RiverHandle*>(
         JS_GetOpaque2(context, this_value, river_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     RiverBoulders boulders{};
     if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
         !required_float(context, arguments[0], "density", boulders.density) ||
@@ -514,6 +531,8 @@ JSValue river_joins(JSContext* context, JSValueConst this_value,
     RiverHandle* handle = static_cast<RiverHandle*>(
         JS_GetOpaque2(context, this_value, river_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     std::string error;
     handle->collector->river_builder->reserve_join(handle->river, error);
     return river_failure(context, handle->collector, error);
@@ -544,6 +563,8 @@ JSValue network_river(JSContext* context, JSValueConst this_value,
     RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
         JS_GetOpaque2(context, this_value, river_network_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     std::string name;
     if (argument_count < 1 || !string_value(context, arguments[0], name))
         return river_failure(context, handle->collector,
@@ -560,6 +581,8 @@ JSValue network_first_section(JSContext* context, JSValueConst this_value,
     RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
         JS_GetOpaque2(context, this_value, river_network_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     RiverHandle* river = argument_count > 0
         ? static_cast<RiverHandle*>(JS_GetOpaque(arguments[0], river_class_id))
         : nullptr;
@@ -590,6 +613,8 @@ JSValue network_build(JSContext* context, JSValueConst this_value,
     RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
         JS_GetOpaque2(context, this_value, river_network_class_id));
     if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
     RiverNetworkDefinition definition;
     std::string error;
     if (!handle->collector->river_builder->finish(definition, error))
@@ -605,6 +630,8 @@ JSValue river_network(JSContext* context, JSValueConst,
         static_cast<LoadCollector*>(JS_GetContextOpaque(context));
     if (!collector)
         return JS_ThrowInternalError(context, "river network collector unavailable");
+    if (!collector->river_hydrology_active)
+        return river_phase_failure(context, collector);
     if (collector->river_network_created)
         return river_failure(context, collector,
                              "hydrology.riverNetwork: only one network may be created");
@@ -2820,7 +2847,9 @@ class World {}
                         "static World.hydrology and instance hydrology() are mutually exclusive");
         }
         load_collector.river_error_path.clear();
+        load_collector.river_hydrology_active = true;
         JSValue result = JS_Call(context, hydrology_method, instance, 0, nullptr);
+        load_collector.river_hydrology_active = false;
         if (JS_IsException(result)) {
             const std::string message = exception_message(context);
             const std::string path = load_collector.river_error_path.empty()

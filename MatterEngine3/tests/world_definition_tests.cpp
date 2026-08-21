@@ -2264,6 +2264,94 @@ class Dual extends World {
           "dual hydrology configuration reports the shared declaration path");
 }
 
+void test_world_loader_rejects_module_scope_river_build() {
+    Fixture fixture;
+    const fs::path path = fixture.write("ModuleScopeRiver.js", R"JS(
+const network = riverNetwork({cellSize: 0.5, seed: 1});
+const main = network.river("main")
+  .inlet([0, 1, 0], {flow: 1})
+  .spline([[0, 1, 0], [100, 0, 0]])
+  .reach({until: 100, baseGrade: -0.01, meander: 0.2})
+  .channel({width: 5, depth: 2, asymmetry: 0})
+  .boulders({density: 0.1, radius: [0.5, 1]});
+network.firstSection(main, {minimumLength: 100, dryMargin: 4,
+  crestWetFraction: 0.8, stableWetSteps: 32, batchSteps: 256, maxSteps: 65536});
+network.build();
+class ModuleScopeRiver extends World { hydrology() {} }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "module scope cannot pre-build a network for an empty hydrology method");
+    CHECK(error.message.find("only available inside hydrology()") !=
+              std::string::npos,
+          "module-scope riverNetwork misuse names the allowed phase");
+    CHECK(!definition.river_network.has_value(),
+          "a module-scope river build never publishes canonical state");
+}
+
+void test_world_loader_rejects_build_entities_river_build() {
+    Fixture fixture;
+    const fs::path path = fixture.write("BuildEntitiesRiver.js", R"JS(
+class BuildEntitiesRiver extends World {
+  buildEntities() {
+    const network = riverNetwork({cellSize: 0.5, seed: 1});
+    const main = network.river("main")
+      .inlet([0, 1, 0], {flow: 1})
+      .spline([[0, 1, 0], [100, 0, 0]])
+      .reach({until: 100, baseGrade: -0.01, meander: 0.2})
+      .channel({width: 5, depth: 2, asymmetry: 0})
+      .boulders({density: 0.1, radius: [0.5, 1]});
+    network.firstSection(main, {minimumLength: 100, dryMargin: 4,
+      crestWetFraction: 0.8, stableWetSteps: 32, batchSteps: 256, maxSteps: 65536});
+    network.build();
+  }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "buildEntities cannot create a silently discarded river network");
+    CHECK(error.property_path == "buildEntities" &&
+              error.message.find("only available inside hydrology()") !=
+                  std::string::npos,
+          "buildEntities riverNetwork misuse identifies both method and phase");
+    CHECK(!definition.river_network.has_value(),
+          "a buildEntities river build never publishes canonical state");
+}
+
+void test_world_loader_closes_river_handles_after_hydrology() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LateRiverHandle.js", R"JS(
+class LateRiverHandle extends World {
+  hydrology() {
+    const network = riverNetwork({cellSize: 0.5, seed: 1});
+    const main = network.river("main")
+      .inlet([0, 1, 0], {flow: 1})
+      .spline([[0, 1, 0], [100, 0, 0]])
+      .reach({until: 100, baseGrade: -0.01, meander: 0.2})
+      .channel({width: 5, depth: 2, asymmetry: 0})
+      .boulders({density: 0.1, radius: [0.5, 1]});
+    network.firstSection(main, {minimumLength: 100, dryMargin: 4,
+      crestWetFraction: 0.8, stableWetSteps: 32, batchSteps: 256, maxSteps: 65536});
+    network.build();
+    this.savedNetwork = network;
+  }
+  buildEntities() { this.savedNetwork.river("late"); }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "opaque river handles stop accepting calls after hydrology returns");
+    CHECK(error.property_path == "buildEntities" &&
+              error.message.find("only available inside hydrology()") !=
+                  std::string::npos,
+          "late opaque-handle use reports the closed hydrology phase");
+    CHECK(!definition.river_network.has_value(),
+          "late handle misuse clears the partial world definition");
+}
+
 } // namespace
 
 int main() {
@@ -2321,5 +2409,8 @@ int main() {
     test_world_loader_builds_imperative_river_network();
     test_world_loader_rejects_imperative_river_failures();
     test_world_loader_rejects_dual_hydrology_configuration();
+    test_world_loader_rejects_module_scope_river_build();
+    test_world_loader_rejects_build_entities_river_build();
+    test_world_loader_closes_river_handles_after_hydrology();
     return check_summary();
 }
