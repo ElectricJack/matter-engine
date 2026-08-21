@@ -84,7 +84,9 @@ void test_hydrology_settings_key_changes_with_terrain_revision() {
     hydrology::HydrologyBakeDescription a{}, b{};
     std::string error;
     CHECK(hydrology::validate_and_key(settings, 41, a, error), error.c_str());
-    CHECK(hydrology::validate_and_key(settings, 42, b, error), error.c_str());
+    const std::uint64_t one_bit_changed_revision = 41ull ^ (1ull << 5);
+    CHECK(hydrology::validate_and_key(settings, one_bit_changed_revision, b, error),
+          error.c_str());
     CHECK(a.semantic_key != b.semantic_key,
           "one terrain-revision bit changes the semantic key");
 }

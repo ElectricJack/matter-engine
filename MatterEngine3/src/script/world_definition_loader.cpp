@@ -2359,6 +2359,17 @@ bool hydrology_number(JSContext* context, JSValueConst value, float& output) {
     return true;
 }
 
+bool hydrology_uint32(JSContext* context, JSValueConst value, std::uint32_t& output) {
+    if (!JS_IsNumber(value)) return false;
+    double number = 0.0;
+    if (JS_ToFloat64(context, &number, value) != 0 || !std::isfinite(number) ||
+        number < 0.0 || std::floor(number) != number ||
+        number > static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
+        return false;
+    output = static_cast<std::uint32_t>(number);
+    return true;
+}
+
 bool hydrology_float_array(JSContext* context, JSValueConst value,
                            std::uint32_t expected, float* output) {
     std::uint32_t length = 0;
@@ -2374,16 +2385,44 @@ bool hydrology_float_array(JSContext* context, JSValueConst value,
 
 bool hydrology_dimensions(JSContext* context, JSValueConst value,
                           matter::HydrologyDomainSettings& domain) {
-    float dimensions[3]{};
-    if (!hydrology_float_array(context, value, 3, dimensions)) return false;
     std::uint32_t* out[] = {&domain.nx, &domain.ny, &domain.nz};
+    std::uint32_t length = 0;
+    if (!array_length(context, value, length) || length != 3) return false;
     for (unsigned index = 0; index < 3; ++index) {
-        if (dimensions[index] < 0.0f || std::floor(dimensions[index]) != dimensions[index] ||
-            dimensions[index] > static_cast<float>(std::numeric_limits<std::uint32_t>::max()))
-            return false;
-        *out[index] = static_cast<std::uint32_t>(dimensions[index]);
+        JSValue item = JS_GetPropertyUint32(context, value, index);
+        const bool ok = hydrology_uint32(context, item, *out[index]);
+        JS_FreeValue(context, item);
+        if (!ok) return false;
     }
     return true;
+}
+
+bool reject_unknown_hydrology_keys(JSContext* context, JSValueConst value,
+                                   const char* const* keys, std::size_t key_count,
+                                   std::string& unknown) {
+    JSPropertyEnum* properties = nullptr;
+    std::uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(context, &properties, &count, value,
+                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) != 0)
+        return false;
+    bool ok = true;
+    for (std::uint32_t index = 0; index < count && ok; ++index) {
+        const char* text = JS_AtomToCString(context, properties[index].atom);
+        if (!text) {
+            ok = false;
+            break;
+        }
+        bool known = false;
+        for (std::size_t key = 0; key < key_count; ++key)
+            if (std::strcmp(keys[key], text) == 0) { known = true; break; }
+        if (!known) {
+            unknown = text;
+            ok = false;
+        }
+        JS_FreeCString(context, text);
+    }
+    JS_FreePropertyEnum(context, properties, count);
+    return ok;
 }
 
 bool extract_hydrology(JSContext* context,
@@ -2408,9 +2447,9 @@ bool extract_hydrology(JSContext* context,
         "batchSteps", "maxSteps",
     };
     std::string unknown;
-    if (!reject_unknown_keys(context, value, kHydrologyKeys,
-                             sizeof(kHydrologyKeys) / sizeof(kHydrologyKeys[0]),
-                             unknown)) {
+    if (!reject_unknown_hydrology_keys(context, value, kHydrologyKeys,
+                                       sizeof(kHydrologyKeys) / sizeof(kHydrologyKeys[0]),
+                                       unknown)) {
         JS_FreeValue(context, value);
         return fail(desc, error, "hydrology" + (unknown.empty() ? std::string{} : "." + unknown),
                     unknown.empty() ? "World.hydrology keys could not be read"
@@ -2466,14 +2505,10 @@ bool extract_hydrology(JSContext* context,
         {"batchSteps", &settings.batch_steps}, {"maxSteps", &settings.max_steps},
     };
     for (const auto& item : steps) {
-        float number = 0.0f;
         field = JS_UNDEFINED;
-        if (ok && (!required(item.key, field) || !hydrology_number(context, field, number) ||
-                   number < 0.0f || std::floor(number) != number ||
-                   number > static_cast<float>(std::numeric_limits<std::uint32_t>::max()))) {
+        if (ok && (!required(item.key, field) ||
+                   !hydrology_uint32(context, field, *item.target))) {
             ok = false;
-        } else if (ok) {
-            *item.target = static_cast<std::uint32_t>(number);
         }
         JS_FreeValue(context, field);
     }
