@@ -27,7 +27,7 @@ SOURCE_SCAN_DIRS = (
 # build graph.  Keep each exclusion named here rather than silently broadening
 # a canonical compiled inventory; a newly added source in any scan root fails.
 EXCLUDED_SOURCES = frozenset({
-    "libs/MatterSurfaceLib/src/mesh_retopo.cpp",  # opt-in autoremesher path
+    "libs/MatterSurfaceLib/src/mesh_retopo.cpp",  # conditionally/default compiled via RETOPO/EXTRA_RETOPO_CPP, outside base manifests
     "libs/MatterSurfaceLib/src/shader_preprocessor.cpp",  # unused helper
     "libs/MatterSurfaceLib/src/voxel_imposter.cpp",  # retired implementation
     "libs/MemoryLib/src/mem_arena.c",  # standalone library API, not linked here
@@ -66,20 +66,25 @@ def check(root: Path | str) -> list[str]:
                 errors.append(f"{location}: invalid platform tag '{platform}'")
                 continue
             source_path = Path(source)
-            if source_path.is_absolute() or ".." in source_path.parts:
+            if source_path.is_absolute():
                 errors.append(f"{location}: source path must be repository-relative: {source}")
                 continue
-            if source_path.suffix.lower() not in SOURCE_SUFFIXES:
+            resolved = (root / source_path).resolve()
+            try:
+                canonical_source = resolved.relative_to(root).as_posix()
+            except ValueError:
+                errors.append(f"{location}: source path escapes repository root: {source}")
+                continue
+            if Path(canonical_source).suffix.lower() not in SOURCE_SUFFIXES:
                 errors.append(f"{location}: source is not compilable: {source}")
                 continue
-            resolved = root / source_path
             if not resolved.is_file():
                 errors.append(f"{location}: missing source: {source}")
                 continue
-            if source in seen:
-                errors.append(f"{location}: duplicate source (already in {seen[source].relative_to(root)}): {source}")
+            if canonical_source in seen:
+                errors.append(f"{location}: duplicate source (already in {seen[canonical_source].relative_to(root)}): {source}")
                 continue
-            seen[source] = manifest
+            seen[canonical_source] = manifest
     for scan_dir in SOURCE_SCAN_DIRS:
         directory = root / scan_dir
         if not directory.is_dir():

@@ -54,6 +54,15 @@ class SourceManifestTests(unittest.TestCase):
 
         self.assertIn("duplicate", "\n".join(CHECKER.check(root)).lower())
 
+    def test_rejects_duplicate_source_spelled_through_a_dot_path_alias(self):
+        root = self.fixture(
+            {"engine-core.sources": "MatterEngine3/src/core.cpp|all\n",
+             "editor.sources": "MatterEngine3/src/./core.cpp|all\n"},
+            ("MatterEngine3/src/core.cpp",),
+        )
+
+        self.assertIn("duplicate", "\n".join(CHECKER.check(root)).lower())
+
     def test_rejects_unknown_platform_tag(self):
         root = self.fixture(
             {"engine-core.sources": "MatterEngine3/src/core.cpp|macos\n"},

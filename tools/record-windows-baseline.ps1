@@ -20,6 +20,23 @@ function Get-Sha256([string]$path) {
     }
 }
 
+function Invoke-RequiredNative([string]$filePath, [string[]]$arguments, [string]$description) {
+    # Native stderr can contain successful Vulkan-loader warnings; capture it
+    # as evidence and decide success solely from the process exit code.
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& $filePath @arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($exitCode -ne 0) {
+        throw "$description failed with exit code ${exitCode}: $($output -join [Environment]::NewLine)"
+    }
+    return $output
+}
+
 foreach ($tool in @($bash, $make, $gpp, $objdump, $glslc)) {
     if (-not (Test-Path $tool)) { throw "Required MSYS2/UCRT64 tool is missing: $tool" }
 }
@@ -34,7 +51,7 @@ $tempDrive = $tempRoot.Substring(0, 1).ToLowerInvariant()
 $tempMsys = "/$tempDrive/" + $tempRoot.Substring(3).Replace('\', '/')
 # Disable only the optional compiler-cache wrapper: this keeps the recorder
 # deterministic when a WSL-launched MSYS2 process lacks ccache's user config.
-$buildCommand = "export PATH=/ucrt64/bin:/usr/bin:`$PATH TMPDIR=`"$tempMsys`" TMP=`"$tempMsys`" TEMP=`"$tempMsys`"; cd `"$repoMsys`"; /usr/bin/make -C MatterEngine3 CCACHE=; /usr/bin/make -C MatterEditor windows CCACHE="
+$buildCommand = "set -e; export PATH=/ucrt64/bin:/usr/bin:`$PATH TMPDIR=`"$tempMsys`" TMP=`"$tempMsys`" TEMP=`"$tempMsys`"; cd `"$repoMsys`"; /usr/bin/make -C MatterEngine3 CCACHE=; /usr/bin/make -C MatterEditor windows CCACHE="
 & $bash -lc $buildCommand
 if ($LASTEXITCODE -ne 0) { throw "MSYS2/UCRT64 baseline build failed ($LASTEXITCODE)" }
 
@@ -51,13 +68,13 @@ foreach ($artifact in @($engine, $editor)) {
     if (-not (Test-Path $artifact)) { throw "Baseline artifact was not produced: $artifact" }
 }
 
-$vulkanInfo = 'unavailable'
-$vulkanInfoExe = if ($env:VULKAN_SDK) { Join-Path $env:VULKAN_SDK 'Bin\vulkaninfo.exe' } else { $null }
-if ($vulkanInfoExe -and (Test-Path $vulkanInfoExe)) {
-    $vulkanInfo = (& $vulkanInfoExe --summary 2>&1 | Select-Object -First 40) -join "`n"
-}
-
-$imports = (& $objdump -p $editor | Select-String 'DLL Name:' | ForEach-Object {
+$vulkanInfoExe = 'C:\VulkanSDK\1.4.357.0\Bin\vulkaninfoSDK.exe'
+if (-not (Test-Path $vulkanInfoExe)) { throw "Required pinned Vulkan evidence tool is missing: $vulkanInfoExe" }
+$vulkanInfo = (Invoke-RequiredNative $vulkanInfoExe @('--summary') 'vulkaninfoSDK' | Select-Object -First 40) -join "`n"
+$compilerVersion = (Invoke-RequiredNative $gpp @('--version') 'g++ version query' | Select-Object -First 1) -join ''
+$glslcVersion = (Invoke-RequiredNative $glslc @('--version') 'glslc version query' | Select-Object -First 1) -join ''
+$objdumpOutput = Invoke-RequiredNative $objdump @('-p', $editor) 'objdump import query'
+$imports = ($objdumpOutput | Select-String 'DLL Name:' | ForEach-Object {
     ($_ -replace '^.*DLL Name:\s*', '').Trim()
 })
 $features = [ordered]@{
@@ -67,12 +84,12 @@ $features = [ordered]@{
         make = $make
         compiler = [ordered]@{
             path = $gpp
-            version = ((& $gpp --version | Select-Object -First 1) -join '')
+            version = $compilerVersion
         }
         vulkan = [ordered]@{
-            sdk = $env:VULKAN_SDK
-            sdk_version = if ($env:VULKAN_SDK) { Split-Path -Leaf $env:VULKAN_SDK } else { $null }
-            glslc_version = ((& $glslc --version | Select-Object -First 1) -join '')
+            sdk = 'C:\VulkanSDK\1.4.357.0'
+            sdk_version = '1.4.357.0'
+            glslc_version = $glslcVersion
             summary = $vulkanInfo
         }
     }
