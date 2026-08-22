@@ -203,6 +203,24 @@ list(APPEND matter_autoremesher_sources
     ${matter_geogram_root}/third_party/rply/rply.c
     ${matter_zlib_sources}
 )
+
+set(matter_nl_superlu_source "${matter_geogram_root}/NL/nl_superlu.c")
+set(matter_nl_cholmod_source "${matter_geogram_root}/NL/nl_cholmod.c")
+set(matter_nl_mkl_source "${matter_geogram_root}/NL/nl_mkl.c")
+set(matter_nl_cuda_source "${matter_geogram_root}/NL/nl_cuda.c")
+set_source_files_properties("${matter_nl_superlu_source}" PROPERTIES COMPILE_DEFINITIONS
+    "nlInitExtension_SUPERLU=matter_unused_real_nlInitExtension_SUPERLU;nlExtensionIsInitialized_SUPERLU=matter_unused_real_nlExtensionIsInitialized_SUPERLU;nlMatrixFactorize_SUPERLU=matter_unused_real_nlMatrixFactorize_SUPERLU"
+)
+set_source_files_properties("${matter_nl_cholmod_source}" PROPERTIES COMPILE_DEFINITIONS
+    "nlInitExtension_CHOLMOD=matter_unused_real_nlInitExtension_CHOLMOD;nlExtensionIsInitialized_CHOLMOD=matter_unused_real_nlExtensionIsInitialized_CHOLMOD;nlMatrixFactorize_CHOLMOD=matter_unused_real_nlMatrixFactorize_CHOLMOD"
+)
+set_source_files_properties("${matter_nl_mkl_source}" PROPERTIES COMPILE_DEFINITIONS
+    "nlInitExtension_MKL=matter_unused_real_nlInitExtension_MKL;nlExtensionIsInitialized_MKL=matter_unused_real_nlExtensionIsInitialized_MKL;NLMultMatrixVector_MKL=matter_unused_real_NLMultMatrixVector_MKL;nlMKLMatrixNewFromCRSMatrix=matter_unused_real_nlMKLMatrixNewFromCRSMatrix;nlMKLMatrixNewFromSparseMatrix=matter_unused_real_nlMKLMatrixNewFromSparseMatrix"
+)
+set_source_files_properties("${matter_nl_cuda_source}" PROPERTIES COMPILE_DEFINITIONS
+    "nlInitExtension_CUDA=matter_unused_real_nlInitExtension_CUDA;nlExtensionIsInitialized_CUDA=matter_unused_real_nlExtensionIsInitialized_CUDA;nlCUDABlas=matter_unused_real_nlCUDABlas;nlCUDAJacobiPreconditionerNewFromCRSMatrix=matter_unused_real_nlCUDAJacobiPreconditionerNewFromCRSMatrix;nlCUDAMatrixNewFromCRSMatrix=matter_unused_real_nlCUDAMatrixNewFromCRSMatrix"
+)
+
 add_library(matter_autoremesher STATIC ${matter_autoremesher_sources})
 target_include_directories(matter_autoremesher
     PUBLIC "${matter_autoremesher_root}/include"
@@ -221,6 +239,9 @@ target_compile_definitions(matter_autoremesher PRIVATE
     _USE_MATH_DEFINES
     GEOGRAM_WITH_PDEL
     AUTOREMESHER_FORCE_SHIM
+)
+target_compile_options(matter_autoremesher PRIVATE
+    "/FI${CMAKE_SOURCE_DIR}/cmake/MatterAutoremesherConfig.h"
 )
 matter_configure_vendor_target(matter_autoremesher)
 

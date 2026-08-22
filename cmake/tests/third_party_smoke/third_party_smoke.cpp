@@ -42,12 +42,18 @@ int main() {
     bc7enc_compress_block_init();
     rgbcx::init();
 
+    const autoremesher::Result empty_remesh =
+        autoremesher::remesh(autoremesher::Mesh{}, autoremesher::Options{});
+    if (empty_remesh.ok || empty_remesh.err != "empty input") {
+        return 3;
+    }
+
     const bool boundaries_ok = world_def.enableContinuous &&
         glfw_major > 0 && allocator != nullptr && animation.num_tracks() == 0 &&
         raw_animation.Validate() && ImGui::GetVersion() != nullptr &&
         !ImGuizmo::IsUsing() && autoremesher::AUTOREMESHER_CORE_VERSION != nullptr;
     if (!boundaries_ok) {
-        return 3;
+        return 4;
     }
 
     std::printf("matter_third_party_smoke: GLFW %d.%d.%d, ImGui %s, autoremesher %s\n",

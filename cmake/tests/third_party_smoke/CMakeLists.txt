@@ -30,8 +30,36 @@ add_test(NAME matter_third_party_binary_audit
         -Executable "$<TARGET_FILE:matter_third_party_smoke>"
         -BuildDirectory "${CMAKE_BINARY_DIR}"
         -Ninja "${CMAKE_MAKE_PROGRAM}"
+        -AutoremesherLibrary "$<TARGET_FILE:matter_autoremesher>"
 )
 set_tests_properties(matter_third_party_binary_audit PROPERTIES
+    DEPENDS matter_third_party_smoke
+    LABELS third_party
+)
+
+add_test(NAME matter_third_party_review_policy
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/review_policy_tests.ps1"
+        -BuildDirectory "${CMAKE_BINARY_DIR}"
+        -Ninja "${CMAKE_MAKE_PROGRAM}"
+        -AutoremesherLibrary "$<TARGET_FILE:matter_autoremesher>"
+        -SmokeSource "${CMAKE_CURRENT_SOURCE_DIR}/third_party_smoke.cpp"
+)
+set_tests_properties(matter_third_party_review_policy PROPERTIES
+    DEPENDS matter_third_party_smoke
+    LABELS third_party
+)
+
+add_test(NAME matter_third_party_audit_rejects_graph_archive
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/verify_binary_fixture_tests.ps1"
+        -AuditScript "${CMAKE_CURRENT_SOURCE_DIR}/verify_binary.ps1"
+        -Executable "$<TARGET_FILE:matter_third_party_smoke>"
+        -BuildDirectory "${CMAKE_BINARY_DIR}"
+        -Ninja "${CMAKE_MAKE_PROGRAM}"
+        -AutoremesherLibrary "$<TARGET_FILE:matter_autoremesher>"
+)
+set_tests_properties(matter_third_party_audit_rejects_graph_archive PROPERTIES
     DEPENDS matter_third_party_smoke
     LABELS third_party
 )
