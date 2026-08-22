@@ -3,6 +3,12 @@
 #include <stddef.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+#define MATTER_MAX_ALIGN_T double
+#else
+#define MATTER_MAX_ALIGN_T max_align_t
+#endif
+
 // Object header used for free list management
 typedef struct ObjectHeader {
     struct ObjectHeader* next;
@@ -29,7 +35,7 @@ static size_t calculate_object_size(size_t requested_size) {
     size_t size = (requested_size > header_size) ? requested_size : header_size;
 
     // Align stride to max_align_t to ensure proper object alignment
-    size_t al = _Alignof(max_align_t);
+    size_t al = _Alignof(MATTER_MAX_ALIGN_T);
     size = (size + al - 1) / al * al;
 
     return size;

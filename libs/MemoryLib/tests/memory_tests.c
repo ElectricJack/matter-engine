@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#ifdef _MSC_VER
+#define MATTER_MAX_ALIGN_T double
+#else
+#define MATTER_MAX_ALIGN_T max_align_t
+#endif
+
 // Test that objects are properly aligned to max_align_t
 void test_object_alignment() {
     printf("Testing object alignment with objectSize=12...\n");
@@ -14,7 +20,7 @@ void test_object_alignment() {
     MemPool* allocator = mem_pool_create(12, 10);
     assert(allocator != NULL);
 
-    size_t alignment = _Alignof(max_align_t);
+    size_t alignment = _Alignof(MATTER_MAX_ALIGN_T);
 
     // Allocate several objects and verify alignment
     void* ptrs[5];
@@ -82,7 +88,7 @@ void test_multi_page_alignment() {
     MemPool* allocator = mem_pool_create(12, 10);
     assert(allocator != NULL);
 
-    size_t alignment = _Alignof(max_align_t);
+    size_t alignment = _Alignof(MATTER_MAX_ALIGN_T);
     void* ptrs[25];
 
     // Allocate 25 objects (more than one page of 10 objects)
@@ -271,7 +277,7 @@ static void test_array_ensure_overflow(void) {
 
 int main() {
     printf("Running MemPool tests...\n");
-    printf("max_align_t alignment: %zu bytes\n\n", _Alignof(max_align_t));
+    printf("max_align_t alignment: %zu bytes\n\n", _Alignof(MATTER_MAX_ALIGN_T));
 
     test_object_alignment();
     printf("\n");

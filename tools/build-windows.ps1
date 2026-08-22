@@ -19,13 +19,14 @@ if ($PreflightOnly) {
 }
 
 $preset = "windows-msvc-$($Config.ToLowerInvariant())"
-$configure = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} && "{2}" --preset "{3}"' -f $toolchain.VsDevCmd, $toolchain.WindowsSdkVersion, $toolchain.CMake, $preset
+$developerEnvironment = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} -vcvars_ver={2}' -f $toolchain.VsDevCmd, $toolchain.WindowsSdkVersion, $toolchain.MsvcToolsVersion
+$configure = '{0} && "{1}" --preset "{2}" -DCMAKE_MAKE_PROGRAM="{3}"' -f $developerEnvironment, $toolchain.CMake, $preset, $toolchain.Ninja
 & $env:ComSpec /d /s /c $configure
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$build = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} && "{2}" --build --preset "{3}"' -f $toolchain.VsDevCmd, $toolchain.WindowsSdkVersion, $toolchain.CMake, $preset
+$build = '{0} && "{1}" --build --preset "{2}"' -f $developerEnvironment, $toolchain.CMake, $preset
 if ($Target) {
     $build += ' --target "{0}"' -f $Target
 }
