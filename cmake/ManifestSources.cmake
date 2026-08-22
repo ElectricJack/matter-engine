@@ -1,0 +1,37 @@
+# Read a compiler-neutral source manifest into a CMake list.
+#
+# Grammar: <repository-relative-source>|<windows|linux|all>.  Comments and
+# blank lines are ignored.  The returned paths remain repository-relative so
+# callers can use them directly from the root CMakeLists.txt.
+function(matter_read_manifest file out_var)
+    cmake_parse_arguments(MANIFEST "" "PLATFORM" "" ${ARGN})
+    if(NOT MANIFEST_PLATFORM MATCHES "^(windows|linux)$")
+        message(FATAL_ERROR "matter_read_manifest requires PLATFORM windows or linux")
+    endif()
+    if(NOT EXISTS "${file}")
+        message(FATAL_ERROR "source manifest does not exist: ${file}")
+    endif()
+
+    file(STRINGS "${file}" lines)
+    set(sources "")
+    foreach(line IN LISTS lines)
+        string(STRIP "${line}" line)
+        if(line STREQUAL "" OR line MATCHES "^#")
+            continue()
+        endif()
+        string(REPLACE "|" ";" fields "${line}")
+        list(LENGTH fields field_count)
+        if(NOT field_count EQUAL 2)
+            message(FATAL_ERROR "unclassified source in ${file}: ${line}")
+        endif()
+        list(GET fields 0 source)
+        list(GET fields 1 platform)
+        if(NOT platform MATCHES "^(windows|linux|all)$")
+            message(FATAL_ERROR "invalid source platform in ${file}: ${line}")
+        endif()
+        if(platform STREQUAL "all" OR platform STREQUAL MANIFEST_PLATFORM)
+            list(APPEND sources "${source}")
+        endif()
+    endforeach()
+    set(${out_var} "${sources}" PARENT_SCOPE)
+endfunction()
