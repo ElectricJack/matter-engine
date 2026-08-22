@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-22
 **Status:** draft for user review
-**Order:** specification 1 of 2; this is the prerequisite for
+**Order:** specification 2 of 3; implementation begins only after
+`2026-08-22-windows-msvc-build-migration-design.md` reaches its migration
+acceptance gate, and this specification is then the prerequisite for
 `2026-08-22-physx-fluid-bake-integration-design.md`
 **Goal:** add a Vulkan-compute visual-meshing service whose first production
 client turns baked fluid particles into a high-resolution water mesh, while
@@ -34,6 +36,9 @@ milestone.
    frame-time or streaming-throughput benefit. Terrain meshing currently runs on
    bake workers, so moving it to the GPU is not assumed to fix render-thread
    hitches.
+8. Windows implementation, shader tests, and packaging use the accepted MSVC
+   CMake/Ninja target graph. Linux and headless CPU fallback coverage continue
+   through the existing GCC build.
 
 ## 2. Existing contracts that remain authoritative
 
@@ -394,7 +399,10 @@ separate:
 - `MatterEngine3/src/provider/local_provider.*` and
   `MatterEngine3/src/matter_engine.cpp` — one renderer callback and bake-job
   handoff, following the tileset pattern; and
-- `MatterEngine3/Makefile` — the sole embedded-SPIR-V source list.
+- the accepted Windows CMake target plus the compiler-neutral source manifests
+  — compile the service without duplicating translation-unit inventories; and
+- `MatterEngine3/Makefile` and its eventual shared shader manifest — preserve a
+  single embedded-SPIR-V inventory for Linux and Windows.
 
 ## 12. Acceptance gates
 
@@ -422,6 +430,8 @@ separate:
 
 ## 13. References
 
+- Windows MSVC prerequisite:
+  `docs/superpowers/specs/2026-08-22-windows-msvc-build-migration-design.md`
 - PhysX particle isosurface API, used only as an architectural reference:
   <https://nvidia-omniverse.github.io/PhysX/physx/5.4.0/_api_build/class_px_isosurface_extractor.html>
 - PhysX GPU dense/sparse extractor and smoothing service API:

@@ -2,9 +2,10 @@
 
 **Date:** 2026-08-22
 **Status:** draft for user review
-**Order:** specification 2 of 2; implementation begins only after
-`2026-08-22-gpu-visual-meshing-foundation-design.md` reaches its fluid
-prerequisite acceptance gate
+**Order:** specification 3 of 3; implementation begins only after both
+`2026-08-22-windows-msvc-build-migration-design.md` reaches its migration
+acceptance gate and `2026-08-22-gpu-visual-meshing-foundation-design.md`
+reaches its fluid-prerequisite acceptance gate
 **Goal:** integrate NVIDIA PhysX's existing GPU PBD fluid implementation into
 MatterEngine's hydrology bake, in-process, and prove that it can fill and flow
 through the authored 100+ metre, approximately 15% ravine. MatterEngine owns
@@ -32,7 +33,7 @@ These are fixed by the gameplay and prior investigation:
    Terrain, boulders, and the explicit virtual dam are the only containing
    collision geometry.
 7. The current CPU mesher remains available for query/collision output. The GPU
-   visual mesher from specification 1 produces the high-resolution water mesh.
+   visual mesher from specification 2 produces the high-resolution water mesh.
 8. PhysX's isosurface extractor is not used.
 
 ## 2. Why PhysX PBD
@@ -48,7 +49,7 @@ The spike treats the unmodified `SnippetPBF` behavior as its control. If the
 official example does not build and run first, no Matter integration work
 starts.
 
-## 3. Dependency and ABI architecture
+## 3. Dependency and native integration architecture
 
 ### 3.1 External source checkout
 
@@ -57,34 +58,40 @@ lock file records the exact upstream URL, commit, SDK version, supported CUDA
 version, and expected binary-interface version. The build receives the checkout
 through `MATTER_PHYSX_ROOT`; it never clones or updates dependencies implicitly.
 
-The repository remains buildable without PhysX. Hydrology authoring and CPU
-meshing tests do not acquire a CUDA, MSVC, or PhysX dependency.
+The repository remains buildable without PhysX. Hydrology authoring, Linux, and
+CPU meshing tests do not acquire a CUDA or PhysX dependency. The Windows editor
+uses the MSVC toolchain established by the migration prerequisite whether or
+not PhysX is enabled.
 
-### 3.2 In-process C-ABI bridge
+### 3.2 In-process native adapter
 
-MatterEditor is built with MSYS2/UCRT64 while PhysX's Windows GPU SDK is built
-with MSVC and CUDA. C++ objects must not cross that ABI boundary. A thin
-Matter-owned bridge is compiled with the same MSVC/CUDA toolchain as PhysX and
-emitted into the normal editor build directory:
+MatterEditor, MatterEngine3, the adapter, and PhysX are built with the pinned
+MSVC 2022 toolchain. A Matter-owned adapter is compiled as an ordinary internal
+engine target and links the official static PhysX core, foundation, common,
+cooking, and extension libraries through CMake:
 
 ```text
-external PhysX checkout + integrations/physx_bridge sources
-                           │ MSVC/CUDA
+external PhysX checkout + integrations/physx_adapter sources
+                           │ pinned MSVC/CUDA + CMake
                            ▼
-MatterEditor/build/windows/matter_physx_bridge.dll
-                           │ versioned C ABI, same process
+MatterEngine PhysxRuntime adapter linked into editor.exe
+                           │ same process
                            ▼
-MatterEngine hydrology bake worker
+hydrology bake worker + staged PhysX runtime DLLs
 ```
 
-The bridge links the official PhysX libraries and redistributable GPU modules.
-MatterEngine loads it with `LoadLibrary`/`GetProcAddress` only when a PhysX bake
-is requested. There is no solver executable, command line, GenCase, temporary
-worker process, or DLL-visible C++ type.
+The adapter contains all PhysX headers and types behind a private implementation
+boundary; public Matter headers expose only Matter-owned types. Static core
+linking keeps editor startup independent of optional PhysX DLL discovery.
+PhysX's redistributable GPU module and any runtime dependencies proven by the
+pinned build's import graph are staged beside `editor.exe`; the GPU module is
+loaded and initialized only when a PhysX bake is requested. There is no Matter
+bridge DLL, solver executable, command line, GenCase, or temporary worker
+process.
 
-### 3.3 Bridge responsibilities
+### 3.3 Adapter responsibilities
 
-The bridge may:
+The adapter may:
 
 - create/release PhysX foundation, CUDA manager, physics, cooking, scene, PBD
   particle system, material, phases, and buffers;
@@ -94,7 +101,7 @@ The bridge may:
 - evaluate inexpensive fill-sensor reductions;
 - report progress, memory, particle, exclusion, and timing counters;
 - copy the final positions and velocities to Matter-owned host buffers; and
-- catch all C++ exceptions and translate PhysX error callbacks to stable bridge
+- catch all C++ exceptions and translate PhysX error callbacks to stable Matter
   status codes.
 
 It may not change PhysX kernels, fluid constraints, neighbor search, collision
@@ -102,64 +109,55 @@ resolution, or timestep integration.
 
 ### 3.4 Licensing and distribution
 
-The dependency lock records every PhysX source, library, and GPU runtime staged
-into the build. The build copies the corresponding upstream license and notice
-files beside the staged bridge. Editor-development use may proceed once the
-official SDK builds; packaging the bridge or NVIDIA GPU modules into a game
-distribution requires a separate redistribution checklist against the pinned
-PhysX release. Shipping static water artifacts never requires the game runtime
-to contain PhysX.
+The dependency lock records every PhysX source, static library, and GPU runtime
+staged into the build. The editor staging and `dist` targets copy all required
+runtime DLLs plus the corresponding upstream license and notice files. An
+editor recipient does not install PhysX, CUDA Toolkit, Visual Studio, CMake, or
+Python. The package preflight tests the runtime from a process environment with
+developer tool paths removed. Shipping static water artifacts never requires
+the game runtime to contain PhysX.
 
-## 4. Versioned C interface
+## 4. Internal adapter interface
 
-The bridge exports one version negotiation function and opaque-session
-operations. The exact spelling is finalized in the implementation plan, but the
-semantic contract is:
+The adapter exposes a narrow Matter-owned C++ interface. The exact spelling is
+finalized in the implementation plan, but the semantic contract is:
 
-```c
-typedef struct MxpApiVersion {
-    uint32_t abi;
-    uint32_t physx_major;
-    uint32_t physx_minor;
-    uint32_t physx_patch;
-} MxpApiVersion;
+```cpp
+namespace matter::hydrology {
 
-typedef struct MxpSession MxpSession;
+class PhysxRuntime {
+public:
+    static RuntimeInfo probe();
+    BakeResult run(const PhysxBakeInput&, ProgressSink&, CancellationToken&);
+};
 
-MxpStatus mxp_create(const MxpCreateInfo*, MxpSession**, MxpError*);
-MxpStatus mxp_set_collision_mesh(MxpSession*, const MxpTriangleMesh*, MxpError*);
-MxpStatus mxp_set_emitters(MxpSession*, const MxpEmitter*, uint32_t, MxpError*);
-MxpStatus mxp_set_sensor(MxpSession*, const MxpFillSensor*, MxpError*);
-MxpStatus mxp_run(MxpSession*, const MxpRunConfig*, MxpProgressFn, void*,
-                  MxpRunResult*, MxpError*);
-void      mxp_cancel(MxpSession*);
-void      mxp_destroy(MxpSession*);
+} // namespace matter::hydrology
 ```
 
-All structs begin with `struct_size` and `abi_version`, use fixed-width integer
-and IEEE scalar fields, and contain only caller-owned arrays described by pointer
-plus element count. The allocator boundary is explicit: Matter allocates inputs;
-the bridge allocates opaque session state; final arrays are copied into buffers
-whose capacity Matter supplies. No STL, exceptions, RTTI, callbacks with C++
-captures, or ownership ambiguity crosses the ABI.
+`PhysxRuntime` uses a private implementation so PhysX headers, compiler defines,
+CUDA types, and ownership rules do not leak into engine consumers. Inputs and
+outputs use Matter-owned value/container types. The adapter owns every PhysX
+object through explicit release-aware RAII and converts exceptions and callbacks
+to `BakeResult`; exceptions do not escape the bake-worker boundary.
 
-`mxp_run` is synchronous on the hydrology bake worker. Progress callbacks occur
-on that same worker and may only publish engine events or inspect cancellation.
+`run` is synchronous on the hydrology bake worker. Progress callbacks occur on
+that same worker and may only publish engine events or inspect cancellation.
 They never call the renderer or UI.
 
 ## 5. Matter-side bake components
 
-### 5.1 `PhysxBridgeLoader`
+### 5.1 `PhysxRuntime`
 
-A platform-specific loader owns the DLL handle, validates the ABI and PhysX
-version, resolves every required symbol atomically, and unloads only after all
-sessions are destroyed. Failure is reported as `backend unavailable`, not as a
-world-loader error. Worlds without a requested fluid bake never load the DLL.
+The native adapter validates the compiled and staged PhysX versions, owns the
+foundation/CUDA/physics lifetime, and creates per-bake sessions. Missing or
+mismatched runtime DLLs are reported as `backend unavailable`, not as a
+world-loader error. Worlds without a requested fluid bake never initialize the
+GPU runtime.
 
 ### 5.2 `PhysxFluidBake`
 
 A pure orchestration component converts a `RiverNetworkDefinition`, generated
-`RiverGeometry`, terrain collision mesh, and bake settings into bridge inputs.
+`RiverGeometry`, terrain collision mesh, and bake settings into adapter inputs.
 It owns the semantic key, progress mapping, cancellation, final validation, and
 artifact assembly. It contains no fluid-force or pressure calculation.
 
@@ -170,7 +168,7 @@ contains:
 
 - schema and backend contract versions;
 - river-network canonical hash and terrain/river-geometry revisions;
-- PhysX SDK, bridge, PBD settings, and GPU provenance;
+- PhysX SDK, adapter, PBD settings, and GPU provenance;
 - section bounds, inlet definitions, virtual-dam definition, and sensor result;
 - completed steps, simulated seconds, peak/active/excluded particle counts,
   memory high-water mark, and wall time;
@@ -215,7 +213,7 @@ errors independently from fluid behavior.
 
 Particle spacing is an authored bake-quality parameter constrained by the
 channel width, boulder scale, GPU memory, and PhysX offset relationships. The
-bridge derives rest/contact offsets and particle mass using the same formulas
+adapter derives rest/contact offsets and particle mass using the same formulas
 as `SnippetPBF`; Matter does not invent alternative PBD parameterization.
 
 The first ravine spike sweeps a small declared set of particle spacings rather
@@ -224,7 +222,7 @@ than tuning arbitrary forces. Each result records its complete PBD settings.
 ### 7.2 Emitters
 
 The input model accepts one or more emitters so later tributaries do not require
-an ABI change. Each emitter includes stable id, position/orientation, cross
+an interface change. Each emitter includes stable id, position/orientation, cross
 section, flow rate, initial velocity, start time, and optional stop time. The
 first acceptance scene uses the authored main-river inlet only.
 
@@ -269,7 +267,7 @@ wet fraction is the fraction of horizontal sensor cells that contain at least
 the configured minimum particle contribution, not simply a global particle
 count. That prevents a narrow jet from falsely completing a broad section.
 
-The bridge evaluates the occupancy reduction from device particle positions and
+The adapter evaluates the occupancy reduction from device particle positions and
 returns only counts per batch. This small CUDA reduction is data plumbing, not
 fluid simulation. A CPU reference evaluates recorded snapshots in tests.
 
@@ -320,14 +318,14 @@ that limitation.
 - The Matter GPU mesher itself retains its same-device byte-repeatability gate.
 - Cross-device output is validated geometrically/statistically, not bytewise.
 
-Changing PhysX version, bridge version, PBD material/offset/iteration settings,
+Changing PhysX version, adapter version, PBD material/offset/iteration settings,
 particle spacing, terrain revision, network hash, dam/sensor settings, or
 Matter-mesher contract invalidates the artifact.
 
 ## 12. GPU coexistence and editor behavior
 
 PhysX owns a CUDA context on the same selected NVIDIA adapter used by Vulkan.
-On Windows the bridge and engine compare the CUDA device identity with Vulkan's
+On Windows the adapter and renderer compare the CUDA device identity with Vulkan's
 device LUID before allocating the full particle buffers; a mismatch is a hard
 bake error rather than an implicit cross-adapter copy.
 The first integration performs no CUDA/Vulkan memory or semaphore interop. This
@@ -351,7 +349,7 @@ with a separate design and measurement proving the final copy is significant.
 
 Stable error categories include:
 
-- bridge DLL missing or ABI mismatch;
+- required PhysX GPU runtime DLL missing or version mismatch;
 - PhysX or CUDA GPU unavailable;
 - selected CUDA/Vulkan adapters do not identify the same physical GPU;
 - PhysX initialization/cooking/scene failure;
@@ -373,7 +371,7 @@ and does not convert a failed simulation into `Ready`.
 ### P0 — dependency and official control
 
 - Resolve the pinned external checkout without network mutation.
-- Build the official supported PhysX configuration and Matter bridge.
+- Build the official supported PhysX configuration and native Matter adapter.
 - Run unmodified `SnippetPBF` on the target RTX GPU.
 - Record PhysX/CUDA versions, adapter identity, particle count, steps, timing,
   and final finite-state checks.
@@ -381,9 +379,9 @@ and does not convert a failed simulation into `Ready`.
 Failure stops the integration. Matter code is not changed to compensate for a
 broken official control.
 
-### P1 — bridge conformance
+### P1 — adapter conformance
 
-- ABI version and struct-size negotiation;
+- compiled/header/runtime PhysX version agreement;
 - create/destroy loop with leak checks;
 - PhysX error and C++ exception translation;
 - cancellation between batches;
@@ -432,27 +430,29 @@ recommendation. Matter does not respond by modifying the solver mathematics.
 - terrain/network/PBD/mesher version changes each invalidate the key;
 - cancellation leaves no publishable partial artifact;
 - world reload cannot publish an old generation; and
-- editor shutdown releases CUDA, PhysX, and DLL resources without device loss.
+- editor shutdown releases CUDA, PhysX, and adapter resources without device
+  loss.
 
 ## 15. Expected source layout
 
 Implementation planning may refine filenames, but responsibilities remain:
 
-- `integrations/physx_bridge/` — MSVC/CUDA C-ABI bridge and its C header;
+- `integrations/physx_adapter/` — native MSVC/CUDA adapter implementation with
+  PhysX types confined to private translation units;
 - `tools/deps/physx.lock` — pinned external dependency identity;
-- `MatterEngine3/src/hydrology/physx_bridge_loader.*` — Windows dynamic loading
-  and ABI negotiation;
+- `MatterEngine3/src/hydrology/physx_runtime.*` — lifetime, version validation,
+  status translation, and the private PhysX implementation boundary;
 - `MatterEngine3/src/hydrology/physx_fluid_bake.*` — Matter orchestration,
   collision input, emitters, sensor, validation, and result conversion;
 - `MatterEngine3/src/hydrology/hydrology_artifact.*` — versioned persistence;
 - `MatterEngine3/include/matter/hydrology.h` — status visible to engine/editor
   consumers;
-- `MatterEngine3/tests/physx_bridge_contract_tests.cpp` — fake bridge and ABI
-  tests that run without PhysX;
+- `MatterEngine3/tests/physx_adapter_contract_tests.cpp` — fake adapter and
+  orchestration tests that run without PhysX;
 - `MatterEngine3/tests/physx_fluid_integration_tests.cpp` — GPU-tagged control,
   chute, and ravine gates;
-- `MatterEditor/Makefile` and a dedicated build script — opt-in bridge build and
-  staging into `build/windows`; and
+- the Windows CMake targets and staging script — opt-in PhysX build followed by
+  complete runtime and notice staging into `build/windows` and `dist`; and
 - `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js` — the authored
   acceptance world, with solver-quality parameters added through the imperative
   build DSL rather than hidden environment values.
@@ -468,7 +468,7 @@ Implementation planning may refine filenames, but responsibilities remain:
 - tributary acceptance beyond preserving a multi-emitter interface;
 - PhysX isosurface extraction;
 - CUDA/Vulkan zero-copy interop; and
-- GPU terrain meshing, which is Phase 2 of specification 1.
+- GPU terrain meshing, which is Phase 2 of specification 2.
 
 ## 17. References
 
@@ -478,6 +478,8 @@ Implementation planning may refine filenames, but responsibilities remain:
   <https://nvidia-omniverse.github.io/PhysX/physx/5.4.0/docs/ParticleSystem.html#particle-buffers>
 - PhysX repository and license:
   <https://github.com/NVIDIA-Omniverse/PhysX>
+- Windows MSVC prerequisite:
+  `docs/superpowers/specs/2026-08-22-windows-msvc-build-migration-design.md`
 - GPU meshing prerequisite:
   `docs/superpowers/specs/2026-08-22-gpu-visual-meshing-foundation-design.md`
 - River authoring contracts:
