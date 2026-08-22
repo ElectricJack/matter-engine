@@ -2024,6 +2024,54 @@ class RiverHydrology extends World {
           "hydrology dimensions are parsed as typed domain extents");
 }
 
+void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
+    const fs::path project = fs::path("../../projects/world_demo");
+    matter::WorldLoadDesc load{};
+    load.world_path =
+        (project / "scenes/RiverHydrology/RiverHydrology.js").string();
+    load.objects_dir = (project / "objects").string();
+    load.project_shared_lib_dir = (project / "shared-lib").string();
+    load.engine_shared_lib_dir = "../shared-lib";
+    matter::WorldDefinition definition{};
+    matter::WorldLoadError load_error{};
+    CHECK(matter::load_world_definition(load, definition, load_error),
+          load_error.message.c_str());
+    CHECK(!definition.hydrology.has_value(),
+          "the checked-in river scene has no legacy static equilibrium object");
+    CHECK(definition.river_network.has_value(),
+          "the checked-in river scene publishes an imperative canonical network");
+    if (!definition.river_network) return;
+    const auto& network = *definition.river_network;
+    CHECK(network.rivers.size() == 1u &&
+              network.first_section_river == "main",
+          "the checked-in scene selects one named first-section river");
+    if (network.rivers.empty()) return;
+    const auto& river = network.rivers.front();
+    CHECK(river.spline.size() == 4u &&
+              river.spline[1].x == 36.0f && river.spline[1].y == 22.2f &&
+              river.spline[1].z == 13.0f &&
+              river.spline[2].x == 78.0f && river.spline[2].y == 20.1f &&
+              river.spline[2].z == -14.0f &&
+              river.spline.back().x == 132.0f &&
+              river.spline.back().y == 17.4f &&
+              river.spline.back().z == 4.0f &&
+              river.reaches.size() == 1u &&
+              river.reaches.back().base_grade == -0.05f &&
+              river.reaches.back().meander == 0.35f,
+          "the visual spike retains the 132 m curved constant-grade spline");
+    CHECK(river.channel.width_m == 10.0f &&
+              river.channel.depth_m == 4.2f &&
+              river.channel.asymmetry == 0.18f &&
+              river.boulders.density == 0.0f,
+          "the visual spike retains the rounded-V channel and frozen roots");
+    CHECK(network.first_section.dry_margin_m == 5.0f &&
+              network.first_section.batch_steps == 256u &&
+              network.first_section.max_steps == 256u &&
+              network.first_section.crest_wet_fraction == 0.80f &&
+              network.first_section.stable_wet_steps == 32u,
+          "the scene retains the 5 m margin, work budget, and exact sensor rule");
+}
+
 void test_world_loader_leaves_hydrology_empty_when_absent() {
     Fixture fixture;
     const fs::path path = fixture.write("Dry.js", "class Dry extends World {}\n");
@@ -2402,6 +2450,7 @@ int main() {
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();
     test_world_loader_reads_static_hydrology();
+    test_checked_in_river_hydrology_uses_the_imperative_section_contract();
     test_world_loader_leaves_hydrology_empty_when_absent();
     test_world_loader_rejects_invalid_static_hydrology();
     test_world_loader_rejects_every_unknown_hydrology_property();

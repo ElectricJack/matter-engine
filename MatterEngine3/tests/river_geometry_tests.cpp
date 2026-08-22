@@ -170,6 +170,31 @@ void test_height_overlay_grade_ravine_boulders_and_hash() {
     CHECK(left < ray_height || right < ray_height,
           "a lateral ray from the thalweg reaches sky over at least one bank");
 
+    matter::RiverNetworkDefinition rounded_network = network;
+    rounded_network.rivers[0].channel.asymmetry = 0.0f;
+    hydrology::RiverGeometry rounded_geometry{};
+    const auto rounded_overlay = build_overlay(rounded_network, rounded_geometry);
+    const auto& rounded_middle =
+        rounded_geometry.centreline[rounded_geometry.centreline.size() / 2u];
+    const float rounded_half_width =
+        rounded_network.rivers[0].channel.width_m * 0.5f;
+    const auto rounded_height = [&](float fraction) {
+        return rounded_overlay->height_at(
+            rounded_middle.position_m.x + rounded_middle.lateral.x *
+                rounded_half_width * fraction,
+            rounded_middle.position_m.z + rounded_middle.lateral.z *
+                rounded_half_width * fraction,
+            80.0f);
+    };
+    const float rounded_bed = rounded_height(0.0f);
+    const float rounded_bank_rise = rounded_height(1.0f) - rounded_bed;
+    const float quarter_rise = rounded_height(0.25f) - rounded_bed;
+    const float three_quarter_rise = rounded_height(0.75f) - rounded_bed;
+    CHECK(quarter_rise > rounded_bank_rise * 0.17f,
+          "rounded-V carve leaves the rounded thalweg on a visibly rising side");
+    CHECK(three_quarter_rise < rounded_bank_rise * 0.80f,
+          "rounded-V carve keeps an open near-linear wall below the shoulder");
+
     matter::RiverNetworkDefinition boulder_network = network;
     boulder_network.rivers[0].boulders = {1.0f, {0.7f, 1.1f}};
     hydrology::RiverGeometry boulder_geometry{};

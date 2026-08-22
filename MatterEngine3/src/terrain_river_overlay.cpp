@@ -36,6 +36,15 @@ float smoothstep(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+float rounded_v(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    constexpr float roundness = 0.08f;
+    const float floor = std::sqrt(roundness * roundness);
+    const float ceiling = std::sqrt(1.0f + roundness * roundness);
+    return (std::sqrt(t * t + roundness * roundness) - floor) /
+           (ceiling - floor);
+}
+
 float broad_noise(float distance_m, std::uint64_t seed) {
     constexpr float wavelength_m = 12.0f;
     const float coordinate = distance_m / wavelength_m;
@@ -192,7 +201,7 @@ float RiverHeightOverlay::terrain_height(float x, float z,
                             (1.0f + 0.85f * signed_asymmetry);
 
     if (absolute_lateral <= half_width) {
-        const float across = smoothstep(absolute_lateral / half_width);
+        const float across = rounded_v(absolute_lateral / half_width);
         return sample.thalweg_y + bank_rise * across;
     }
 
