@@ -12,10 +12,18 @@ file(WRITE "${source_dir}/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.25)
 project(matter_compiler_policy_probe LANGUAGES C CXX)
 
-include("${MATTER_REPOSITORY_ROOT}/cmake/MatterCompiler.cmake")
+get_filename_component(matter_repository_root "${MATTER_REPOSITORY_ROOT}" REALPATH)
+include("${matter_repository_root}/cmake/MatterCompiler.cmake")
 
 add_library(matter_compiler_policy_probe STATIC probe.c probe.cpp)
 matter_apply_project_defaults(matter_compiler_policy_probe)
+
+add_library(matter_interface_policy_probe INTERFACE)
+matter_apply_project_defaults(matter_interface_policy_probe)
+
+add_executable(matter_test_policy_probe probe.c)
+matter_apply_project_defaults(matter_test_policy_probe)
+matter_apply_test_assertion_policy(matter_test_policy_probe)
 
 function(require_target_property property expected)
     get_target_property(actual matter_compiler_policy_probe "${property}")
@@ -47,6 +55,40 @@ require_compile_option("/W4")
 require_compile_option("$<$<COMPILE_LANGUAGE:CXX>:/permissive->")
 require_compile_option("$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>")
 require_compile_option("$<$<COMPILE_LANGUAGE:CXX>:/EHsc>")
+
+get_target_property(interface_features matter_interface_policy_probe INTERFACE_COMPILE_FEATURES)
+foreach(required_feature IN ITEMS c_std_17 cxx_std_17)
+    list(FIND interface_features "${required_feature}" feature_index)
+    if(feature_index EQUAL -1)
+        message(FATAL_ERROR
+            "matter_interface_policy_probe is missing usage feature '${required_feature}': '${interface_features}'")
+    endif()
+endforeach()
+
+get_target_property(interface_options matter_interface_policy_probe INTERFACE_COMPILE_OPTIONS)
+if(interface_options)
+    message(FATAL_ERROR
+        "matter_interface_policy_probe leaked project compile options: '${interface_options}'")
+endif()
+
+get_target_property(interface_runtime matter_interface_policy_probe MSVC_RUNTIME_LIBRARY)
+if(interface_runtime)
+    message(FATAL_ERROR
+        "matter_interface_policy_probe leaked project runtime policy: '${interface_runtime}'")
+endif()
+
+get_target_property(test_options matter_test_policy_probe COMPILE_OPTIONS)
+list(FIND test_options "/UNDEBUG" undefine_option_index)
+if(NOT undefine_option_index EQUAL -1)
+    message(FATAL_ERROR "matter_test_policy_probe uses conflicting /UNDEBUG: '${test_options}'")
+endif()
+set(expected_force_include
+    "/FI${matter_repository_root}/cmake/MatterTestAssertions.h")
+list(FIND test_options "${expected_force_include}" force_include_index)
+if(force_include_index EQUAL -1)
+    message(FATAL_ERROR
+        "matter_test_policy_probe is missing '${expected_force_include}': '${test_options}'")
+endif()
 ]=])
 
 execute_process(

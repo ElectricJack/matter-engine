@@ -57,6 +57,7 @@ target_link_libraries(matter_asset_store PUBLIC matter_memory)
 
 set(foundation_targets
     matter_memory
+    matter_math
     matter_spatial
     matter_profile
     matter_particle_flow
@@ -137,11 +138,10 @@ if(BUILD_TESTING)
     )
     foreach(test_target IN LISTS foundation_targets)
         if(test_target MATCHES "_tests$" OR test_target STREQUAL "matter_math_c_smoke")
-            # The existing suites use assert() for checks and, in a few cases,
-            # for setup calls. Keep those assertions active in every preset.
-            target_compile_options("${test_target}" PRIVATE /UNDEBUG)
+            matter_apply_test_assertion_policy("${test_target}")
         endif()
     endforeach()
 endif()
 
-add_custom_target(matter_foundation DEPENDS ${foundation_targets})
+add_custom_target(matter_foundation)
+add_dependencies(matter_foundation ${foundation_targets})
