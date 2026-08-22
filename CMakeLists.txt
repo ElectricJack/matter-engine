@@ -9,3 +9,8 @@ endif()
 include(CTest)
 include(cmake/MatterCompiler.cmake)
 include(cmake/MatterTargets.cmake)
+include(cmake/MatterThirdParty.cmake)
+
+if(BUILD_TESTING)
+    add_subdirectory(cmake/tests/third_party_smoke)
+endif()
