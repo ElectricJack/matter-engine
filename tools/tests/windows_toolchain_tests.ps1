@@ -57,6 +57,7 @@ $toolchain = Resolve-MatterWindowsToolchain -RepositoryRoot $repositoryRoot
 
 Assert-True ($toolchain.VisualStudioRoot -match '[\\/]2022[\\/]') 'Visual Studio 2022 was not selected'
 Assert-True ($toolchain.VisualStudioRoot -notmatch '[\\/]18([\\/]|$)') 'Visual Studio 18 must not be selected'
+Assert-True ($toolchain.VisualStudioProductId -eq 'Microsoft.VisualStudio.Product.Community') "Expected Visual Studio Community, got $($toolchain.VisualStudioProductId)"
 Assert-True ($toolchain.MsvcToolsVersion -eq '14.44.35207') "Expected MSVC 14.44.35207, got $($toolchain.MsvcToolsVersion)"
 Assert-True ($toolchain.WindowsSdkVersion -eq '10.0.26100.0') "Expected Windows SDK 10.0.26100.0, got $($toolchain.WindowsSdkVersion)"
 Assert-True ($toolchain.CMake.StartsWith($toolchain.VisualStudioRoot, [System.StringComparison]::OrdinalIgnoreCase)) 'CMake was not selected from Visual Studio'
@@ -66,7 +67,8 @@ Assert-True ($toolchain.Glslc -eq 'C:\VulkanSDK\1.4.357.0\Bin\glslc.exe') "Expec
 
 Assert-CommandSucceeds -Path $toolchain.CMake -Arguments @('--version') -Name 'CMake'
 Assert-CommandSucceeds -Path $toolchain.Ninja -Arguments @('--version') -Name 'Ninja'
-Assert-CommandSucceeds -Path $toolchain.Python -Arguments @('--version') -Name 'Python'
+Assert-True ($toolchain.PythonVersion -match '^Python 3\.13\.') "Expected Python 3.13, got $($toolchain.PythonVersion)"
+Assert-CommandSucceeds -Path $toolchain.Python -Arguments @('-3.13', '--version') -Name 'Python 3.13'
 Assert-CommandSucceeds -Path $toolchain.Glslc -Arguments @('--version') -Name 'Vulkan glslc'
 
 Write-Output 'windows_toolchain_tests: PASS'

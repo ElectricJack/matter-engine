@@ -43,6 +43,10 @@ function Resolve-MatterWindowsToolchain {
         throw 'Visual Studio 2022 with Microsoft.VisualStudio.Component.VC.Tools.x86.x64 was not found'
     }
     $visualStudioRoot = (Resolve-Path -LiteralPath $visualStudioRoot).Path
+    $visualStudioProductId = (& $vswhere -path $visualStudioRoot -property productId | Select-Object -First 1).Trim()
+    if ($visualStudioProductId -ne 'Microsoft.VisualStudio.Product.Community') {
+        throw "Visual Studio 2022 Community was required, but selected $visualStudioProductId at $visualStudioRoot"
+    }
 
     $msvcToolsVersion = '14.44.35207'
     $windowsSdkVersion = '10.0.26100.0'
@@ -58,6 +62,7 @@ function Resolve-MatterWindowsToolchain {
     Require-MatterFile -Path (Join-Path $windowsKitsRoot "Lib\$windowsSdkVersion\ucrt\x64\ucrt.lib") -Description "Windows SDK $windowsSdkVersion UCRT x64 import libraries" | Out-Null
 
     $python = $null
+    $pythonVersion = $null
     $pythonCandidates = @(
         (Join-Path $env:WINDIR 'py.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Launcher\py.exe'),
@@ -65,12 +70,16 @@ function Resolve-MatterWindowsToolchain {
     ) | Where-Object { $_ }
     foreach ($candidate in $pythonCandidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            $python = $candidate
-            break
+            $candidateVersion = (& $candidate -3.13 --version 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -and $candidateVersion -match '^Python 3\.13\.') {
+                $python = $candidate
+                $pythonVersion = $candidateVersion
+                break
+            }
         }
     }
     if (-not $python) {
-        throw 'Python launcher py.exe was not found. Install Python 3.13.14 for all users so C:\Windows\py.exe is available.'
+        throw 'Python launcher py.exe with Python 3.13 was not found. Install Python 3.13.14 so py.exe -3.13 succeeds.'
     }
 
     $vulkanSdk = 'C:\VulkanSDK\1.4.357.0'
@@ -81,12 +90,14 @@ function Resolve-MatterWindowsToolchain {
 
     $result = [PSCustomObject][ordered]@{
         VisualStudioRoot = $visualStudioRoot
+        VisualStudioProductId = $visualStudioProductId
         VsDevCmd = $vsDevCmd
         MsvcToolsVersion = $msvcToolsVersion
         WindowsSdkVersion = $windowsSdkVersion
         CMake = $cmake
         Ninja = $ninja
         Python = $python
+        PythonVersion = $pythonVersion
         VulkanSdk = $vulkanSdk
         Glslc = $glslc
     }
