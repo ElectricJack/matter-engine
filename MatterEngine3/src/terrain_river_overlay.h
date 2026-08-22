@@ -34,6 +34,7 @@ private:
         float lateral_z = 0.0f;
         float distance_m = 0.0f;
         float thalweg_y = 0.0f;
+        float half_width_m = 0.0f;
     };
     struct Boulder {
         float x = 0.0f;

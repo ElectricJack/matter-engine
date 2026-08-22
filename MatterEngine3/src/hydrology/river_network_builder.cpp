@@ -90,7 +90,7 @@ std::uint64_t fnv1a64(std::string_view text) {
 std::string canonical_text(const RiverNetworkDefinition& network) {
     std::string text;
     text.reserve(512);
-    text += "river-network-v1\ncell-size=";
+    text += "river-network-v2\ncell-size=";
     append_float(text, network.cell_size_m);
     text += "\nseed=";
     append_uint(text, network.seed);
@@ -113,6 +113,8 @@ std::string canonical_text(const RiverNetworkDefinition& network) {
             append_float(text, reach.base_grade);
             text.push_back(',');
             append_float(text, reach.meander);
+            text.push_back(',');
+            append_float(text, reach.width_scale);
         }
         text += "\nchannel=";
         append_float(text, river.channel.width_m);
@@ -228,6 +230,10 @@ bool RiverNetworkBuilder::add_reach(std::size_t river, const RiverReach& reach,
                     "baseGrade must be finite and nonpositive");
     if (!finite(reach.meander) || reach.meander < 0.0f || reach.meander > 1.0f)
         return fail(error, path + ".meander", "meander must lie in [0, 1]");
+    if (!finite(reach.width_scale) || reach.width_scale <= 0.0f ||
+        reach.width_scale > 3.0f)
+        return fail(error, path + ".widthScale",
+                    "widthScale must lie in (0, 3]");
     state->definition.reaches.push_back(reach);
     return true;
 }

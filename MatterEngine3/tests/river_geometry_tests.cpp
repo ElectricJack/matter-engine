@@ -230,6 +230,45 @@ void test_height_overlay_grade_ravine_boulders_and_hash() {
           "overlay hash changes with spline, grade, and seed-derived geometry");
 }
 
+void test_reach_width_scales_move_the_rounded_v_banks() {
+    matter::RiverNetworkDefinition network = straight_response_network();
+    network.rivers[0].reaches[0].width_scale = 0.70f;
+    network.rivers[0].reaches[1].width_scale = 1.45f;
+    network.rivers[0].channel.asymmetry = 0.0f;
+    network.rivers[0].boulders.density = 0.0f;
+
+    hydrology::RiverGeometry geometry{};
+    const auto overlay = build_overlay(network, geometry);
+    CHECK(overlay != nullptr && !geometry.centreline.empty(),
+          "variable-width river builds a height overlay");
+    if (!overlay || geometry.centreline.empty()) return;
+
+    const auto narrow = std::find_if(
+        geometry.centreline.begin(), geometry.centreline.end(),
+        [](const auto& sample) { return sample.distance_m >= 32.0f; });
+    const auto wide = std::find_if(
+        geometry.centreline.begin(), geometry.centreline.end(),
+        [](const auto& sample) { return sample.distance_m >= 96.0f; });
+    CHECK(narrow != geometry.centreline.end() &&
+              wide != geometry.centreline.end() &&
+              narrow->width_scale == 0.70f && wide->width_scale == 1.45f,
+          "centreline samples retain each reach's authored width scale");
+    if (narrow == geometry.centreline.end() || wide == geometry.centreline.end())
+        return;
+
+    const float probe_offset = network.rivers[0].channel.width_m * 0.45f;
+    const auto bank_rise = [&](const auto& sample) {
+        const float bed = overlay->height_at(sample.position_m.x,
+                                             sample.position_m.z, 80.0f);
+        const float side = overlay->height_at(
+            sample.position_m.x + sample.lateral.x * probe_offset,
+            sample.position_m.z + sample.lateral.z * probe_offset, 80.0f);
+        return side - bed;
+    };
+    CHECK(bank_rise(*narrow) > bank_rise(*wide) + 0.5f,
+          "the same lateral probe reaches the narrow bank but remains inside the wide channel");
+}
+
 void test_arc_length_reaches_and_hard_controls() {
     const matter::RiverNetworkDefinition network = approved_network();
     hydrology::RiverGeometry geometry{};
@@ -591,6 +630,7 @@ int main() {
     test_revision_changes_when_geometry_bounds_change();
     test_boulders_are_deterministic_bounded_and_reserve_cross_sections();
     test_height_overlay_grade_ravine_boulders_and_hash();
+    test_reach_width_scales_move_the_rounded_v_banks();
     test_generated_intersection_is_deterministically_attenuated();
     test_generated_intersection_exhaustion_rejects_unchanged();
     return check_summary();

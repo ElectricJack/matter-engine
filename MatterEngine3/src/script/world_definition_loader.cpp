@@ -474,9 +474,11 @@ JSValue river_reach(JSContext* context, JSValueConst this_value,
     if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
         !required_float(context, arguments[0], "until", reach.until_m) ||
         !required_float(context, arguments[0], "baseGrade", reach.base_grade) ||
-        !required_float(context, arguments[0], "meander", reach.meander)) {
+        !required_float(context, arguments[0], "meander", reach.meander) ||
+        !optional_number(context, arguments[0], "widthScale",
+                         reach.width_scale)) {
         return river_failure(context, handle->collector,
-                             "hydrology.reach: reach requires until/baseGrade/meander");
+                             "hydrology.reach: reach requires until/baseGrade/meander and an optional finite widthScale");
     }
     std::string error;
     if (!handle->collector->river_builder->add_reach(handle->river, reach, error))

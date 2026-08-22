@@ -2048,19 +2048,24 @@ void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
     if (network.rivers.empty()) return;
     const auto& river = network.rivers.front();
     CHECK(river.spline.size() == 4u &&
-              river.spline[1].x == 36.0f && river.spline[1].y == 22.2f &&
-              river.spline[1].z == 13.0f &&
-              river.spline[2].x == 78.0f && river.spline[2].y == 20.1f &&
-              river.spline[2].z == -14.0f &&
-              river.spline.back().x == 132.0f &&
-              river.spline.back().y == 17.4f &&
-              river.spline.back().z == 4.0f &&
-              river.reaches.size() == 1u &&
-              river.reaches.back().base_grade == -0.05f &&
-              river.reaches.back().meander == 0.35f,
-          "the visual spike retains the 132 m curved constant-grade spline");
-    CHECK(river.channel.width_m == 10.0f &&
-              river.channel.depth_m == 4.2f &&
+              river.spline.front().y == 42.0f &&
+              river.spline[1].x == 38.0f && river.spline[1].y == 35.5f &&
+              river.spline[1].z == 16.0f &&
+              river.spline[2].x == 82.0f && river.spline[2].y == 29.8f &&
+              river.spline[2].z == -16.0f &&
+              river.spline.back().x == 142.0f &&
+              river.spline.back().y == 19.5f &&
+              river.spline.back().z == 6.0f &&
+              river.reaches.size() == 3u &&
+              river.reaches[0].base_grade == -0.17f &&
+              river.reaches[0].width_scale == 0.78f &&
+              river.reaches[1].base_grade == -0.115f &&
+              river.reaches[1].width_scale == 1.30f &&
+              river.reaches[2].base_grade == -0.17f &&
+              river.reaches[2].width_scale == 0.92f,
+          "the visual spike retains the steep variable-width 142 m spline");
+    CHECK(river.channel.width_m == 14.0f &&
+              river.channel.depth_m == 7.0f &&
               river.channel.asymmetry == 0.18f &&
               river.boulders.density == 0.0f,
           "the visual spike retains the rounded-V channel and frozen roots");

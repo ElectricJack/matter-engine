@@ -16,6 +16,7 @@ struct RiverCentrelineSample {
     float distance_m = 0.0f;
     float grade = 0.0f;
     float meander = 0.0f;
+    float width_scale = 1.0f;
 };
 
 struct RiverBoulder {

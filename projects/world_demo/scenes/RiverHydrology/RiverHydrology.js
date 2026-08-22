@@ -1,8 +1,8 @@
 // One authored upstream section. The engine derives its terrain-contained
 // hydraulic domain, virtual completion dam, and strict cache key at install.
 class RiverHydrology extends World {
-  static world = { sectorSize: 64, yMin: -24, yMax: 72 };
-  static camera = { position: [0, 52, 48], target: [64, 25, 0] };
+  static world = { sectorSize: 64, yMin: -32, yMax: 112 };
+  static camera = { position: [10, 86, 76], target: [76, 28, 0] };
   static volumetrics = { enabled: false };
   static streaming = {
     nestedSectors: true, volumetricSectors: true,
@@ -45,15 +45,17 @@ class RiverHydrology extends World {
     });
 
     const main = network.river("main")
-      .inlet([0, 24, 0], { flow: 1.0 })
+      .inlet([0, 42, 0], { flow: 1.0 })
       .spline([
-        [0, 24, 0],
-        [36, 22.2, 13],
-        [78, 20.1, -14],
-        [132, 17.4, 4],
+        [0, 42, 0],
+        [38, 35.5, 16],
+        [82, 29.8, -16],
+        [142, 19.5, 6],
       ])
-      .reach({ until: 145, baseGrade: -0.05, meander: 0.35 })
-      .channel({ width: 10, depth: 4.2, asymmetry: 0.18 })
+      .reach({ until: 48, baseGrade: -0.17, meander: 0.25, widthScale: 0.78 })
+      .reach({ until: 108, baseGrade: -0.115, meander: 0.65, widthScale: 1.30 })
+      .reach({ until: 165, baseGrade: -0.17, meander: 0.28, widthScale: 0.92 })
+      .channel({ width: 14, depth: 7.0, asymmetry: 0.18 })
       .boulders({ density: 0.0, radius: [0.9, 2.4] });
 
     network.firstSection(main, {
@@ -70,14 +72,14 @@ class RiverHydrology extends World {
   }
 
   field(p) {
-    // A compact alpine field: the whole landscape follows the river's 5%
+    // A compact alpine field: the whole landscape follows the river's 15%
     // downstream plane while warped ridges and coarse/fine relief make it read
     // like the mountain world rather than a procedural slab. The river overlay
     // subtracts its rounded-V corridor from this surface afterward.
-    const grade = worldX().mul(-0.05).add(27.5);
-    const broad = noise2(p.worldSeed ^ 0x31, 1 / 180, 4).mul(10.0);
+    const grade = worldX().mul(-0.15).add(48.0);
+    const broad = noise2(p.worldSeed ^ 0x31, 1 / 190, 4).mul(18.0);
     const ridges = ridge2(p.worldSeed ^ 0x51, 1 / 80, 3, 0.52, 2.0)
-      .add(1).mul(0.5).pow(1.6).mul(8.0);
+      .add(1).mul(0.5).pow(1.75).mul(20.0);
     const height = grade.add(broad).add(ridges);
     return {
       density: heightToDensity(height),

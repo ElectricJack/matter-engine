@@ -166,6 +166,27 @@ float meander_response(const matter::RiverDefinition& river,
     return result;
 }
 
+float width_scale_at(const matter::RiverDefinition& river,
+                     float distance_m) {
+    const matter::RiverReach& current = reach_at(river, distance_m);
+    float result = current.width_scale;
+    constexpr float blend_half_width = 8.0f;
+    for (std::size_t i = 0; i + 1 < river.reaches.size(); ++i) {
+        const float boundary = river.reaches[i].until_m;
+        if (distance_m < boundary - blend_half_width ||
+            distance_m > boundary + blend_half_width)
+            continue;
+        const float t = smoothstep(
+            (distance_m - boundary + blend_half_width) /
+            (2.0f * blend_half_width));
+        result = river.reaches[i].width_scale +
+                 (river.reaches[i + 1].width_scale -
+                  river.reaches[i].width_scale) * t;
+        break;
+    }
+    return result;
+}
+
 bool fail(std::string& error, const std::string& message) {
     error = "river geometry: " + message;
     return false;
@@ -198,6 +219,9 @@ bool validate(const matter::RiverNetworkDefinition& network,
             return fail(error, "every reach grade must be finite and negative");
         if (!finite(reach.meander) || reach.meander < 0.0f)
             return fail(error, "reach meander must be finite and nonnegative");
+        if (!finite(reach.width_scale) || reach.width_scale <= 0.0f ||
+            reach.width_scale > 3.0f)
+            return fail(error, "reach width scale must lie in (0, 3]");
         previous_until = reach.until_m;
     }
     if (!finite(river->channel.width_m) || river->channel.width_m <= 0.0f ||
@@ -349,6 +373,7 @@ std::vector<RiverCentrelineSample> resample(
         const matter::RiverReach& reach = reach_at(river, target);
         sample.grade = reach.base_grade;
         sample.meander = reach.meander;
+        sample.width_scale = width_scale_at(river, target);
         samples.push_back(sample);
     };
 
@@ -357,6 +382,7 @@ std::vector<RiverCentrelineSample> resample(
     first.distance_m = 0.0f;
     first.grade = river.reaches.front().base_grade;
     first.meander = river.reaches.front().meander;
+    first.width_scale = river.reaches.front().width_scale;
     result.push_back(first);
     for (std::size_t step = 1; step <= full_steps; ++step)
         append(static_cast<float>(step) * spacing_m, dense_index, result);
@@ -413,6 +439,8 @@ RiverCentrelineSample sample_at(
     result.tangent = normalize(lerp(before.tangent, after->tangent, t));
     result.lateral = horizontal_lateral(result.tangent);
     result.distance_m = distance_m;
+    result.width_scale = before.width_scale +
+                         (after->width_scale - before.width_scale) * t;
     return result;
 }
 
@@ -423,11 +451,17 @@ std::vector<RiverBoulder> select_boulders(
     std::vector<RiverBoulder> result;
     if (river.boulders.density <= 0.0f) return result;
 
-    const float half_width = river.channel.width_m * 0.5f;
-    const float inlet_reserve = std::max(river.channel.width_m,
+    const float maximum_width_scale = std::max_element(
+        river.reaches.begin(), river.reaches.end(),
+        [](const auto& a, const auto& b) {
+            return a.width_scale < b.width_scale;
+        })->width_scale;
+    const float maximum_half_width =
+        river.channel.width_m * maximum_width_scale * 0.5f;
+    const float inlet_reserve = std::max(river.channel.width_m * maximum_width_scale,
                                          river.boulders.radius_m.y * 2.0f);
     const float cross_section_reserve =
-        std::max(half_width, river.boulders.radius_m.y);
+        std::max(maximum_half_width, river.boulders.radius_m.y);
     const float end = centreline.back().distance_m - cross_section_reserve;
     const std::uint64_t first_index = static_cast<std::uint64_t>(
         std::ceil(inlet_reserve));
@@ -450,12 +484,15 @@ std::vector<RiverBoulder> select_boulders(
                              (river.boulders.radius_m.y -
                               river.boulders.radius_m.x) *
                                  radius_t;
-        const float available_lateral = std::max(0.0f, half_width - radius);
+        const RiverCentrelineSample sample = sample_at(centreline, distance_m);
+        const float local_half_width = river.channel.width_m *
+                                       sample.width_scale * 0.5f;
+        const float available_lateral =
+            std::max(0.0f, local_half_width - radius);
         const float lateral_t = unit_float(keyed_hash(
             network.seed, river.name, index, UINT64_C(0x626f756c64657233)));
         const float lateral_offset = (lateral_t * 2.0f - 1.0f) *
                                      available_lateral;
-        const RiverCentrelineSample sample = sample_at(centreline, distance_m);
         RiverBoulder boulder{};
         boulder.center_m = add(sample.position_m,
                                multiply(sample.lateral, lateral_offset));
@@ -479,8 +516,9 @@ matter::Aabb geometry_bounds(const matter::RiverDefinition& river,
     const float infinity = std::numeric_limits<float>::infinity();
     matter::Aabb bounds{{infinity, infinity, infinity},
                         {-infinity, -infinity, -infinity}};
-    const float half_width = river.channel.width_m * 0.5f;
     for (const RiverCentrelineSample& sample : geometry.centreline) {
+        const float half_width = river.channel.width_m *
+                                 sample.width_scale * 0.5f;
         include(bounds, {sample.position_m.x - half_width,
                          sample.position_m.y - river.channel.depth_m,
                          sample.position_m.z - half_width});
@@ -517,6 +555,7 @@ std::uint64_t geometry_revision(const matter::RiverNetworkDefinition& network,
         hash_bytes(hash, &sample.position_m, sizeof(sample.position_m));
         hash_bytes(hash, &sample.grade, sizeof(sample.grade));
         hash_bytes(hash, &sample.meander, sizeof(sample.meander));
+        hash_bytes(hash, &sample.width_scale, sizeof(sample.width_scale));
     }
     for (const RiverBoulder& boulder : geometry.boulders)
         hash_bytes(hash, &boulder, sizeof(boulder));

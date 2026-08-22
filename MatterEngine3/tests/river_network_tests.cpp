@@ -36,8 +36,8 @@ bool build_valid_network(float second_grade, RiverNetworkDefinition& out,
                                {34.0f, 14.0f, 11.0f},
                                {72.0f, 9.0f, -9.0f},
                                {128.0f, 3.0f, 5.0f}}, error) &&
-           builder.add_reach(main, {64.0f, -0.035f, 0.15f}, error) &&
-           builder.add_reach(main, {128.0f, second_grade, 0.65f}, error) &&
+           builder.add_reach(main, {64.0f, -0.035f, 0.15f, 0.75f}, error) &&
+           builder.add_reach(main, {128.0f, second_grade, 0.65f, 1.35f}, error) &&
            builder.set_channel(main, {7.0f, 2.5f, 0.35f}, error) &&
            builder.set_boulders(main, {0.08f, {0.5f, 2.0f}}, error) &&
            builder.set_first_section(main,
@@ -61,7 +61,9 @@ void test_records_in_insertion_order_and_keys_every_field() {
           "the canonical builder retains named rivers in declaration order");
     CHECK(first.rivers[0].reaches.size() == 2u &&
               first.rivers[0].reaches[0].until_m == 64.0f &&
-              first.rivers[0].reaches[1].meander == 0.65f,
+              first.rivers[0].reaches[1].meander == 0.65f &&
+              first.rivers[0].reaches[0].width_scale == 0.75f &&
+              first.rivers[0].reaches[1].width_scale == 1.35f,
           "reach declarations retain their authored order and values");
     CHECK(first.first_section_river == "main" &&
               first.first_section.minimum_length_m == 100.0f,
@@ -117,6 +119,16 @@ void test_rejects_duplicate_names_and_invalid_declarations() {
                   error.find("hydrology.main.reach[1].until") !=
                       std::string::npos,
               "decreasing reach boundaries are rejected at the second boundary");
+    }
+    {
+        RiverNetworkBuilder builder(0.5f, 1u);
+        std::size_t main = 0;
+        std::string error;
+        CHECK(builder.add_river("main", main, error), error.c_str());
+        CHECK(!builder.add_reach(main, {64.0f, -0.02f, 0.2f, 0.0f}, error) &&
+                  error.find("hydrology.main.reach[0].widthScale") !=
+                      std::string::npos,
+              "nonpositive width scales are rejected at the authored reach");
     }
     {
         RiverNetworkBuilder builder(0.5f, 1u);

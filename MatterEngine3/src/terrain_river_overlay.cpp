@@ -88,7 +88,9 @@ bool RiverHeightOverlay::build(
         if (!finite(source.position_m.x) || !finite(source.position_m.y) ||
             !finite(source.position_m.z) || !finite(source.lateral.x) ||
             !finite(source.lateral.z) || !finite(source.distance_m) ||
-            !finite(source.grade) || source.distance_m <= previous_distance)
+            !finite(source.grade) || !finite(source.width_scale) ||
+            source.width_scale <= 0.0f ||
+            source.distance_m <= previous_distance)
             return fail(error, "river height overlay centreline is invalid");
         previous_distance = source.distance_m;
         hash_bytes(terrain_seed, &source.position_m, sizeof(source.position_m));
@@ -142,7 +144,8 @@ bool RiverHeightOverlay::build(
                                     source.lateral.x,
                                     source.lateral.z,
                                     source.distance_m,
-                                    smoothed[i]});
+                                    smoothed[i],
+                                    channel.width_m * source.width_scale * 0.5f});
     }
 
     for (const auto& source : geometry.boulders) {
@@ -193,7 +196,7 @@ float RiverHeightOverlay::terrain_height(float x, float z,
     const float dz = z - sample.z;
     const float lateral = dx * sample.lateral_x + dz * sample.lateral_z;
     const float absolute_lateral = std::fabs(lateral);
-    const float half_width = channel_.width_m * 0.5f;
+    const float half_width = sample.half_width_m;
     const float outer_width = half_width * 3.0f;
     const float asymmetry = std::clamp(channel_.asymmetry, -1.0f, 1.0f);
     const float signed_asymmetry = lateral >= 0.0f ? asymmetry : -asymmetry;

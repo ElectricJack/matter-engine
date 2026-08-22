@@ -12,6 +12,7 @@ struct RiverReach {
     float until_m = 0.0f;
     float base_grade = 0.0f;
     float meander = 0.0f;
+    float width_scale = 1.0f;
 };
 
 struct RiverChannel {
