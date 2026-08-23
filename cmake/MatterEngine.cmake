@@ -125,6 +125,9 @@ add_library(matter_engine_headless STATIC
     $<TARGET_OBJECTS:matter_engine_surface_objects>
 )
 matter_engine_include_directories(matter_engine_headless PUBLIC)
+target_compile_definitions(matter_engine_headless INTERFACE
+    MATTER_HAVE_SCRIPT_HOST
+)
 target_link_libraries(matter_engine_headless PUBLIC
     matter_memory
     matter_math
@@ -151,7 +154,6 @@ if(BUILD_TESTING)
         target_compile_definitions("${target}" PRIVATE
             PLATFORM_DESKTOP
             GRAPHICS_API_OPENGL_43
-            MATTER_HAVE_SCRIPT_HOST
             MATTER_VULKAN_ONLY
         )
         target_link_libraries("${target}" PRIVATE matter_engine_headless)
@@ -188,6 +190,18 @@ if(BUILD_TESTING)
     set_tests_properties(compiler_portability_tests PROPERTIES
         LABELS cpu
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+    )
+    add_executable(matter_engine_headless_consumer_tests
+        MatterEngine3/tests/headless_consumer_interface_tests.cpp
+    )
+    target_link_libraries(matter_engine_headless_consumer_tests
+        PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(matter_engine_headless_consumer_tests)
+    matter_apply_test_assertion_policy(matter_engine_headless_consumer_tests)
+    add_test(NAME matter_engine_headless_consumer_tests
+        COMMAND matter_engine_headless_consumer_tests)
+    set_tests_properties(matter_engine_headless_consumer_tests PROPERTIES
+        LABELS compiler-policy
     )
     add_test(NAME compiler_format_negative_tests
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
@@ -266,6 +280,7 @@ if(BUILD_TESTING)
     add_custom_target(matter_engine_cpu_tests)
     add_dependencies(matter_engine_cpu_tests
         compiler_portability_tests
+        matter_engine_headless_consumer_tests
         matter_mesh_allocator_policy_tests
         ${matter_engine_cpu_targets}
     )
