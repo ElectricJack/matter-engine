@@ -421,6 +421,40 @@ bool LocalProvider::run_fluid_bake(
                                          error);
 }
 
+bool LocalProvider::run_authored_fluid_bake() {
+    accepted_fluid_artifact_.reset();
+    if (!hydrology_settings_ || !hydrology_settings_->enabled) return false;
+
+    FluidBakeRequest request{};
+    hydrology::HydrologyArtifact candidate{};
+    hydrology::FluidBakeError fluid_error{};
+    bool produced = false;
+    try {
+        produced = cfg_.fluid_bake_request_producer &&
+            cfg_.fluid_bake_request_producer(
+                *hydrology_settings_, river_network_, request, fluid_error);
+    } catch (const std::exception& exception) {
+        fluid_error = {hydrology::FluidBakeCode::BackendFailure,
+                       exception.what()};
+    } catch (...) {
+        fluid_error = {hydrology::FluidBakeCode::BackendFailure,
+                       "fluid request assembly raised an unknown exception"};
+    }
+    if (!produced || !request.backend || !request.terrain ||
+        !run_fluid_bake(request.input, *request.backend, request.callbacks,
+                        request.product_settings, request.terrain, candidate,
+                        fluid_error)) {
+        MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
+                    fluid_error.message.empty()
+                        ? "missing request producer, backend, or terrain sampler"
+                        : fluid_error.message.c_str());
+        return false;
+    }
+
+    accepted_fluid_artifact_ = std::move(candidate);
+    return true;
+}
+
 bool LocalProvider::build_river_height_overlay(
     hydrology::RiverGeometry& geometry,
     std::shared_ptr<const terrain_field::RiverHeightOverlay>& overlay,
@@ -1459,36 +1493,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             return false;
         }
     }
-    accepted_fluid_artifact_.reset();
-    if (hydrology_settings_ && hydrology_settings_->enabled) {
-        FluidBakeRequest request{};
-        hydrology::HydrologyArtifact candidate{};
-        hydrology::FluidBakeError fluid_error{};
-        bool produced = false;
-        try {
-            produced = cfg_.fluid_bake_request_producer &&
-                cfg_.fluid_bake_request_producer(
-                    *hydrology_settings_, river_network_, request,
-                    fluid_error);
-        } catch (const std::exception& exception) {
-            fluid_error = {hydrology::FluidBakeCode::BackendFailure,
-                           exception.what()};
-        } catch (...) {
-            fluid_error = {hydrology::FluidBakeCode::BackendFailure,
-                           "fluid request assembly raised an unknown exception"};
-        }
-        if (!produced || !request.backend || !request.terrain ||
-            !run_fluid_bake(request.input, *request.backend,
-                            request.callbacks, request.product_settings,
-                            request.terrain, candidate, fluid_error)) {
-            MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
-                        fluid_error.message.empty()
-                            ? "missing request producer, backend, or terrain sampler"
-                            : fluid_error.message.c_str());
-        } else {
-            accepted_fluid_artifact_ = std::move(candidate);
-        }
-    }
+    (void)run_authored_fluid_bake();
     return true;
 }
 

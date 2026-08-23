@@ -5,15 +5,18 @@
 #include "hydrology/physx_collision_input.h"
 #include "hydrology/physx_fluid_bake.h"
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
-#include "provider/local_provider.h"
+#include "matter/engine_context.h"
 #endif
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -867,8 +870,8 @@ void test_product_keys_follow_the_settings_the_extractors_consume() {
 }
 
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
-bool write_provider_connect_fixture(const std::filesystem::path& root,
-                                    bool fluid_enabled = true) {
+bool write_world_session_fixture(const std::filesystem::path& root,
+                                 bool fluid_enabled = true) {
     std::error_code error;
     std::filesystem::remove_all(root, error);
     std::filesystem::create_directories(root / "objects", error);
@@ -901,128 +904,127 @@ bool write_provider_connect_fixture(const std::filesystem::path& root,
     return static_cast<bool>(world);
 }
 
-void test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path() {
-    const std::filesystem::path root =
-        std::filesystem::temp_directory_path() / "matter-local-fluid-bake-contract";
-    CHECK(write_provider_connect_fixture(root),
-          "the production fluid request test created its minimal provider world");
-    auto backend = std::make_shared<RecordingBackend>();
+bool drive_world_session_bake(matter::WorldSession& session) {
+    session.request_bake();
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < deadline) {
+        session.pump_gpu_jobs(8.0f);
+        matter::Event event{};
+        bool observed_event = false;
+        while (session.poll_event(event)) {
+            observed_event = true;
+            if (event.type == matter::EventType::BakeFinished) return true;
+            if (event.type == matter::EventType::BakeError) {
+                return false;
+            }
+        }
+        if (!observed_event)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
+struct WorldSessionFluidCase {
+    bool opened = false;
+    bool finished = false;
+    bool accepted = false;
+    std::uint32_t dry_instance_count = 0;
     int backend_factory_calls = 0;
-    auto config = viewer::make_engine_local_provider_config(
-        root.string(), "Demo", "", [&] {
-            ++backend_factory_calls;
-            return backend;
-        });
-    int gpu_run_calls = 0;
-    int vk_visual_calls = 0;
-    config.gpu_run = [&](const char* name, std::function<bool(std::string&)> work,
-                         std::string& runner_error) {
-        ++gpu_run_calls;
-        CHECK(std::string(name) == "hydrology_particle_visual",
-              "the production provider labels the renderer product job");
-        return work(runner_error);
-    };
-    config.vk_particle_visual_bake =
-        [&](const gpu_meshing::ParticleJob& job, gpu_meshing::MeshResult& mesh,
-            gpu_meshing::Stats&, gpu_meshing::Error&,
-            const gpu_meshing::BuildControl&) {
-            ++vk_visual_calls;
-            mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-                              0.0f, 1.0f, 0.0f};
-            mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
-                            0.0f, 0.0f, 1.0f};
-            mesh.indices = {0u, 1u, 2u};
-            mesh.material = job.material;
-            mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
-            return true;
-        };
-    CHECK(backend_factory_calls == 0,
-          "the engine producer does not create PhysX before authored connect requests it");
-    viewer::LocalProvider provider(std::move(config));
-    viewer::WorldManifest manifest{};
-    std::string connect_error;
-    CHECK(provider.connect(manifest, connect_error) &&
-              !manifest.instances.empty() &&
-              provider.accepted_fluid_artifact().has_value() &&
-              provider.accepted_fluid_artifact()->accepted &&
-              backend_factory_calls == 1 && backend->run_calls == 1 &&
-              gpu_run_calls == 1 && vk_visual_calls == 1,
-          connect_error.empty()
-              ? "the production connect path sends the accepted backend snapshot to vk_particle_visual_bake"
-              : connect_error.c_str());
-    auto failing_backend = std::make_shared<RecordingBackend>();
-    int failing_backend_factory_calls = 0;
-    auto failing_config = viewer::make_engine_local_provider_config(
-        root.string(), "Demo", "", [&] {
-            ++failing_backend_factory_calls;
-            return failing_backend;
-        });
-    int failing_visual_calls = 0;
-    failing_config.vk_particle_visual_bake =
-        [&](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
-            gpu_meshing::Stats&, gpu_meshing::Error& error,
-            const gpu_meshing::BuildControl&) {
-            ++failing_visual_calls;
-            error.message = "deliberate editor visual failure";
-            return false;
-        };
-    viewer::LocalProvider failing_provider(std::move(failing_config));
-    viewer::WorldManifest failing_manifest{};
-    std::string failing_connect_error;
-    CHECK(failing_provider.connect(failing_manifest, failing_connect_error) &&
-              !failing_manifest.instances.empty() &&
-              !failing_provider.accepted_fluid_artifact().has_value() &&
-              failing_backend_factory_calls == 1 &&
-              failing_backend->run_calls == 1 && failing_visual_calls == 1,
-          "a production renderer failure prevents publication of the completed snapshot");
+    int backend_run_calls = 0;
+    int visual_calls = 0;
+};
 
-    auto unavailable_backend = std::make_shared<RecordingBackend>();
-    unavailable_backend->available = false;
-    auto solver_config = viewer::make_engine_local_provider_config(
-        root.string(), "Demo", "",
-        [unavailable_backend] { return unavailable_backend; });
-    int unexpected_visual_calls = 0;
-    solver_config.vk_particle_visual_bake =
-        [&](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
-            gpu_meshing::Stats&, gpu_meshing::Error&,
-            const gpu_meshing::BuildControl&) {
-            ++unexpected_visual_calls;
-            return true;
-        };
-    viewer::LocalProvider solver_failure_provider(std::move(solver_config));
-    viewer::WorldManifest solver_failure_manifest{};
-    std::string solver_connect_error;
-    CHECK(solver_failure_provider.connect(solver_failure_manifest,
-                                          solver_connect_error) &&
-              !solver_failure_manifest.instances.empty() &&
-              !solver_failure_provider.accepted_fluid_artifact().has_value() &&
-              unavailable_backend->probe_calls == 1 &&
-              unavailable_backend->run_calls == 0 &&
-              unexpected_visual_calls == 0,
-          "a production solver failure preserves the dry world and publishes no partial artifact");
+WorldSessionFluidCase run_world_session_fluid_case(
+    const char* fixture_name, bool fluid_enabled, bool visual_succeeds) {
+    WorldSessionFluidCase result{};
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / fixture_name;
+    CHECK(write_world_session_fixture(root, fluid_enabled),
+          "the live fluid request test created its minimal editor world");
+    auto backend = std::make_shared<RecordingBackend>();
+    {
+        const std::string cache_root = (root / ".cache").string();
+        matter::EngineDesc engine_desc{};
+        engine_desc.cache_root = cache_root.c_str();
+        engine_desc.allow_gl_lt_46 = true;
+        std::string error;
+        auto engine = matter::EngineContext::create(engine_desc, error);
+        CHECK(engine != nullptr,
+              error.empty() ? "the live fluid test created an engine"
+                            : error.c_str());
+        if (!engine) return result;
 
-    const std::filesystem::path dry_root =
-        std::filesystem::temp_directory_path() /
-        "matter-local-fluid-dry-contract";
-    CHECK(write_provider_connect_fixture(dry_root, false),
-          "the disabled-fluid test created its minimal provider world");
-    int dry_backend_factory_calls = 0;
-    auto dry_config = viewer::make_engine_local_provider_config(
-        dry_root.string(), "Demo", "", [&] {
-            ++dry_backend_factory_calls;
-            return std::make_shared<RecordingBackend>();
-        });
-    viewer::LocalProvider dry_provider(std::move(dry_config));
-    viewer::WorldManifest dry_manifest{};
-    std::string dry_connect_error;
-    CHECK(dry_provider.connect(dry_manifest, dry_connect_error) &&
-              !dry_manifest.instances.empty() &&
-              !dry_provider.accepted_fluid_artifact().has_value() &&
-              dry_backend_factory_calls == 0,
-          "an authored disabled fluid setting preserves the dry path without creating a backend");
+        const std::string project_dir = root.string();
+        matter::WorldDesc world_desc{};
+        world_desc.project_dir = project_dir.c_str();
+        world_desc.world_name = "Demo";
+        auto session = engine->open_world(world_desc, error);
+        CHECK(session != nullptr,
+              error.empty() ? "the live fluid test opened an editor world"
+                            : error.c_str());
+        if (!session) return result;
+        result.opened = true;
+
+        session->set_test_fluid_bake_dependencies(
+            [&] {
+                ++result.backend_factory_calls;
+                return backend;
+            },
+            [&](const gpu_meshing::ParticleJob& job,
+                gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
+                gpu_meshing::Error&,
+                const gpu_meshing::BuildControl&) {
+                ++result.visual_calls;
+                if (!visual_succeeds) return false;
+                mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                  0.0f, 1.0f, 0.0f};
+                mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                                0.0f, 0.0f, 1.0f};
+                mesh.indices = {0u, 1u, 2u};
+                mesh.material = job.material;
+                mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+                return true;
+            });
+        CHECK(result.backend_factory_calls == 0,
+              "open_world keeps the authored fluid backend lazy before the bake");
+        result.finished = drive_world_session_bake(*session);
+        result.accepted = session->has_accepted_fluid_artifact_for_test();
+        result.dry_instance_count = session->instance_count();
+        result.backend_run_calls = backend->run_calls;
+    }
     std::error_code remove_error;
     std::filesystem::remove_all(root, remove_error);
-    std::filesystem::remove_all(dry_root, remove_error);
+    return result;
+}
+
+void test_world_session_runs_authored_fluid_bake_before_publication() {
+    const WorldSessionFluidCase success = run_world_session_fluid_case(
+        "matter-live-fluid-success-contract", true, true);
+    CHECK(success.opened && success.finished && success.dry_instance_count > 0 &&
+              success.accepted && success.backend_factory_calls == 1 &&
+              success.backend_run_calls == 1 && success.visual_calls == 1,
+          "the live WorldSession path sends authored fluid through the production renderer before publication");
+
+    const WorldSessionFluidCase renderer_failure = run_world_session_fluid_case(
+        "matter-live-fluid-renderer-failure-contract", true, false);
+    CHECK(renderer_failure.opened && renderer_failure.finished &&
+              renderer_failure.dry_instance_count > 0 &&
+              !renderer_failure.accepted &&
+              renderer_failure.backend_factory_calls == 1 &&
+              renderer_failure.backend_run_calls == 1 &&
+              renderer_failure.visual_calls == 1,
+          "a live renderer product failure preserves dry terrain and publishes no fluid artifact");
+
+    const WorldSessionFluidCase authored_disabled = run_world_session_fluid_case(
+        "matter-live-fluid-disabled-contract", false, true);
+    CHECK(authored_disabled.opened && authored_disabled.finished &&
+              authored_disabled.dry_instance_count > 0 &&
+              !authored_disabled.accepted &&
+              authored_disabled.backend_factory_calls == 0 &&
+              authored_disabled.backend_run_calls == 0 &&
+              authored_disabled.visual_calls == 0,
+          "an authored-disabled live world remains lazy and publishes dry terrain");
 }
 #endif
 
@@ -1046,7 +1048,7 @@ int main() {
     test_accepted_snapshot_builds_all_products_or_publishes_nothing();
     test_product_keys_follow_the_settings_the_extractors_consume();
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
-    test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path();
+    test_world_session_runs_authored_fluid_bake_before_publication();
 #endif
     return check_summary();
 }

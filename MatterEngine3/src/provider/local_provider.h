@@ -436,6 +436,13 @@ public:
         return accepted_fluid_artifact_;
     }
 
+    // Runs the authored synchronous Task 6 request after install/restore has
+    // populated hydrology and river state. Returns true only when every
+    // required solver/renderer/CPU/gameplay product was accepted. A disabled
+    // request or any failure leaves no artifact and never invalidates the dry
+    // world assembled by the caller.
+    bool run_authored_fluid_bake();
+
     // connect() == install_graph() + compose_world() with unchanged external behavior.
     bool connect(WorldManifest& out, std::string& err) override;
 

@@ -300,7 +300,8 @@ if(BUILD_TESTING)
     matter_add_engine_cpu_test(hydrology_artifact_tests
         MatterEngine3/tests/hydrology_artifact_tests.cpp)
     matter_add_engine_cpu_test(physx_adapter_contract_tests
-        MatterEngine3/tests/physx_adapter_contract_tests.cpp)
+        MatterEngine3/tests/physx_adapter_contract_tests.cpp
+        MatterEngine3/src/ecs/scene_registry.cpp)
     target_compile_definitions(physx_adapter_contract_tests PRIVATE
         MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
     if(MATTER_ENABLE_PHYSX)

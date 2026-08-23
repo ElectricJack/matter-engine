@@ -758,6 +758,7 @@ struct WorldSession::Impl {
         std::numeric_limits<float>::infinity()};
 
     std::atomic<bool> connected{false};
+    std::atomic<bool> accepted_fluid_artifact{false};
 
     // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
     // progress is emitted here as typed events (matter/events/*.h). Declared
@@ -1072,6 +1073,7 @@ struct WorldSession::Impl {
     void reconcile_runtime_animation_skinning();
     // Execute one BakeAll/Reload command. Called only on the worker thread.
     void execute_bake(matter_async::Command& cmd, bool is_reload);
+    void run_authored_fluid_bake_after_world_load();
     // Execute a RebakeCone command. Called only on the worker thread.
     void execute_rebake_cone(matter_async::Command& cmd);
     // Phase C Task 6: execute one camera-driven refine step.
@@ -2839,6 +2841,7 @@ void WorldSession::Impl::worker_loop() {
 void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload) {
     auto& token = cmd.token;
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
+    accepted_fluid_artifact.store(false, std::memory_order_release);
 
     // Bake Lab (task 1.2): fresh trace for this run; make the session collector
     // current on the worker thread so BAKE_SPAN/BAKE_COUNT sites anywhere below
@@ -3044,6 +3047,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
                     set_authored_fog(provider->world_settings().fog);
                     set_authored_sun(provider->world_settings());
+                    run_authored_fluid_bake_after_world_load();
 
                     {
                         MATTER_LOGI("resolve", "resolve cache: hit %016llx\n",
@@ -3156,6 +3160,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // the default zero-density settings for their entire session.
         set_authored_fog(provider->world_settings().fog);
         set_authored_sun(provider->world_settings());
+        run_authored_fluid_bake_after_world_load();
 
         // World-kind sessions use an empty manifest; sectors are streamed.
         viewer::WorldManifest empty_manifest;
@@ -3227,6 +3232,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     set_authored_fog(provider->world_settings().fog);
     set_authored_sun(provider->world_settings());
+    run_authored_fluid_bake_after_world_load();
 
     // Phase C Task 17: save resolve cache after a successful full install+compose.
     // Write to temp + rename (atomic). Non-fatal on failure (no cache next warm launch).
@@ -3268,6 +3274,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         clk_t::now() - t_bake_start).count();
     MATTER_LOGI("bake-timing", "install=%.0fms compose=%.0fms publish=%.0fms total=%.0fms\n",
             install_ms, compose_ms, publish_ms, total_ms);
+}
+
+void WorldSession::Impl::run_authored_fluid_bake_after_world_load() {
+    const bool accepted = provider && provider->run_authored_fluid_bake();
+    accepted_fluid_artifact.store(accepted, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------
@@ -9263,6 +9274,24 @@ void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {
     // command builds a fresh LocalProvider(cfg_). Thread-safe: only call this
     // before request_bake() or between bakes on the same thread as the caller.
     impl_->cfg.test_fault_hook = std::move(hook);
+}
+
+void WorldSession::set_test_fluid_bake_dependencies(
+    FluidBakeBackendTestFactory backend_factory,
+    FluidVisualBakeTestCallback visual_bake) {
+    // Reuse the shipped producer factory so tests replace only the two
+    // external systems. The authored schema and deterministic request defaults
+    // stay byte-for-byte identical to an editor world load.
+    auto fluid_config = viewer::make_engine_local_provider_config(
+        impl_->cfg.project_dir, impl_->cfg.world_name,
+        impl_->cfg.engine_shared_lib_dir, std::move(backend_factory));
+    impl_->cfg.fluid_bake_request_producer =
+        std::move(fluid_config.fluid_bake_request_producer);
+    impl_->cfg.vk_particle_visual_bake = std::move(visual_bake);
+}
+
+bool WorldSession::has_accepted_fluid_artifact_for_test() const {
+    return impl_->accepted_fluid_artifact.load(std::memory_order_acquire);
 }
 
 void WorldSession::set_test_animation_raster_range_resolver(

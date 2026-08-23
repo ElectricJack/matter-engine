@@ -23,6 +23,14 @@
 #include "bake_trace.h"   // bake_trace::Span — see last_bake_trace()
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
+namespace gpu_meshing {
+struct BuildControl;
+struct Error;
+struct MeshResult;
+struct ParticleJob;
+struct Stats;
+}
+namespace hydrology { class IFluidBakeBackend; }
 namespace matter::evt { class Hub; }
 namespace matter::scene { class SceneService; class SceneChangeTracker; }
 namespace matter::props { class DynamicGroup; }
@@ -39,6 +47,12 @@ struct AnimationRasterRange {
 };
 using AnimationRasterRangeResolver =
     std::function<bool(uint64_t part_hash, AnimationRasterRange& out)>;
+using FluidBakeBackendTestFactory =
+    std::function<std::shared_ptr<hydrology::IFluidBakeBackend>()>;
+using FluidVisualBakeTestCallback = std::function<bool(
+    const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
+    gpu_meshing::Stats&, gpu_meshing::Error&,
+    const gpu_meshing::BuildControl&)>;
 
 struct WorldDesc {
     // Preferred project layout. open_world derives objects/, worlds/,
@@ -846,6 +860,17 @@ public:
     // ScriptError/Internal). Null clears the hook.
     // NOT part of the stable public API — for kernel-internal tests only.
     void set_test_fault_hook(std::function<void(int)> hook);
+
+    // Task 6 kernel-internal integration seam. Installs only the external
+    // solver/renderer dependencies; request assembly, authored enablement,
+    // WorldSession scheduling, and publication remain the production path.
+    // Call before request_bake(). Not part of the stable public API.
+    void set_test_fluid_bake_dependencies(
+        FluidBakeBackendTestFactory backend_factory,
+        FluidVisualBakeTestCallback visual_bake);
+
+    // Observes the all-or-nothing accepted-product boundary after BakeFinished.
+    bool has_accepted_fluid_artifact_for_test() const;
 
     struct Impl;
     explicit WorldSession(std::unique_ptr<Impl> impl);   // internal; use open_world
