@@ -310,6 +310,11 @@ GLSLC ?= glslc
 # shaders_gen/embedded_shaders.h) instead of keeping its own copy, so there
 # is only ever one list to update when a shader is added.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
+         build/shaders_vk/gpu_mesh_scan_add.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_count.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_scatter.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_sort.comp.spv \
          build/shaders_vk/atmosphere_transmittance.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \
          build/shaders_vk/atmosphere_sky_view.comp.spv \
@@ -356,6 +361,12 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
+
+build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
+    build/shaders_vk/gpu_mesh_scan_add.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_count.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_scatter.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_sort.comp.spv: shaders_vk/gpu_mesh_common.glsl
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl

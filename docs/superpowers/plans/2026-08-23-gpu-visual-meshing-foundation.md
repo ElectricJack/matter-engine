@@ -177,11 +177,11 @@ git commit -m "feat: define GPU visual meshing contracts"
 - Produces `gpu_meshing::GpuVisualMesher`, with `bool build_particle_visual(const ParticleJob&, MeshResult&, Stats&, Error&, const BuildControl& = {})`.
 - Test seam produces `run_gpu_visual_mesher_pure_vk_tests()` and `run_gpu_visual_mesher_vk_tests(matter::VulkanDevice&)` for the existing validation-enabled smoke executable.
 
-- [ ] **Step 1: Write failing GPU scan/bin tests**
+- [x] **Step 1: Write failing GPU scan/bin tests**
 
 Add a `MATTER_VK_SMOKE_MODE=gpu-mesher` branch to the smoke harness which calls the new functions. Tests upload `{3,0,2,5}`, assert GPU output `{0,3,3,5}` and total `10`, then exercise 257 and 65,537 elements so one-block and recursive block-sum paths are both required. Particle-bin tests use contributing negative-coordinate particles on bin faces and assert every contributing input id appears exactly once, offsets are monotonic, and every bin's ids are ascending after `gpu_mesh_bin_sort.comp`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -192,7 +192,7 @@ $env:MATTER_VK_SMOKE_MODE='gpu-mesher'; & 'MatterEditor/build/cmake/windows-msvc
 
 Expected: build fails because the new Vulkan mesher and shaders are absent.
 
-- [ ] **Step 3: Implement the hierarchical exclusive scan**
+- [x] **Step 3: Implement the hierarchical exclusive scan**
 
 Use 256-value workgroups. `gpu_mesh_scan_blocks.comp` performs a Blelloch exclusive scan in shared memory and writes one sum per block. Recursively scan block sums until one block remains, then dispatch `gpu_mesh_scan_add.comp` from the highest populated level back to level zero. The host reads only the last output/count pair to calculate the total and rejects any `uint32_t` overflow.
 
@@ -207,19 +207,19 @@ bool exclusive_scan_gpu(matter::VulkanDevice&, const matter::VkBufferResource& i
 
 Each submitted stage uses `ImmediateSubmitPhase::compute_dispatch`; cancellation and `generation_is_current(job.generation)` are checked before every dispatch and after every completed submission. A superseded generation returns `ErrorCode::StaleGeneration`, distinct from user cancellation.
 
-- [ ] **Step 4: Implement bounded deterministic bins**
+- [x] **Step 4: Implement bounded deterministic bins**
 
 `gpu_mesh_bin_count.comp` atomically counts one center-bin entry per particle. Scan counts into offsets. `gpu_mesh_bin_scatter.comp` atomically fills the exact `particle_count` index buffer. `gpu_mesh_bin_sort.comp` runs one invocation per bin and insertion-sorts that bin's variable-length id range; it has no occupancy cap. The field stages therefore visit ids in stable order despite scatter scheduling.
 
-- [ ] **Step 5: Keep Windows and Make shader inventories identical**
+- [x] **Step 5: Keep Windows and Make shader inventories identical**
 
 Add every new `.comp.spv` to `VK_SPV` and explicit `.glsl` prerequisites for shaders including `gpu_mesh_common.glsl`. CMake discovers the stages and must continue rejecting inventory drift.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 Run the build and the `gpu-mesher` smoke mode again. Expected: scan/bin checks print `ALL PASS`, `validation errors: 0`, and repeat bin readbacks are byte-identical.
 
-- [ ] **Step 7: Commit Task 2**
+- [x] **Step 7: Commit Task 2**
 
 ```powershell
 git add MatterEngine3/src/render/gpu_meshing MatterEngine3/shaders_vk/gpu_mesh_common.glsl MatterEngine3/shaders_vk/gpu_mesh_bin_count.comp MatterEngine3/shaders_vk/gpu_mesh_bin_scatter.comp MatterEngine3/shaders_vk/gpu_mesh_bin_sort.comp MatterEngine3/shaders_vk/gpu_mesh_scan_blocks.comp MatterEngine3/shaders_vk/gpu_mesh_scan_add.comp MatterEngine3/tests/gpu_visual_mesher_vk_tests.h MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp MatterEngine3/tests/vulkan_smoke_tests.cpp cmake/manifests/engine-viewer.sources cmake/MatterViewer.cmake MatterEngine3/Makefile

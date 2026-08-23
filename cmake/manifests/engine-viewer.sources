@@ -2,6 +2,7 @@
 MatterEngine3/src/render/vk_context.cpp|all
 MatterEngine3/src/render/vk_resources.cpp|all
 MatterEngine3/src/render/vk_pipeline.cpp|all
+MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp|all
 MatterEngine3/src/render/vk_scene_renderer.cpp|all
 MatterEngine3/src/render/vk_volumetrics.cpp|all
 MatterEngine3/src/render/vk_emitter_gather.cpp|all

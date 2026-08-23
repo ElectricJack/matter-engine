@@ -1,0 +1,28 @@
+#version 450
+
+#include "gpu_mesh_common.glsl"
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer ParamsBuffer {
+    GpuMeshBinParams params;
+};
+layout(std430, binding = 1) readonly buffer ParticleBuffer {
+    GpuMeshParticle particles[];
+};
+layout(std430, binding = 2) buffer CountBuffer {
+    uint counts[];
+};
+
+void main() {
+    const uint particleId = gl_GlobalInvocationID.x;
+    if (particleId >= params.counts.x) return;
+    const vec3 relative =
+        (particles[particleId].positionM - params.binOriginAndSize.xyz) /
+        params.binOriginAndSize.w;
+    const ivec3 coordinate = ivec3(floor(relative));
+    const ivec3 dimensions = ivec3(params.binDimsAndCount.xyz);
+    if (any(lessThan(coordinate, ivec3(0))) ||
+        any(greaterThanEqual(coordinate, dimensions))) return;
+    atomicAdd(counts[gpuMeshLinearBin(uvec3(coordinate),
+                                      params.binDimsAndCount.xyz)], 1u);
+}
