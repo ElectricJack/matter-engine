@@ -52,8 +52,18 @@ if ($Mode -eq 'Generate') {
         $env:PM_CUDA_PATH = ([string]$shortCuda[0]).Trim()
         Push-Location $dependency.SdkRoot
         try {
-            $output = @(& (Join-Path $dependency.SdkRoot 'generate_projects.bat') $dependency.WindowsPreset 2>&1)
-            if ($LASTEXITCODE -ne 0) {
+            # The upstream generator writes informational CMake output to
+            # stderr. Capture it without allowing Windows PowerShell's Stop
+            # preference to turn a successful native process into an error.
+            $savedGeneratorErrorAction = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $output = @(& (Join-Path $dependency.SdkRoot 'generate_projects.bat') $dependency.WindowsPreset 2>&1)
+                $generatorExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $savedGeneratorErrorAction
+            }
+            if ($generatorExitCode -ne 0) {
                 throw "PhysX project generation failed:`n$($output -join "`n")"
             }
         } finally {

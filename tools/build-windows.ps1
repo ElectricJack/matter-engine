@@ -3,6 +3,9 @@ param(
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release')]
     [string]$Config = 'RelWithDebInfo',
     [string]$Target,
+    [switch]$EnablePhysx,
+    [string]$PhysxRoot = $env:MATTER_PHYSX_ROOT,
+    [string]$CudaRoot = $env:CUDA_PATH_V12_8,
     [switch]$PreflightOnly
 )
 
@@ -21,6 +24,19 @@ if ($PreflightOnly) {
 $preset = "windows-msvc-$($Config.ToLowerInvariant())"
 $developerEnvironment = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} -vcvars_ver={2}' -f $toolchain.VsDevCmd, $toolchain.WindowsSdkVersion, $toolchain.MsvcToolsVersion
 $configure = '{0} && "{1}" --preset "{2}" -DCMAKE_MAKE_PROGRAM="{3}" -DMATTER_PYTHON_EXECUTABLE:FILEPATH="{4}"' -f $developerEnvironment, $toolchain.CMake, $preset, $toolchain.Ninja, $toolchain.Python
+if ($EnablePhysx) {
+    if (-not $PhysxRoot) {
+        throw '-EnablePhysx requires -PhysxRoot or MATTER_PHYSX_ROOT.'
+    }
+    if (-not $CudaRoot) {
+        throw '-EnablePhysx requires -CudaRoot or CUDA_PATH_V12_8.'
+    }
+    $configure += ' -DMATTER_ENABLE_PHYSX=ON -DMATTER_PHYSX_ROOT:PATH="{0}" -DMATTER_CUDA_ROOT:PATH="{1}"' -f $PhysxRoot, $CudaRoot
+} else {
+    # Always reset the shared preset build tree so an opt-in build cannot make
+    # a later ordinary editor build retain PhysX from the CMake cache.
+    $configure += ' -DMATTER_ENABLE_PHYSX=OFF'
+}
 & $env:ComSpec /d /s /c $configure
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

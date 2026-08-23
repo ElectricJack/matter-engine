@@ -295,6 +295,25 @@ if(BUILD_TESTING)
         MatterEngine3/tests/hydrology_artifact_tests.cpp)
     matter_add_engine_cpu_test(physx_adapter_contract_tests
         MatterEngine3/tests/physx_adapter_contract_tests.cpp)
+    if(MATTER_ENABLE_PHYSX)
+        add_executable(physx_fluid_integration_tests
+            MatterEngine3/tests/physx_fluid_integration_tests.cpp)
+        matter_engine_include_directories(
+            physx_fluid_integration_tests PRIVATE)
+        target_include_directories(physx_fluid_integration_tests PRIVATE
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+        target_link_libraries(physx_fluid_integration_tests PRIVATE
+            matter_engine_headless
+            matter_physx_adapter)
+        matter_apply_project_defaults(physx_fluid_integration_tests)
+        matter_apply_test_assertion_policy(physx_fluid_integration_tests)
+        add_test(NAME physx_fluid_integration_tests
+            COMMAND physx_fluid_integration_tests)
+        set_tests_properties(physx_fluid_integration_tests PROPERTIES
+            LABELS "gpu;physx"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+        matter_stage_physx_runtime(physx_fluid_integration_tests)
+    endif()
     matter_add_engine_cpu_test(gpu_water_render_tests
         MatterEngine3/tests/gpu_water_render_tests.cpp
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp)

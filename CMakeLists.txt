@@ -105,6 +105,7 @@ matter_add_vulkan_shader_pipeline(
         "raster_skin.vert|raster.vert|MATTER_SKINNED_VERTEX_INPUT"
 )
 
+include(cmake/MatterPhysx.cmake)
 include(cmake/MatterEngine.cmake)
 include(cmake/MatterViewer.cmake)
 include(cmake/MatterEditor.cmake)

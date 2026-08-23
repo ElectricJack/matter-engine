@@ -196,11 +196,11 @@ git commit -m "feat: define PhysX fluid bake contracts"
 - Consumes: the Task 1 validated external checkout and Task 2 `IFluidBakeBackend` contract.
 - Produces: `PhysxRuntime` with a private implementation, lazy PhysX/CUDA creation, exact header/runtime version checks, CUDA device identity, error-callback translation, and idempotent destruction.
 
-- [ ] **Step 1: Write a GPU-tagged failing runtime probe test**
+- [x] **Step 1: Write a GPU-tagged failing runtime probe test**
 
 The test is registered only when `MATTER_ENABLE_PHYSX=ON`. It asserts exact SDK version `5.6.1`, a valid CUDA context, RTX device identity, create/destroy loops, no exception escape, and stable `BackendUnavailable` when the GPU module path is deliberately removed.
 
-- [ ] **Step 2: Verify RED with the opt-in configuration**
+- [x] **Step 2: Verify RED with the opt-in configuration**
 
 ```powershell
 $env:MATTER_PHYSX_ROOT='D:\PhysX-5.6.1'
@@ -209,9 +209,9 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target physx_fluid_integration_t
 
 Expected: configuration or link failure because `MatterPhysx.cmake` and the adapter do not exist.
 
-- [ ] **Step 3: Add the opt-in external build and private adapter**
+- [x] **Step 3: Add the opt-in external build and private adapter**
 
-`MatterPhysx.cmake` requires the lock validator before enabling targets, builds official static core/foundation/common/cooking/extensions libraries into `MatterEditor/build/windows-msvc/physx`, keeps `PhysXGpu_64.dll` as the staged GPU runtime, and exposes one internal target `matter_physx_adapter`. No PhysX include directory is `PUBLIC` or `INTERFACE` on an engine target.
+`MatterPhysx.cmake` requires the lock validator before enabling targets, builds official static core/foundation/common/cooking/extensions libraries into the active CMake build tree's `physx/` directory, keeps `PhysXGpu_64.dll` as the staged GPU runtime, and exposes one internal target `matter_physx_adapter`. No PhysX include directory is `PUBLIC` or `INTERFACE` on an engine target.
 
 Use release-aware ownership:
 
@@ -222,18 +222,30 @@ template <class T> struct PxRelease {
 template <class T> using PxOwner = std::unique_ptr<T, PxRelease<T>>;
 ```
 
-- [ ] **Step 4: Implement lazy probe/lifetime/error translation**
+- [x] **Step 4: Implement lazy probe/lifetime/error translation**
 
-Create foundation, physics, CUDA context manager, cooking, and scene only from `run`; `probe` may load version/device metadata but must not allocate the full particle buffers. Convert PhysX callback severities and caught exceptions to `FluidBakeError`; never throw across `IFluidBakeBackend`.
+`probe` creates only the lightweight foundation, physics, and CUDA context
+needed to validate the actual GPU runtime; cooking, scene, and particle buffers
+remain per-bake `run` resources. Convert PhysX callback severities and caught
+exceptions to stable Matter failures; never throw across `IFluidBakeBackend`.
 
-- [ ] **Step 5: Pass focused GPU and default-off build gates**
+- [x] **Step 5: Pass focused GPU and default-off build gates**
 
 Run the opt-in probe, then configure/build `matter_editor` without `MATTER_ENABLE_PHYSX` or `MATTER_PHYSX_ROOT` and confirm the default graph is unchanged.
 
-- [ ] **Step 6: Commit**
+Result (2026-08-23): Matter builds the official static core/foundation/common/
+cooking/extensions closure under the CMake build tree and stages only the
+official `PhysXGpu_64.dll`. The native probe passed on the RTX 4090 through
+three create/destroy cycles, success-then-missing GPU-path rejection, injected
+exception containment, and exact 5.6.1 identity checks. `dumpbin /dependents`
+reported only `KERNEL32.dll` for the probe executable. The default editor,
+Windows/WSL wrapper contracts, and WSL GCC adapter contract passed with the
+PhysX target absent from the default build graph.
+
+- [x] **Step 6: Commit**
 
 ```powershell
-git add integrations/physx_adapter cmake/MatterPhysx.cmake CMakeLists.txt cmake/MatterEngine.cmake tools/build-windows.ps1 MatterEngine3/tests/physx_fluid_integration_tests.cpp
+git add integrations/physx_adapter cmake/MatterPhysx.cmake CMakeLists.txt cmake/MatterEngine.cmake tools/build-windows.ps1 tools/physx/build-physx-control.ps1 tools/physx/configure-physx-static.ps1 MatterEngine3/src/hydrology/physx_runtime.h MatterEngine3/tests/physx_fluid_integration_tests.cpp docs/superpowers/plans/2026-08-23-physx-fluid-bake-integration.md
 git commit -m "feat: embed the PhysX GPU runtime"
 ```
 
