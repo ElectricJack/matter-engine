@@ -260,6 +260,11 @@ exit 0
     $forbidden = New-ValidFixture 'forbidden-gnu-import'
     Assert-Rejected 'forbidden GNU import' $forbidden 'libstdc\+\+|forbidden' $fakeDumpbin @('KERNEL32.dll', 'libstdc++-6.dll')
 
+    $dynamicMsvcCrt = New-ValidFixture 'dynamic-msvc-crt-import'
+    Assert-Rejected 'dynamic MSVC CRT import' $dynamicMsvcCrt `
+        'VCRUNTIME140|MSVCP140|dynamic.*CRT|static.*CRT' $fakeDumpbin `
+        @('KERNEL32.dll', 'fixture_runtime.dll', 'VCRUNTIME140_1.dll', 'MSVCP140.dll')
+
     $missingNotice = New-ValidFixture 'missing-notice'
     Remove-Item -LiteralPath (Join-Path $missingNotice 'THIRD_PARTY_NOTICES.txt')
     Write-Manifest $missingNotice
@@ -343,7 +348,7 @@ exit 0
     $validResult = Invoke-Checker $valid '' $null
     Assert-True ($validResult.ExitCode -eq 0) "valid package failed:`n$($validResult.Output)"
     Assert-True ($validResult.Output -match 'MSVC package: PASS') 'valid package omitted PASS summary'
-    Write-Output 'Windows MSVC package fixtures: PASS (18/18; real recursive PE closure and standalone dumpbin discovery)'
+    Write-Output 'Windows MSVC package fixtures: PASS (19/19; real recursive PE closure and standalone dumpbin discovery)'
 } finally {
     if ($env:MATTER_KEEP_PACKAGE_TESTS) {
         Write-Output "MATTER_PACKAGE_TEST_SCRATCH=$scratch"

@@ -141,14 +141,52 @@ def _is_reparse_point(path: Path) -> bool:
     return path.is_symlink() or bool(attributes & reparse)
 
 
+def _absolute_unresolved(path: Path, label: str) -> Path:
+    """Make a path absolute without resolving away symlink/reparse identity."""
+    if ".." in path.parts:
+        raise ValueError(f"{label} contains an ambiguous parent component: {path}")
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
+def _assert_no_reparse_components(path: Path, label: str) -> Path:
+    """Fail closed if any existing component of the original path is an alias."""
+    path = _absolute_unresolved(path, label)
+    anchor = Path(path.anchor)
+    current = anchor
+    parts = path.parts[1:] if path.anchor else path.parts
+    for part in parts:
+        current = current / part
+        try:
+            current.lstat()
+        except FileNotFoundError:
+            # Descendants cannot exist once an original-path component is
+            # missing. The caller separately enforces required existence.
+            break
+        except OSError as error:
+            raise ValueError(
+                f"cannot inspect {label} path component {current}: {error}"
+            ) from error
+        if _is_reparse_point(current):
+            raise ValueError(
+                f"{label} path contains a symlink or reparse point: {current}"
+            )
+    return path
+
+
 def _assert_direct_child(
     root: Path, candidate: Path, label: str, *, must_exist: bool
 ) -> tuple[Path, Path]:
-    root = root.resolve(strict=True)
-    if not root.is_dir() or _is_reparse_point(root):
-        raise ValueError(f"{label} root is not a physical directory: {root}")
+    original_root = _assert_no_reparse_components(root, f"{label} root")
+    try:
+        root = original_root.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"{label} root is missing or unresolved: {original_root}") from error
+    if not root.is_dir():
+        raise ValueError(f"{label} root is not a physical directory: {original_root}")
 
-    candidate = candidate.absolute()
+    candidate = _assert_no_reparse_components(candidate, label)
     try:
         parent = candidate.parent.resolve(strict=True)
     except OSError as error:
@@ -194,16 +232,22 @@ def reset_distribution_directory(
     destination: Path,
 ) -> Path:
     """Validate before mutation, revalidate at deletion, then recreate destination."""
+    validate_staging_paths(
+        projects_root, project_source, dist_root, destination
+    )
+    # Always repeat the original, unresolved trust-root checks immediately at
+    # the mutation boundary. Do not feed a previously resolved destination
+    # back into validation: that would erase the alias evidence being checked.
     _, dist = validate_staging_paths(
         projects_root, project_source, dist_root, destination
     )
     if dist.exists():
-        # Defense in depth: do the resolved direct-child assertions again at the
-        # destructive boundary, after all earlier validation and existence checks.
-        _, dist = validate_staging_paths(
-            projects_root, project_source, dist_root, destination
-        )
         shutil.rmtree(dist)
+    # A root can be replaced between deletion and recreation. Recheck the
+    # unresolved paths once more before mkdir/copy can write package content.
+    _, dist = validate_staging_paths(
+        projects_root, project_source, dist_root, destination
+    )
     dist.mkdir()
     return dist
 
@@ -330,22 +374,39 @@ def main() -> int:
     parser.add_argument("--dependency-library", action="append", default=[])
     args = parser.parse_args()
 
-    root = args.root.resolve()
+    try:
+        original_root = _assert_no_reparse_components(args.root, "repository root")
+        root = original_root.resolve(strict=True)
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"unsafe repository root: {error}") from error
     try:
         project_name = validate_project_name(args.project)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     editor = args.editor.resolve()
     pdb = args.pdb.resolve()
-    projects_root = (root / "projects").resolve()
-    project = projects_root / project_name
-    dist_root = (root / "MatterEditor" / "build" / "dist").resolve()
-    requested_dist = args.dist.absolute()
+    # Keep the caller's original absolute spelling through every trust-root
+    # check. Resolving here would erase a repository/projects/build/dist alias.
+    projects_root = original_root / "projects"
+    project_source = projects_root / project_name
+    dist_root = original_root / "MatterEditor" / "build" / "dist"
+    try:
+        requested_dist = _absolute_unresolved(
+            args.dist, "distribution destination"
+        )
+    except ValueError as error:
+        raise SystemExit(f"unsafe package staging path: {error}") from error
     if requested_dist.name != project_name:
         raise SystemExit(
             f"distribution destination name must match project {project_name!r}: {requested_dist}"
         )
     engine_shared = root / "MatterEngine3" / "shared-lib"
+    try:
+        project, _ = validate_staging_paths(
+            projects_root, project_source, dist_root, requested_dist
+        )
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"unsafe package staging path: {error}") from error
     required = [(editor, "editor executable"), (project, "project"), (engine_shared, "engine shared library")]
     if args.config == "RelWithDebInfo":
         required.append((pdb, "RelWithDebInfo PDB"))
@@ -363,14 +424,16 @@ def main() -> int:
     diff_sha256 = hashlib.sha256(diff).hexdigest()
 
     try:
-        project, dist = validate_staging_paths(
-            projects_root, project, dist_root, requested_dist
-        )
         dist = reset_distribution_directory(
             projects_root=projects_root,
-            project_source=project,
+            project_source=project_source,
             dist_root=dist_root,
-            destination=dist,
+            destination=requested_dist,
+        )
+        # Repeat the unresolved component checks immediately before copying
+        # package content; never trust the previously resolved return values.
+        project, dist = validate_staging_paths(
+            projects_root, project_source, dist_root, requested_dist
         )
     except (OSError, ValueError) as error:
         raise SystemExit(f"unsafe package staging path: {error}") from error

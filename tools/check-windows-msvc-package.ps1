@@ -346,6 +346,7 @@ $stagedDlls = @(Get-ChildItem -LiteralPath $dist -Recurse -File -Filter '*.dll' 
 Assert-ExactStrings 'runtime_dlls/staged DLL closure' @($stagedDlls | Sort-Object) @($runtimeDlls | Sort-Object)
 
 $forbiddenImports = '^(libstdc\+\+|libgcc|libwinpthread|opengl32).*\.dll$'
+$dynamicMsvcCrtImports = '^(vcruntime|msvcp|concrt|msvcr|ucrtbase|vccorlib)[a-z0-9_.-]*\.dll$'
 $systemDirectory = Join-Path $env:SystemRoot 'System32'
 $pending = New-Object 'System.Collections.Generic.Queue[string]'
 $pending.Enqueue($editor)
@@ -360,6 +361,9 @@ while ($pending.Count -gt 0) {
         [void]$allImports.Add($import)
         if ($import -match $forbiddenImports) {
             throw "forbidden GNU/OpenGL import '$import' in $([IO.Path]::GetFileName($binary))"
+        }
+        if ($import -match $dynamicMsvcCrtImports) {
+            throw "dynamic MSVC CRT import '$import' in $([IO.Path]::GetFileName($binary)) contradicts the static CRT package policy"
         }
         $staged = Join-Path $dist $import
         if (Test-Path -LiteralPath $staged -PathType Leaf) {
