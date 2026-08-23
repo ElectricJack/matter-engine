@@ -225,6 +225,14 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
 
+    add_test(NAME vulkan_scene_oracle_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/MatterEditor/tools/tests/vulkan_scene_oracle_tests.ps1"
+            -RepositoryRoot "${CMAKE_SOURCE_DIR}"
+    )
+    set_tests_properties(vulkan_scene_oracle_tests PROPERTIES
+        LABELS "vulkan;viewer")
+
     set(matter_vt_compositor_test_sources
         MatterEngine3/src/render/vt_compositor.cpp
         MatterEngine3/src/terrain_field.cpp

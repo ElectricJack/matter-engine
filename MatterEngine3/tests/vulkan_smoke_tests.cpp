@@ -10509,6 +10509,9 @@ void run_display_transform_tests(matter::VulkanDevice& vulkan) {
 void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize Vulkan frame-record renderer"
+                        : error.c_str());
     const matter::Mat4f identity = identity_matrix();
     const viewer::VkScenePart first = known_raster_triangle(972);
     const viewer::VkScenePart second = known_raster_triangle(973);
@@ -10521,9 +10524,25 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "stage two active Vulkan raster parts" : error.c_str());
 
     const FixedCullScene scene = make_fixed_cull_scene();
+    matter::VulkanFrame warmup{};
+    CHECK(vulkan.begin_frame(warmup, error),
+          error.empty() ? "begin complete Vulkan warmup frame"
+                        : error.c_str());
+    if (warmup.command_buffer == VK_NULL_HANDLE) return;
+    CHECK(renderer.prepare_frame(warmup, scene.frame, scene.eye, 1.0f, error) &&
+              renderer.record_cull_and_render(
+                  warmup, scene.frame, scene.eye, 1.0f, error) &&
+              renderer.record_composite_to_swapchain(warmup, error) &&
+              vulkan.end_frame(warmup, error),
+          error.empty()
+              ? "warm a complete Vulkan frame before steady immediate-submit baseline"
+              : error.c_str());
+    renderer.finish_ray_tracing_frame(warmup.serial, true);
+    vulkan.wait_idle();
+
     matter::VulkanFrame frame{};
     CHECK(vulkan.begin_frame(frame, error),
-          error.empty() ? "begin asynchronous Vulkan record frame"
+          error.empty() ? "begin complete steady Vulkan record frame"
                         : error.c_str());
     if (frame.command_buffer == VK_NULL_HANDLE) return;
     bool dlss_output_evaluated = false;
@@ -10582,13 +10601,22 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     dlss_temporal.reset = true;
     dlss_temporal.attempt_token = 100;
     renderer.set_temporal_frame(dlss_temporal);
-    CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error),
-          error.empty() ? "prepare asynchronous Vulkan record frame"
-                        : error.c_str());
     const uint64_t immediate_before = matter::immediate_submit_count();
+    // Deliberate test-only mutation hook: CI/review can prove the guard is
+    // capable of going RED without changing production renderer code.
+    if (std::getenv("MATTER_VK_TEST_MUTATE_IMMEDIATE_SUBMIT")) {
+        std::string mutation_error;
+        (void)matter::submit_immediate(vulkan, nullptr, nullptr,
+                                       mutation_error,
+                                       matter::ImmediateSubmitPhase::compute_dispatch);
+    }
+    CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error),
+          error.empty() ? "prepare complete steady Vulkan record frame"
+                        : error.c_str());
     CHECK(renderer.record_cull_and_render(frame, scene.frame, scene.eye, 1.0f,
                                           error),
-          error.empty() ? "record Vulkan cull and raster" : error.c_str());
+          error.empty() ? "record complete steady Vulkan cull and raster"
+                        : error.c_str());
     CHECK(renderer.record_composite_to_swapchain(frame, error) &&
               dlss_output_evaluated && dlss_input_is_linear_hdr &&
               renderer.active_dlss_mode() == matter::DlssMode::Quality,
@@ -10613,7 +10641,7 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     CHECK(vulkan.readback_swapchain_rgba8(frame, dlss_composite_rgba, error),
           error.empty() ? "queue fake DLSS output readback" : error.c_str());
     CHECK(matter::immediate_submit_count() == immediate_before,
-          "production Vulkan record path performs no immediate submissions");
+          "complete steady Vulkan frame performs no immediate submissions");
     // Adjacent parts now COALESCE into one multi-draw (record_raster), so the
     // recorded count is no longer one-per-part. The property this test has
     // always been about survives and is asserted directly: commands are grouped

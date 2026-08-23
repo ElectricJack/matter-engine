@@ -10,6 +10,7 @@ if (-not $OutputDir) { $OutputDir = Join-Path $root '.codex-tmp\vulkan-viewer-sm
 $ViewerPath = (Resolve-Path $ViewerPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Add-Type -AssemblyName System.Drawing
+. (Join-Path $PSScriptRoot 'vulkan_scene_oracle.ps1')
 
 function Assert-Png([string]$Path, [int]$ExpectedWidth, [int]$ExpectedHeight) {
     if (-not (Test-Path $Path)) { throw "screenshot was not written: $Path" }
@@ -295,6 +296,7 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
         }
     }
     Assert-UiOverlay $png (-not $HideUi)
+    Assert-VulkanSceneFrame -Path $png
     Write-Output "$Name PASS: $Width x $Height, validation errors 0"
 }
 
