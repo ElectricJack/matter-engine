@@ -876,6 +876,13 @@ public:
     void set_test_fluid_renderer_luid(
         const std::array<std::uint8_t, 8>& luid);
 
+    // Parks the bake worker after a fluid candidate has been prepared but
+    // before its generation-guarded publication commit. Test-only.
+    void set_test_fluid_before_publication_hook(std::function<void()> hook);
+    // Parks the worker after the commit-or-skip decision, before it can begin
+    // a queued replacement generation. Test-only.
+    void set_test_fluid_after_publication_hook(std::function<void()> hook);
+
     // Observes the all-or-nothing accepted-product boundary after BakeFinished.
     bool has_accepted_fluid_artifact_for_test() const;
 

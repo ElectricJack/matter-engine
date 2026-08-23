@@ -11,6 +11,7 @@
 #include <chrono>
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -948,8 +949,8 @@ struct LifecycleBackendState {
     std::atomic<bool> first_run_entered{false};
     bool available = true;
     bool block_first_until_cancelled = false;
-    std::array<std::uint8_t, 8> luid{};
-    bool luid_valid = false;
+    std::array<std::uint8_t, 8> luid{1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    bool luid_valid = true;
     std::mutex thread_mutex;
     std::thread::id run_thread{};
 };
@@ -1008,8 +1009,10 @@ struct WorldSessionFluidOptions {
     bool fluid_enabled = true;
     bool visual_succeeds = true;
     bool supersede_first_run = false;
-    bool renderer_luid_valid = false;
-    std::array<std::uint8_t, 8> renderer_luid{};
+    bool supersede_at_publication_barrier = false;
+    bool renderer_luid_valid = true;
+    std::array<std::uint8_t, 8> renderer_luid{
+        1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
 };
 
 struct WorldSessionFluidCase {
@@ -1023,7 +1026,12 @@ struct WorldSessionFluidCase {
     int backend_release_calls = 0;
     int visual_calls = 0;
     int hydrology_progress_events = 0;
+    int hydrology_terminal_events = 0;
+    int stale_terminal_events_before_replacement = 0;
+    bool stale_artifact_before_replacement = false;
+    bool stale_ready_status_before_replacement = false;
     int hydrology_error_events = 0;
+    int bake_finished_events = 0;
     bool backend_released_before_visual = false;
     std::thread::id caller_thread{};
     std::thread::id backend_thread{};
@@ -1087,8 +1095,80 @@ WorldSessionFluidCase run_world_session_fluid_case(
             });
         if (options.renderer_luid_valid)
             session->set_test_fluid_renderer_luid(options.renderer_luid);
+        std::mutex publication_mutex;
+        std::condition_variable publication_cv;
+        int publication_hook_calls = 0;
+        int after_publication_hook_calls = 0;
+        bool release_first_publication = false;
+        bool release_first_after_publication = false;
+        bool release_second_publication = false;
+        if (options.supersede_at_publication_barrier) {
+            session->set_test_fluid_before_publication_hook([&] {
+                std::unique_lock<std::mutex> lock(publication_mutex);
+                const int invocation = ++publication_hook_calls;
+                publication_cv.notify_all();
+                publication_cv.wait(lock, [&] {
+                    return invocation == 1 ? release_first_publication
+                                           : release_second_publication;
+                });
+            });
+            session->set_test_fluid_after_publication_hook([&] {
+                std::unique_lock<std::mutex> lock(publication_mutex);
+                const int invocation = ++after_publication_hook_calls;
+                publication_cv.notify_all();
+                if (invocation == 1) {
+                    publication_cv.wait(lock, [&] {
+                        return release_first_after_publication;
+                    });
+                }
+            });
+        }
         CHECK(backend_state->factory_calls.load() == 0,
               "open_world keeps the authored fluid backend lazy before the bake");
+        auto record_event = [&](const matter::Event& event) {
+            if (event.type == matter::EventType::BakePartDone &&
+                event.phase == "hydrology") {
+                ++result.hydrology_progress_events;
+                if (event.done == 1 && event.total == 1)
+                    ++result.hydrology_terminal_events;
+            }
+            if (event.type == matter::EventType::BakeError &&
+                event.phase == "hydrology")
+                ++result.hydrology_error_events;
+            if (event.type == matter::EventType::BakeFinished)
+                ++result.bake_finished_events;
+        };
+        auto pump_until_publication_hook = [&](int expected_calls) {
+            const auto hook_deadline = std::chrono::steady_clock::now() +
+                                       std::chrono::seconds(30);
+            while (std::chrono::steady_clock::now() < hook_deadline) {
+                session->pump_gpu_jobs(8.0f);
+                matter::Event event{};
+                while (session->poll_event(event)) record_event(event);
+                {
+                    std::lock_guard<std::mutex> lock(publication_mutex);
+                    if (publication_hook_calls >= expected_calls) return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return false;
+        };
+        auto pump_until_after_publication_hook = [&](int expected_calls) {
+            const auto hook_deadline = std::chrono::steady_clock::now() +
+                                       std::chrono::seconds(30);
+            while (std::chrono::steady_clock::now() < hook_deadline) {
+                session->pump_gpu_jobs(8.0f);
+                matter::Event event{};
+                while (session->poll_event(event)) record_event(event);
+                {
+                    std::lock_guard<std::mutex> lock(publication_mutex);
+                    if (after_publication_hook_calls >= expected_calls)
+                        return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return false;
+        };
         session->request_bake();
         if (options.supersede_first_run) {
             const auto entered_deadline = std::chrono::steady_clock::now() +
@@ -1102,6 +1182,38 @@ WorldSessionFluidCase run_world_session_fluid_case(
                   "the supersession fixture reached the first solver run");
             session->reload();
         }
+        if (options.supersede_at_publication_barrier) {
+            CHECK(pump_until_publication_hook(1),
+                  "the publication-race fixture reached the first generation commit barrier");
+            session->reload();
+            {
+                std::lock_guard<std::mutex> lock(publication_mutex);
+                release_first_publication = true;
+            }
+            publication_cv.notify_all();
+            CHECK(pump_until_after_publication_hook(1),
+                  "the publication-race fixture reached the first generation post-commit barrier");
+            result.stale_artifact_before_replacement =
+                session->has_accepted_fluid_artifact_for_test();
+            result.stale_ready_status_before_replacement =
+                session->hydrology_status().state ==
+                matter::HydrologyState::Ready;
+            result.stale_terminal_events_before_replacement =
+                result.hydrology_terminal_events;
+            {
+                std::lock_guard<std::mutex> lock(publication_mutex);
+                release_first_after_publication = true;
+            }
+            publication_cv.notify_all();
+            CHECK(pump_until_publication_hook(2),
+                  "the publication-race fixture reached the replacement commit barrier");
+            {
+                std::lock_guard<std::mutex> lock(publication_mutex);
+                release_second_publication = true;
+            }
+            publication_cv.notify_all();
+        }
+        const int finished_target = result.bake_finished_events + 1;
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::seconds(30);
         while (std::chrono::steady_clock::now() < deadline) {
@@ -1110,13 +1222,8 @@ WorldSessionFluidCase run_world_session_fluid_case(
             bool observed_event = false;
             while (session->poll_event(event)) {
                 observed_event = true;
-                if (event.type == matter::EventType::BakePartDone &&
-                    event.phase == "hydrology")
-                    ++result.hydrology_progress_events;
-                if (event.type == matter::EventType::BakeError &&
-                    event.phase == "hydrology")
-                    ++result.hydrology_error_events;
-                if (event.type == matter::EventType::BakeFinished) {
+                record_event(event);
+                if (result.bake_finished_events >= finished_target) {
                     result.finished = true;
                     break;
                 }
@@ -1262,6 +1369,62 @@ void test_world_session_fluid_device_mismatch_is_a_hard_dry_error() {
     std::filesystem::remove_all(root, remove_error);
 }
 
+void test_world_session_fluid_missing_device_identity_is_a_hard_dry_error() {
+    const auto missing_renderer_root =
+        std::filesystem::temp_directory_path() /
+        "matter-live-fluid-missing-renderer-identity-contract";
+    std::error_code remove_error;
+    std::filesystem::remove_all(missing_renderer_root, remove_error);
+    auto missing_renderer_state = std::make_shared<LifecycleBackendState>();
+    missing_renderer_state->luid.fill(1u);
+    missing_renderer_state->luid_valid = true;
+    WorldSessionFluidOptions missing_renderer_options{};
+    missing_renderer_options.renderer_luid_valid = false;
+    const WorldSessionFluidCase missing_renderer = run_world_session_fluid_case(
+        missing_renderer_root, missing_renderer_options, missing_renderer_state);
+
+    CHECK(missing_renderer.opened && missing_renderer.finished &&
+              missing_renderer.dry_instance_count > 0 &&
+              !missing_renderer.accepted &&
+              missing_renderer.backend_factory_calls == 0 &&
+              missing_renderer.backend_probe_calls == 0 &&
+              missing_renderer.backend_run_calls == 0 &&
+              missing_renderer.backend_release_calls == 0 &&
+              missing_renderer.visual_calls == 0 &&
+              missing_renderer.hydrology_error_events == 1 &&
+              missing_renderer.status.state == matter::HydrologyState::Invalid &&
+              missing_renderer.status.failure_reason.find("Vulkan render adapter") !=
+                  std::string::npos,
+          "a missing Vulkan adapter identity rejects a cache miss before backend allocation while dry terrain still publishes");
+    std::filesystem::remove_all(missing_renderer_root, remove_error);
+
+    const auto missing_cuda_root =
+        std::filesystem::temp_directory_path() /
+        "matter-live-fluid-missing-cuda-identity-contract";
+    std::filesystem::remove_all(missing_cuda_root, remove_error);
+    auto missing_cuda_state = std::make_shared<LifecycleBackendState>();
+    missing_cuda_state->luid_valid = false;
+    WorldSessionFluidOptions matching_renderer{};
+    matching_renderer.renderer_luid_valid = true;
+    matching_renderer.renderer_luid.fill(1u);
+    const WorldSessionFluidCase missing_cuda = run_world_session_fluid_case(
+        missing_cuda_root, matching_renderer, missing_cuda_state);
+
+    CHECK(missing_cuda.opened && missing_cuda.finished &&
+              missing_cuda.dry_instance_count > 0 && !missing_cuda.accepted &&
+              missing_cuda.backend_factory_calls == 1 &&
+              missing_cuda.backend_probe_calls == 1 &&
+              missing_cuda.backend_run_calls == 0 &&
+              missing_cuda.backend_release_calls == 1 &&
+              missing_cuda.visual_calls == 0 &&
+              missing_cuda.hydrology_error_events == 1 &&
+              missing_cuda.status.state == matter::HydrologyState::Invalid &&
+              missing_cuda.status.failure_reason.find("CUDA device identity") !=
+                  std::string::npos,
+          "a missing CUDA adapter identity rejects a cache miss before solver or Vulkan work while dry terrain still publishes");
+    std::filesystem::remove_all(missing_cuda_root, remove_error);
+}
+
 void test_world_session_fluid_backend_failure_preserves_dry_world() {
     const auto root = std::filesystem::temp_directory_path() /
                       "matter-live-fluid-backend-failure-contract";
@@ -1307,6 +1470,35 @@ void test_world_session_fluid_supersession_cannot_publish_stale_products() {
           "a superseded generation cannot mesh, save, or publish before the replacement reaches Ready");
     std::filesystem::remove_all(root, remove_error);
 }
+
+void test_world_session_fluid_supersession_closes_final_commit_race() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-final-commit-race-contract";
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
+    auto state = std::make_shared<LifecycleBackendState>();
+    WorldSessionFluidOptions options{};
+    options.supersede_at_publication_barrier = true;
+    const WorldSessionFluidCase superseded = run_world_session_fluid_case(
+        root, options, state);
+
+    CHECK(superseded.opened && superseded.finished &&
+              superseded.dry_instance_count > 0 && superseded.accepted &&
+              superseded.backend_factory_calls == 1 &&
+              superseded.backend_probe_calls == 2 &&
+              superseded.backend_run_calls == 1 &&
+              superseded.backend_release_calls == 1 &&
+              superseded.visual_calls == 1 &&
+              superseded.stale_terminal_events_before_replacement == 0 &&
+              !superseded.stale_artifact_before_replacement &&
+              !superseded.stale_ready_status_before_replacement &&
+              superseded.hydrology_terminal_events == 1 &&
+              superseded.hydrology_error_events == 0 &&
+              superseded.status.state == matter::HydrologyState::Ready &&
+              superseded.status.cache_hit,
+          "supersession at the final commit boundary prevents stale Ready artifact/status/event publication");
+    std::filesystem::remove_all(root, remove_error);
+}
 #endif
 
 }  // namespace
@@ -1332,8 +1524,10 @@ int main() {
     test_world_session_runs_authored_fluid_bake_before_publication();
     test_world_session_fluid_cache_hit_skips_solver_and_renderer();
     test_world_session_fluid_device_mismatch_is_a_hard_dry_error();
+    test_world_session_fluid_missing_device_identity_is_a_hard_dry_error();
     test_world_session_fluid_backend_failure_preserves_dry_world();
     test_world_session_fluid_supersession_cannot_publish_stale_products();
+    test_world_session_fluid_supersession_closes_final_commit_race();
 #endif
     return check_summary();
 }

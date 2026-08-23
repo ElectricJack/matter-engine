@@ -433,6 +433,11 @@ public:
         return accepted_fluid_artifact_;
     }
 
+    void commit_accepted_fluid_artifact(
+        hydrology::HydrologyArtifact artifact) {
+        accepted_fluid_artifact_ = std::move(artifact);
+    }
+
     bool authored_fluid_requested() const;
 
     // Called from WorldSession's existing bake worker after the authored world
@@ -441,7 +446,8 @@ public:
     // lifecycle. A false return never invalidates the dry world.
     bool run_authored_fluid_bake(const FluidBakeRunContext& context,
                                  matter::HydrologyStatus& status,
-                                 hydrology::FluidBakeError& error);
+                                 hydrology::FluidBakeError& error,
+                                 hydrology::HydrologyArtifact& artifact);
 
     // connect() == install_graph() + compose_world() with unchanged external behavior.
     bool connect(WorldManifest& out, std::string& err) override;

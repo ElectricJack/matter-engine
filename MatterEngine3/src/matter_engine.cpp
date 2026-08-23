@@ -759,8 +759,14 @@ struct WorldSession::Impl {
 
     std::atomic<bool> connected{false};
     std::atomic<bool> accepted_fluid_artifact{false};
+    // Serializes full-request token cancellation with the complete hydrology
+    // commit (provider artifact, status, accepted flag, and terminal event).
+    // Recursive keeps immediate event subscribers free to query/request again.
+    mutable std::recursive_mutex hydrology_generation_mutex;
     mutable std::mutex hydrology_status_mutex;
     matter::HydrologyStatus hydrology_status_copy{};
+    std::function<void()> test_fluid_before_publication_hook;
+    std::function<void()> test_fluid_after_publication_hook;
 
     // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
     // progress is emitted here as typed events (matter/events/*.h). Declared
@@ -1066,6 +1072,7 @@ struct WorldSession::Impl {
     // --- Phase B: async bake worker helpers (defined below) ------------------
     // Start the worker thread if not already running.
     void ensure_worker_started();
+    void enqueue_full_bake(matter_async::CommandKind kind);
     // Worker thread entry point.
     void worker_loop();
     // Existing provider/live-edit polling, called after each valid ECS tick.
@@ -2505,6 +2512,19 @@ void WorldSession::Impl::ensure_worker_started() {
     worker = std::thread([this] { worker_loop(); });
 }
 
+void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        hydrology_generation_mutex);
+    accepted_fluid_artifact.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> status_lock(hydrology_status_mutex);
+        hydrology_status_copy = {};
+    }
+    matter_async::Command command;
+    command.kind = kind;
+    commands.push(std::move(command));
+}
+
 // Lazily spawn the sector-bake executor pool. Worker-thread only, so the
 // members are settled before any dispatch. MATTER_STREAM_WORKERS<=1 keeps the
 // serial path with zero extra threads.
@@ -2844,7 +2864,6 @@ void WorldSession::Impl::worker_loop() {
 void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload) {
     auto& token = cmd.token;
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
-    accepted_fluid_artifact.store(false, std::memory_order_release);
 
     // Bake Lab (task 1.2): fresh trace for this run; make the session collector
     // current on the worker thread so BAKE_SPAN/BAKE_COUNT sites anywhere below
@@ -3281,14 +3300,19 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
 void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
     const std::shared_ptr<matter_async::CancelToken>& token) {
-    accepted_fluid_artifact.store(false, std::memory_order_release);
     if (!provider || !provider->authored_fluid_requested()) {
-        std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        if (token && token->is_cancelled()) return;
+        std::lock_guard<std::mutex> status_lock(hydrology_status_mutex);
         hydrology_status_copy = {};
         return;
     }
 
     {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        if (token && token->is_cancelled()) return;
         std::lock_guard<std::mutex> lock(hydrology_status_mutex);
         hydrology_status_copy = {};
         hydrology_status_copy.state = matter::HydrologyState::Baking;
@@ -3300,6 +3324,8 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
     };
     context.callbacks.progress = [this, token](
         const hydrology::FluidBakeProgress& progress) {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
         if (token && token->is_cancelled()) return;
         {
             std::lock_guard<std::mutex> lock(hydrology_status_mutex);
@@ -3331,37 +3357,51 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
 
     matter::HydrologyStatus result{};
     hydrology::FluidBakeError error{};
+    hydrology::HydrologyArtifact artifact{};
     const bool accepted = provider->run_authored_fluid_bake(
-        context, result, error);
-    const bool stale = token && token->is_cancelled();
-    if (stale) {
-        result.state = matter::HydrologyState::Stale;
-        result.failure_reason = "authored fluid bake generation was superseded";
-    }
+        context, result, error, artifact);
+    std::function<void()> before_publication_hook;
+    std::function<void()> after_publication_hook;
     {
-        std::lock_guard<std::mutex> lock(hydrology_status_mutex);
-        hydrology_status_copy = result;
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        before_publication_hook = test_fluid_before_publication_hook;
+        after_publication_hook = test_fluid_after_publication_hook;
     }
-    accepted_fluid_artifact.store(accepted && !stale,
-                                  std::memory_order_release);
-    if (accepted && !stale) {
-        events::BakePartDone event;
-        event.done = 1;
-        event.total = 1;
-        event.phase = "hydrology";
-        hub_.emit(std::move(event));
-    } else if (!stale && !error.message.empty()) {
-        events::BakeError event;
-        event.code = (error.code == hydrology::FluidBakeCode::ProductFailure ||
-                      error.code == hydrology::FluidBakeCode::DeviceLost)
-            ? BakeErrorCode::GpuError
-            : BakeErrorCode::Internal;
-        event.phase = "hydrology";
-        event.message = error.message;
-        hub_.emit(std::move(event));
-        MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
-                    error.message.c_str());
+    if (before_publication_hook) before_publication_hook();
+    {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        if (!token || !token->is_cancelled()) {
+            if (accepted)
+                provider->commit_accepted_fluid_artifact(std::move(artifact));
+            {
+                std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+                hydrology_status_copy = result;
+            }
+            accepted_fluid_artifact.store(accepted, std::memory_order_release);
+            if (accepted) {
+                events::BakePartDone event;
+                event.done = 1;
+                event.total = 1;
+                event.phase = "hydrology";
+                hub_.emit(std::move(event));
+            } else if (!error.message.empty()) {
+                events::BakeError event;
+                event.code =
+                    (error.code == hydrology::FluidBakeCode::ProductFailure ||
+                     error.code == hydrology::FluidBakeCode::DeviceLost)
+                    ? BakeErrorCode::GpuError
+                    : BakeErrorCode::Internal;
+                event.phase = "hydrology";
+                event.message = error.message;
+                hub_.emit(std::move(event));
+                MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
+                            error.message.c_str());
+            }
+        }
     }
+    if (after_publication_hook) after_publication_hook();
 }
 
 // ---------------------------------------------------------------------------
@@ -9313,7 +9353,18 @@ WorldSession::~WorldSession() {
     auto& coordinator = impl_->ecs_runtime.streaming_coordinator();
     const flecs::entity_t owner = coordinator.intended_owner();
     if (owner != 0) coordinator.detach(owner);
-    impl_->commands.shut_down();
+    {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            impl_->hydrology_generation_mutex);
+        impl_->accepted_fluid_artifact.store(false,
+                                             std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> status_lock(
+                impl_->hydrology_status_mutex);
+            impl_->hydrology_status_copy = {};
+        }
+        impl_->commands.shut_down();
+    }
 
     // Give cancellation and FIFO clear a fixed number of full queue drains.
     // If the worker is still blocked, queue shutdown releases run_blocking;
@@ -9399,11 +9450,29 @@ void WorldSession::set_test_fluid_renderer_luid(
     impl_->cfg.fluid_renderer_device.driver_version = 1u;
 }
 
+void WorldSession::set_test_fluid_before_publication_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
+    impl_->test_fluid_before_publication_hook = std::move(hook);
+}
+
+void WorldSession::set_test_fluid_after_publication_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
+    impl_->test_fluid_after_publication_hook = std::move(hook);
+}
+
 bool WorldSession::has_accepted_fluid_artifact_for_test() const {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
     return impl_->accepted_fluid_artifact.load(std::memory_order_acquire);
 }
 
 HydrologyStatus WorldSession::hydrology_status() const {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
     std::lock_guard<std::mutex> lock(impl_->hydrology_status_mutex);
     return impl_->hydrology_status_copy;
 }
@@ -9429,9 +9498,7 @@ void WorldSession::request_bake() {
     // runs in pump_gpu_jobs() on the app/GL thread. Supersession is handled
     // inside CommandQueue::push (cancels in-flight token + clears pending).
     impl_->ensure_worker_started();
-    matter_async::Command c;
-    c.kind = matter_async::CommandKind::BakeAll;
-    impl_->commands.push(std::move(c));
+    impl_->enqueue_full_bake(matter_async::CommandKind::BakeAll);
 }
 
 void WorldSession::reload() {
@@ -9439,9 +9506,7 @@ void WorldSession::reload() {
     // worker will additionally reset the GPU culler at the top of execute_bake
     // (mirroring old reload() semantics).
     impl_->ensure_worker_started();
-    matter_async::Command c;
-    c.kind = matter_async::CommandKind::Reload;
-    impl_->commands.push(std::move(c));
+    impl_->enqueue_full_bake(matter_async::CommandKind::Reload);
 }
 
 void WorldSession::regenerate(uint64_t world_seed) {
@@ -9459,9 +9524,7 @@ void WorldSession::regenerate(uint64_t world_seed) {
         impl_->seed_root_params_json = buf;
     }
     impl_->ensure_worker_started();
-    matter_async::Command c;
-    c.kind = matter_async::CommandKind::Reload;
-    impl_->commands.push(std::move(c));
+    impl_->enqueue_full_bake(matter_async::CommandKind::Reload);
 }
 
 bool WorldSession::sea_level(float& out) const {

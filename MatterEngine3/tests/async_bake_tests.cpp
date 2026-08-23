@@ -235,6 +235,8 @@ public:
         result.code = hydrology::FluidBakeCode::Ready;
         result.sdk_version_hex = 0x05060100u;
         result.cuda_driver_version = 1;
+        result.device_luid = {1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+        result.device_luid_valid = true;
         return result;
     }
 
@@ -2065,6 +2067,8 @@ static bool test_authored_fluid_uses_worker_and_gpu_job_seam(
             mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
             return true;
         });
+    session->set_test_fluid_renderer_luid(
+        {1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u});
     CHECK(backend_state->factory_calls.load() == 0,
           "async authored fluid backend remains lazy before request_bake");
     session->request_bake();

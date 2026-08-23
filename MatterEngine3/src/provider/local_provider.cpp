@@ -700,8 +700,10 @@ bool LocalProvider::authored_fluid_requested() const {
 bool LocalProvider::run_authored_fluid_bake(
     const FluidBakeRunContext& context,
     matter::HydrologyStatus& status,
-    hydrology::FluidBakeError& fluid_error) {
+    hydrology::FluidBakeError& fluid_error,
+    hydrology::HydrologyArtifact& artifact) {
     accepted_fluid_artifact_.reset();
+    artifact = {};
     fluid_error = {};
     status = {};
     if (!authored_fluid_requested()) return false;
@@ -748,8 +750,17 @@ bool LocalProvider::run_authored_fluid_bake(
                 static_cast<double>(candidate.stats.simulated_steps) *
                 request.input.settings.fixed_step_seconds;
             status.payload_digest = hex64(candidate.payload_digest);
-            accepted_fluid_artifact_ = std::move(candidate);
+            artifact = std::move(candidate);
             return true;
+        }
+
+        if (!cfg_.fluid_renderer_device.luid_valid) {
+            fluid_error = {
+                hydrology::FluidBakeCode::BackendUnavailable,
+                "Vulkan render adapter identity is unavailable for the PhysX fluid bake"};
+            status.state = matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
         }
 
         if (!cfg_.fluid_bake_backend_factory) {
@@ -776,9 +787,15 @@ bool LocalProvider::run_authored_fluid_bake(
             status.failure_reason = fluid_error.message;
             return false;
         }
-        if (cfg_.fluid_renderer_device.luid_valid &&
-            (!probe.device_luid_valid ||
-             probe.device_luid != cfg_.fluid_renderer_device.luid)) {
+        if (!probe.device_luid_valid) {
+            fluid_error = {
+                hydrology::FluidBakeCode::BackendUnavailable,
+                "CUDA device identity is unavailable for the Vulkan render adapter comparison"};
+            status.state = matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+        if (probe.device_luid != cfg_.fluid_renderer_device.luid) {
             fluid_error = {
                 hydrology::FluidBakeCode::BackendUnavailable,
                 "CUDA device identity does not match the Vulkan render adapter"};
@@ -875,7 +892,7 @@ bool LocalProvider::run_authored_fluid_bake(
             static_cast<double>(validated.stats.simulated_steps) *
             request.input.settings.fixed_step_seconds;
         status.payload_digest = hex64(validated.payload_digest);
-        accepted_fluid_artifact_ = std::move(validated);
+        artifact = std::move(validated);
         return true;
     } catch (const std::exception& exception) {
         fluid_error = {hydrology::FluidBakeCode::BackendFailure,
