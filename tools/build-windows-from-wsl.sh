@@ -21,9 +21,24 @@ fi
 
 "$powershell" "${args[@]}"
 
-if [[ "$target" == 'preflight' ]] ||
-        [[ -n "$target" && "$target" != 'matter_editor' &&
-           "$target" != 'editor' && "$target" != 'all' ]]; then
+if [[ "$target" == 'preflight' ]]; then
+    exit 0
+fi
+
+if [[ "$target" == 'matter_dist' ]]; then
+    wsl_package="${repository_root}/MatterEditor/build/dist/world_demo"
+    for required in editor.exe build_features.json; do
+        if [[ ! -f "$wsl_package/$required" ]]; then
+            echo "matter_dist succeeded but verified package file was not found: ${wsl_package}/${required}" >&2
+            exit 1
+        fi
+    done
+    printf 'MATTER_WSL_PACKAGE=%s\n' "$wsl_package"
+    exit 0
+fi
+
+if [[ -n "$target" && "$target" != 'matter_editor' &&
+      "$target" != 'editor' && "$target" != 'all' ]]; then
     exit 0
 fi
 

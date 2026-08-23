@@ -38,7 +38,8 @@ Set-Content -LiteralPath (Join-Path $fixtureRoot 'tools\windows\MatterWindowsToo
     -Encoding UTF8 -Value $module
 
 $artifact = Join-Path $fixtureRoot 'MatterEditor\build\windows-msvc\editor.exe'
-function Invoke-Fixture([string]$Target, [bool]$CreateArtifact) {
+$package = Join-Path $fixtureRoot 'MatterEditor\build\dist\world_demo'
+function Invoke-Fixture([string]$Target, [bool]$CreateArtifact, [bool]$CreatePackage = $false) {
     if (Test-Path -LiteralPath $artifact) {
         Remove-Item -LiteralPath $artifact -Force
     }
@@ -46,6 +47,14 @@ function Invoke-Fixture([string]$Target, [bool]$CreateArtifact) {
         New-Item -ItemType Directory -Path (Split-Path -Parent $artifact) -Force |
             Out-Null
         Set-Content -LiteralPath $artifact -Encoding ASCII -Value 'fixture'
+    }
+    if (Test-Path -LiteralPath $package) {
+        Remove-Item -LiteralPath $package -Recurse -Force
+    }
+    if ($CreatePackage) {
+        New-Item -ItemType Directory -Path $package -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $package 'editor.exe') -Encoding ASCII -Value 'fixture'
+        Set-Content -LiteralPath (Join-Path $package 'build_features.json') -Encoding ASCII -Value '{}'
     }
     $arguments = @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass',
@@ -88,6 +97,19 @@ $defaultMarkers = @($default.Output -split "`r?`n" |
     Where-Object { $_ -match '^MATTER_WINDOWS_ARTIFACT=' })
 if ($default.ExitCode -ne 0 -or $defaultMarkers.Count -ne 1) {
     throw "default build did not emit exactly one verified marker`n$($default.Output)"
+}
+
+$missingPackage = Invoke-Fixture 'matter_dist' $false $false
+if ($missingPackage.ExitCode -eq 0 -or $missingPackage.Output -match 'MATTER_WINDOWS_PACKAGE=') {
+    throw "missing package was not rejected`n$($missingPackage.Output)"
+}
+
+$dist = Invoke-Fixture 'matter_dist' $false $true
+$packageMarkers = @($dist.Output -split "`r?`n" |
+    Where-Object { $_ -match '^MATTER_WINDOWS_PACKAGE=' })
+if ($dist.ExitCode -ne 0 -or $packageMarkers.Count -ne 1 -or
+        $dist.Output -match 'MATTER_WINDOWS_ARTIFACT=') {
+    throw "matter_dist did not emit exactly one verified package marker`n$($dist.Output)"
 }
 
 $repositoryPath = [System.IO.Path]::GetFullPath($RepositoryRoot)

@@ -32,14 +32,24 @@ if ($Target) {
 }
 & $env:ComSpec /d /s /c $build
 $buildExitCode = $LASTEXITCODE
-if ($buildExitCode -eq 0 -and
-        ((-not $Target) -or $Target -in @('matter_editor', 'editor', 'all'))) {
-    $artifact = Join-Path $repositoryRoot 'MatterEditor\build\windows-msvc\editor.exe'
-    if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
-        $targetLabel = if ($Target) { $Target } else { '<default>' }
-        Write-Error "editor-producing target '$targetLabel' succeeded but $artifact was not found"
-        exit 1
+if ($buildExitCode -eq 0) {
+    if ($Target -eq 'matter_dist') {
+        $package = Join-Path $repositoryRoot 'MatterEditor\build\dist\world_demo'
+        foreach ($required in @('editor.exe', 'build_features.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $package $required) -PathType Leaf)) {
+                Write-Error "matter_dist succeeded but verified package file was not found: $package\$required"
+                exit 1
+            }
+        }
+        Write-Output "MATTER_WINDOWS_PACKAGE=$package"
+    } elseif ((-not $Target) -or $Target -in @('matter_editor', 'editor', 'all')) {
+        $artifact = Join-Path $repositoryRoot 'MatterEditor\build\windows-msvc\editor.exe'
+        if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+            $targetLabel = if ($Target) { $Target } else { '<default>' }
+            Write-Error "editor-producing target '$targetLabel' succeeded but $artifact was not found"
+            exit 1
+        }
+        Write-Output "MATTER_WINDOWS_ARTIFACT=$artifact"
     }
-    Write-Output "MATTER_WINDOWS_ARTIFACT=$artifact"
 }
 exit $buildExitCode
