@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace matter_stream {
 
@@ -592,6 +593,16 @@ private:
     // profile.
     bool coarser_resident_beside(int level, int64_t tx, int64_t ty,
                                  int64_t tz) const;
+    // Publication-order guard.  The desired map is 2:1 balanced, but a
+    // desired bridge tile can still be baking while an older resident remains
+    // drawn beneath it.  Return true when publishing this candidate now would
+    // put it beside that currently drawn residency at a gap of two or more.
+    bool resident_level_conflict_beside(int level, int64_t tx, int64_t ty,
+                                        int64_t tz) const;
+    // Candidates proven unsafe against the residency snapshot produced by the
+    // current update.  Cleared once per update; avoids re-running the exact
+    // face probe for every candidate on every next_request() selection pass.
+    std::unordered_set<uint64_t, KeyHash> request_level_holds_;
     bool lateral_staging_active() const;
 
     // Resident tile count per level, refreshed at the top of update_nested()

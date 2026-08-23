@@ -691,6 +691,98 @@ bool SectorStreamer::coarser_resident_beside(int level, int64_t tx, int64_t ty,
     return false;
 }
 
+bool SectorStreamer::resident_level_conflict_beside(
+        int level, int64_t tx, int64_t ty, int64_t tz) const {
+    if (!cfg_.nested_sectors) return false;
+
+    // Work in level-0 tile coordinates.  A level-L tile is the integer box
+    // [t*2^L,(t+1)*2^L), so every face-neighbour probe below is exact for
+    // negative coordinates too (signed right shift is the nesting convention
+    // used everywhere else in this file).
+    const int64_t scale = int64_t{1} << level;
+    const int64_t lo[3] = {tx * scale, ty * scale, tz * scale};
+    const int64_t hi[3] = {(tx + 1) * scale, (ty + 1) * scale,
+                           (tz + 1) * scale};
+    const int axes = cfg_.volumetric_sectors ? 3 : 2;
+
+    // The coarsest resident covering a probe tile is what the engine draws;
+    // finer residency under a transition parent is parked and must not create
+    // a false dependency here.
+    const auto drawn_over = [&](int probe_level, int64_t px, int64_t py,
+                                int64_t pz, int& drawn_level,
+                                int64_t& dx, int64_t& dy, int64_t& dz) {
+        drawn_level = -1;
+        for (int up = probe_level; up <= max_level(); ++up) {
+            const int sh = up - probe_level;
+            const int64_t ux = px >> sh;
+            const int64_t uy = cfg_.volumetric_sectors ? (py >> sh) : kFlatTy;
+            const int64_t uz = pz >> sh;
+            const auto it = sectors_.find(nested_key(up, ux, uy, uz));
+            if (it == sectors_.end() ||
+                (it->second.resident_rung < 0 &&
+                 it->second.inflight_rung < 0))
+                continue;
+            drawn_level = up;
+            dx = ux;
+            dy = uy;
+            dz = uz;
+        }
+        return drawn_level >= 0;
+    };
+
+    for (int other = 0; other <= max_level(); ++other) {
+        if (std::abs(other - level) < 2) continue;
+        const int64_t other_scale = int64_t{1} << other;
+        for (int axis_i = 0; axis_i < axes; ++axis_i) {
+            const int axis = cfg_.volumetric_sectors
+                ? axis_i
+                : (axis_i == 0 ? 0 : 2); // column path: x and z only
+            const int u = (axis + 1) % 3;
+            const int v = (axis + 2) % 3;
+            for (int side = 0; side < 2; ++side) {
+                const int64_t boundary = side == 0 ? lo[axis] : hi[axis];
+                // A coarser cell can touch this face only when the candidate's
+                // boundary is also one of its boundaries.  Otherwise that cell
+                // is the candidate's own ancestor, handled by footprint
+                // staging/parking rather than by lateral scheduling.
+                if (other > level && boundary % other_scale != 0) continue;
+                int64_t fixed = boundary >> other;
+                if (side == 0) --fixed;
+                const int64_t ulo = lo[u] >> other;
+                const int64_t uhi = (hi[u] - 1) >> other;
+                const int64_t vlo = lo[v] >> other;
+                const int64_t vhi = (hi[v] - 1) >> other;
+                for (int64_t a = ulo; a <= uhi; ++a)
+                    for (int64_t b = vlo; b <= vhi; ++b) {
+                        int64_t p[3] = {0, kFlatTy, 0};
+                        p[axis] = fixed;
+                        p[u] = a;
+                        p[v] = b;
+                        int drawn = -1;
+                        int64_t dx = 0, dy = 0, dz = 0;
+                        if (!drawn_over(other, p[0], p[1], p[2], drawn,
+                                        dx, dy, dz))
+                            continue;
+                        if (std::abs(drawn - level) < 2) continue;
+                        // An ancestor covering the candidate and the probe is
+                        // not a lateral neighbour.  The candidate may still be
+                        // requested; engine-side transition parking keeps that
+                        // ancestor drawn until the replacement group is ready.
+                        if (drawn > level) {
+                            const int sh = drawn - level;
+                            if ((tx >> sh) == dx &&
+                                (!cfg_.volumetric_sectors || (ty >> sh) == dy) &&
+                                (tz >> sh) == dz)
+                                continue;
+                        }
+                        return true;
+                    }
+            }
+        }
+    }
+    return false;
+}
+
 int SectorStreamer::resident_level_over(int level, int64_t tx, int64_t ty,
                                         int64_t tz) const {
     // Walk this tile and then its ancestors -- the same ancestor chain
@@ -872,6 +964,7 @@ void SectorStreamer::scan_footprint(int level, int64_t tx, int64_t ty,
 
 void SectorStreamer::update_nested(float anchor_x, float anchor_y,
                                    float anchor_z) {
+    request_level_holds_.clear();
     last_anchor_x_ = anchor_x;
     last_anchor_y_ = anchor_y;   // stored, never read in M1 (see the header)
     last_anchor_z_ = anchor_z;
@@ -1139,31 +1232,56 @@ bool SectorStreamer::next_request(SectorRequest& out) {
     // invisible frontier baked. Distance is what the eye ranks by; a hole
     // only outranks an upgrade when they are at comparable range.
     uint64_t best_k = 0;
-    float best_score = std::numeric_limits<float>::max();
-    bool found = false;
+    for (;;) {
+        float best_score = std::numeric_limits<float>::max();
+        bool found = false;
 
-    for (auto& [k, st] : sectors_) {
-        if (st.inflight_rung >= 0) continue;      // already in flight
-        if (st.cooldown > 0) continue;             // cooling down
-        if (st.desired_rung < 0) continue;        // not desired
-        if (st.desired_rung == st.resident_rung) continue; // satisfied
+        for (auto& [k, st] : sectors_) {
+            if (st.inflight_rung >= 0) continue;      // already in flight
+            if (st.cooldown > 0) continue;             // cooling down
+            if (st.desired_rung < 0) continue;        // not desired
+            if (st.desired_rung == st.resident_rung) continue; // satisfied
+            if (request_level_holds_.count(k) != 0) continue;
 
-        const bool is_hole = (st.resident_rung < 0);
-        // The hole bonus is one tile width, so in nested mode it is the tile's
-        // OWN width -- a 2 km level-5 hole should not outrank a 64 m one by the
-        // margin a level-0 width would give it.
-        const float width = cfg_.nested_sectors
-            ? level_size(st.desired_level < 0 ? 0 : st.desired_level)
-            : cfg_.sector_size;
-        float score = is_hole ? st.dist - width : st.dist;
-        if (score < best_score) {
-            best_score = score;
-            best_k = k;
-            found = true;
+            const bool is_hole = (st.resident_rung < 0);
+            // The hole bonus is one tile width, so in nested mode it is the tile's
+            // OWN width -- a 2 km level-5 hole should not outrank a 64 m one by the
+            // margin a level-0 width would give it.
+            const float width = cfg_.nested_sectors
+                ? level_size(st.desired_level < 0 ? 0 : st.desired_level)
+                : cfg_.sector_size;
+            float score = is_hole ? st.dist - width : st.dist;
+            if (score < best_score) {
+                best_score = score;
+                best_k = k;
+                found = true;
+            }
         }
-    }
 
-    if (!found) return false;
+        if (!found) return false;
+
+        // Desired 2:1 balance is not enough during an asynchronous cold/merge
+        // fill: the intermediate desired tile may still be baking while an old
+        // resident two levels away remains drawn.  Probe only the winning
+        // candidate, then memoize a hold for this update's residency snapshot.
+        // The intermediate desired tile is necessarily within one level of
+        // both sides, so it remains eligible and removes the dependency on a
+        // later update (strict progress, no mutual wait).  This is request
+        // staging, not visibility parking: no completed geometry is hidden.
+        // The cold/merge defect this closes is specific to the octree: the
+        // column streamer's established lateral-staging A/B contract remains
+        // the rollback/failability probe for its older refinement-only rule.
+        if (cfg_.volumetric_sectors && lateral_staging_active()) {
+            int level = 0;
+            int64_t tx = 0, ty = 0, tz = 0;
+            nested_unkey(best_k, level, tx, ty, tz);
+            if (resident_level_conflict_beside(level, tx, ty, tz)) {
+                request_level_holds_.insert(best_k);
+                continue;
+            }
+        }
+        break;
+    }
 
     auto& st = sectors_.at(best_k);
     int level; int64_t tx, ty, tz;
