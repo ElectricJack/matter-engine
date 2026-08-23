@@ -1,0 +1,318 @@
+#include "hydrology/physx_fluid_bake.h"
+
+#include <algorithm>
+#include <cmath>
+#include <exception>
+#include <unordered_set>
+#include <utility>
+
+namespace hydrology {
+namespace {
+
+bool finite(float value) noexcept { return std::isfinite(value); }
+
+bool finite(const matter::Float3& value) noexcept {
+    return finite(value.x) && finite(value.y) && finite(value.z);
+}
+
+bool valid_bounds(const matter::Aabb& bounds) noexcept {
+    return finite(bounds.minimum) && finite(bounds.maximum) &&
+           bounds.minimum.x < bounds.maximum.x &&
+           bounds.minimum.y < bounds.maximum.y &&
+           bounds.minimum.z < bounds.maximum.z;
+}
+
+bool inside(const matter::Aabb& bounds,
+            const matter::Float3& point) noexcept {
+    return point.x >= bounds.minimum.x && point.x <= bounds.maximum.x &&
+           point.y >= bounds.minimum.y && point.y <= bounds.maximum.y &&
+           point.z >= bounds.minimum.z && point.z <= bounds.maximum.z;
+}
+
+bool fail(FluidBakeCode code, const char* message,
+          FluidBakeOutput& output, FluidBakeError& error) {
+    output = {};
+    error = {code, message};
+    return false;
+}
+
+bool validate_input(const FluidBakeInput& input,
+                    FluidBakeOutput& output, FluidBakeError& error) {
+    if (!finite(input.network.cell_size_m) ||
+        input.network.cell_size_m <= 0.0f || input.network.rivers.empty() ||
+        input.network.first_section_river.empty()) {
+        return fail(FluidBakeCode::InvalidInput,
+                    "river network is incomplete", output, error);
+    }
+    for (const auto& river : input.network.rivers) {
+        if (river.name.empty() || river.spline.size() < 2u ||
+            !finite(river.inlet.position_m) ||
+            !finite(river.inlet.flow_m3s) || river.inlet.flow_m3s <= 0.0f) {
+            return fail(FluidBakeCode::InvalidInput,
+                        "river definition is invalid", output, error);
+        }
+        for (const auto& point : river.spline) {
+            if (!finite(point)) {
+                return fail(FluidBakeCode::InvalidInput,
+                            "river spline contains a non-finite point",
+                            output, error);
+            }
+        }
+    }
+    if (input.geometry.centreline.size() < 2u ||
+        !valid_bounds(input.geometry.bounds_m)) {
+        return fail(FluidBakeCode::InvalidInput,
+                    "river geometry is incomplete", output, error);
+    }
+    for (const auto& sample : input.geometry.centreline) {
+        if (!finite(sample.position_m) || !finite(sample.tangent) ||
+            !finite(sample.lateral) || !finite(sample.distance_m) ||
+            !finite(sample.grade) || !finite(sample.meander) ||
+            !finite(sample.width_scale)) {
+            return fail(FluidBakeCode::InvalidInput,
+                        "river geometry contains a non-finite sample",
+                        output, error);
+        }
+    }
+    if (input.collision.vertices.empty() ||
+        input.collision.indices.empty() ||
+        input.collision.indices.size() % 3u != 0u) {
+        return fail(FluidBakeCode::InvalidInput,
+                    "collision mesh is empty or not triangular", output,
+                    error);
+    }
+    for (const auto& vertex : input.collision.vertices) {
+        if (!finite(vertex)) {
+            return fail(FluidBakeCode::InvalidInput,
+                        "collision mesh contains a non-finite vertex",
+                        output, error);
+        }
+    }
+    for (const std::uint32_t index : input.collision.indices) {
+        if (index >= input.collision.vertices.size()) {
+            return fail(FluidBakeCode::InvalidInput,
+                        "collision mesh index is out of range", output,
+                        error);
+        }
+    }
+    if (input.emitters.empty()) {
+        return fail(FluidBakeCode::InvalidInput,
+                    "at least one fluid emitter is required", output,
+                    error);
+    }
+    std::unordered_set<std::uint32_t> emitter_ids;
+    for (const auto& emitter : input.emitters) {
+        const float direction_length_sq =
+            emitter.direction.x * emitter.direction.x +
+            emitter.direction.y * emitter.direction.y +
+            emitter.direction.z * emitter.direction.z;
+        if (!emitter_ids.insert(emitter.id).second ||
+            !finite(emitter.position_m) || !finite(emitter.direction) ||
+            !finite(direction_length_sq) || direction_length_sq <= 0.0f ||
+            !finite(emitter.flow_m3s) || emitter.flow_m3s <= 0.0f ||
+            !finite(emitter.radius_m) || emitter.radius_m <= 0.0f ||
+            emitter.start_step >= emitter.stop_step) {
+            return fail(FluidBakeCode::InvalidInput,
+                        "fluid emitter is invalid", output, error);
+        }
+    }
+    const auto& settings = input.settings;
+    if (!finite(settings.particle_spacing_m) ||
+        settings.particle_spacing_m <= 0.0f ||
+        !finite(settings.rest_density_kg_m3) ||
+        settings.rest_density_kg_m3 <= 0.0f ||
+        !finite(settings.fixed_step_seconds) ||
+        settings.fixed_step_seconds <= 0.0f ||
+        settings.solver_iterations == 0u || settings.max_neighbors == 0u ||
+        settings.batch_steps == 0u || settings.max_steps == 0u ||
+        settings.batch_steps > settings.max_steps ||
+        settings.max_particles == 0u) {
+        return fail(FluidBakeCode::InvalidInput,
+                    "PBD bake settings are invalid", output, error);
+    }
+    for (const auto& emitter : input.emitters) {
+        if (emitter.stop_step > settings.max_steps) {
+            return fail(FluidBakeCode::InvalidInput,
+                        "fluid emitter exceeds max_steps", output, error);
+        }
+    }
+    if (!valid_bounds(input.sensor.bounds_m) ||
+        input.sensor.resolution.x == 0u ||
+        input.sensor.resolution.y == 0u ||
+        input.sensor.resolution.z == 0u ||
+        !finite(input.sensor.required_wet_fraction) ||
+        input.sensor.required_wet_fraction <= 0.0f ||
+        input.sensor.required_wet_fraction > 1.0f ||
+        input.sensor.stable_steps == 0u ||
+        !valid_bounds(input.dry_collar_bounds_m)) {
+        return fail(FluidBakeCode::InvalidInput,
+                    "fill sensor or dry collar is invalid", output, error);
+    }
+    return true;
+}
+
+bool validate_output(const FluidBakeInput& input,
+                     FluidBakeOutput& output, FluidBakeError& error) {
+    if (output.particles.size() > input.settings.max_particles ||
+        output.stats.active_particles != output.particles.size() ||
+        output.stats.peak_particles < output.stats.active_particles) {
+        return fail(FluidBakeCode::CapacityExceeded,
+                    "backend particle counts exceed the declared capacity",
+                    output, error);
+    }
+    if (output.stats.simulated_steps > input.settings.max_steps ||
+        !std::isfinite(output.stats.wall_seconds) ||
+        output.stats.wall_seconds < 0.0) {
+        return fail(FluidBakeCode::BackendFailure,
+                    "backend statistics are invalid", output, error);
+    }
+    if (output.stats.non_finite_particles != 0u) {
+        return fail(FluidBakeCode::NonFinite,
+                    "backend reported non-finite particles", output, error);
+    }
+    if (output.stats.escaped_particles != 0u) {
+        return fail(FluidBakeCode::Escaped,
+                    "backend reported escaped particles", output, error);
+    }
+    if (!output.sensor.complete ||
+        output.sensor.completion_step > output.stats.simulated_steps ||
+        output.sensor.stable_steps < input.sensor.stable_steps ||
+        !finite(output.sensor.wet_fraction) ||
+        output.sensor.wet_fraction < input.sensor.required_wet_fraction ||
+        output.sensor.wet_fraction > 1.0f) {
+        return fail(FluidBakeCode::SensorNotReached,
+                    "backend did not satisfy the fill sensor contract",
+                    output, error);
+    }
+    std::unordered_set<std::uint64_t> particle_ids;
+    for (const auto& particle : output.particles) {
+        if (!finite(particle.position_m) || !finite(particle.velocity_mps)) {
+            return fail(FluidBakeCode::NonFinite,
+                        "backend output contains a non-finite particle",
+                        output, error);
+        }
+        if (!inside(input.dry_collar_bounds_m, particle.position_m)) {
+            return fail(FluidBakeCode::Escaped,
+                        "backend output contains an escaped particle",
+                        output, error);
+        }
+        if (!particle_ids.insert(particle.id).second) {
+            return fail(FluidBakeCode::BackendFailure,
+                        "backend output contains duplicate particle ids",
+                        output, error);
+        }
+    }
+    std::stable_sort(output.particles.begin(), output.particles.end(),
+                     [](const FluidParticle& left,
+                        const FluidParticle& right) {
+                         return left.id < right.id;
+                     });
+    return true;
+}
+
+}  // namespace
+
+bool PhysxFluidBake::run(const FluidBakeInput& input,
+                         IFluidBakeBackend& backend,
+                         const FluidBakeCallbacks& callbacks,
+                         FluidBakeOutput& output,
+                         FluidBakeError& error) noexcept {
+    output = {};
+    error = {};
+    try {
+        if (!validate_input(input, output, error)) return false;
+        if (callbacks.cancelled && callbacks.cancelled()) {
+            return fail(FluidBakeCode::Cancelled,
+                        "fluid bake was cancelled before backend probe",
+                        output, error);
+        }
+
+        const FluidBackendProbe probe = backend.probe();
+        if (!probe.available) {
+            return fail(FluidBakeCode::BackendUnavailable,
+                        probe.message.empty() ? "fluid backend is unavailable"
+                                              : probe.message.c_str(),
+                        output, error);
+        }
+
+        bool callback_failed = false;
+        bool progress_failed = false;
+        bool saw_progress = false;
+        std::uint32_t last_step = 0u;
+        FluidBakeCallbacks guarded{};
+        guarded.cancelled = [&]() {
+            if (!callbacks.cancelled) return false;
+            try {
+                return callbacks.cancelled();
+            } catch (...) {
+                callback_failed = true;
+                return true;
+            }
+        };
+        guarded.progress = [&](const FluidBakeProgress& progress) {
+            const bool valid =
+                progress.total_steps == input.settings.max_steps &&
+                progress.completed_steps <= progress.total_steps &&
+                progress.active_particles <= input.settings.max_particles &&
+                finite(progress.sensor_wet_fraction) &&
+                progress.sensor_wet_fraction >= 0.0f &&
+                progress.sensor_wet_fraction <= 1.0f &&
+                (!saw_progress || progress.completed_steps >= last_step);
+            if (!valid) {
+                progress_failed = true;
+                return;
+            }
+            saw_progress = true;
+            last_step = progress.completed_steps;
+            if (callbacks.progress) {
+                try {
+                    callbacks.progress(progress);
+                } catch (...) {
+                    callback_failed = true;
+                }
+            }
+        };
+
+        FluidBakeOutput candidate{};
+        FluidBakeError backend_error{};
+        if (!backend.run(input, guarded, candidate, backend_error)) {
+            if (callback_failed) {
+                return fail(FluidBakeCode::BackendFailure,
+                            "fluid bake callback raised an exception",
+                            output, error);
+            }
+            const FluidBakeCode code =
+                backend_error.code == FluidBakeCode::Ready
+                    ? FluidBakeCode::BackendFailure
+                    : backend_error.code;
+            return fail(code,
+                        backend_error.message.empty()
+                            ? "fluid backend failed without a diagnostic"
+                            : backend_error.message.c_str(),
+                        output, error);
+        }
+        if (callback_failed) {
+            return fail(FluidBakeCode::BackendFailure,
+                        "fluid bake callback raised an exception", output,
+                        error);
+        }
+        if (progress_failed) {
+            return fail(FluidBakeCode::BackendFailure,
+                        "fluid backend violated the progress contract",
+                        output, error);
+        }
+        output = std::move(candidate);
+        if (!validate_output(input, output, error)) return false;
+        error = {};
+        return true;
+    } catch (const std::exception& exception) {
+        return fail(FluidBakeCode::BackendFailure, exception.what(), output,
+                    error);
+    } catch (...) {
+        return fail(FluidBakeCode::BackendFailure,
+                    "fluid backend raised an unknown exception", output,
+                    error);
+    }
+}
+
+}  // namespace hydrology

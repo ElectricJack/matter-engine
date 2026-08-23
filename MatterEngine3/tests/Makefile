@@ -1160,6 +1160,10 @@ HYDROLOGY_ARTIFACT_CPP = hydrology_artifact_tests.cpp \
 HYDROLOGY_ARTIFACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
                        $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
 
+PHYSX_ADAPTER_CONTRACT_TARGET = build/physx_adapter_contract_tests
+PHYSX_ADAPTER_CONTRACT_CPP = physx_adapter_contract_tests.cpp \
+                             ../src/hydrology/physx_fluid_bake.cpp
+
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
 PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
@@ -1490,6 +1494,7 @@ def_CPP_SRCS := $(sort \
     $(SEAMINTEGRATION_CPP) \
     $(GPU_VISUAL_MESHER_CPU_CPP) \
     $(HYDROLOGY_ARTIFACT_CPP) \
+    $(PHYSX_ADAPTER_CONTRACT_CPP) \
     $(PARTSTORE_CPP))
 
 qjs_CPP_SRCS := $(sort \
@@ -1679,6 +1684,8 @@ GPU_VISUAL_MESHER_CPU_OBJS = \
 HYDROLOGY_ARTIFACT_OBJS = \
     $(call obj_list,def,$(HYDROLOGY_ARTIFACT_CPP)) \
     $(call obj_list,mslc,$(HYDROLOGY_ARTIFACT_C))
+PHYSX_ADAPTER_CONTRACT_OBJS = \
+    $(call obj_list,def,$(PHYSX_ADAPTER_CONTRACT_CPP))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 SECTORPROF_OBJS = $(call obj_list,sh,$(SECTORPROF_CPP)) $(call obj_list,mslc,$(SECTORPROF_C)) $(qjsc_C_OBJS)
@@ -3044,6 +3051,20 @@ run-hydrology-artifact: $(HYDROLOGY_ARTIFACT_TARGET)
 clean: clean-hydrology-artifact
 clean-hydrology-artifact:
 	rm -f $(HYDROLOGY_ARTIFACT_TARGET)
+
+$(PHYSX_ADAPTER_CONTRACT_TARGET): $(PHYSX_ADAPTER_CONTRACT_OBJS) \
+        ../src/hydrology/physx_fluid_types.h \
+        ../src/hydrology/physx_runtime.h \
+        ../src/hydrology/physx_fluid_bake.h check.h | build
+	$(CC) $(PHYSX_ADAPTER_CONTRACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-physx-adapter-contract: $(PHYSX_ADAPTER_CONTRACT_TARGET)
+	./$(PHYSX_ADAPTER_CONTRACT_TARGET)
+
+.PHONY: run-physx-adapter-contract clean-physx-adapter-contract
+clean: clean-physx-adapter-contract
+clean-physx-adapter-contract:
+	rm -f $(PHYSX_ADAPTER_CONTRACT_TARGET)
 
 # Physical atmosphere CPU reference model (header-only; no graphics runtime).
 ATMOSPHERE_TARGET = build/atmosphere_tests

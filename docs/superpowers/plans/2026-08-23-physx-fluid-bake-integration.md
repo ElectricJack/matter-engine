@@ -137,7 +137,7 @@ git commit -m "build: pin the PhysX PBF control"
 - Consumes: `matter::RiverNetworkDefinition`, `hydrology::RiverGeometry`, world-space indexed collision triangles, and callback-based cancellation/progress.
 - Produces: `IFluidBakeBackend::probe()`/`run()`, `PhysxFluidBake::run()`, stable `FluidBakeCode`, `FluidParticle`, `FillSensorResult`, `FluidBakeStats`, and `FluidBakeOutput` types with no PhysX/CUDA headers.
 
-- [ ] **Step 1: Write failing fake-backend contract tests**
+- [x] **Step 1: Write failing fake-backend contract tests**
 
 Cover invalid indices/non-finite values before backend invocation, unavailable-backend status translation, callback progress monotonicity, cancellation propagation, stable particle-id sorting, multiple emitter preservation, and rejection of backend output containing escaped or non-finite particles.
 
@@ -150,15 +150,15 @@ CHECK(backend.run_calls == 0);
 CHECK(error.code == FluidBakeCode::InvalidInput);
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run the new target; expect compilation to fail because the Matter-owned contracts do not exist.
 
-- [ ] **Step 3: Implement the minimal contracts and pure validation/orchestration**
+- [x] **Step 3: Implement the minimal contracts and pure validation/orchestration**
 
 Use `std::function<bool()> cancelled` and `std::function<void(const FluidBakeProgress&)> progress` so the adapter does not depend on `matter_async::CancelToken`. `IFluidBakeBackend` is the only injected seam; tests use a real in-memory fake implementation and assert orchestration results rather than mock call text.
 
-- [ ] **Step 4: Preserve compiler neutrality and pass MSVC plus WSL GCC tests**
+- [x] **Step 4: Preserve compiler neutrality and pass MSVC plus WSL GCC tests**
 
 Run:
 
@@ -173,7 +173,7 @@ make -C MatterEngine3/tests run-physx-adapter-contract
 
 Expected: both PASS with `MATTER_ENABLE_PHYSX` absent.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add MatterEngine3/src/hydrology/physx_fluid_types.h MatterEngine3/src/hydrology/physx_runtime.h MatterEngine3/src/hydrology/physx_fluid_bake.h MatterEngine3/src/hydrology/physx_fluid_bake.cpp MatterEngine3/tests/physx_adapter_contract_tests.cpp cmake/manifests/engine-core.sources cmake/MatterEngine.cmake MatterEngine3/tests/Makefile
