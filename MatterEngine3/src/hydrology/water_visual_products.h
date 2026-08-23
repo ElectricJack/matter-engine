@@ -28,6 +28,17 @@ struct GameplaySample {
     bool wet_valid = false;
 };
 
+// This is deliberately the single layout type used both by the field builder
+// and by the gameplay product key.  Keeping it here prevents a second,
+// cache-only approximation of the field parameters from drifting away from
+// the values that actually determine gameplay samples.
+struct GameplayFieldLayout {
+    matter::Float3 origin_m{};
+    float cell_size_m = 0.0f;
+    std::uint32_t width = 0;
+    std::uint32_t depth = 0;
+};
+
 inline bool operator==(const GameplaySample& a,
                        const GameplaySample& b) noexcept {
     return a.height_m == b.height_m && a.depth_m == b.depth_m &&
@@ -38,7 +49,6 @@ inline bool operator==(const GameplaySample& a,
 }
 
 struct ProductIdentitySettings {
-    float coarse_voxel_m = 0.5f;
     std::uint32_t field_contract_version = 1;
     std::uint32_t extraction_contract_version = 1;
     std::uint32_t output_contract_version = 1;
@@ -46,8 +56,6 @@ struct ProductIdentitySettings {
     bool smoothing_enabled = false;
     bool anisotropy_enabled = false;
     std::vector<std::uint64_t> shader_digests;
-    float gameplay_cell_m = 0.5f;
-    std::uint64_t terrain_revision = 0;
     std::uint64_t semantic_key = 0;
 };
 
@@ -83,7 +91,8 @@ bool make_fluid_particle_job(
 ProductKeys derive_product_keys(
     const gpu_meshing::ParticleJob& job,
     std::uint64_t particle_snapshot_digest,
-    const ProductIdentitySettings& settings);
+    const ProductIdentitySettings& settings, float coarse_voxel_m,
+    const GameplayFieldLayout& gameplay_layout);
 
 bool build_cpu_particle_visual(const gpu_meshing::ParticleJob& job,
                                float coarse_voxel_m,

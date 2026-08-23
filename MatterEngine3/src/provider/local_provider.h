@@ -8,6 +8,7 @@
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
 #include "matter/world_definition.h"
 #include "matter/gpu_visual_meshing.h"
+#include "hydrology/physx_fluid_bake.h"
 #include "tileset_slot_allocator.h"  // LRU detail-tileset slot pool (chart-VT C3)
 #include "detail_bake_plan.h"        // DetailBakeRequest / plan_detail_bakes
 
@@ -165,10 +166,10 @@ struct LocalProviderConfig {
                        bool dump_png,
                        std::string& err)> vk_tileset_bake;
 
-    // Renderer-owned Vulkan particle-water visual bake. Future fluid
-    // orchestration posts this blocking call through gpu_run after the final
-    // stable particle snapshot. It is deliberately null in headless mode;
-    // coarse CPU collision/query output never depends on this callback.
+    // Renderer-owned Vulkan particle-water visual bake.  LocalProvider routes
+    // the accepted snapshot through gpu_run to this callback before it can
+    // publish an artifact. It is deliberately null in headless mode; coarse
+    // CPU collision/query output never substitutes for the required visual.
     std::function<bool(const gpu_meshing::ParticleJob& job,
                        gpu_meshing::MeshResult& result,
                        gpu_meshing::Stats& stats,
@@ -369,6 +370,16 @@ inline ProviderWorldDefinition adapt_world_definition(
 class LocalProvider : public WorldProvider {
 public:
     explicit LocalProvider(LocalProviderConfig cfg);
+
+    // Product assembly seam for a completed PhysX bake.  The existing
+    // renderer callback is marshalled via cfg_.gpu_run here; worker lifecycle
+    // scheduling deliberately remains with the later orchestration task.
+    bool build_accepted_fluid_artifact(
+        const hydrology::FluidBakeOutput& output,
+        const hydrology::PhysxFluidBake::ProductBuildSettings& settings,
+        const hydrology::TerrainHeightSampler& terrain,
+        hydrology::HydrologyArtifact& artifact,
+        hydrology::FluidBakeError& error) const;
 
     // connect() == install_graph() + compose_world() with unchanged external behavior.
     bool connect(WorldManifest& out, std::string& err) override;

@@ -184,6 +184,11 @@ bool validate_artifact(const HydrologyArtifact& artifact) {
         artifact.product_keys.gameplay == 0u ||
         artifact.semantic_key == 0u || !artifact.accepted ||
         artifact.particle_snapshot_digest == 0u ||
+        artifact.provenance.gpu_vendor == 0u ||
+        artifact.provenance.gpu_device == 0u ||
+        artifact.provenance.driver_version == 0u ||
+        artifact.provenance.physx_sdk_version == 0u ||
+        artifact.provenance.adapter_version == 0u ||
         !std::isfinite(artifact.particle_radius_m) ||
         artifact.particle_radius_m <= 0.0f ||
         !validate_mesh(artifact.visual_mesh) ||

@@ -1,6 +1,7 @@
 #include "check.h"
 
 #include "matter/gpu_visual_meshing.h"
+#include "hydrology/water_visual_products.h"
 #include "surface.h"
 
 #include <cmath>
@@ -224,6 +225,25 @@ void test_mesh_digest_is_stable_and_sensitive() {
           "material affects mesh digest");
 }
 
+void test_gameplay_identity_ignores_visual_job_bounds() {
+    gpu_meshing::ParticleSample particles[1];
+    const auto job = one_sphere_job(particles);
+    hydrology::ProductIdentitySettings settings{};
+    settings.semantic_key = 91u;
+    const hydrology::GameplayFieldLayout gameplay_layout{
+        {-1.0f, 0.0f, -1.0f}, 0.5f, 4u, 4u};
+    const std::uint64_t snapshot = hydrology::particle_snapshot_digest(particles, 1u);
+    const auto first = hydrology::derive_product_keys(
+        job, snapshot, settings, 0.25f, gameplay_layout);
+    auto visual_bounds_changed = job;
+    visual_bounds_changed.bounds_m.max_m.x = 4.0f;
+    const auto second = hydrology::derive_product_keys(
+        visual_bounds_changed, snapshot, settings, 0.25f, gameplay_layout);
+    CHECK(first.visual != second.visual && first.coarse_cpu != second.coarse_cpu &&
+              first.gameplay == second.gameplay,
+          "visual and CPU bounds do not spuriously invalidate the gameplay field key");
+}
+
 }  // namespace
 
 int main() {
@@ -232,5 +252,6 @@ int main() {
     test_reference_field_matches_matter_surface_oracle();
     test_reference_scan_covers_empty_zero_max_and_overflow();
     test_mesh_digest_is_stable_and_sensitive();
+    test_gameplay_identity_ignores_visual_job_bounds();
     return check_summary();
 }

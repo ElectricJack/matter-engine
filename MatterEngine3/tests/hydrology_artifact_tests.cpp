@@ -113,16 +113,18 @@ void test_identity_separates_visual_from_authority_products() {
     const auto samples = particles();
     const auto job = particle_job(samples);
     hydrology::ProductIdentitySettings settings{};
-    settings.coarse_voxel_m = 0.35f;
     settings.shader_digests = {11u, 22u, 33u};
+    const hydrology::GameplayFieldLayout gameplay_layout{
+        {-2.0f, 0.0f, -2.0f}, 0.5f, 8u, 8u};
     const uint64_t snapshot = hydrology::particle_snapshot_digest(
         samples.data(), static_cast<uint32_t>(samples.size()));
-    const auto first = hydrology::derive_product_keys(job, snapshot, settings);
+    const auto first = hydrology::derive_product_keys(
+        job, snapshot, settings, 0.35f, gameplay_layout);
     auto visual_change = job;
     visual_change.voxel_m = 0.1f;
     settings.shader_digests[1] = 99u;
     const auto second = hydrology::derive_product_keys(
-        visual_change, snapshot, settings);
+        visual_change, snapshot, settings, 0.35f, gameplay_layout);
     CHECK(first.visual != second.visual,
           "visual resolution or shader changes invalidate the visual key");
     CHECK(first.coarse_cpu == second.coarse_cpu &&
@@ -214,6 +216,10 @@ void test_artifact_round_trip_and_corruption_closure() {
     invalid.particles[1].id = invalid.particles[0].id;
     CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
           "an artifact cannot replace the accepted stable-id snapshot with duplicate ids");
+    invalid = artifact;
+    invalid.provenance.adapter_version = 0u;
+    CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
+          "zero PhysX or adapter provenance cannot be persisted in an accepted artifact");
 }
 
 void test_atomic_save_validated_load_and_cache_hit() {

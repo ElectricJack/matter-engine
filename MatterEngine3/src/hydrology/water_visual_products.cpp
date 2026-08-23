@@ -152,16 +152,17 @@ bool make_fluid_particle_job(
 
 ProductKeys derive_product_keys(
     const gpu_meshing::ParticleJob& job, std::uint64_t snapshot,
-    const ProductIdentitySettings& settings) {
-    const auto common = [&](Digest& digest) {
+    const ProductIdentitySettings& settings, float coarse_voxel_m,
+    const GameplayFieldLayout& gameplay_layout) {
+    const auto simulation_common = [&](Digest& digest) {
         digest.u64(snapshot);
         digest.u64(settings.semantic_key);
-        digest.point(job.bounds_m.min_m);
-        digest.point(job.bounds_m.max_m);
         digest.u32(job.material);
     };
     Digest visual(0x56495355414c3031ull);
-    common(visual);
+    simulation_common(visual);
+    visual.point(job.bounds_m.min_m);
+    visual.point(job.bounds_m.max_m);
     visual.floating(job.voxel_m);
     visual.floating(job.blend_width_m);
     visual.floating(job.iso_value);
@@ -175,14 +176,18 @@ ProductKeys derive_product_keys(
     for (std::uint64_t shader : settings.shader_digests) visual.u64(shader);
 
     Digest coarse(0x434f415253453031ull);
-    common(coarse);
-    coarse.floating(settings.coarse_voxel_m);
+    simulation_common(coarse);
+    coarse.point(job.bounds_m.min_m);
+    coarse.point(job.bounds_m.max_m);
+    coarse.floating(coarse_voxel_m);
 
     Digest gameplay(0x47414d45504c4159ull);
-    common(gameplay);
-    gameplay.floating(settings.gameplay_cell_m);
+    simulation_common(gameplay);
+    gameplay.point(gameplay_layout.origin_m);
+    gameplay.floating(gameplay_layout.cell_size_m);
+    gameplay.u32(gameplay_layout.width);
+    gameplay.u32(gameplay_layout.depth);
     gameplay.u32(settings.field_contract_version);
-    gameplay.u64(settings.terrain_revision);
     return {visual.finish(), coarse.finish(), gameplay.finish()};
 }
 

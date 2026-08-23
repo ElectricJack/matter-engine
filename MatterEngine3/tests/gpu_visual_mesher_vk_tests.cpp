@@ -495,21 +495,24 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
         hydrology::particle_snapshot_digest(
             particles.data(), static_cast<std::uint32_t>(particles.size()));
     hydrology::ProductIdentitySettings identity{};
-    identity.coarse_voxel_m = 0.48f;
     identity.shader_digests = {
         0x62696e2d636f756eull, 0x6669656c642d7061ull,
         0x636c617373696679ull, 0x656d69742d763175ull};
 
     hydrology::HydrologyArtifact artifact{};
     artifact.particle_snapshot_digest = snapshot_digest;
+    constexpr float kCoarseVoxelM = 0.48f;
+    const hydrology::GameplayFieldLayout gameplay_layout{
+        job.bounds_m.min_m, 0.48f, 32u, 32u};
     artifact.product_keys =
-        hydrology::derive_product_keys(job, snapshot_digest, identity);
+        hydrology::derive_product_keys(job, snapshot_digest, identity,
+                                       kCoarseVoxelM, gameplay_layout);
     artifact.visual_mesh = first;
     gpu_meshing::MeshResult cpu_repeat{};
     const auto cpu_first_start = std::chrono::steady_clock::now();
     error = {};
     GPU_CHECK(hydrology::build_cpu_particle_visual(
-                  job, identity.coarse_voxel_m, artifact.coarse_cpu_mesh,
+                  job, kCoarseVoxelM, artifact.coarse_cpu_mesh,
                   error),
               error.message.empty() ? "build coarse CPU water fallback"
                                     : error.message.c_str());
@@ -520,7 +523,7 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
     const auto cpu_repeat_start = std::chrono::steady_clock::now();
     error = {};
     GPU_CHECK(hydrology::build_cpu_particle_visual(
-                  job, identity.coarse_voxel_m, cpu_repeat, error),
+                  job, kCoarseVoxelM, cpu_repeat, error),
               error.message.empty() ? "repeat coarse CPU water fallback"
                                     : error.message.c_str());
     const double cpu_repeat_ms = std::chrono::duration<double, std::milli>(

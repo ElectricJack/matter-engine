@@ -205,6 +205,17 @@ std::string class_name_from_source(const std::string& source) {
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
+bool LocalProvider::build_accepted_fluid_artifact(
+    const hydrology::FluidBakeOutput& output,
+    const hydrology::PhysxFluidBake::ProductBuildSettings& settings,
+    const hydrology::TerrainHeightSampler& terrain,
+    hydrology::HydrologyArtifact& artifact,
+    hydrology::FluidBakeError& error) const {
+    return hydrology::PhysxFluidBake::build_accepted_artifact_on_renderer(
+        output, settings, terrain, cfg_.gpu_run, cfg_.vk_particle_visual_bake,
+        artifact, error);
+}
+
 bool LocalProvider::build_river_height_overlay(
     hydrology::RiverGeometry& geometry,
     std::shared_ptr<const terrain_field::RiverHeightOverlay>& overlay,

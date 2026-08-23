@@ -404,6 +404,19 @@ bool PhysxFluidBake::build_accepted_artifact(
                      "fluid products require an accepted simulation and visual mesher"};
             return false;
         }
+        if (settings.semantic.physx_sdk_version == 0u ||
+            settings.semantic.adapter_version == 0u ||
+            settings.provenance.gpu_vendor == 0u ||
+            settings.provenance.gpu_device == 0u ||
+            settings.provenance.driver_version == 0u ||
+            settings.provenance.physx_sdk_version !=
+                settings.semantic.physx_sdk_version ||
+            settings.provenance.adapter_version !=
+                settings.semantic.adapter_version) {
+            error = {FluidBakeCode::ProductFailure,
+                     "fluid product provenance must match the semantic PhysX and adapter versions"};
+            return false;
+        }
         for (std::size_t index = 1; index < output.particles.size(); ++index) {
             if (output.particles[index - 1].id >= output.particles[index].id) {
                 error = {FluidBakeCode::ProductFailure,
@@ -468,7 +481,9 @@ bool PhysxFluidBake::build_accepted_artifact(
         candidate.semantic_key = derive_hydrology_semantic_key(settings.semantic);
         ProductIdentitySettings identity = settings.identity;
         identity.semantic_key = candidate.semantic_key;
-        candidate.product_keys = derive_product_keys(job, snapshot, identity);
+        candidate.product_keys = derive_product_keys(
+            job, snapshot, identity, settings.coarse_voxel_m,
+            settings.gameplay_layout);
         candidate.particle_snapshot_digest = snapshot;
         candidate.particle_radius_m = settings.particle_radius_m;
         candidate.accepted = true;
@@ -490,6 +505,43 @@ bool PhysxFluidBake::build_accepted_artifact(
                  "fluid product construction raised an unknown exception"};
         return false;
     }
+}
+
+bool PhysxFluidBake::build_accepted_artifact_on_renderer(
+    const FluidBakeOutput& output, const ProductBuildSettings& settings,
+    const TerrainHeightSampler& terrain, const GpuRunner& gpu_run,
+    const VisualMesher& vk_particle_visual_bake, HydrologyArtifact& artifact,
+    FluidBakeError& error) noexcept {
+    artifact = {};
+    error = {};
+    if (!vk_particle_visual_bake) {
+        error = {FluidBakeCode::ProductFailure,
+                 "Vulkan particle-water visual mesher is unavailable"};
+        return false;
+    }
+    const VisualMesher visual_mesher =
+        [gpu_run, vk_particle_visual_bake](
+            const gpu_meshing::ParticleJob& job, gpu_meshing::MeshResult& result,
+            gpu_meshing::Stats& stats, gpu_meshing::Error& mesher_error,
+            const gpu_meshing::BuildControl& control) {
+            std::string run_error;
+            const auto invoke = [&](std::string&) {
+                return vk_particle_visual_bake(job, result, stats,
+                                                mesher_error, control);
+            };
+            const bool completed = gpu_run
+                ? gpu_run("hydrology_particle_visual", invoke, run_error)
+                : invoke(run_error);
+            if (!completed && mesher_error.message.empty()) {
+                mesher_error.code = gpu_meshing::ErrorCode::VulkanFailure;
+                mesher_error.message = run_error.empty()
+                    ? "Vulkan particle-water visual meshing failed"
+                    : run_error;
+            }
+            return completed;
+        };
+    return build_accepted_artifact(output, settings, terrain, visual_mesher,
+                                   artifact, error);
 }
 
 }  // namespace hydrology

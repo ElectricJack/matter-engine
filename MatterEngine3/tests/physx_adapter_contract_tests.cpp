@@ -728,6 +728,7 @@ void test_accepted_snapshot_builds_all_products_or_publishes_nothing() {
     settings.visual_job.limits = {16u, 4096u, 65536u, 65536u};
     settings.gameplay_layout = {{0.0f, 0.0f, 0.0f}, 1.0f, 2u, 1u};
     settings.semantic = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
+    settings.provenance = {0x10deu, 0x2684u, 1u, 1u, 2u};
     bool saw_water_job = false;
     auto visual = [&](const gpu_meshing::ParticleJob& job,
                       gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
@@ -755,6 +756,32 @@ void test_accepted_snapshot_builds_all_products_or_publishes_nothing() {
               artifact.gameplay_field[0].wet_valid,
           "the accepted stable-id snapshot feeds existing visual and CPU meshers plus gameplay fields");
 
+    int gpu_run_calls = 0;
+    int vk_visual_calls = 0;
+    hydrology::HydrologyArtifact renderer_artifact{};
+    const hydrology::PhysxFluidBake::GpuRunner gpu_run =
+        [&](const char* name, std::function<bool(std::string&)> work,
+            std::string& runner_error) {
+            ++gpu_run_calls;
+            CHECK(std::string(name) == "hydrology_particle_visual",
+                  "the accepted fluid visual product uses the renderer job name");
+            return work(runner_error);
+        };
+    const hydrology::PhysxFluidBake::VisualMesher vk_visual =
+        [&](const gpu_meshing::ParticleJob& job, gpu_meshing::MeshResult& mesh,
+            gpu_meshing::Stats& stats, gpu_meshing::Error& gpu_error,
+            const gpu_meshing::BuildControl& control) {
+            ++vk_visual_calls;
+            return visual(job, mesh, stats, gpu_error, control);
+        };
+    CHECK(hydrology::PhysxFluidBake::build_accepted_artifact_on_renderer(
+              output, settings,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              gpu_run, vk_visual, renderer_artifact, error) &&
+              gpu_run_calls == 1 && vk_visual_calls == 1 &&
+              renderer_artifact.accepted,
+          "the LocalProvider-compatible seam marshals accepted water through vk_particle_visual_bake");
+
     hydrology::HydrologyArtifact rejected{};
     auto failed_visual = [](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
                             gpu_meshing::Stats&, gpu_meshing::Error& error,
@@ -768,6 +795,70 @@ void test_accepted_snapshot_builds_all_products_or_publishes_nothing() {
               failed_visual, rejected, error) && rejected.particles.empty() &&
               error.code == FluidBakeCode::ProductFailure,
           "a failed required visual product leaves no publishable artifact");
+}
+
+void test_product_keys_follow_the_settings_the_extractors_consume() {
+    FluidBakeOutput output{};
+    output.particles = {
+        {{0.25f, 1.0f, 0.25f}, {1.0f, 0.0f, 0.0f}, 2u},
+        {{0.75f, 1.5f, 0.25f}, {3.0f, 0.0f, 0.0f}, 5u},
+    };
+    output.stats = {6u, 2u, 2u, 0u, 0u, 0.1};
+    output.sensor = {0.8f, 3u, 6u, true, 0.8f, 0.8f, 0.8f, 4u};
+    hydrology::PhysxFluidBake::ProductBuildSettings settings{};
+    settings.particle_radius_m = 0.65f;
+    settings.coarse_voxel_m = 0.5f;
+    settings.visual_job.bounds_m = {{-1.0f, -1.0f, -1.0f}, {2.0f, 3.0f, 2.0f}};
+    settings.visual_job.voxel_m = 0.25f;
+    settings.visual_job.blend_width_m = 0.1f;
+    settings.visual_job.limits = {16u, 4096u, 65536u, 65536u};
+    settings.gameplay_layout = {{0.0f, 0.0f, 0.0f}, 1.0f, 2u, 1u};
+    settings.semantic = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
+    settings.provenance = {0x10deu, 0x2684u, 1u, 1u, 2u};
+    auto visual = [](const gpu_meshing::ParticleJob& job,
+                     gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
+                     gpu_meshing::Error&, const gpu_meshing::BuildControl&) {
+        mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                          0.0f, 1.0f, 0.0f};
+        mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                        0.0f, 0.0f, 1.0f};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = job.material;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+        return true;
+    };
+    const auto terrain = [](float, float, float& height) {
+        height = 0.0f;
+        return true;
+    };
+    hydrology::HydrologyArtifact first{};
+    FluidBakeError error{};
+    CHECK(hydrology::PhysxFluidBake::build_accepted_artifact(
+              output, settings, terrain, visual, first, error), error.message.c_str());
+    auto coarse_changed = settings;
+    coarse_changed.coarse_voxel_m = 0.4f;
+    hydrology::HydrologyArtifact second{};
+    CHECK(hydrology::PhysxFluidBake::build_accepted_artifact(
+              output, coarse_changed, terrain, visual, second, error), error.message.c_str());
+    CHECK(first.product_keys.coarse_cpu != second.product_keys.coarse_cpu &&
+              first.product_keys.gameplay == second.product_keys.gameplay,
+          "the coarse key follows the CPU mesher voxel setting without churning gameplay");
+    auto layout_changed = settings;
+    layout_changed.gameplay_layout = {{-0.5f, 0.0f, -0.5f}, 1.0f, 3u, 2u};
+    hydrology::HydrologyArtifact third{};
+    CHECK(hydrology::PhysxFluidBake::build_accepted_artifact(
+              output, layout_changed, terrain, visual, third, error), error.message.c_str());
+    CHECK(first.product_keys.gameplay != third.product_keys.gameplay &&
+              first.product_keys.coarse_cpu == third.product_keys.coarse_cpu,
+          "the gameplay key follows its complete section-local layout without churning CPU mesh");
+
+    auto mismatch = settings;
+    mismatch.provenance.adapter_version = 99u;
+    hydrology::HydrologyArtifact rejected{};
+    CHECK(!hydrology::PhysxFluidBake::build_accepted_artifact(
+              output, mismatch, terrain, visual, rejected, error) &&
+              error.code == FluidBakeCode::ProductFailure && rejected.particles.empty(),
+          "mismatched PhysX or adapter provenance cannot become an accepted artifact");
 }
 
 }  // namespace
@@ -788,5 +879,6 @@ int main() {
     test_backend_exceptions_never_cross_the_matter_boundary();
     test_capacity_statistics_and_sensor_consistency_are_distinct();
     test_accepted_snapshot_builds_all_products_or_publishes_nothing();
+    test_product_keys_follow_the_settings_the_extractors_consume();
     return check_summary();
 }

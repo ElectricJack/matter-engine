@@ -11,13 +11,6 @@ namespace hydrology {
 
 // A section-local X/Z lattice.  Each sample is invalid unless it has water;
 // callers must never treat an invalid sample as a stationary current.
-struct GameplayFieldLayout {
-    matter::Float3 origin_m{};
-    float cell_size_m = 0.0f;
-    std::uint32_t width = 0;
-    std::uint32_t depth = 0;
-};
-
 using TerrainHeightSampler = std::function<bool(float x_m, float z_m,
                                                 float& height_m)>;
 
