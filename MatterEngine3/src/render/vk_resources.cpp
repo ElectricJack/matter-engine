@@ -110,9 +110,10 @@ void release_device_address(uint64_t base) {
     }
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(_WINDOWS_)
 // Declared rather than pulling in <windows.h>, which would drag min/max and a
-// few thousand macros into a header-light translation unit.
+// few thousand macros into a header-light translation unit. If a prior Vulkan
+// platform include already pulled in Windows.h, use its canonical declarations.
 extern "C" __declspec(dllimport) void* __stdcall GetModuleHandleW(
     const wchar_t*);
 extern "C" __declspec(dllimport) void* __stdcall GetProcAddress(
@@ -170,7 +171,7 @@ ProcessMemoryStats process_memory_stats() noexcept {
     };
     using Fn = int(__stdcall*)(void*, PMC*, uint32_t);
     static const Fn fn = [] {
-        void* k32 = GetModuleHandleW(L"kernel32.dll");
+        auto k32 = GetModuleHandleW(L"kernel32.dll");
         return k32 ? reinterpret_cast<Fn>(GetProcAddress(k32,
                          "K32GetProcessMemoryInfo"))
                    : nullptr;

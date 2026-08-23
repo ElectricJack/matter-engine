@@ -239,6 +239,9 @@ target_compile_definitions(matter_autoremesher PRIVATE
     _USE_MATH_DEFINES
     GEOGRAM_WITH_PDEL
     AUTOREMESHER_FORCE_SHIM
+    # Geogram already gives stb_image internal linkage, but its matching
+    # stb_image_write implementation needs the separate upstream switch.
+    STB_IMAGE_WRITE_STATIC
 )
 target_compile_options(matter_autoremesher PRIVATE
     "/FI${CMAKE_SOURCE_DIR}/cmake/MatterAutoremesherConfig.h"

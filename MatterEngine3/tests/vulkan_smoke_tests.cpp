@@ -1711,11 +1711,17 @@ void run_vulkan_temporal_tests() {
               "post-reset candidate commits");
     };
     expect_one_reset({120, 80}, {}, {moved_object}, "resize resets temporal history");
-    expect_one_reset({120, 80}, {.camera_cut = true}, {moved_object},
+    viewer::TemporalInvalidation camera_cut{};
+    camera_cut.camera_cut = true;
+    expect_one_reset({120, 80}, camera_cut, {moved_object},
                      "camera cut resets temporal history");
-    expect_one_reset({120, 80}, {.world_reload = true}, {moved_object},
+    viewer::TemporalInvalidation world_reload{};
+    world_reload.world_reload = true;
+    expect_one_reset({120, 80}, world_reload, {moved_object},
                      "world reload resets temporal history");
-    expect_one_reset({120, 80}, {.renderer_reset = true}, {moved_object},
+    viewer::TemporalInvalidation renderer_reset{};
+    renderer_reset.renderer_reset = true;
+    expect_one_reset({120, 80}, renderer_reset, {moved_object},
                      "renderer recovery resets temporal history");
 
     // A newcomer id is a per-instance event, not a global cut: it enters with

@@ -153,7 +153,7 @@ static const FieldDescriptor s_part_instance_fields[] = {
     fd("casts_shadow", FieldType::Bool, ME_FIELD_OFF(PartInstance, casts_shadow)),
 };
 
-static const FieldDescriptor s_sector_streaming_fields[] = {};
+static const FieldDescriptor* const s_sector_streaming_fields = nullptr;
 
 // ---------------------------------------------------------------------------
 // Component descriptor table.
