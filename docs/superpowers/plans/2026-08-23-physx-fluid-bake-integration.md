@@ -390,23 +390,23 @@ git commit -m "feat: persist PhysX river bake products"
 - Consumes: imperative builder calls for backend, particle spacing, density, fixed step, iterations/neighbors, caps, sensor grid, dam, dry collar, and emitters.
 - Produces: canonical world definition/hash; worker-owned PhysX bake; renderer GPU-mesher handoff; `HydrologyStatus`/events; dry-world fallback on failure; stale-generation protection.
 
-- [ ] **Step 1: Write failing DSL canonicalization tests**
+- [x] **Step 1: Write failing DSL canonicalization tests**
 
 Author the exact builder surface and assert defaults, invalid ranges, call-order independence where intended, multiple emitter preservation, canonical text/hash changes for every solver-relevant setting, and no hidden environment override.
 
-- [ ] **Step 2: Implement the builder and update the ravine scene**
+- [x] **Step 2: Implement the builder and update the ravine scene**
 
 The scene explicitly declares one upstream inlet, the virtual dam, fill sensor, dry margin, particle spacing, fixed timestep, batch/max steps, capacity, and visual/coarse/gameplay quality settings.
 
-- [ ] **Step 3: Write failing async lifecycle tests**
+- [x] **Step 3: Write failing async lifecycle tests**
 
 Assert PhysX runs on the bake worker, Vulkan meshing runs through the existing renderer callback, progress/cancellation events remain thread-safe, dry terrain loads on failure, superseded generations cannot publish, and cache hits submit neither PhysX nor Vulkan work.
 
-- [ ] **Step 4: Implement orchestration and status mapping**
+- [x] **Step 4: Implement orchestration and status mapping**
 
 Lazy-create `PhysxRuntime` only for requested PhysX bakes. Compare CUDA/Vulkan LUID before full allocation. Copy the final snapshot to host, idle/release PhysX, then invoke Vulkan meshing. Publish `Ready` only after artifact validation/atomic save.
 
-- [ ] **Step 5: Pass CPU/default-off/editor opt-in tests and commit**
+- [x] **Step 5: Pass CPU/default-off/editor opt-in tests and commit**
 
 ```powershell
 git add MatterEngine3/include/matter/hydrology.h MatterEngine3/include/matter/river_network.h MatterEngine3/src/dsl_bindings.cpp MatterEngine3/src/script/world_definition_loader.cpp MatterEngine3/src/provider/local_provider.cpp MatterEngine3/src/provider/local_provider.h MatterEngine3/src/matter_engine.cpp projects/world_demo/scenes/RiverHydrology/RiverHydrology.js MatterEngine3/tests/river_network_tests.cpp MatterEngine3/tests/dsl_determinism_tests.cpp MatterEngine3/tests/async_bake_tests.cpp
