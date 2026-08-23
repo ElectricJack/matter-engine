@@ -349,23 +349,23 @@ git commit -m "feat: fill river sections with PhysX PBD water"
 - Consumes: accepted, stable-id-sorted final particles and terrain-height sampling.
 - Produces: visual `ParticleJob`, coarse CPU mesh, section-local height/depth/wet/velocity field, PhysX provenance/stats/sensor metadata, particle snapshot, semantic key, and immutable `MHYDMSH2` artifact.
 
-- [ ] **Step 1: Write failing product and artifact migration tests**
+- [x] **Step 1: Write failing product and artifact migration tests**
 
 Assert radius/velocity/id conversion, empty samples invalid rather than zero-current, volume-weighted velocity literals, independent product keys, exact semantic invalidation inputs, V1 rejection or explicit migration, V2 round-trip, corruption rejection, and no artifact publication on failed/cancelled simulation.
 
-- [ ] **Step 2: Implement gameplay-field conversion and product keys**
+- [x] **Step 2: Implement gameplay-field conversion and product keys**
 
 Keep visual-only settings out of coarse/gameplay keys. Include PhysX/adapter/PBD/collision/network/dam/sensor versions in the hydrology semantic key.
 
-- [ ] **Step 3: Extend the artifact atomically**
+- [x] **Step 3: Extend the artifact atomically**
 
 Use bounded lengths and finite validation for every new payload, preserve write-temp/reopen/atomic-replace, and record acceptance explicitly. Debug particles may be stripped only after all accepted products exist.
 
-- [ ] **Step 4: Connect the existing GPU and CPU meshers**
+- [x] **Step 4: Connect the existing GPU and CPU meshers**
 
 Post the final host snapshot through `vk_particle_visual_bake`, use material 4, build the coarse CPU mesh separately, and fail the hydrology result if either required accepted product fails. Never call a PhysX isosurface symbol.
 
-- [ ] **Step 5: Pass artifact/mesher/orchestration tests and commit**
+- [x] **Step 5: Pass artifact/mesher/orchestration tests and commit**
 
 ```powershell
 git add MatterEngine3/src/hydrology MatterEngine3/tests/hydrology_artifact_tests.cpp MatterEngine3/tests/gpu_visual_mesher_cpu_tests.cpp MatterEngine3/tests/physx_adapter_contract_tests.cpp
