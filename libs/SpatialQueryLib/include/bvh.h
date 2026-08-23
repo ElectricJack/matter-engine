@@ -36,6 +36,13 @@ struct Intersection
 	uint instPrim;	// instance index (12 bit) and primitive index (20 bit)
 };
 
+// These SIMD records intentionally expose anonymous scalar/vector views.
+// Limit MSVC's C4201 exception to the two ABI declarations that require them.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4201)
+#endif
+
 // ray struct, prepared for SIMD AABB intersection
 struct MATTER_ALIGN(64) BVHRay
 {
@@ -58,6 +65,16 @@ struct BVHNode
 		return (e.x * e.y + e.y * e.z + e.z * e.x) * triCount;
 	}
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
+// Cache-line alignment intentionally leaves tail padding in this BLAS record.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
 
 // bounding volume hierarchy, to be used as BLAS
 class MATTER_ALIGN(64) BVH
@@ -100,6 +117,10 @@ public:
 	int buildStackPtr;
 };
 
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
 // minimalist mesh class
 class BvhMesh
 {
@@ -141,6 +162,12 @@ public:
 	mat4& GetInvTransform() { return invTransform; }
 };
 
+// TLAS nodes intentionally overlay anonymous child/leaf and SIMD views.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4201)
+#endif
+
 // Top Level Acceleration Structure
 struct TLASNode
 {
@@ -159,6 +186,16 @@ struct TLASNode
 	};
 	bool isLeaf() const { return leftRight == 0; }
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
+// Cache-line alignment intentionally leaves tail padding in this TLAS record.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
 
 class MATTER_ALIGN(64) TLAS
 {
@@ -189,3 +226,7 @@ public:
 	TLASNode* tlasNode = 0;
 	uint* nodeIdx = 0;
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif

@@ -45,9 +45,6 @@ target_include_directories(matter_editor SYSTEM PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party/bc7enc"
     "${CMAKE_SOURCE_DIR}/third_party/ozz-animation/include"
     "${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include"
-    # This source-built SIMD dependency intentionally exposes anonymous
-    # union views and over-aligned records in its public ABI.
-    "${CMAKE_SOURCE_DIR}/libs/SpatialQueryLib/include"
 )
 target_compile_definitions(matter_editor PRIVATE
     PLATFORM_DESKTOP
@@ -86,7 +83,7 @@ target_link_libraries(matter_editor PRIVATE
     dbghelp
 )
 matter_apply_project_defaults(matter_editor)
-target_compile_options(matter_editor PRIVATE /external:W0 /WX)
+target_compile_options(matter_editor PRIVATE /WX)
 set_target_properties(matter_editor PROPERTIES
     OUTPUT_NAME editor
     WIN32_EXECUTABLE TRUE

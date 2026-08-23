@@ -69,6 +69,14 @@ typedef unsigned char uchar;
 typedef unsigned int uint;
 typedef unsigned short ushort;
 
+// These vector views intentionally use anonymous structs so named components
+// and indexed storage share the exact OpenCL-compatible bytes. MSVC diagnoses
+// that ABI extension as C4201; keep the exception local to these declarations.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4201)
+#endif
+
 // vector type placeholders, carefully matching OpenCL's layout and alignment
 struct MATTER_ALIGN( 8 ) int2
 {
@@ -113,6 +121,10 @@ struct MATTER_ALIGN( 16 ) float4
 	union { struct { float x, y, z, w; }; float cell[4]; };
 	float& operator [] ( const int n ) { return cell[n]; }
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 // math functions
 inline float fminf( float a, float b ) { return a < b ? a : b; }

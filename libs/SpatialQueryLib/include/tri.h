@@ -10,6 +10,13 @@
 
 #include "precomp.h"
 
+// The four SIMD aliases intentionally align each shared float3/__m128 view;
+// MSVC's C4324 padding is the required 64-byte triangle ABI, not accidental.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
+
 // minimalist triangle struct
 struct MATTER_ALIGN(64) Tri
 {
@@ -19,6 +26,10 @@ struct MATTER_ALIGN(64) Tri
 	union { float3 vertex2; __m128 v2; };
 	union { float3 centroid; __m128 centroid4; }; // total size: 64 bytes
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 // additional triangle data, for texturing and shading
 // tint is per-triangle RGBA copied from the nearest particle; a (alpha) is the
