@@ -1,0 +1,116 @@
+#include "check.h"
+
+#include "render/gpu_meshing/water_scene_part.h"
+
+#include <cmath>
+#include <limits>
+#include <memory>
+
+namespace {
+
+gpu_meshing::MeshResult triangle_mesh() {
+    gpu_meshing::MeshResult mesh{};
+    mesh.positions = {-2.0f, 3.0f, 1.0f, 4.0f, 3.0f, 1.0f,
+                      -2.0f, 7.0f, 1.0f};
+    mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                    0.0f, 0.0f, 1.0f};
+    mesh.indices = {0u, 1u, 2u};
+    mesh.material = 4u;
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    return mesh;
+}
+
+void test_converts_to_one_ordinary_glass_part() {
+    const auto mesh = triangle_mesh();
+    std::shared_ptr<const viewer::VkScenePart> part;
+    uint64_t instance_id = 0;
+    gpu_meshing::Error error{};
+    CHECK(gpu_meshing::build_water_scene_part(
+              mesh, 0x123456789abcdef0ull, part, instance_id, error),
+          error.message.c_str());
+    CHECK(part && part->part_hash != 0u && instance_id != 0u &&
+              instance_id != part->part_hash,
+          "water conversion derives distinct nonzero stable identities");
+    CHECK(part->clusters.size() == 1u &&
+              part->clusters[0].lods.size() == 1u &&
+              part->clusters[0].lods[0].first_index == 0u &&
+              part->clusters[0].lods[0].index_count == mesh.indices.size(),
+          "water conversion produces one cluster and one LOD");
+    CHECK(part->vertices.size() == 3u && part->indices == mesh.indices,
+          "water conversion retains exact indexed topology");
+    for (size_t i = 0; i < part->vertices.size(); ++i) {
+        const auto& vertex = part->vertices[i];
+        CHECK(vertex.position.x == mesh.positions[i * 3u + 0u] &&
+                  vertex.position.y == mesh.positions[i * 3u + 1u] &&
+                  vertex.position.z == mesh.positions[i * 3u + 2u] &&
+                  vertex.normal.x == mesh.normals[i * 3u + 0u] &&
+                  vertex.normal.y == mesh.normals[i * 3u + 1u] &&
+                  vertex.normal.z == mesh.normals[i * 3u + 2u],
+              "water conversion retains exact positions and normals");
+        CHECK(vertex.material_index == 4u && vertex.tint.x == 1.0f &&
+                  vertex.tint.y == 1.0f && vertex.tint.z == 1.0f &&
+                  vertex.surface.z == 1.0f && vertex.surface.w == 1.0f,
+              "water conversion selects canonical glass material 4");
+    }
+    CHECK(part->clusters[0].aabb_min.x == -2.0f &&
+              part->clusters[0].aabb_min.y == 3.0f &&
+              part->clusters[0].aabb_min.z == 1.0f &&
+              part->clusters[0].aabb_max.x == 4.0f &&
+              part->clusters[0].aabb_max.y == 7.0f &&
+              part->clusters[0].aabb_max.z == 1.0f,
+          "water conversion computes exact bounds");
+    CHECK(std::fabs(part->clusters[0].radius -
+                    0.5f * std::sqrt(52.0f)) < 1e-6f,
+          "water conversion computes cluster radius from its diagonal");
+
+    std::shared_ptr<const viewer::VkScenePart> repeated;
+    uint64_t repeated_instance = 0;
+    CHECK(gpu_meshing::build_water_scene_part(
+              mesh, 0x123456789abcdef0ull, repeated, repeated_instance, error) &&
+              repeated->part_hash == part->part_hash &&
+              repeated_instance == instance_id,
+          "artifact digest yields stable part and instance identities");
+}
+
+void test_dry_omission_and_malformed_transactionality() {
+    gpu_meshing::MeshResult dry{};
+    dry.material = 4u;
+    dry.content_digest = gpu_meshing::mesh_content_digest(dry);
+    std::shared_ptr<const viewer::VkScenePart> part =
+        std::make_shared<viewer::VkScenePart>();
+    uint64_t instance_id = 99u;
+    gpu_meshing::Error error{};
+    CHECK(gpu_meshing::build_water_scene_part(dry, 10u, part, instance_id,
+                                              error) &&
+              !part && instance_id == 0u,
+          "dry water mesh is omitted without an empty renderer part");
+
+    const auto old = std::make_shared<viewer::VkScenePart>();
+    old->part_hash = 77u;
+    part = old;
+    instance_id = 88u;
+    auto malformed = triangle_mesh();
+    malformed.indices[2] = 99u;
+    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, part,
+                                               instance_id, error) &&
+              part == old && instance_id == 88u,
+          "invalid replacement leaves the previously accepted binding intact");
+    malformed = triangle_mesh();
+    malformed.normals.pop_back();
+    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, part,
+                                               instance_id, error),
+          "mismatched position and normal streams are rejected");
+    malformed = triangle_mesh();
+    malformed.positions[0] = std::numeric_limits<float>::infinity();
+    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, part,
+                                               instance_id, error),
+          "non-finite renderer geometry is rejected");
+}
+
+}  // namespace
+
+int main() {
+    test_converts_to_one_ordinary_glass_part();
+    test_dry_omission_and_malformed_transactionality();
+    return check_summary();
+}

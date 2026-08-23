@@ -25,6 +25,7 @@
 #include "matter/render_debug.h"
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
+#include "matter/gpu_visual_meshing.h"
 #include "matter/math_types.h"
 #include "matter/world_definition.h"
 #include "material_registry.h"
@@ -50,6 +51,10 @@ struct VulkanFrame;
 struct VulkanVolumetricsSettings;
 struct FogSettings;
 struct TilesetPomSettings;
+}
+
+namespace gpu_meshing {
+class GpuVisualMesher;
 }
 
 namespace tileset {
@@ -810,6 +815,12 @@ public:
     VkSceneRenderer& operator=(const VkSceneRenderer&) = delete;
 
     bool init(std::string& error);
+    bool build_particle_visual(
+        const gpu_meshing::ParticleJob& job,
+        gpu_meshing::MeshResult& result,
+        gpu_meshing::Stats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control = {});
     int ensure_part(const VkScenePart& part, std::string& error);
 
     // M2.5: how many terminal impostors currently hold an atlas slot. On the
@@ -2215,6 +2226,7 @@ private:
     void evict_vt_rung(PartRecord& record, uint32_t rung);
 
     matter::VulkanDevice* vulkan_ = nullptr;
+    std::unique_ptr<gpu_meshing::GpuVisualMesher> gpu_visual_mesher_;
     VkAnimationSkinning animation_skinning_;
     std::vector<VkSkinFallback> consumed_animation_skin_fallbacks_;
     VkAnimationBounds animation_bounds_;

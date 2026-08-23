@@ -2,6 +2,7 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
 #include "vk_scene_renderer.h"
+#include "gpu_meshing/gpu_visual_mesher_vk.h"
 
 #include "lod_distance.h"   // the one LOD selection rule (M1)
 #include "impostor_bake.h"  // M2.5 terminal impostor atlas layout
@@ -18,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -1621,6 +1623,7 @@ VkSceneRenderer::~VkSceneRenderer() {
 
 void VkSceneRenderer::destroy_pipeline() {
     if (!vulkan_) return;
+    gpu_visual_mesher_.reset();
     if (volumetrics_) {
         volumetrics_->destroy();
         volumetrics_.reset();
@@ -7394,6 +7397,15 @@ bool VkSceneRenderer::init(std::string& error) {
         ensure_vertex_buffer(vertex_reserve, error) &&
         ensure_index_buffer(index_reserve, error);
     if (initialized_) {
+        try {
+            gpu_visual_mesher_ =
+                std::make_unique<gpu_meshing::GpuVisualMesher>(*vulkan_);
+        } catch (const std::bad_alloc&) {
+            error = "GPU visual mesher allocation failed";
+            initialized_ = false;
+        }
+    }
+    if (initialized_) {
         std::printf("[vk] static reserve: clusters %llu MiB, vertices %llu MiB, "
                     "indices %llu MiB (host-visible)\n",
                     (unsigned long long)(clusters_.size >> 20),
@@ -7415,6 +7427,22 @@ bool VkSceneRenderer::init(std::string& error) {
         raster_extent_ = {};
     }
     return initialized_;
+}
+
+bool VkSceneRenderer::build_particle_visual(
+    const gpu_meshing::ParticleJob& job, gpu_meshing::MeshResult& result,
+    gpu_meshing::Stats& stats, gpu_meshing::Error& error,
+    const gpu_meshing::BuildControl& control) {
+    result = {};
+    stats = {};
+    error = {};
+    if (!initialized_ || !gpu_visual_mesher_) {
+        error.code = gpu_meshing::ErrorCode::Unavailable;
+        error.message = "Vulkan GPU visual mesher is not initialized";
+        return false;
+    }
+    return gpu_visual_mesher_->build_particle_visual(job, result, stats,
+                                                      error, control);
 }
 
 int VkSceneRenderer::ensure_part(const VkScenePart& part,

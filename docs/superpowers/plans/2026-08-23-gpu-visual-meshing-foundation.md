@@ -381,23 +381,23 @@ git commit -m "feat: persist GPU water mesh products"
 - `build_water_scene_part(const MeshResult&, uint64_t artifact_digest, std::shared_ptr<const viewer::VkScenePart>&, uint64_t& instance_id, Error&)` validates and converts accepted output to the normal indexed/static renderer format.
 - `LocalProvider::Config::vk_particle_visual_bake` is the renderer callback seam that later PhysX orchestration posts through `GpuJobQueue`; it is null in headless mode.
 
-- [ ] **Step 1: Write failing render-contract tests**
+- [x] **Step 1: Write failing render-contract tests**
 
 Test a triangle mesh and require one cluster/LOD, exact positions/normals/uint32 indices, digest-derived stable part and instance identities, material index `4` on every vertex, exact bounds, dry mesh omission, rejection of malformed meshes, and unchanged old binding when replacement upload fails.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Build `gpu_water_render_tests`. Expected: converter and callback seam are absent.
 
-- [ ] **Step 3: Implement trusted conversion and renderer ownership**
+- [x] **Step 3: Implement trusted conversion and renderer ownership**
 
 Construct ordinary `VkRasterVertex` entries with white tint and canonical glass material 4, one cluster spanning the full index buffer, identity instance transform, and digest-derived nonzero ids. `VkSceneRenderer::init` creates the mesher only after the Vulkan device is initialized; destruction drains submitted immediate work before the member releases buffers/pipelines.
 
-- [ ] **Step 4: Wire the callback without starting a bake**
+- [x] **Step 4: Wire the callback without starting a bake**
 
 Configure `vk_particle_visual_bake` beside `vk_tileset_bake` in both initial and reload setup paths. The callback fails with `ErrorCode::Unavailable` when no Vulkan renderer is active. No current world invokes it; the PhysX phase supplies the final particle snapshot and schedules the call through the existing GPU job queue.
 
-- [ ] **Step 5: Verify GREEN and registration census**
+- [x] **Step 5: Verify GREEN and registration census**
 
 Run `ctest -R 'gpu_water_render_tests|editor_registration_census|viewer_graph_tests'`. Expected: converter tests pass and the editor census remains exact apart from the intentionally registered synthetic test part.
 

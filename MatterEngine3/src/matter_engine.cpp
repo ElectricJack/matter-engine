@@ -2914,6 +2914,21 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
     };
+    cfg.vk_particle_visual_bake = [this](
+        const gpu_meshing::ParticleJob& job,
+        gpu_meshing::MeshResult& result, gpu_meshing::Stats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) -> bool {
+        if (!vk_scene) {
+            result = {};
+            stats = {};
+            error.code = gpu_meshing::ErrorCode::Unavailable;
+            error.message = "vk_particle_visual_bake: Vulkan renderer not active";
+            return false;
+        }
+        return vk_scene->build_particle_visual(job, result, stats, error,
+                                               control);
+    };
     // Vulkan hardware-RT .gtex bake (vulkan-rt-gtex-bake.md §I.7, V4): binds
     // run_tileset_deferred's bake-capable arm to the renderer. Runs on the
     // app/Vulkan thread — the provider marshals it through cfg.gpu_run above.
@@ -8701,6 +8716,21 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
             return false;
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
+    };
+    cfg.vk_particle_visual_bake = [this](
+        const gpu_meshing::ParticleJob& job,
+        gpu_meshing::MeshResult& result, gpu_meshing::Stats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) -> bool {
+        if (!vk_scene) {
+            result = {};
+            stats = {};
+            error.code = gpu_meshing::ErrorCode::Unavailable;
+            error.message = "vk_particle_visual_bake: Vulkan renderer not active";
+            return false;
+        }
+        return vk_scene->build_particle_visual(job, result, stats, error,
+                                               control);
     };
     // V4: same vk_tileset_bake wiring as execute_bake above — including the
     // device-capability gate, so a non-RT GPU takes the load-only arm here too

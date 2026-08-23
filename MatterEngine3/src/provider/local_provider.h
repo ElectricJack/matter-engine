@@ -7,6 +7,7 @@
 #include "part_graph.h"           // PartGraph, InstallResult, ChildRequest
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
 #include "matter/world_definition.h"
+#include "matter/gpu_visual_meshing.h"
 #include "tileset_slot_allocator.h"  // LRU detail-tileset slot pool (chart-VT C3)
 #include "detail_bake_plan.h"        // DetailBakeRequest / plan_detail_bakes
 
@@ -163,6 +164,17 @@ struct LocalProviderConfig {
                        const tileset::BakeInputs& inputs,
                        bool dump_png,
                        std::string& err)> vk_tileset_bake;
+
+    // Renderer-owned Vulkan particle-water visual bake. Future fluid
+    // orchestration posts this blocking call through gpu_run after the final
+    // stable particle snapshot. It is deliberately null in headless mode;
+    // coarse CPU collision/query output never depends on this callback.
+    std::function<bool(const gpu_meshing::ParticleJob& job,
+                       gpu_meshing::MeshResult& result,
+                       gpu_meshing::Stats& stats,
+                       gpu_meshing::Error& error,
+                       const gpu_meshing::BuildControl& control)>
+        vk_particle_visual_bake;
 
     // Task 7: OOM/error injection hook for testing skip-and-continue.
     // Fired once per part processed (install bake + fetch/load); `part_index` is the

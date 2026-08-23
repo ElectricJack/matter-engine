@@ -26,9 +26,9 @@ matter_read_manifest(
 list(FILTER matter_engine_viewer_sources
     INCLUDE REGEX "^MatterEngine3/src/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 18)
+if(NOT matter_engine_viewer_source_count EQUAL 19)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 18 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 19 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -51,9 +51,9 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 151)
+    set(matter_expected_viewer_product_count 152)
 else()
-    set(matter_expected_viewer_product_count 150)
+    set(matter_expected_viewer_product_count 151)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
