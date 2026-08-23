@@ -256,6 +256,9 @@ private:
 
     matter::VulkanDevice* vulkan_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
+    VkPipelineStageFlags2 sampled_shader_stages_ =
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     matter::VkImageResource emergency_[4];
     matter::VkBufferResource cloud_layer_ssbo_[2];
     VkSampler generation_sampler_ = VK_NULL_HANDLE;

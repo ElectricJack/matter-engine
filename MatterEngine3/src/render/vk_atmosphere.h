@@ -124,6 +124,9 @@ private:
                            const matter::Float3& to_sun, std::string& error);
 
     matter::VulkanDevice* vulkan_ = nullptr;
+    VkPipelineStageFlags2 sampled_shader_stages_ =
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     matter::VkImageResource transmittance_;
     matter::VkImageResource multiscatter_;
     matter::VkImageResource sky_view_;

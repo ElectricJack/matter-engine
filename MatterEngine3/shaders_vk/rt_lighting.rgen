@@ -681,7 +681,11 @@ void main() {
             hit.cone_spread =
                 cone_spread_after_roughness(pixel_spread, roughness);
             traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
-                        world + normal * constants.bias, constants.bias,
+                        // `normal` is the G-buffer shading normal, not a
+                        // geometric normal. Advance on the outgoing ray so a
+                        // normal-mapped/smoothed surface cannot place the
+                        // reflection origin behind its own triangle.
+                        world + reflected * constants.bias, constants.bias,
                         reflected, constants.max_distance, 1);
             vec3 spec_hit_base;
             vec3 incoming = (hit.surface.flags & RT_SURFACE_VALID) != 0u

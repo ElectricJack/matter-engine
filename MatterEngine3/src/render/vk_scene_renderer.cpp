@@ -7920,10 +7920,12 @@ bool VkSceneRenderer::record_test_surface_ray(
         return false;
     }
     FrameResources& selected = frames_[frame.frame_slot];
-    // Keep this recognizable to the source-level lifetime gate: the former
-    // update_environment_descriptor(selected) call is now fallible because
-    // publishing a newly generated ping is a flush transaction.
-    if (!update_environment_descriptor(selected, error)) return false;
+    // record_test_surface_ray() is appended to a production cull/render pass.
+    // That pass already published and bound selected.environment_descriptor_set.
+    // Rewriting it here invalidates the still-recording command buffer because
+    // the layout deliberately does not use UPDATE_AFTER_BIND. Keep the same
+    // descriptor snapshot for both traces; a later frame publishes any newer
+    // cloud-shadow ping before either trace is bound.
     if (invalid_part_slot != UINT32_MAX) {
         if (invalid_part_slot >= parts_.size() ||
             selected.rt_parts.mapped == nullptr) {

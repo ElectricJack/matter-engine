@@ -15,18 +15,21 @@ namespace {
 
 struct ClearImagesRecord {
     const std::vector<matter::VkImageResource*>* images = nullptr;
+    VkPipelineStageFlags2 sampled_shader_stages = 0;
 };
 
 struct ReadTauRecord {
     matter::VkImageResource* image = nullptr;
     VkBuffer destination = VK_NULL_HANDLE;
     uint32_t x = 0, y = 0, z = 0;
+    VkPipelineStageFlags2 sampled_shader_stages = 0;
 };
 
 struct WriteTauRecord {
     matter::VkImageResource* image = nullptr;
     VkBuffer source = VK_NULL_HANDLE;
     uint32_t x = 0, y = 0, z = 0;
+    VkPipelineStageFlags2 sampled_shader_stages = 0;
 };
 
 struct GenerationRecord {
@@ -143,9 +146,7 @@ void record_clear_images(VkCommandBuffer command_buffer, void* user_data) {
             command_buffer, *image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            record.sampled_shader_stages,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -171,9 +172,7 @@ void record_read_tau(VkCommandBuffer command_buffer, void* user_data) {
     matter::record_image_transition(
         command_buffer, *record.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        record.sampled_shader_stages,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -196,9 +195,7 @@ void record_write_tau(VkCommandBuffer command_buffer, void* user_data) {
     matter::record_image_transition(
         command_buffer, *record.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        record.sampled_shader_stages,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -226,6 +223,11 @@ bool VkCloudShadows::init(matter::VulkanDevice& vulkan, std::string& error) {
     if (initialized_) return true;
     vulkan_ = &vulkan;
     device_ = vulkan.device();
+    sampled_shader_stages_ = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    if (vulkan.ray_tracing_available())
+        sampled_shader_stages_ |=
+            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
     requested_settings_.enabled = false;
     requested_levels_ = matter::resolve_cloud_shadow_levels(requested_settings_);
     if (!create_generation_resources(error) || !create_emergency_images(error)) {
@@ -366,7 +368,7 @@ bool VkCloudShadows::create_emergency_images(std::string& error) {
 
 bool VkCloudShadows::clear_images(
     const std::vector<matter::VkImageResource*>& images, std::string& error) {
-    ClearImagesRecord record{&images};
+    ClearImagesRecord record{&images, sampled_shader_stages_};
     std::vector<std::shared_ptr<void>> lifetimes;
     lifetimes.reserve(images.size());
     for (const auto* image : images) lifetimes.push_back(image->lifetime);
@@ -703,9 +705,7 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
         auto& output = level.cumulative[destination];
         matter::record_image_transition(
             command_buffer, output, VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            sampled_shader_stages_,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -752,9 +752,7 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
             command_buffer, output, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            sampled_shader_stages_,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -856,7 +854,8 @@ bool VkCloudShadows::environment_image_is_clear_for_test(
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readback, error) ||
         !matter::map_buffer(readback, error)) return false;
-    ReadTauRecord request{&image, readback.buffer, 0, 0, 0};
+    ReadTauRecord request{
+        &image, readback.buffer, 0, 0, 0, sampled_shader_stages_};
     if (!matter::submit_immediate(
             *vulkan_, record_read_tau, &request, error,
             matter::ImmediateSubmitPhase::staging_readback,
@@ -954,7 +953,8 @@ bool VkCloudShadows::readback_voxel(
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readback, error) ||
         !matter::map_buffer(readback, error)) return false;
-    ReadTauRecord request{&image, readback.buffer, x, y, z};
+    ReadTauRecord request{
+        &image, readback.buffer, x, y, z, sampled_shader_stages_};
     if (!matter::submit_immediate(
             *vulkan_, record_read_tau, &request, error,
             matter::ImmediateSubmitPhase::staging_readback,
@@ -1000,7 +1000,8 @@ bool VkCloudShadows::write_cumulative_raw_for_test(
         !matter::map_buffer(upload, error)) return false;
     std::memcpy(upload.mapped, &raw, sizeof(raw));
     if (!matter::flush_buffer(upload, 0, sizeof(raw), error)) return false;
-    WriteTauRecord request{&image, upload.buffer, x, y, z};
+    WriteTauRecord request{
+        &image, upload.buffer, x, y, z, sampled_shader_stages_};
     return matter::submit_immediate(
         *vulkan_, record_write_tau, &request, error,
         matter::ImmediateSubmitPhase::staging_upload,
@@ -1047,6 +1048,8 @@ void VkCloudShadows::destroy() {
     failed_candidate_lifetimes_.clear();
     vulkan_ = nullptr;
     device_ = VK_NULL_HANDLE;
+    sampled_shader_stages_ = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     active_ = false;
     initialized_ = false;
     request_failed_ = false;

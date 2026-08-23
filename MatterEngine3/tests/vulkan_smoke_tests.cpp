@@ -3246,8 +3246,10 @@ void run_vt_path(matter::VulkanDevice& vulkan) {
     // Keep the physical pool to a single array layer; the production default
     // (8192 pages, ~0.9 GB) is pointless for a 2-chart fixture.
 #ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
     _putenv_s("MATTER_VT_POOL_PAGES", "256");
 #else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
 #endif
     std::string error;
@@ -3708,8 +3710,10 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
 #ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
     _putenv_s("MATTER_VT_POOL_PAGES", "256");
 #else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
 #endif
     std::string error;
@@ -4191,9 +4195,11 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
 #ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
     _putenv_s("MATTER_VT_POOL_PAGES", "256");
     _putenv_s("MATTER_VT_ENRICH_PER_FRAME", "2");
 #else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
     setenv("MATTER_VT_ENRICH_PER_FRAME", "2", 1);
 #endif
@@ -4601,8 +4607,10 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 320;
     constexpr uint32_t height = 200;
 #ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
     _putenv_s("MATTER_VT_POOL_PAGES", "256");
 #else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
 #endif
     std::string error;
@@ -5824,11 +5832,20 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
     uint32_t& retry_x                 = ctx.retry_x;
     uint32_t& retry_y                 = ctx.retry_y;
 
-    const uint64_t immediate_before = matter::immediate_submit_count();
-    CHECK(renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
-                                 error) &&
-              renderer.record_cull_and_render(
-                  frame, matrices, camera.position, 1.0f, error) &&
+    const bool first_prepared = renderer.prepare_frame(
+        frame, matrices, camera.position, 1.0f, error);
+    CHECK(first_prepared && vulkan.validation_error_count() == 0,
+          error.empty() ? "prepare native RT frame without validation errors"
+                        : error.c_str());
+    // prepare_frame may settle deferred asset uploads created by ensure_part;
+    // the frame-recording contract begins after that explicit preparation.
+    const uint64_t immediate_before_record = matter::immediate_submit_count();
+    const bool first_recorded = first_prepared && renderer.record_cull_and_render(
+        frame, matrices, camera.position, 1.0f, error);
+    CHECK(first_recorded && vulkan.validation_error_count() == 0,
+          error.empty() ? "record native RT frame without validation errors"
+                        : error.c_str());
+    CHECK(first_recorded &&
               renderer.record_composite_to_swapchain(frame, error),
           error.empty() ? "record BLAS TLAS native shadow trace"
                         : error.c_str());
@@ -5858,7 +5875,7 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
               "native RT frame observes direct-shadow and diffuse-GI dispatches");
         CHECK(renderer.test_composite_uses_gi_temporal(),
               "same-frame composite descriptor samples accumulated GI output");
-        CHECK(matter::immediate_submit_count() == immediate_before,
+        CHECK(matter::immediate_submit_count() == immediate_before_record,
               "native RT frame records without immediate submit");
         CHECK(vulkan.end_frame(frame, error),
               error.empty() ? "submit native RT frame" : error.c_str());
@@ -8394,28 +8411,66 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
         // count is saturated and can only fall. It asserted
         // rough_lit >= mirror_lit, which no widening could ever satisfy.
         //
-        // What this fixture can show, and what a broken GGX normalization would
-        // break, is the pair of invariants below: reflected energy over the
-        // receiver is conserved as roughness goes 0.02 -> 0.65, while the
-        // radiance stops being uniform across it. The sharp lobe reflects the
-        // same patch of the target from every receiver pixel (peak == mean,
-        // p/m == 1.0); the wide lobe integrates a different slice per pixel, so
-        // per-pixel radiance scatters (p/m ~ 2.6) even though the mean holds.
+        // The physical sky is directionally varying, so this first fixture
+        // measures lobe broadening only. The controlled uniform-radiance
+        // enclosure below measures energy conservation independently; mixing
+        // the two made a valid rough lobe fail whenever it sampled bright sky.
         CHECK(std::isfinite(rough_metal_stats.second.x) &&
                   std::isfinite(rough_metal_stats.second.y) &&
                   std::isfinite(rough_metal_stats.second.z) &&
                   // the wide lobe must not go dark over the receiver
                   rough_metal_stats.first * 2u >= mirror_receiver_total &&
-                  // energy conserved, not amplified or swallowed
-                  rough_mean > mirror_mean * 0.5 &&
-                  rough_mean < mirror_mean * 1.5 &&
                   // sharp lobe uniform across the receiver, wide lobe not
                   mirror_peak <= mirror_mean * 1.05 &&
                   rough_peak > rough_mean * 1.5,
-              "rough metal spreads the reflected lobe and conserves finite energy");
+              "rough metal spreads the reflected lobe with finite energy");
+
+        const MaterialGpuRecord physical_target = gi_materials[0];
+        viewer::VkSceneLighting uniform_lighting = ctx.lighting;
+        uniform_lighting.atmosphere_sources.authored_display_sky_chroma_rgb = {};
+        uniform_lighting.atmosphere_sources.authored_irradiance_chroma_rgb = {};
+        uniform_lighting.atmosphere_sources.sun_multiplier = 0.0f;
+        renderer.set_lighting(uniform_lighting);
+        gi_materials[0].emission_strength[0] = 1.0f;
+        gi_materials[0].emission_strength[1] = 0.02f;
+        gi_materials[0].emission_strength[2] = 0.02f;
+        gi_materials[0].emission_strength[3] = 1.0f;
+        gi_materials[1].base_roughness[3] = 0.02f;
+        CHECK(renderer.ensure_part(rt_horizontal_part(
+                  926, 2.0f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f),
+                  error) >= 0 &&
+                  renderer.update_materials(gi_materials, 12, 1, error) &&
+                  renderer.update_instances(
+                      {{920, identity_matrix()}, {925, identity_matrix()},
+                       {926, identity_matrix()}}, error) &&
+                  render_temporal_control(311),
+              error.empty() ? "render uniform-radiance mirror fixture"
+                            : error.c_str());
+        specular_coverage();
+        const double uniform_mirror_mean = receiver_mean_energy;
+        gi_materials[1].base_roughness[3] = 0.65f;
+        CHECK(renderer.update_materials(gi_materials, 13, 1, error) &&
+                  render_temporal_control(312),
+              error.empty() ? "render uniform-radiance rough-metal fixture"
+                            : error.c_str());
+        const auto uniform_rough_stats = specular_coverage();
+        const double uniform_rough_mean = receiver_mean_energy;
+        CHECK(uniform_rough_stats.first > 0u &&
+                  std::isfinite(uniform_rough_mean) &&
+                  uniform_mirror_mean > 0.0 &&
+                  uniform_rough_mean > uniform_mirror_mean * 0.5 &&
+                  uniform_rough_mean < uniform_mirror_mean * 1.5,
+              "rough metal conserves finite energy under uniform incident radiance");
+
+        gi_materials[0] = physical_target;
+        renderer.release_part(926);
+        renderer.set_lighting(ctx.lighting);
         gi_materials[1].metal_opacity_spec_coat[0] = 0.0f;
         gi_materials[1].base_roughness[3] = 0.35f;
-        CHECK(renderer.update_materials(gi_materials, 12, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 14, 1, error) &&
+                  renderer.update_instances(
+                      {{920, identity_matrix()}, {925, identity_matrix()}},
+                      error) &&
                   render_temporal_control(306),
               error.empty() ? "render untinted dielectric baseline"
                             : error.c_str());
@@ -8423,7 +8478,7 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
         gi_materials[1].specular_tint_coat_roughness[0] = 0.01f;
         gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[2] = 0.01f;
-        CHECK(renderer.update_materials(gi_materials, 13, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 15, 1, error) &&
                   render_temporal_control(307),
               error.empty() ? "render tinted dielectric fixture"
                             : error.c_str());
@@ -8439,7 +8494,7 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
         gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[2] = 1.0f;
         gi_materials[1].base_roughness[3] = 0.8f;
-        CHECK(renderer.update_materials(gi_materials, 14, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 16, 1, error) &&
                   render_temporal_control(308),
               error.empty() ? "render rough dielectric F0 fixture"
                             : error.c_str());
@@ -8452,7 +8507,7 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
         gi_materials[1].specular_tint_coat_roughness[1] = 0.05f;
         gi_materials[1].specular_tint_coat_roughness[2] = 0.05f;
         gi_materials[1].metal_opacity_spec_coat[3] = 0.0f;
-        CHECK(renderer.update_materials(gi_materials, 15, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 17, 1, error) &&
                   render_temporal_control(309),
               error.empty() ? "render clearcoat-off red-base fixture"
                             : error.c_str());
@@ -8467,7 +8522,7 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
                   : error.c_str());
         gi_materials[1].metal_opacity_spec_coat[3] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[3] = 0.08f;
-        CHECK(renderer.update_materials(gi_materials, 16, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 18, 1, error) &&
                   render_temporal_control(310),
               error.empty() ? "render clearcoat second-lobe fixture"
                             : error.c_str());
@@ -9233,8 +9288,14 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
 
     std::string error;
     rt_scenario_surface_query(vulkan, properties, error);
+    CHECK(vulkan.validation_error_count() == 0,
+          "surface-query scenario has no Vulkan validation errors");
     rt_scenario_blas_pinning(vulkan, error);
+    CHECK(vulkan.validation_error_count() == 0,
+          "BLAS-pinning scenario has no Vulkan validation errors");
     rt_scenario_visibility_classification(vulkan, error);
+    CHECK(vulkan.validation_error_count() == 0,
+          "visibility-classification scenario has no Vulkan validation errors");
 
     // Shared state for all renderer-based scenarios.
     viewer::VkSceneRenderer renderer(vulkan);
@@ -9268,16 +9329,28 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                       receiver_min_visibility, receiver_max_visibility};
 
     rt_scenario_shadow_contract(ctx);
+    CHECK(vulkan.validation_error_count() == 0,
+          "shadow-contract scenario has no Vulkan validation errors");
 
     matter::VulkanFrame frame{};
     CHECK(vulkan.begin_frame(frame, error),
           error.empty() ? "begin native RT frame" : error.c_str());
     if (frame.command_buffer != VK_NULL_HANDLE) {
         rt_scenario_first_frame_and_blas_lifecycle(ctx, frame);
+        CHECK(vulkan.validation_error_count() == 0,
+              "native first-frame/BLAS scenario has no Vulkan validation errors");
         rt_scenario_atrous_denoising(ctx);
+        CHECK(vulkan.validation_error_count() == 0,
+              "A-trous fixture has no Vulkan validation errors");
         rt_scenario_gi_history_resets(ctx);
+        CHECK(vulkan.validation_error_count() == 0,
+              "GI history scenario has no Vulkan validation errors");
         rt_scenario_secondary_sun_visibility(ctx);
+        CHECK(vulkan.validation_error_count() == 0,
+              "secondary-sun scenario has no Vulkan validation errors");
         rt_scenario_mirror_specular(ctx);
+        CHECK(vulkan.validation_error_count() == 0,
+              "mirror-specular scenario has no Vulkan validation errors");
         rt_scenario_baked_ao_and_gi_disable(ctx);
     }
 
