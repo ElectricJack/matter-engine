@@ -239,15 +239,15 @@ git commit -m "feat: add deterministic GPU meshing primitives"
 - Consumes sorted bin offsets/ids and `GridLayout`.
 - Produces one finite signed scalar per grid vertex, or positive infinity when no particle lies within the MatterSurface query radius.
 
-- [ ] **Step 1: Write failing CPU/GPU field parity tests**
+- [x] **Step 1: Write failing CPU/GPU field parity tests**
 
 Build single-sphere, separated-sphere, and blended-sphere jobs, including a translated negative-coordinate fixture. Read the scalar buffer and compare every sample to both `evaluate_particle_field_reference` and `ProbeFieldScalar`. Require absolute error `<= 2e-5f` for finite samples and matching outside classification for infinite samples. Repeat dispatch and require byte-identical scalar buffers.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run the `gpu-mesher` smoke mode. Expected: field dispatch/report is absent and the new scalar assertions fail.
 
-- [ ] **Step 3: Implement the exact Phase 1 field**
+- [x] **Step 3: Implement the exact Phase 1 field**
 
 For each lattice sample, enumerate all bins whose AABBs intersect `query_radius`, reject particle centers outside the actual radius, compute `distance(point, center) - radius`, track `fmin`, and evaluate:
 
@@ -259,11 +259,11 @@ field = blendWidth <= 1e-5 || neighborCount == 1
 
 Use two deterministic passes through sorted ids when blending: one for `fmin` and one for the sum. Never truncate neighbors.
 
-- [ ] **Step 4: Verify GREEN and shader rebuild edges**
+- [x] **Step 4: Verify GREEN and shader rebuild edges**
 
 Run the smoke mode and `ctest -R 'gpu_visual_mesher_cpu_tests|shader_rebuild_tests'`. Expected: parity/determinism pass and touching `gpu_mesh_common.glsl` rebuilds every dependent GPU-mesh stage.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```powershell
 git add MatterEngine3/shaders_vk/gpu_mesh_field.comp MatterEngine3/shaders_vk/gpu_mesh_common.glsl MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp MatterEngine3/Makefile

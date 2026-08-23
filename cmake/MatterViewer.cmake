@@ -159,6 +159,10 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp
         MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp
+        libs/MatterSurfaceLib/src/surface.c
+        libs/MatterSurfaceLib/src/fat_primitive.c
+        libs/SpatialQueryLib/src/spatial_hash.c
+        libs/MemoryLib/src/mem_pool.c
     )
     add_library(matter_vulkan_smoke_objects OBJECT ${matter_vulkan_smoke_sources})
     matter_engine_include_directories(matter_vulkan_smoke_objects PRIVATE)

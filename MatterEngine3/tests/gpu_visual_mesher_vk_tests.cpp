@@ -1,6 +1,7 @@
 #include "gpu_visual_mesher_vk_tests.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <numeric>
@@ -8,6 +9,7 @@
 
 #include "matter/gpu_visual_meshing.h"
 #include "render/gpu_meshing/gpu_visual_mesher_vk.h"
+#include "surface.h"
 
 namespace {
 
@@ -40,6 +42,86 @@ std::vector<uint32_t> reference_scan(const std::vector<uint32_t>& input,
     const bool ok = gpu_meshing::exclusive_scan_reference(input, output, total);
     GPU_CHECK(ok, "reference scan fixture is representable");
     return output;
+}
+
+void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
+                         const std::vector<gpu_meshing::ParticleSample>& samples,
+                         gpu_meshing::Aabb bounds, float blend,
+                         const char* label) {
+    gpu_meshing::ParticleJob job{};
+    job.particles = samples.data();
+    job.particle_count = static_cast<uint32_t>(samples.size());
+    job.bounds_m = bounds;
+    job.voxel_m = 0.25f;
+    job.blend_width_m = blend;
+    job.limits = {64u, 1u << 20u, 1u << 20u, 1u << 20u};
+
+    std::vector<float> first;
+    std::vector<float> second;
+    gpu_meshing::GridLayout layout{};
+    gpu_meshing::Error error{};
+    const bool first_ok =
+        mesher.debug_evaluate_particle_field(job, first, layout, error);
+    GPU_CHECK(first_ok, error.message.empty() ? label : error.message.c_str());
+    error = {};
+    gpu_meshing::GridLayout repeated_layout{};
+    const bool second_ok = mesher.debug_evaluate_particle_field(
+        job, second, repeated_layout, error);
+    GPU_CHECK(second_ok,
+              error.message.empty() ? "repeat GPU field dispatch succeeds"
+                                    : error.message.c_str());
+    if (!first_ok) return;
+    GPU_CHECK(first.size() == layout.grid_vertices,
+              "GPU field emits exactly one value per grid sample");
+    if (second_ok)
+        GPU_CHECK(first == second,
+                  "repeated GPU scalar readbacks are byte-identical");
+
+    std::vector<Particle> surface_particles(samples.size());
+    float max_radius = 0.0f;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        surface_particles[i] = {
+            {samples[i].position_m.x, samples[i].position_m.y,
+             samples[i].position_m.z},
+            samples[i].radius_m, 4};
+        max_radius = std::max(max_radius, samples[i].radius_m);
+    }
+    SurfaceScratch* scratch = CreateSurfaceScratch();
+    GPU_CHECK(scratch != nullptr, "create MatterSurface field oracle scratch");
+    for (uint32_t z = 0; z < layout.sample_dims[2]; ++z) {
+        for (uint32_t y = 0; y < layout.sample_dims[1]; ++y) {
+            for (uint32_t x = 0; x < layout.sample_dims[0]; ++x) {
+                const uint32_t index = x + layout.sample_dims[0] *
+                    (y + layout.sample_dims[1] * z);
+                const matter::Float3 point{
+                    layout.origin_m.x + layout.spacing_m.x * x,
+                    layout.origin_m.y + layout.spacing_m.y * y,
+                    layout.origin_m.z + layout.spacing_m.z * z};
+                const float reference =
+                    gpu_meshing::evaluate_particle_field_reference(
+                        samples.data(), static_cast<uint32_t>(samples.size()),
+                        blend, point);
+                const float oracle = ProbeFieldScalar(
+                    scratch, surface_particles.data(), max_radius,
+                    static_cast<int>(surface_particles.size()), blend, nullptr,
+                    nullptr, 0, nullptr, 0, 0.0f,
+                    {point.x, point.y, point.z});
+                if (std::isfinite(reference)) {
+                    GPU_CHECK(std::isfinite(first[index]),
+                              "GPU field finite classification matches reference");
+                    GPU_CHECK(std::fabs(first[index] - reference) <= 2e-5f,
+                              "GPU field matches compiler-neutral reference");
+                    GPU_CHECK(std::fabs(first[index] - oracle) <= 2e-5f,
+                              "GPU field matches MatterSurface ProbeFieldScalar");
+                } else {
+                    GPU_CHECK(!std::isfinite(first[index]) &&
+                                  !std::isfinite(oracle),
+                              "GPU field outside classification matches both oracles");
+                }
+            }
+        }
+    }
+    DestroySurfaceScratch(scratch);
 }
 
 }  // namespace
@@ -129,5 +211,20 @@ int run_gpu_visual_mesher_vk_tests(matter::VulkanDevice& vulkan) {
                       first.particle_ids == second.particle_ids,
                   "repeated particle bin readbacks are byte-identical");
     }
+
+    check_field_fixture(mesher, {{{0.0f, 0.0f, 0.0f}, 0.5f}},
+                        {{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}}, 0.0f,
+                        "single-sphere GPU field dispatch succeeds");
+    check_field_fixture(
+        mesher,
+        {{{-0.55f, 0.0f, 0.0f}, 0.4f}, {{0.55f, 0.0f, 0.0f}, 0.4f}},
+        {{-1.5f, -1.0f, -1.0f}, {1.5f, 1.0f, 1.0f}}, 0.0f,
+        "separated-sphere GPU field dispatch succeeds");
+    check_field_fixture(
+        mesher,
+        {{{-2.2f, -1.1f, -0.7f}, 0.55f},
+         {{-1.5f, -1.1f, -0.7f}, 0.45f}},
+        {{-3.0f, -2.0f, -1.5f}, {-0.5f, 0.0f, 0.5f}}, 0.18f,
+        "translated blended-sphere GPU field dispatch succeeds");
     return failures;
 }

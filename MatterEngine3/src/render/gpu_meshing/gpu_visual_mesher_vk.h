@@ -35,6 +35,9 @@ public:
                               std::uint32_t& total, Error& error);
     bool debug_build_particle_bins(const ParticleJob& job,
                                    GpuParticleBins& bins, Error& error);
+    bool debug_evaluate_particle_field(const ParticleJob& job,
+                                       std::vector<float>& values,
+                                       GridLayout& layout, Error& error);
 
 private:
     struct Impl;

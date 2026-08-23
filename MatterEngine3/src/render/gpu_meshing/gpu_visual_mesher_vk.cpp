@@ -125,9 +125,21 @@ struct alignas(16) BinParams {
     std::array<std::uint32_t, 4> counts{};
 };
 
+struct alignas(16) FieldParams {
+    std::array<float, 4> origin_and_iso{};
+    std::array<float, 4> spacing_and_blend{};
+    std::array<float, 4> bin_origin_and_size{};
+    std::array<std::uint32_t, 4> sample_dims_and_count{};
+    std::array<std::uint32_t, 4> bin_dims_and_count{};
+    std::array<std::uint32_t, 4> counts{};
+    std::array<float, 4> query_radius_and_padding{};
+};
+
 static_assert(sizeof(ScanParams) == 16, "scan params must match one uvec4");
 static_assert(sizeof(BinParams) == 48,
               "bin params must match three std430 vec4 values");
+static_assert(sizeof(FieldParams) == 112,
+              "field params must match seven std430 vec4 values");
 static_assert(sizeof(ParticleSample) == 16,
               "particle samples must match the GLSL particle ABI");
 
@@ -142,6 +154,7 @@ struct GpuVisualMesher::Impl {
     matter::VkComputePipelineResource bin_count;
     matter::VkComputePipelineResource bin_scatter;
     matter::VkComputePipelineResource bin_sort;
+    matter::VkComputePipelineResource field;
 
     bool dispatch(matter::VkComputePipelineResource& pipeline,
                   std::uint32_t x, const BuildControl& control,
@@ -355,6 +368,93 @@ struct GpuVisualMesher::Impl {
         bins = std::move(candidate);
         return true;
     }
+
+    bool evaluate_field(const ParticleJob& job, std::vector<float>& values,
+                        GridLayout& layout, Error& error) {
+        values.clear();
+        layout = {};
+        error = {};
+        GpuParticleBins bins{};
+        if (!build_bins(job, bins, error)) return false;
+        layout = bins.layout;
+        if (job.particle_count == 0u) return true;
+
+        matter::VkBufferResource params_buffer;
+        matter::VkBufferResource particle_buffer;
+        matter::VkBufferResource counts_buffer;
+        matter::VkBufferResource offsets_buffer;
+        matter::VkBufferResource ids_buffer;
+        matter::VkBufferResource field_buffer;
+        const std::size_t particles_bytes =
+            static_cast<std::size_t>(job.particle_count) * sizeof(ParticleSample);
+        const std::size_t bins_bytes =
+            static_cast<std::size_t>(layout.bins) * sizeof(std::uint32_t);
+        const std::size_t ids_bytes = std::max<std::size_t>(
+            bins.particle_ids.size() * sizeof(std::uint32_t),
+            sizeof(std::uint32_t));
+        const std::size_t field_bytes =
+            static_cast<std::size_t>(layout.grid_vertices) * sizeof(float);
+        if (!create_gpu_buffer(vulkan, sizeof(FieldParams), params_buffer,
+                               error) ||
+            !create_gpu_buffer(vulkan, particles_bytes, particle_buffer,
+                               error) ||
+            !create_gpu_buffer(vulkan, bins_bytes, counts_buffer, error) ||
+            !create_gpu_buffer(vulkan, bins_bytes, offsets_buffer, error) ||
+            !create_gpu_buffer(vulkan, ids_bytes, ids_buffer, error) ||
+            !create_gpu_buffer(vulkan, field_bytes, field_buffer, error))
+            return false;
+
+        const FieldParams params{
+            {layout.origin_m.x, layout.origin_m.y, layout.origin_m.z,
+             job.iso_value},
+            {layout.spacing_m.x, layout.spacing_m.y, layout.spacing_m.z,
+             job.blend_width_m},
+            {layout.bin_origin_m.x, layout.bin_origin_m.y,
+             layout.bin_origin_m.z, layout.bin_size_m},
+            {layout.sample_dims[0], layout.sample_dims[1],
+             layout.sample_dims[2], layout.grid_vertices},
+            {layout.bin_dims[0], layout.bin_dims[1], layout.bin_dims[2],
+             layout.bins},
+            {job.particle_count,
+             static_cast<std::uint32_t>(bins.particle_ids.size()), 0u, 0u},
+            {layout.query_radius_m, 0.0f, 0.0f, 0.0f},
+        };
+        if (!upload(vulkan, params_buffer, &params, sizeof(params), error) ||
+            !upload(vulkan, particle_buffer, job.particles, particles_bytes,
+                    error) ||
+            !upload(vulkan, counts_buffer, bins.counts.data(), bins_bytes,
+                    error) ||
+            !upload(vulkan, offsets_buffer, bins.offsets.data(), bins_bytes,
+                    error) ||
+            (!bins.particle_ids.empty() &&
+             !upload(vulkan, ids_buffer, bins.particle_ids.data(),
+                     bins.particle_ids.size() * sizeof(std::uint32_t), error)) ||
+            !ensure_pipeline(vulkan, field, "gpu_mesh_field.comp.spv", 6u,
+                             error))
+            return false;
+        matter::write_storage_buffer_descriptor(field, 0u, params_buffer, 0u,
+                                                params_buffer.size);
+        matter::write_storage_buffer_descriptor(field, 1u, particle_buffer, 0u,
+                                                particle_buffer.size);
+        matter::write_storage_buffer_descriptor(field, 2u, counts_buffer, 0u,
+                                                counts_buffer.size);
+        matter::write_storage_buffer_descriptor(field, 3u, offsets_buffer, 0u,
+                                                offsets_buffer.size);
+        matter::write_storage_buffer_descriptor(field, 4u, ids_buffer, 0u,
+                                                ids_buffer.size);
+        matter::write_storage_buffer_descriptor(field, 5u, field_buffer, 0u,
+                                                field_buffer.size);
+        const std::uint32_t groups =
+            (layout.grid_vertices + 255u) / 256u;
+        if (!dispatch(field, groups, {}, job.generation, error)) return false;
+
+        std::vector<float> candidate(layout.grid_vertices);
+        if (!readback(vulkan, field_buffer, candidate.data(), field_bytes,
+                      error))
+            return false;
+        values = std::move(candidate);
+        return true;
+    }
 };
 
 GpuVisualMesher::GpuVisualMesher(matter::VulkanDevice& vulkan)
@@ -372,6 +472,12 @@ bool GpuVisualMesher::debug_build_particle_bins(const ParticleJob& job,
                                                 GpuParticleBins& bins,
                                                 Error& error) {
     return impl_->build_bins(job, bins, error);
+}
+
+bool GpuVisualMesher::debug_evaluate_particle_field(
+    const ParticleJob& job, std::vector<float>& values, GridLayout& layout,
+    Error& error) {
+    return impl_->evaluate_field(job, values, layout, error);
 }
 
 }  // namespace gpu_meshing
