@@ -108,6 +108,7 @@ matter_add_vulkan_shader_pipeline(
 include(cmake/MatterEngine.cmake)
 include(cmake/MatterViewer.cmake)
 include(cmake/MatterEditor.cmake)
+include(cmake/MatterPackaging.cmake)
 
 if(BUILD_TESTING)
     add_subdirectory(cmake/tests/third_party_smoke)
