@@ -759,6 +759,8 @@ struct WorldSession::Impl {
 
     std::atomic<bool> connected{false};
     std::atomic<bool> accepted_fluid_artifact{false};
+    mutable std::mutex hydrology_status_mutex;
+    matter::HydrologyStatus hydrology_status_copy{};
 
     // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
     // progress is emitted here as typed events (matter/events/*.h). Declared
@@ -1073,7 +1075,8 @@ struct WorldSession::Impl {
     void reconcile_runtime_animation_skinning();
     // Execute one BakeAll/Reload command. Called only on the worker thread.
     void execute_bake(matter_async::Command& cmd, bool is_reload);
-    void run_authored_fluid_bake_after_world_load();
+    void run_authored_fluid_bake_after_world_load(
+        const std::shared_ptr<matter_async::CancelToken>& token);
     // Execute a RebakeCone command. Called only on the worker thread.
     void execute_rebake_cone(matter_async::Command& cmd);
     // Phase C Task 6: execute one camera-driven refine step.
@@ -3047,7 +3050,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
                     set_authored_fog(provider->world_settings().fog);
                     set_authored_sun(provider->world_settings());
-                    run_authored_fluid_bake_after_world_load();
+                    run_authored_fluid_bake_after_world_load(token);
 
                     {
                         MATTER_LOGI("resolve", "resolve cache: hit %016llx\n",
@@ -3160,7 +3163,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // the default zero-density settings for their entire session.
         set_authored_fog(provider->world_settings().fog);
         set_authored_sun(provider->world_settings());
-        run_authored_fluid_bake_after_world_load();
+        run_authored_fluid_bake_after_world_load(token);
 
         // World-kind sessions use an empty manifest; sectors are streamed.
         viewer::WorldManifest empty_manifest;
@@ -3232,7 +3235,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     set_authored_fog(provider->world_settings().fog);
     set_authored_sun(provider->world_settings());
-    run_authored_fluid_bake_after_world_load();
+    run_authored_fluid_bake_after_world_load(token);
 
     // Phase C Task 17: save resolve cache after a successful full install+compose.
     // Write to temp + rename (atomic). Non-fatal on failure (no cache next warm launch).
@@ -3276,9 +3279,89 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             install_ms, compose_ms, publish_ms, total_ms);
 }
 
-void WorldSession::Impl::run_authored_fluid_bake_after_world_load() {
-    const bool accepted = provider && provider->run_authored_fluid_bake();
-    accepted_fluid_artifact.store(accepted, std::memory_order_release);
+void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
+    const std::shared_ptr<matter_async::CancelToken>& token) {
+    accepted_fluid_artifact.store(false, std::memory_order_release);
+    if (!provider || !provider->authored_fluid_requested()) {
+        std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+        hydrology_status_copy = {};
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+        hydrology_status_copy = {};
+        hydrology_status_copy.state = matter::HydrologyState::Baking;
+        hydrology_status_copy.progress = 0.0f;
+    }
+    viewer::FluidBakeRunContext context{};
+    context.callbacks.cancelled = [token] {
+        return token && token->is_cancelled();
+    };
+    context.callbacks.progress = [this, token](
+        const hydrology::FluidBakeProgress& progress) {
+        if (token && token->is_cancelled()) return;
+        {
+            std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+            hydrology_status_copy.state = matter::HydrologyState::Baking;
+            hydrology_status_copy.completed_steps = progress.completed_steps;
+            hydrology_status_copy.progress = progress.total_steps == 0u
+                ? -1.0f
+                : static_cast<float>(progress.completed_steps) /
+                      static_cast<float>(progress.total_steps);
+        }
+        events::BakePartDone event;
+        event.done = static_cast<int>(std::min<std::uint32_t>(
+            progress.completed_steps,
+            static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
+        event.total = static_cast<int>(std::min<std::uint32_t>(
+            progress.total_steps,
+            static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
+        event.phase = "hydrology";
+        hub_.emit(std::move(event));
+    };
+    if (world_field) {
+        context.terrain = [this](float x, float z, float& height) {
+            if (!world_field) return false;
+            height = world_field->height_at(x, z);
+            return std::isfinite(height);
+        };
+        context.terrain_revision = world_field->hash();
+    }
+
+    matter::HydrologyStatus result{};
+    hydrology::FluidBakeError error{};
+    const bool accepted = provider->run_authored_fluid_bake(
+        context, result, error);
+    const bool stale = token && token->is_cancelled();
+    if (stale) {
+        result.state = matter::HydrologyState::Stale;
+        result.failure_reason = "authored fluid bake generation was superseded";
+    }
+    {
+        std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+        hydrology_status_copy = result;
+    }
+    accepted_fluid_artifact.store(accepted && !stale,
+                                  std::memory_order_release);
+    if (accepted && !stale) {
+        events::BakePartDone event;
+        event.done = 1;
+        event.total = 1;
+        event.phase = "hydrology";
+        hub_.emit(std::move(event));
+    } else if (!stale && !error.message.empty()) {
+        events::BakeError event;
+        event.code = (error.code == hydrology::FluidBakeCode::ProductFailure ||
+                      error.code == hydrology::FluidBakeCode::DeviceLost)
+            ? BakeErrorCode::GpuError
+            : BakeErrorCode::Internal;
+        event.phase = "hydrology";
+        event.message = error.message;
+        hub_.emit(std::move(event));
+        MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
+                    error.message.c_str());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -9015,6 +9098,30 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
             desc.project_dir, desc.world_name,
             desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
 #endif
+#if defined(MATTER_VULKAN_VIEWER) && defined(_WIN32)
+        if (impl_->render_device) {
+            VkPhysicalDeviceIDProperties id_properties{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+            VkPhysicalDeviceProperties2 properties{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            properties.pNext = &id_properties;
+            vkGetPhysicalDeviceProperties2(
+                impl_->render_device->physical_device(), &properties);
+            simpl->cfg.fluid_renderer_device.vendor_id =
+                properties.properties.vendorID;
+            simpl->cfg.fluid_renderer_device.device_id =
+                properties.properties.deviceID;
+            simpl->cfg.fluid_renderer_device.driver_version =
+                properties.properties.driverVersion;
+            if (id_properties.deviceLUIDValid == VK_TRUE) {
+                static_assert(VK_LUID_SIZE == 8,
+                              "fluid adapter identity assumes the Vulkan LUID width");
+                std::memcpy(simpl->cfg.fluid_renderer_device.luid.data(),
+                            id_properties.deviceLUID, VK_LUID_SIZE);
+                simpl->cfg.fluid_renderer_device.luid_valid = true;
+            }
+        }
+#endif
         // At least ONE object root must exist. Requiring the project tier
         // specifically would reject a scene that carries all of its own
         // objects and shares nothing -- which is a legitimate, and in fact the
@@ -9279,19 +9386,26 @@ void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {
 void WorldSession::set_test_fluid_bake_dependencies(
     FluidBakeBackendTestFactory backend_factory,
     FluidVisualBakeTestCallback visual_bake) {
-    // Reuse the shipped producer factory so tests replace only the two
-    // external systems. The authored schema and deterministic request defaults
-    // stay byte-for-byte identical to an editor world load.
-    auto fluid_config = viewer::make_engine_local_provider_config(
-        impl_->cfg.project_dir, impl_->cfg.world_name,
-        impl_->cfg.engine_shared_lib_dir, std::move(backend_factory));
-    impl_->cfg.fluid_bake_request_producer =
-        std::move(fluid_config.fluid_bake_request_producer);
+    impl_->cfg.fluid_bake_backend_factory = std::move(backend_factory);
     impl_->cfg.vk_particle_visual_bake = std::move(visual_bake);
+}
+
+void WorldSession::set_test_fluid_renderer_luid(
+    const std::array<std::uint8_t, 8>& luid) {
+    impl_->cfg.fluid_renderer_device.luid = luid;
+    impl_->cfg.fluid_renderer_device.luid_valid = true;
+    impl_->cfg.fluid_renderer_device.vendor_id = 0x10deu;
+    impl_->cfg.fluid_renderer_device.device_id = 1u;
+    impl_->cfg.fluid_renderer_device.driver_version = 1u;
 }
 
 bool WorldSession::has_accepted_fluid_artifact_for_test() const {
     return impl_->accepted_fluid_artifact.load(std::memory_order_acquire);
+}
+
+HydrologyStatus WorldSession::hydrology_status() const {
+    std::lock_guard<std::mutex> lock(impl_->hydrology_status_mutex);
+    return impl_->hydrology_status_copy;
 }
 
 void WorldSession::set_test_animation_raster_range_resolver(

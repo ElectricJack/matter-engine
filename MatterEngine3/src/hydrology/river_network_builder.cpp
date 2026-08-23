@@ -8,6 +8,13 @@
 namespace hydrology {
 using matter::Float2;
 using matter::Float3;
+using matter::HydrologyBackend;
+using matter::HydrologyBakeLimits;
+using matter::HydrologyEmitter;
+using matter::HydrologyFillSensor;
+using matter::HydrologyPbdSettings;
+using matter::HydrologyQualitySettings;
+using matter::HydrologyVirtualDam;
 using matter::RiverBoulders;
 using matter::RiverChannel;
 using matter::RiverDefinition;
@@ -29,6 +36,14 @@ bool finite(Float2 value) { return finite(value.x) && finite(value.y); }
 
 bool finite(Float3 value) {
     return finite(value.x) && finite(value.y) && finite(value.z);
+}
+
+bool positive(float value) { return finite(value) && value > 0.0f; }
+
+bool nonnegative(float value) { return finite(value) && value >= 0.0f; }
+
+float length_squared(Float3 value) {
+    return value.x * value.x + value.y * value.y + value.z * value.z;
 }
 
 void append_float(std::string& text, float value) {
@@ -90,7 +105,7 @@ std::uint64_t fnv1a64(std::string_view text) {
 std::string canonical_text(const RiverNetworkDefinition& network) {
     std::string text;
     text.reserve(512);
-    text += "river-network-v2\ncell-size=";
+    text += "river-network-v3\ncell-size=";
     append_float(text, network.cell_size_m);
     text += "\nseed=";
     append_uint(text, network.seed);
@@ -133,14 +148,85 @@ std::string canonical_text(const RiverNetworkDefinition& network) {
     append_float(text, network.first_section.minimum_length_m);
     text.push_back(',');
     append_float(text, network.first_section.dry_margin_m);
+
+    text += "\nfluid-backend=";
+    text += network.fluid.backend == HydrologyBackend::Physx ? "physx" : "disabled";
+    text += "\npbd=";
+    append_float(text, network.fluid.pbd.particle_spacing_m);
     text.push_back(',');
-    append_float(text, network.first_section.crest_wet_fraction);
+    append_float(text, network.fluid.pbd.rest_density_kg_m3);
     text.push_back(',');
-    append_uint(text, network.first_section.stable_wet_steps);
+    append_float(text, network.fluid.pbd.fixed_step_seconds);
     text.push_back(',');
-    append_uint(text, network.first_section.batch_steps);
+    append_uint(text, network.fluid.pbd.solver_iterations);
     text.push_back(',');
-    append_uint(text, network.first_section.max_steps);
+    append_uint(text, network.fluid.pbd.max_neighbors);
+    text += "\nlimits=";
+    append_uint(text, network.fluid.limits.batch_steps);
+    text.push_back(',');
+    append_uint(text, network.fluid.limits.max_steps);
+    text.push_back(',');
+    append_uint(text, network.fluid.limits.max_particles);
+    for (const HydrologyEmitter& emitter : network.fluid.emitters) {
+        text += "\nemitter=";
+        append_quoted(text, emitter.id);
+        text.push_back(',');
+        append_float3(text, emitter.position_m);
+        text.push_back(',');
+        append_float3(text, emitter.direction);
+        text.push_back(',');
+        append_float3(text, emitter.initial_velocity_mps);
+        text.push_back(',');
+        append_float(text, emitter.flow_m3s);
+        text.push_back(',');
+        append_float(text, emitter.radius_m);
+        text.push_back(',');
+        append_float(text, emitter.start_time_s);
+        text.push_back(',');
+        append_float(text, emitter.stop_time_s);
+    }
+    text += "\nvirtual-dam=";
+    append_float(text, network.fluid.virtual_dam.distance_m);
+    text.push_back(',');
+    append_float(text, network.fluid.virtual_dam.height_m);
+    text.push_back(',');
+    append_float(text, network.fluid.virtual_dam.thickness_m);
+    text += "\nfill-sensor=";
+    append_float(text, network.fluid.fill_sensor.upstream_offset_m);
+    text.push_back(',');
+    append_float(text, network.fluid.fill_sensor.length_m);
+    text.push_back(',');
+    append_float(text, network.fluid.fill_sensor.height_m);
+    text.push_back(',');
+    append_uint(text, network.fluid.fill_sensor.resolution_x);
+    text.push_back(',');
+    append_uint(text, network.fluid.fill_sensor.resolution_y);
+    text.push_back(',');
+    append_uint(text, network.fluid.fill_sensor.resolution_z);
+    text.push_back(',');
+    append_float(text, network.fluid.fill_sensor.crest_wet_fraction);
+    text.push_back(',');
+    append_uint(text, network.fluid.fill_sensor.stable_wet_steps);
+    text.push_back(',');
+    append_uint(text, network.fluid.fill_sensor.minimum_particles_per_cell);
+    text += "\nquality=";
+    append_float(text, network.fluid.quality.particle_radius_m);
+    text.push_back(',');
+    append_float(text, network.fluid.quality.visual_voxel_m);
+    text.push_back(',');
+    append_float(text, network.fluid.quality.visual_blend_width_m);
+    text.push_back(',');
+    append_float(text, network.fluid.quality.coarse_voxel_m);
+    text.push_back(',');
+    append_float(text, network.fluid.quality.gameplay_cell_m);
+    text.push_back(',');
+    append_uint(text, network.fluid.quality.max_visual_particles);
+    text.push_back(',');
+    append_uint(text, network.fluid.quality.max_grid_vertices);
+    text.push_back(',');
+    append_uint(text, network.fluid.quality.max_mesh_vertices);
+    text.push_back(',');
+    append_uint(text, network.fluid.quality.max_mesh_indices);
     text.push_back('\n');
     return text;
 }
@@ -300,22 +386,149 @@ bool RiverNetworkBuilder::set_first_section(
     if (!finite(section.dry_margin_m) || section.dry_margin_m <= 0.0f)
         return fail(error, path + ".dryMargin",
                     "dryMargin must be finite and positive");
-    if (!finite(section.crest_wet_fraction) ||
-        section.crest_wet_fraction <= 0.0f ||
-        section.crest_wet_fraction > 1.0f)
-        return fail(error, path + ".crestWetFraction",
-                    "crestWetFraction must lie in (0, 1]");
-    if (section.stable_wet_steps == 0u)
-        return fail(error, path + ".stableWetSteps",
-                    "stableWetSteps must be positive");
-    if (section.batch_steps == 0u)
-        return fail(error, path + ".batchSteps", "batchSteps must be positive");
-    if (section.max_steps == 0u || section.max_steps < section.batch_steps)
-        return fail(error, path + ".maxSteps",
-                    "maxSteps must be at least batchSteps");
     first_section_river_ = river;
     first_section_ = section;
     has_first_section_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_backend(HydrologyBackend backend,
+                                       std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    if (has_backend_)
+        return fail(error, "hydrology.backend", "backend may be declared only once");
+    fluid_.backend = backend;
+    has_backend_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_pbd(const HydrologyPbdSettings& settings,
+                                   std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.pbd";
+    if (has_pbd_) return fail(error, path, "pbd may be declared only once");
+    if (!positive(settings.particle_spacing_m))
+        return fail(error, path + ".particleSpacing", "particleSpacing must be finite and positive");
+    if (!positive(settings.rest_density_kg_m3))
+        return fail(error, path + ".restDensity", "restDensity must be finite and positive");
+    if (!positive(settings.fixed_step_seconds))
+        return fail(error, path + ".fixedStep", "fixedStep must be finite and positive");
+    if (settings.solver_iterations == 0u)
+        return fail(error, path + ".iterations", "iterations must be positive");
+    if (settings.max_neighbors == 0u)
+        return fail(error, path + ".maxNeighbors", "maxNeighbors must be positive");
+    fluid_.pbd = settings;
+    has_pbd_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_limits(const HydrologyBakeLimits& limits,
+                                      std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.limits";
+    if (has_limits_) return fail(error, path, "limits may be declared only once");
+    if (limits.batch_steps == 0u)
+        return fail(error, path + ".batchSteps", "batchSteps must be positive");
+    if (limits.max_steps < limits.batch_steps)
+        return fail(error, path + ".maxSteps", "maxSteps must be at least batchSteps");
+    if (limits.max_particles == 0u)
+        return fail(error, path + ".maxParticles", "maxParticles must be positive");
+    fluid_.limits = limits;
+    has_limits_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::add_emitter(const HydrologyEmitter& emitter,
+                                       std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::size_t index = fluid_.emitters.size();
+    const std::string path = "hydrology.emitter[" + std::to_string(index) + "]";
+    if (emitter.id.empty()) return fail(error, path + ".id", "id must not be empty");
+    for (const HydrologyEmitter& existing : fluid_.emitters) {
+        if (existing.id == emitter.id)
+            return fail(error, path + ".id", "emitter id must be unique");
+    }
+    if (!finite(emitter.position_m))
+        return fail(error, path + ".position", "position must be finite");
+    if (!finite(emitter.direction) || length_squared(emitter.direction) <= 0.0f)
+        return fail(error, path + ".direction", "direction must be finite and nonzero");
+    if (!finite(emitter.initial_velocity_mps))
+        return fail(error, path + ".initialVelocity", "initialVelocity must be finite");
+    if (!positive(emitter.flow_m3s))
+        return fail(error, path + ".flow", "flow must be finite and positive");
+    if (!positive(emitter.radius_m))
+        return fail(error, path + ".radius", "radius must be finite and positive");
+    if (!nonnegative(emitter.start_time_s))
+        return fail(error, path + ".startTime", "startTime must be finite and nonnegative");
+    if (!finite(emitter.stop_time_s) || emitter.stop_time_s <= emitter.start_time_s)
+        return fail(error, path + ".stopTime", "stopTime must be finite and greater than startTime");
+    fluid_.emitters.push_back(emitter);
+    return true;
+}
+
+bool RiverNetworkBuilder::set_virtual_dam(const HydrologyVirtualDam& dam,
+                                           std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.virtualDam";
+    if (has_virtual_dam_)
+        return fail(error, path, "virtualDam may be declared only once");
+    if (!positive(dam.distance_m))
+        return fail(error, path + ".distance", "distance must be finite and positive");
+    if (!positive(dam.height_m))
+        return fail(error, path + ".height", "height must be finite and positive");
+    if (!positive(dam.thickness_m))
+        return fail(error, path + ".thickness", "thickness must be finite and positive");
+    fluid_.virtual_dam = dam;
+    has_virtual_dam_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_fill_sensor(const HydrologyFillSensor& sensor,
+                                           std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.fillSensor";
+    if (has_fill_sensor_)
+        return fail(error, path, "fillSensor may be declared only once");
+    if (!nonnegative(sensor.upstream_offset_m))
+        return fail(error, path + ".upstreamOffset", "upstreamOffset must be finite and nonnegative");
+    if (!positive(sensor.length_m))
+        return fail(error, path + ".length", "length must be finite and positive");
+    if (!positive(sensor.height_m))
+        return fail(error, path + ".height", "height must be finite and positive");
+    if (sensor.resolution_x == 0u || sensor.resolution_y == 0u || sensor.resolution_z == 0u)
+        return fail(error, path + ".resolution", "every resolution axis must be positive");
+    if (!finite(sensor.crest_wet_fraction) || sensor.crest_wet_fraction <= 0.0f ||
+        sensor.crest_wet_fraction > 1.0f)
+        return fail(error, path + ".crestWetFraction", "crestWetFraction must lie in (0, 1]");
+    if (sensor.stable_wet_steps == 0u)
+        return fail(error, path + ".stableWetSteps", "stableWetSteps must be positive");
+    if (sensor.minimum_particles_per_cell == 0u)
+        return fail(error, path + ".minimumParticlesPerCell", "minimumParticlesPerCell must be positive");
+    fluid_.fill_sensor = sensor;
+    has_fill_sensor_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_quality(const HydrologyQualitySettings& quality,
+                                       std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.quality";
+    if (has_quality_) return fail(error, path, "quality may be declared only once");
+    if (!positive(quality.particle_radius_m))
+        return fail(error, path + ".particleRadius", "particleRadius must be finite and positive");
+    if (!positive(quality.visual_voxel_m))
+        return fail(error, path + ".visualVoxel", "visualVoxel must be finite and positive");
+    if (!nonnegative(quality.visual_blend_width_m))
+        return fail(error, path + ".visualBlendWidth", "visualBlendWidth must be finite and nonnegative");
+    if (!positive(quality.coarse_voxel_m))
+        return fail(error, path + ".coarseVoxel", "coarseVoxel must be finite and positive");
+    if (!positive(quality.gameplay_cell_m))
+        return fail(error, path + ".gameplayCell", "gameplayCell must be finite and positive");
+    if (quality.max_visual_particles == 0u || quality.max_grid_vertices == 0u ||
+        quality.max_mesh_vertices == 0u || quality.max_mesh_indices == 0u)
+        return fail(error, path + ".caps", "every product cap must be positive");
+    fluid_.quality = quality;
+    has_quality_ = true;
     return true;
 }
 
@@ -342,6 +555,14 @@ bool RiverNetworkBuilder::finish(RiverNetworkDefinition& out,
     }
     if (!has_first_section_)
         return fail(error, "hydrology.firstSection", "firstSection is required");
+    if (fluid_.backend == HydrologyBackend::Physx) {
+        if (fluid_.emitters.empty())
+            return fail(error, "hydrology.emitter", "at least one emitter is required for the PhysX backend");
+        if (!has_virtual_dam_)
+            return fail(error, "hydrology.virtualDam", "virtualDam is required for the PhysX backend");
+        if (!has_fill_sensor_)
+            return fail(error, "hydrology.fillSensor", "fillSensor is required for the PhysX backend");
+    }
 
     RiverNetworkDefinition result;
     result.cell_size_m = cell_size_m_;
@@ -351,6 +572,7 @@ bool RiverNetworkBuilder::finish(RiverNetworkDefinition& out,
         result.rivers.push_back(river.definition);
     result.first_section_river = rivers_[first_section_river_].definition.name;
     result.first_section = first_section_;
+    result.fluid = fluid_;
     result.canonical_text = canonical_text(result);
     result.canonical_hash = fnv1a64(result.canonical_text);
     out = std::move(result);

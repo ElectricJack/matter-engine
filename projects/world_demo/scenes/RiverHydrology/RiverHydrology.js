@@ -1,5 +1,5 @@
-// One authored upstream section. The engine derives its terrain-contained
-// hydraulic domain, virtual completion dam, and strict cache key at install.
+// One authored upstream section. Fluid baking is explicit and defaults off in
+// every other river world; these values are part of this scene's strict key.
 class RiverHydrology extends World {
   static world = { sectorSize: 64, yMin: -32, yMax: 112 };
   static camera = { position: [10, 86, 76], target: [76, 28, 0] };
@@ -58,15 +58,54 @@ class RiverHydrology extends World {
       .channel({ width: 14, depth: 7.0, asymmetry: 0.18 })
       .boulders({ density: 0.0, radius: [0.9, 2.4] });
 
+    network.backend("physx");
+    network.pbd({
+      particleSpacing: 0.20,
+      restDensity: 1000,
+      fixedStep: 1 / 120,
+      iterations: 4,
+      maxNeighbors: 96,
+    });
+    network.limits({
+      batchSteps: 256,
+      maxSteps: 65536,
+      maxParticles: 1000000,
+    });
+    network.emitter({
+      id: "upstream-inlet",
+      position: [0, 42, 0],
+      direction: [1, -0.17, 0],
+      initialVelocity: [1.0, -0.17, 0],
+      flow: 1.0,
+      radius: 2.0,
+      startTime: 0,
+      stopTime: 64,
+    });
+    network.virtualDam({ distance: 100, height: 8, thickness: 0.5 });
+    network.fillSensor({
+      upstreamOffset: 2,
+      length: 1,
+      height: 6,
+      resolution: [24, 1, 12],
+      crestWetFraction: 0.80,
+      stableWetSteps: 32,
+      minimumParticlesPerCell: 1,
+    });
+    network.quality({
+      particleRadius: 0.13,
+      visualVoxel: 0.10,
+      visualBlendWidth: 0.05,
+      coarseVoxel: 0.40,
+      gameplayCell: 0.50,
+      maxVisualParticles: 1000000,
+      maxGridVertices: 4194304,
+      maxMeshVertices: 12582912,
+      maxMeshIndices: 12582912,
+    });
+
     network.firstSection(main, {
       minimumLength: 100,
       dryMargin: 5,
-      batchSteps: 256,
-      // Terrain/placement spike only. The bespoke fluid path is being retired;
-      // one batch keeps the planner contract alive without delaying captures.
-      maxSteps: 256,
-      crestWetFraction: 0.80,
-      stableWetSteps: 32,
     });
     network.build();
   }

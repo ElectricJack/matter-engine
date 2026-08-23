@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -10,6 +11,7 @@
 #include "matter/render_debug.h"
 #include "matter/ecs.h"
 #include "matter/world_definition.h"
+#include "matter/hydrology.h"
 #include "matter/streaming.h"
 #include "matter/sun_angles.h"  // kSunAngularDiameterDefaultDeg + the convention
 #include "matter/atmosphere_lighting.h"
@@ -869,8 +871,15 @@ public:
         FluidBakeBackendTestFactory backend_factory,
         FluidVisualBakeTestCallback visual_bake);
 
+    // Test-only renderer identity seam used to prove CUDA/Vulkan mismatch
+    // rejection before solver allocation. Production reads the Vulkan LUID.
+    void set_test_fluid_renderer_luid(
+        const std::array<std::uint8_t, 8>& luid);
+
     // Observes the all-or-nothing accepted-product boundary after BakeFinished.
     bool has_accepted_fluid_artifact_for_test() const;
+
+    HydrologyStatus hydrology_status() const;
 
     struct Impl;
     explicit WorldSession(std::unique_ptr<Impl> impl);   // internal; use open_world

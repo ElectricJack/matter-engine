@@ -28,6 +28,19 @@ public:
     bool reserve_join(std::size_t river, std::string& error);
     bool set_first_section(std::size_t river, const matter::RiverFirstSection& section,
                            std::string& error);
+    bool set_backend(matter::HydrologyBackend backend, std::string& error);
+    bool set_pbd(const matter::HydrologyPbdSettings& settings,
+                 std::string& error);
+    bool set_limits(const matter::HydrologyBakeLimits& limits,
+                    std::string& error);
+    bool add_emitter(const matter::HydrologyEmitter& emitter,
+                     std::string& error);
+    bool set_virtual_dam(const matter::HydrologyVirtualDam& dam,
+                         std::string& error);
+    bool set_fill_sensor(const matter::HydrologyFillSensor& sensor,
+                         std::string& error);
+    bool set_quality(const matter::HydrologyQualitySettings& quality,
+                     std::string& error);
 
     bool finish(matter::RiverNetworkDefinition& out, std::string& error);
 
@@ -48,7 +61,14 @@ private:
     std::vector<RiverState> rivers_;
     std::size_t first_section_river_ = 0;
     matter::RiverFirstSection first_section_{};
+    matter::HydrologyFluidRequest fluid_{};
     bool has_first_section_ = false;
+    bool has_backend_ = false;
+    bool has_pbd_ = false;
+    bool has_limits_ = false;
+    bool has_virtual_dam_ = false;
+    bool has_fill_sensor_ = false;
+    bool has_quality_ = false;
     bool finished_ = false;
 };
 

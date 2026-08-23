@@ -17,6 +17,7 @@
 #endif
 
 #include <cmath>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <filesystem>
@@ -41,23 +42,33 @@ namespace terrain_field { class RiverHeightOverlay; }
 
 namespace viewer {
 
-// The completed-bake handoff is deliberately data-only and synchronous.  Task
-// 7 decides when to create it and which worker owns the backend; LocalProvider
-// consumes it during its existing connect flow and owns publication policy.
+// Request-local data assembled from the imperative river network. WorldSession
+// invokes the one authored-fluid lifecycle below on its existing bake worker;
+// connect() has no fluid side path.
 struct FluidBakeRequest {
-    std::shared_ptr<hydrology::IFluidBakeBackend> backend;
     hydrology::FluidBakeInput input{};
-    hydrology::FluidBakeCallbacks callbacks{};
     hydrology::PhysxFluidBake::ProductBuildSettings product_settings{};
     hydrology::TerrainHeightSampler terrain;
+    std::filesystem::path cache_path;
+    std::uint64_t semantic_key = 0;
 };
 
 using FluidBakeBackendFactory =
     std::function<std::shared_ptr<hydrology::IFluidBakeBackend>()>;
-using FluidBakeRequestProducer = std::function<bool(
-    const matter::HydrologyWorldSettings&,
-    const std::optional<matter::RiverNetworkDefinition>&,
-    FluidBakeRequest&, hydrology::FluidBakeError&)>;
+
+struct FluidDeviceIdentity {
+    std::array<std::uint8_t, 8> luid{};
+    bool luid_valid = false;
+    std::uint32_t vendor_id = 0;
+    std::uint32_t device_id = 0;
+    std::uint32_t driver_version = 0;
+};
+
+struct FluidBakeRunContext {
+    hydrology::FluidBakeCallbacks callbacks{};
+    hydrology::TerrainHeightSampler terrain;
+    std::uint64_t terrain_revision = 0;
+};
 
 struct LocalProviderConfig {
     std::string project_dir;
@@ -196,12 +207,11 @@ struct LocalProviderConfig {
                        const gpu_meshing::BuildControl& control)>
         vk_particle_visual_bake;
 
-    // Engine-installed synchronous request producer. connect() invokes it only
-    // after the authored world has loaded and only when that world explicitly
-    // enables the legacy hydrology request. The producer owns no lifecycle;
-    // Task 7 replaces its fixed defaults with the expanded imperative DSL and
-    // worker/generation/cache orchestration.
-    FluidBakeRequestProducer fluid_bake_request_producer;
+    // Task 7 authored-fluid dependencies. The factory remains dormant until
+    // an imperative river network explicitly selects the PhysX backend and a
+    // semantic cache miss reaches the worker-owned solver phase.
+    FluidBakeBackendFactory fluid_bake_backend_factory;
+    FluidDeviceIdentity fluid_renderer_device{};
 
     // Task 7: OOM/error injection hook for testing skip-and-continue.
     // Fired once per part processed (install bake + fetch/load); `part_index` is the
@@ -418,30 +428,20 @@ public:
         hydrology::HydrologyArtifact& artifact,
         hydrology::FluidBakeError& error) const;
 
-    // Synchronous product half of the production fluid bake.  Task 7 owns
-    // when this starts and which worker supplies the backend; once that
-    // backend has accepted its final host snapshot this method is the only
-    // path to publication, including the renderer-owned visual product.
-    bool run_fluid_bake(
-        const hydrology::FluidBakeInput& input,
-        hydrology::IFluidBakeBackend& backend,
-        const hydrology::FluidBakeCallbacks& callbacks,
-        const hydrology::PhysxFluidBake::ProductBuildSettings& settings,
-        const hydrology::TerrainHeightSampler& terrain,
-        hydrology::HydrologyArtifact& artifact,
-        hydrology::FluidBakeError& error) const;
-
     const std::optional<hydrology::HydrologyArtifact>&
     accepted_fluid_artifact() const {
         return accepted_fluid_artifact_;
     }
 
-    // Runs the authored synchronous Task 6 request after install/restore has
-    // populated hydrology and river state. Returns true only when every
-    // required solver/renderer/CPU/gameplay product was accepted. A disabled
-    // request or any failure leaves no artifact and never invalidates the dry
-    // world assembled by the caller.
-    bool run_authored_fluid_bake();
+    bool authored_fluid_requested() const;
+
+    // Called from WorldSession's existing bake worker after the authored world
+    // and terrain field are ready. Cache lookup, lazy backend creation, solver,
+    // renderer handoff, atomic save/reopen, and publication are one guarded
+    // lifecycle. A false return never invalidates the dry world.
+    bool run_authored_fluid_bake(const FluidBakeRunContext& context,
+                                 matter::HydrologyStatus& status,
+                                 hydrology::FluidBakeError& error);
 
     // connect() == install_graph() + compose_world() with unchanged external behavior.
     bool connect(WorldManifest& out, std::string& err) override;

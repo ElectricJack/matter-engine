@@ -2070,11 +2070,22 @@ void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
               river.boulders.density == 0.0f,
           "the visual spike retains the rounded-V channel and frozen roots");
     CHECK(network.first_section.dry_margin_m == 5.0f &&
-              network.first_section.batch_steps == 256u &&
-              network.first_section.max_steps == 256u &&
-              network.first_section.crest_wet_fraction == 0.80f &&
-              network.first_section.stable_wet_steps == 32u,
-          "the scene retains the 5 m margin, work budget, and exact sensor rule");
+              network.fluid.backend == matter::HydrologyBackend::Physx &&
+              network.fluid.limits.batch_steps == 256u &&
+              network.fluid.limits.max_steps == 65536u &&
+              network.fluid.limits.max_particles == 1000000u &&
+              network.fluid.fill_sensor.crest_wet_fraction == 0.80f &&
+              network.fluid.fill_sensor.stable_wet_steps == 32u,
+          "the scene retains the dry margin, explicit work budget, and sensor rule");
+    CHECK(network.fluid.emitters.size() == 1u &&
+              network.fluid.emitters[0].id == "upstream-inlet" &&
+              network.fluid.virtual_dam.distance_m == 100.0f &&
+              network.fluid.pbd.particle_spacing_m == 0.20f &&
+              network.fluid.pbd.fixed_step_seconds == 1.0f / 120.0f &&
+              network.fluid.quality.visual_voxel_m == 0.10f &&
+              network.fluid.quality.coarse_voxel_m == 0.40f &&
+              network.fluid.quality.gameplay_cell_m == 0.50f,
+          "the checked-in scene explicitly authors inlet, dam, solver, and every product quality");
 }
 
 void test_world_loader_leaves_hydrology_empty_when_absent() {
@@ -2205,9 +2216,26 @@ class River extends World {
       .reach({ until: 128, baseGrade: -0.012, meander: 0.65 })
       .channel({ width: 7, depth: 2.5, asymmetry: 0.35 })
       .boulders({ density: 0.08, radius: [0.5, 2.0] });
+    network.backend("physx");
+    network.pbd({particleSpacing: .2, restDensity: 1000, fixedStep: 1 / 120,
+                 iterations: 4, maxNeighbors: 96});
+    network.limits({batchSteps: 256, maxSteps: 65536, maxParticles: 1000000});
+    network.emitter({id: "main-inlet", position: [0,18,0], direction: [1,0,0],
+                     initialVelocity: [1,0,0], flow: 1, radius: 2,
+                     startTime: 0, stopTime: 64});
+    network.emitter({id: "future-tributary", position: [32,14,8], direction: [1,0,0],
+                     initialVelocity: [1,0,0], flow: .25, radius: 1,
+                     startTime: 2, stopTime: 32});
+    network.virtualDam({distance: 100, height: 8, thickness: .5});
+    network.fillSensor({upstreamOffset: 2, length: 1, height: 6,
+                        resolution: [24,1,12], crestWetFraction: .8,
+                        stableWetSteps: 32, minimumParticlesPerCell: 1});
+    network.quality({particleRadius: .13, visualVoxel: .1,
+                     visualBlendWidth: .05, coarseVoxel: .4, gameplayCell: .5,
+                     maxVisualParticles: 1000000, maxGridVertices: 4194304,
+                     maxMeshVertices: 12582912, maxMeshIndices: 12582912});
     network.firstSection(main, {
-      minimumLength: 100, dryMargin: 4, batchSteps: 256, maxSteps: 65536,
-      crestWetFraction: 0.80, stableWetSteps: 32,
+      minimumLength: 100, dryMargin: 4,
     });
     network.build();
   }
@@ -2227,8 +2255,11 @@ class River extends World {
               definition.river_network->rivers[0].reaches[1].meander == 0.65f,
           "the loader retains two ordered reaches including gentle meander");
     CHECK(definition.river_network->first_section.minimum_length_m == 100.0f &&
-              definition.river_network->first_section.batch_steps == 256u,
-          "the loader retains first-section length and work settings");
+              definition.river_network->fluid.backend ==
+                  matter::HydrologyBackend::Physx &&
+              definition.river_network->fluid.emitters.size() == 2u &&
+              definition.river_network->fluid.limits.batch_steps == 256u,
+          "the loader retains first-section geometry and authored fluid settings");
     CHECK(!definition.river_network->canonical_text.empty() &&
               definition.river_network->canonical_hash != 0u,
           "the loader publishes canonical bytes and their deterministic key");
@@ -2266,8 +2297,7 @@ void test_world_loader_rejects_imperative_river_failures() {
         .reach({until:100,baseGrade:-.01,meander:.2})
         .channel({width:5,depth:2,asymmetry:0})
         .boulders({density:.1,radius:[.5,1]});
-      n.firstSection(r,{minimumLength:100,dryMargin:4,crestWetFraction:.8,
-                        stableWetSteps:32,batchSteps:256,maxSteps:65536});
+      n.firstSection(r,{minimumLength:100,dryMargin:4});
       n.build(); n.build();
     )JS", "hydrology.build");
     rejects("Nonfinite.js",
@@ -2328,7 +2358,7 @@ const main = network.river("main")
   .channel({width: 5, depth: 2, asymmetry: 0})
   .boulders({density: 0.1, radius: [0.5, 1]});
 network.firstSection(main, {minimumLength: 100, dryMargin: 4,
-  crestWetFraction: 0.8, stableWetSteps: 32, batchSteps: 256, maxSteps: 65536});
+});
 network.build();
 class ModuleScopeRiver extends World { hydrology() {} }
 )JS");
@@ -2356,7 +2386,7 @@ class BuildEntitiesRiver extends World {
       .channel({width: 5, depth: 2, asymmetry: 0})
       .boulders({density: 0.1, radius: [0.5, 1]});
     network.firstSection(main, {minimumLength: 100, dryMargin: 4,
-      crestWetFraction: 0.8, stableWetSteps: 32, batchSteps: 256, maxSteps: 65536});
+    });
     network.build();
   }
 }
@@ -2386,7 +2416,7 @@ class LateRiverHandle extends World {
       .channel({width: 5, depth: 2, asymmetry: 0})
       .boulders({density: 0.1, radius: [0.5, 1]});
     network.firstSection(main, {minimumLength: 100, dryMargin: 4,
-      crestWetFraction: 0.8, stableWetSteps: 32, batchSteps: 256, maxSteps: 65536});
+    });
     network.build();
     this.savedNetwork = network;
   }

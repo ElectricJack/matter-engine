@@ -182,6 +182,7 @@ target_compile_definitions(matter_physx_sdk INTERFACE
 )
 target_link_libraries(matter_physx_sdk INTERFACE
     ${matter_physx_static_libraries}
+    "${matter_cuda_driver_library}"
     delayimp.lib
     ws2_32.lib
 )

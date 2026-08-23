@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <limits>
@@ -614,6 +615,20 @@ struct PhysxRuntime::Impl {
         cached_probe.cuda_driver_version = cuda->getDriverVersion();
         cached_probe.device_total_memory_bytes =
             static_cast<std::uint64_t>(cuda->getDeviceTotalMemBytes());
+#if defined(_WIN32)
+        char luid[8]{};
+        unsigned int node_mask = 0;
+        const CUresult luid_result = cuDeviceGetLuid(
+            luid, &node_mask, static_cast<CUdevice>(cuda->getDevice()));
+        if (luid_result != CUDA_SUCCESS) {
+            return fail(FluidBakeCode::BackendUnavailable,
+                        "CUDA device LUID query failed before scene allocation");
+        }
+        std::memcpy(cached_probe.device_luid.data(), luid,
+                    cached_probe.device_luid.size());
+        cached_probe.device_luid_valid = true;
+        cached_probe.device_node_mask = node_mask;
+#endif
         return cached_probe;
     }
 

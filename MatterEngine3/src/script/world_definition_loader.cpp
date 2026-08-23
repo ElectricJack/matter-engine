@@ -593,13 +593,7 @@ JSValue network_first_section(JSContext* context, JSValueConst this_value,
         !JS_IsObject(arguments[1]) ||
         !required_float(context, arguments[1], "minimumLength",
                         section.minimum_length_m) ||
-        !required_float(context, arguments[1], "dryMargin", section.dry_margin_m) ||
-        !required_float(context, arguments[1], "crestWetFraction",
-                        section.crest_wet_fraction) ||
-        !required_uint32(context, arguments[1], "stableWetSteps",
-                         section.stable_wet_steps) ||
-        !required_uint32(context, arguments[1], "batchSteps", section.batch_steps) ||
-        !required_uint32(context, arguments[1], "maxSteps", section.max_steps)) {
+        !required_float(context, arguments[1], "dryMargin", section.dry_margin_m)) {
         return river_failure(context, handle->collector,
                              "hydrology.firstSection: invalid river or section settings");
     }
@@ -608,6 +602,210 @@ JSValue network_first_section(JSContext* context, JSValueConst this_value,
                                                               error))
         return river_failure(context, handle->collector, error);
     return JS_UNDEFINED;
+}
+
+RiverNetworkHandle* active_network_handle(JSContext* context,
+                                          JSValueConst this_value) {
+    RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque2(context, this_value, river_network_class_id));
+    if (!handle) return nullptr;
+    if (!handle->collector->river_hydrology_active) {
+        river_phase_failure(context, handle->collector);
+        return nullptr;
+    }
+    return handle;
+}
+
+bool required_string(JSContext* context, JSValueConst object, const char* key,
+                     std::string& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    const bool ok = string_value(context, value, output);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+bool required_float3(JSContext* context, JSValueConst object, const char* key,
+                     Float3& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    const bool ok = float3_value(context, value, output);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+JSValue network_backend(JSContext* context, JSValueConst this_value,
+                        int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    std::string name;
+    if (argument_count < 1 || !string_value(context, arguments[0], name) ||
+        (name != "physx" && name != "disabled")) {
+        return river_failure(context, handle->collector,
+                             "hydrology.backend: backend must be 'physx' or 'disabled'");
+    }
+    std::string error;
+    const matter::HydrologyBackend backend = name == "physx"
+        ? matter::HydrologyBackend::Physx
+        : matter::HydrologyBackend::Disabled;
+    if (!handle->collector->river_builder->set_backend(backend, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_pbd(JSContext* context, JSValueConst this_value,
+                    int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyPbdSettings settings{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "particleSpacing",
+                        settings.particle_spacing_m) ||
+        !required_float(context, arguments[0], "restDensity",
+                        settings.rest_density_kg_m3) ||
+        !required_float(context, arguments[0], "fixedStep",
+                        settings.fixed_step_seconds) ||
+        !required_uint32(context, arguments[0], "iterations",
+                         settings.solver_iterations) ||
+        !required_uint32(context, arguments[0], "maxNeighbors",
+                         settings.max_neighbors)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.pbd: pbd requires particleSpacing/restDensity/fixedStep/iterations/maxNeighbors");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_pbd(settings, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_limits(JSContext* context, JSValueConst this_value,
+                       int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyBakeLimits limits{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_uint32(context, arguments[0], "batchSteps", limits.batch_steps) ||
+        !required_uint32(context, arguments[0], "maxSteps", limits.max_steps) ||
+        !required_uint32(context, arguments[0], "maxParticles", limits.max_particles)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.limits: limits requires batchSteps/maxSteps/maxParticles");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_limits(limits, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_emitter(JSContext* context, JSValueConst this_value,
+                        int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyEmitter emitter{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_string(context, arguments[0], "id", emitter.id) ||
+        !required_float3(context, arguments[0], "position", emitter.position_m) ||
+        !required_float3(context, arguments[0], "direction", emitter.direction) ||
+        !required_float3(context, arguments[0], "initialVelocity",
+                         emitter.initial_velocity_mps) ||
+        !required_float(context, arguments[0], "flow", emitter.flow_m3s) ||
+        !required_float(context, arguments[0], "radius", emitter.radius_m) ||
+        !required_float(context, arguments[0], "startTime", emitter.start_time_s) ||
+        !required_float(context, arguments[0], "stopTime", emitter.stop_time_s)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.emitter: emitter requires id/position/direction/initialVelocity/flow/radius/startTime/stopTime");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->add_emitter(emitter, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_virtual_dam(JSContext* context, JSValueConst this_value,
+                            int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyVirtualDam dam{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "distance", dam.distance_m) ||
+        !required_float(context, arguments[0], "height", dam.height_m) ||
+        !required_float(context, arguments[0], "thickness", dam.thickness_m)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.virtualDam: virtualDam requires distance/height/thickness");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_virtual_dam(dam, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_fill_sensor(JSContext* context, JSValueConst this_value,
+                            int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyFillSensor sensor{};
+    Float3 resolution{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "upstreamOffset",
+                        sensor.upstream_offset_m) ||
+        !required_float(context, arguments[0], "length", sensor.length_m) ||
+        !required_float(context, arguments[0], "height", sensor.height_m) ||
+        !required_float3(context, arguments[0], "resolution", resolution) ||
+        !std::isfinite(resolution.x) || !std::isfinite(resolution.y) ||
+        !std::isfinite(resolution.z) || resolution.x < 0.0f ||
+        resolution.y < 0.0f || resolution.z < 0.0f ||
+        std::floor(resolution.x) != resolution.x ||
+        std::floor(resolution.y) != resolution.y ||
+        std::floor(resolution.z) != resolution.z ||
+        resolution.x > static_cast<float>(std::numeric_limits<std::uint32_t>::max()) ||
+        resolution.y > static_cast<float>(std::numeric_limits<std::uint32_t>::max()) ||
+        resolution.z > static_cast<float>(std::numeric_limits<std::uint32_t>::max()) ||
+        !required_float(context, arguments[0], "crestWetFraction",
+                        sensor.crest_wet_fraction) ||
+        !required_uint32(context, arguments[0], "stableWetSteps",
+                         sensor.stable_wet_steps) ||
+        !required_uint32(context, arguments[0], "minimumParticlesPerCell",
+                         sensor.minimum_particles_per_cell)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.fillSensor: fillSensor requires upstreamOffset/length/height/resolution/crestWetFraction/stableWetSteps/minimumParticlesPerCell");
+    }
+    sensor.resolution_x = static_cast<std::uint32_t>(resolution.x);
+    sensor.resolution_y = static_cast<std::uint32_t>(resolution.y);
+    sensor.resolution_z = static_cast<std::uint32_t>(resolution.z);
+    std::string error;
+    if (!handle->collector->river_builder->set_fill_sensor(sensor, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_quality(JSContext* context, JSValueConst this_value,
+                        int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyQualitySettings quality{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "particleRadius",
+                        quality.particle_radius_m) ||
+        !required_float(context, arguments[0], "visualVoxel",
+                        quality.visual_voxel_m) ||
+        !required_float(context, arguments[0], "visualBlendWidth",
+                        quality.visual_blend_width_m) ||
+        !required_float(context, arguments[0], "coarseVoxel",
+                        quality.coarse_voxel_m) ||
+        !required_float(context, arguments[0], "gameplayCell",
+                        quality.gameplay_cell_m) ||
+        !required_uint32(context, arguments[0], "maxVisualParticles",
+                         quality.max_visual_particles) ||
+        !required_uint32(context, arguments[0], "maxGridVertices",
+                         quality.max_grid_vertices) ||
+        !required_uint32(context, arguments[0], "maxMeshVertices",
+                         quality.max_mesh_vertices) ||
+        !required_uint32(context, arguments[0], "maxMeshIndices",
+                         quality.max_mesh_indices)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.quality: quality requires all particle/visual/coarse/gameplay settings and caps");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_quality(quality, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
 }
 
 JSValue network_build(JSContext* context, JSValueConst this_value,
@@ -665,6 +863,20 @@ JSValue river_network(JSContext* context, JSValueConst,
     JS_SetOpaque(object, new RiverNetworkHandle{collector});
     JS_SetPropertyStr(context, object, "river",
                       JS_NewCFunction(context, network_river, "river", 1));
+    JS_SetPropertyStr(context, object, "backend",
+                      JS_NewCFunction(context, network_backend, "backend", 1));
+    JS_SetPropertyStr(context, object, "pbd",
+                      JS_NewCFunction(context, network_pbd, "pbd", 1));
+    JS_SetPropertyStr(context, object, "limits",
+                      JS_NewCFunction(context, network_limits, "limits", 1));
+    JS_SetPropertyStr(context, object, "emitter",
+                      JS_NewCFunction(context, network_emitter, "emitter", 1));
+    JS_SetPropertyStr(context, object, "virtualDam",
+                      JS_NewCFunction(context, network_virtual_dam, "virtualDam", 1));
+    JS_SetPropertyStr(context, object, "fillSensor",
+                      JS_NewCFunction(context, network_fill_sensor, "fillSensor", 1));
+    JS_SetPropertyStr(context, object, "quality",
+                      JS_NewCFunction(context, network_quality, "quality", 1));
     JS_SetPropertyStr(context, object, "firstSection",
                       JS_NewCFunction(context, network_first_section,
                                       "firstSection", 2));

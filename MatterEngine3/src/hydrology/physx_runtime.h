@@ -4,6 +4,7 @@
 #include "hydrology/physx_fluid_types.h"
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <string>
 
@@ -21,6 +22,9 @@ struct FluidBackendProbe {
     int device_ordinal = -1;
     int cuda_driver_version = 0;
     std::uint64_t device_total_memory_bytes = 0;
+    std::array<std::uint8_t, 8> device_luid{};
+    bool device_luid_valid = false;
+    std::uint32_t device_node_mask = 0;
 };
 
 class IFluidBakeBackend {

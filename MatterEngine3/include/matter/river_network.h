@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hydrology.h"
 #include "math_types.h"
 
 #include <cstdint>
@@ -34,10 +35,6 @@ struct RiverInlet {
 struct RiverFirstSection {
     float minimum_length_m = 0.0f;
     float dry_margin_m = 0.0f;
-    float crest_wet_fraction = 0.0f;
-    std::uint32_t stable_wet_steps = 0;
-    std::uint32_t batch_steps = 0;
-    std::uint32_t max_steps = 0;
 };
 
 struct RiverDefinition {
@@ -55,6 +52,7 @@ struct RiverNetworkDefinition {
     std::vector<RiverDefinition> rivers;
     std::string first_section_river;
     RiverFirstSection first_section{};
+    HydrologyFluidRequest fluid{};
     std::string canonical_text;
     std::uint64_t canonical_hash = 0;
 };

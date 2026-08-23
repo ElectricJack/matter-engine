@@ -9,11 +9,14 @@
 #endif
 
 #include <chrono>
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -518,7 +521,7 @@ void test_every_nested_numeric_input_is_validated() {
     expect_rejected_before_backend(std::move(input),
                                    "non-finite boulder authoring is rejected");
     input = valid_input();
-    input.network.first_section.crest_wet_fraction = nan;
+    input.network.first_section.dry_margin_m = nan;
     expect_rejected_before_backend(std::move(input),
                                    "non-finite section settings are rejected");
     input = valid_input();
@@ -873,7 +876,6 @@ void test_product_keys_follow_the_settings_the_extractors_consume() {
 bool write_world_session_fixture(const std::filesystem::path& root,
                                  bool fluid_enabled = true) {
     std::error_code error;
-    std::filesystem::remove_all(root, error);
     std::filesystem::create_directories(root / "objects", error);
     if (error) return false;
     std::filesystem::create_directories(root / "worlds", error);
@@ -892,14 +894,26 @@ bool write_world_session_fixture(const std::filesystem::path& root,
     }
     std::ofstream world(root / "worlds" / "Demo.js");
     world << "class Demo extends World {\n"
-             "  static hydrology = {\n"
-             "    enabled: " << (fluid_enabled ? "true" : "false") <<
-             ", origin: [0, 0, 0], dimensions: [8, 8, 8],\n"
-             "    cellSize: 1, dt: 0.01, gravity: 9.81, downstream: [1, 0],\n"
-             "    residualGrade: [-0.01, 0], inletFlow: 1, inletHead: 4,\n"
-             "    outletHead: 1, batchSteps: 8, maxSteps: 120\n"
-             "  };\n"
              "  static roots = [{ module: 'FluidBakePart', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }];\n"
+             "  hydrology() {\n"
+             "    const n=riverNetwork({cellSize:1,seed:7});\n"
+             "    const r=n.river('main').inlet([0,8,0],{flow:1})\n"
+             "      .spline([[0,8,0],[10,1,0]])\n"
+             "      .reach({until:10,baseGrade:-.1,meander:0})\n"
+             "      .channel({width:4,depth:3,asymmetry:0})\n"
+             "      .boulders({density:0,radius:[.5,1]});\n";
+    if (fluid_enabled) {
+        world <<
+             "    n.backend('physx');\n"
+             "    n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:.01,iterations:4,maxNeighbors:96});\n"
+             "    n.limits({batchSteps:8,maxSteps:120,maxParticles:1000});\n"
+             "    n.emitter({id:'main-inlet',position:[1,4,1],direction:[1,0,0],initialVelocity:[1,0,0],flow:1,radius:.5,startTime:0,stopTime:1.2});\n"
+             "    n.virtualDam({distance:8,height:4,thickness:.5});\n"
+             "    n.fillSensor({upstreamOffset:1,length:1,height:3,resolution:[2,2,2],crestWetFraction:.5,stableWetSteps:1,minimumParticlesPerCell:1});\n"
+             "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxVisualParticles:1000,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n";
+    }
+    world << "    n.firstSection(r,{minimumLength:8,dryMargin:1}); n.build();\n"
+             "  }\n"
              "}\n";
     return static_cast<bool>(world);
 }
@@ -915,7 +929,8 @@ bool drive_world_session_bake(matter::WorldSession& session) {
         while (session.poll_event(event)) {
             observed_event = true;
             if (event.type == matter::EventType::BakeFinished) return true;
-            if (event.type == matter::EventType::BakeError) {
+            if (event.type == matter::EventType::BakeError &&
+                event.phase != "hydrology") {
                 return false;
             }
         }
@@ -925,24 +940,105 @@ bool drive_world_session_bake(matter::WorldSession& session) {
     return false;
 }
 
+struct LifecycleBackendState {
+    std::atomic<int> factory_calls{0};
+    std::atomic<int> probe_calls{0};
+    std::atomic<int> run_calls{0};
+    std::atomic<int> release_calls{0};
+    std::atomic<bool> first_run_entered{false};
+    bool available = true;
+    bool block_first_until_cancelled = false;
+    std::array<std::uint8_t, 8> luid{};
+    bool luid_valid = false;
+    std::mutex thread_mutex;
+    std::thread::id run_thread{};
+};
+
+class LifecycleBackend final : public IFluidBakeBackend {
+public:
+    explicit LifecycleBackend(std::shared_ptr<LifecycleBackendState> state)
+        : state_(std::move(state)) {}
+
+    ~LifecycleBackend() override { ++state_->release_calls; }
+
+    FluidBackendProbe probe() override {
+        ++state_->probe_calls;
+        FluidBackendProbe result{};
+        result.available = state_->available;
+        result.backend_name = "lifecycle-fake";
+        result.sdk_version = "5.6.1";
+        result.device_name = "Lifecycle Fake GPU";
+        result.code = state_->available ? FluidBakeCode::Ready
+                                        : FluidBakeCode::BackendUnavailable;
+        result.message = state_->available ? "" : "fake backend unavailable";
+        result.sdk_version_hex = 0x05060100u;
+        result.cuda_driver_version = 1;
+        result.device_luid = state_->luid;
+        result.device_luid_valid = state_->luid_valid;
+        return result;
+    }
+
+    bool run(const FluidBakeInput& input,
+             const FluidBakeCallbacks& callbacks,
+             FluidBakeOutput& output,
+             FluidBakeError& error) override {
+        const int ordinal = ++state_->run_calls;
+        {
+            std::lock_guard<std::mutex> lock(state_->thread_mutex);
+            state_->run_thread = std::this_thread::get_id();
+        }
+        if (ordinal == 1) state_->first_run_entered.store(true);
+        if (ordinal == 1 && state_->block_first_until_cancelled) {
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(10);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (callbacks.cancelled && callbacks.cancelled()) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        RecordingBackend delegate;
+        return delegate.run(input, callbacks, output, error);
+    }
+
+private:
+    std::shared_ptr<LifecycleBackendState> state_;
+};
+
+struct WorldSessionFluidOptions {
+    bool fluid_enabled = true;
+    bool visual_succeeds = true;
+    bool supersede_first_run = false;
+    bool renderer_luid_valid = false;
+    std::array<std::uint8_t, 8> renderer_luid{};
+};
+
 struct WorldSessionFluidCase {
     bool opened = false;
     bool finished = false;
     bool accepted = false;
     std::uint32_t dry_instance_count = 0;
     int backend_factory_calls = 0;
+    int backend_probe_calls = 0;
     int backend_run_calls = 0;
+    int backend_release_calls = 0;
     int visual_calls = 0;
+    int hydrology_progress_events = 0;
+    int hydrology_error_events = 0;
+    bool backend_released_before_visual = false;
+    std::thread::id caller_thread{};
+    std::thread::id backend_thread{};
+    std::thread::id visual_thread{};
+    matter::HydrologyStatus status{};
 };
 
 WorldSessionFluidCase run_world_session_fluid_case(
-    const char* fixture_name, bool fluid_enabled, bool visual_succeeds) {
+    const std::filesystem::path& root,
+    const WorldSessionFluidOptions& options,
+    const std::shared_ptr<LifecycleBackendState>& backend_state) {
     WorldSessionFluidCase result{};
-    const std::filesystem::path root =
-        std::filesystem::temp_directory_path() / fixture_name;
-    CHECK(write_world_session_fixture(root, fluid_enabled),
+    result.caller_thread = std::this_thread::get_id();
+    CHECK(write_world_session_fixture(root, options.fluid_enabled),
           "the live fluid request test created its minimal editor world");
-    auto backend = std::make_shared<RecordingBackend>();
     {
         const std::string cache_root = (root / ".cache").string();
         matter::EngineDesc engine_desc{};
@@ -967,16 +1063,19 @@ WorldSessionFluidCase run_world_session_fluid_case(
         result.opened = true;
 
         session->set_test_fluid_bake_dependencies(
-            [&] {
-                ++result.backend_factory_calls;
-                return backend;
+            [backend_state] {
+                ++backend_state->factory_calls;
+                return std::make_shared<LifecycleBackend>(backend_state);
             },
             [&](const gpu_meshing::ParticleJob& job,
                 gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
                 gpu_meshing::Error&,
                 const gpu_meshing::BuildControl&) {
                 ++result.visual_calls;
-                if (!visual_succeeds) return false;
+                result.visual_thread = std::this_thread::get_id();
+                result.backend_released_before_visual =
+                    backend_state->release_calls.load() > 0;
+                if (!options.visual_succeeds) return false;
                 mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
                                   0.0f, 1.0f, 0.0f};
                 mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
@@ -986,38 +1085,117 @@ WorldSessionFluidCase run_world_session_fluid_case(
                 mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
                 return true;
             });
-        CHECK(result.backend_factory_calls == 0,
+        if (options.renderer_luid_valid)
+            session->set_test_fluid_renderer_luid(options.renderer_luid);
+        CHECK(backend_state->factory_calls.load() == 0,
               "open_world keeps the authored fluid backend lazy before the bake");
-        result.finished = drive_world_session_bake(*session);
+        session->request_bake();
+        if (options.supersede_first_run) {
+            const auto entered_deadline = std::chrono::steady_clock::now() +
+                                          std::chrono::seconds(30);
+            while (!backend_state->first_run_entered.load() &&
+                   std::chrono::steady_clock::now() < entered_deadline) {
+                session->pump_gpu_jobs(8.0f);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            CHECK(backend_state->first_run_entered.load(),
+                  "the supersession fixture reached the first solver run");
+            session->reload();
+        }
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(30);
+        while (std::chrono::steady_clock::now() < deadline) {
+            session->pump_gpu_jobs(8.0f);
+            matter::Event event{};
+            bool observed_event = false;
+            while (session->poll_event(event)) {
+                observed_event = true;
+                if (event.type == matter::EventType::BakePartDone &&
+                    event.phase == "hydrology")
+                    ++result.hydrology_progress_events;
+                if (event.type == matter::EventType::BakeError &&
+                    event.phase == "hydrology")
+                    ++result.hydrology_error_events;
+                if (event.type == matter::EventType::BakeFinished) {
+                    result.finished = true;
+                    break;
+                }
+                if (event.type == matter::EventType::BakeError &&
+                    event.phase != "hydrology") {
+                    break;
+                }
+            }
+            if (result.finished) break;
+            if (!observed_event)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         result.accepted = session->has_accepted_fluid_artifact_for_test();
         result.dry_instance_count = session->instance_count();
-        result.backend_run_calls = backend->run_calls;
+        result.status = session->hydrology_status();
     }
-    std::error_code remove_error;
-    std::filesystem::remove_all(root, remove_error);
+    result.backend_factory_calls = backend_state->factory_calls.load();
+    result.backend_probe_calls = backend_state->probe_calls.load();
+    result.backend_run_calls = backend_state->run_calls.load();
+    result.backend_release_calls = backend_state->release_calls.load();
+    {
+        std::lock_guard<std::mutex> lock(backend_state->thread_mutex);
+        result.backend_thread = backend_state->run_thread;
+    }
     return result;
 }
 
 void test_world_session_runs_authored_fluid_bake_before_publication() {
+    const auto success_root = std::filesystem::temp_directory_path() /
+                              "matter-live-fluid-success-contract";
+    std::error_code remove_error;
+    std::filesystem::remove_all(success_root, remove_error);
+    auto success_state = std::make_shared<LifecycleBackendState>();
     const WorldSessionFluidCase success = run_world_session_fluid_case(
-        "matter-live-fluid-success-contract", true, true);
+        success_root, {}, success_state);
     CHECK(success.opened && success.finished && success.dry_instance_count > 0 &&
               success.accepted && success.backend_factory_calls == 1 &&
-              success.backend_run_calls == 1 && success.visual_calls == 1,
+              success.backend_probe_calls == 2 &&
+              success.backend_run_calls == 1 &&
+              success.backend_release_calls == 1 &&
+              success.visual_calls == 1 &&
+              success.backend_released_before_visual &&
+              success.backend_thread != success.caller_thread &&
+              success.visual_thread == success.caller_thread &&
+              success.hydrology_progress_events >= 3 &&
+              success.status.state == matter::HydrologyState::Ready &&
+              !success.status.cache_hit && success.status.progress == 1.0f &&
+              !success.status.input_key.empty() &&
+              !success.status.payload_digest.empty(),
           "the live WorldSession path sends authored fluid through the production renderer before publication");
+    std::filesystem::remove_all(success_root, remove_error);
 
+    const auto failure_root = std::filesystem::temp_directory_path() /
+                              "matter-live-fluid-renderer-failure-contract";
+    std::filesystem::remove_all(failure_root, remove_error);
+    auto failure_state = std::make_shared<LifecycleBackendState>();
+    WorldSessionFluidOptions failure_options{};
+    failure_options.visual_succeeds = false;
     const WorldSessionFluidCase renderer_failure = run_world_session_fluid_case(
-        "matter-live-fluid-renderer-failure-contract", true, false);
+        failure_root, failure_options, failure_state);
     CHECK(renderer_failure.opened && renderer_failure.finished &&
               renderer_failure.dry_instance_count > 0 &&
               !renderer_failure.accepted &&
               renderer_failure.backend_factory_calls == 1 &&
               renderer_failure.backend_run_calls == 1 &&
-              renderer_failure.visual_calls == 1,
+              renderer_failure.visual_calls == 1 &&
+              renderer_failure.hydrology_error_events == 1 &&
+              renderer_failure.status.state == matter::HydrologyState::Invalid,
           "a live renderer product failure preserves dry terrain and publishes no fluid artifact");
+    std::filesystem::remove_all(failure_root, remove_error);
 
+    const auto disabled_root = std::filesystem::temp_directory_path() /
+                               "matter-live-fluid-disabled-contract";
+    std::filesystem::remove_all(disabled_root, remove_error);
+    auto disabled_state = std::make_shared<LifecycleBackendState>();
+    WorldSessionFluidOptions disabled_options{};
+    disabled_options.fluid_enabled = false;
     const WorldSessionFluidCase authored_disabled = run_world_session_fluid_case(
-        "matter-live-fluid-disabled-contract", false, true);
+        disabled_root, disabled_options, disabled_state);
     CHECK(authored_disabled.opened && authored_disabled.finished &&
               authored_disabled.dry_instance_count > 0 &&
               !authored_disabled.accepted &&
@@ -1025,6 +1203,109 @@ void test_world_session_runs_authored_fluid_bake_before_publication() {
               authored_disabled.backend_run_calls == 0 &&
               authored_disabled.visual_calls == 0,
           "an authored-disabled live world remains lazy and publishes dry terrain");
+    std::filesystem::remove_all(disabled_root, remove_error);
+}
+
+void test_world_session_fluid_cache_hit_skips_solver_and_renderer() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-cache-contract";
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
+
+    auto cold_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase cold = run_world_session_fluid_case(
+        root, {}, cold_state);
+    auto warm_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase warm = run_world_session_fluid_case(
+        root, {}, warm_state);
+
+    CHECK(cold.accepted && !cold.status.cache_hit &&
+              cold.backend_run_calls == 1 && cold.visual_calls == 1,
+          "the cache fixture first creates one validated accepted artifact");
+    CHECK(warm.opened && warm.finished && warm.accepted &&
+              warm.status.state == matter::HydrologyState::Ready &&
+              warm.status.cache_hit &&
+              warm.backend_factory_calls == 0 &&
+              warm.backend_probe_calls == 0 && warm.backend_run_calls == 0 &&
+              warm.backend_release_calls == 0 && warm.visual_calls == 0 &&
+              !warm.status.payload_digest.empty(),
+          "a validated semantic cache hit performs neither PhysX nor Vulkan work");
+    std::filesystem::remove_all(root, remove_error);
+}
+
+void test_world_session_fluid_device_mismatch_is_a_hard_dry_error() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-device-mismatch-contract";
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
+    auto state = std::make_shared<LifecycleBackendState>();
+    state->luid.fill(2u);
+    state->luid_valid = true;
+    WorldSessionFluidOptions options{};
+    options.renderer_luid_valid = true;
+    options.renderer_luid.fill(1u);
+    const WorldSessionFluidCase mismatch = run_world_session_fluid_case(
+        root, options, state);
+
+    CHECK(mismatch.opened && mismatch.finished &&
+              mismatch.dry_instance_count > 0 && !mismatch.accepted &&
+              mismatch.backend_factory_calls == 1 &&
+              mismatch.backend_probe_calls == 1 &&
+              mismatch.backend_run_calls == 0 &&
+              mismatch.backend_release_calls == 1 &&
+              mismatch.visual_calls == 0 &&
+              mismatch.hydrology_error_events == 1 &&
+              mismatch.status.state == matter::HydrologyState::Invalid &&
+              mismatch.status.failure_reason.find("does not match") !=
+                  std::string::npos,
+          "CUDA/Vulkan adapter mismatch fails before solver allocation while dry terrain still publishes");
+    std::filesystem::remove_all(root, remove_error);
+}
+
+void test_world_session_fluid_backend_failure_preserves_dry_world() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-backend-failure-contract";
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
+    auto state = std::make_shared<LifecycleBackendState>();
+    state->available = false;
+    const WorldSessionFluidCase failed = run_world_session_fluid_case(
+        root, {}, state);
+
+    CHECK(failed.opened && failed.finished && failed.dry_instance_count > 0 &&
+              !failed.accepted && failed.backend_factory_calls == 1 &&
+              failed.backend_probe_calls == 1 && failed.backend_run_calls == 0 &&
+              failed.backend_release_calls == 1 && failed.visual_calls == 0 &&
+              failed.hydrology_error_events == 1 &&
+              failed.status.state == matter::HydrologyState::Invalid &&
+              !failed.status.failure_reason.empty(),
+          "an unavailable requested backend reports Invalid without preventing dry publication");
+    std::filesystem::remove_all(root, remove_error);
+}
+
+void test_world_session_fluid_supersession_cannot_publish_stale_products() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-supersession-contract";
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
+    auto state = std::make_shared<LifecycleBackendState>();
+    state->block_first_until_cancelled = true;
+    WorldSessionFluidOptions options{};
+    options.supersede_first_run = true;
+    const WorldSessionFluidCase superseded = run_world_session_fluid_case(
+        root, options, state);
+
+    CHECK(superseded.opened && superseded.finished &&
+              superseded.dry_instance_count > 0 && superseded.accepted &&
+              superseded.backend_factory_calls == 2 &&
+              superseded.backend_probe_calls == 4 &&
+              superseded.backend_run_calls == 2 &&
+              superseded.backend_release_calls == 2 &&
+              superseded.visual_calls == 1 &&
+              superseded.status.state == matter::HydrologyState::Ready &&
+              !superseded.status.cache_hit,
+          "a superseded generation cannot mesh, save, or publish before the replacement reaches Ready");
+    std::filesystem::remove_all(root, remove_error);
 }
 #endif
 
@@ -1049,6 +1330,10 @@ int main() {
     test_product_keys_follow_the_settings_the_extractors_consume();
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
     test_world_session_runs_authored_fluid_bake_before_publication();
+    test_world_session_fluid_cache_hit_skips_solver_and_renderer();
+    test_world_session_fluid_device_mismatch_is_a_hard_dry_error();
+    test_world_session_fluid_backend_failure_preserves_dry_world();
+    test_world_session_fluid_supersession_cannot_publish_stale_products();
 #endif
     return check_summary();
 }

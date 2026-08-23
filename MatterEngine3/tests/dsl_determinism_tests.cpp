@@ -55,6 +55,7 @@
 #include <vector>
 #include "dsl_state.h"
 #include "csg_lowering.h"
+#include "hydrology/river_network_builder.h"
 
 // Implemented in field_probe.cpp; links surface.c's real field evaluator.
 bool mesh_field_is_solid(const dsl::LoweredField& f, Vector3 p);
@@ -312,6 +313,83 @@ void scene_degenerate_flatten(dsl::DslState& s) {
     s.popMatrix();
 }
 
+bool build_fluid_network(bool quality_first,
+                         matter::RiverNetworkDefinition& network,
+                         std::string& error) {
+    hydrology::RiverNetworkBuilder builder(0.5f, 7u);
+    std::size_t river = 0;
+    if (!builder.add_river("main", river, error) ||
+        !builder.set_inlet(river, {{0.0f, 18.0f, 0.0f}, 1.0f}, error) ||
+        !builder.set_spline(river, {{0.0f, 18.0f, 0.0f},
+                                    {128.0f, 3.0f, 5.0f}}, error) ||
+        !builder.add_reach(river, {128.0f, -0.012f, 0.65f}, error) ||
+        !builder.set_channel(river, {7.0f, 2.5f, 0.35f}, error) ||
+        !builder.set_boulders(river, {0.08f, {0.5f, 2.0f}}, error) ||
+        !builder.set_first_section(river, {100.0f, 5.0f}, error) ||
+        !builder.set_backend(matter::HydrologyBackend::Physx, error))
+        return false;
+
+    matter::HydrologyPbdSettings pbd{};
+    matter::HydrologyBakeLimits limits{};
+    matter::HydrologyQualitySettings quality{};
+    if (quality_first) {
+        if (!builder.set_quality(quality, error) ||
+            !builder.set_limits(limits, error) ||
+            !builder.set_pbd(pbd, error)) return false;
+    } else if (!builder.set_pbd(pbd, error) ||
+               !builder.set_limits(limits, error) ||
+               !builder.set_quality(quality, error)) {
+        return false;
+    }
+    matter::HydrologyEmitter inlet{};
+    inlet.id = "upstream-inlet";
+    inlet.position_m = {0.0f, 18.0f, 0.0f};
+    inlet.direction = {1.0f, -0.17f, 0.0f};
+    inlet.initial_velocity_mps = {1.0f, -0.17f, 0.0f};
+    inlet.flow_m3s = 1.0f;
+    inlet.radius_m = 2.0f;
+    inlet.stop_time_s = 64.0f;
+    matter::HydrologyEmitter tributary = inlet;
+    tributary.id = "future-tributary";
+    tributary.position_m = {32.0f, 14.0f, 8.0f};
+    tributary.flow_m3s = 0.25f;
+    matter::HydrologyFillSensor sensor{};
+    sensor.upstream_offset_m = 2.0f;
+    sensor.length_m = 1.0f;
+    sensor.height_m = 6.0f;
+    sensor.resolution_x = 24u;
+    sensor.resolution_y = 1u;
+    sensor.resolution_z = 12u;
+    sensor.crest_wet_fraction = 0.8f;
+    sensor.stable_wet_steps = 32u;
+    sensor.minimum_particles_per_cell = 1u;
+    return builder.add_emitter(inlet, error) &&
+           builder.add_emitter(tributary, error) &&
+           builder.set_virtual_dam({100.0f, 8.0f, 0.5f}, error) &&
+           builder.set_fill_sensor(sensor, error) &&
+           builder.finish(network, error);
+}
+
+bool run_fluid_network_determinism() {
+    matter::RiverNetworkDefinition first{};
+    matter::RiverNetworkDefinition reordered{};
+    std::string error;
+    if (!build_fluid_network(false, first, error) ||
+        !build_fluid_network(true, reordered, error)) {
+        std::printf("river_fluid ERROR: %s\n", error.c_str());
+        return false;
+    }
+    const bool invariant = first.canonical_text == reordered.canonical_text &&
+                           first.canonical_hash == reordered.canonical_hash &&
+                           first.fluid.emitters.size() == 2u &&
+                           first.fluid.emitters[0].id == "upstream-inlet" &&
+                           first.fluid.emitters[1].id == "future-tributary";
+    std::printf("river_fluid_hash=%016llx emitters=%zu order_invariant=%d\n",
+                static_cast<unsigned long long>(first.canonical_hash),
+                first.fluid.emitters.size(), invariant ? 1 : 0);
+    return invariant;
+}
+
 } // namespace
 
 int main() {
@@ -340,6 +418,7 @@ int main() {
         scene_degenerate_flatten(s);
         run_scene("degenerate_flatten", s, 0.0f, 3.0f, 0.5f);
     }
+    const bool fluid_deterministic = run_fluid_network_determinism();
     std::printf("DETERMINISM HARNESS DONE\n");
-    return 0;
+    return fluid_deterministic ? 0 : 1;
 }

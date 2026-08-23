@@ -16,7 +16,7 @@ matter::RiverNetworkDefinition approved_network(std::uint64_t seed = 0x52495645u
     network.cell_size_m = 0.5f;
     network.seed = seed;
     network.first_section_river = "main";
-    network.first_section = {100.0f, 4.0f, 0.80f, 32u, 256u, 65536u};
+    network.first_section = {100.0f, 4.0f};
 
     matter::RiverDefinition river{};
     river.name = "main";

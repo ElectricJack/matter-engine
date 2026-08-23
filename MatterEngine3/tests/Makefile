@@ -1360,6 +1360,16 @@ GPU_RENDER_CPP = \
 GPU_PIPELINE_CPP = \
     ../src/part_graph.cpp \
     ../src/script_host.cpp ../src/script/world_definition_loader.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+    ../src/hydrology/river_geometry.cpp \
+    ../src/hydrology/physx_fluid_bake.cpp \
+    ../src/hydrology/physx_collision_input.cpp \
+    ../src/hydrology/fluid_emission.cpp \
+    ../src/hydrology/fill_sensor.cpp \
+    ../src/hydrology/hydrology_artifact.cpp \
+    ../src/hydrology/fluid_gameplay_field.cpp \
+    ../src/hydrology/water_visual_products.cpp \
+    ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp \
+    ../src/terrain_river_overlay.cpp \
     ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
     ../src/script_rng_binding.cpp \
     ../src/polygon_triangulate.cpp \
@@ -1661,7 +1671,9 @@ TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_li
 WARPFIELD_OBJS = $(call obj_list,def,$(WARPFIELD_CPP)) $(call obj_list,mslc,$(WARPFIELD_C))
 TILESETMEADOWMANIFEST_OBJS = $(call obj_list,qjs,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C)) $(qjsc_C_OBJS)
 ISO_OBJS = $(call obj_list,def,$(ISO_CPP)) $(call obj_list,mslc,$(ISO_C))
-DSLDET_OBJS = $(call obj_list,def,$(DSLDET_CPP)) $(call obj_list,mslc,$(DSLDET_C))
+DSLDET_OBJS = $(call obj_list,def,$(DSLDET_CPP)) \
+              $(call obj_of,def,../src/hydrology/river_network_builder.cpp) \
+              $(call obj_list,mslc,$(DSLDET_C))
 DEV_OBJS = $(call obj_list,def,$(DEV_SOURCES))
 POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))

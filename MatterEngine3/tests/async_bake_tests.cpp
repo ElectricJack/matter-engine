@@ -20,6 +20,7 @@
 #include "matter/engine_context.h"
 #include "matter/scene.h"
 #include "matter/world_session.h"
+#include "hydrology/physx_fluid_bake.h"
 #include "render/animation_skin_bridge.h"
 
 // Editor-side scene tree cache policy (ImGui-free by design so this suite can
@@ -36,6 +37,8 @@
 #include "matter/events/stream_events.h"
 
 #include <chrono>
+#include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -179,6 +182,86 @@ static bool build_sandbox(const std::string& root) {
         project_world_root("Box"),
     });
 }
+
+static bool build_authored_fluid_sandbox(const fs::path& root) {
+    if (!reset_project(root, "FluidAsync")) return false;
+    if (!write_file(root / "objects" / "FluidPart.js",
+        "class FluidPart extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone); this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) return false;
+    return write_file(root / "worlds" / "FluidAsync.js",
+        "class FluidAsync extends World {\n"
+        "  static roots=[{module:'FluidPart',transform:[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}];\n"
+        "  hydrology() {\n"
+        "    const n=riverNetwork({cellSize:1,seed:7});\n"
+        "    const r=n.river('main').inlet([0,8,0],{flow:1})\n"
+        "      .spline([[0,8,0],[10,1,0]])\n"
+        "      .reach({until:10,baseGrade:-.1,meander:0})\n"
+        "      .channel({width:4,depth:3,asymmetry:0})\n"
+        "      .boulders({density:0,radius:[.5,1]});\n"
+        "    n.backend('physx');\n"
+        "    n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:.01,iterations:4,maxNeighbors:96});\n"
+        "    n.limits({batchSteps:8,maxSteps:120,maxParticles:1000});\n"
+        "    n.emitter({id:'main-inlet',position:[1,4,1],direction:[1,0,0],initialVelocity:[1,0,0],flow:1,radius:.5,startTime:0,stopTime:1.2});\n"
+        "    n.virtualDam({distance:8,height:4,thickness:.5});\n"
+        "    n.fillSensor({upstreamOffset:1,length:1,height:3,resolution:[2,2,2],crestWetFraction:.5,stableWetSteps:1,minimumParticlesPerCell:1});\n"
+        "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxVisualParticles:1000,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n"
+        "    n.firstSection(r,{minimumLength:8,dryMargin:1}); n.build();\n"
+        "  }\n"
+        "}\n") && project_fixture_contract(root, "FluidAsync");
+}
+
+struct AsyncFluidBackendState {
+    std::atomic<int> factory_calls{0};
+    std::atomic<int> run_calls{0};
+    std::thread::id worker_thread{};
+};
+
+class AsyncFluidBackend final : public hydrology::IFluidBakeBackend {
+public:
+    explicit AsyncFluidBackend(std::shared_ptr<AsyncFluidBackendState> state)
+        : state_(std::move(state)) {}
+
+    hydrology::FluidBackendProbe probe() override {
+        hydrology::FluidBackendProbe result{};
+        result.available = true;
+        result.backend_name = "async-fake";
+        result.sdk_version = "5.6.1";
+        result.device_name = "Async Fake GPU";
+        result.code = hydrology::FluidBakeCode::Ready;
+        result.sdk_version_hex = 0x05060100u;
+        result.cuda_driver_version = 1;
+        return result;
+    }
+
+    bool run(const hydrology::FluidBakeInput& input,
+             const hydrology::FluidBakeCallbacks& callbacks,
+             hydrology::FluidBakeOutput& output,
+             hydrology::FluidBakeError& error) override {
+        ++state_->run_calls;
+        state_->worker_thread = std::this_thread::get_id();
+        if (callbacks.progress) {
+            callbacks.progress({1u, input.settings.max_steps, 2u, 0.25f});
+            callbacks.progress({2u, input.settings.max_steps, 3u, 0.75f});
+        }
+        output.particles = {
+            {{1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 2.0f}, 2u},
+            {{2.0f, 2.0f, 2.0f}, {0.0f, 0.0f, 1.0f}, 5u},
+            {{3.0f, 3.0f, 3.0f}, {0.0f, 0.0f, 3.0f}, 9u},
+        };
+        output.sensor = {0.75f, 4u, 5u, true, 0.8f, 0.75f, 0.75f, 2u};
+        output.stats = {5u, 3u, 3u, 0u, 0u, 0.01};
+        error = {};
+        return true;
+    }
+
+private:
+    std::shared_ptr<AsyncFluidBackendState> state_;
+};
 
 // Snapshot format for determinism comparison.
 struct EvRec {
@@ -1933,6 +2016,83 @@ static bool test_e3_poll_event_typed_parity(const std::string& sandbox) {
     return finished;
 }
 
+// Task 7 fluid lifecycle proof in the general async suite. The focused PhysX
+// contract suite exercises cache, failure, LUID mismatch, and supersession;
+// this case keeps the core worker/event promise visible beside the editor's
+// other request_bake() guarantees.
+static bool test_authored_fluid_uses_worker_and_gpu_job_seam(
+    const std::string& sandbox) {
+    printf("-- authored_fluid_uses_worker_and_gpu_job_seam\n");
+    const fs::path root = fs::path(sandbox).string() + "_fluid";
+    if (!build_authored_fluid_sandbox(root)) {
+        CHECK(false, "async fluid fixture created");
+        return false;
+    }
+    const std::string cache_root = (root / ".cache").string();
+    matter::EngineDesc engine_desc{};
+    engine_desc.cache_root = cache_root.c_str();
+    engine_desc.allow_gl_lt_46 = true;
+    std::string error;
+    auto engine = matter::EngineContext::create(engine_desc, error);
+    CHECK(engine != nullptr, "async fluid engine created");
+    if (!engine) { remove_tree(root); return false; }
+    const std::string project_dir = root.string();
+    matter::WorldDesc world_desc = project_world_desc(project_dir, "FluidAsync");
+    auto session = engine->open_world(world_desc, error);
+    CHECK(session != nullptr, "async authored-fluid session opened");
+    if (!session) { remove_tree(root); return false; }
+
+    auto backend_state = std::make_shared<AsyncFluidBackendState>();
+    const std::thread::id caller_thread = std::this_thread::get_id();
+    std::thread::id visual_thread{};
+    int visual_calls = 0;
+    session->set_test_fluid_bake_dependencies(
+        [backend_state] {
+            ++backend_state->factory_calls;
+            return std::make_shared<AsyncFluidBackend>(backend_state);
+        },
+        [&](const gpu_meshing::ParticleJob& job,
+            gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
+            gpu_meshing::Error&, const gpu_meshing::BuildControl&) {
+            ++visual_calls;
+            visual_thread = std::this_thread::get_id();
+            mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                              0.0f, 1.0f, 0.0f};
+            mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                            0.0f, 0.0f, 1.0f};
+            mesh.indices = {0u, 1u, 2u};
+            mesh.material = job.material;
+            mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+            return true;
+        });
+    CHECK(backend_state->factory_calls.load() == 0,
+          "async authored fluid backend remains lazy before request_bake");
+    session->request_bake();
+    std::vector<EvRec> events;
+    const bool finished = drive_bake(*session, events, 60);
+    int hydrology_progress = 0;
+    for (const EvRec& event : events)
+        if (event.type == static_cast<int>(matter::EventType::BakePartDone) &&
+            event.phase == "hydrology")
+            ++hydrology_progress;
+    const matter::HydrologyStatus status = session->hydrology_status();
+    CHECK(finished && session->instance_count() > 0,
+          "async authored fluid bake preserves and publishes dry world content");
+    CHECK(backend_state->factory_calls.load() == 1 &&
+              backend_state->run_calls.load() == 1 &&
+              backend_state->worker_thread != caller_thread,
+          "requested PhysX work runs once on the existing bake worker");
+    CHECK(visual_calls == 1 && visual_thread == caller_thread,
+          "particle visual work runs once through the app-thread GPU job seam");
+    CHECK(hydrology_progress >= 3 &&
+              status.state == matter::HydrologyState::Ready &&
+              status.progress == 1.0f &&
+              session->has_accepted_fluid_artifact_for_test(),
+          "thread-safe hydrology progress reaches Ready only with an accepted artifact");
+    remove_tree(root);
+    return finished;
+}
+
 int main() {
     // Unique writable sandbox so parallel test runs do not collide.
     const auto stamp = std::chrono::high_resolution_clock::now()
@@ -1978,6 +2138,9 @@ int main() {
     // Task 7 (Phase C): regenerate(seed) — root param override reload.
     test_regenerate_seed_reroll(sandbox);
     test_production_animated_gallery_binding();
+
+    // Task 7 PhysX fluid bake integration on the same worker/GPU-job lifecycle.
+    test_authored_fluid_uses_worker_and_gpu_job_seam(sandbox);
 
     // E3 milestone (event-system.md): typed bake events + legacy poll_event
     // shim over lane::legacy_poll. Runs LAST so it cannot perturb any prior

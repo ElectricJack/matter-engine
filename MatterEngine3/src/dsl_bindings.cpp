@@ -29,6 +29,10 @@ extern "C" {
 // see: MatterEngine3/src/script_host.cpp :: eval_lod_budgets
 // This file only owns the runtime-verb bindings the Part class methods forward
 // to (translate, box, sphere, placeChild, tileset verbs, etc.).
+// The imperative riverNetwork() builder is intentionally a World-authoring
+// binding in script/world_definition_loader.cpp. Registering it here would
+// expose a second, unconnected Part-DSL request path with no WorldDefinition
+// sink, so authored fluid remains single-path through the world loader.
 
 namespace dsl {
 

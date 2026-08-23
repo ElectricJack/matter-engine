@@ -63,7 +63,7 @@ int main() {
         network.cell_size_m = 1.0f;
         network.seed = 77u;
         network.first_section_river = "main";
-        network.first_section = {20.0f, 4.0f, 0.8f, 32u, 256u, 4096u};
+        network.first_section = {20.0f, 4.0f};
         matter::RiverDefinition river{};
         river.name = "main";
         river.inlet = {{0.0f, 12.0f, 8.0f}, 1.0f};

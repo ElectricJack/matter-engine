@@ -82,8 +82,7 @@ bool validate_input(const FluidBakeInput& input,
     }
     const auto& first_section = input.network.first_section;
     if (!finite(first_section.minimum_length_m) ||
-        !finite(first_section.dry_margin_m) ||
-        !finite(first_section.crest_wet_fraction)) {
+        !finite(first_section.dry_margin_m)) {
         return fail(FluidBakeCode::InvalidInput,
                     "first-section settings contain a non-finite value",
                     output, error);
