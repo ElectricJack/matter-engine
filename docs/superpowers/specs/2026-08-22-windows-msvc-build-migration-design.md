@@ -100,14 +100,14 @@ The 2026-08-22 audit of the current workstation found:
 | Windows SDK 10.0.26100.0 | Installed | Pin as the initial SDK |
 | Vulkan SDK 1.4.357.0 | Installed | No user action |
 | PowerShell | Installed with Windows | No user action |
-| Windows Python launcher `py.exe` | Not visible on `PATH` | Install/repair Python with the launcher enabled |
+| Windows Python 3.13.14 launcher `py.exe` | Installed and resolved explicitly | No user action |
 | CUDA Toolkit 13.3 | Installed | Not needed for Phase 0 |
 | CUDA Toolkit 12.8 | Not detected | Install side-by-side before the PhysX GPU control spike unless the pinned PhysX revision proves support for 13.3 |
 | External PhysX checkout | Not part of Phase 0 | Create only when the PhysX plan starts |
 
-The only dependency needed from the user before Phase 0 begins is native
-Windows Python with the Python launcher enabled. CUDA and the external PhysX
-checkout are deliberately deferred and cannot block the compiler migration.
+All dependencies required for the compiler migration are installed. CUDA and
+the external PhysX checkout remain deliberately deferred and cannot block the
+compiler migration.
 
 Before the PhysX phase, the dependency preflight must resolve the apparent
 version mismatch rather than guessing. The current upstream Windows readme
@@ -127,8 +127,8 @@ WSL.
 The canonical entry points are:
 
 ```text
-tools/build-windows.ps1 [-Config Debug|RelWithDebInfo|Release]
-tools/build-windows-from-wsl.sh [Debug|RelWithDebInfo|Release]
+tools/build-windows.ps1 [-Config Debug|RelWithDebInfo|Release] [-Target <target>]
+tools/build-windows-from-wsl.sh [Debug|RelWithDebInfo|Release] [target]
 ```
 
 Both resolve the repository root, validate dependencies, select the pinned
@@ -139,7 +139,7 @@ The CMake build tree lives outside the staged product directory. For example:
 
 ```text
 MatterEditor/build/cmake/windows-msvc/ # CMake cache, objects, intermediate libs
-MatterEditor/build/windows/            # staged editor.exe and runtime dependencies
+MatterEditor/build/windows-msvc/       # linker/developer editor.exe + PDB
 MatterEditor/build/dist/<name>/        # distributable package
 ```
 
@@ -285,11 +285,13 @@ build, not a cross-compile.
 
 ## 9. Packaging
 
-`MatterEditor/build/windows` is a runnable staged editor directory, not merely
-the linker output folder. The staging step includes:
+`MatterEditor/build/windows-msvc` is the linker/developer output directory.
+`matter_dist` reproducibly recreates the user-facing package at
+`MatterEditor/build/dist/<project>` with no stale files. The package includes:
 
 - `editor.exe` and PDB for non-Release developer builds;
-- Streamline runtime DLLs when enabled;
+- only runtime DLLs proven by the recursive PE import closure (Streamline when
+  enabled, and later PhysX when selected);
 - license and notice files for staged dependencies; and
 - a machine-readable build manifest containing compiler, Windows SDK, Vulkan
   SDK, source revision, configuration, CRT, and feature identities.
@@ -399,16 +401,20 @@ clean at its declared warning level.
 
 ## 13. Rollback and bisectability
 
-Migration commits remain staged by M0–M4. Until M4 acceptance, the existing
-MinGW build remains runnable and outputs to a distinct directory. Each stage
-must leave at least one complete Windows editor path green.
+Migration commits remain staged by M0–M4. The existing MinGW build remains
+runnable in a distinct directory and is labeled rollback-only through the M4
+product/docs commit. Each stage leaves at least one complete Windows editor
+path green.
 
 No stage combines compiler migration with GPU meshing, PhysX, terrain changes,
 or world-authoring changes. If a parity failure occurs, matched builds can
 compare the same source revision, project, camera, and replay timeline.
 
-Once M4 is accepted, MinGW is deleted rather than maintained as a second
-Windows product. Git history remains the rollback mechanism.
+MinGW removal is deliberately not mixed into the M4 product/docs commit. Only
+after the package is accepted may a separate final cleanup commit remove the
+rollback rules and committed MinGW-only archives. Git history then becomes the
+rollback mechanism; until that separate commit, the rules remain available but
+non-canonical.
 
 ## 14. Expected source layout
 

@@ -10,27 +10,27 @@ See `docs/agent/control-surface.md` for the full FIFO verb table and env var
 reference these recipes exercise, and `docs/agent/issue-system.md` for the
 issue-report/replay recipes (5).
 
-## 1. Build the engine lib
+## 1. Configure and build the MSVC engine graph
 
-```bash
-export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
-make -C MatterEngine3
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_engine_headless
 ```
 
-`platform.mk` (included by every Makefile here) now exports `TMP`/`TEMP`
-automatically — no need to pass them on the command line. Expect
-`build/libmatter_engine3.a` plus a regenerated embedded-shader/SPIR-V header on
-exit code 0. **Check the exit code, not the output for the string "error"** —
-see the Traps section.
+The wrapper selects the pinned Visual Studio 2022 x64 environment and the
+repository's CMake/Ninja preset. From WSL, use
+`./tools/build-windows-from-wsl.sh RelWithDebInfo matter_engine_headless`.
+**Check the exit code, not the output for the string "error"** — see the Traps
+section.
 
 ## 2. Build the Windows editor
 
-```bash
-make -C MatterEditor windows
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor
 ```
 
-Expect `build/windows/editor.exe`. Requires `editor.exe` not to already be
-running (file lock).
+Expect `MatterEditor/build/windows-msvc/editor.exe`. Requires `editor.exe` not
+to already be running (file lock). The former
+`make -C MatterEditor windows` path is MinGW rollback-only.
 
 ## 3. One-shot screenshot of a world
 
@@ -42,7 +42,7 @@ MATTER_SCREENSHOT="C:/tmp/shot.png" \
 MATTER_SCREENSHOT_SETTLE=90 \
 TMP="C:/Users/webde/AppData/Local/Temp" \
 TEMP="C:/Users/webde/AppData/Local/Temp" \
-  ./build/windows/editor.exe
+  ./build/windows-msvc/editor.exe
 ```
 
 Expect the process to bake, settle 90 frames (streamed worlds need far more
@@ -74,7 +74,8 @@ quit
 EOF
 
 python MatterEngine3/tools/drive.py --world meadow --timeline /tmp/shots.txt \
-    --out-dir C:/tmp/drive-out
+    --out-dir C:/tmp/drive-out \
+    --editor MatterEditor/build/windows-msvc/editor.exe
 ```
 
 Expect exit 0, `C:/tmp/current-cost.png` + `current-cost.png.done` on disk,
@@ -119,14 +120,15 @@ per-shot gates).
 
 ## 6. Run the Vulkan smoke gate
 
-```bash
-make -C MatterEngine3/tests vulkan-smoke
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests
+MatterEditor/tools/smoke_vulkan_faults.ps1 `
+    -TestPath MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe `
+    -TimeoutMilliseconds 30000
 ```
 
-This delegates to `make -C MatterEditor vulkan-smoke`, which builds
-`vulkan_smoke_tests.exe`/`vulkan_compat_tests.exe` and drives
-`MatterEditor/tools/smoke_vulkan_faults.ps1 -TimeoutMilliseconds 30000`, which
-runs the smoke exe **12 times**, once per `MATTER_VK_SMOKE_MODE` value, each
+The fault harness runs the smoke exe **12 times**, once per
+`MATTER_VK_SMOKE_MODE` value, each
 under a per-mode timeout (30 s from the Makefile's override, except `rt`
 90 s and `rt-transmission` 45 s, which raise their own floor): the two
 Streamline-proxy-missing fault modes, `rt`, `rt-transmission`, `rt-disabled`,
@@ -136,9 +138,9 @@ Streamline-proxy-missing fault modes, `rt`, `rt-transmission`, `rt-disabled`,
 
 To run a single mode directly (faster iteration while chasing one failure):
 
-```bash
-cd MatterEditor
-MATTER_VK_SMOKE_MODE=vt-enrich ./build/windows/vulkan_smoke_tests.exe
+```powershell
+$env:MATTER_VK_SMOKE_MODE='vt-enrich'
+& MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe
 ```
 
 The smoke exe supports more modes than the 12-mode gate exercises (e.g.
@@ -177,7 +179,7 @@ MATTER_PERF_WARMUP_SECONDS=5 \
 MATTER_PERF_SAMPLE_SECONDS=20 \
 TMP="C:/Users/webde/AppData/Local/Temp" \
 TEMP="C:/Users/webde/AppData/Local/Temp" \
-  ./build/windows/editor.exe
+  ./build/windows-msvc/editor.exe
 ```
 
 All three `MATTER_PERF_*` vars **must be set together** — setting any subset is
@@ -194,7 +196,7 @@ MATTER_WORLD=StreamMountain \
 MATTER_CAM_PATH=../MatterEngine3/tools/streammountain_flythrough.path \
 MATTER_CAM_PATH_EXIT=1 \
 MATTER_CAM_PATH_WARMUP=30 \
-  ./build/windows/editor.exe
+  ./build/windows-msvc/editor.exe
 ```
 
 Consumes one pose per **rendered frame** (frame-indexed, not wall-clock) from
@@ -206,9 +208,21 @@ fixtures live in `MatterEngine3/tools/` (`streammountain_flythrough.path`,
 example that also enables `MATTER_SEAM_TRACE` and polls
 `WorldSession::seam_weld_status()` at the end.
 
-## 10. Which `MatterEngine3/tests` run-* targets run fully on Windows
+## 10. Windows CPU CTest gate
 
-Per `CLAUDE.md` and the `tests/Makefile` comments: targets that link
+The canonical Windows CPU gate is the MSVC `cpu` label rather than a manually
+maintained list of Make targets:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' `
+    --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo `
+    -L cpu --output-on-failure
+```
+
+### MinGW rollback target inventory
+
+For rollback diagnosis only, the old `tests/Makefile` targets that link
 `-lGL -lX11 -ldl -lrt` (Linux-only libs) fail at *link* time on Windows —
 compilation (the syntax/semantic check) still succeeds, so a green `g++`
 compile does not imply the binary runs. Targets that don't depend on raylib/GL
@@ -233,7 +247,7 @@ Run one directly, e.g.:
 make -C MatterEngine3/tests run-world-definition GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
-`vulkan-smoke` and `run-vt-compositor` are special-cased: they delegate to
+`vulkan-smoke` and `run-vt-compositor` are special-cased in the rollback graph: they delegate to
 `MatterEditor`'s cross-build rules (recipe 6) because the Vulkan/GLFW link line
 lives there, not in this Makefile.
 
@@ -253,7 +267,7 @@ flag (or `--experimental-detect-module` on Node ≥ 20.10) is required every tim
 
 ## Traps
 
-- **The TEMP incantation — now automatic for `make`.** MSYS2's `make` used to
+- **Rollback-only TEMP behavior.** MSYS2's `make` used to
   clobber the Windows `TEMP` env var, so GCC failed with "Cannot create
   temporary file in C:\WINDOWS\" unless you passed `TMP=`/`TEMP=` explicitly on
   every `make` invocation. `platform.mk` (included by every Makefile in this
