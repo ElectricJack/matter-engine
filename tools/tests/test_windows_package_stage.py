@@ -63,12 +63,101 @@ class ProjectNameTests(unittest.TestCase):
             "white space",
             ".hidden",
             "name;command",
+            "world_demo.",
+            "world_demo..",
+            "CON",
+            "con.txt",
+            "PRN",
+            "AUX.log",
+            "NUL",
+            "COM1",
+            "com9.data",
+            "LPT1",
+            "lpt9.cache",
         ):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 stager.validate_project_name(name)
 
 
 class DirectChildSafetyTests(unittest.TestCase):
+    def test_creates_missing_physical_dist_root_for_first_stage(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matter-stage-first-dist-") as temporary:
+            repository = Path(temporary)
+            project = repository / "projects" / "world_demo"
+            build_root = repository / "MatterEditor" / "build"
+            dist_root = build_root / "dist"
+            destination = dist_root / "world_demo"
+            project.mkdir(parents=True)
+            build_root.mkdir(parents=True)
+
+            created = stager.ensure_distribution_root(repository, dist_root)
+            self.assertEqual(created, dist_root.resolve(strict=True))
+            self.assertTrue(created.is_dir())
+            staged = stager.reset_distribution_directory(
+                projects_root=repository / "projects",
+                project_source=project,
+                dist_root=dist_root,
+                destination=destination,
+            )
+            self.assertEqual(staged, destination.resolve(strict=True))
+            self.assertEqual(list(staged.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction contract")
+    def test_rejects_reparse_build_parent_when_dist_root_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matter-stage-first-dist-junction-") as temporary:
+            repository = Path(temporary) / "repository"
+            matter_editor = repository / "MatterEditor"
+            physical_build = Path(temporary) / "external-build"
+            build_alias = matter_editor / "build"
+            matter_editor.mkdir(parents=True)
+            physical_build.mkdir()
+            sentinel = physical_build / "must-survive.txt"
+            sentinel.write_text("external", encoding="utf-8")
+            make_directory_junction(build_alias, physical_build)
+            try:
+                with self.assertRaisesRegex(ValueError, "reparse|symlink|physical"):
+                    stager.ensure_distribution_root(
+                        repository, build_alias / "dist"
+                    )
+                self.assertFalse((physical_build / "dist").exists())
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "external")
+            finally:
+                remove_directory_alias(build_alias)
+
+    @unittest.skipUnless(os.name == "nt", "Windows basename alias contract")
+    def test_rejects_trailing_dot_host_alias_before_rmtree(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matter-stage-dot-alias-") as temporary:
+            root = Path(temporary)
+            projects = root / "projects"
+            project = projects / "world_demo"
+            dist_root = root / "dist"
+            destination = dist_root / "world_demo"
+            project.mkdir(parents=True)
+            destination.mkdir(parents=True)
+            sentinel = destination / "must-survive.txt"
+            sentinel.write_text("canonical", encoding="utf-8")
+
+            # Windows resolves the dotted spelling to the canonical directory.
+            project_alias = projects / "world_demo."
+            destination_alias = dist_root / "world_demo."
+            self.assertEqual(project_alias.resolve(strict=True), project.resolve(strict=True))
+            self.assertEqual(
+                destination_alias.resolve(strict=True), destination.resolve(strict=True)
+            )
+            with mock.patch.object(
+                stager.shutil,
+                "rmtree",
+                side_effect=AssertionError("rmtree reached a basename alias"),
+            ):
+                with self.assertRaises(ValueError):
+                    stager.reset_distribution_directory(
+                        projects_root=projects,
+                        project_source=project_alias,
+                        dist_root=dist_root,
+                        destination=destination_alias,
+                    )
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "canonical")
+
     def test_rejects_outside_destination_before_deletion(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matter-stage-safety-") as temporary:
             root = Path(temporary)

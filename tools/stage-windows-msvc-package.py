@@ -118,14 +118,24 @@ NOTICE_COMPONENTS = [
 ]
 
 SAFE_PROJECT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+WINDOWS_DEVICE_STEM = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", re.IGNORECASE
+)
 
 
 def validate_project_name(name: str) -> str:
     """Return a safe single-component project name or reject it."""
-    if name in {"", ".", ".."} or not SAFE_PROJECT_NAME.fullmatch(name):
+    device_stem = name.split(".", 1)[0]
+    if (
+        name in {"", ".", ".."}
+        or name.endswith(".")
+        or WINDOWS_DEVICE_STEM.fullmatch(device_stem)
+        or not SAFE_PROJECT_NAME.fullmatch(name)
+    ):
         raise ValueError(
             f"unsafe project name {name!r}: expected a basename matching "
-            "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            "^[A-Za-z0-9][A-Za-z0-9._-]*$ without Windows trailing-dot "
+            "or DOS-device aliases"
         )
     return name
 
@@ -176,8 +186,14 @@ def _assert_no_reparse_components(path: Path, label: str) -> Path:
 
 
 def _assert_direct_child(
-    root: Path, candidate: Path, label: str, *, must_exist: bool
+    root: Path,
+    candidate: Path,
+    label: str,
+    *,
+    must_exist: bool,
+    expected_name: str,
 ) -> tuple[Path, Path]:
+    expected_name = validate_project_name(expected_name)
     original_root = _assert_no_reparse_components(root, f"{label} root")
     try:
         root = original_root.resolve(strict=True)
@@ -187,6 +203,11 @@ def _assert_direct_child(
         raise ValueError(f"{label} root is not a physical directory: {original_root}")
 
     candidate = _assert_no_reparse_components(candidate, label)
+    if candidate.name.casefold() != expected_name.casefold():
+        raise ValueError(
+            f"{label} authored basename mismatch: {candidate.name!r} != "
+            f"{expected_name!r}"
+        )
     try:
         parent = candidate.parent.resolve(strict=True)
     except OSError as error:
@@ -199,6 +220,11 @@ def _assert_direct_child(
         resolved = candidate.resolve(strict=True)
         if resolved.parent != root:
             raise ValueError(f"resolved {label} escapes {root}: {resolved}")
+        if resolved.name.casefold() != expected_name.casefold():
+            raise ValueError(
+                f"resolved {label} basename mismatch: {resolved.name!r} != "
+                f"{expected_name!r}"
+            )
     elif must_exist:
         raise ValueError(f"{label} is missing: {candidate}")
     else:
@@ -213,15 +239,107 @@ def validate_staging_paths(
     destination: Path,
 ) -> tuple[Path, Path]:
     """Prove both staging paths are physical immediate children of fixed roots."""
+    project_name = validate_project_name(project_source.name)
+    destination_name = validate_project_name(destination.name)
+    if project_name.casefold() != destination_name.casefold():
+        raise ValueError(
+            "project source and distribution destination basenames differ: "
+            f"{project_name!r} != {destination_name!r}"
+        )
     _, source = _assert_direct_child(
-        projects_root, project_source, "project source", must_exist=True
+        projects_root,
+        project_source,
+        "project source",
+        must_exist=True,
+        expected_name=project_name,
     )
     _, dist = _assert_direct_child(
-        dist_root, destination, "distribution destination", must_exist=False
+        dist_root,
+        destination,
+        "distribution destination",
+        must_exist=False,
+        expected_name=project_name,
     )
     if not source.is_dir():
         raise ValueError(f"project source is not a directory: {source}")
     return source, dist
+
+
+def ensure_distribution_root(repository_root: Path, dist_root: Path) -> Path:
+    """Create only the exact physical MatterEditor/build/dist trust root."""
+    original_repository = _assert_no_reparse_components(
+        repository_root, "repository root"
+    )
+    try:
+        resolved_repository = original_repository.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(
+            f"repository root is missing or unresolved: {original_repository}"
+        ) from error
+    if not resolved_repository.is_dir():
+        raise ValueError(f"repository root is not a directory: {original_repository}")
+
+    expected_build = original_repository / "MatterEditor" / "build"
+    expected_dist = expected_build / "dist"
+    original_dist = _absolute_unresolved(dist_root, "distribution root")
+    if str(original_dist).casefold() != str(expected_dist).casefold():
+        raise ValueError(
+            "distribution root is not the exact repository build root: "
+            f"{original_dist}"
+        )
+
+    _assert_no_reparse_components(expected_build, "distribution build parent")
+    try:
+        resolved_build = expected_build.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(
+            f"distribution build parent is missing or unresolved: {expected_build}"
+        ) from error
+    if not resolved_build.is_dir():
+        raise ValueError(
+            f"distribution build parent is not a physical directory: {expected_build}"
+        )
+    if resolved_build.parent.parent != resolved_repository:
+        raise ValueError(
+            f"distribution build parent escaped the repository: {resolved_build}"
+        )
+
+    _assert_no_reparse_components(original_dist, "distribution root")
+    if original_dist.exists():
+        resolved_dist = original_dist.resolve(strict=True)
+        if (
+            not resolved_dist.is_dir()
+            or resolved_dist.parent != resolved_build
+            or resolved_dist.name.casefold() != "dist"
+        ):
+            raise ValueError(
+                "distribution root is not the physical build/dist directory: "
+                f"{original_dist}"
+            )
+        return resolved_dist
+
+    # Recheck the original trust chain immediately before creating the one
+    # permitted missing directory. Parents are deliberately not synthesized.
+    _assert_no_reparse_components(original_repository, "repository root")
+    _assert_no_reparse_components(expected_build, "distribution build parent")
+    if expected_build.resolve(strict=True) != resolved_build:
+        raise ValueError("distribution build parent changed before creation")
+    original_dist.mkdir()
+
+    # Prove the created root is still the exact physical child before any
+    # destination validation, recursive deletion, or package copying can run.
+    _assert_no_reparse_components(original_dist, "distribution root")
+    resolved_dist = original_dist.resolve(strict=True)
+    if (
+        not resolved_dist.is_dir()
+        or resolved_dist.parent != resolved_build
+        or resolved_dist.name.casefold() != "dist"
+    ):
+        raise ValueError(
+            "created distribution root failed physical-child validation: "
+            f"{original_dist}"
+        )
+    return resolved_dist
 
 
 def reset_distribution_directory(
@@ -402,6 +520,7 @@ def main() -> int:
         )
     engine_shared = root / "MatterEngine3" / "shared-lib"
     try:
+        ensure_distribution_root(original_root, dist_root)
         project, _ = validate_staging_paths(
             projects_root, project_source, dist_root, requested_dist
         )
