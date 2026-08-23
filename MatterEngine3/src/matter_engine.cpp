@@ -45,6 +45,8 @@
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
 #ifdef MATTER_VULKAN_VIEWER
 #include "matter/vulkan_device.h"
+#include "hydrology/hydrology_artifact.h"
+#include "render/gpu_meshing/water_scene_part.h"
 #include "render/vk_instance_cache.h"
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
@@ -691,6 +693,10 @@ struct WorldSession::Impl {
     std::unique_ptr<viewer::PartStore>      store;
 #ifdef MATTER_VULKAN_VIEWER
     std::unique_ptr<viewer::VkSceneRenderer> vk_scene;
+    // Acceptance-only cached GPU water. This is populated only by the
+    // explicit absolute-path environment hook and never invokes the mesher.
+    std::shared_ptr<const viewer::VkScenePart> gpu_mesher_acceptance_part;
+    viewer::VkSceneInstance gpu_mesher_acceptance_instance{};
     viewer::VulkanInstanceCache vk_instance_cache;
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
@@ -9061,6 +9067,75 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     if (impl_->render_device) {
         simpl->vk_scene =
             std::make_unique<viewer::VkSceneRenderer>(*impl_->render_device);
+        if (const char* raw =
+                std::getenv("MATTER_GPU_MESHER_ACCEPTANCE_ARTIFACT")) {
+            const std::filesystem::path path(raw);
+            gpu_meshing::Error acceptance_error{};
+            if (!path.is_absolute()) {
+                MATTER_LOGE("gpu-mesher",
+                            "acceptance artifact path must be absolute: %s\n",
+                            raw);
+            } else {
+                std::ifstream stream(path, std::ios::binary | std::ios::ate);
+                std::streamoff size = -1;
+                if (stream) size = static_cast<std::streamoff>(stream.tellg());
+                constexpr std::streamoff kMaximumAcceptanceBytes =
+                    512ll * 1024ll * 1024ll;
+                if (size <= 0 || size > kMaximumAcceptanceBytes) {
+                    MATTER_LOGE("gpu-mesher",
+                                "could not open bounded acceptance artifact: %s\n",
+                                raw);
+                } else {
+                    try {
+                        stream.seekg(0, std::ios::beg);
+                        std::vector<std::uint8_t> bytes(
+                            static_cast<std::size_t>(size));
+                        stream.read(reinterpret_cast<char*>(bytes.data()),
+                                    static_cast<std::streamsize>(size));
+                        hydrology::HydrologyArtifact artifact{};
+                        std::uint64_t instance_id = 0;
+                        if (!stream ||
+                            !hydrology::deserialize_artifact(
+                                bytes, artifact, acceptance_error) ||
+                            !gpu_meshing::build_water_scene_part(
+                                artifact.visual_mesh, artifact.payload_digest,
+                                simpl->gpu_mesher_acceptance_part, instance_id,
+                                acceptance_error)) {
+                            MATTER_LOGE(
+                                "gpu-mesher",
+                                "acceptance artifact rejected (%s): %s\n",
+                                raw,
+                                acceptance_error.message.empty()
+                                    ? "read failed"
+                                    : acceptance_error.message.c_str());
+                            simpl->gpu_mesher_acceptance_part.reset();
+                        } else if (simpl->gpu_mesher_acceptance_part) {
+                            simpl->gpu_mesher_acceptance_instance.part_hash =
+                                simpl->gpu_mesher_acceptance_part->part_hash;
+                            simpl->gpu_mesher_acceptance_instance
+                                .object_to_world = viewer::mat4_mul(
+                                viewer::mat4_translation(
+                                    {6.449f, 42.15f, 2.716f}),
+                                viewer::mat4_rotation_y(1.17227388f));
+                            simpl->gpu_mesher_acceptance_instance.instance_id =
+                                instance_id;
+                            MATTER_LOGI(
+                                "gpu-mesher",
+                                "loaded cached acceptance water: %zu vertices, "
+                                "%zu triangles (%s)\n",
+                                artifact.visual_mesh.positions.size() / 3u,
+                                artifact.visual_mesh.indices.size() / 3u, raw);
+                        }
+                    } catch (const std::bad_alloc&) {
+                        simpl->gpu_mesher_acceptance_part.reset();
+                        MATTER_LOGE(
+                            "gpu-mesher",
+                            "acceptance artifact host allocation failed: %s\n",
+                            raw);
+                    }
+                }
+            }
+        }
     }
 #endif
 
@@ -10693,7 +10768,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->vk_instance_cache.store(resolved, std::move(rebuilt));
         impl_->vk_instance_cache.prune_sources(resolved);
     }
-    const auto& instances = impl_->vk_instance_cache.instances();
+    const auto& cached_instances = impl_->vk_instance_cache.instances();
+    std::vector<viewer::VkSceneInstance> acceptance_instances;
+    const std::vector<viewer::VkSceneInstance>* instance_view =
+        &cached_instances;
+    if (impl_->gpu_mesher_acceptance_part) {
+        if (impl_->vk_scene->ensure_part(
+                *impl_->gpu_mesher_acceptance_part, err) < 0)
+            return false;
+        acceptance_instances = cached_instances;
+        acceptance_instances.push_back(
+            impl_->gpu_mesher_acceptance_instance);
+        instance_view = &acceptance_instances;
+    }
+    const auto& instances = *instance_view;
     if (instances.empty()) {
         impl_->stats.instances_resolved = 0;
         const bool rt_available =

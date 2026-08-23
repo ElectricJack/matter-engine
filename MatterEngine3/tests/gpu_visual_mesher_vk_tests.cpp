@@ -1,15 +1,28 @@
 #include "gpu_visual_mesher_vk_tests.h"
 
+#include "matter/windows_compat.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <memory>
 #include <numeric>
+#include <string>
 #include <vector>
 
+#include "fixtures/gpu_mesher_synthetic_pbf.h"
+#include "hydrology/hydrology_artifact.h"
+#include "hydrology/water_visual_products.h"
 #include "matter/gpu_visual_meshing.h"
 #include "render/gpu_meshing/gpu_visual_mesher_vk.h"
+#include "render/gpu_meshing/water_scene_part.h"
+#include "render/frame_matrices.h"
+#include "render/matrix_math.h"
+#include "render/vk_resources.h"
+#include "render/vk_scene_renderer.h"
 #include "surface.h"
 
 namespace {
@@ -432,5 +445,181 @@ int run_gpu_visual_mesher_vk_tests(matter::VulkanDevice& vulkan) {
     }
     _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE", "");
 #endif
+    return failures;
+}
+
+int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
+    failures = 0;
+    const auto particles =
+        gpu_meshing::fixtures::synthetic_flowing_water_particles();
+    const auto job =
+        gpu_meshing::fixtures::synthetic_flowing_water_job(particles);
+
+    std::string renderer_error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    GPU_CHECK(renderer.init(renderer_error),
+              renderer_error.empty()
+                  ? "initialize renderer-owned GPU water mesher"
+                  : renderer_error.c_str());
+
+    gpu_meshing::MeshResult first{};
+    gpu_meshing::MeshResult second{};
+    gpu_meshing::Stats first_stats{};
+    gpu_meshing::Stats second_stats{};
+    gpu_meshing::Error error{};
+    const bool first_ok = renderer.build_particle_visual(
+        job, first, first_stats, error);
+    GPU_CHECK(first_ok,
+              error.message.empty() ? "bake synthetic flowing water"
+                                    : error.message.c_str());
+    error = {};
+    const bool second_ok = renderer.build_particle_visual(
+        job, second, second_stats, error);
+    GPU_CHECK(second_ok,
+              error.message.empty() ? "repeat synthetic flowing-water bake"
+                                    : error.message.c_str());
+    if (!first_ok || !second_ok) return failures;
+    GPU_CHECK(!first.positions.empty() && !first.indices.empty(),
+              "synthetic flowing water produces a non-empty visual surface");
+    GPU_CHECK(first.positions == second.positions &&
+                  first.normals == second.normals &&
+                  first.indices == second.indices &&
+                  first.content_digest == second.content_digest,
+              "same-device synthetic water bakes are byte-identical");
+    GPU_CHECK(first_stats.bin_ms > 0.0 && first_stats.field_ms > 0.0 &&
+                  first_stats.classify_ms > 0.0 && first_stats.emit_ms > 0.0,
+              "synthetic acceptance records nonzero stage timings");
+
+    const std::uint64_t snapshot_digest =
+        hydrology::particle_snapshot_digest(
+            particles.data(), static_cast<std::uint32_t>(particles.size()));
+    hydrology::ProductIdentitySettings identity{};
+    identity.coarse_voxel_m = 0.48f;
+    identity.shader_digests = {
+        0x62696e2d636f756eull, 0x6669656c642d7061ull,
+        0x636c617373696679ull, 0x656d69742d763175ull};
+
+    hydrology::HydrologyArtifact artifact{};
+    artifact.particle_snapshot_digest = snapshot_digest;
+    artifact.product_keys =
+        hydrology::derive_product_keys(job, snapshot_digest, identity);
+    artifact.visual_mesh = first;
+    error = {};
+    GPU_CHECK(hydrology::build_cpu_particle_visual(
+                  job, identity.coarse_voxel_m, artifact.coarse_cpu_mesh,
+                  error),
+              error.message.empty() ? "build coarse CPU water fallback"
+                                    : error.message.c_str());
+    artifact.gameplay_field =
+        gpu_meshing::fixtures::synthetic_flowing_water_gameplay();
+    artifact.provenance = {0x10deu, 0x2684u, 0u};
+
+    std::filesystem::path artifact_path =
+        std::filesystem::temp_directory_path() /
+        "matter-gpu-mesher-synthetic-pbf.mhyd";
+    if (const char* output =
+            std::getenv("MATTER_GPU_MESHER_ACCEPTANCE_OUTPUT")) {
+        if (*output != '\0') artifact_path = output;
+    }
+    error = {};
+    GPU_CHECK(hydrology::save_artifact_atomic(artifact_path, artifact, error),
+              error.message.empty() ? "save synthetic hydrology artifact"
+                                    : error.message.c_str());
+
+    const std::uint64_t submits_before_reload =
+        matter::immediate_submit_count();
+    hydrology::HydrologyArtifact loaded{};
+    error = {};
+    const bool load_ok = hydrology::load_artifact_validated(
+        artifact_path, artifact.product_keys.visual, loaded, error);
+    GPU_CHECK(load_ok,
+              error.message.empty() ? "reload synthetic hydrology artifact"
+                                    : error.message.c_str());
+    GPU_CHECK(matter::immediate_submit_count() == submits_before_reload,
+              "artifact reload performs no Vulkan mesher submission");
+    if (!load_ok) return failures;
+    GPU_CHECK(loaded.visual_mesh.positions == first.positions &&
+                  loaded.visual_mesh.normals == first.normals &&
+                  loaded.visual_mesh.indices == first.indices &&
+                  loaded.visual_mesh.content_digest == first.content_digest,
+              "artifact reload retains exact accepted GPU visual bytes");
+    GPU_CHECK(loaded.visual_mesh.positions.data() !=
+                  loaded.coarse_cpu_mesh.positions.data() &&
+                  loaded.visual_mesh.indices != loaded.coarse_cpu_mesh.indices &&
+                  !loaded.gameplay_field.empty(),
+              "visual, coarse CPU, and gameplay products remain independent");
+
+    std::shared_ptr<const viewer::VkScenePart> part;
+    std::uint64_t instance_id = 0;
+    error = {};
+    GPU_CHECK(gpu_meshing::build_water_scene_part(
+                  loaded.visual_mesh, loaded.payload_digest, part,
+                  instance_id, error),
+              error.message.empty() ? "convert cached water to glass part"
+                                    : error.message.c_str());
+    if (!part) return failures;
+    GPU_CHECK(renderer.ensure_part(*part, renderer_error) >= 0,
+              renderer_error.empty() ? "register cached water raster part"
+                                     : renderer_error.c_str());
+    const matter::Mat4f identity_transform = viewer::mat4_identity();
+    const viewer::VkSceneInstance instance{
+        part->part_hash, identity_transform, instance_id};
+    GPU_CHECK(renderer.update_instances({instance}, renderer_error),
+              renderer_error.empty() ? "register cached water instance"
+                                     : renderer_error.c_str());
+
+    std::uint32_t vertex_start = 0;
+    std::uint32_t vertex_count = 0;
+    std::uint32_t index_start = 0;
+    std::uint32_t index_count = 0;
+    GPU_CHECK(renderer.part_raster_range(
+                  part->part_hash, vertex_start, vertex_count,
+                  index_start, index_count) &&
+                  vertex_count == part->vertices.size() &&
+                  index_count == part->indices.size(),
+              "cached water occupies the ordinary indexed raster arenas");
+
+    matter::CameraDesc camera{};
+    camera.position = {7.0f, 6.0f, 11.0f};
+    camera.target = {0.0f, 0.2f, 0.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 80.0f;
+    viewer::FrameMatrices matrices{};
+    GPU_CHECK(viewer::build_frame_matrices(camera, 320u, 200u, matrices,
+                                           renderer_error) &&
+                  renderer.dispatch_culling(matrices, camera.position, 1.0f,
+                                             renderer_error),
+              renderer_error.empty() ? "cull cached water through raster path"
+                                     : renderer_error.c_str());
+    viewer::VkCullStats cull{};
+    GPU_CHECK(renderer.cull_stats(cull, renderer_error) && cull.emitted == 1u &&
+                  cull.triangles == part->indices.size() / 3u,
+              renderer_error.empty() ? "cached water emits its raster geometry"
+                                     : renderer_error.c_str());
+
+    std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
+    GPU_CHECK(renderer.fill_rt_instances(rt_instances) == 1 &&
+                  rt_instances[0].part_hash == part->part_hash,
+              "cached water instance enters the native-RT registration lane");
+    const auto rt_geometry = viewer::vk_scene_detail::select_rt_instance_geometry(
+        *part, identity_transform, camera.position, 1.0f);
+    GPU_CHECK(!rt_geometry.empty() &&
+                  rt_geometry[0].index_count == part->indices.size(),
+              "cached water supplies indexed BLAS geometry");
+
+    std::printf(
+        "gpu-mesher acceptance: particles=%u grid=%u cells=%u active=%u "
+        "triangles=%u digest=%016llx artifact=%s\n",
+        first_stats.particles, first_stats.grid_vertices,
+        first_stats.grid_cells, first_stats.active_cells,
+        first_stats.triangles,
+        static_cast<unsigned long long>(first.content_digest),
+        artifact_path.string().c_str());
+    std::printf(
+        "gpu-mesher timings-ms: bin=%.3f field=%.3f classify=%.3f emit=%.3f\n",
+        first_stats.bin_ms, first_stats.field_ms,
+        first_stats.classify_ms, first_stats.emit_ms);
     return failures;
 }

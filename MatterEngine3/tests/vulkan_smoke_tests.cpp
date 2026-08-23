@@ -12245,6 +12245,7 @@ int main() {
         if (smoke_mode && std::string(smoke_mode) == "gpu-mesher") {
             g_failures += run_gpu_visual_mesher_pure_vk_tests();
             g_failures += run_gpu_visual_mesher_vk_tests(*vulkan);
+            g_failures += run_gpu_visual_mesher_acceptance(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

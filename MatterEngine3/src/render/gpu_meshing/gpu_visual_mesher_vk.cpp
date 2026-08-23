@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <string>
@@ -21,6 +23,20 @@ extern "C" char triTable[256][16];
 namespace {
 
 constexpr std::uint32_t kScanWorkgroup = 256u;
+
+double elapsed_ms(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+}
+
+std::size_t align_up_256(std::size_t value) {
+    constexpr std::size_t kAlignment = 256u;
+    if (value > std::numeric_limits<std::size_t>::max() -
+                    (kAlignment - 1u))
+        return 0u;
+    return (value + kAlignment - 1u) & ~(kAlignment - 1u);
+}
 
 bool fail(Error& error, ErrorCode code, std::string message) {
     error.code = code;
@@ -187,6 +203,24 @@ struct GpuVisualMesher::Impl {
     matter::VkComputePipelineResource compact;
     matter::VkComputePipelineResource emit;
 
+    struct ResidentBins {
+        GridLayout layout{};
+        std::uint32_t contributing_particles = 0;
+        matter::VkBufferResource particle_buffer;
+        matter::VkBufferResource counts_buffer;
+        matter::VkBufferResource offsets_buffer;
+        matter::VkBufferResource ids_buffer;
+    };
+
+    struct ResidentField {
+        ResidentBins bins;
+        FieldParams params{};
+        matter::VkBufferResource params_buffer;
+        matter::VkBufferResource field_buffer;
+        double bin_ms = 0.0;
+        double field_ms = 0.0;
+    };
+
     bool dispatch(matter::VkComputePipelineResource& pipeline,
                   std::uint32_t x, const BuildControl& control,
                   std::uint64_t generation, Error& error) {
@@ -293,7 +327,8 @@ struct GpuVisualMesher::Impl {
     }
 
     bool build_bins(const ParticleJob& job, GpuParticleBins& bins,
-                    Error& error, const BuildControl& control = {}) {
+                    Error& error, const BuildControl& control = {},
+                    ResidentBins* resident = nullptr) {
         bins = {};
         error = {};
         GridLayout layout{};
@@ -390,6 +425,16 @@ struct GpuVisualMesher::Impl {
         if (!dispatch(bin_sort, bin_groups, control, job.generation, error))
             return false;
 
+        if (resident) {
+            resident->layout = layout;
+            resident->contributing_particles = contributing_particles;
+            resident->particle_buffer = std::move(particle_buffer);
+            resident->counts_buffer = std::move(counts_buffer);
+            resident->offsets_buffer = std::move(offsets_buffer);
+            resident->ids_buffer = std::move(ids_buffer);
+            return true;
+        }
+
         GpuParticleBins candidate{};
         candidate.layout = layout;
         candidate.counts.resize(layout.bins);
@@ -410,14 +455,21 @@ struct GpuVisualMesher::Impl {
 
     bool evaluate_field(const ParticleJob& job, std::vector<float>& values,
                         GridLayout& layout, Error& error,
-                        const BuildControl& control = {}) {
+                        const BuildControl& control = {},
+                        ResidentField* resident = nullptr) {
         values.clear();
         layout = {};
         error = {};
+        const auto bin_start = std::chrono::steady_clock::now();
         GpuParticleBins bins{};
-        if (!build_bins(job, bins, error, control)) return false;
-        layout = bins.layout;
+        ResidentBins gpu_bins{};
+        if (!build_bins(job, bins, error, control,
+                        resident ? &gpu_bins : nullptr))
+            return false;
+        layout = resident ? gpu_bins.layout : bins.layout;
+        const double bin_ms = elapsed_ms(bin_start);
         if (job.particle_count == 0u) return true;
+        const auto field_start = std::chrono::steady_clock::now();
 
         matter::VkBufferResource params_buffer;
         matter::VkBufferResource particle_buffer;
@@ -429,20 +481,32 @@ struct GpuVisualMesher::Impl {
             static_cast<std::size_t>(job.particle_count) * sizeof(ParticleSample);
         const std::size_t bins_bytes =
             static_cast<std::size_t>(layout.bins) * sizeof(std::uint32_t);
+        const std::uint32_t contributing_particles = resident
+            ? gpu_bins.contributing_particles
+            : static_cast<std::uint32_t>(bins.particle_ids.size());
         const std::size_t ids_bytes = std::max<std::size_t>(
-            bins.particle_ids.size() * sizeof(std::uint32_t),
+            static_cast<std::size_t>(contributing_particles) *
+                sizeof(std::uint32_t),
             sizeof(std::uint32_t));
         const std::size_t field_bytes =
             static_cast<std::size_t>(layout.grid_vertices) * sizeof(float);
         if (!create_gpu_buffer(vulkan, sizeof(FieldParams), params_buffer,
                                error) ||
-            !create_gpu_buffer(vulkan, particles_bytes, particle_buffer,
-                               error) ||
-            !create_gpu_buffer(vulkan, bins_bytes, counts_buffer, error) ||
-            !create_gpu_buffer(vulkan, bins_bytes, offsets_buffer, error) ||
-            !create_gpu_buffer(vulkan, ids_bytes, ids_buffer, error) ||
+            (!resident &&
+             (!create_gpu_buffer(vulkan, particles_bytes, particle_buffer,
+                                 error) ||
+              !create_gpu_buffer(vulkan, bins_bytes, counts_buffer, error) ||
+              !create_gpu_buffer(vulkan, bins_bytes, offsets_buffer, error) ||
+              !create_gpu_buffer(vulkan, ids_bytes, ids_buffer, error))) ||
             !create_gpu_buffer(vulkan, field_bytes, field_buffer, error))
             return false;
+
+        if (resident) {
+            particle_buffer = std::move(gpu_bins.particle_buffer);
+            counts_buffer = std::move(gpu_bins.counts_buffer);
+            offsets_buffer = std::move(gpu_bins.offsets_buffer);
+            ids_buffer = std::move(gpu_bins.ids_buffer);
+        }
 
         const FieldParams params{
             {layout.origin_m.x, layout.origin_m.y, layout.origin_m.z,
@@ -455,20 +519,21 @@ struct GpuVisualMesher::Impl {
              layout.sample_dims[2], layout.grid_vertices},
             {layout.bin_dims[0], layout.bin_dims[1], layout.bin_dims[2],
              layout.bins},
-            {job.particle_count,
-             static_cast<std::uint32_t>(bins.particle_ids.size()), 0u, 0u},
+            {job.particle_count, contributing_particles, 0u, 0u},
             {layout.query_radius_m, 0.0f, 0.0f, 0.0f},
         };
         if (!upload(vulkan, params_buffer, &params, sizeof(params), error) ||
-            !upload(vulkan, particle_buffer, job.particles, particles_bytes,
-                    error) ||
-            !upload(vulkan, counts_buffer, bins.counts.data(), bins_bytes,
-                    error) ||
-            !upload(vulkan, offsets_buffer, bins.offsets.data(), bins_bytes,
-                    error) ||
-            (!bins.particle_ids.empty() &&
-             !upload(vulkan, ids_buffer, bins.particle_ids.data(),
-                     bins.particle_ids.size() * sizeof(std::uint32_t), error)) ||
+            (!resident &&
+             (!upload(vulkan, particle_buffer, job.particles,
+                      particles_bytes, error) ||
+              !upload(vulkan, counts_buffer, bins.counts.data(), bins_bytes,
+                      error) ||
+              !upload(vulkan, offsets_buffer, bins.offsets.data(), bins_bytes,
+                      error) ||
+              (!bins.particle_ids.empty() &&
+               !upload(vulkan, ids_buffer, bins.particle_ids.data(),
+                       bins.particle_ids.size() * sizeof(std::uint32_t),
+                       error)))) ||
             !ensure_pipeline(vulkan, field, "gpu_mesh_field.comp.spv", 6u,
                              error))
             return false;
@@ -488,6 +553,21 @@ struct GpuVisualMesher::Impl {
             (layout.grid_vertices + 255u) / 256u;
         if (!dispatch(field, groups, control, job.generation, error))
             return false;
+
+        if (resident) {
+            resident->bins.layout = layout;
+            resident->bins.contributing_particles = contributing_particles;
+            resident->bins.particle_buffer = std::move(particle_buffer);
+            resident->bins.counts_buffer = std::move(counts_buffer);
+            resident->bins.offsets_buffer = std::move(offsets_buffer);
+            resident->bins.ids_buffer = std::move(ids_buffer);
+            resident->params = params;
+            resident->params_buffer = std::move(params_buffer);
+            resident->field_buffer = std::move(field_buffer);
+            resident->bin_ms = bin_ms;
+            resident->field_ms = elapsed_ms(field_start);
+            return true;
+        }
 
         std::vector<float> candidate(layout.grid_vertices);
         if (!readback(vulkan, field_buffer, candidate.data(), field_bytes,
@@ -521,9 +601,14 @@ struct GpuVisualMesher::Impl {
 
         std::vector<float> field_values;
         GridLayout field_layout{};
-        if (!evaluate_field(job, field_values, field_layout, error, control) ||
+        ResidentField resident_field{};
+        if (!evaluate_field(job, field_values, field_layout, error, control,
+                            &resident_field) ||
             !check_control(control, job.generation, error))
             return false;
+        stats.bin_ms = resident_field.bin_ms;
+        stats.field_ms = resident_field.field_ms;
+        const auto classify_start = std::chrono::steady_clock::now();
 
         std::array<std::int32_t, 256u * 16u> triangle_table{};
         for (std::size_t cube = 0; cube != 256u; ++cube) {
@@ -551,22 +636,11 @@ struct GpuVisualMesher::Impl {
                             "MatterSurface marching-cubes table row is malformed");
         }
 
-        FieldParams params{
-            {layout.origin_m.x, layout.origin_m.y, layout.origin_m.z,
-             job.iso_value},
-            {layout.spacing_m.x, layout.spacing_m.y, layout.spacing_m.z,
-             job.blend_width_m},
-            {layout.bin_origin_m.x, layout.bin_origin_m.y,
-             layout.bin_origin_m.z, layout.bin_size_m},
-            {layout.sample_dims[0], layout.sample_dims[1],
-             layout.sample_dims[2], layout.grid_vertices},
-            {layout.bin_dims[0], layout.bin_dims[1], layout.bin_dims[2],
-             layout.bins},
-            {job.particle_count, 0u, 0u, 0u},
-            {layout.query_radius_m, 0.0f, 0.0f, 0.0f},
-        };
-        matter::VkBufferResource params_buffer;
-        matter::VkBufferResource field_buffer;
+        FieldParams params = resident_field.params;
+        matter::VkBufferResource params_buffer =
+            std::move(resident_field.params_buffer);
+        matter::VkBufferResource field_buffer =
+            std::move(resident_field.field_buffer);
         matter::VkBufferResource case_buffer;
         matter::VkBufferResource active_flags_buffer;
         matter::VkBufferResource triangle_counts_buffer;
@@ -575,18 +649,13 @@ struct GpuVisualMesher::Impl {
             static_cast<std::size_t>(layout.grid_vertices) * sizeof(float);
         const std::size_t cells_bytes =
             static_cast<std::size_t>(layout.grid_cells) * sizeof(std::uint32_t);
-        if (!create_gpu_buffer(vulkan, sizeof(params), params_buffer, error) ||
-            !create_gpu_buffer(vulkan, field_bytes, field_buffer, error) ||
-            !create_gpu_buffer(vulkan, cells_bytes, case_buffer, error) ||
+        if (!create_gpu_buffer(vulkan, cells_bytes, case_buffer, error) ||
             !create_gpu_buffer(vulkan, cells_bytes, active_flags_buffer,
                                error) ||
             !create_gpu_buffer(vulkan, cells_bytes, triangle_counts_buffer,
                                error) ||
             !create_gpu_buffer(vulkan, sizeof(triangle_table),
                                triangle_table_buffer, error) ||
-            !upload(vulkan, params_buffer, &params, sizeof(params), error) ||
-            !upload(vulkan, field_buffer, field_values.data(), field_bytes,
-                    error) ||
             !upload(vulkan, triangle_table_buffer, triangle_table.data(),
                     sizeof(triangle_table), error) ||
             !ensure_pipeline(vulkan, classify,
@@ -673,52 +742,36 @@ struct GpuVisualMesher::Impl {
                                                 active_cells_buffer.size);
         if (!dispatch(compact, cell_groups, control, job.generation, error))
             return false;
+        stats.classify_ms = elapsed_ms(classify_start);
 
-        GpuParticleBins bins{};
-        if (!build_bins(job, bins, error, control) ||
-            !check_control(control, job.generation, error))
-            return false;
-        matter::VkBufferResource particle_buffer;
-        matter::VkBufferResource bin_counts_buffer;
-        matter::VkBufferResource bin_offsets_buffer;
-        matter::VkBufferResource particle_ids_buffer;
-        matter::VkBufferResource position_buffer;
-        matter::VkBufferResource normal_buffer;
-        matter::VkBufferResource index_buffer;
-        const std::size_t particle_bytes =
-            static_cast<std::size_t>(job.particle_count) * sizeof(ParticleSample);
-        const std::size_t bin_bytes =
-            static_cast<std::size_t>(layout.bins) * sizeof(std::uint32_t);
-        const std::size_t particle_id_bytes = std::max<std::size_t>(
-            bins.particle_ids.size() * sizeof(std::uint32_t),
-            sizeof(std::uint32_t));
+        if (!check_control(control, job.generation, error)) return false;
+        const auto emit_start = std::chrono::steady_clock::now();
+        matter::VkBufferResource particle_buffer =
+            std::move(resident_field.bins.particle_buffer);
+        matter::VkBufferResource bin_counts_buffer =
+            std::move(resident_field.bins.counts_buffer);
+        matter::VkBufferResource bin_offsets_buffer =
+            std::move(resident_field.bins.offsets_buffer);
+        matter::VkBufferResource particle_ids_buffer =
+            std::move(resident_field.bins.ids_buffer);
+        matter::VkBufferResource output_buffer;
         const std::size_t vec4_output_bytes =
             static_cast<std::size_t>(vertex_count) * sizeof(float) * 4u;
         const std::size_t index_bytes =
             static_cast<std::size_t>(vertex_count) * sizeof(std::uint32_t);
-        if (!create_gpu_buffer(vulkan, particle_bytes, particle_buffer, error) ||
-            !create_gpu_buffer(vulkan, bin_bytes, bin_counts_buffer, error) ||
-            !create_gpu_buffer(vulkan, bin_bytes, bin_offsets_buffer, error) ||
-            !create_gpu_buffer(vulkan, particle_id_bytes, particle_ids_buffer,
-                               error) ||
-            !create_gpu_buffer(vulkan, vec4_output_bytes, position_buffer,
-                               error) ||
-            !create_gpu_buffer(vulkan, vec4_output_bytes, normal_buffer,
-                               error) ||
-            !create_gpu_buffer(vulkan, index_bytes, index_buffer, error) ||
-            !upload(vulkan, particle_buffer, job.particles, particle_bytes,
-                    error) ||
-            !upload(vulkan, bin_counts_buffer, bins.counts.data(), bin_bytes,
-                    error) ||
-            !upload(vulkan, bin_offsets_buffer, bins.offsets.data(), bin_bytes,
-                    error) ||
-            (!bins.particle_ids.empty() &&
-             !upload(vulkan, particle_ids_buffer, bins.particle_ids.data(),
-                     bins.particle_ids.size() * sizeof(std::uint32_t), error)))
+        const std::size_t position_offset = 0u;
+        const std::size_t normal_offset = align_up_256(vec4_output_bytes);
+        const std::size_t index_offset = align_up_256(
+            normal_offset == 0u ? 0u : normal_offset + vec4_output_bytes);
+        if (normal_offset == 0u || index_offset == 0u ||
+            index_bytes > std::numeric_limits<std::size_t>::max() -
+                              index_offset)
+            return fail(error, ErrorCode::Overflow,
+                        "GPU marching-cubes packed output size overflows");
+        const std::size_t output_bytes = index_offset + index_bytes;
+        if (!create_gpu_buffer(vulkan, output_bytes, output_buffer, error))
             return false;
 
-        params.counts[1] =
-            static_cast<std::uint32_t>(bins.particle_ids.size());
         params.counts[2] = active_cells;
         if (!upload(vulkan, params_buffer, &params, sizeof(params), error) ||
             !ensure_pipeline(vulkan, emit, "gpu_mesh_emit.comp.spv", 13u,
@@ -730,14 +783,24 @@ struct GpuVisualMesher::Impl {
             &triangle_offsets_buffer, &triangle_table_buffer,
             &particle_buffer,        &bin_counts_buffer,
             &bin_offsets_buffer,     &particle_ids_buffer,
-            &position_buffer,        &normal_buffer,
-            &index_buffer,
         };
-        for (std::uint32_t binding = 0u; binding != 13u; ++binding) {
+        for (std::uint32_t binding = 0u; binding != 10u; ++binding) {
             matter::write_storage_buffer_descriptor(
                 emit, binding, *emit_buffers[binding], 0u,
                 emit_buffers[binding]->size);
         }
+        matter::write_storage_buffer_descriptor(
+            emit, 10u, output_buffer,
+            static_cast<VkDeviceSize>(position_offset),
+            static_cast<VkDeviceSize>(vec4_output_bytes));
+        matter::write_storage_buffer_descriptor(
+            emit, 11u, output_buffer,
+            static_cast<VkDeviceSize>(normal_offset),
+            static_cast<VkDeviceSize>(vec4_output_bytes));
+        matter::write_storage_buffer_descriptor(
+            emit, 12u, output_buffer,
+            static_cast<VkDeviceSize>(index_offset),
+            static_cast<VkDeviceSize>(index_bytes));
         const std::uint32_t active_groups = (active_cells + 63u) / 64u;
         if (!dispatch(emit, active_groups, control, job.generation, error))
             return false;
@@ -745,14 +808,19 @@ struct GpuVisualMesher::Impl {
         std::vector<std::array<float, 4>> packed_positions(vertex_count);
         std::vector<std::array<float, 4>> packed_normals(vertex_count);
         std::vector<std::uint32_t> indices(vertex_count);
-        if (!readback(vulkan, position_buffer, packed_positions.data(),
-                      vec4_output_bytes, error) ||
-            !readback(vulkan, normal_buffer, packed_normals.data(),
-                      vec4_output_bytes, error) ||
-            !readback(vulkan, index_buffer, indices.data(), index_bytes,
-                      error) ||
+        std::vector<std::uint8_t> packed_output(output_bytes);
+        if (!readback(vulkan, output_buffer, packed_output.data(),
+                      output_bytes, error) ||
             !check_control(control, job.generation, error))
             return false;
+        std::memcpy(packed_positions.data(),
+                    packed_output.data() + position_offset,
+                    vec4_output_bytes);
+        std::memcpy(packed_normals.data(),
+                    packed_output.data() + normal_offset,
+                    vec4_output_bytes);
+        std::memcpy(indices.data(), packed_output.data() + index_offset,
+                    index_bytes);
 
         MeshResult candidate{};
         candidate.positions.reserve(static_cast<std::size_t>(vertex_count) * 3u);
@@ -774,6 +842,7 @@ struct GpuVisualMesher::Impl {
                             "GPU marching-cubes index is out of range");
         }
         candidate.content_digest = mesh_content_digest(candidate);
+        stats.emit_ms = elapsed_ms(emit_start);
         stats.device_bytes =
             static_cast<std::uint64_t>(field_bytes) + cells_bytes * 5u +
             vec4_output_bytes * 2u + index_bytes;

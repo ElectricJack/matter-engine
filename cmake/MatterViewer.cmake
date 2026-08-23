@@ -158,6 +158,9 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/lod_trace.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp
+        MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp
+        MatterEngine3/src/hydrology/hydrology_artifact.cpp
+        MatterEngine3/src/hydrology/water_visual_products.cpp
         MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp
         libs/MatterSurfaceLib/src/surface.c
         libs/MatterSurfaceLib/src/fat_primitive.c

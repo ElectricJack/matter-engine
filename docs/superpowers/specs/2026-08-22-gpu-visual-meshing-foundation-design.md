@@ -1,7 +1,7 @@
 # GPU visual-meshing foundation — design
 
 **Date:** 2026-08-22
-**Status:** draft for user review
+**Status:** Phase 1 implemented and accepted on the target NVIDIA GPU
 **Order:** specification 2 of 3; implementation begins only after
 `2026-08-22-windows-msvc-build-migration-design.md` reaches its migration
 acceptance gate, and this specification is then the prerequisite for
@@ -428,7 +428,44 @@ separate:
 - The matched profile demonstrates a real user-facing performance improvement;
   otherwise terrain stays on CPU.
 
-## 13. References
+## 13. Phase 1 measured acceptance (2026-08-23)
+
+The accepted MSVC/Vulkan implementation was exercised on an NVIDIA GeForce
+RTX 4090 with NVIDIA driver 610.74 and Vulkan API 1.4.341. The deterministic
+synthetic final-particle snapshot contains 116 particles. Its visual lattice
+contains 68,208 samples and 62,468 cells; 4,390 cells are active and emit
+8,772 triangles (26,316 triangle-soup vertices). Two builds on the same device
+produced the exact digest `9f0e981939d8f65b` and byte-identical position,
+normal, and index streams.
+
+Measured blocking bake-stage wall times for the accepted run were 20.519 ms
+for deterministic binning, 1.195 ms for field evaluation, 10.131 ms for
+classification/scan/compaction, and 4.064 ms for emission/final readback.
+These are authoring-bake measurements, not per-frame renderer costs. Particle
+bins and the scalar lattice now remain device-resident through emission; the
+three output streams share one aligned GPU allocation and one final payload
+readback. Only bounded scan totals are read back earlier for exact capacity
+preflight.
+
+The single-sphere oracle remains within 0.05 m of the authored isosurface at a
+0.20 m voxel (the required one-quarter-voxel maximum), with outward winding
+and analytic-normal dot product at least 0.999. The synthetic artifact reload
+performed no Vulkan submission, retained independent visual/coarse/gameplay
+products, registered in the normal indexed raster and native-RT geometry
+lanes, and completed with zero Vulkan validation errors.
+
+Three normal-editor raster captures of the cached artifact are stored at:
+
+- `MatterEditor/build/baselines/msvc/gpu-mesher-acceptance/overview.png`
+- `MatterEditor/build/baselines/msvc/gpu-mesher-acceptance/curve.png`
+- `MatterEditor/build/baselines/msvc/gpu-mesher-acceptance/low-water.png`
+
+The captures are deliberately a compact synthetic ribbon proving the GPU
+mesher/artifact/renderer path; they are not a final PhysX river bake. Terrain
+T0-T3 has not started, because this specification gates that work after the
+fluid prerequisite and the next PhysX-fluid integration specification.
+
+## 14. References
 
 - Windows MSVC prerequisite:
   `docs/superpowers/specs/2026-08-22-windows-msvc-build-migration-design.md`

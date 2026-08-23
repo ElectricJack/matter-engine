@@ -401,7 +401,7 @@ Configure `vk_particle_visual_bake` beside `vk_tileset_bake` in both initial and
 
 Run `ctest -R 'gpu_water_render_tests|editor_registration_census|viewer_graph_tests'`. Expected: converter tests pass and the editor census remains exact apart from the intentionally registered synthetic test part.
 
-- [ ] **Step 6: Commit Task 6**
+- [x] **Step 6: Commit Task 6**
 
 ```powershell
 git add MatterEngine3/src/render/gpu_meshing/water_scene_part.h MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp MatterEngine3/tests/gpu_water_render_tests.cpp MatterEngine3/src/render/vk_scene_renderer.h MatterEngine3/src/render/vk_scene_renderer.cpp MatterEngine3/src/provider/local_provider.h MatterEngine3/src/matter_engine.cpp cmake/manifests/engine-viewer.sources cmake/MatterViewer.cmake MatterEngine3/Makefile
@@ -421,27 +421,27 @@ git commit -m "feat: connect GPU water meshes to the renderer"
 - Produces a stable synthetic flowing-water particle snapshot with stable ids and a narrow acceptance-only editor injection selected by `MATTER_GPU_MESHER_ACCEPTANCE_ARTIFACT=<absolute path>`.
 - The editor injection loads a validated serialized artifact and installs its visual mesh as one glass part; it never runs the GPU mesher on level load.
 
-- [ ] **Step 1: Write failing end-to-end acceptance tests**
+- [x] **Step 1: Write failing end-to-end acceptance tests**
 
 The GPU smoke test bakes the fixture, creates coarse/gameplay products, saves the artifact, reloads it, proves the mesher dispatch counter does not change on reload, converts the visual mesh to a glass part, and verifies visual/coarse/gameplay topology independence. Register the part through `VkSceneRenderer`, prove it participates in raster geometry and native-RT BLAS/TLAS registration, and require zero validation errors. A second bake on the same device must reproduce all visual buffers and the digest byte-for-byte.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run the `gpu-mesher` smoke mode. Expected: synthetic fixture/cache-reload assertions fail.
 
-- [ ] **Step 3: Implement the acceptance-only artifact injection**
+- [x] **Step 3: Implement the acceptance-only artifact injection**
 
 At editor setup, when the variable is present, load only the explicit absolute artifact, validate it, convert/install it through the normal renderer path, and append one identity instance to the world. Any validation error reports a precise diagnostic and leaves the dry world usable. With the variable absent, product behavior is byte-identical and no artifact path is opened.
 
-- [ ] **Step 4: Capture three angles through the normal app**
+- [x] **Step 4: Capture three angles through the normal app**
 
 Bake the synthetic artifact once, then launch `RiverHydrology` three times with the artifact variable and scripted cameras for overview, curve, and low-water views. Use `MatterEngine3/tools/drive.py` with `wait_event bake.finished`, `wait_idle`, `cam`, `shot`, and `quit`; store PNGs under `MatterEditor/build/baselines/msvc/gpu-mesher-acceptance/`. Confirm the mesh uses glass shading, is smooth/connected, has no capacity truncation, and remains identical after an editor restart.
 
-- [ ] **Step 5: Record measured acceptance and spec status**
+- [x] **Step 5: Record measured acceptance and spec status**
 
 Change the design status from draft to accepted/implemented Phase 1 and record GPU model, driver, grid/particle/triangle counts, timings, surface-distance maximum, repeat digest, screenshot paths, and the explicit statement that terrain T0-T3 has not started because the spec gates it after fluid-prerequisite acceptance.
 
-- [ ] **Step 6: Commit Task 7**
+- [x] **Step 6: Commit Task 7**
 
 ```powershell
 git add MatterEngine3/tests/fixtures/gpu_mesher_synthetic_pbf.h MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp MatterEngine3/tests/vulkan_smoke_tests.cpp MatterEngine3/src/matter_engine.cpp docs/superpowers/specs/2026-08-22-gpu-visual-meshing-foundation-design.md
