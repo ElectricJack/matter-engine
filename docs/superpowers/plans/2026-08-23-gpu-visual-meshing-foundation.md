@@ -456,7 +456,7 @@ git commit -m "test: accept the GPU water meshing foundation"
 **Interfaces:**
 - Produces the final accepted MSVC editor/package and preserves the Linux/headless rollback build inventories.
 
-- [ ] **Step 1: Run focused tests from clean outputs**
+- [x] **Step 1: Run focused tests from clean outputs**
 
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target gpu_visual_mesher_cpu_tests
@@ -468,7 +468,7 @@ $env:MATTER_VK_SMOKE_MODE='gpu-mesher'; & 'MatterEditor/build/cmake/windows-msvc
 
 Expected: every command exits zero, GPU mode prints `ALL PASS`, and validation errors remain zero.
 
-- [ ] **Step 2: Run the full MSVC suite**
+- [x] **Step 2: Run the full MSVC suite**
 
 ```powershell
 & 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --preset windows-msvc-relwithdebinfo
@@ -476,7 +476,7 @@ Expected: every command exits zero, GPU mode prints `ALL PASS`, and validation e
 
 Expected: all tests pass with zero failures.
 
-- [ ] **Step 3: Verify editor/package and clean runtime environment**
+- [x] **Step 3: Verify editor/package and clean runtime environment**
 
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_dist
@@ -485,15 +485,15 @@ tools/check-windows-msvc-package.ps1 -DistPath MatterEditor/build/dist/world_dem
 
 Expected: package checker accepts the package, no MinGW runtime is staged, no new runtime DLL is required, and the artifact acceptance load works from the packaged editor with developer paths removed.
 
-- [ ] **Step 4: Verify compiler-neutral inventory**
+- [x] **Step 4: Verify compiler-neutral inventory**
 
 From WSL run the existing GCC shader/headless build and the focused CPU tests. Expected: shader inventory agrees with CMake, the headless build never references Vulkan mesher symbols, and CPU fallback/artifact tests pass.
 
-- [ ] **Step 5: Review the diff against every Phase 1 acceptance gate**
+- [x] **Step 5: Review the diff against every Phase 1 acceptance gate**
 
 Check: CPU-disabled behavior; GPU field parity; hierarchical scan; deterministic bins/output; overflow closure; cancellation/stale generation; same-device repeat; coarse CPU fallback; three independent artifact products; restart cache hit; glass rendering from three angles; precise unavailable diagnostics; no terrain switch; no PhysX/CUDA dependency.
 
-- [ ] **Step 6: Commit final corrections and use the branch-finishing workflow**
+- [x] **Step 6: Commit final corrections and use the branch-finishing workflow**
 
 ```powershell
 git status --short

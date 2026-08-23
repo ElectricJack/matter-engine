@@ -1488,6 +1488,8 @@ def_CPP_SRCS := $(sort \
     $(CONTOURMESH_CPP) \
     $(CONTOURENGINE_CPP) \
     $(SEAMINTEGRATION_CPP) \
+    $(GPU_VISUAL_MESHER_CPU_CPP) \
+    $(HYDROLOGY_ARTIFACT_CPP) \
     $(PARTSTORE_CPP))
 
 qjs_CPP_SRCS := $(sort \
@@ -1671,6 +1673,12 @@ CONTOURSEAM_OBJS  = $(call obj_list,def,$(CONTOURSEAM_CPP))
 CONTOURMESH_OBJS  = $(call obj_list,def,$(CONTOURMESH_CPP))
 CONTOURENGINE_OBJS = $(call obj_list,def,$(CONTOURENGINE_CPP))
 SEAMINTEGRATION_OBJS = $(call obj_list,def,$(SEAMINTEGRATION_CPP))
+GPU_VISUAL_MESHER_CPU_OBJS = \
+    $(call obj_list,def,$(GPU_VISUAL_MESHER_CPU_CPP)) \
+    $(call obj_list,mslc,$(GPU_VISUAL_MESHER_CPU_C))
+HYDROLOGY_ARTIFACT_OBJS = \
+    $(call obj_list,def,$(HYDROLOGY_ARTIFACT_CPP)) \
+    $(call obj_list,mslc,$(HYDROLOGY_ARTIFACT_C))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 SECTORPROF_OBJS = $(call obj_list,sh,$(SECTORPROF_CPP)) $(call obj_list,mslc,$(SECTORPROF_C)) $(qjsc_C_OBJS)
@@ -3012,10 +3020,9 @@ clean: clean-surfacefield
 clean-surfacefield:
 	rm -f build/surface_field_tests
 
-$(GPU_VISUAL_MESHER_CPU_TARGET): $(GPU_VISUAL_MESHER_CPU_CPP) \
-        $(GPU_VISUAL_MESHER_CPU_C) ../include/matter/gpu_visual_meshing.h check.h | build
-	$(CC) $(CFLAGS) $(INCLUDE_PATHS) -o $@ \
-	    $(GPU_VISUAL_MESHER_CPU_CPP) $(GPU_VISUAL_MESHER_CPU_C) -lm
+$(GPU_VISUAL_MESHER_CPU_TARGET): $(GPU_VISUAL_MESHER_CPU_OBJS) \
+        ../include/matter/gpu_visual_meshing.h check.h | build
+	$(CC) $(GPU_VISUAL_MESHER_CPU_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
 
 run-gpu-visual-mesher-cpu: $(GPU_VISUAL_MESHER_CPU_TARGET)
 	./$(GPU_VISUAL_MESHER_CPU_TARGET)
@@ -3025,11 +3032,10 @@ clean: clean-gpu-visual-mesher-cpu
 clean-gpu-visual-mesher-cpu:
 	rm -f $(GPU_VISUAL_MESHER_CPU_TARGET)
 
-$(HYDROLOGY_ARTIFACT_TARGET): $(HYDROLOGY_ARTIFACT_CPP) \
-        $(HYDROLOGY_ARTIFACT_C) ../src/hydrology/hydrology_artifact.h \
+$(HYDROLOGY_ARTIFACT_TARGET): $(HYDROLOGY_ARTIFACT_OBJS) \
+        ../src/hydrology/hydrology_artifact.h \
         ../src/hydrology/water_visual_products.h check.h | build
-	$(CC) $(CFLAGS) $(INCLUDE_PATHS) -o $@ \
-	    $(HYDROLOGY_ARTIFACT_CPP) $(HYDROLOGY_ARTIFACT_C) -lm
+	$(CC) $(HYDROLOGY_ARTIFACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
 
 run-hydrology-artifact: $(HYDROLOGY_ARTIFACT_TARGET)
 	./$(HYDROLOGY_ARTIFACT_TARGET)

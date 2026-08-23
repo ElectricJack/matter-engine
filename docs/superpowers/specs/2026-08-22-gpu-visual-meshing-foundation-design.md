@@ -438,14 +438,28 @@ contains 68,208 samples and 62,468 cells; 4,390 cells are active and emit
 produced the exact digest `9f0e981939d8f65b` and byte-identical position,
 normal, and index streams.
 
-Measured blocking bake-stage wall times for the accepted run were 20.519 ms
-for deterministic binning, 1.195 ms for field evaluation, 10.131 ms for
-classification/scan/compaction, and 4.064 ms for emission/final readback.
-These are authoring-bake measurements, not per-frame renderer costs. Particle
-bins and the scalar lattice now remain device-resident through emission; the
-three output streams share one aligned GPU allocation and one final payload
-readback. Only bounded scan totals are read back earlier for exact capacity
-preflight.
+Three fresh process runs separated cold initialization from the second,
+already-initialized bake. The cold bake ranged from 200.050 to 222.619 ms. The
+warm bake ranged from 34.563 to 38.107 ms (median 35.930 ms); representative
+warm stage costs were 10.720 ms for deterministic binning, 1.368 ms for field
+evaluation, 15.251 ms for classification/scan/compaction, and 7.223 ms for
+emission/final readback. The warm number excludes editor/world startup,
+pipeline creation, and the first complete bake. It is intentionally a
+synchronous CPU wall-clock measurement, so it still includes command
+recording, queue submissions, fences, bounded capacity readbacks, GPU
+execution, and the final payload readback. These are authoring-bake
+measurements, not per-frame renderer costs.
+
+On the same 116-particle fixture, the 0.48 m coarse CPU collision/fallback
+mesh took 5.833 to 6.099 ms warm and emitted 784 triangles. That is faster for
+this tiny job but is not a visual-quality comparison. The closest practical
+MatterSurface CPU visual lattice requests 0.12 m (roughly 0.121 m after its
+power-of-two cubic-grid quantization), took 221.810 to 233.347 ms, and emitted
+14,800 triangles. Against that visual-quality comparison the 0.16 m GPU mesh
+was 5.82x to 6.49x faster while emitting 8,772 triangles. Particle bins and
+the scalar lattice remain device-resident through emission; the three output
+streams share one aligned GPU allocation and one final payload readback. Only
+bounded scan totals are read back earlier for exact capacity preflight.
 
 The single-sphere oracle remains within 0.05 m of the authored isosurface at a
 0.20 m voxel (the required one-quarter-voxel maximum), with outward winding
@@ -459,6 +473,10 @@ Three normal-editor raster captures of the cached artifact are stored at:
 - `MatterEditor/build/baselines/msvc/gpu-mesher-acceptance/overview.png`
 - `MatterEditor/build/baselines/msvc/gpu-mesher-acceptance/curve.png`
 - `MatterEditor/build/baselines/msvc/gpu-mesher-acceptance/low-water.png`
+
+Matched-camera GPU, coarse-CPU, and visual-quality-CPU comparisons are stored
+under `MatterEditor/build/baselines/msvc/gpu-mesher-comparison/`; the most
+revealing pair is `gpu-low-water.png` versus `cpu-visual-low-water.png`.
 
 The captures are deliberately a compact synthetic ribbon proving the GPU
 mesher/artifact/renderer path; they are not a final PhysX river bake. Terrain

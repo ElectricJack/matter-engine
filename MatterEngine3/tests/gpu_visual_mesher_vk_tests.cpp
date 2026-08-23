@@ -3,6 +3,7 @@
 #include "matter/windows_compat.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -504,12 +505,51 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
     artifact.product_keys =
         hydrology::derive_product_keys(job, snapshot_digest, identity);
     artifact.visual_mesh = first;
+    gpu_meshing::MeshResult cpu_repeat{};
+    const auto cpu_first_start = std::chrono::steady_clock::now();
     error = {};
     GPU_CHECK(hydrology::build_cpu_particle_visual(
                   job, identity.coarse_voxel_m, artifact.coarse_cpu_mesh,
                   error),
               error.message.empty() ? "build coarse CPU water fallback"
                                     : error.message.c_str());
+    const double cpu_first_ms = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() -
+                                    cpu_first_start)
+                                    .count();
+    const auto cpu_repeat_start = std::chrono::steady_clock::now();
+    error = {};
+    GPU_CHECK(hydrology::build_cpu_particle_visual(
+                  job, identity.coarse_voxel_m, cpu_repeat, error),
+              error.message.empty() ? "repeat coarse CPU water fallback"
+                                    : error.message.c_str());
+    const double cpu_repeat_ms = std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() -
+                                     cpu_repeat_start)
+                                     .count();
+    GPU_CHECK(artifact.coarse_cpu_mesh.positions == cpu_repeat.positions &&
+                  artifact.coarse_cpu_mesh.normals == cpu_repeat.normals &&
+                  artifact.coarse_cpu_mesh.indices == cpu_repeat.indices &&
+                  artifact.coarse_cpu_mesh.content_digest ==
+                      cpu_repeat.content_digest,
+              "repeated CPU fallback meshes are byte-identical");
+
+    // MatterSurface uses a power-of-two cubic lattice. A 0.12 m request on
+    // this 15.4 m fixture selects a roughly 0.121 m cell, making it the
+    // closest CPU visual-quality comparison to the GPU job's exact 0.16 m
+    // rectangular grid (the next coarser CPU lattice is roughly 0.244 m).
+    constexpr float kCpuVisualComparisonVoxelM = 0.12f;
+    gpu_meshing::MeshResult cpu_visual{};
+    const auto cpu_visual_start = std::chrono::steady_clock::now();
+    error = {};
+    GPU_CHECK(hydrology::build_cpu_particle_visual(
+                  job, kCpuVisualComparisonVoxelM, cpu_visual, error),
+              error.message.empty() ? "build CPU visual-quality comparison"
+                                    : error.message.c_str());
+    const double cpu_visual_ms = std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() -
+                                     cpu_visual_start)
+                                     .count();
     artifact.gameplay_field =
         gpu_meshing::fixtures::synthetic_flowing_water_gameplay();
     artifact.provenance = {0x10deu, 0x2684u, 0u};
@@ -525,6 +565,34 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
     GPU_CHECK(hydrology::save_artifact_atomic(artifact_path, artifact, error),
               error.message.empty() ? "save synthetic hydrology artifact"
                                     : error.message.c_str());
+
+    if (const char* output =
+            std::getenv("MATTER_CPU_MESHER_ACCEPTANCE_OUTPUT")) {
+        if (*output != '\0') {
+            hydrology::HydrologyArtifact cpu_artifact = artifact;
+            cpu_artifact.visual_mesh = cpu_artifact.coarse_cpu_mesh;
+            error = {};
+            GPU_CHECK(hydrology::save_artifact_atomic(
+                          std::filesystem::path(output), cpu_artifact, error),
+                      error.message.empty()
+                          ? "save CPU comparison hydrology artifact"
+                          : error.message.c_str());
+        }
+    }
+    if (const char* output =
+            std::getenv("MATTER_CPU_VISUAL_MESHER_ACCEPTANCE_OUTPUT")) {
+        if (*output != '\0') {
+            hydrology::HydrologyArtifact cpu_visual_artifact = artifact;
+            cpu_visual_artifact.visual_mesh = cpu_visual;
+            error = {};
+            GPU_CHECK(hydrology::save_artifact_atomic(
+                          std::filesystem::path(output), cpu_visual_artifact,
+                          error),
+                      error.message.empty()
+                          ? "save CPU visual-quality comparison artifact"
+                          : error.message.c_str());
+        }
+    }
 
     const std::uint64_t submits_before_reload =
         matter::immediate_submit_count();
@@ -617,9 +685,34 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
         first_stats.triangles,
         static_cast<unsigned long long>(first.content_digest),
         artifact_path.string().c_str());
+    const double gpu_first_ms = first_stats.bin_ms + first_stats.field_ms +
+                                first_stats.classify_ms +
+                                first_stats.emit_ms;
     std::printf(
-        "gpu-mesher timings-ms: bin=%.3f field=%.3f classify=%.3f emit=%.3f\n",
+        "gpu-mesher cold timings-ms: bin=%.3f field=%.3f classify=%.3f "
+        "emit=%.3f total=%.3f\n",
         first_stats.bin_ms, first_stats.field_ms,
-        first_stats.classify_ms, first_stats.emit_ms);
+        first_stats.classify_ms, first_stats.emit_ms, gpu_first_ms);
+    const double gpu_repeat_ms = second_stats.bin_ms + second_stats.field_ms +
+                                 second_stats.classify_ms +
+                                 second_stats.emit_ms;
+    std::printf(
+        "gpu-mesher warm timings-ms: bin=%.3f field=%.3f classify=%.3f "
+        "emit=%.3f total=%.3f\n",
+        second_stats.bin_ms, second_stats.field_ms,
+        second_stats.classify_ms, second_stats.emit_ms, gpu_repeat_ms);
+    std::printf(
+        "iso-mesher coarse comparison: gpu-warm=%.3f ms gpu-triangles=%u "
+        "cpu-cold=%.3f ms cpu-warm=%.3f ms cpu-triangles=%zu "
+        "cpu/gpu-time=%.2fx\n",
+        gpu_repeat_ms, second_stats.triangles, cpu_first_ms, cpu_repeat_ms,
+        artifact.coarse_cpu_mesh.indices.size() / 3u,
+        gpu_repeat_ms > 0.0 ? cpu_repeat_ms / gpu_repeat_ms : 0.0);
+    std::printf(
+        "iso-mesher visual comparison: gpu=%.3f ms at %.3f m (%u triangles) "
+        "cpu=%.3f ms at requested %.3f m (%zu triangles) gpu-speedup=%.2fx\n",
+        gpu_repeat_ms, job.voxel_m, second_stats.triangles, cpu_visual_ms,
+        kCpuVisualComparisonVoxelM, cpu_visual.indices.size() / 3u,
+        gpu_repeat_ms > 0.0 ? cpu_visual_ms / gpu_repeat_ms : 0.0);
     return failures;
 }
