@@ -38,12 +38,36 @@ public:
                      FluidBakeError& error) = 0;
 };
 
+enum class PhysxRuntimeEvent : std::uint8_t {
+    ActivationUploaded = 0,
+    SimulateBegin,
+    SensorCountsReady,
+    BatchComplete,
+};
+
 struct PhysxRuntimeOptions {
     std::string gpu_runtime_path;
     int device_ordinal = -1;
     // Internal diagnostic seam. The adapter contains any exception raised by
     // this hook exactly as it must contain future per-bake initialization.
     void (*initialization_hook)() = nullptr;
+    // Internal test/diagnostic seam. It observes ordering and bounded counts;
+    // it does not expose PhysX or CUDA objects.
+    void (*execution_hook)(PhysxRuntimeEvent event,
+                           std::uint32_t step,
+                           std::uint32_t value,
+                           void* user_data) = nullptr;
+    void* execution_hook_user_data = nullptr;
+    // Test-only hardware failure seam, applied to the PxScene hardware error
+    // state after a real fetchResults call.
+    std::uint32_t (*hardware_error_injection_hook)(
+        std::uint32_t step, void* user_data) = nullptr;
+    void* hardware_error_injection_user_data = nullptr;
+    // Test-only CUDA-result seam. A nonzero result replaces the activation
+    // upload status for the selected step.
+    std::uint32_t (*cuda_error_injection_hook)(
+        std::uint32_t step, void* user_data) = nullptr;
+    void* cuda_error_injection_user_data = nullptr;
 };
 
 class PhysxRuntime final : public IFluidBakeBackend {

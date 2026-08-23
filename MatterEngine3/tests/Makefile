@@ -1163,7 +1163,9 @@ HYDROLOGY_ARTIFACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
 PHYSX_ADAPTER_CONTRACT_TARGET = build/physx_adapter_contract_tests
 PHYSX_ADAPTER_CONTRACT_CPP = physx_adapter_contract_tests.cpp \
                              ../src/hydrology/physx_fluid_bake.cpp \
-                             ../src/hydrology/physx_collision_input.cpp
+                             ../src/hydrology/physx_collision_input.cpp \
+                             ../src/hydrology/fluid_emission.cpp \
+                             ../src/hydrology/fill_sensor.cpp
 
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
@@ -3057,7 +3059,9 @@ $(PHYSX_ADAPTER_CONTRACT_TARGET): $(PHYSX_ADAPTER_CONTRACT_OBJS) \
         ../src/hydrology/physx_fluid_types.h \
         ../src/hydrology/physx_runtime.h \
         ../src/hydrology/physx_fluid_bake.h \
-        ../src/hydrology/physx_collision_input.h check.h | build
+        ../src/hydrology/physx_collision_input.h \
+        ../src/hydrology/fluid_emission.h \
+        ../src/hydrology/fill_sensor.h check.h | build
 	$(CC) $(PHYSX_ADAPTER_CONTRACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
 
 run-physx-adapter-contract: $(PHYSX_ADAPTER_CONTRACT_TARGET)

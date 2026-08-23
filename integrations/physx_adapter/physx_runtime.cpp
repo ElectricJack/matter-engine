@@ -1,17 +1,25 @@
 #include "hydrology/physx_runtime.h"
 
+#include "cuda.h"
+#include "gpu_fill_sensor.h"
+#include "hydrology/fill_sensor.h"
+#include "hydrology/fluid_emission.h"
 #include "physx_raii.h"
 
 #include "PxPhysicsAPI.h"
+#include "cudamanager/PxCudaContext.h"
 #include "extensions/PxDefaultCpuDispatcher.h"
 #include "extensions/PxRigidActorExt.h"
 #include "extensions/PxRigidBodyExt.h"
 #include "gpu/PxGpu.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -71,6 +79,10 @@ public:
 
     bool has_issue() const noexcept {
         return last_code != physx::PxErrorCode::eNO_ERROR;
+    }
+
+    bool has_failure() const noexcept {
+        return severity_rank(last_code) >= 2;
     }
 
 private:
@@ -164,6 +176,13 @@ bool valid_bounds(const matter::Aabb& bounds) {
            bounds.minimum.z <= bounds.maximum.z;
 }
 
+bool valid_strict_bounds(const matter::Aabb& bounds) {
+    return finite(bounds.minimum) && finite(bounds.maximum) &&
+           bounds.minimum.x < bounds.maximum.x &&
+           bounds.minimum.y < bounds.maximum.y &&
+           bounds.minimum.z < bounds.maximum.z;
+}
+
 bool inside(const matter::Aabb& bounds, matter::Float3 point) {
     return point.x >= bounds.minimum.x && point.x <= bounds.maximum.x &&
            point.y >= bounds.minimum.y && point.y <= bounds.maximum.y &&
@@ -177,6 +196,146 @@ matter::Float3 from_px(physx::PxVec3 value) {
 physx::PxVec3 to_px(matter::Float3 value) {
     return {value.x, value.y, value.z};
 }
+
+hydrology::FluidBakeCode cuda_failure_code(
+    std::uint32_t cuda_result,
+    const physx::PxCudaContextManager& cuda) {
+    if (!cuda.contextIsValid()) return hydrology::FluidBakeCode::DeviceLost;
+    switch (static_cast<CUresult>(cuda_result)) {
+        case CUDA_ERROR_OUT_OF_MEMORY:
+            return hydrology::FluidBakeCode::CapacityExceeded;
+        case CUDA_ERROR_DEINITIALIZED:
+        case CUDA_ERROR_DEVICE_UNAVAILABLE:
+        case CUDA_ERROR_NO_DEVICE:
+        case CUDA_ERROR_INVALID_CONTEXT:
+        case CUDA_ERROR_ECC_UNCORRECTABLE:
+        case CUDA_ERROR_ILLEGAL_ADDRESS:
+        case CUDA_ERROR_LAUNCH_TIMEOUT:
+        case CUDA_ERROR_CONTEXT_IS_DESTROYED:
+        case CUDA_ERROR_ASSERT:
+        case CUDA_ERROR_HARDWARE_STACK_ERROR:
+        case CUDA_ERROR_LAUNCH_FAILED:
+        case CUDA_ERROR_UNKNOWN:
+            return hydrology::FluidBakeCode::DeviceLost;
+        default:
+            return hydrology::FluidBakeCode::BackendFailure;
+    }
+}
+
+matter::Float3 add(matter::Float3 left, matter::Float3 right) {
+    return {left.x + right.x, left.y + right.y, left.z + right.z};
+}
+
+matter::Float3 scale(matter::Float3 value, float factor) {
+    return {value.x * factor, value.y * factor, value.z * factor};
+}
+
+matter::Float3 cross(matter::Float3 left, matter::Float3 right) {
+    return {left.y * right.z - left.z * right.y,
+            left.z * right.x - left.x * right.z,
+            left.x * right.y - left.y * right.x};
+}
+
+matter::Float3 normalized(matter::Float3 value) {
+    const float length = std::sqrt(value.x * value.x + value.y * value.y +
+                                   value.z * value.z);
+    return scale(value, 1.0f / length);
+}
+
+struct EmitterPlacement {
+    matter::Float3 position_m{};
+    matter::Float3 direction{};
+    std::vector<matter::Float3> disk_offsets;
+};
+
+EmitterPlacement make_emitter_placement(
+    const hydrology::FluidEmitter& emitter,
+    float particle_spacing_m,
+    std::uint32_t maximum_offsets) {
+    EmitterPlacement placement{};
+    placement.position_m = emitter.position_m;
+    placement.direction = normalized(emitter.direction);
+    const matter::Float3 reference =
+        std::fabs(placement.direction.y) < 0.9f
+            ? matter::Float3{0.0f, 1.0f, 0.0f}
+            : matter::Float3{1.0f, 0.0f, 0.0f};
+    const matter::Float3 tangent =
+        normalized(cross(placement.direction, reference));
+    const matter::Float3 bitangent = cross(placement.direction, tangent);
+
+    const double radius_cells = std::floor(
+        static_cast<double>(emitter.radius_m) /
+        static_cast<double>(particle_spacing_m));
+    const double ring_cap = (std::min)(
+        static_cast<double>(maximum_offsets),
+        static_cast<double>((std::numeric_limits<int>::max)()));
+    const auto maximum_ring = static_cast<std::uint32_t>((std::min)(
+        radius_cells, ring_cap));
+    for (std::uint32_t ring = 0u;
+         ring <= maximum_ring &&
+         placement.disk_offsets.size() < maximum_offsets;
+         ++ring) {
+        const int signed_ring = static_cast<int>(ring);
+        for (int z = -signed_ring;
+             z <= signed_ring &&
+             placement.disk_offsets.size() < maximum_offsets; ++z) {
+            for (int x = -signed_ring;
+                 x <= signed_ring &&
+                 placement.disk_offsets.size() < maximum_offsets; ++x) {
+                if ((std::max)(std::abs(x), std::abs(z)) != signed_ring) {
+                    continue;
+                }
+                const float offset_x =
+                    static_cast<float>(x) * particle_spacing_m;
+                const float offset_z =
+                    static_cast<float>(z) * particle_spacing_m;
+                if (offset_x * offset_x + offset_z * offset_z <=
+                    emitter.radius_m * emitter.radius_m + 1.0e-6f) {
+                    placement.disk_offsets.push_back(
+                        add(scale(tangent, offset_x),
+                            scale(bitangent, offset_z)));
+                }
+            }
+        }
+    }
+    if (placement.disk_offsets.empty()) placement.disk_offsets.push_back({});
+    return placement;
+}
+
+matter::Float3 emitter_activation_position(
+    const EmitterPlacement& placement,
+    std::uint64_t emitted_sequence,
+    std::uint32_t ordinal_this_step,
+    float particle_spacing_m) {
+    const std::size_t slot = static_cast<std::size_t>(
+        emitted_sequence % placement.disk_offsets.size());
+    const std::uint32_t layer = ordinal_this_step /
+        static_cast<std::uint32_t>(placement.disk_offsets.size());
+    return add(add(placement.position_m, placement.disk_offsets[slot]),
+               scale(placement.direction,
+                     -static_cast<float>(layer) * particle_spacing_m));
+}
+
+class ParticleBufferAttachment final {
+public:
+    ParticleBufferAttachment(physx::PxPBDParticleSystem& system,
+                             physx::PxParticleBuffer& buffer)
+        : system_(&system), buffer_(&buffer) {
+        system_->addParticleBuffer(buffer_);
+    }
+
+    ~ParticleBufferAttachment() {
+        if (system_ && buffer_) system_->removeParticleBuffer(buffer_);
+    }
+
+    ParticleBufferAttachment(const ParticleBufferAttachment&) = delete;
+    ParticleBufferAttachment& operator=(const ParticleBufferAttachment&) =
+        delete;
+
+private:
+    physx::PxPBDParticleSystem* system_ = nullptr;
+    physx::PxParticleBuffer* buffer_ = nullptr;
+};
 
 physx::PxFilterFlags probe_filter_shader(
     physx::PxFilterObjectAttributes attributes0,
@@ -262,6 +421,101 @@ bool validate_probe_input(const hydrology::FluidCollisionProbeInput& input,
                      "PhysX collision probe start is non-finite or outside the dry collar"};
             return false;
         }
+    }
+    return true;
+}
+
+bool validate_pbd_run_input(const hydrology::FluidBakeInput& input,
+                            hydrology::FluidBakeError& error) {
+    const auto& settings = input.settings;
+    if (input.collision.vertices.empty() ||
+        input.collision.indices.empty() ||
+        input.collision.indices.size() % 3u != 0u ||
+        input.emitters.empty() ||
+        !std::isfinite(settings.particle_spacing_m) ||
+        !(settings.particle_spacing_m > 0.0f) ||
+        !std::isfinite(settings.rest_density_kg_m3) ||
+        !(settings.rest_density_kg_m3 > 0.0f) ||
+        !std::isfinite(settings.fixed_step_seconds) ||
+        !(settings.fixed_step_seconds > 0.0f) ||
+        settings.solver_iterations == 0u || settings.max_neighbors == 0u ||
+        settings.batch_steps == 0u || settings.max_steps == 0u ||
+        settings.batch_steps > settings.max_steps ||
+        settings.max_particles == 0u ||
+        !valid_strict_bounds(input.sensor.bounds_m) ||
+        input.sensor.resolution.x == 0u ||
+        input.sensor.resolution.y == 0u ||
+        input.sensor.resolution.z == 0u ||
+        !std::isfinite(input.sensor.required_wet_fraction) ||
+        !(input.sensor.required_wet_fraction > 0.0f) ||
+        input.sensor.required_wet_fraction > 1.0f ||
+        input.sensor.stable_steps == 0u ||
+        input.sensor.minimum_particles_per_cell == 0u ||
+        !valid_strict_bounds(input.dry_collar_bounds_m)) {
+        error = {hydrology::FluidBakeCode::InvalidInput,
+                 "PhysX PBD run input is incomplete or invalid"};
+        return false;
+    }
+    for (matter::Float3 vertex : input.collision.vertices) {
+        if (!finite(vertex)) {
+            error = {hydrology::FluidBakeCode::InvalidInput,
+                     "PhysX PBD collision contains a non-finite vertex"};
+            return false;
+        }
+    }
+    for (std::uint32_t index : input.collision.indices) {
+        if (index >= input.collision.vertices.size()) {
+            error = {hydrology::FluidBakeCode::InvalidInput,
+                     "PhysX PBD collision contains an out-of-range index"};
+            return false;
+        }
+    }
+    std::vector<std::uint32_t> emitter_ids;
+    emitter_ids.reserve(input.emitters.size());
+    for (const hydrology::FluidEmitter& emitter : input.emitters) {
+        const float direction_length_squared =
+            emitter.direction.x * emitter.direction.x +
+            emitter.direction.y * emitter.direction.y +
+            emitter.direction.z * emitter.direction.z;
+        if (!finite(emitter.position_m) || !finite(emitter.direction) ||
+            !finite(emitter.initial_velocity_mps) ||
+            !std::isfinite(direction_length_squared) ||
+            !(direction_length_squared > 0.0f) ||
+            !std::isfinite(emitter.flow_m3s) ||
+            !(emitter.flow_m3s > 0.0f) ||
+            !std::isfinite(emitter.radius_m) ||
+            !(emitter.radius_m > 0.0f) ||
+            emitter.start_step >= emitter.stop_step ||
+            emitter.stop_step > settings.max_steps ||
+            std::find(emitter_ids.begin(), emitter_ids.end(), emitter.id) !=
+                emitter_ids.end()) {
+            error = {hydrology::FluidBakeCode::InvalidInput,
+                     "PhysX PBD emitter is invalid"};
+            return false;
+        }
+        emitter_ids.push_back(emitter.id);
+    }
+    return true;
+}
+
+bool preflight_emission_capacity(const hydrology::FluidBakeInput& input,
+                                 hydrology::FluidBakeError& error) {
+    hydrology::FluidEmissionState state{};
+    std::vector<hydrology::FluidParticleActivation> activations;
+    std::uint32_t active_particles = 0u;
+    std::uint32_t last_emission_step = 0u;
+    for (const hydrology::FluidEmitter& emitter : input.emitters) {
+        last_emission_step = (std::max)(last_emission_step,
+                                        emitter.stop_step);
+    }
+    for (std::uint32_t step = 0u; step < last_emission_step; ++step) {
+        if (!hydrology::schedule_fluid_emission_step(
+                input.emitters, input.settings, step, active_particles, state,
+                activations, error)) {
+            return false;
+        }
+        active_particles +=
+            static_cast<std::uint32_t>(activations.size());
     }
     return true;
 }
@@ -520,6 +774,468 @@ struct PhysxRuntime::Impl {
         return true;
     }
 
+    bool run(const FluidBakeInput& input,
+             const FluidBakeCallbacks& callbacks,
+             FluidBakeOutput& output,
+             FluidBakeError& error) {
+        output = {};
+        error = {};
+        const auto wall_start = std::chrono::steady_clock::now();
+        auto fail_run = [&](FluidBakeCode code,
+                            const std::string& message) -> bool {
+            output.stats.wall_seconds =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - wall_start)
+                    .count();
+            error = {code, message};
+            return false;
+        };
+        auto notify = [&](PhysxRuntimeEvent event, std::uint32_t step,
+                          std::uint32_t value) {
+            if (options.execution_hook) {
+                options.execution_hook(event, step, value,
+                                       options.execution_hook_user_data);
+            }
+        };
+
+        const FluidBackendProbe state = probe();
+        if (!state.available) return fail_run(state.code, state.message);
+        FluidBakeError validation_error{};
+        if (!validate_pbd_run_input(input, validation_error)) {
+            return fail_run(validation_error.code, validation_error.message);
+        }
+        if (!preflight_emission_capacity(input, validation_error)) {
+            return fail_run(validation_error.code, validation_error.message);
+        }
+
+        matter_physx::PxOwner<physx::PxDefaultCpuDispatcher> dispatcher(
+            physx::PxDefaultCpuDispatcherCreate(2u));
+        if (!dispatcher) {
+            return fail_run(FluidBakeCode::BackendFailure,
+                            "PhysX PBD CPU dispatcher creation failed");
+        }
+        physx::PxSceneDesc scene_desc(physics->getTolerancesScale());
+        scene_desc.gravity = physx::PxVec3(0.0f, -9.81f, 0.0f);
+        scene_desc.cpuDispatcher = dispatcher.get();
+        scene_desc.filterShader = physx::PxDefaultSimulationFilterShader;
+        scene_desc.cudaContextManager = cuda.get();
+        scene_desc.staticStructure =
+            physx::PxPruningStructureType::eDYNAMIC_AABB_TREE;
+        scene_desc.flags |= physx::PxSceneFlag::eENABLE_PCM;
+        scene_desc.flags |= physx::PxSceneFlag::eENABLE_GPU_DYNAMICS;
+        scene_desc.broadPhaseType = physx::PxBroadPhaseType::eGPU;
+        scene_desc.solverType = physx::PxSolverType::eTGS;
+        if (!scene_desc.isValid()) {
+            return fail_run(FluidBakeCode::BackendFailure,
+                            "PhysX PBD scene description is invalid");
+        }
+        matter_physx::PxOwner<physx::PxScene> scene(
+            physics->createScene(scene_desc));
+        if (!scene) {
+            return fail_run(
+                errors.translated_code(FluidBakeCode::BackendFailure),
+                errors.diagnostic("PhysX PBD scene creation failed"));
+        }
+
+        std::vector<physx::PxVec3> vertices;
+        vertices.reserve(input.collision.vertices.size());
+        for (matter::Float3 vertex : input.collision.vertices) {
+            vertices.push_back(to_px(vertex));
+        }
+        physx::PxTriangleMeshDesc mesh_desc;
+        mesh_desc.points.count = static_cast<physx::PxU32>(vertices.size());
+        mesh_desc.points.stride = sizeof(physx::PxVec3);
+        mesh_desc.points.data = vertices.data();
+        mesh_desc.triangles.count = static_cast<physx::PxU32>(
+            input.collision.indices.size() / 3u);
+        mesh_desc.triangles.stride = 3u * sizeof(std::uint32_t);
+        mesh_desc.triangles.data = input.collision.indices.data();
+        physx::PxCookingParams cooking_params(physics->getTolerancesScale());
+        cooking_params.meshEdgeLengthMaxLimit = 0.0f;
+        cooking_params.buildGPUData = true;
+        errors.clear();
+        physx::PxTriangleMeshCookingResult::Enum cooking_result =
+            physx::PxTriangleMeshCookingResult::eFAILURE;
+        matter_physx::PxOwner<physx::PxTriangleMesh> triangle_mesh(
+            PxCreateTriangleMesh(cooking_params, mesh_desc,
+                                 physics->getPhysicsInsertionCallback(),
+                                 &cooking_result));
+        if (!triangle_mesh ||
+            cooking_result != physx::PxTriangleMeshCookingResult::eSUCCESS ||
+            errors.has_issue()) {
+            return fail_run(
+                errors.translated_code(FluidBakeCode::BackendFailure),
+                errors.diagnostic("PhysX PBD collision cooking failed"));
+        }
+        matter_physx::PxOwner<physx::PxMaterial> collision_material(
+            physics->createMaterial(0.35f, 0.35f, 0.0f));
+        matter_physx::PxOwner<physx::PxRigidStatic> terrain(
+            physics->createRigidStatic(physx::PxTransform(physx::PxIdentity)));
+        if (!collision_material || !terrain ||
+            !physx::PxRigidActorExt::createExclusiveShape(
+                *terrain, physx::PxTriangleMeshGeometry(triangle_mesh.get()),
+                *collision_material)) {
+            return fail_run(FluidBakeCode::BackendFailure,
+                            "PhysX PBD collision actor creation failed");
+        }
+        scene->addActor(*terrain);
+
+        const float spacing = input.settings.particle_spacing_m;
+        const float rest_offset = 0.5f * spacing / 0.6f;
+        const float solid_rest_offset = rest_offset;
+        const float fluid_rest_offset = rest_offset * 0.6f;
+        const float particle_mass = input.settings.rest_density_kg_m3 *
+            physx_particle_volume_m3(spacing);
+        matter_physx::PxOwner<physx::PxPBDMaterial> pbd_material(
+            physics->createPBDMaterial(0.05f, 0.05f, 0.0f, 0.001f, 0.5f,
+                                       0.005f, 0.01f, 0.0f, 0.0f));
+        matter_physx::PxOwner<physx::PxPBDParticleSystem> particle_system(
+            physics->createPBDParticleSystem(*cuda,
+                                             input.settings.max_neighbors));
+        if (!pbd_material || !particle_system ||
+            !std::isfinite(particle_mass) || !(particle_mass > 0.0f)) {
+            return fail_run(FluidBakeCode::BackendFailure,
+                            "PhysX PBD material or system creation failed");
+        }
+        pbd_material->setViscosity(0.001f);
+        pbd_material->setSurfaceTension(0.00704f);
+        pbd_material->setCohesion(0.0704f);
+        pbd_material->setVorticityConfinement(10.0f);
+        particle_system->setRestOffset(rest_offset);
+        particle_system->setContactOffset(rest_offset + 0.01f);
+        particle_system->setParticleContactOffset(fluid_rest_offset / 0.6f);
+        particle_system->setSolidRestOffset(solid_rest_offset);
+        particle_system->setFluidRestOffset(fluid_rest_offset);
+        particle_system->setParticleFlag(
+            physx::PxParticleFlag::eENABLE_SPECULATIVE_CCD, false);
+        particle_system->setMaxVelocity(solid_rest_offset * 100.0f);
+        particle_system->setSolverIterationCounts(
+            input.settings.solver_iterations, 1u);
+        const physx::PxU32 phase = particle_system->createPhase(
+            pbd_material.get(),
+            physx::PxParticlePhaseFlags(
+                physx::PxParticlePhaseFlag::eParticlePhaseFluid |
+                physx::PxParticlePhaseFlag::eParticlePhaseSelfCollide));
+        if (phase == PX_INVALID_U32) {
+            return fail_run(FluidBakeCode::BackendFailure,
+                            "PhysX PBD fluid phase creation failed");
+        }
+        scene->addActor(*particle_system);
+
+        matter_physx::PxOwner<physx::PxParticleBuffer> particle_buffer(
+            physics->createParticleBuffer(input.settings.max_particles, 0u,
+                                           cuda.get()));
+        if (!particle_buffer) {
+            return fail_run(FluidBakeCode::CapacityExceeded,
+                            "PhysX PBD particle buffer allocation failed");
+        }
+        particle_buffer->setNbActiveParticles(0u);
+        ParticleBufferAttachment attachment(*particle_system,
+                                            *particle_buffer);
+
+        const std::uint64_t horizontal_cells_64 =
+            static_cast<std::uint64_t>(input.sensor.resolution.x) *
+            static_cast<std::uint64_t>(input.sensor.resolution.z);
+        if (horizontal_cells_64 == 0u ||
+            horizontal_cells_64 >
+                std::numeric_limits<std::uint32_t>::max()) {
+            return fail_run(FluidBakeCode::InvalidInput,
+                            "PhysX PBD fill sensor resolution is invalid");
+        }
+        matter_physx::GpuFillSensor gpu_sensor;
+        std::string gpu_sensor_error;
+        if (!gpu_sensor.initialize(
+                *cuda, static_cast<std::uint32_t>(horizontal_cells_64),
+                input.settings.batch_steps,
+                gpu_sensor_error)) {
+            return fail_run(cuda_failure_code(
+                                gpu_sensor.last_cuda_error(), *cuda),
+                            gpu_sensor_error);
+        }
+
+        FluidEmissionState emission_state{};
+        FillSensorState fill_state{};
+        std::vector<FluidParticleActivation> activations;
+        std::vector<std::uint64_t> particle_ids;
+        particle_ids.reserve(input.settings.max_particles);
+        std::vector<std::uint64_t> emitted_per_emitter(
+            input.emitters.size(), 0u);
+        std::vector<EmitterPlacement> emitter_placements;
+        emitter_placements.reserve(input.emitters.size());
+        for (const FluidEmitter& emitter : input.emitters) {
+            emitter_placements.push_back(
+                make_emitter_placement(
+                    emitter, spacing, input.settings.max_particles));
+        }
+        std::uint32_t active_particles = 0u;
+        bool completed = false;
+
+        std::uint32_t batch_start = 0u;
+        while (batch_start < input.settings.max_steps && !completed) {
+            if (callbacks.cancelled && callbacks.cancelled()) {
+                return fail_run(FluidBakeCode::Cancelled,
+                                "PhysX PBD bake was cancelled between batches");
+            }
+            const std::uint32_t batch_end = batch_start + std::min(
+                input.settings.batch_steps,
+                input.settings.max_steps - batch_start);
+            gpu_sensor.begin_batch();
+            for (std::uint32_t zero_step = batch_start;
+                 zero_step < batch_end; ++zero_step) {
+                FluidBakeError schedule_error{};
+                if (!schedule_fluid_emission_step(
+                        input.emitters, input.settings, zero_step,
+                        active_particles, emission_state, activations,
+                        schedule_error)) {
+                    return fail_run(schedule_error.code,
+                                    schedule_error.message);
+                }
+
+                std::vector<physx::PxVec4> positions;
+                std::vector<physx::PxVec4> velocities;
+                std::vector<physx::PxU32> phases;
+                positions.reserve(activations.size());
+                velocities.reserve(activations.size());
+                phases.reserve(activations.size());
+                std::vector<std::uint32_t> ordinals(input.emitters.size(), 0u);
+                for (const FluidParticleActivation& activation : activations) {
+                    std::size_t emitter_index = input.emitters.size();
+                    for (std::size_t index = 0u;
+                         index < input.emitters.size(); ++index) {
+                        if (input.emitters[index].id == activation.emitter_id) {
+                            emitter_index = index;
+                            break;
+                        }
+                    }
+                    if (emitter_index == input.emitters.size()) {
+                        return fail_run(FluidBakeCode::BackendFailure,
+                                        "PhysX PBD activation references an unknown emitter");
+                    }
+                    const matter::Float3 position = emitter_activation_position(
+                        emitter_placements[emitter_index],
+                        emitted_per_emitter[emitter_index]++,
+                        ordinals[emitter_index]++, spacing);
+                    positions.emplace_back(position.x, position.y, position.z,
+                                           1.0f / particle_mass);
+                    const matter::Float3 velocity = activation.velocity_mps;
+                    velocities.emplace_back(velocity.x, velocity.y, velocity.z,
+                                            0.0f);
+                    phases.push_back(phase);
+                    particle_ids.push_back(activation.id);
+                }
+
+                if (!activations.empty()) {
+                    physx::PxCUresult upload_result = CUDA_SUCCESS;
+                    {
+                        physx::PxScopedCudaLock cuda_lock(*cuda);
+                        physx::PxCudaContext* context = cuda->getCudaContext();
+                        upload_result = context->memcpyHtoD(
+                            reinterpret_cast<CUdeviceptr>(
+                                particle_buffer->getPositionInvMasses() +
+                                active_particles),
+                            positions.data(),
+                            positions.size() * sizeof(physx::PxVec4));
+                        if (upload_result == CUDA_SUCCESS) {
+                            upload_result = context->memcpyHtoD(
+                                reinterpret_cast<CUdeviceptr>(
+                                    particle_buffer->getVelocities() +
+                                    active_particles),
+                                velocities.data(),
+                                velocities.size() * sizeof(physx::PxVec4));
+                        }
+                        if (upload_result == CUDA_SUCCESS) {
+                            upload_result = context->memcpyHtoD(
+                                reinterpret_cast<CUdeviceptr>(
+                                    particle_buffer->getPhases() +
+                                    active_particles),
+                                phases.data(),
+                                phases.size() * sizeof(physx::PxU32));
+                        }
+                    }
+                    if (options.cuda_error_injection_hook) {
+                        const std::uint32_t injected =
+                            options.cuda_error_injection_hook(
+                                zero_step + 1u,
+                                options.cuda_error_injection_user_data);
+                        if (injected != 0u) upload_result.value = injected;
+                    }
+                    if (upload_result != CUDA_SUCCESS) {
+                        return fail_run(
+                            cuda_failure_code(upload_result.value, *cuda),
+                            "CUDA particle activation upload failed with code " +
+                                std::to_string(upload_result.value));
+                    }
+                    active_particles +=
+                        static_cast<std::uint32_t>(activations.size());
+                    particle_buffer->setNbActiveParticles(active_particles);
+                    particle_buffer->raiseFlags(
+                        physx::PxParticleBufferFlag::eUPDATE_POSITION);
+                    particle_buffer->raiseFlags(
+                        physx::PxParticleBufferFlag::eUPDATE_VELOCITY);
+                    particle_buffer->raiseFlags(
+                        physx::PxParticleBufferFlag::eUPDATE_PHASE);
+                }
+                const std::uint32_t step = zero_step + 1u;
+                notify(PhysxRuntimeEvent::ActivationUploaded, step,
+                       static_cast<std::uint32_t>(activations.size()));
+                notify(PhysxRuntimeEvent::SimulateBegin, step,
+                       active_particles);
+                errors.clear();
+                scene->simulate(input.settings.fixed_step_seconds);
+                physx::PxU32 hardware_error_state = 0u;
+                const bool fetched =
+                    scene->fetchResults(true, &hardware_error_state);
+                if (options.hardware_error_injection_hook) {
+                    hardware_error_state |=
+                        options.hardware_error_injection_hook(
+                            step,
+                            options.hardware_error_injection_user_data);
+                }
+                if (hardware_error_state != 0u ||
+                    !cuda->contextIsValid()) {
+                    return fail_run(
+                        FluidBakeCode::DeviceLost,
+                        "PhysX PBD reported hardware error state " +
+                            std::to_string(hardware_error_state));
+                }
+                if (!fetched) {
+                    return fail_run(FluidBakeCode::BackendFailure,
+                                    "PhysX PBD fetchResults failed");
+                }
+                if (errors.has_failure()) {
+                    return fail_run(
+                        errors.translated_code(
+                            FluidBakeCode::BackendFailure),
+                        errors.diagnostic(
+                            "PhysX PBD simulation reported an error"));
+                }
+                output.stats.simulated_steps = step;
+                output.stats.active_particles = active_particles;
+                output.stats.peak_particles = std::max(
+                    output.stats.peak_particles, active_particles);
+
+                if (!gpu_sensor.enqueue(
+                        particle_buffer->getPositionInvMasses(),
+                        active_particles, input.sensor,
+                        input.dry_collar_bounds_m,
+                        gpu_sensor_error)) {
+                    return fail_run(cuda_failure_code(
+                                        gpu_sensor.last_cuda_error(), *cuda),
+                                    gpu_sensor_error);
+                }
+            }
+
+            std::vector<matter_physx::GpuFillSensorCounts> batch_counts;
+            if (!gpu_sensor.read_batch(batch_counts, gpu_sensor_error)) {
+                return fail_run(cuda_failure_code(
+                                    gpu_sensor.last_cuda_error(), *cuda),
+                                gpu_sensor_error);
+            }
+            const std::uint32_t executed_batch_steps =
+                output.stats.simulated_steps - batch_start;
+            if (batch_counts.size() != executed_batch_steps) {
+                return fail_run(
+                    FluidBakeCode::BackendFailure,
+                    "GPU fill sensor returned an inconsistent batch size");
+            }
+            for (const matter_physx::GpuFillSensorCounts& counts :
+                 batch_counts) {
+                if (counts.non_finite_particles != 0u) {
+                    output.stats.non_finite_particles =
+                        counts.non_finite_particles;
+                    return fail_run(
+                        FluidBakeCode::NonFinite,
+                        "PhysX PBD produced non-finite particle positions");
+                }
+                if (counts.escaped_particles != 0u) {
+                    output.stats.escaped_particles = counts.escaped_particles;
+                    return fail_run(
+                        FluidBakeCode::Escaped,
+                        "PhysX PBD particles crossed the dry collar");
+                }
+            }
+            for (std::size_t sample = 0u;
+                 sample < batch_counts.size(); ++sample) {
+                const std::uint32_t step =
+                    batch_start + static_cast<std::uint32_t>(sample) + 1u;
+                const auto& counts = batch_counts[sample];
+                notify(PhysxRuntimeEvent::SensorCountsReady, step,
+                       counts.wet_columns);
+                FluidBakeError sensor_error{};
+                if (!update_fill_sensor_counts(
+                        input.sensor, counts.wet_columns,
+                        static_cast<std::uint32_t>(horizontal_cells_64), step,
+                        fill_state, output.sensor, sensor_error)) {
+                    return fail_run(sensor_error.code, sensor_error.message);
+                }
+                if (output.sensor.complete) {
+                    completed = true;
+                    break;
+                }
+            }
+
+            notify(PhysxRuntimeEvent::BatchComplete,
+                   output.stats.simulated_steps, active_particles);
+            if (callbacks.progress) {
+                callbacks.progress({output.stats.simulated_steps,
+                                    input.settings.max_steps,
+                                    active_particles,
+                                    output.sensor.wet_fraction});
+            }
+            batch_start = batch_end;
+        }
+
+        if (!completed) {
+            return fail_run(FluidBakeCode::SensorNotReached,
+                            "PhysX PBD fill sensor was not reached before max_steps");
+        }
+        if (particle_ids.size() != active_particles) {
+            return fail_run(FluidBakeCode::BackendFailure,
+                            "PhysX PBD stable particle id count is inconsistent");
+        }
+        std::vector<physx::PxVec4> final_positions(active_particles);
+        std::vector<physx::PxVec4> final_velocities(active_particles);
+        physx::PxCUresult download_result = CUDA_SUCCESS;
+        {
+            physx::PxScopedCudaLock cuda_lock(*cuda);
+            physx::PxCudaContext* context = cuda->getCudaContext();
+            download_result = context->memcpyDtoH(
+                final_positions.data(),
+                reinterpret_cast<CUdeviceptr>(
+                    particle_buffer->getPositionInvMasses()),
+                final_positions.size() * sizeof(physx::PxVec4));
+            if (download_result == CUDA_SUCCESS) {
+                download_result = context->memcpyDtoH(
+                    final_velocities.data(),
+                    reinterpret_cast<CUdeviceptr>(
+                        particle_buffer->getVelocities()),
+                    final_velocities.size() * sizeof(physx::PxVec4));
+            }
+        }
+        if (download_result != CUDA_SUCCESS) {
+            return fail_run(
+                cuda_failure_code(download_result.value, *cuda),
+                "CUDA final particle snapshot failed with code " +
+                    std::to_string(download_result.value));
+        }
+        output.particles.resize(active_particles);
+        for (std::uint32_t index = 0u; index < active_particles; ++index) {
+            output.particles[index] = {
+                {final_positions[index].x, final_positions[index].y,
+                 final_positions[index].z},
+                {final_velocities[index].x, final_velocities[index].y,
+                 final_velocities[index].z},
+                particle_ids[index],
+            };
+        }
+        output.stats.wall_seconds =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - wall_start)
+                .count();
+        error = {};
+        return true;
+    }
+
     PhysxRuntimeOptions options;
     physx::PxDefaultAllocator allocator;
     MatterPhysxErrorCallback errors;
@@ -560,18 +1276,21 @@ FluidBackendProbe PhysxRuntime::probe() {
     }
 }
 
-bool PhysxRuntime::run(const FluidBakeInput&, const FluidBakeCallbacks&,
+bool PhysxRuntime::run(const FluidBakeInput& input,
+                       const FluidBakeCallbacks& callbacks,
                        FluidBakeOutput& output, FluidBakeError& error) {
     try {
-        output = {};
-        const FluidBackendProbe state = probe();
-        if (!state.available) {
-            error = {state.code, state.message};
+        if (!impl_) {
+            output = {};
+            error = {FluidBakeCode::BackendFailure,
+                     "PhysX runtime has been moved from"};
             return false;
         }
-        error = {
-            FluidBakeCode::BackendFailure,
-            "PhysX particle execution is not implemented in this milestone"};
+        return impl_->run(input, callbacks, output, error);
+    } catch (const std::bad_alloc&) {
+        output = {};
+        error = {FluidBakeCode::CapacityExceeded,
+                 "PhysX run exhausted host memory"};
         return false;
     } catch (const std::exception& exception) {
         output = {};

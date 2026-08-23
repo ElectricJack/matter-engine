@@ -1,5 +1,7 @@
 #include "check.h"
 
+#include "hydrology/fill_sensor.h"
+#include "hydrology/fluid_emission.h"
 #include "hydrology/physx_collision_input.h"
 #include "hydrology/physx_fluid_bake.h"
 
@@ -146,6 +148,183 @@ void test_collision_bounds_and_virtual_dam_do_not_create_hidden_walls() {
           "dry collar is derived from authored section bounds and margin");
 }
 
+void test_emission_fractional_carry_boundaries_and_stable_ids() {
+    hydrology::FluidPbdSettings settings{};
+    settings.particle_spacing_m = 0.2f;
+    settings.fixed_step_seconds = 1.0f;
+    settings.max_particles = 32u;
+    const float particle_volume =
+        hydrology::physx_particle_volume_m3(settings.particle_spacing_m);
+
+    hydrology::FluidEmitter main{};
+    main.id = 7u;
+    main.flow_m3s = 2.5f * particle_volume;
+    main.radius_m = 1.0f;
+    main.direction = {0.0f, 0.0f, 1.0f};
+    main.start_step = 0u;
+    main.stop_step = 4u;
+    hydrology::FluidEmitter tributary = main;
+    tributary.id = 3u;
+    tributary.flow_m3s = 1.5f * particle_volume;
+    tributary.start_step = 1u;
+    tributary.stop_step = 3u;
+
+    hydrology::FluidEmissionState state{};
+    hydrology::FluidBakeError error{};
+    std::vector<hydrology::FluidParticleActivation> activations;
+    std::vector<std::uint32_t> main_counts;
+    std::vector<std::uint32_t> tributary_counts;
+    std::uint32_t active_count = 0u;
+    for (std::uint32_t step = 0u; step != 4u; ++step) {
+        CHECK(hydrology::schedule_fluid_emission_step(
+                  {main, tributary}, settings, step, active_count,
+                  state, activations, error),
+              error.message.c_str());
+        std::uint32_t main_count = 0u;
+        std::uint32_t tributary_count = 0u;
+        for (const auto& activation : activations) {
+            main_count += activation.emitter_id == main.id ? 1u : 0u;
+            tributary_count +=
+                activation.emitter_id == tributary.id ? 1u : 0u;
+            CHECK(activation.id == active_count + main_count +
+                                       tributary_count - 1u,
+                  "particle ids remain contiguous in authored-emitter order");
+        }
+        main_counts.push_back(main_count);
+        tributary_counts.push_back(tributary_count);
+        active_count += static_cast<std::uint32_t>(activations.size());
+    }
+    CHECK(main_counts == std::vector<std::uint32_t>({2u, 3u, 2u, 3u}),
+          "2.5 particles per step deterministically yields 2,3,2,3");
+    CHECK(tributary_counts ==
+              std::vector<std::uint32_t>({0u, 1u, 2u, 0u}),
+          "each emitter keeps independent carry and exact start/stop bounds");
+    CHECK(active_count == 13u && state.next_particle_id == 13u,
+          "stable ids cover every activated particle exactly once");
+}
+
+void test_emission_capacity_is_checked_before_state_or_output_changes() {
+    hydrology::FluidPbdSettings settings{};
+    settings.particle_spacing_m = 0.2f;
+    settings.fixed_step_seconds = 1.0f;
+    settings.max_particles = 4u;
+    hydrology::FluidEmitter emitter{};
+    emitter.id = 9u;
+    emitter.direction = {0.0f, 0.0f, 1.0f};
+    emitter.radius_m = 1.0f;
+    emitter.flow_m3s = 2.5f *
+        hydrology::physx_particle_volume_m3(settings.particle_spacing_m);
+    emitter.start_step = 0u;
+    emitter.stop_step = 4u;
+
+    hydrology::FluidEmissionState state{};
+    hydrology::FluidBakeError error{};
+    std::vector<hydrology::FluidParticleActivation> activations;
+    CHECK(hydrology::schedule_fluid_emission_step(
+              {emitter}, settings, 0u, 0u, state, activations, error) &&
+              activations.size() == 2u,
+          "first emission fits capacity");
+    const auto state_before_failure = state;
+    activations.push_back({});
+    CHECK(!hydrology::schedule_fluid_emission_step(
+              {emitter}, settings, 1u, 2u, state, activations, error),
+          "next emission fails before exceeding particle capacity");
+    CHECK(error.code == FluidBakeCode::CapacityExceeded &&
+              activations.empty() &&
+              state.next_particle_id == state_before_failure.next_particle_id &&
+              state.next_step == state_before_failure.next_step &&
+              state.fractional_carry == state_before_failure.fractional_carry,
+          "capacity failure is transactional for schedule state and writes");
+}
+
+void test_emission_rejects_duplicate_ids_before_initializing_state() {
+    hydrology::FluidPbdSettings settings{};
+    settings.particle_spacing_m = 0.2f;
+    settings.fixed_step_seconds = 1.0f;
+    settings.max_particles = 8u;
+    hydrology::FluidEmitter emitter{};
+    emitter.id = 4u;
+    emitter.direction = {0.0f, 0.0f, 1.0f};
+    emitter.radius_m = 0.5f;
+    emitter.flow_m3s = hydrology::physx_particle_volume_m3(0.2f);
+    emitter.start_step = 0u;
+    emitter.stop_step = 2u;
+
+    hydrology::FluidEmissionState state{};
+    hydrology::FluidBakeError error{};
+    std::vector<hydrology::FluidParticleActivation> activations;
+    CHECK(!hydrology::schedule_fluid_emission_step(
+              {emitter, emitter}, settings, 0u, 0u, state, activations,
+              error) &&
+              error.code == FluidBakeCode::InvalidInput &&
+              !state.initialized && activations.empty(),
+          "standalone emission scheduling rejects duplicate emitter ids transactionally");
+}
+
+std::vector<matter::Float3> sensor_columns(std::uint32_t count,
+                                           std::uint32_t contributions) {
+    std::vector<matter::Float3> particles;
+    for (std::uint32_t column = 0; column < count; ++column) {
+        const float x = static_cast<float>(column % 4u) + 0.5f;
+        const float z = static_cast<float>(column / 4u) + 0.5f;
+        for (std::uint32_t sample = 0; sample < contributions; ++sample) {
+            particles.push_back({x, 0.25f + 0.1f * sample, z});
+        }
+    }
+    return particles;
+}
+
+void test_fill_sensor_rejects_jets_and_requires_a_consecutive_window() {
+    hydrology::FluidFillSensor sensor{};
+    sensor.bounds_m = {{0.0f, 0.0f, 0.0f}, {4.0f, 1.0f, 4.0f}};
+    sensor.resolution = {4u, 2u, 4u};
+    sensor.required_wet_fraction = 0.5f;
+    sensor.stable_steps = 3u;
+    sensor.minimum_particles_per_cell = 2u;
+
+    hydrology::FillSensorState state{};
+    hydrology::FillSensorResult result{};
+    hydrology::FluidBakeError error{};
+    std::vector<matter::Float3> narrow_jet(40u, {0.5f, 0.5f, 0.5f});
+    CHECK(hydrology::update_fill_sensor(
+              sensor, narrow_jet, 1u, state, result, error),
+          error.message.c_str());
+    CHECK(result.wet_fraction == 1.0f / 16.0f &&
+              result.stable_steps == 0u && !result.complete,
+          "many particles in one column cannot complete a broad sensor");
+
+    const auto broad_wet = sensor_columns(8u, 2u);
+    CHECK(hydrology::update_fill_sensor(
+              sensor, broad_wet, 2u, state, result, error) &&
+              result.wet_fraction == 0.5f && result.stable_steps == 1u,
+          "first broad wet sample starts the stable window");
+    const auto too_narrow = sensor_columns(7u, 2u);
+    CHECK(hydrology::update_fill_sensor(
+              sensor, too_narrow, 3u, state, result, error) &&
+              result.stable_steps == 0u,
+          "one below-threshold sample resets consecutive stability");
+    for (std::uint32_t step = 4u; step <= 6u; ++step) {
+        CHECK(hydrology::update_fill_sensor(
+                  sensor, broad_wet, step, state, result, error),
+              error.message.c_str());
+    }
+    CHECK(result.complete && result.stable_steps == 3u &&
+              result.completion_step == 6u &&
+              result.first_satisfied_step == 2u &&
+              result.maximum_wet_fraction == 0.5f &&
+              result.final_wet_fraction == 0.5f &&
+              result.stable_window_wet_fraction == 0.5f,
+          "sensor completes on the exact third consecutive wet step");
+
+    hydrology::FillSensorState reduced_state{};
+    hydrology::FillSensorResult reduced_result{};
+    CHECK(hydrology::update_fill_sensor_counts(
+              sensor, 8u, 16u, 1u, reduced_state, reduced_result, error) &&
+              reduced_result.wet_fraction == 0.5f &&
+              reduced_result.stable_steps == 1u,
+          "bounded GPU occupancy counts use the same temporal sensor rule");
+}
+
 enum class BackendBehavior {
     Succeed,
     Cancel,
@@ -207,7 +386,8 @@ public:
             {{1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 2.0f}, 2u},
             {{3.0f, 3.0f, 3.0f}, {0.0f, 0.0f, 3.0f}, 5u},
         };
-        output.sensor = {0.75f, 4u, 5u, true};
+        output.sensor = {0.75f, 4u, 5u, true,
+                         0.8f, 0.75f, 0.75f, 2u};
         output.stats = {5u, 3u, 3u, 0u, 0u, 0.01};
         if (behavior == BackendBehavior::NonFiniteOutput) {
             output.particles[0].velocity_mps.x =
@@ -519,6 +699,15 @@ void test_capacity_statistics_and_sensor_consistency_are_distinct() {
           "impossible stable-window telemetry is rejected");
     CHECK(error.code == FluidBakeCode::SensorNotReached,
           "impossible sensor telemetry reports SensorNotReached");
+
+    backend = {};
+    backend.mutate_output = [](FluidBakeOutput& candidate) {
+        candidate.sensor.maximum_wet_fraction = 0.5f;
+    };
+    CHECK(!hydrology::PhysxFluidBake::run(
+              valid_input(), backend, {}, output, error) &&
+              error.code == FluidBakeCode::SensorNotReached,
+          "sensor telemetry rejects a maximum below the final wet fraction");
 }
 
 }  // namespace
@@ -527,6 +716,10 @@ int main() {
     test_collision_assembly_deduplicates_without_changing_winding();
     test_collision_assembly_rejects_invalid_geometry_and_transforms();
     test_collision_bounds_and_virtual_dam_do_not_create_hidden_walls();
+    test_emission_fractional_carry_boundaries_and_stable_ids();
+    test_emission_capacity_is_checked_before_state_or_output_changes();
+    test_emission_rejects_duplicate_ids_before_initializing_state();
+    test_fill_sensor_rejects_jets_and_requires_a_consecutive_window();
     test_invalid_input_never_invokes_backend();
     test_every_nested_numeric_input_is_validated();
     test_unavailable_backend_and_cancellation_are_stable();

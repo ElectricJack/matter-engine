@@ -62,6 +62,7 @@ struct FluidFillSensor {
     FluidGridResolution resolution{};
     float required_wet_fraction = 0.0f;
     std::uint32_t stable_steps = 0;
+    std::uint32_t minimum_particles_per_cell = 1;
 };
 
 struct FluidPbdSettings {
@@ -80,6 +81,10 @@ struct FillSensorResult {
     std::uint32_t stable_steps = 0;
     std::uint32_t completion_step = 0;
     bool complete = false;
+    float maximum_wet_fraction = 0.0f;
+    float final_wet_fraction = 0.0f;
+    float stable_window_wet_fraction = 0.0f;
+    std::uint32_t first_satisfied_step = 0;
 };
 
 struct FluidBakeStats {

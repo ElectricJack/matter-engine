@@ -301,23 +301,32 @@ git commit -m "feat: collide PhysX water with Matter terrain"
 - Consumes: multiple authored emitters, fixed timestep/batch/capacity settings, particle positions, and a grid-based sensor volume.
 - Produces: deterministic per-step activation counts with fractional carry, stable particle ids, sensor wet fractions/windows, completion step, and terminal `Ready|Cancelled|CapacityExceeded|Escaped|NonFinite|SensorNotReached|DeviceLost` results.
 
-- [ ] **Step 1: Write failing emission and CPU sensor-reference tests**
+- [x] **Step 1: Write failing emission and CPU sensor-reference tests**
 
 Use hand-derived sequences such as a 2.5-particles-per-step emitter yielding `2,3,2,3`; assert independent carry per emitter, start/stop boundaries, stable ids, broad-sensor rejection of a narrow jet, consecutive-step reset, and exact stable-window completion.
 
-- [ ] **Step 2: Implement pure emission/sensor references and pass CPU tests**
+- [x] **Step 2: Implement pure emission/sensor references and pass CPU tests**
 
 No forces, pressures, neighbor search, or integration math may appear in these files.
 
-- [ ] **Step 3: Add failing adapter batch-loop tests**
+- [x] **Step 3: Add failing adapter batch-loop tests**
 
 Assert activation precedes each simulate step, cancellation is sampled between batches, progress is monotonic, capacity is checked before writes, and only bounded sensor counts return per batch.
 
-- [ ] **Step 4: Implement PhysX PBD setup from `SnippetPBF` formulas**
+- [x] **Step 4: Implement PhysX PBD setup from `SnippetPBF` formulas**
 
 Derive rest/contact/fluid offsets and particle mass exactly from particle spacing and density, create fluid/self-collide phase, upload initial/activated particles, step `simulate`/`fetchResults`, run the occupancy reduction, and copy final position/velocity/id once after completion.
 
-- [ ] **Step 5: Pass control parity and failure-injection tests and commit**
+- [x] **Step 5: Pass control parity and failure-injection tests and commit**
+
+Result (2026-08-23): the in-process adapter now creates the official PhysX
+5.6.1 GPU PBD system/material/phase, activates deterministic multi-emitter
+particles before fixed steps, checks occupancy on device, and copies only a
+bounded count batch until one accepted final particle snapshot. The fixed
+SnippetPBF-parameter control, authored-floor collision, cancellation,
+pre-write capacity, hardware-error/DeviceLost, CUDA-OOM/CapacityExceeded,
+sensor telemetry, default-off MSVC graph, and WSL/GCC contracts pass on the
+RTX 4090. The native test executable imports only `KERNEL32.dll`.
 
 ```powershell
 git add MatterEngine3/src/hydrology/fluid_emission.h MatterEngine3/src/hydrology/fluid_emission.cpp MatterEngine3/src/hydrology/fill_sensor.h MatterEngine3/src/hydrology/fill_sensor.cpp MatterEngine3/src/hydrology/physx_fluid_bake.cpp integrations/physx_adapter/physx_runtime.cpp MatterEngine3/tests/physx_adapter_contract_tests.cpp MatterEngine3/tests/physx_fluid_integration_tests.cpp

@@ -181,6 +181,7 @@ bool validate_input(const FluidBakeInput& input,
         input.sensor.required_wet_fraction <= 0.0f ||
         input.sensor.required_wet_fraction > 1.0f ||
         input.sensor.stable_steps == 0u ||
+        input.sensor.minimum_particles_per_cell == 0u ||
         !valid_bounds(input.dry_collar_bounds_m)) {
         return fail(FluidBakeCode::InvalidInput,
                     "fill sensor or dry collar is invalid", output, error);
@@ -223,8 +224,23 @@ bool validate_output(const FluidBakeInput& input,
         output.sensor.stable_steps > output.stats.simulated_steps ||
         output.sensor.stable_steps < input.sensor.stable_steps ||
         !finite(output.sensor.wet_fraction) ||
+        !finite(output.sensor.maximum_wet_fraction) ||
+        !finite(output.sensor.final_wet_fraction) ||
+        !finite(output.sensor.stable_window_wet_fraction) ||
         output.sensor.wet_fraction < input.sensor.required_wet_fraction ||
-        output.sensor.wet_fraction > 1.0f) {
+        output.sensor.wet_fraction > 1.0f ||
+        output.sensor.final_wet_fraction != output.sensor.wet_fraction ||
+        output.sensor.maximum_wet_fraction <
+            output.sensor.final_wet_fraction ||
+        output.sensor.maximum_wet_fraction <
+            output.sensor.stable_window_wet_fraction ||
+        output.sensor.maximum_wet_fraction > 1.0f ||
+        output.sensor.stable_window_wet_fraction <
+            input.sensor.required_wet_fraction ||
+        output.sensor.stable_window_wet_fraction > 1.0f ||
+        output.sensor.first_satisfied_step == 0u ||
+        output.sensor.first_satisfied_step >
+            output.sensor.completion_step) {
         return fail(FluidBakeCode::SensorNotReached,
                     "backend did not satisfy the fill sensor contract",
                     output, error);

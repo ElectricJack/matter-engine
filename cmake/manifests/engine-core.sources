@@ -21,6 +21,8 @@ MatterEngine3/src/hydrology/river_network_builder.cpp|all
 MatterEngine3/src/hydrology/river_geometry.cpp|all
 MatterEngine3/src/hydrology/physx_fluid_bake.cpp|all
 MatterEngine3/src/hydrology/physx_collision_input.cpp|all
+MatterEngine3/src/hydrology/fluid_emission.cpp|all
+MatterEngine3/src/hydrology/fill_sensor.cpp|all
 MatterEngine3/src/terrain_river_overlay.cpp|all
 MatterEngine3/src/script_rng_binding.cpp|all
 MatterEngine3/src/part_asset_v2.cpp|all

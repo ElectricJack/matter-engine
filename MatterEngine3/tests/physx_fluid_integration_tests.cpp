@@ -1,12 +1,17 @@
 #include "check.h"
 
+#include "hydrology/physx_fluid_bake.h"
 #include "hydrology/physx_runtime.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -138,6 +143,243 @@ hydrology::FluidCollisionProbeInput probe_input(
 bool finite(matter::Float3 value) {
     return std::isfinite(value.x) && std::isfinite(value.y) &&
            std::isfinite(value.z);
+}
+
+hydrology::FluidBakeInput pbd_basin_input() {
+    hydrology::FluidBakeInput input{};
+    input.network.cell_size_m = 1.0f;
+    input.network.first_section_river = "main";
+    matter::RiverDefinition river{};
+    river.name = "main";
+    river.inlet = {{0.0f, 1.5f, 0.0f}, 1.0f};
+    river.spline = {{0.0f, 1.5f, -0.5f}, {0.0f, 0.5f, 1.0f}};
+    input.network.rivers.push_back(river);
+    input.geometry.centreline = {
+        {{0.0f, 1.5f, -0.5f}, {0.0f, -0.5f, 1.0f},
+         {-1.0f, 0.0f, 0.0f}, 0.0f, 0.1f, 0.0f, 1.0f},
+        {{0.0f, 0.5f, 1.0f}, {0.0f, -0.5f, 1.0f},
+         {-1.0f, 0.0f, 0.0f}, 2.0f, 0.1f, 0.0f, 1.0f},
+    };
+    input.geometry.bounds_m = {{-2.0f, 0.0f, -2.0f},
+                               {2.0f, 4.0f, 2.0f}};
+    input.collision = box_mesh({-2.0f, 0.0f, -2.0f},
+                               {2.0f, 4.0f, 2.0f});
+    input.settings = {0.2f, 1000.0f, 1.0f / 60.0f, 4u, 96u,
+                      4u, 24u, 64u};
+    const float particle_volume =
+        1.333f * 3.14159f * 0.2f * 0.2f * 0.2f;
+    input.emitters = {
+        {7u, {0.0f, 1.5f, 0.0f}, {0.0f, 0.0f, 1.0f},
+         {0.0f, 0.0f, 0.25f}, particle_volume * 60.0f,
+         0.35f, 0u, 24u},
+    };
+    input.sensor = {{{-0.75f, 0.0f, -0.75f},
+                     {0.75f, 3.0f, 0.75f}},
+                    {1u, 1u, 1u}, 1.0f, 2u, 1u};
+    input.dry_collar_bounds_m = {{-3.0f, -1.0f, -3.0f},
+                                 {3.0f, 5.0f, 3.0f}};
+    return input;
+}
+
+struct RuntimeTrace {
+    std::vector<std::tuple<hydrology::PhysxRuntimeEvent,
+                           std::uint32_t, std::uint32_t>> events;
+};
+
+void record_runtime_event(hydrology::PhysxRuntimeEvent event,
+                          std::uint32_t step, std::uint32_t value,
+                          void* user_data) {
+    static_cast<RuntimeTrace*>(user_data)->events.emplace_back(
+        event, step, value);
+}
+
+void test_pbd_batch_loop_uses_gpu_sensor_and_returns_one_snapshot() {
+    RuntimeTrace trace{};
+    hydrology::PhysxRuntimeOptions options{};
+    options.execution_hook = &record_runtime_event;
+    options.execution_hook_user_data = &trace;
+    hydrology::PhysxRuntime runtime(options);
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    const auto input = pbd_basin_input();
+
+    CHECK(hydrology::PhysxFluidBake::run(
+              input, runtime, {}, output, error),
+          error.message.c_str());
+    CHECK(output.sensor.complete && output.sensor.completion_step == 2u &&
+              output.sensor.first_satisfied_step == 1u &&
+              output.sensor.maximum_wet_fraction == 1.0f &&
+              output.sensor.final_wet_fraction == 1.0f &&
+              output.sensor.stable_window_wet_fraction == 1.0f &&
+              output.stats.simulated_steps == 4u &&
+              output.stats.active_particles == 4u &&
+              output.particles.size() == 4u,
+          "native PBD run completes from the GPU occupancy sensor");
+    CHECK(output.particles[0].id == 0u && output.particles[1].id == 1u &&
+              finite(output.particles[0].position_m) &&
+              finite(output.particles[1].velocity_mps),
+          "accepted native run copies one finite stable-id snapshot");
+    // Golden snapshot captured from this fixed fixture using the unmodified
+    // PhysX 5.6.1 SnippetPBF material/offset/mass setup on the reference RTX
+    // 4090. Tolerances allow same-architecture driver variation while catching
+    // changes to activation order or official PBD parameterization.
+    const matter::Float3 reference_positions[] = {
+        {0.00504111685f, 1.48561764f, 0.0162575003f},
+        {0.187237307f, 1.67765975f, 0.0124340793f},
+        {0.00498337019f, 1.68650365f, 0.00859848596f},
+        {-0.197983429f, 1.69680321f, 0.00422162469f},
+    };
+    const matter::Float3 reference_velocities[] = {
+        {0.0818048865f, -0.0750849992f, 0.230594605f},
+        {-0.623257995f, -0.620274246f, 0.240396068f},
+        {0.196425825f, -0.603899717f, 0.262732208f},
+        {0.215965629f, -0.202863485f, 0.253319174f},
+    };
+    bool control_parity = output.particles.size() == 4u;
+    for (std::size_t index = 0u;
+         control_parity && index < output.particles.size(); ++index) {
+        const auto close = [](matter::Float3 value, matter::Float3 reference,
+                              float tolerance) {
+            return std::fabs(value.x - reference.x) <= tolerance &&
+                   std::fabs(value.y - reference.y) <= tolerance &&
+                   std::fabs(value.z - reference.z) <= tolerance;
+        };
+        control_parity = control_parity &&
+            close(output.particles[index].position_m,
+                  reference_positions[index], 2.0e-4f) &&
+            close(output.particles[index].velocity_mps,
+                  reference_velocities[index], 2.0e-3f);
+    }
+    CHECK(control_parity,
+          "fixed Matter output matches the recorded SnippetPBF control snapshot");
+
+    bool ordered = true;
+    for (std::uint32_t step = 1u; step <= 2u; ++step) {
+        std::size_t upload = trace.events.size();
+        std::size_t simulate = trace.events.size();
+        std::size_t sensor = trace.events.size();
+        for (std::size_t index = 0; index < trace.events.size(); ++index) {
+            if (std::get<1>(trace.events[index]) != step) continue;
+            if (std::get<0>(trace.events[index]) ==
+                hydrology::PhysxRuntimeEvent::ActivationUploaded) upload = index;
+            if (std::get<0>(trace.events[index]) ==
+                hydrology::PhysxRuntimeEvent::SimulateBegin) simulate = index;
+            if (std::get<0>(trace.events[index]) ==
+                hydrology::PhysxRuntimeEvent::SensorCountsReady) sensor = index;
+        }
+        ordered = ordered && upload < simulate && simulate < sensor;
+    }
+    CHECK(ordered, "activation upload precedes simulate and bounded sensor readback");
+    std::size_t fourth_simulate = trace.events.size();
+    std::size_t first_sensor = trace.events.size();
+    for (std::size_t index = 0; index < trace.events.size(); ++index) {
+        if (std::get<0>(trace.events[index]) ==
+                hydrology::PhysxRuntimeEvent::SimulateBegin &&
+            std::get<1>(trace.events[index]) == 4u) {
+            fourth_simulate = index;
+        }
+        if (first_sensor == trace.events.size() &&
+            std::get<0>(trace.events[index]) ==
+                hydrology::PhysxRuntimeEvent::SensorCountsReady) {
+            first_sensor = index;
+        }
+    }
+    CHECK(fourth_simulate < first_sensor,
+          "sensor counts return to the host once after the fixed-step batch");
+}
+
+void test_pbd_particles_reach_and_rest_on_authored_collision() {
+    auto input = pbd_basin_input();
+    input.settings.max_steps = 120u;
+    input.emitters[0].stop_step = 4u;
+    input.sensor.bounds_m = {{-1.0f, 0.0f, -1.0f},
+                             {1.0f, 0.6f, 1.0f}};
+    input.sensor.stable_steps = 3u;
+    input.dry_collar_bounds_m.minimum.y = -0.5f;
+
+    hydrology::PhysxRuntime runtime;
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::PhysxFluidBake::run(
+              input, runtime, {}, output, error),
+          error.message.c_str());
+    float minimum_y = (std::numeric_limits<float>::max)();
+    for (const auto& particle : output.particles) {
+        minimum_y = (std::min)(minimum_y, particle.position_m.y);
+    }
+    CHECK(output.sensor.complete && output.stats.active_particles == 4u &&
+              minimum_y > 0.02f,
+          "PBD particles reach the lower sensor and remain above the authored basin floor");
+}
+
+void test_pbd_cancellation_is_sampled_between_batches() {
+    auto input = pbd_basin_input();
+    input.sensor.bounds_m = {{1.0f, 0.0f, 1.0f}, {1.5f, 1.0f, 1.5f}};
+    std::uint32_t progress_calls = 0u;
+    hydrology::FluidBakeCallbacks callbacks{};
+    callbacks.progress = [&](const hydrology::FluidBakeProgress&) {
+        ++progress_calls;
+    };
+    callbacks.cancelled = [&]() { return progress_calls != 0u; };
+
+    hydrology::PhysxRuntime runtime;
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    CHECK(!hydrology::PhysxFluidBake::run(
+              input, runtime, callbacks, output, error) &&
+              error.code == hydrology::FluidBakeCode::Cancelled &&
+              progress_calls == 1u,
+          "native PBD cancellation is observed only at a batch boundary");
+}
+
+void test_pbd_capacity_fails_before_a_second_particle_write() {
+    auto input = pbd_basin_input();
+    input.settings.max_particles = 1u;
+    input.sensor.bounds_m = {{1.0f, 0.0f, 1.0f}, {1.5f, 1.0f, 1.5f}};
+    hydrology::PhysxRuntime runtime;
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    CHECK(!hydrology::PhysxFluidBake::run(
+              input, runtime, {}, output, error) &&
+              error.code == hydrology::FluidBakeCode::CapacityExceeded &&
+              error.message.find("requires 2 particles") != std::string::npos &&
+              error.message.find("capacity is 1") != std::string::npos,
+          "native PBD capacity is rejected before an out-of-range upload");
+}
+
+std::uint32_t inject_second_step_hardware_error(std::uint32_t step, void*) {
+    return step == 2u ? 1u : 0u;
+}
+
+void test_pbd_hardware_error_is_device_lost() {
+    hydrology::PhysxRuntimeOptions options{};
+    options.hardware_error_injection_hook =
+        &inject_second_step_hardware_error;
+    hydrology::PhysxRuntime runtime(options);
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    CHECK(!hydrology::PhysxFluidBake::run(
+              pbd_basin_input(), runtime, {}, output, error) &&
+              error.code == hydrology::FluidBakeCode::DeviceLost &&
+              output.particles.empty(),
+          "per-step PhysX hardware failure becomes DeviceLost without a partial snapshot");
+}
+
+std::uint32_t inject_first_step_cuda_oom(std::uint32_t step, void*) {
+    return step == 1u ? 2u : 0u;  // CUDA_ERROR_OUT_OF_MEMORY
+}
+
+void test_pbd_cuda_oom_is_capacity_exceeded() {
+    hydrology::PhysxRuntimeOptions options{};
+    options.cuda_error_injection_hook = &inject_first_step_cuda_oom;
+    hydrology::PhysxRuntime runtime(options);
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    CHECK(!hydrology::PhysxFluidBake::run(
+              pbd_basin_input(), runtime, {}, output, error) &&
+              error.code == hydrology::FluidBakeCode::CapacityExceeded &&
+              output.particles.empty(),
+          "CUDA out-of-memory becomes CapacityExceeded without a partial snapshot");
 }
 
 void test_gpu_collision_fixtures() {
@@ -338,6 +580,12 @@ int main() {
     test_missing_gpu_runtime_is_a_stable_probe_failure();
     test_initialization_exceptions_do_not_cross_the_backend_boundary();
     test_exact_sdk_cuda_context_and_rtx_identity();
+    test_pbd_batch_loop_uses_gpu_sensor_and_returns_one_snapshot();
+    test_pbd_particles_reach_and_rest_on_authored_collision();
+    test_pbd_cancellation_is_sampled_between_batches();
+    test_pbd_capacity_fails_before_a_second_particle_write();
+    test_pbd_hardware_error_is_device_lost();
+    test_pbd_cuda_oom_is_capacity_exceeded();
     test_gpu_collision_fixtures();
     test_dry_collar_is_an_escape_sensor_not_a_collider();
     test_invalid_triangle_cooking_is_a_categorized_failure();
