@@ -39,6 +39,7 @@ struct FluidEmitter {
     std::uint32_t id = 0;
     matter::Float3 position_m{};
     matter::Float3 direction{};
+    matter::Float3 initial_velocity_mps{};
     float flow_m3s = 0.0f;
     float radius_m = 0.0f;
     std::uint32_t start_step = 0;

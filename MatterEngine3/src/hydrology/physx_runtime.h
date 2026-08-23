@@ -20,6 +20,10 @@ public:
     virtual ~IFluidBakeBackend() = default;
 
     virtual FluidBackendProbe probe() = 0;
+
+    // run() is synchronous. Implementations invoke callbacks on the calling
+    // thread and must not retain input, callback, output, or error references
+    // after returning.
     virtual bool run(const FluidBakeInput& input,
                      const FluidBakeCallbacks& callbacks,
                      FluidBakeOutput& output,

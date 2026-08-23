@@ -11,6 +11,10 @@ namespace {
 
 bool finite(float value) noexcept { return std::isfinite(value); }
 
+bool finite(const matter::Float2& value) noexcept {
+    return finite(value.x) && finite(value.y);
+}
+
 bool finite(const matter::Float3& value) noexcept {
     return finite(value.x) && finite(value.y) && finite(value.z);
 }
@@ -58,6 +62,31 @@ bool validate_input(const FluidBakeInput& input,
                             output, error);
             }
         }
+        for (const auto& reach : river.reaches) {
+            if (!finite(reach.until_m) || !finite(reach.base_grade) ||
+                !finite(reach.meander) || !finite(reach.width_scale)) {
+                return fail(FluidBakeCode::InvalidInput,
+                            "river reach contains a non-finite value",
+                            output, error);
+            }
+        }
+        if (!finite(river.channel.width_m) ||
+            !finite(river.channel.depth_m) ||
+            !finite(river.channel.asymmetry) ||
+            !finite(river.boulders.density) ||
+            !finite(river.boulders.radius_m)) {
+            return fail(FluidBakeCode::InvalidInput,
+                        "river channel or boulder settings are non-finite",
+                        output, error);
+        }
+    }
+    const auto& first_section = input.network.first_section;
+    if (!finite(first_section.minimum_length_m) ||
+        !finite(first_section.dry_margin_m) ||
+        !finite(first_section.crest_wet_fraction)) {
+        return fail(FluidBakeCode::InvalidInput,
+                    "first-section settings contain a non-finite value",
+                    output, error);
     }
     if (input.geometry.centreline.size() < 2u ||
         !valid_bounds(input.geometry.bounds_m)) {
@@ -71,6 +100,13 @@ bool validate_input(const FluidBakeInput& input,
             !finite(sample.width_scale)) {
             return fail(FluidBakeCode::InvalidInput,
                         "river geometry contains a non-finite sample",
+                        output, error);
+        }
+    }
+    for (const auto& boulder : input.geometry.boulders) {
+        if (!finite(boulder.center_m) || !finite(boulder.radius_m)) {
+            return fail(FluidBakeCode::InvalidInput,
+                        "river geometry contains a non-finite boulder",
                         output, error);
         }
     }
@@ -108,6 +144,7 @@ bool validate_input(const FluidBakeInput& input,
             emitter.direction.z * emitter.direction.z;
         if (!emitter_ids.insert(emitter.id).second ||
             !finite(emitter.position_m) || !finite(emitter.direction) ||
+            !finite(emitter.initial_velocity_mps) ||
             !finite(direction_length_sq) || direction_length_sq <= 0.0f ||
             !finite(emitter.flow_m3s) || emitter.flow_m3s <= 0.0f ||
             !finite(emitter.radius_m) || emitter.radius_m <= 0.0f ||
@@ -154,11 +191,17 @@ bool validate_input(const FluidBakeInput& input,
 bool validate_output(const FluidBakeInput& input,
                      FluidBakeOutput& output, FluidBakeError& error) {
     if (output.particles.size() > input.settings.max_particles ||
-        output.stats.active_particles != output.particles.size() ||
-        output.stats.peak_particles < output.stats.active_particles) {
+        output.stats.active_particles > input.settings.max_particles ||
+        output.stats.peak_particles > input.settings.max_particles) {
         return fail(FluidBakeCode::CapacityExceeded,
                     "backend particle counts exceed the declared capacity",
                     output, error);
+    }
+    if (output.stats.active_particles != output.particles.size() ||
+        output.stats.peak_particles < output.stats.active_particles) {
+        return fail(FluidBakeCode::BackendFailure,
+                    "backend particle statistics are inconsistent", output,
+                    error);
     }
     if (output.stats.simulated_steps > input.settings.max_steps ||
         !std::isfinite(output.stats.wall_seconds) ||
@@ -176,6 +219,8 @@ bool validate_output(const FluidBakeInput& input,
     }
     if (!output.sensor.complete ||
         output.sensor.completion_step > output.stats.simulated_steps ||
+        output.sensor.completion_step < output.sensor.stable_steps ||
+        output.sensor.stable_steps > output.stats.simulated_steps ||
         output.sensor.stable_steps < input.sensor.stable_steps ||
         !finite(output.sensor.wet_fraction) ||
         output.sensor.wet_fraction < input.sensor.required_wet_fraction ||
@@ -184,7 +229,6 @@ bool validate_output(const FluidBakeInput& input,
                     "backend did not satisfy the fill sensor contract",
                     output, error);
     }
-    std::unordered_set<std::uint64_t> particle_ids;
     for (const auto& particle : output.particles) {
         if (!finite(particle.position_m) || !finite(particle.velocity_mps)) {
             return fail(FluidBakeCode::NonFinite,
@@ -196,17 +240,18 @@ bool validate_output(const FluidBakeInput& input,
                         "backend output contains an escaped particle",
                         output, error);
         }
-        if (!particle_ids.insert(particle.id).second) {
+    }
+    std::sort(output.particles.begin(), output.particles.end(),
+              [](const FluidParticle& left, const FluidParticle& right) {
+                  return left.id < right.id;
+              });
+    for (std::size_t index = 1u; index < output.particles.size(); ++index) {
+        if (output.particles[index - 1u].id == output.particles[index].id) {
             return fail(FluidBakeCode::BackendFailure,
                         "backend output contains duplicate particle ids",
                         output, error);
         }
     }
-    std::stable_sort(output.particles.begin(), output.particles.end(),
-                     [](const FluidParticle& left,
-                        const FluidParticle& right) {
-                         return left.id < right.id;
-                     });
     return true;
 }
 
@@ -236,6 +281,7 @@ bool PhysxFluidBake::run(const FluidBakeInput& input,
         }
 
         bool callback_failed = false;
+        bool cancellation_seen = false;
         bool progress_failed = false;
         bool saw_progress = false;
         std::uint32_t last_step = 0u;
@@ -243,7 +289,9 @@ bool PhysxFluidBake::run(const FluidBakeInput& input,
         guarded.cancelled = [&]() {
             if (!callbacks.cancelled) return false;
             try {
-                return callbacks.cancelled();
+                const bool cancelled = callbacks.cancelled();
+                cancellation_seen = cancellation_seen || cancelled;
+                return cancelled;
             } catch (...) {
                 callback_failed = true;
                 return true;
@@ -281,6 +329,11 @@ bool PhysxFluidBake::run(const FluidBakeInput& input,
                             "fluid bake callback raised an exception",
                             output, error);
             }
+            if (cancellation_seen) {
+                return fail(FluidBakeCode::Cancelled,
+                            "fluid bake cancellation was observed", output,
+                            error);
+            }
             const FluidBakeCode code =
                 backend_error.code == FluidBakeCode::Ready
                     ? FluidBakeCode::BackendFailure
@@ -294,6 +347,11 @@ bool PhysxFluidBake::run(const FluidBakeInput& input,
         if (callback_failed) {
             return fail(FluidBakeCode::BackendFailure,
                         "fluid bake callback raised an exception", output,
+                        error);
+        }
+        if (cancellation_seen) {
+            return fail(FluidBakeCode::Cancelled,
+                        "fluid bake cancellation was observed", output,
                         error);
         }
         if (progress_failed) {
