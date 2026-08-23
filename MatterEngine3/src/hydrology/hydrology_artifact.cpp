@@ -10,15 +10,17 @@
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
 namespace hydrology {
 namespace {
 
-constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'M', 'S', 'H', '1'};
-constexpr std::uint32_t kVersion = 1u;
+constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'M', 'S', 'H', '2'};
+constexpr std::uint32_t kVersion = 2u;
 constexpr std::uint64_t kMaxPayloadBytes = 512ull * 1024ull * 1024ull;
 constexpr std::size_t kHeaderBytes = 28u;
 
@@ -43,6 +45,11 @@ public:
         std::uint32_t bits = 0;
         std::memcpy(&bits, &value, sizeof(bits));
         u32(bits);
+    }
+    void f64(double value) {
+        std::uint64_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        u64(bits);
     }
     void raw(const std::uint8_t* data, std::size_t size) {
         bytes.insert(bytes.end(), data, data + size);
@@ -81,6 +88,12 @@ public:
     bool floating(float& value) {
         std::uint32_t bits = 0;
         if (!u32(bits)) return false;
+        std::memcpy(&value, &bits, sizeof(value));
+        return true;
+    }
+    bool f64(double& value) {
+        std::uint64_t bits = 0;
+        if (!u64(bits)) return false;
         std::memcpy(&value, &bits, sizeof(value));
         return true;
     }
@@ -169,12 +182,56 @@ bool validate_artifact(const HydrologyArtifact& artifact) {
     if (artifact.product_keys.visual == 0u ||
         artifact.product_keys.coarse_cpu == 0u ||
         artifact.product_keys.gameplay == 0u ||
+        artifact.semantic_key == 0u || !artifact.accepted ||
         artifact.particle_snapshot_digest == 0u ||
+        !std::isfinite(artifact.particle_radius_m) ||
+        artifact.particle_radius_m <= 0.0f ||
         !validate_mesh(artifact.visual_mesh) ||
-        !validate_mesh(artifact.coarse_cpu_mesh))
+        !validate_mesh(artifact.coarse_cpu_mesh) ||
+        artifact.visual_mesh.material != 4u ||
+        artifact.coarse_cpu_mesh.material != 4u)
         return false;
+    if (!std::isfinite(artifact.stats.wall_seconds) || artifact.stats.wall_seconds < 0.0 ||
+        artifact.stats.active_particles != artifact.particles.size() ||
+        artifact.stats.peak_particles < artifact.stats.active_particles ||
+        !artifact.sensor.complete ||
+        !std::isfinite(artifact.sensor.wet_fraction) ||
+        !std::isfinite(artifact.sensor.maximum_wet_fraction) ||
+        !std::isfinite(artifact.sensor.final_wet_fraction) ||
+        !std::isfinite(artifact.sensor.stable_window_wet_fraction) ||
+        artifact.sensor.wet_fraction < 0.0f || artifact.sensor.wet_fraction > 1.0f ||
+        artifact.sensor.maximum_wet_fraction < artifact.sensor.wet_fraction ||
+        artifact.sensor.maximum_wet_fraction > 1.0f ||
+        artifact.sensor.final_wet_fraction != artifact.sensor.wet_fraction ||
+        artifact.sensor.stable_window_wet_fraction < 0.0f ||
+        artifact.sensor.stable_window_wet_fraction > 1.0f ||
+        !std::isfinite(artifact.gameplay_layout.origin_m.x) ||
+        !std::isfinite(artifact.gameplay_layout.origin_m.y) ||
+        !std::isfinite(artifact.gameplay_layout.origin_m.z) ||
+        !std::isfinite(artifact.gameplay_layout.cell_size_m) ||
+        artifact.gameplay_layout.cell_size_m <= 0.0f ||
+        artifact.gameplay_layout.width == 0u || artifact.gameplay_layout.depth == 0u ||
+        artifact.gameplay_field.size() !=
+            static_cast<std::size_t>(artifact.gameplay_layout.width) *
+                artifact.gameplay_layout.depth)
+        return false;
+    std::uint64_t previous_id = 0;
+    bool have_previous_id = false;
+    for (const FluidParticle& particle : artifact.particles) {
+        if (!std::isfinite(particle.position_m.x) ||
+            !std::isfinite(particle.position_m.y) ||
+            !std::isfinite(particle.position_m.z) ||
+            !std::isfinite(particle.velocity_mps.x) ||
+            !std::isfinite(particle.velocity_mps.y) ||
+            !std::isfinite(particle.velocity_mps.z))
+            return false;
+        if (have_previous_id && previous_id >= particle.id) return false;
+        previous_id = particle.id;
+        have_previous_id = true;
+    }
     if (artifact.gameplay_field.size() > kMaxPayloadBytes / 21u)
         return false;
+    if (artifact.particles.size() > kMaxPayloadBytes / 32u) return false;
     for (const GameplaySample& sample : artifact.gameplay_field) {
         if (!std::isfinite(sample.height_m) ||
             !std::isfinite(sample.depth_m) ||
@@ -227,12 +284,44 @@ bool serialize_artifact(const HydrologyArtifact& artifact,
     payload.u64(artifact.product_keys.visual);
     payload.u64(artifact.product_keys.coarse_cpu);
     payload.u64(artifact.product_keys.gameplay);
+    payload.u64(artifact.semantic_key);
     payload.u64(artifact.particle_snapshot_digest);
+    payload.floating(artifact.particle_radius_m);
+    payload.u8(artifact.accepted ? 1u : 0u);
     payload.u32(artifact.provenance.gpu_vendor);
     payload.u32(artifact.provenance.gpu_device);
     payload.u32(artifact.provenance.driver_version);
+    payload.u64(artifact.provenance.physx_sdk_version);
+    payload.u64(artifact.provenance.adapter_version);
+    payload.u32(artifact.stats.simulated_steps);
+    payload.u32(artifact.stats.active_particles);
+    payload.u32(artifact.stats.peak_particles);
+    payload.u32(artifact.stats.escaped_particles);
+    payload.u32(artifact.stats.non_finite_particles);
+    payload.f64(artifact.stats.wall_seconds);
+    payload.floating(artifact.sensor.wet_fraction);
+    payload.u32(artifact.sensor.stable_steps);
+    payload.u32(artifact.sensor.completion_step);
+    payload.u8(artifact.sensor.complete ? 1u : 0u);
+    payload.floating(artifact.sensor.maximum_wet_fraction);
+    payload.floating(artifact.sensor.final_wet_fraction);
+    payload.floating(artifact.sensor.stable_window_wet_fraction);
+    payload.u32(artifact.sensor.first_satisfied_step);
+    payload.u64(static_cast<std::uint64_t>(artifact.particles.size()) * 32u);
+    for (const FluidParticle& particle : artifact.particles) {
+        payload.floating(particle.position_m.x); payload.floating(particle.position_m.y);
+        payload.floating(particle.position_m.z); payload.floating(particle.velocity_mps.x);
+        payload.floating(particle.velocity_mps.y); payload.floating(particle.velocity_mps.z);
+        payload.u64(particle.id);
+    }
     write_mesh(payload, artifact.visual_mesh);
     write_mesh(payload, artifact.coarse_cpu_mesh);
+    payload.floating(artifact.gameplay_layout.origin_m.x);
+    payload.floating(artifact.gameplay_layout.origin_m.y);
+    payload.floating(artifact.gameplay_layout.origin_m.z);
+    payload.floating(artifact.gameplay_layout.cell_size_m);
+    payload.u32(artifact.gameplay_layout.width);
+    payload.u32(artifact.gameplay_layout.depth);
     payload.u64(static_cast<std::uint64_t>(artifact.gameplay_field.size()) *
                 21u);
     for (const GameplaySample& sample : artifact.gameplay_field) {
@@ -281,15 +370,57 @@ bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
         return fail(error, "hydrology artifact payload digest is invalid");
     Reader reader(payload, static_cast<std::size_t>(payload_size));
     HydrologyArtifact candidate{};
+    std::uint8_t accepted = 0;
+    std::uint8_t sensor_complete = 0;
     if (!reader.u64(candidate.product_keys.visual) ||
         !reader.u64(candidate.product_keys.coarse_cpu) ||
         !reader.u64(candidate.product_keys.gameplay) ||
+        !reader.u64(candidate.semantic_key) ||
         !reader.u64(candidate.particle_snapshot_digest) ||
+        !reader.floating(candidate.particle_radius_m) ||
+        !reader.u8(accepted) || accepted > 1u ||
         !reader.u32(candidate.provenance.gpu_vendor) ||
         !reader.u32(candidate.provenance.gpu_device) ||
         !reader.u32(candidate.provenance.driver_version) ||
-        !read_mesh(reader, candidate.visual_mesh) ||
-        !read_mesh(reader, candidate.coarse_cpu_mesh))
+        !reader.u64(candidate.provenance.physx_sdk_version) ||
+        !reader.u64(candidate.provenance.adapter_version) ||
+        !reader.u32(candidate.stats.simulated_steps) ||
+        !reader.u32(candidate.stats.active_particles) ||
+        !reader.u32(candidate.stats.peak_particles) ||
+        !reader.u32(candidate.stats.escaped_particles) ||
+        !reader.u32(candidate.stats.non_finite_particles) ||
+        !reader.f64(candidate.stats.wall_seconds) ||
+        !reader.floating(candidate.sensor.wet_fraction) ||
+        !reader.u32(candidate.sensor.stable_steps) ||
+        !reader.u32(candidate.sensor.completion_step) ||
+        !reader.u8(sensor_complete) || sensor_complete > 1u ||
+        !reader.floating(candidate.sensor.maximum_wet_fraction) ||
+        !reader.floating(candidate.sensor.final_wet_fraction) ||
+        !reader.floating(candidate.sensor.stable_window_wet_fraction) ||
+        !reader.u32(candidate.sensor.first_satisfied_step))
+        return fail(error, "hydrology artifact product payload is invalid");
+    candidate.accepted = accepted != 0u;
+    candidate.sensor.complete = sensor_complete != 0u;
+    std::uint64_t particle_bytes = 0;
+    if (!reader.u64(particle_bytes) || particle_bytes > kMaxPayloadBytes ||
+        particle_bytes % 32u != 0u || particle_bytes > reader.remaining)
+        return fail(error, "hydrology artifact particle payload is invalid");
+    candidate.particles.resize(static_cast<std::size_t>(particle_bytes / 32u));
+    for (FluidParticle& particle : candidate.particles) {
+        if (!reader.floating(particle.position_m.x) || !reader.floating(particle.position_m.y) ||
+            !reader.floating(particle.position_m.z) || !reader.floating(particle.velocity_mps.x) ||
+            !reader.floating(particle.velocity_mps.y) || !reader.floating(particle.velocity_mps.z) ||
+            !reader.u64(particle.id))
+            return fail(error, "hydrology artifact particle payload is invalid");
+    }
+    if (!read_mesh(reader, candidate.visual_mesh) ||
+        !read_mesh(reader, candidate.coarse_cpu_mesh) ||
+        !reader.floating(candidate.gameplay_layout.origin_m.x) ||
+        !reader.floating(candidate.gameplay_layout.origin_m.y) ||
+        !reader.floating(candidate.gameplay_layout.origin_m.z) ||
+        !reader.floating(candidate.gameplay_layout.cell_size_m) ||
+        !reader.u32(candidate.gameplay_layout.width) ||
+        !reader.u32(candidate.gameplay_layout.depth))
         return fail(error, "hydrology artifact product payload is invalid");
     std::uint64_t gameplay_bytes = 0;
     if (!reader.u64(gameplay_bytes) || gameplay_bytes > kMaxPayloadBytes ||
@@ -359,13 +490,15 @@ bool save_artifact_atomic(const std::filesystem::path& path,
 bool load_artifact_validated(const std::filesystem::path& path,
                              std::uint64_t expected_visual_key,
                              HydrologyArtifact& artifact,
-                             gpu_meshing::Error& error) {
+                             gpu_meshing::Error& error,
+                             std::uint64_t expected_semantic_key) {
     artifact = {};
     std::vector<std::uint8_t> bytes;
     if (!read_file(path, bytes, error) ||
         !deserialize_artifact(bytes, artifact, error))
         return false;
-    if (artifact.product_keys.visual != expected_visual_key) {
+    if (artifact.product_keys.visual != expected_visual_key ||
+        (expected_semantic_key != 0u && artifact.semantic_key != expected_semantic_key)) {
         artifact = {};
         return fail(error, "hydrology artifact semantic key is stale");
     }
@@ -376,9 +509,11 @@ bool load_or_build_artifact(const std::filesystem::path& path,
                             std::uint64_t expected_visual_key,
                             const ArtifactBuilder& builder,
                             HydrologyArtifact& artifact,
-                            gpu_meshing::Error& error) {
+                            gpu_meshing::Error& error,
+                            std::uint64_t expected_semantic_key) {
     if (std::filesystem::exists(path) &&
-        load_artifact_validated(path, expected_visual_key, artifact, error))
+        load_artifact_validated(path, expected_visual_key, artifact, error,
+                                expected_semantic_key))
         return true;
     artifact = {};
     error = {};
@@ -386,7 +521,8 @@ bool load_or_build_artifact(const std::filesystem::path& path,
         return fail(error, "hydrology artifact builder is unavailable");
     HydrologyArtifact candidate{};
     if (!builder(candidate, error)) return false;
-    if (candidate.product_keys.visual != expected_visual_key)
+    if (candidate.product_keys.visual != expected_visual_key ||
+        (expected_semantic_key != 0u && candidate.semantic_key != expected_semantic_key))
         return fail(error, "hydrology artifact builder returned the wrong key");
     if (!save_artifact_atomic(path, candidate, error)) return false;
     artifact = std::move(candidate);

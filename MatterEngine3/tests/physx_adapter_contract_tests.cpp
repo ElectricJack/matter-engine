@@ -710,6 +710,66 @@ void test_capacity_statistics_and_sensor_consistency_are_distinct() {
           "sensor telemetry rejects a maximum below the final wet fraction");
 }
 
+void test_accepted_snapshot_builds_all_products_or_publishes_nothing() {
+    FluidBakeOutput output{};
+    output.particles = {
+        {{0.25f, 1.0f, 0.25f}, {1.0f, 0.0f, 0.0f}, 2u},
+        {{0.75f, 1.5f, 0.25f}, {3.0f, 0.0f, 0.0f}, 5u},
+    };
+    output.stats = {6u, 2u, 2u, 0u, 0u, 0.1};
+    output.sensor = {0.8f, 3u, 6u, true, 0.8f, 0.8f, 0.8f, 4u};
+    hydrology::PhysxFluidBake::ProductBuildSettings settings{};
+    settings.particle_radius_m = 0.65f;
+    settings.coarse_voxel_m = 0.5f;
+    settings.visual_job.bounds_m = {{-1.0f, -1.0f, -1.0f}, {2.0f, 3.0f, 2.0f}};
+    settings.visual_job.voxel_m = 0.25f;
+    settings.visual_job.blend_width_m = 0.1f;
+    settings.visual_job.iso_value = 0.0f;
+    settings.visual_job.limits = {16u, 4096u, 65536u, 65536u};
+    settings.gameplay_layout = {{0.0f, 0.0f, 0.0f}, 1.0f, 2u, 1u};
+    settings.semantic = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
+    bool saw_water_job = false;
+    auto visual = [&](const gpu_meshing::ParticleJob& job,
+                      gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
+                      gpu_meshing::Error&, const gpu_meshing::BuildControl&) {
+        saw_water_job = job.material == 4u && job.particle_count == 2u &&
+                        job.particles[0].radius_m == 0.65f &&
+                        job.particles[1].position_m.x == 0.75f;
+        mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                          0.0f, 1.0f, 0.0f};
+        mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                        0.0f, 0.0f, 1.0f};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = job.material;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+        return true;
+    };
+    hydrology::HydrologyArtifact artifact{};
+    FluidBakeError error{};
+    CHECK(hydrology::PhysxFluidBake::build_accepted_artifact(
+              output, settings,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              visual, artifact, error), error.message.c_str());
+    CHECK(saw_water_job && artifact.accepted && artifact.visual_mesh.material == 4u &&
+              !artifact.coarse_cpu_mesh.positions.empty() &&
+              artifact.gameplay_field[0].wet_valid,
+          "the accepted stable-id snapshot feeds existing visual and CPU meshers plus gameplay fields");
+
+    hydrology::HydrologyArtifact rejected{};
+    auto failed_visual = [](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
+                            gpu_meshing::Stats&, gpu_meshing::Error& error,
+                            const gpu_meshing::BuildControl&) {
+        error.message = "deliberate GPU mesher failure";
+        return false;
+    };
+    CHECK(!hydrology::PhysxFluidBake::build_accepted_artifact(
+              output, settings,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              failed_visual, rejected, error) && rejected.particles.empty() &&
+              error.code == FluidBakeCode::ProductFailure,
+          "a failed required visual product leaves no publishable artifact");
+}
+
 }  // namespace
 
 int main() {
@@ -727,5 +787,6 @@ int main() {
     test_progress_and_backend_output_are_validated();
     test_backend_exceptions_never_cross_the_matter_boundary();
     test_capacity_statistics_and_sensor_consistency_are_distinct();
+    test_accepted_snapshot_builds_all_products_or_publishes_nothing();
     return check_summary();
 }

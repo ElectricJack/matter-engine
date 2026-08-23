@@ -389,4 +389,107 @@ bool PhysxFluidBake::run(const FluidBakeInput& input,
     }
 }
 
+bool PhysxFluidBake::build_accepted_artifact(
+    const FluidBakeOutput& output, const ProductBuildSettings& settings,
+    const TerrainHeightSampler& terrain, const VisualMesher& visual_mesher,
+    HydrologyArtifact& artifact, FluidBakeError& error) noexcept {
+    artifact = {};
+    error = {};
+    try {
+        if (!output.sensor.complete || output.stats.active_particles != output.particles.size() ||
+            output.stats.peak_particles < output.stats.active_particles ||
+            output.stats.escaped_particles != 0u ||
+            output.stats.non_finite_particles != 0u || !visual_mesher) {
+            error = {FluidBakeCode::ProductFailure,
+                     "fluid products require an accepted simulation and visual mesher"};
+            return false;
+        }
+        for (std::size_t index = 1; index < output.particles.size(); ++index) {
+            if (output.particles[index - 1].id >= output.particles[index].id) {
+                error = {FluidBakeCode::ProductFailure,
+                         "fluid products require a stable-id-sorted particle snapshot"};
+                return false;
+            }
+        }
+        std::vector<gpu_meshing::ParticleSample> particles;
+        gpu_meshing::ParticleJob job{};
+        gpu_meshing::Error mesher_error{};
+        if (!make_fluid_particle_job(output.particles, settings.particle_radius_m,
+                                    settings.visual_job, particles, job,
+                                    mesher_error)) {
+            error = {FluidBakeCode::ProductFailure, mesher_error.message};
+            return false;
+        }
+        gpu_meshing::Stats visual_stats{};
+        gpu_meshing::MeshResult visual{};
+        if (!visual_mesher(job, visual, visual_stats, mesher_error, {})) {
+            error = {FluidBakeCode::ProductFailure,
+                     mesher_error.message.empty() ? "Matter GPU visual meshing failed"
+                                                   : mesher_error.message};
+            return false;
+        }
+        if (visual.positions.empty() || visual.indices.empty() ||
+            visual.material != 4u) {
+            error = {FluidBakeCode::ProductFailure,
+                     "Matter GPU visual meshing returned an empty required product"};
+            return false;
+        }
+        gpu_meshing::MeshResult coarse{};
+        if (!build_cpu_particle_visual(job, settings.coarse_voxel_m, coarse,
+                                       mesher_error)) {
+            error = {FluidBakeCode::ProductFailure,
+                     mesher_error.message.empty() ? "Matter CPU query meshing failed"
+                                                   : mesher_error.message};
+            return false;
+        }
+        if (coarse.positions.empty() || coarse.indices.empty() ||
+            coarse.material != 4u) {
+            error = {FluidBakeCode::ProductFailure,
+                     "Matter CPU query meshing returned an empty required product"};
+            return false;
+        }
+        std::vector<GameplaySample> gameplay;
+        std::string gameplay_error;
+        if (!build_fluid_gameplay_field(output.particles, settings.particle_radius_m,
+                                        settings.gameplay_layout, terrain,
+                                        gameplay, gameplay_error)) {
+            error = {FluidBakeCode::ProductFailure, gameplay_error};
+            return false;
+        }
+        if (std::none_of(gameplay.begin(), gameplay.end(),
+                         [](const GameplaySample& sample) { return sample.wet_valid; })) {
+            error = {FluidBakeCode::ProductFailure,
+                     "fluid gameplay field contains no wet samples"};
+            return false;
+        }
+        const std::uint64_t snapshot = fluid_particle_snapshot_digest(
+            output.particles, settings.particle_radius_m);
+        HydrologyArtifact candidate{};
+        candidate.semantic_key = derive_hydrology_semantic_key(settings.semantic);
+        ProductIdentitySettings identity = settings.identity;
+        identity.semantic_key = candidate.semantic_key;
+        candidate.product_keys = derive_product_keys(job, snapshot, identity);
+        candidate.particle_snapshot_digest = snapshot;
+        candidate.particle_radius_m = settings.particle_radius_m;
+        candidate.accepted = true;
+        candidate.stats = output.stats;
+        candidate.sensor = output.sensor;
+        candidate.particles = output.particles;
+        candidate.visual_mesh = std::move(visual);
+        candidate.coarse_cpu_mesh = std::move(coarse);
+        candidate.gameplay_layout = settings.gameplay_layout;
+        candidate.gameplay_field = std::move(gameplay);
+        candidate.provenance = settings.provenance;
+        artifact = std::move(candidate);
+        return true;
+    } catch (const std::exception& exception) {
+        error = {FluidBakeCode::ProductFailure, exception.what()};
+        return false;
+    } catch (...) {
+        error = {FluidBakeCode::ProductFailure,
+                 "fluid product construction raised an unknown exception"};
+        return false;
+    }
+}
+
 }  // namespace hydrology

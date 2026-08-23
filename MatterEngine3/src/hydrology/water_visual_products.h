@@ -1,6 +1,7 @@
 #pragma once
 
 #include "matter/gpu_visual_meshing.h"
+#include "hydrology/physx_fluid_types.h"
 
 #include <cstdint>
 #include <vector>
@@ -45,10 +46,39 @@ struct ProductIdentitySettings {
     bool smoothing_enabled = false;
     bool anisotropy_enabled = false;
     std::vector<std::uint64_t> shader_digests;
+    float gameplay_cell_m = 0.5f;
+    std::uint64_t terrain_revision = 0;
+    std::uint64_t semantic_key = 0;
+};
+
+// Versions and canonical revisions that define a hydrology simulation, as
+// opposed to a renderer-only appearance choice.
+struct HydrologySemanticInputs {
+    std::uint64_t physx_sdk_version = 0;
+    std::uint64_t adapter_version = 0;
+    std::uint64_t pbd_settings_version = 0;
+    std::uint64_t collision_revision = 0;
+    std::uint64_t network_hash = 0;
+    std::uint64_t terrain_revision = 0;
+    std::uint64_t virtual_dam_revision = 0;
+    std::uint64_t sensor_revision = 0;
+    std::uint64_t mesher_contract_version = 0;
 };
 
 std::uint64_t particle_snapshot_digest(
     const gpu_meshing::ParticleSample* particles, std::uint32_t count);
+
+std::uint64_t fluid_particle_snapshot_digest(
+    const std::vector<FluidParticle>& particles, float radius_m);
+
+std::uint64_t derive_hydrology_semantic_key(
+    const HydrologySemanticInputs& inputs);
+
+bool make_fluid_particle_job(
+    const std::vector<FluidParticle>& particles, float radius_m,
+    const gpu_meshing::ParticleJob& template_job,
+    std::vector<gpu_meshing::ParticleSample>& owned_particles,
+    gpu_meshing::ParticleJob& job, gpu_meshing::Error& error);
 
 ProductKeys derive_product_keys(
     const gpu_meshing::ParticleJob& job,

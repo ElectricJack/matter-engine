@@ -1155,6 +1155,7 @@ GPU_VISUAL_MESHER_CPU_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
 HYDROLOGY_ARTIFACT_TARGET = build/hydrology_artifact_tests
 HYDROLOGY_ARTIFACT_CPP = hydrology_artifact_tests.cpp \
                          ../src/hydrology/hydrology_artifact.cpp \
+                         ../src/hydrology/fluid_gameplay_field.cpp \
                          ../src/hydrology/water_visual_products.cpp \
                          ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp
 HYDROLOGY_ARTIFACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
@@ -1163,9 +1164,15 @@ HYDROLOGY_ARTIFACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
 PHYSX_ADAPTER_CONTRACT_TARGET = build/physx_adapter_contract_tests
 PHYSX_ADAPTER_CONTRACT_CPP = physx_adapter_contract_tests.cpp \
                              ../src/hydrology/physx_fluid_bake.cpp \
+                             ../src/hydrology/hydrology_artifact.cpp \
+                             ../src/hydrology/fluid_gameplay_field.cpp \
+                             ../src/hydrology/water_visual_products.cpp \
+                             ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp \
                              ../src/hydrology/physx_collision_input.cpp \
                              ../src/hydrology/fluid_emission.cpp \
                              ../src/hydrology/fill_sensor.cpp
+PHYSX_ADAPTER_CONTRACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+                           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
 
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
@@ -1688,7 +1695,8 @@ HYDROLOGY_ARTIFACT_OBJS = \
     $(call obj_list,def,$(HYDROLOGY_ARTIFACT_CPP)) \
     $(call obj_list,mslc,$(HYDROLOGY_ARTIFACT_C))
 PHYSX_ADAPTER_CONTRACT_OBJS = \
-    $(call obj_list,def,$(PHYSX_ADAPTER_CONTRACT_CPP))
+    $(call obj_list,def,$(PHYSX_ADAPTER_CONTRACT_CPP)) \
+    $(call obj_list,mslc,$(PHYSX_ADAPTER_CONTRACT_C))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 SECTORPROF_OBJS = $(call obj_list,sh,$(SECTORPROF_CPP)) $(call obj_list,mslc,$(SECTORPROF_C)) $(qjsc_C_OBJS)

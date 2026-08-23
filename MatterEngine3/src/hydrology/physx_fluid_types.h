@@ -21,6 +21,7 @@ enum class FluidBakeCode : std::uint8_t {
     Escaped,
     NonFinite,
     SensorNotReached,
+    ProductFailure,
     DeviceLost,
 };
 

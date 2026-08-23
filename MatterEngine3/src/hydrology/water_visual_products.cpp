@@ -88,11 +88,74 @@ std::uint64_t particle_snapshot_digest(
     return digest.finish();
 }
 
+std::uint64_t fluid_particle_snapshot_digest(
+    const std::vector<FluidParticle>& particles, float radius_m) {
+    Digest digest(0x46504f53534e4150ull);
+    digest.floating(radius_m);
+    digest.u64(particles.size());
+    for (const FluidParticle& particle : particles) {
+        digest.u64(particle.id);
+        digest.point(particle.position_m);
+        digest.point(particle.velocity_mps);
+    }
+    return digest.finish();
+}
+
+std::uint64_t derive_hydrology_semantic_key(
+    const HydrologySemanticInputs& inputs) {
+    Digest digest(0x485944524f4b4559ull);
+    digest.u64(inputs.physx_sdk_version);
+    digest.u64(inputs.adapter_version);
+    digest.u64(inputs.pbd_settings_version);
+    digest.u64(inputs.collision_revision);
+    digest.u64(inputs.network_hash);
+    digest.u64(inputs.terrain_revision);
+    digest.u64(inputs.virtual_dam_revision);
+    digest.u64(inputs.sensor_revision);
+    digest.u64(inputs.mesher_contract_version);
+    return digest.finish();
+}
+
+bool make_fluid_particle_job(
+    const std::vector<FluidParticle>& particles, float radius_m,
+    const gpu_meshing::ParticleJob& template_job,
+    std::vector<gpu_meshing::ParticleSample>& owned_particles,
+    gpu_meshing::ParticleJob& job, gpu_meshing::Error& error) {
+    owned_particles.clear();
+    job = {};
+    error = {};
+    if (!std::isfinite(radius_m) || radius_m <= 0.0f)
+        return fail(error, gpu_meshing::ErrorCode::InvalidInput,
+                    "fluid particle render radius must be positive and finite");
+    if (particles.size() > std::numeric_limits<std::uint32_t>::max())
+        return fail(error, gpu_meshing::ErrorCode::LimitExceeded,
+                    "fluid particle snapshot exceeds the visual particle limit");
+    owned_particles.reserve(particles.size());
+    for (const FluidParticle& particle : particles) {
+        if (!std::isfinite(particle.position_m.x) ||
+            !std::isfinite(particle.position_m.y) ||
+            !std::isfinite(particle.position_m.z) ||
+            !std::isfinite(particle.velocity_mps.x) ||
+            !std::isfinite(particle.velocity_mps.y) ||
+            !std::isfinite(particle.velocity_mps.z))
+            return fail(error, gpu_meshing::ErrorCode::InvalidInput,
+                        "fluid particle snapshot contains non-finite values");
+        owned_particles.push_back({particle.position_m, radius_m});
+    }
+    job = template_job;
+    job.particles = owned_particles.empty() ? nullptr : owned_particles.data();
+    job.particle_count = static_cast<std::uint32_t>(owned_particles.size());
+    job.material = 4u;
+    gpu_meshing::GridLayout ignored{};
+    return gpu_meshing::validate_particle_job(job, ignored, error);
+}
+
 ProductKeys derive_product_keys(
     const gpu_meshing::ParticleJob& job, std::uint64_t snapshot,
     const ProductIdentitySettings& settings) {
     const auto common = [&](Digest& digest) {
         digest.u64(snapshot);
+        digest.u64(settings.semantic_key);
         digest.point(job.bounds_m.min_m);
         digest.point(job.bounds_m.max_m);
         digest.u32(job.material);
@@ -117,6 +180,9 @@ ProductKeys derive_product_keys(
 
     Digest gameplay(0x47414d45504c4159ull);
     common(gameplay);
+    gameplay.floating(settings.gameplay_cell_m);
+    gameplay.u32(settings.field_contract_version);
+    gameplay.u64(settings.terrain_revision);
     return {visual.finish(), coarse.finish(), gameplay.finish()};
 }
 

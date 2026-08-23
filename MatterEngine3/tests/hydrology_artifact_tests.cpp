@@ -1,6 +1,7 @@
 #include "check.h"
 
 #include "hydrology/hydrology_artifact.h"
+#include "hydrology/fluid_gameplay_field.h"
 #include "hydrology/water_visual_products.h"
 
 #include <chrono>
@@ -46,7 +47,16 @@ gpu_meshing::MeshResult visual_triangle() {
 hydrology::HydrologyArtifact fixture_artifact() {
     hydrology::HydrologyArtifact artifact{};
     artifact.product_keys = {101u, 202u, 303u};
+    artifact.semantic_key = 505u;
     artifact.particle_snapshot_digest = 404u;
+    artifact.particle_radius_m = 0.65f;
+    artifact.accepted = true;
+    artifact.stats = {9u, 2u, 3u, 0u, 0u, 0.25};
+    artifact.sensor = {0.8f, 3u, 9u, true, 0.9f, 0.8f, 0.8f, 7u};
+    artifact.particles = {
+        {{0.0f, 1.0f, 0.0f}, {2.0f, 0.0f, -0.5f}, 4u},
+        {{1.0f, 1.5f, 0.0f}, {1.0f, 0.2f, -0.25f}, 9u},
+    };
     artifact.visual_mesh = visual_triangle();
     artifact.coarse_cpu_mesh = visual_triangle();
     artifact.coarse_cpu_mesh.positions[0] = -0.25f;
@@ -56,8 +66,47 @@ hydrology::HydrologyArtifact fixture_artifact() {
         {10.0f, 1.5f, 2.0f, 0.0f, -0.5f, true},
         {9.5f, 0.7f, 1.0f, 0.2f, -0.25f, false},
     };
-    artifact.provenance = {0x10deu, 0x2684u, 610074u};
+    artifact.gameplay_layout = {{0.0f, 0.0f, 0.0f}, 1.0f, 2u, 1u};
+    artifact.provenance = {0x10deu, 0x2684u, 610074u, 0x050601u, 7u};
     return artifact;
+}
+
+void test_gameplay_field_marks_empty_cells_invalid_and_weights_velocity_by_volume() {
+    const std::vector<hydrology::FluidParticle> fluid = {
+        {{0.25f, 2.0f, 0.25f}, {1.0f, 0.0f, 0.0f}, 3u},
+        {{0.75f, 3.0f, 0.25f}, {3.0f, 0.0f, 0.0f}, 4u},
+    };
+    hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f, 2u, 1u};
+    std::vector<hydrology::GameplaySample> field;
+    std::string error;
+    CHECK(hydrology::build_fluid_gameplay_field(
+              fluid, 0.5f, layout,
+              [](float, float, float& height) { height = 1.0f; return true; },
+              field, error), error.c_str());
+    CHECK(field.size() == 2u && field[0].wet_valid && !field[1].wet_valid,
+          "an empty gameplay cell remains invalid instead of becoming zero-current water");
+    CHECK(std::fabs(field[0].height_m - 3.5f) < 1e-6f &&
+              std::fabs(field[0].depth_m - 2.5f) < 1e-6f &&
+              std::fabs(field[0].velocity_x_mps - 2.0f) < 1e-6f,
+          "equal-volume particles produce the literal average velocity and top surface");
+    hydrology::GameplaySample sample{};
+    CHECK(!hydrology::sample_fluid_gameplay_field(layout, field, 1.5f, 0.5f, sample),
+          "queries fail outside the wet mask");
+}
+
+void test_semantic_key_covers_every_simulation_contract_input() {
+    hydrology::HydrologySemanticInputs inputs{1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
+    const uint64_t key = hydrology::derive_hydrology_semantic_key(inputs);
+    for (uint64_t* value : {&inputs.physx_sdk_version, &inputs.adapter_version,
+                            &inputs.pbd_settings_version, &inputs.collision_revision,
+                            &inputs.network_hash, &inputs.terrain_revision,
+                            &inputs.virtual_dam_revision, &inputs.sensor_revision,
+                            &inputs.mesher_contract_version}) {
+        ++*value;
+        CHECK(hydrology::derive_hydrology_semantic_key(inputs) != key,
+              "each PhysX, collision, terrain, network, dam, sensor, and mesher input invalidates the semantic key");
+        --*value;
+    }
 }
 
 void test_identity_separates_visual_from_authority_products() {
@@ -105,8 +154,8 @@ void test_artifact_round_trip_and_corruption_closure() {
     CHECK(hydrology::serialize_artifact(artifact, bytes, error),
           error.message.c_str());
     CHECK(bytes.size() > 32u &&
-              std::equal(bytes.begin(), bytes.begin() + 8, "MHYDMSH1"),
-          "artifact starts with fixed hydrology magic");
+              std::equal(bytes.begin(), bytes.begin() + 8, "MHYDMSH2"),
+          "accepted artifacts use the V2 hydrology schema");
     hydrology::HydrologyArtifact loaded{};
     CHECK(hydrology::deserialize_artifact(bytes, loaded, error),
           error.message.c_str());
@@ -115,6 +164,9 @@ void test_artifact_round_trip_and_corruption_closure() {
               round_trip == bytes,
           "artifact bytes round-trip exactly");
     CHECK(loaded.product_keys == artifact.product_keys &&
+              loaded.accepted && loaded.semantic_key == artifact.semantic_key &&
+              loaded.particles.size() == artifact.particles.size() &&
+              loaded.particles[0].id == artifact.particles[0].id &&
               loaded.visual_mesh.positions == artifact.visual_mesh.positions &&
               loaded.coarse_cpu_mesh.positions ==
                   artifact.coarse_cpu_mesh.positions &&
@@ -133,6 +185,10 @@ void test_artifact_round_trip_and_corruption_closure() {
     CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
           "wrong magic is rejected");
     corrupt = bytes;
+    corrupt[7] = '1';
+    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
+          "V1 artifacts are explicitly rejected rather than silently migrated");
+    corrupt = bytes;
     corrupt.resize(corrupt.size() - 1u);
     CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
           "truncated payload is rejected");
@@ -150,6 +206,14 @@ void test_artifact_round_trip_and_corruption_closure() {
         std::numeric_limits<float>::quiet_NaN();
     CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
           "non-finite CPU mesh payload is rejected");
+    invalid = artifact;
+    invalid.accepted = false;
+    CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
+          "failed or cancelled simulations cannot publish an artifact");
+    invalid = artifact;
+    invalid.particles[1].id = invalid.particles[0].id;
+    CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
+          "an artifact cannot replace the accepted stable-id snapshot with duplicate ids");
 }
 
 void test_atomic_save_validated_load_and_cache_hit() {
@@ -169,6 +233,10 @@ void test_atomic_save_validated_load_and_cache_hit() {
     CHECK(loaded.visual_mesh.content_digest ==
               artifact.visual_mesh.content_digest,
           "validated file load retains visual mesh bytes");
+    CHECK(!hydrology::load_artifact_validated(
+              path, artifact.product_keys.visual, loaded, error,
+              artifact.semantic_key + 1u),
+          "a changed hydrology semantic key invalidates a cached product");
 
     int builder_calls = 0;
     hydrology::HydrologyArtifact cached{};
@@ -200,6 +268,8 @@ void test_atomic_save_validated_load_and_cache_hit() {
 
 int main() {
     test_identity_separates_visual_from_authority_products();
+    test_gameplay_field_marks_empty_cells_invalid_and_weights_velocity_by_volume();
+    test_semantic_key_covers_every_simulation_contract_input();
     test_cpu_fallback_builds_owned_coarse_mesh();
     test_artifact_round_trip_and_corruption_closure();
     test_atomic_save_validated_load_and_cache_hit();
