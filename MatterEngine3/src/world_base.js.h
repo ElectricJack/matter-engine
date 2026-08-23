@@ -293,7 +293,8 @@ function __surfaceArg(targetOps) {
     // 3D fbm noise over PART-LOCAL (x, y, z) — varies along vertical surfaces
     // where the 2D pair smears into stripes. `warp` = {seed, freq, amp}
     // optionally domain-warps the op's own sample point (organic boundary
-    // shapes) — one op, no stateful warp2 in the tape.
+    // shapes) — one op, no stateful warp2 in the tape.)JS"
+R"JS(
     noise3(seed, freq, octaves, gain, lacunarity, warp) {
       if (octaves === undefined) octaves = 3;
       if (gain === undefined) gain = 0.5;

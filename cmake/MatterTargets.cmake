@@ -31,6 +31,7 @@ matter_apply_project_defaults(matter_math)
 matter_manifest_sources(matter-surface.sources "libs/SpatialQueryLib/src/" spatial_sources)
 add_library(matter_spatial STATIC ${spatial_sources})
 matter_configure_library(matter_spatial libs/SpatialQueryLib/include)
+target_include_directories(matter_spatial PUBLIC "${CMAKE_SOURCE_DIR}/MatterEngine3/include")
 target_link_libraries(matter_spatial PUBLIC matter_memory)
 
 matter_manifest_sources(vendor.sources "libs/ProfileLib/src/" profile_sources)

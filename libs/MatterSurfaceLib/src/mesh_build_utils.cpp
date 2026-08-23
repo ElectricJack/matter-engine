@@ -104,18 +104,18 @@ std::vector<Tri> convert_mesh_to_triangles(const Mesh& mesh, std::vector<TriEx>*
 // any mesh discarded inside build_group_mesh (which runs on worker threads);
 // uploaded meshes are still torn down with UnloadMesh on the main thread.
 void unload_cpu_mesh(Mesh& m) {
-    MemFree(m.vboId);
-    MemFree(m.vertices);
-    MemFree(m.texcoords);
-    MemFree(m.normals);
-    MemFree(m.colors);
-    MemFree(m.tangents);
-    MemFree(m.texcoords2);
-    MemFree(m.indices);
-    MemFree(m.animVertices);
-    MemFree(m.animNormals);
-    MemFree(m.boneWeights);
-    MemFree(m.boneIds);
-    MemFree(m.boneMatrices);
+    RL_FREE(m.vboId);
+    RL_FREE(m.vertices);
+    RL_FREE(m.texcoords);
+    RL_FREE(m.normals);
+    RL_FREE(m.colors);
+    RL_FREE(m.tangents);
+    RL_FREE(m.texcoords2);
+    RL_FREE(m.indices);
+    RL_FREE(m.animVertices);
+    RL_FREE(m.animNormals);
+    RL_FREE(m.boneWeights);
+    RL_FREE(m.boneIds);
+    RL_FREE(m.boneMatrices);
     m = Mesh{};
 }

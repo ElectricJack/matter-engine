@@ -39,6 +39,7 @@
 #include <variant>
 #include <vector>
 
+#include "matter/compiler.h"
 #include "matter/event/channel.h"
 #include "matter/event/detail/dispatch_context.h"
 #include "matter/event/event_name.h"
@@ -187,16 +188,15 @@ public:
     // handler (registration_error.h); try_subscribe returns
     // RegistrationError::DuplicateName without mutating the registry.
     //
-    // file/line default to the call site via GCC's __builtin_FILE/LINE
-    // (a GNU extension available on this project's g++ toolchain; C++17
-    // has no std::source_location) so registry_snapshot() can report a
+    // file/line default to the call site through the compiler boundary
+    // (C++17 has no std::source_location) so registry_snapshot() can report a
     // subscribe site without a macro at every call site.
     // -------------------------------------------------------------
     template <class E>
     [[nodiscard]] Subscription must_subscribe(const char* name, immediate_t, Callback<E> cb,
                                                phase ph = phase::Default, int priority = 0,
-                                               const char* file = __builtin_FILE(),
-                                               int line = __builtin_LINE()) {
+                                               const char* file = MATTER_CALLSITE_FILE,
+                                               int line = MATTER_CALLSITE_LINE) {
         auto res = subscribe_generic(type_state<E>(), name, /*is_immediate=*/true, lane{}, ph,
                                       priority, file, line, make_invoke<E>(std::move(cb)));
         if (res.duplicate) {
@@ -209,8 +209,8 @@ public:
     template <class E>
     [[nodiscard]] Subscription must_subscribe(const char* name, lane ln, Callback<E> cb,
                                                phase ph = phase::Default, int priority = 0,
-                                               const char* file = __builtin_FILE(),
-                                               int line = __builtin_LINE()) {
+                                               const char* file = MATTER_CALLSITE_FILE,
+                                               int line = MATTER_CALLSITE_LINE) {
         auto res = subscribe_generic(type_state<E>(), name, /*is_immediate=*/false, ln, ph, priority,
                                       file, line, make_invoke<E>(std::move(cb)));
         if (res.duplicate) {
@@ -223,7 +223,7 @@ public:
     template <class E>
     [[nodiscard]] std::variant<Subscription, RegistrationError> try_subscribe(
         const char* name, immediate_t, Callback<E> cb, phase ph = phase::Default, int priority = 0,
-        const char* file = __builtin_FILE(), int line = __builtin_LINE()) {
+        const char* file = MATTER_CALLSITE_FILE, int line = MATTER_CALLSITE_LINE) {
         auto res = subscribe_generic(type_state<E>(), name, /*is_immediate=*/true, lane{}, ph,
                                       priority, file, line, make_invoke<E>(std::move(cb)));
         if (res.duplicate) return RegistrationError::DuplicateName;
@@ -233,7 +233,7 @@ public:
     template <class E>
     [[nodiscard]] std::variant<Subscription, RegistrationError> try_subscribe(
         const char* name, lane ln, Callback<E> cb, phase ph = phase::Default, int priority = 0,
-        const char* file = __builtin_FILE(), int line = __builtin_LINE()) {
+        const char* file = MATTER_CALLSITE_FILE, int line = MATTER_CALLSITE_LINE) {
         auto res = subscribe_generic(type_state<E>(), name, /*is_immediate=*/false, ln, ph, priority,
                                       file, line, make_invoke<E>(std::move(cb)));
         if (res.duplicate) return RegistrationError::DuplicateName;

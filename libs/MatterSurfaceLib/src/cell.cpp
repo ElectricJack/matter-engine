@@ -487,9 +487,14 @@ void Cell::clear_meshes(BLASManager* blas_manager) {
     for (auto& mesh_entry : material_meshes) {
         Mesh& mesh = mesh_entry.second;
 
+#ifdef MATTER_VULKAN_ONLY
+        // Vulkan-only/headless meshes never own raylib GL objects.
+        unload_cpu_mesh(mesh);
+#else
         // First, unload GPU resources (VAO, VBOs, etc.)
         // This is critical - without this, old mesh data stays on GPU!
         UnloadMesh(mesh);
+#endif
 
         // Note: UnloadMesh() already frees the CPU memory (vertices, normals, etc.)
         // so we don't need to manually call RL_FREE() anymore

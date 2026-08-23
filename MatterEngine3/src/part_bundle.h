@@ -14,6 +14,7 @@
 #include <mutex>
 #include <sys/stat.h>
 #ifdef _WIN32
+#include <direct.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -188,7 +189,7 @@ inline void ensure_parent_dir(const std::string& path) {
     if (pos == std::string::npos) return;
     const std::string parent = path.substr(0, pos);
 #ifdef _WIN32
-    mkdir(parent.c_str());
+    _mkdir(parent.c_str());
 #else
     mkdir(parent.c_str(), 0755);
 #endif

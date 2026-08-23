@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "matter/vulkan_device.h"
+#include "matter/compiler.h"
 #include "vk_device_internal.h"
 
 namespace matter {
@@ -617,7 +618,7 @@ bool create_acceleration_structure(
     }
     candidate.lifetime->device_address = candidate.address;
     register_device_address(candidate.address, size, "acceleration structure",
-                            __builtin_return_address(0));
+                            matter::diagnostics::return_address());
     output = std::move(candidate);
     return true;
 }
@@ -730,7 +731,7 @@ bool create_buffer(VulkanDevice& vulkan, VkDeviceSize size,
     if (candidate.address != 0) {
         candidate.lifetime->device_address = candidate.address;
         register_device_address(candidate.address, candidate.allocation_size,
-                                "buffer", __builtin_return_address(0));
+                                "buffer", matter::diagnostics::return_address());
     }
     output = std::move(candidate);
     return true;

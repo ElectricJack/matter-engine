@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <assert.h>
 
+#include "matter/compiler.h"
+
 // "leak" common namespaces to all compilation units. This is not standard
 // C++ practice but a simplification for template projects.
 using namespace std;
@@ -38,13 +40,11 @@ extern "C" void  matter_free64_hook( void* p );
 #define FREE64( x ) matter_free64_hook( x )
 #endif
 #ifdef _MSC_VER
-#define ALIGN( x ) __declspec( align( x ) )
 #ifndef MATTER_MALLOC64_HOOK
 #define MALLOC64( x ) ( ( x ) == 0 ? 0 : _aligned_malloc( ( x ), 64 ) )
 #define FREE64( x ) _aligned_free( x )
 #endif
 #else
-#define ALIGN( x ) __attribute__( ( aligned( x ) ) )
 #ifndef MATTER_MALLOC64_HOOK
 #ifdef _WIN32
     #define MALLOC64( x ) ( ( x ) == 0 ? 0 : _aligned_malloc( ( x ), 64 ) )
@@ -70,7 +70,7 @@ typedef unsigned int uint;
 typedef unsigned short ushort;
 
 // vector type placeholders, carefully matching OpenCL's layout and alignment
-struct ALIGN( 8 ) int2
+struct MATTER_ALIGN( 8 ) int2
 {
 	int2() = default;
 	int2( const int a, const int b ) : x( a ), y( b ) {}
@@ -79,7 +79,7 @@ struct ALIGN( 8 ) int2
 	int& operator [] ( const int n ) { return cell[n]; }
 };
 
-struct ALIGN( 8 ) uint2
+struct MATTER_ALIGN( 8 ) uint2
 {
 	uint2() = default;
 	uint2( const int a, const int b ) : x( a ), y( b ) {}
@@ -88,7 +88,7 @@ struct ALIGN( 8 ) uint2
 	uint& operator [] ( const int n ) { return cell[n]; }
 };
 
-struct ALIGN( 8 ) float2
+struct MATTER_ALIGN( 8 ) float2
 {
 	float2() = default;
 	float2( const float a, const float b ) : x( a ), y( b ) {}
@@ -103,7 +103,7 @@ struct float3
 	float& operator [] ( const int n ) { return cell[n]; }
 };
 
-struct ALIGN( 16 ) float4
+struct MATTER_ALIGN( 16 ) float4
 {
 	float4() = default;
 	float4( const float a, const float b, const float c, const float d ) : x( a ), y( b ), z( c ), w( d ) {}

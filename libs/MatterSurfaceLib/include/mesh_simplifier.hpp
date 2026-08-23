@@ -35,7 +35,7 @@ struct CellBounds {
     mm::Vec3 max_bound;
 };
 
-// Returns a NEW indexed Mesh allocated with raylib's allocator (MemAlloc),
+// Returns a NEW indexed Mesh allocated with raylib's allocator (RL_MALLOC),
 // safe to pass to UploadMesh/UnloadMesh. Does NOT mutate or free `input`.
 // On empty/degenerate input returns a zeroed Mesh (vertexCount == 0).
 Mesh simplify_mesh(const Mesh& input,

@@ -94,7 +94,7 @@ SettleWorld::SettleWorld(float torus_size, const HeightField& base, const Settle
     impl_->torus = torus_size * S;
 
     b3WorldDef wdef = b3DefaultWorldDef();
-    wdef.gravity = (b3Vec3){ 0.0f, -9.8f * S, 0.0f };
+    wdef.gravity = b3Vec3{ 0.0f, -9.8f * S, 0.0f };
     impl_->world = b3CreateWorld(&wdef);
 
     // Base terrain: use b3HeightField (dedicated heightfield shape) instead of a
@@ -116,7 +116,7 @@ SettleWorld::SettleWorld(float torus_size, const HeightField& base, const Settle
         hfdef.heights            = const_cast<float*>(base.heights.data());
         hfdef.materialIndices    = nullptr;
         // scale.x / scale.z = grid spacing in sim units; scale.y = height multiplier.
-        hfdef.scale              = (b3Vec3){ base.cell * S, S, base.cell * S };
+        hfdef.scale              = b3Vec3{ base.cell * S, S, base.cell * S };
         hfdef.countX             = nx;
         hfdef.countZ             = nz;
         hfdef.globalMinimumHeight = hmin;
@@ -168,9 +168,9 @@ void SettleWorld::begin_layer(const std::vector<BodySpawn>& spawns) {
     for (const BodySpawn& sp : spawns) {
         b3BodyDef bd = b3DefaultBodyDef();
         bd.type = b3_dynamicBody;
-        bd.position = (b3Pos){ sp.start.px * S, sp.start.py * S, sp.start.pz * S };
+        bd.position = b3Pos{ sp.start.px * S, sp.start.py * S, sp.start.pz * S };
         bd.rotation = to_b3quat(sp.start);
-        bd.linearVelocity = (b3Vec3){ sp.vx * S, sp.vy * S, sp.vz * S };
+        bd.linearVelocity = b3Vec3{ sp.vx * S, sp.vy * S, sp.vz * S };
         b3BodyId id = b3CreateBody(impl_->world, &bd);
 
         b3ShapeDef sd = b3DefaultShapeDef();
@@ -183,16 +183,16 @@ void SettleWorld::begin_layer(const std::vector<BodySpawn>& spawns) {
         const float cx = c.center[0] * S, cy = c.center[1] * S, cz = c.center[2] * S;
         switch (c.type) {
         case ColliderType::Sphere: {
-            b3Sphere s = { (b3Vec3){ cx, cy, cz }, c.radius * S };
+            b3Sphere s = { b3Vec3{ cx, cy, cz }, c.radius * S };
             b3CreateSphereShape(id, &sd, &s);
             break;
         }
         case ColliderType::Capsule: {
             b3Capsule cap;
-            cap.center1 = (b3Vec3){ cx - c.seg_half * S * c.axis[0][0],
+            cap.center1 = b3Vec3{ cx - c.seg_half * S * c.axis[0][0],
                                     cy - c.seg_half * S * c.axis[0][1],
                                     cz - c.seg_half * S * c.axis[0][2] };
-            cap.center2 = (b3Vec3){ cx + c.seg_half * S * c.axis[0][0],
+            cap.center2 = b3Vec3{ cx + c.seg_half * S * c.axis[0][0],
                                     cy + c.seg_half * S * c.axis[0][1],
                                     cz + c.seg_half * S * c.axis[0][2] };
             cap.radius = c.radius * S;
@@ -203,7 +203,7 @@ void SettleWorld::begin_layer(const std::vector<BodySpawn>& spawns) {
             float q[4];
             axes_to_quat(c.axis, q);
             b3Transform xf;
-            xf.p = (b3Vec3){ cx, cy, cz };
+            xf.p = b3Vec3{ cx, cy, cz };
             xf.q.v.x = q[0]; xf.q.v.y = q[1]; xf.q.v.z = q[2]; xf.q.s = q[3];
             b3BoxHull bh = b3MakeTransformedBoxHull(
                 c.half_extent[0] * S, c.half_extent[1] * S, c.half_extent[2] * S, xf);
@@ -213,7 +213,7 @@ void SettleWorld::begin_layer(const std::vector<BodySpawn>& spawns) {
         case ColliderType::Hull: {
             std::vector<b3Vec3> pts;
             for (size_t i = 0; i + 2 < c.hull_points.size(); i += 3)
-                pts.push_back((b3Vec3){ c.hull_points[i] * S,
+                pts.push_back(b3Vec3{ c.hull_points[i] * S,
                                         c.hull_points[i+1] * S,
                                         c.hull_points[i+2] * S });
             b3HullData* hull = b3CreateHull(pts.data(), (int)pts.size(), 32);
@@ -221,7 +221,7 @@ void SettleWorld::begin_layer(const std::vector<BodySpawn>& spawns) {
                 // Fallback: b3CreateHull needs >= 4 non-coplanar points; if hull
                 // creation fails, use a sphere approximation so the body is still
                 // simulated correctly.
-                b3Sphere sph = { (b3Vec3){ c.center[0]*S, c.center[1]*S, c.center[2]*S }, c.radius*S };
+                b3Sphere sph = { b3Vec3{ c.center[0]*S, c.center[1]*S, c.center[2]*S }, c.radius*S };
                 b3CreateSphereShape(id, &sd, &sph);
             } else {
                 b3CreateHullShape(id, &sd, hull);
@@ -353,8 +353,8 @@ void SettleWorld::finalize() {
     for (const Impl::TrackedBody& tb : impl_->bodies) {
         if (tb.group < 0) continue;
         b3Body_SetType(tb.id, b3_kinematicBody);
-        b3Body_SetLinearVelocity(tb.id, (b3Vec3){ 0, 0, 0 });
-        b3Body_SetAngularVelocity(tb.id, (b3Vec3){ 0, 0, 0 });
+        b3Body_SetLinearVelocity(tb.id, b3Vec3{ 0, 0, 0 });
+        b3Body_SetAngularVelocity(tb.id, b3Vec3{ 0, 0, 0 });
     }
     for (int i = 0; i < impl_->params.micro_relax_steps; ++i) {
         b3World_Step(impl_->world, impl_->params.dt, impl_->params.substeps);
@@ -387,7 +387,7 @@ void SettleWorld::Impl::wrap_bodies() {
         while (nz < 0.0f)     nz += torus;
         while (nz >= torus)   nz -= torus;
         if (nx != p.x || nz != p.z)
-            b3Body_SetTransform(tb.id, (b3Pos){ nx, p.y, nz }, b3Body_GetRotation(tb.id));
+            b3Body_SetTransform(tb.id, b3Pos{ nx, p.y, nz }, b3Body_GetRotation(tb.id));
     }
 }
 
@@ -467,9 +467,9 @@ void SettleWorld::Impl::sync_groups_step(bool force_snap) {
                 while (nx >= torus) nx -= torus;
                 while (nz < 0.0f)   nz += torus;
                 while (nz >= torus) nz -= torus;
-                b3Body_SetTransform(id, (b3Pos){ nx, ny, nz }, aq);
-                b3Body_SetLinearVelocity(id, (b3Vec3){ vx, vy, vz });
-                b3Body_SetAngularVelocity(id, (b3Vec3){ wx, wy, wz });
+                b3Body_SetTransform(id, b3Pos{ nx, ny, nz }, aq);
+                b3Body_SetLinearVelocity(id, b3Vec3{ vx, vy, vz });
+                b3Body_SetAngularVelocity(id, b3Vec3{ wx, wy, wz });
             }
         }
     }

@@ -93,10 +93,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
+#include <filesystem>
 #include <fstream>
 #include <map>
-#include <sys/stat.h>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
@@ -189,30 +189,34 @@ static std::vector<uint8_t> read_file_bytes(const std::string& path) {
 }
 
 // Collect all regular files under `dir` recursively, returning sorted relative
-// paths (relative to `dir`, with '/' separators). On any opendir failure,
+// paths (relative to `dir`, with '/' separators). On any directory-open failure,
 // the entry is skipped (best-effort; key computation remains deterministic
 // for files that ARE readable).
 static void collect_files_sorted(const std::string& dir,
                                  const std::string& rel_prefix,
                                  std::vector<std::string>& out) {
-    DIR* d = opendir(dir.c_str());
-    if (!d) return;
-    struct dirent* ent;
     std::vector<std::string> subdirs;
-    while ((ent = readdir(d)) != nullptr) {
-        if (ent->d_name[0] == '.') continue;
-        std::string name = ent->d_name;
-        std::string full = dir + "/" + name;
+    std::error_code ec;
+    std::filesystem::directory_iterator entries(dir, ec);
+    if (ec) return;
+    const std::filesystem::directory_iterator end;
+    for (; entries != end; entries.increment(ec)) {
+        if (ec) break;
+        const auto& entry = *entries;
+        const std::string name = entry.path().filename().string();
+        if (name.empty() || name[0] == '.') continue;
         std::string rel  = rel_prefix.empty() ? name : rel_prefix + "/" + name;
-        struct stat st{};
-        if (::stat(full.c_str(), &st) != 0) continue;
-        if (S_ISREG(st.st_mode)) {
+        const auto status = entry.status(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (std::filesystem::is_regular_file(status)) {
             out.push_back(rel);
-        } else if (S_ISDIR(st.st_mode)) {
+        } else if (std::filesystem::is_directory(status)) {
             subdirs.push_back(name);
         }
     }
-    closedir(d);
     std::sort(subdirs.begin(), subdirs.end());
     for (const auto& sub : subdirs)
         collect_files_sorted(dir + "/" + sub, rel_prefix.empty() ? sub : rel_prefix + "/" + sub, out);

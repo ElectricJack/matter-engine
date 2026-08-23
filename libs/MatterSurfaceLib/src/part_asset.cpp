@@ -7,6 +7,10 @@
 #include <unordered_map>
 #include <sys/stat.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#endif
+
 namespace {
 template <class T>
 void put(std::vector<uint8_t>& b, const T& v) {
@@ -21,7 +25,7 @@ void ensure_parent_dir(const std::string& path) {
     auto pos = path.find_last_of('/');
     if (pos == std::string::npos) return;
 #ifdef _WIN32
-    mkdir(path.substr(0, pos).c_str()); // ignore EEXIST (Windows mkdir takes no mode)
+    _mkdir(path.substr(0, pos).c_str()); // ignore EEXIST
 #else
     mkdir(path.substr(0, pos).c_str(), 0755); // ignore EEXIST
 #endif

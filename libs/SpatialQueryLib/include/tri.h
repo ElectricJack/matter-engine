@@ -11,7 +11,7 @@
 #include "precomp.h"
 
 // minimalist triangle struct
-struct ALIGN(64) Tri
+struct MATTER_ALIGN(64) Tri
 {
 	// union each float3 with a 16-byte __m128 for faster BVH construction
 	union { float3 vertex0; __m128 v0; };

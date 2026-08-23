@@ -37,7 +37,7 @@ struct Intersection
 };
 
 // ray struct, prepared for SIMD AABB intersection
-struct ALIGN(64) BVHRay
+struct MATTER_ALIGN(64) BVHRay
 {
 	BVHRay() { O4 = D4 = rD4 = _mm_set1_ps( 1 ); }
 	union { struct { float3 O; float dummy1; }; __m128 O4; };
@@ -60,7 +60,7 @@ struct BVHNode
 };
 
 // bounding volume hierarchy, to be used as BLAS
-class ALIGN(64) BVH
+class MATTER_ALIGN(64) BVH
 {
 	struct BuildJob
 	{
@@ -160,7 +160,7 @@ struct TLASNode
 	bool isLeaf() const { return leftRight == 0; }
 };
 
-class ALIGN(64) TLAS
+class MATTER_ALIGN(64) TLAS
 {
 public:
 	TLAS() = default;
