@@ -176,9 +176,9 @@ ShotReplay load_shot_replay(const std::string& path, int shot_index) {
         const std::filesystem::path sidecar =
             std::filesystem::path(path).parent_path() / layout_file;
         bool layout_ok = false;
-        const std::string text = read_file(sidecar.string(), layout_ok);
+        const std::string layout_text = read_file(sidecar.string(), layout_ok);
         if (layout_ok)
-            replay.layout_ini = text;
+            replay.layout_ini = layout_text;
         else
             MATTER_LOGW("replay", "layout sidecar %s is missing\n",
                         sidecar.string().c_str());

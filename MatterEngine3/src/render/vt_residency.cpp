@@ -505,10 +505,10 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     enrich_queue_.clear();
     enrich_queued_slot_.clear();
     variants_.clear();           // grows lazily with the slot high-water mark
-    // VariantRung::context points back into its owning rung's vectors and
-    // atlas. Some standard libraries copy (rather than noexcept-move) this
-    // aggregate during vector growth, leaving those borrowed pointers aimed
-    // at the destroyed pre-growth copies. The slot ceiling is fixed for this
+    // VariantRung::context is self-referential: it borrows the owning rung's
+    // vector storage and its atlas. Any relocation of a VariantRung during
+    // variants_ growth leaves both the context storage pointers and
+    // context.atlas aimed at the old rung. The slot ceiling is fixed for this
     // residency lifetime, so reserve it once and make every rung address
     // stable before any context is adopted.
     variants_.reserve(max_variants_);

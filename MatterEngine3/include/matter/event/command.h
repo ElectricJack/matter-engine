@@ -408,6 +408,11 @@ public:
         return std::variant<Registration, CommandRegistrationError>(std::move(res.reg));
     }
 
+    // Deterministic snapshot of the command names whose registration handles
+    // are still live. Used by runtime diagnostics; linked descriptors and
+    // released handlers are intentionally absent.
+    std::vector<std::string> registered_handler_names() const;
+
     // ---- execute (owner-lane, synchronous, typed) ---------------------
     template <class C>
     typename C::Result execute(C cmd) {

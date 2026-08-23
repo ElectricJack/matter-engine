@@ -138,6 +138,22 @@ CommandRegistry::HandlerLookup CommandRegistry::lookup(const void* type_id) cons
     return out;
 }
 
+std::vector<std::string> CommandRegistry::registered_handler_names() const {
+    std::lock_guard<std::mutex> lk(handlers_mu_);
+    std::vector<std::string> names;
+    names.reserve(handlers_.size());
+    for (const auto& entry : handlers_) {
+        const HandlerRecord& record = entry.second;
+        if (record.name && record.block &&
+            record.block->active.load(std::memory_order_acquire)) {
+            names.emplace_back(record.name);
+        }
+    }
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
+}
+
 // ---------------------------------------------------------------------
 // Lane channels + pump. A command lane owns two Channels of type-erased
 // closures: a bounded RejectNewest command channel (non-dropping by

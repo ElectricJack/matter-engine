@@ -971,11 +971,22 @@ int main() {
         ctx.vertex_count = 3;
         ctx.indices = valid_indices;
         ctx.triangle_count = 1;
-        CHECK(vt::vt_enrich_mesh_indices_valid(ctx),
+        CHECK(vt::vt_enrich_mesh_validation(ctx) ==
+                  vt::VtEnrichMeshValidation::Valid,
               "tier-2 accepts an in-range triangle index stream");
         ctx.indices = invalid_indices;
-        CHECK(!vt::vt_enrich_mesh_indices_valid(ctx),
+        CHECK(vt::vt_enrich_mesh_validation(ctx) ==
+                  vt::VtEnrichMeshValidation::OutOfRangeIndex,
               "tier-2 rejects sentinel/out-of-range triangle indices");
+        ctx.indices = nullptr;
+        CHECK(vt::vt_enrich_mesh_validation(ctx) ==
+                  vt::VtEnrichMeshValidation::MissingGeometry,
+              "tier-2 distinguishes missing geometry from malformed indices");
+        ctx.indices = valid_indices;
+        ctx.triangle_count = 0;
+        CHECK(vt::vt_enrich_mesh_validation(ctx) ==
+                  vt::VtEnrichMeshValidation::MissingGeometry,
+              "tier-2 reports an empty triangle stream as missing geometry");
     }
 #ifdef MATTER_VK_TEST_LAYER_PATH
     SetDllDirectoryA(MATTER_VK_TEST_LAYER_PATH);

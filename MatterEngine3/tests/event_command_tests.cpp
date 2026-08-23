@@ -472,6 +472,38 @@ static void test_history_sink_inverse_coalesce() {
 }
 
 // ===========================================================================
+// Runtime diagnostics must observe the live registry, not command-name strings
+// that merely happen to be linked into the executable.  The snapshot is sorted
+// for deterministic machine-readable output and drops registrations after the
+// RAII handle is released.
+// ===========================================================================
+static void test_registered_handler_name_snapshot_tracks_live_registry() {
+    printf("[test_registered_handler_name_snapshot_tracks_live_registry]\n");
+    Hub hub;
+    CommandRegistry reg(hub);
+
+    Registration create = reg.must_register_handler<CreateEntity>(
+        CommandScope::App, lane::app, [](const CreateEntity&) {
+            return CreateEntity::Result::succeeded(CreateReceipt{1});
+        });
+    Registration remove = reg.must_register_handler<DeleteEntity>(
+        CommandScope::App, lane::app, [](const DeleteEntity&) {
+            return DeleteEntity::Result::succeeded(1);
+        });
+
+    const std::vector<std::string> both = reg.registered_handler_names();
+    CHECK(both == std::vector<std::string>({"test.create_entity",
+                                            "test.delete_entity"}),
+          "registered handler snapshot is sorted and contains live handlers");
+
+    create.reset();
+    const std::vector<std::string> after_release =
+        reg.registered_handler_names();
+    CHECK(after_release == std::vector<std::string>({"test.delete_entity"}),
+          "registered handler snapshot excludes released registrations");
+}
+
+// ===========================================================================
 // 8. Concurrency smoke: many threads dispatch while one worker pumps; every
 //    ticket completes exactly once (Success), none left pending.
 // ===========================================================================
@@ -547,6 +579,7 @@ int main() {
     test_ticket_exactly_once_all_outcomes();
     test_hub_notifications();
     test_history_sink_inverse_coalesce();
+    test_registered_handler_name_snapshot_tracks_live_registry();
     test_concurrent_dispatch();
 
     if (g_failures == 0) {

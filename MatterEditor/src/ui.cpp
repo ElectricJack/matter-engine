@@ -850,7 +850,6 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         ImGui::TextDisabled("GPU Breakdown");
         const double total_gpu = mib(s.gpu_device_local_bytes);
         const double vt_pool = mib(s.vt_pool_bytes);
-        const double vt_mesh = mib(s.vt_mesh_bytes);
         const double vt_indir = mib(s.vt_indirection_bytes);
         const double vol = mib(s.froxel_bytes);
         const double cloud = mib(s.cloud_shadow_bytes);

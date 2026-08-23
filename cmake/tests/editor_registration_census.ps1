@@ -18,7 +18,8 @@ if (-not $MsvcEditor) {
     $MsvcEditor = Join-Path $RepositoryRoot 'MatterEditor\build\windows-msvc\editor.exe'
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path $RepositoryRoot 'MatterEditor\build\baselines\msvc\registration-census'
+    $OutputDirectory = Join-Path $RepositoryRoot `
+        'MatterEditor\build\baselines\msvc\registration-census'
 }
 
 foreach ($editor in @($MinGWEditor, $MsvcEditor)) {
@@ -27,161 +28,20 @@ foreach ($editor in @($MinGWEditor, $MsvcEditor)) {
     }
 }
 
-function Get-SourceText([string[]]$paths) {
-    $builder = [System.Text.StringBuilder]::new()
-    foreach ($path in $paths) {
-        [void]$builder.AppendLine([System.IO.File]::ReadAllText($path))
-    }
-    return $builder.ToString()
+function Get-SortedUnique([System.Collections.IEnumerable]$Items) {
+    return @($Items | Where-Object { $_ } | Sort-Object -Unique)
 }
 
-function Get-SortedUnique([System.Collections.IEnumerable]$items) {
-    return @($items | Where-Object { $_ } | Sort-Object -Unique)
-}
-
-function Remove-CppComments([string]$text) {
-    $builder = [System.Text.StringBuilder]::new($text.Length)
-    $inLineComment = $false
-    $inBlockComment = $false
-    $quote = [char]0
-    $escaped = $false
-    for ($index = 0; $index -lt $text.Length; ++$index) {
-        $character = $text[$index]
-        $next = if ($index + 1 -lt $text.Length) { $text[$index + 1] } else { [char]0 }
-
-        if ($inLineComment) {
-            if ($character -eq "`n") {
-                $inLineComment = $false
-                [void]$builder.Append($character)
-            } else {
-                [void]$builder.Append(' ')
-            }
-            continue
-        }
-        if ($inBlockComment) {
-            if ($character -eq '*' -and $next -eq '/') {
-                [void]$builder.Append(' ')
-                [void]$builder.Append(' ')
-                ++$index
-                $inBlockComment = $false
-            } elseif ($character -eq "`n") {
-                [void]$builder.Append($character)
-            } else {
-                [void]$builder.Append(' ')
-            }
-            continue
-        }
-        if ($quote -ne [char]0) {
-            [void]$builder.Append($character)
-            if ($escaped) {
-                $escaped = $false
-            } elseif ($character -eq '\') {
-                $escaped = $true
-            } elseif ($character -eq $quote) {
-                $quote = [char]0
-            }
-            continue
-        }
-        if ($character -eq '/' -and $next -eq '/') {
-            [void]$builder.Append(' ')
-            [void]$builder.Append(' ')
-            ++$index
-            $inLineComment = $true
-        } elseif ($character -eq '/' -and $next -eq '*') {
-            [void]$builder.Append(' ')
-            [void]$builder.Append(' ')
-            ++$index
-            $inBlockComment = $true
-        } else {
-            [void]$builder.Append($character)
-            if ($character -eq '"' -or $character -eq "'") {
-                $quote = $character
-            }
-        }
-    }
-    return $builder.ToString()
-}
-
-function Get-AsciiStringSet([string]$path) {
-    $bytes = [System.IO.File]::ReadAllBytes($path)
-    $text = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
-    $set = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::Ordinal)
-    foreach ($match in [regex]::Matches($text, '[\x20-\x7e]{4,}')) {
-        [void]$set.Add($match.Value)
-    }
-    return $set
-}
-
-function Get-ExpectedRegistrations {
-    $dslPaths = @(
-        (Join-Path $RepositoryRoot 'MatterEngine3\src\dsl_bindings.cpp'),
-        (Join-Path $RepositoryRoot 'MatterEngine3\src\pf_bindings.cpp')
-    )
-    $dslText = Remove-CppComments (Get-SourceText $dslPaths)
-    $dsl = foreach ($match in [regex]::Matches(
-            $dslText, '\bbind\s*\(\s*"([^"]+)"')) {
-        $match.Groups[1].Value
-    }
-
-    $propertyPaths = @(
-        Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'MatterEditor\src') `
-            -Recurse -File -Include '*.cpp', '*.h'
-        Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'MatterEngine3\src') `
-            -Recurse -File -Include '*.cpp', '*.h'
-        Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'MatterEngine3\include') `
-            -Recurse -File -Include '*.cpp', '*.h'
-    ) | ForEach-Object FullName
-    $propertyText = Remove-CppComments (Get-SourceText $propertyPaths)
-    $properties = foreach ($match in [regex]::Matches(
-            $propertyText,
-            'props::group\s*<[^>]+>\s*\(\s*"([^"]+)"',
-            [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
-        $match.Groups[1].Value
-    }
-
-    $editorPaths = @(
-        Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'MatterEditor\src') `
-            -Recurse -File -Include '*.cpp', '*.h'
-        Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'MatterEngine3\src') `
-            -Recurse -File -Include '*.cpp', '*.h'
-        Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'MatterEngine3\include') `
-            -Recurse -File -Include '*.cpp', '*.h'
-    ) | ForEach-Object FullName
-    $editorText = Remove-CppComments (Get-SourceText $editorPaths)
-    $editor = foreach ($match in [regex]::Matches(
-            $editorText, 'MT_COMMAND_NAME\s*\(\s*"([^"]+)"')) {
-        $match.Groups[1].Value
-    }
-
-    return [ordered]@{
-        dsl = Get-SortedUnique $dsl
-        property = Get-SortedUnique $properties
-        editor = Get-SortedUnique $editor
-    }
-}
-
-function Get-BinaryRegistrations([string]$path, $expected) {
-    $strings = Get-AsciiStringSet $path
-    $result = [ordered]@{}
-    foreach ($category in @('dsl', 'property', 'editor')) {
-        $present = foreach ($name in $expected[$category]) {
-            if ($strings.Contains($name)) { $name }
-        }
-        $result[$category] = Get-SortedUnique $present
-    }
-    return $result
-}
-
-function Invoke-WorldDiagnostic([string]$path) {
+function Invoke-RuntimeCensus([string]$Path, [string]$LogPath) {
     $start = [System.Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $path
+    $start.FileName = $Path
     $start.WorkingDirectory = Join-Path $RepositoryRoot 'MatterEditor'
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    $start.EnvironmentVariables['MATTER_WORLD'] = '__matter_registration_census_invalid__'
+    [void]$start.EnvironmentVariables.Remove('MATTER_WORLD')
+    $start.EnvironmentVariables['MATTER_REGISTRATION_CENSUS'] = '1'
     $start.EnvironmentVariables['MATTER_HIDE_UI'] = '1'
     $start.EnvironmentVariables['TMP'] = [System.IO.Path]::GetTempPath()
     $start.EnvironmentVariables['TEMP'] = [System.IO.Path]::GetTempPath()
@@ -193,63 +53,104 @@ function Invoke-WorldDiagnostic([string]$path) {
     $stderrTask = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit(30000)) {
         $process.Kill()
-        throw "$path did not finish its list-worlds diagnostic within 30 seconds"
+        throw "$Path did not finish its runtime registration census within 30 seconds"
     }
     $stdout = $stdoutTask.Result
     $stderr = $stderrTask.Result
-    $log = $stdout + "`n" + $stderr
-    if ($process.ExitCode -eq 0 -or
-            $log -notmatch "MATTER_WORLD '__matter_registration_census_invalid__' is not a committed world") {
-        throw "$path did not complete the expected list-worlds diagnostic (exit $($process.ExitCode))`n$log"
+    ($stdout + "`n" + $stderr) |
+        Set-Content -LiteralPath $LogPath -Encoding UTF8
+    if ($process.ExitCode -ne 0) {
+        throw "$Path runtime registration census failed with exit $($process.ExitCode)`n$stdout`n$stderr"
     }
 
-    $worlds = foreach ($line in ($stdout -split "`r?`n")) {
-        if ($line -match '^\s+\[\d+\]\s+(.+?)\s+\(.+\)\s*$') {
-            $Matches[1]
+    $prefix = 'MATTER_REGISTRATION_CENSUS_JSON='
+    $records = @($stdout -split "`r?`n" |
+        Where-Object { $_.StartsWith($prefix, [System.StringComparison]::Ordinal) })
+    if ($records.Count -ne 1) {
+        throw "$Path emitted $($records.Count) runtime census records; expected exactly one`n$stdout`n$stderr"
+    }
+    try {
+        $record = $records[0].Substring($prefix.Length) | ConvertFrom-Json
+    } catch {
+        throw "$Path emitted invalid runtime census JSON: $($records[0])"
+    }
+
+    $result = [ordered]@{}
+    foreach ($category in @('world', 'dsl', 'property', 'editor')) {
+        $property = $record.PSObject.Properties[$category]
+        if ($null -eq $property) {
+            throw "$Path runtime census omitted '$category'"
         }
+        $values = @($property.Value | ForEach-Object { [string]$_ })
+        $unique = Get-SortedUnique $values
+        if ($values.Count -eq 0) {
+            throw "$Path runtime census reported no '$category' registrations"
+        }
+        if ($values.Count -ne $unique.Count) {
+            throw "$Path runtime census reported duplicate '$category' registrations"
+        }
+        $result[$category] = $unique
     }
-    $worlds = Get-SortedUnique $worlds
-    if ($worlds.Count -eq 0) {
-        throw "$path list-worlds diagnostic reported no worlds`n$log"
-    }
-    return [ordered]@{ worlds = $worlds; log = $log }
+    return $result
 }
 
-function Compare-Set([string]$category, [string]$leftName, $left,
-                     [string]$rightName, $right) {
-    $missing = @($left | Where-Object { $_ -notin $right })
-    $extra = @($right | Where-Object { $_ -notin $left })
+function Compare-Set([string]$Category, [string]$LeftName, $Left,
+                     [string]$RightName, $Right) {
+    $missing = @($Left | Where-Object { $_ -notin $Right })
+    $extra = @($Right | Where-Object { $_ -notin $Left })
     if ($missing.Count -eq 0 -and $extra.Count -eq 0) { return }
 
-    $message = "$category registration mismatch: $leftName vs $rightName"
+    $message = "$Category registration mismatch: $LeftName vs $RightName"
     if ($missing.Count -gt 0) {
-        $message += "`n  missing from ${rightName}: $($missing -join ', ')"
+        $message += "`n  missing from ${RightName}: $($missing -join ', ')"
     }
     if ($extra.Count -gt 0) {
-        $message += "`n  extra in ${rightName}: $($extra -join ', ')"
+        $message += "`n  extra in ${RightName}: $($extra -join ', ')"
     }
     throw $message
 }
 
-$expected = Get-ExpectedRegistrations
-$mingw = Get-BinaryRegistrations $MinGWEditor $expected
-$msvc = Get-BinaryRegistrations $MsvcEditor $expected
-$mingwWorlds = Invoke-WorldDiagnostic $MinGWEditor
-$msvcWorlds = Invoke-WorldDiagnostic $MsvcEditor
-$mingw['world'] = $mingwWorlds.worlds
-$msvc['world'] = $msvcWorlds.worlds
+[System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
+$mingwLog = Join-Path $OutputDirectory 'mingw-runtime.log'
+$msvcLog = Join-Path $OutputDirectory 'msvc-runtime.log'
+$mingw = Invoke-RuntimeCensus $MinGWEditor $mingwLog
+$msvc = Invoke-RuntimeCensus $MsvcEditor $msvcLog
 
-foreach ($category in @('dsl', 'property', 'editor')) {
-    Compare-Set $category 'source registration inventory' $expected[$category] `
-        'MinGW editor.exe' $mingw[$category]
-    Compare-Set $category 'source registration inventory' $expected[$category] `
-        'MSVC editor.exe' $msvc[$category]
+foreach ($category in @('world', 'dsl', 'property', 'editor')) {
     Compare-Set $category 'MinGW editor.exe' $mingw[$category] `
         'MSVC editor.exe' $msvc[$category]
 }
-Compare-Set 'world' 'MinGW editor.exe' $mingw.world 'MSVC editor.exe' $msvc.world
 
-[System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
+# A linked byte string is not a registration.  Appending a PE overlay proves the
+# diagnostic observes live registries rather than treating strings(1) output as
+# authority: Windows loads the copied editor, while its bytes contain the decoy.
+$decoy = '__dsl_unregistered_binary_decoy__'
+$decoyEditor = Join-Path $OutputDirectory 'editor-unregistered-decoy.exe'
+[System.IO.File]::Copy($MsvcEditor, $decoyEditor, $true)
+$stream = [System.IO.File]::Open($decoyEditor,
+    [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::Read)
+try {
+    $decoyBytes = [System.Text.Encoding]::ASCII.GetBytes($decoy + [char]0)
+    $stream.Write($decoyBytes, 0, $decoyBytes.Length)
+} finally {
+    $stream.Dispose()
+}
+$mutatedBytes = [System.Text.Encoding]::GetEncoding(28591).GetString(
+    [System.IO.File]::ReadAllBytes($decoyEditor))
+if (-not $mutatedBytes.Contains($decoy)) {
+    throw 'negative census fixture does not contain its unregistered decoy string'
+}
+$decoyCensus = Invoke-RuntimeCensus $decoyEditor `
+    (Join-Path $OutputDirectory 'msvc-unregistered-decoy-runtime.log')
+foreach ($category in @('world', 'dsl', 'property', 'editor')) {
+    if ($decoy -in $decoyCensus[$category]) {
+        throw "unregistered binary decoy was falsely reported as a $category registration"
+    }
+    Compare-Set $category 'MSVC editor.exe' $msvc[$category] `
+        'MSVC editor.exe with unregistered string overlay' $decoyCensus[$category]
+}
+
 $mingwRecord = [ordered]@{
     compiler = 'MinGW'
     executable = (Resolve-Path -LiteralPath $MinGWEditor).Path
@@ -264,7 +165,5 @@ $mingwRecord | ConvertTo-Json -Depth 6 |
     Set-Content -LiteralPath (Join-Path $OutputDirectory 'mingw.json') -Encoding UTF8
 $msvcRecord | ConvertTo-Json -Depth 6 |
     Set-Content -LiteralPath (Join-Path $OutputDirectory 'msvc.json') -Encoding UTF8
-$mingwWorlds.log | Set-Content -LiteralPath (Join-Path $OutputDirectory 'mingw-worlds.log') -Encoding UTF8
-$msvcWorlds.log | Set-Content -LiteralPath (Join-Path $OutputDirectory 'msvc-worlds.log') -Encoding UTF8
 
-Write-Host "registration census passed: worlds=$($msvc.world.Count) dsl=$($msvc.dsl.Count) property=$($msvc.property.Count) editor=$($msvc.editor.Count)"
+Write-Host "runtime registration census passed: worlds=$($msvc.world.Count) dsl=$($msvc.dsl.Count) property=$($msvc.property.Count) editor=$($msvc.editor.Count); unregistered binary decoy rejected"

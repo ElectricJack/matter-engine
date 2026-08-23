@@ -129,8 +129,8 @@ public:
     void mark_dirty(detail::PropertyBase* p);
     void clear_dirty(detail::PropertyBase* p);
     void assert_owner(const char* op) const;
-    void trace(const char* prop_name, bool immediate) const {
-        if (trace_sink_) trace_sink_(prop_name, immediate);
+    void trace(const char* prop_name, bool immediate_delivery) const {
+        if (trace_sink_) trace_sink_(prop_name, immediate_delivery);
     }
 
 private:
@@ -223,8 +223,8 @@ private:
         std::function<void(const T&)> cb;
     };
 
-    void deliver(bool immediate) {
-        scheduler_.trace(prop_name, immediate);
+    void deliver(bool immediate_delivery) {
+        scheduler_.trace(prop_name, immediate_delivery);
         // Snapshot the value so every observer in THIS delivery sees one
         // consistent value; a set() from a callback mutates value_ but its
         // delivery is deferred to the next flush (edit-loop termination).

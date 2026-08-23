@@ -29,6 +29,26 @@ target_include_directories(matter_editor PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party/ImGuizmo"
     "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
 )
+# Headers owned by source-built dependencies retain their own warning policy.
+# /WX below applies to Matter's 40 editor translation units, while MSVC treats
+# these include roots as external at a narrowly suppressed warning level.
+target_include_directories(matter_editor SYSTEM PRIVATE
+    "${matter_vulkan_include}"
+    "${CMAKE_SOURCE_DIR}/third_party/quickjs-ng"
+    "${CMAKE_SOURCE_DIR}/third_party/flecs"
+    "${CMAKE_SOURCE_DIR}/third_party/imgui"
+    "${CMAKE_SOURCE_DIR}/third_party/imgui/backends"
+    "${CMAKE_SOURCE_DIR}/third_party/ImGuizmo"
+    "${CMAKE_SOURCE_DIR}/third_party/raylib/src"
+    "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
+    "${CMAKE_SOURCE_DIR}/third_party/box3d/include"
+    "${CMAKE_SOURCE_DIR}/third_party/bc7enc"
+    "${CMAKE_SOURCE_DIR}/third_party/ozz-animation/include"
+    "${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include"
+    # This source-built SIMD dependency intentionally exposes anonymous
+    # union views and over-aligned records in its public ABI.
+    "${CMAKE_SOURCE_DIR}/libs/SpatialQueryLib/include"
+)
 target_compile_definitions(matter_editor PRIVATE
     PLATFORM_DESKTOP
     NDEBUG
@@ -41,6 +61,7 @@ target_compile_definitions(matter_editor PRIVATE
     MATTER_VULKAN_ONLY
     MATTER_HAVE_STREAMLINE=0
     VK_USE_PLATFORM_WIN32_KHR
+    _CRT_SECURE_NO_WARNINGS
 )
 if(MATTER_ENABLE_AUTOREMESHER)
     target_compile_definitions(matter_editor PRIVATE MATTER_HAVE_AUTOREMESHER)
@@ -65,6 +86,7 @@ target_link_libraries(matter_editor PRIVATE
     dbghelp
 )
 matter_apply_project_defaults(matter_editor)
+target_compile_options(matter_editor PRIVATE /external:W0 /WX)
 set_target_properties(matter_editor PROPERTIES
     OUTPUT_NAME editor
     WIN32_EXECUTABLE TRUE
@@ -80,6 +102,14 @@ target_link_options(matter_editor PRIVATE /ENTRY:mainCRTStartup)
 add_custom_target(editor DEPENDS matter_editor)
 
 if(BUILD_TESTING)
+    add_test(NAME windows_build_wrapper_contract
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/cmake/tests/build_wrapper_contract_tests.ps1"
+            -RepositoryRoot "${CMAKE_SOURCE_DIR}"
+    )
+    set_tests_properties(windows_build_wrapper_contract PROPERTIES
+        LABELS "editor;compiler-policy")
+
     add_test(NAME editor_registration_census
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/cmake/tests/editor_registration_census.ps1"

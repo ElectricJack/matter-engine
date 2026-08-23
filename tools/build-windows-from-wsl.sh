@@ -10,7 +10,7 @@ config="${1:-RelWithDebInfo}"
 target="${2:-}"
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 windows_root="$(wslpath -w "$repository_root")"
-powershell='/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+powershell="${MATTER_WINDOWS_POWERSHELL:-/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe}"
 
 args=(-NoProfile -ExecutionPolicy Bypass -File "${windows_root}\\tools\\build-windows.ps1" -Config "$config")
 if [[ "$target" == 'preflight' ]]; then
@@ -21,7 +21,15 @@ fi
 
 "$powershell" "${args[@]}"
 
-windows_artifact="${windows_root}\\MatterEditor\\build\\windows-msvc\\editor.exe"
+if [[ "$target" == 'preflight' ]] ||
+        [[ -n "$target" && "$target" != 'matter_editor' &&
+           "$target" != 'editor' && "$target" != 'all' ]]; then
+    exit 0
+fi
+
 wsl_artifact="${repository_root}/MatterEditor/build/windows-msvc/editor.exe"
-printf 'MATTER_WINDOWS_ARTIFACT=%s\n' "$windows_artifact"
+if [[ ! -f "$wsl_artifact" ]]; then
+    echo "editor-producing target '${target:-<default>}' succeeded but ${wsl_artifact} was not found" >&2
+    exit 1
+fi
 printf 'MATTER_WSL_ARTIFACT=%s\n' "$wsl_artifact"

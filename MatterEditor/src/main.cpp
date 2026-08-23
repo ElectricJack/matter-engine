@@ -48,8 +48,10 @@
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 #include "viewport_pick.h"
+#include "dsl_bindings.h"
 
 #include "imgui.h"
+#include "quickjs.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -693,6 +695,122 @@ std::string json_string(const std::string& value) {
     return escaped;
 }
 
+std::vector<std::string> quickjs_global_property_names(JSContext* context,
+                                                       std::string& error) {
+    JSValue global = JS_GetGlobalObject(context);
+    JSPropertyEnum* properties = nullptr;
+    uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(context, &properties, &count, global,
+                               JS_GPN_STRING_MASK) != 0) {
+        JS_FreeValue(context, global);
+        error = "QuickJS failed to enumerate global properties";
+        return {};
+    }
+
+    std::vector<std::string> names;
+    names.reserve(count);
+    for (uint32_t index = 0; index < count; ++index) {
+        const char* name = JS_AtomToCString(context, properties[index].atom);
+        if (name) {
+            names.emplace_back(name);
+            JS_FreeCString(context, name);
+        }
+        JS_FreeAtom(context, properties[index].atom);
+    }
+    js_free(context, properties);
+    JS_FreeValue(context, global);
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
+}
+
+std::vector<std::string> runtime_dsl_binding_names(std::string& error) {
+    JSRuntime* runtime = JS_NewRuntime();
+    if (!runtime) {
+        error = "QuickJS failed to create a runtime for the registration census";
+        return {};
+    }
+    JSContext* context = JS_NewContext(runtime);
+    if (!context) {
+        JS_FreeRuntime(runtime);
+        error = "QuickJS failed to create a context for the registration census";
+        return {};
+    }
+
+    const std::vector<std::string> before =
+        quickjs_global_property_names(context, error);
+    std::vector<std::string> after;
+    if (error.empty()) {
+        dsl::install_bindings(context);
+        after = quickjs_global_property_names(context, error);
+    }
+
+    std::vector<std::string> installed;
+    if (error.empty()) {
+        std::set_difference(after.begin(), after.end(), before.begin(),
+                            before.end(), std::back_inserter(installed));
+    }
+    JS_FreeContext(context);
+    JS_FreeRuntime(runtime);
+    return installed;
+}
+
+void append_json_string_array(std::ostringstream& stream,
+                              const std::vector<std::string>& values) {
+    stream << '[';
+    for (size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) stream << ',';
+        stream << '"' << json_string(values[index]) << '"';
+    }
+    stream << ']';
+}
+
+void emit_registration_census(
+    const std::vector<viewer::WorldEntry>& worlds,
+    const matter::props::Registry& properties,
+    const matter::evt::CommandRegistry& commands) {
+    std::vector<std::string> world_names;
+    world_names.reserve(worlds.size());
+    for (const viewer::WorldEntry& world : worlds) {
+        world_names.push_back(world.world_name);
+    }
+    std::sort(world_names.begin(), world_names.end());
+    world_names.erase(std::unique(world_names.begin(), world_names.end()),
+                      world_names.end());
+
+    std::vector<std::string> property_names;
+    property_names.reserve(properties.size());
+    for (size_t index = 0; index < properties.size(); ++index) {
+        const char* path = properties.at(index).schema().path;
+        if (path && path[0] != '\0') property_names.emplace_back(path);
+    }
+    std::sort(property_names.begin(), property_names.end());
+    property_names.erase(
+        std::unique(property_names.begin(), property_names.end()),
+        property_names.end());
+
+    std::string dsl_error;
+    const std::vector<std::string> dsl_names =
+        runtime_dsl_binding_names(dsl_error);
+    if (!dsl_error.empty()) {
+        MATTER_LOGE("registration-census", "FATAL: %s\n", dsl_error.c_str());
+        return;
+    }
+
+    std::ostringstream json;
+    json << '{';
+    json << "\"world\":";
+    append_json_string_array(json, world_names);
+    json << ",\"dsl\":";
+    append_json_string_array(json, dsl_names);
+    json << ",\"property\":";
+    append_json_string_array(json, property_names);
+    json << ",\"editor\":";
+    append_json_string_array(json, commands.registered_handler_names());
+    json << '}';
+    std::printf("MATTER_REGISTRATION_CENSUS_JSON=%s\n", json.str().c_str());
+}
+
 bool write_perf_result(const PerfRunConfig& config, const std::string& world,
                        std::vector<double> frame_times, const PerfCounters& start,
                        const PerfCounters& finish,
@@ -838,6 +956,9 @@ int main() {
     // exact acknowledgements as synchronization, so publish them immediately.
     if (std::getenv("MATTER_CMD_FIFO"))
         std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const bool registration_census_mode =
+        std::getenv("MATTER_REGISTRATION_CENSUS") != nullptr;
+    if (registration_census_mode) std::setvbuf(stdout, nullptr, _IONBF, 0);
     PerfRunConfig perf;
     std::string perf_error;
     if (!read_perf_run_config(perf, perf_error)) {
@@ -860,6 +981,7 @@ int main() {
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    if (registration_census_mode) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     GLFWwindow* window = glfwCreateWindow(
         replay.valid && replay.frame_width > 0
             ? static_cast<int>(replay.frame_width) : 1280,
@@ -1090,12 +1212,16 @@ int main() {
     if (const char* value = world_env) {
         std::string wanted(value);
         std::transform(wanted.begin(), wanted.end(), wanted.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
+                       [](unsigned char c) {
+                           return static_cast<char>(std::tolower(c));
+                       });
         bool found = false;
         for (size_t i = 0; i < worlds.size(); ++i) {
             std::string candidate = worlds[i].world_name;
             std::transform(candidate.begin(), candidate.end(), candidate.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
+                           [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
             if (candidate == wanted) {
                 initial_world = static_cast<int>(i);
                 found = true;
@@ -1138,7 +1264,8 @@ int main() {
     camera_prefs.far_plane = camera.far_plane;
     viewer::EditorProps editor_props;
     editor_props.init(stats, camera_prefs, ui.toolbar_state(),
-                      ui.console_state(), !replay.valid);
+                      ui.console_state(),
+                      !replay.valid && !registration_census_mode);
     camera.far_plane = camera_prefs.far_plane;
     // render.gpu.ray_tracing has now been through every layer that can set it
     // (compiled default -> User scope file -> MATTER_DISABLE_VK_RT via
@@ -1896,8 +2023,9 @@ int main() {
         ui.set_hide_ui(true);
     }
 
+#ifndef _WIN32
     int cmd_fd = -1;
-#ifdef _WIN32
+#else
     HANDLE cmd_handle = INVALID_HANDLE_VALUE;
     LARGE_INTEGER cmd_offset{};
 #endif
@@ -2097,10 +2225,6 @@ int main() {
                          std::vector<matter::evt::Subscription>& out) {
             scene_adapter.build(session_hub, out);
         });
-    // Startup bind-then-request: builds the bridge (snapshot-primes the scene
-    // model) + opens the first command epoch BEFORE requesting the initial bake.
-    binding.initialize();
-
     // ---- Registered viewer commands (S I.11 migration map) ------------------
     // Handlers live where the poll-site code lived (this main loop / the lab
     // shell). All App-scoped and non-undoable. Same-thread UI triggers reach
@@ -2376,6 +2500,22 @@ int main() {
             return viewer::SceneReparentEntity::Result::succeeded(
                 session->scene_service().reparent(cmd.child, cmd.new_parent));
         });
+
+    // The diagnostic reaches the same live registries and actual production
+    // handler registrations as normal startup, but exits before
+    // SessionBinding::initialize() requests the first (expensive) world bake.
+    // It is intentionally machine-readable and has no source/string inventory
+    // fallback: registration handles must have executed and still be live.
+    if (registration_census_mode) {
+        emit_registration_census(worlds, editor_props.registry(), registry);
+        editor_props.shutdown();
+        ui.shutdown();
+        return 0;
+    }
+
+    // Startup bind-then-request: builds the bridge (snapshot-primes the scene
+    // model) + opens the first command epoch BEFORE requesting the initial bake.
+    binding.initialize();
 
     // Scene-tree mutation bridge (E5c): same std::function idiom as
     // FieldCommands, but each closure now issues a SceneService ActiveSession
@@ -2723,18 +2863,18 @@ int main() {
                     if (!presentation_command.success) {
                         std::printf("%s\n",
                                     presentation_command.error.c_str());
-                    } else if (const auto* command =
+                    } else if (const auto* render_path_command =
                                    std::get_if<viewer::FifoRenderPath>(
                                        &presentation_command.command)) {
-                        registry.dispatch(*command);
-                    } else if (const auto* command =
+                        registry.dispatch(*render_path_command);
+                    } else if (const auto* history_reset_command =
                                    std::get_if<viewer::FifoHistoryReset>(
                                        &presentation_command.command)) {
-                        registry.dispatch(*command);
-                    } else if (const auto* command =
+                        registry.dispatch(*history_reset_command);
+                    } else if (const auto* wait_frames_command =
                                    std::get_if<viewer::FifoWaitFrames>(
                                        &presentation_command.command)) {
-                        const auto ticket = registry.dispatch(*command);
+                        const auto ticket = registry.dispatch(*wait_frames_command);
                         // D-06: dispatch() can finalize the ticket
                         // SYNCHRONOUSLY as a rejection (no handler / registry
                         // shut down / queue full) before pump() ever runs the
@@ -2756,10 +2896,10 @@ int main() {
                             // below in the completed_waits loop after advance()).
                             fifo_block = FifoBlockKind::WaitFrames;
                         }
-                    } else if (const auto* command =
+                    } else if (const auto* screenshot_now_command =
                                    std::get_if<viewer::FifoScreenshotNow>(
                                        &presentation_command.command)) {
-                        registry.dispatch(*command);
+                        registry.dispatch(*screenshot_now_command);
                         // D-02: shot_now blocks like `shot` -- see the release
                         // check beside fifo_quit_pending's, after end_frame.
                         // Recommended for consistency (control-surface.md):
@@ -2992,13 +3132,17 @@ int main() {
                     // multi-world sweep.
                     std::string wanted(word);
                     std::transform(wanted.begin(), wanted.end(), wanted.begin(),
-                                   [](unsigned char ch) { return std::tolower(ch); });
+                                   [](unsigned char ch) {
+                                       return static_cast<char>(std::tolower(ch));
+                                   });
                     int world_index = -1;
                     for (size_t i = 0; i < worlds.size(); ++i) {
                         std::string candidate = worlds[i].world_name;
                         std::transform(candidate.begin(), candidate.end(),
                                        candidate.begin(),
-                                       [](unsigned char ch) { return std::tolower(ch); });
+                                       [](unsigned char ch) {
+                                           return static_cast<char>(std::tolower(ch));
+                                       });
                         if (candidate == wanted) {
                             world_index = static_cast<int>(i);
                             break;
@@ -4024,20 +4168,20 @@ int main() {
         // wait_frames' own release is symmetric, after present, below.
         if (fifo_block == FifoBlockKind::WaitIdle) {
             const uint32_t resident = frame_stats.resident_sectors;
-            const auto now = std::chrono::steady_clock::now();
+            const auto idle_now = std::chrono::steady_clock::now();
             if (resident != fifo_wait_idle_last_resident) {
                 fifo_wait_idle_last_resident = resident;
-                fifo_wait_idle_last_change = now;
+                fifo_wait_idle_last_change = idle_now;
             }
             const double settled_for =
-                std::chrono::duration<double>(now - fifo_wait_idle_last_change).count();
+                std::chrono::duration<double>(idle_now - fifo_wait_idle_last_change).count();
             if (bake_ready && settled_for >= fifo_wait_idle_seconds) {
                 const double elapsed =
-                    std::chrono::duration<double>(now - fifo_wait_idle_start).count();
+                    std::chrono::duration<double>(idle_now - fifo_wait_idle_start).count();
                 std::printf("idle: settled after %.1fs\n", elapsed);
                 fifo_block = FifoBlockKind::None;
             } else if (fifo_wait_idle_timeout_s > 0.0 &&
-                       std::chrono::duration<double>(now - fifo_wait_idle_start)
+                       std::chrono::duration<double>(idle_now - fifo_wait_idle_start)
                                .count() >= fifo_wait_idle_timeout_s) {
                 // D-04: explicit deadline expired without ever settling --
                 // mirrors wait_event's timeout branch below: print and

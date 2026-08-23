@@ -619,9 +619,19 @@ void VtEnricher::Impl::bind_pool_orm(VkImageView view) {
 bool VtEnricher::Impl::build_acceleration_structures(VariantEntry& e,
                                                      const VtPartContext* ctx,
                                                      std::string& err) {
-    if (!ctx || !vt_enrich_mesh_indices_valid(*ctx)) {
-        err = "vt_enrich: rung mesh has out-of-range triangle indices";
+    if (!ctx) {
+        err = "vt_enrich: rung mesh has missing or empty geometry";
         return false;
+    }
+    switch (vt_enrich_mesh_validation(*ctx)) {
+        case VtEnrichMeshValidation::MissingGeometry:
+            err = "vt_enrich: rung mesh has missing or empty geometry";
+            return false;
+        case VtEnrichMeshValidation::OutOfRangeIndex:
+            err = "vt_enrich: rung mesh has out-of-range triangle indices";
+            return false;
+        case VtEnrichMeshValidation::Valid:
+            break;
     }
     const uint32_t vertices = ctx->vertex_count;
     const uint32_t triangles = ctx->triangle_count;
