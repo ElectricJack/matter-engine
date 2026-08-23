@@ -167,20 +167,57 @@ if(BUILD_TESTING)
 
     add_executable(compiler_portability_tests
         MatterEngine3/tests/compiler_portability_tests.cpp
-        MatterEngine3/src/event/event_hub.cpp
-        MatterEngine3/src/event/subscription.cpp
-        MatterEngine3/src/event/dispatch_context.cpp
     )
     matter_engine_include_directories(compiler_portability_tests PRIVATE)
     target_include_directories(compiler_portability_tests PRIVATE
         "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
     )
+    target_link_libraries(compiler_portability_tests PRIVATE matter_engine_headless)
     matter_apply_project_defaults(compiler_portability_tests)
     matter_apply_test_assertion_policy(compiler_portability_tests)
+    get_target_property(compiler_portability_links
+        compiler_portability_tests LINK_LIBRARIES)
+    list(FIND compiler_portability_links matter_engine_headless
+        compiler_portability_headless_index)
+    if(compiler_portability_headless_index EQUAL -1)
+        message(FATAL_ERROR
+            "compiler_portability_tests must exercise matter_engine_headless: "
+            "'${compiler_portability_links}'")
+    endif()
     add_test(NAME compiler_portability_tests COMMAND compiler_portability_tests)
     set_tests_properties(compiler_portability_tests PROPERTIES
         LABELS cpu
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+    )
+    add_test(NAME compiler_format_negative_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/cmake/tests/compiler_format_negative_tests.ps1"
+    )
+    set_tests_properties(compiler_format_negative_tests PROPERTIES
+        LABELS compiler-policy
+    )
+    add_test(NAME compiler_return_address_gnu_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/cmake/tests/compiler_return_address_gnu_tests.ps1"
+    )
+    set_tests_properties(compiler_return_address_gnu_tests PROPERTIES
+        LABELS compiler-policy
+    )
+    add_executable(matter_mesh_allocator_policy_tests
+        libs/MatterSurfaceLib/tests/mesh_allocator_policy_tests.cpp
+        libs/MatterSurfaceLib/tests/mesh_allocator_graphical_probe.cpp
+        libs/MatterSurfaceLib/tests/mesh_allocator_headless_probe.cpp
+    )
+    matter_engine_include_directories(matter_mesh_allocator_policy_tests PRIVATE)
+    target_include_directories(matter_mesh_allocator_policy_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+    )
+    matter_apply_project_defaults(matter_mesh_allocator_policy_tests)
+    matter_apply_test_assertion_policy(matter_mesh_allocator_policy_tests)
+    add_test(NAME matter_mesh_allocator_policy_tests
+        COMMAND matter_mesh_allocator_policy_tests)
+    set_tests_properties(matter_mesh_allocator_policy_tests PROPERTIES
+        LABELS compiler-policy
     )
 
     matter_add_engine_cpu_test(world_definition_tests
@@ -229,6 +266,7 @@ if(BUILD_TESTING)
     add_custom_target(matter_engine_cpu_tests)
     add_dependencies(matter_engine_cpu_tests
         compiler_portability_tests
+        matter_mesh_allocator_policy_tests
         ${matter_engine_cpu_targets}
     )
 endif()

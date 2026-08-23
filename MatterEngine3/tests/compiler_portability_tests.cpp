@@ -19,6 +19,30 @@ struct CallsiteEvent {
     MT_EVENT_NAME("test.compiler.callsite");
 };
 
+#if defined(_MSC_VER)
+#define MATTER_TEST_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define MATTER_TEST_NOINLINE __attribute__((noinline))
+#else
+#define MATTER_TEST_NOINLINE
+#endif
+
+struct ReturnAddressProbe {
+    void* expected;
+    void* actual;
+};
+
+MATTER_TEST_NOINLINE ReturnAddressProbe capture_return_address() {
+#if defined(_MSC_VER)
+    void* expected = _ReturnAddress();
+#elif defined(__GNUC__) || defined(__clang__)
+    void* expected = __builtin_extract_return_addr(__builtin_return_address(0));
+#else
+    void* expected = nullptr;
+#endif
+    return ReturnAddressProbe{expected, matter::diagnostics::return_address()};
+}
+
 void format_probe(const char*, ...) MATTER_PRINTF_FORMAT(1, 2);
 
 void format_probe(const char*, ...) {}
@@ -40,6 +64,10 @@ static_assert(std::is_standard_layout<BVHNode>::value,
 static_assert(sizeof(Tri) == 64, "serialized Tri size changed");
 static_assert(sizeof(TriEx) == 96, "serialized TriEx size changed");
 static_assert(sizeof(BVHNode) == 32, "serialized BVHNode size changed");
+static_assert(offsetof(BVHNode, aabbMin) == 0, "serialized BVHNode aabbMin moved");
+static_assert(offsetof(BVHNode, leftFirst) == 12, "serialized BVHNode leftFirst moved");
+static_assert(offsetof(BVHNode, aabbMax) == 16, "serialized BVHNode aabbMax moved");
+static_assert(offsetof(BVHNode, triCount) == 28, "serialized BVHNode triCount moved");
 static_assert(offsetof(Tri, vertex0) == 0, "serialized Tri vertex0 moved");
 static_assert(offsetof(Tri, vertex1) == 16, "serialized Tri vertex1 moved");
 static_assert(offsetof(Tri, vertex2) == 32, "serialized Tri vertex2 moved");
@@ -54,7 +82,10 @@ void test_callsite_capture() {
 
     const auto snapshot = hub.registry_snapshot();
     CHECK(snapshot.size() == 1, "callsite probe registers one event type");
-    if (snapshot.size() != 1 || snapshot.front().subscribers.size() != 1) return;
+    if (snapshot.size() != 1) return;
+    CHECK(snapshot.front().subscribers.size() == 1,
+          "callsite probe registers exactly one subscriber");
+    if (snapshot.front().subscribers.size() != 1) return;
 
     const auto& subscriber = snapshot.front().subscribers.front();
     CHECK(subscriber.file != nullptr && std::strcmp(subscriber.file, __FILE__) == 0,
@@ -63,11 +94,13 @@ void test_callsite_capture() {
 }
 
 void test_return_address() {
-    void* address = matter::diagnostics::return_address();
+    const ReturnAddressProbe probe = capture_return_address();
 #if defined(_MSC_VER) || defined(__GNUC__) || defined(__clang__)
-    CHECK(address != nullptr, "supported compiler returns a diagnostic return address");
+    CHECK(probe.actual != nullptr, "supported compiler returns a diagnostic return address");
+    CHECK(probe.actual == probe.expected,
+          "diagnostic return address preserves its caller's identity");
 #else
-    CHECK(address == nullptr, "unsupported compiler reports no diagnostic return address");
+    CHECK(probe.actual == nullptr, "unsupported compiler reports no diagnostic return address");
 #endif
 }
 

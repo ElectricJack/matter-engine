@@ -1,4 +1,5 @@
 #include "mesh_build_utils.h"
+#include "mesh_memory.h"
 #include <cmath>
 #include <cstdio>
 
@@ -104,18 +105,18 @@ std::vector<Tri> convert_mesh_to_triangles(const Mesh& mesh, std::vector<TriEx>*
 // any mesh discarded inside build_group_mesh (which runs on worker threads);
 // uploaded meshes are still torn down with UnloadMesh on the main thread.
 void unload_cpu_mesh(Mesh& m) {
-    RL_FREE(m.vboId);
-    RL_FREE(m.vertices);
-    RL_FREE(m.texcoords);
-    RL_FREE(m.normals);
-    RL_FREE(m.colors);
-    RL_FREE(m.tangents);
-    RL_FREE(m.texcoords2);
-    RL_FREE(m.indices);
-    RL_FREE(m.animVertices);
-    RL_FREE(m.animNormals);
-    RL_FREE(m.boneWeights);
-    RL_FREE(m.boneIds);
-    RL_FREE(m.boneMatrices);
+    matter_surface::detail::mesh_free(m.vboId);
+    matter_surface::detail::mesh_free(m.vertices);
+    matter_surface::detail::mesh_free(m.texcoords);
+    matter_surface::detail::mesh_free(m.normals);
+    matter_surface::detail::mesh_free(m.colors);
+    matter_surface::detail::mesh_free(m.tangents);
+    matter_surface::detail::mesh_free(m.texcoords2);
+    matter_surface::detail::mesh_free(m.indices);
+    matter_surface::detail::mesh_free(m.animVertices);
+    matter_surface::detail::mesh_free(m.animNormals);
+    matter_surface::detail::mesh_free(m.boneWeights);
+    matter_surface::detail::mesh_free(m.boneIds);
+    matter_surface::detail::mesh_free(m.boneMatrices);
     m = Mesh{};
 }

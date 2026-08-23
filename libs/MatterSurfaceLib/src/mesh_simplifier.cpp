@@ -1,4 +1,5 @@
 #include "mesh_simplifier.hpp"
+#include "mesh_memory.h"
 
 #include <vector>
 #include <array>
@@ -211,9 +212,10 @@ static Mesh buildMesh(const std::vector<WVert>& verts, const std::vector<WTri>& 
 
     out.vertexCount = nv;
     out.triangleCount = nt;
-    out.vertices = (float*)RL_MALLOC(sizeof(float) * 3 * nv);
-    out.normals  = (float*)RL_MALLOC(sizeof(float) * 3 * nv);
-    out.indices  = (unsigned short*)RL_MALLOC(sizeof(unsigned short) * idx.size());
+    out.vertices = (float*)matter_surface::detail::mesh_alloc(sizeof(float) * 3 * nv);
+    out.normals  = (float*)matter_surface::detail::mesh_alloc(sizeof(float) * 3 * nv);
+    out.indices  = (unsigned short*)matter_surface::detail::mesh_alloc(
+        sizeof(unsigned short) * idx.size());
 
     for (size_t i = 0; i < verts.size(); ++i) {
         if (verts[i].removed) continue;
