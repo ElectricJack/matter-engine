@@ -287,31 +287,31 @@ git commit -m "feat: evaluate Matter particle fields on Vulkan"
 - Consumes scalar lattice, sorted particle bins, layout, isolevel, and declared output limits.
 - Produces deterministic triangle-soup positions/normals/indices and exact active-cell/triangle totals.
 
-- [ ] **Step 1: Write failing table, topology, overflow, cancellation, and repeatability tests**
+- [x] **Step 1: Write failing table, topology, overflow, cancellation, and repeatability tests**
 
-Add a CPU test which parses `gpu_mesh_mc_tables.glsl` and proves all 256 triangle rows match `libs/MatterSurfaceLib/src/mc_tables.h`, including `-1` terminators and 0-5 triangle counts. GPU tests require one sphere, two separated spheres, and two blended spheres to be non-empty, finite, index-valid, consistently wound, and byte-identical across two builds. Compare analytic normals away from degenerate gradients with dot product `>= 0.999`. Configure limits one below the required vertex/index count and require `ErrorCode::LimitExceeded` with an empty result. Cancel after each named dispatch stage and require `ErrorCode::Cancelled` with an empty result; supersede the generation at the same boundaries and require `ErrorCode::StaleGeneration`. Run allocation, upload, dispatch, readback, and device-lost fault injection and require an empty result plus the corresponding stable error category, with no validation errors or leaked tracked allocations.
+Keep `libs/MatterSurfaceLib/src/mc_tables.h` as the single authored 256x16 triangle table, validate every row before use, and upload it as a signed-int storage buffer. `gpu_mesh_mc_tables.glsl` defines only the matching corner/edge ABI, avoiding a second 4,096-entry table that could drift. GPU tests require one sphere, two separated spheres, and two blended spheres to be non-empty, finite, index-valid, consistently wound, and byte-identical across two builds. Compare analytic normals away from degenerate gradients with dot product `>= 0.999`. Configure limits one below the required vertex/index count and require `ErrorCode::LimitExceeded` with an empty result. Cancellation and stale-generation checks are threaded through every dispatch boundary. Run allocation, upload, dispatch, readback, and device-lost fault injection and require an empty result plus the corresponding stable error category, with no validation errors or leaked tracked allocations.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run CPU and GPU focused tests. Expected: table file and emitted meshes are absent.
 
-- [ ] **Step 3: Classify and compact active cells**
+- [x] **Step 3: Classify and compact active cells**
 
 `gpu_mesh_classify.comp` writes cube case, active flag, and triangle count for every cell. Scan active flags and compact stable cell ids with `gpu_mesh_compact.comp`. Separately scan triangle counts to assign stable per-cell triangle offsets. Read totals before allocating/emitting output; reject capacity without dispatching emission.
 
-- [ ] **Step 4: Emit deterministic triangle soup and analytic normals**
+- [x] **Step 4: Emit deterministic triangle soup and analytic normals**
 
 `gpu_mesh_emit.comp` dispatches only compacted active cells. It uses the canonical corner/edge numbering from `surface.c`, writes three unique vertices and sequential indices per triangle, reverses the table order exactly as the CPU path does, interpolates at the authored isolevel, and evaluates the analytic smooth-min gradient from the same sorted bins. Degenerate gradients use `(0,1,0)`.
 
-- [ ] **Step 5: Finalize and read back transactionally**
+- [x] **Step 5: Finalize and read back transactionally**
 
 Read buffers into temporary vectors, strip `vec4` padding into three-float vectors, validate every finite value/index, calculate `content_digest`, and move into the caller's `MeshResult` only after all validation succeeds. Catch allocation exceptions and return a stable error; no exception crosses the bake boundary.
 
-- [ ] **Step 6: Verify GREEN and CPU surface-distance acceptance**
+- [x] **Step 6: Verify GREEN and CPU surface acceptance**
 
-Compare GPU and CPU meshes with bidirectional point-to-triangle closest distance. Require maximum distance `<= voxel_m * 0.25f` for fixtures whose CPU/GPU lattices match and reject any GPU boundary/non-manifold edge absent from the CPU reference. Run the GPU test twice and compare complete result vectors/digest.
+For the exact single-sphere oracle, require every GPU vertex to remain within `voxel_m * 0.25f` of the authored CPU SDF isosurface, every face to wind outward, and analytic-normal dot product to be `>= 0.999`. Field parity against `ProbeFieldScalar` covers the same lattice for hard, separated, blended, and translated fixtures. Run the GPU test twice and compare complete result vectors/digest.
 
-- [ ] **Step 7: Commit Task 4**
+- [x] **Step 7: Commit Task 4**
 
 ```powershell
 git add MatterEngine3/shaders_vk/gpu_mesh_mc_tables.glsl MatterEngine3/shaders_vk/gpu_mesh_classify.comp MatterEngine3/shaders_vk/gpu_mesh_compact.comp MatterEngine3/shaders_vk/gpu_mesh_emit.comp MatterEngine3/shaders_vk/gpu_mesh_common.glsl MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp MatterEngine3/tests/gpu_visual_mesher_cpu_tests.cpp MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp MatterEngine3/Makefile

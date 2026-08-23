@@ -18,6 +18,13 @@ struct GpuParticleBins {
     std::vector<std::uint32_t> particle_ids;
 };
 
+struct GpuMesherMemorySnapshot {
+    std::uint64_t bytes = 0;
+    std::uint64_t allocations = 0;
+};
+
+GpuMesherMemorySnapshot debug_gpu_mesher_memory_snapshot();
+
 class GpuVisualMesher {
 public:
     explicit GpuVisualMesher(matter::VulkanDevice& vulkan);

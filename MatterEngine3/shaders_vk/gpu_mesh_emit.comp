@@ -1,0 +1,166 @@
+#version 450
+
+#include "gpu_mesh_common.glsl"
+#include "gpu_mesh_mc_tables.glsl"
+
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer ParamsBuffer {
+    GpuMeshFieldParams params;
+};
+layout(std430, binding = 1) readonly buffer FieldBuffer {
+    float field[];
+};
+layout(std430, binding = 2) readonly buffer CaseBuffer {
+    uint cubeCases[];
+};
+layout(std430, binding = 3) readonly buffer ActiveCellBuffer {
+    uint activeCells[];
+};
+layout(std430, binding = 4) readonly buffer TriangleOffsetBuffer {
+    uint triangleOffsets[];
+};
+layout(std430, binding = 5) readonly buffer TriangleTableBuffer {
+    int triangleTable[];
+};
+layout(std430, binding = 6) readonly buffer ParticleBuffer {
+    GpuMeshParticle particles[];
+};
+layout(std430, binding = 7) readonly buffer BinCountBuffer {
+    uint binCounts[];
+};
+layout(std430, binding = 8) readonly buffer BinOffsetBuffer {
+    uint binOffsets[];
+};
+layout(std430, binding = 9) readonly buffer ParticleIdBuffer {
+    uint particleIds[];
+};
+layout(std430, binding = 10) writeonly buffer PositionBuffer {
+    vec4 positions[];
+};
+layout(std430, binding = 11) writeonly buffer NormalBuffer {
+    vec4 normals[];
+};
+layout(std430, binding = 12) writeonly buffer IndexBuffer {
+    uint indices[];
+};
+
+uint gpuMeshSampleIndex(uvec3 coordinate) {
+    return coordinate.x + params.sampleDimsAndCount.x *
+        (coordinate.y + params.sampleDimsAndCount.y * coordinate.z);
+}
+
+vec3 gpuMeshCornerPosition(uvec3 cell, uint corner) {
+    return params.originAndIso.xyz + params.spacingAndBlend.xyz *
+        vec3(cell + gpuMeshCornerOffset(corner));
+}
+
+vec3 gpuMeshEdgePosition(uvec3 cell, uint edge) {
+    const uvec2 endpoints = gpuMeshEdgeCorners(edge);
+    const uvec3 aCoordinate = cell + gpuMeshCornerOffset(endpoints.x);
+    const uvec3 bCoordinate = cell + gpuMeshCornerOffset(endpoints.y);
+    const float a = field[gpuMeshSampleIndex(aCoordinate)];
+    const float b = field[gpuMeshSampleIndex(bCoordinate)];
+    float t = 0.5;
+    if (abs(b - a) > 1e-8)
+        t = clamp((params.originAndIso.w - a) / (b - a), 0.0, 1.0);
+    return mix(gpuMeshCornerPosition(cell, endpoints.x),
+               gpuMeshCornerPosition(cell, endpoints.y), t);
+}
+
+void gpuMeshQueryRange(vec3 point, out ivec3 binMin, out ivec3 binMax) {
+    const float radius = params.queryRadiusAndPadding.x;
+    const ivec3 maximum = ivec3(params.binDimsAndCount.xyz) - ivec3(1);
+    binMin = clamp(ivec3(floor(
+        (point - vec3(radius) - params.binOriginAndSize.xyz) /
+        params.binOriginAndSize.w)), ivec3(0), maximum);
+    binMax = clamp(ivec3(floor(
+        (point + vec3(radius) - params.binOriginAndSize.xyz) /
+        params.binOriginAndSize.w)), ivec3(0), maximum);
+}
+
+vec3 gpuMeshAnalyticNormal(vec3 point) {
+    ivec3 binMin;
+    ivec3 binMax;
+    gpuMeshQueryRange(point, binMin, binMax);
+    const float radiusSquared = params.queryRadiusAndPadding.x *
+        params.queryRadiusAndPadding.x;
+    float minimum = uintBitsToFloat(0x7f800000u);
+    uint neighbors = 0u;
+    for (int z = binMin.z; z <= binMax.z; ++z)
+        for (int y = binMin.y; y <= binMax.y; ++y)
+            for (int x = binMin.x; x <= binMax.x; ++x) {
+                const uint bin = gpuMeshLinearBin(uvec3(x, y, z),
+                                                  params.binDimsAndCount.xyz);
+                for (uint cursor = binOffsets[bin];
+                     cursor < binOffsets[bin] + binCounts[bin]; ++cursor) {
+                    const GpuMeshParticle particle =
+                        particles[particleIds[cursor]];
+                    const vec3 delta = point - particle.positionM;
+                    const float squared = dot(delta, delta);
+                    if (squared > radiusSquared) continue;
+                    minimum = min(minimum, sqrt(squared) - particle.radiusM);
+                    ++neighbors;
+                }
+            }
+    if (neighbors == 0u) return vec3(0.0, 1.0, 0.0);
+
+    vec3 gradient = vec3(0.0);
+    float weightSum = 0.0;
+    for (int z = binMin.z; z <= binMax.z; ++z)
+        for (int y = binMin.y; y <= binMax.y; ++y)
+            for (int x = binMin.x; x <= binMax.x; ++x) {
+                const uint bin = gpuMeshLinearBin(uvec3(x, y, z),
+                                                  params.binDimsAndCount.xyz);
+                for (uint cursor = binOffsets[bin];
+                     cursor < binOffsets[bin] + binCounts[bin]; ++cursor) {
+                    const GpuMeshParticle particle =
+                        particles[particleIds[cursor]];
+                    const vec3 delta = point - particle.positionM;
+                    const float squared = dot(delta, delta);
+                    if (squared > radiusSquared) continue;
+                    const float length = sqrt(squared);
+                    if (length <= 1e-8) continue;
+                    const float distance = length - particle.radiusM;
+                    const float weight = params.spacingAndBlend.w <= 1e-5
+                        ? (abs(distance - minimum) <= 1e-6 ? 1.0 : 0.0)
+                        : exp(-(distance - minimum) / params.spacingAndBlend.w);
+                    gradient += weight * delta / length;
+                    weightSum += weight;
+                }
+            }
+    const float gradientLength = length(gradient);
+    return weightSum > 0.0 && gradientLength > 1e-8
+        ? gradient / gradientLength : vec3(0.0, 1.0, 0.0);
+}
+
+void main() {
+    const uint activeIndex = gl_GlobalInvocationID.x;
+    if (activeIndex >= params.counts.z) return;
+    const uint cellId = activeCells[activeIndex];
+    const uvec3 cellDimensions = params.sampleDimsAndCount.xyz - uvec3(1u);
+    const uint x = cellId % cellDimensions.x;
+    const uint yz = cellId / cellDimensions.x;
+    const uint y = yz % cellDimensions.y;
+    const uint z = yz / cellDimensions.y;
+    const uvec3 cell = uvec3(x, y, z);
+    const uint cubeCase = cubeCases[cellId];
+    const uint triangleBase = triangleOffsets[cellId];
+
+    for (uint triangle = 0u; triangle < 5u; ++triangle) {
+        const uint tableBase = cubeCase * 16u + triangle * 3u;
+        if (triangleTable[tableBase] < 0) break;
+        // MatterSurface reverses the canonical table order for outward winding.
+        const uint edges[3] = uint[3](
+            uint(triangleTable[tableBase + 2u]),
+            uint(triangleTable[tableBase + 1u]),
+            uint(triangleTable[tableBase + 0u]));
+        const uint outputBase = (triangleBase + triangle) * 3u;
+        for (uint vertex = 0u; vertex < 3u; ++vertex) {
+            const vec3 position = gpuMeshEdgePosition(cell, edges[vertex]);
+            positions[outputBase + vertex] = vec4(position, 1.0);
+            normals[outputBase + vertex] =
+                vec4(gpuMeshAnalyticNormal(position), 0.0);
+            indices[outputBase + vertex] = outputBase + vertex;
+        }
+    }
+}

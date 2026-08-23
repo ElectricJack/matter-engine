@@ -316,6 +316,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gpu_mesh_bin_scatter.comp.spv \
          build/shaders_vk/gpu_mesh_bin_sort.comp.spv \
          build/shaders_vk/gpu_mesh_field.comp.spv \
+         build/shaders_vk/gpu_mesh_classify.comp.spv \
+         build/shaders_vk/gpu_mesh_compact.comp.spv \
+         build/shaders_vk/gpu_mesh_emit.comp.spv \
          build/shaders_vk/atmosphere_transmittance.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \
          build/shaders_vk/atmosphere_sky_view.comp.spv \
@@ -368,7 +371,13 @@ build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
     build/shaders_vk/gpu_mesh_bin_count.comp.spv \
     build/shaders_vk/gpu_mesh_bin_scatter.comp.spv \
     build/shaders_vk/gpu_mesh_bin_sort.comp.spv \
-    build/shaders_vk/gpu_mesh_field.comp.spv: shaders_vk/gpu_mesh_common.glsl
+    build/shaders_vk/gpu_mesh_field.comp.spv \
+    build/shaders_vk/gpu_mesh_classify.comp.spv \
+    build/shaders_vk/gpu_mesh_compact.comp.spv \
+    build/shaders_vk/gpu_mesh_emit.comp.spv: shaders_vk/gpu_mesh_common.glsl
+
+build/shaders_vk/gpu_mesh_classify.comp.spv \
+    build/shaders_vk/gpu_mesh_emit.comp.spv: shaders_vk/gpu_mesh_mc_tables.glsl
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl

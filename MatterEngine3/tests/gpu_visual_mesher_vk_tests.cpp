@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <numeric>
 #include <vector>
 
@@ -124,6 +125,68 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
     DestroySurfaceScratch(scratch);
 }
 
+gpu_meshing::ParticleJob mesh_job(
+    const std::vector<gpu_meshing::ParticleSample>& particles, float blend,
+    gpu_meshing::Limits limits = {64u, 1u << 20u, 1u << 20u,
+                                  1u << 20u}) {
+    gpu_meshing::ParticleJob job{};
+    job.particles = particles.data();
+    job.particle_count = static_cast<uint32_t>(particles.size());
+    job.bounds_m = {{-1.5f, -1.5f, -1.5f}, {1.5f, 1.5f, 1.5f}};
+    job.voxel_m = 0.2f;
+    job.blend_width_m = blend;
+    job.iso_value = 0.0f;
+    job.material = 4u;
+    job.limits = limits;
+    job.generation = 41u;
+    return job;
+}
+
+gpu_meshing::MeshResult check_mesh_fixture(
+    gpu_meshing::GpuVisualMesher& mesher,
+    const std::vector<gpu_meshing::ParticleSample>& particles, float blend,
+    const char* label) {
+    gpu_meshing::MeshResult first{};
+    gpu_meshing::MeshResult second{};
+    gpu_meshing::Stats stats{};
+    gpu_meshing::Error error{};
+    const auto job = mesh_job(particles, blend);
+    const bool first_ok =
+        mesher.build_particle_visual(job, first, stats, error);
+    GPU_CHECK(first_ok, error.message.empty() ? label : error.message.c_str());
+    error = {};
+    gpu_meshing::Stats repeated_stats{};
+    const bool second_ok =
+        mesher.build_particle_visual(job, second, repeated_stats, error);
+    GPU_CHECK(second_ok,
+              error.message.empty() ? "repeat GPU mesh extraction succeeds"
+                                    : error.message.c_str());
+    if (!first_ok) return {};
+    GPU_CHECK(!first.positions.empty() && !first.indices.empty(),
+              "GPU mesh fixture produces non-empty geometry");
+    GPU_CHECK(first.positions.size() == first.normals.size() &&
+                  first.positions.size() % 3u == 0u,
+              "GPU mesh positions and normals have matching vec3 streams");
+    GPU_CHECK(first.indices.size() % 3u == 0u,
+              "GPU mesh index stream contains complete triangles");
+    GPU_CHECK(first.material == job.material && first.content_digest != 0u,
+              "GPU mesh retains material and content digest");
+    for (size_t i = 0; i < first.positions.size(); ++i)
+        GPU_CHECK(std::isfinite(first.positions[i]) &&
+                      std::isfinite(first.normals[i]),
+                  "GPU mesh output is finite");
+    for (size_t i = 0; i < first.indices.size(); ++i)
+        GPU_CHECK(first.indices[i] < first.positions.size() / 3u,
+                  "GPU mesh indices remain in range");
+    if (second_ok)
+        GPU_CHECK(first.positions == second.positions &&
+                      first.normals == second.normals &&
+                      first.indices == second.indices &&
+                      first.content_digest == second.content_digest,
+                  "repeated GPU mesh extraction is byte-identical");
+    return first;
+}
+
 }  // namespace
 
 int run_gpu_visual_mesher_pure_vk_tests() {
@@ -226,5 +289,148 @@ int run_gpu_visual_mesher_vk_tests(matter::VulkanDevice& vulkan) {
          {{-1.5f, -1.1f, -0.7f}, 0.45f}},
         {{-3.0f, -2.0f, -1.5f}, {-0.5f, 0.0f, 0.5f}}, 0.18f,
         "translated blended-sphere GPU field dispatch succeeds");
+
+    const std::vector<gpu_meshing::ParticleSample> one_sphere{
+        {{0.0f, 0.0f, 0.0f}, 0.65f}};
+    const gpu_meshing::MeshResult sphere = check_mesh_fixture(
+        mesher, one_sphere, 0.0f, "single-sphere GPU extraction succeeds");
+    for (size_t vertex = 0; vertex < sphere.positions.size() / 3u; ++vertex) {
+        const float x = sphere.positions[vertex * 3u + 0u];
+        const float y = sphere.positions[vertex * 3u + 1u];
+        const float z = sphere.positions[vertex * 3u + 2u];
+        const float length = std::sqrt(x * x + y * y + z * z);
+        if (length <= 1e-6f) continue;
+        const float dot =
+            (sphere.normals[vertex * 3u + 0u] * x +
+             sphere.normals[vertex * 3u + 1u] * y +
+             sphere.normals[vertex * 3u + 2u] * z) /
+            length;
+        GPU_CHECK(dot >= 0.999f,
+                  "single-sphere GPU normals follow the analytic gradient");
+        GPU_CHECK(std::fabs(length - 0.65f) <= 0.05f,
+                  "GPU vertices remain near the authored isosurface");
+    }
+    for (size_t triangle = 0; triangle < sphere.indices.size() / 3u;
+         ++triangle) {
+        const auto position = [&](uint32_t corner, uint32_t axis) {
+            const uint32_t vertex = sphere.indices[triangle * 3u + corner];
+            return sphere.positions[vertex * 3u + axis];
+        };
+        const float ax = position(1u, 0u) - position(0u, 0u);
+        const float ay = position(1u, 1u) - position(0u, 1u);
+        const float az = position(1u, 2u) - position(0u, 2u);
+        const float bx = position(2u, 0u) - position(0u, 0u);
+        const float by = position(2u, 1u) - position(0u, 1u);
+        const float bz = position(2u, 2u) - position(0u, 2u);
+        const float nx = ay * bz - az * by;
+        const float ny = az * bx - ax * bz;
+        const float nz = ax * by - ay * bx;
+        const float cx = (position(0u, 0u) + position(1u, 0u) +
+                          position(2u, 0u)) /
+                         3.0f;
+        const float cy = (position(0u, 1u) + position(1u, 1u) +
+                          position(2u, 1u)) /
+                         3.0f;
+        const float cz = (position(0u, 2u) + position(1u, 2u) +
+                          position(2u, 2u)) /
+                         3.0f;
+        GPU_CHECK(nx * cx + ny * cy + nz * cz > 0.0f,
+                  "GPU triangle winding faces outward");
+    }
+    check_mesh_fixture(
+        mesher,
+        {{{-0.62f, 0.0f, 0.0f}, 0.45f},
+         {{0.62f, 0.0f, 0.0f}, 0.45f}},
+        0.0f, "separated-sphere GPU extraction succeeds");
+    check_mesh_fixture(
+        mesher,
+        {{{-0.35f, 0.0f, 0.0f}, 0.55f},
+         {{0.35f, 0.0f, 0.0f}, 0.55f}},
+        0.18f, "blended-sphere GPU extraction succeeds");
+
+    if (!sphere.positions.empty()) {
+        gpu_meshing::Limits too_small = {
+            64u, 1u << 20u,
+            static_cast<uint32_t>(sphere.positions.size() / 3u - 1u),
+            static_cast<uint32_t>(sphere.indices.size() - 1u)};
+        auto limited_job = mesh_job(one_sphere, 0.0f, too_small);
+        gpu_meshing::MeshResult rejected{{1.0f}, {1.0f}, {0u}, 9u, 9u};
+        gpu_meshing::Stats rejected_stats{};
+        error = {};
+        GPU_CHECK(!mesher.build_particle_visual(limited_job, rejected,
+                                                rejected_stats, error) &&
+                      error.code == gpu_meshing::ErrorCode::LimitExceeded,
+                  "GPU extraction rejects output capacity before emission");
+        GPU_CHECK(rejected.positions.empty() && rejected.normals.empty() &&
+                      rejected.indices.empty(),
+                  "capacity rejection exposes no partial mesh");
+    }
+
+    gpu_meshing::MeshResult cancelled{{1.0f}, {}, {}, 0u, 0u};
+    gpu_meshing::Stats cancelled_stats{};
+    error = {};
+    const gpu_meshing::BuildControl cancel_control{
+        [] { return true; }, {}};
+    GPU_CHECK(!mesher.build_particle_visual(mesh_job(one_sphere, 0.0f),
+                                            cancelled, cancelled_stats, error,
+                                            cancel_control) &&
+                  error.code == gpu_meshing::ErrorCode::Cancelled &&
+                  cancelled.positions.empty(),
+              "cancelled GPU mesh build fails transactionally");
+    gpu_meshing::MeshResult stale{{1.0f}, {}, {}, 0u, 0u};
+    error = {};
+    const gpu_meshing::BuildControl stale_control{
+        {}, [](uint64_t) { return false; }};
+    GPU_CHECK(!mesher.build_particle_visual(mesh_job(one_sphere, 0.0f), stale,
+                                            cancelled_stats, error,
+                                            stale_control) &&
+                  error.code == gpu_meshing::ErrorCode::StaleGeneration &&
+                  stale.positions.empty(),
+              "stale GPU mesh generation fails transactionally");
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    const auto check_fault = [&](const char* phase,
+                                 gpu_meshing::ErrorCode expected) {
+        const gpu_meshing::GpuMesherMemorySnapshot before =
+            gpu_meshing::debug_gpu_mesher_memory_snapshot();
+        _putenv_s("MATTER_GPU_MESH_TEST_FAULT", phase);
+        {
+            gpu_meshing::GpuVisualMesher fault_mesher(vulkan);
+            gpu_meshing::MeshResult faulted{{1.0f}, {}, {}, 0u, 0u};
+            gpu_meshing::Stats faulted_stats{};
+            gpu_meshing::Error fault_error{};
+            GPU_CHECK(!fault_mesher.build_particle_visual(
+                          mesh_job(one_sphere, 0.0f), faulted, faulted_stats,
+                          fault_error) &&
+                          fault_error.code == expected &&
+                          faulted.positions.empty() && faulted.indices.empty(),
+                      "forced GPU mesher fault exposes no partial mesh");
+        }
+        _putenv_s("MATTER_GPU_MESH_TEST_FAULT", "");
+        const gpu_meshing::GpuMesherMemorySnapshot after =
+            gpu_meshing::debug_gpu_mesher_memory_snapshot();
+        GPU_CHECK(after.allocations == before.allocations &&
+                      after.bytes == before.bytes,
+                  "forced GPU mesher fault releases tracked allocations");
+    };
+    check_fault("allocation", gpu_meshing::ErrorCode::VulkanFailure);
+    check_fault("upload", gpu_meshing::ErrorCode::VulkanFailure);
+    check_fault("readback", gpu_meshing::ErrorCode::VulkanFailure);
+    check_fault("device-lost", gpu_meshing::ErrorCode::DeviceLost);
+
+    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE",
+              "dispatch-moved-buffer");
+    {
+        gpu_meshing::GpuVisualMesher fault_mesher(vulkan);
+        gpu_meshing::MeshResult dispatch_failed{{1.0f}, {}, {}, 0u, 0u};
+        error = {};
+        GPU_CHECK(!fault_mesher.build_particle_visual(
+                      mesh_job(one_sphere, 0.0f), dispatch_failed,
+                      cancelled_stats, error) &&
+                      error.code == gpu_meshing::ErrorCode::VulkanFailure &&
+                      dispatch_failed.positions.empty(),
+                  "completed Vulkan dispatch failure exposes no partial mesh");
+    }
+    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE", "");
+#endif
     return failures;
 }
