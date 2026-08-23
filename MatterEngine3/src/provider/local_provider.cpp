@@ -15,6 +15,7 @@
 #include "bake_trace_names.h"  // kSpanTileset
 #include "material_registry.h"
 #include "matter/log.h"
+#include "hydrology/hydrology_settings.h"
 #include "hydrology/river_geometry.h"
 #include "terrain_river_overlay.h"
 
@@ -201,7 +202,194 @@ std::string class_name_from_source(const std::string& source) {
     return {};
 }
 
+class UnavailableFluidBakeBackend final
+    : public hydrology::IFluidBakeBackend {
+public:
+    hydrology::FluidBackendProbe probe() override {
+        return {false, "Matter default-off", {}, {},
+                hydrology::FluidBakeCode::BackendUnavailable,
+                "PhysX fluid support is disabled in this build"};
+    }
+
+    bool run(const hydrology::FluidBakeInput&,
+             const hydrology::FluidBakeCallbacks&,
+             hydrology::FluidBakeOutput& output,
+             hydrology::FluidBakeError& error) override {
+        output = {};
+        error = {hydrology::FluidBakeCode::BackendUnavailable,
+                 "PhysX fluid support is disabled in this build"};
+        return false;
+    }
+};
+
+constexpr std::uint64_t kLegacyPhysxSdkVersion = 0x05060100u;
+constexpr std::uint64_t kLegacyAdapterVersion = 1u;
+constexpr std::uint64_t kLegacyPbdSettingsVersion = 1u;
+constexpr std::uint64_t kLegacyMesherContractVersion = 1u;
+constexpr std::uint32_t kNvidiaVendorId = 0x10deu;
+
+std::uint64_t legacy_semantic_word(
+    const hydrology::HydrologyKey& key) noexcept {
+    std::uint64_t value = 0;
+    std::memcpy(&value, key.bytes.data(), sizeof(value));
+    return value == 0 ? 1u : value;
+}
+
+bool assemble_legacy_fluid_request(
+    const matter::HydrologyWorldSettings& authored,
+    const std::optional<matter::RiverNetworkDefinition>& authored_network,
+    const FluidBakeBackendFactory& backend_factory,
+    FluidBakeRequest& request, hydrology::FluidBakeError& error) {
+    request = {};
+    error = {};
+    hydrology::HydrologyBakeDescription canonical{};
+    std::string settings_error;
+    if (!hydrology::validate_and_key(authored, 0u, canonical,
+                                     settings_error)) {
+        error = {hydrology::FluidBakeCode::InvalidInput,
+                 std::move(settings_error)};
+        return false;
+    }
+
+    const matter::Float3 minimum = authored.domain.origin_m;
+    const matter::Float3 maximum = {
+        minimum.x + authored.domain.cell_size_m * authored.domain.nx,
+        minimum.y + authored.domain.cell_size_m * authored.domain.ny,
+        minimum.z + authored.domain.cell_size_m * authored.domain.nz,
+    };
+    const float cell = authored.domain.cell_size_m;
+    const float mid_z = 0.5f * (minimum.z + maximum.z);
+    const float inlet_y = std::min(maximum.y - cell,
+                                   minimum.y + std::max(cell, authored.inlet_head_m));
+    const float outlet_y = std::min(maximum.y - cell,
+                                    minimum.y + std::max(cell, authored.outlet_head_m));
+    const matter::Float3 inlet = {minimum.x + cell, inlet_y, mid_z};
+    const matter::Float3 outlet = {maximum.x - cell, outlet_y, mid_z};
+
+    hydrology::FluidBakeInput input{};
+    if (authored_network) {
+        input.network = *authored_network;
+        if (!hydrology::build_river_geometry(input.network, input.geometry,
+                                              settings_error)) {
+            error = {hydrology::FluidBakeCode::InvalidInput,
+                     std::move(settings_error)};
+            return false;
+        }
+    } else {
+        input.network.cell_size_m = cell;
+        input.network.seed = legacy_semantic_word(canonical.semantic_key);
+        input.network.first_section_river = "legacy-main";
+        input.network.first_section.minimum_length_m =
+            std::max(cell, outlet.x - inlet.x);
+        input.network.first_section.dry_margin_m = cell;
+        input.network.first_section.crest_wet_fraction = 0.5f;
+        input.network.first_section.stable_wet_steps = 1u;
+        input.network.first_section.batch_steps = authored.batch_steps;
+        input.network.first_section.max_steps = authored.max_steps;
+        matter::RiverDefinition river{};
+        river.name = input.network.first_section_river;
+        river.inlet = {inlet, authored.inlet_flow_m3s};
+        river.spline = {inlet, outlet};
+        river.reaches.push_back({input.network.first_section.minimum_length_m,
+                                 authored.residual_head_gradient_xz.x,
+                                 0.0f, 1.0f});
+        river.channel = {std::max(2.0f * cell, 1.0f),
+                         std::max(2.0f * cell, 1.0f), 0.0f};
+        input.network.rivers.push_back(std::move(river));
+        input.geometry.centreline = {
+            {inlet, {1.0f, authored.residual_head_gradient_xz.x, 0.0f},
+             {0.0f, 0.0f, 1.0f}, 0.0f,
+             authored.residual_head_gradient_xz.x, 0.0f, 1.0f},
+            {outlet, {1.0f, authored.residual_head_gradient_xz.x, 0.0f},
+             {0.0f, 0.0f, 1.0f}, outlet.x - inlet.x,
+             authored.residual_head_gradient_xz.x, 0.0f, 1.0f},
+        };
+        input.geometry.bounds_m = {minimum, maximum};
+        input.geometry.revision = legacy_semantic_word(canonical.semantic_key);
+    }
+
+    input.collision.vertices = {
+        {minimum.x, minimum.y, minimum.z},
+        {maximum.x, minimum.y, minimum.z},
+        {maximum.x, minimum.y, maximum.z},
+        {minimum.x, minimum.y, maximum.z},
+    };
+    input.collision.indices = {0u, 2u, 1u, 0u, 3u, 2u};
+    input.emitters.push_back({
+        1u, inlet, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
+        authored.inlet_flow_m3s, std::max(cell, 0.5f), 0u,
+        authored.max_steps,
+    });
+    input.sensor.bounds_m = {
+        {std::max(minimum.x, maximum.x - 2.0f * cell), minimum.y, minimum.z},
+        {maximum.x, maximum.y, maximum.z},
+    };
+    input.sensor.resolution = {1u, 1u, 1u};
+    input.sensor.required_wet_fraction = 0.5f;
+    input.sensor.stable_steps = 1u;
+    input.sensor.minimum_particles_per_cell = 1u;
+    const std::uint64_t domain_cells =
+        static_cast<std::uint64_t>(authored.domain.nx) *
+        authored.domain.ny * authored.domain.nz;
+    input.settings = {
+        std::max(0.05f, 0.2f * cell), 1000.0f, authored.dt_s,
+        4u, 96u, authored.batch_steps, authored.max_steps,
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            std::max<std::uint64_t>(domain_cells, 1u), 2000000u)),
+    };
+    input.dry_collar_bounds_m = {minimum, maximum};
+
+    hydrology::PhysxFluidBake::ProductBuildSettings products{};
+    products.particle_radius_m = std::max(0.05f, 0.65f * cell);
+    products.coarse_voxel_m = std::max(0.05f, 0.4f * cell);
+    products.visual_job.bounds_m = {minimum, maximum};
+    products.visual_job.voxel_m = std::max(0.05f, 0.25f * cell);
+    products.visual_job.blend_width_m = std::max(0.01f, 0.1f * cell);
+    products.visual_job.iso_value = 0.0f;
+    products.visual_job.limits = {64u, 4194304u, 12582912u, 12582912u};
+    products.gameplay_layout = {minimum, cell, authored.domain.nx,
+                                authored.domain.nz};
+    const std::uint64_t semantic = legacy_semantic_word(canonical.semantic_key);
+    products.semantic = {kLegacyPhysxSdkVersion, kLegacyAdapterVersion,
+                         kLegacyPbdSettingsVersion, semantic,
+                         authored_network ? authored_network->canonical_hash
+                                          : semantic,
+                         1u, 1u, 1u, kLegacyMesherContractVersion};
+    products.provenance = {kNvidiaVendorId, 1u, 1u,
+                           kLegacyPhysxSdkVersion,
+                           kLegacyAdapterVersion};
+
+    request.backend = backend_factory ? backend_factory() : nullptr;
+    if (!request.backend)
+        request.backend = std::make_shared<UnavailableFluidBakeBackend>();
+    request.input = std::move(input);
+    request.product_settings = std::move(products);
+    request.terrain = [minimum](float, float, float& height) {
+        height = minimum.y;
+        return true;
+    };
+    return true;
+}
+
 } // namespace
+
+LocalProviderConfig make_engine_local_provider_config(
+    const std::string& project_dir, const std::string& world_name,
+    const std::string& engine_shared_lib_dir,
+    FluidBakeBackendFactory backend_factory) {
+    LocalProviderConfig config = LocalProviderConfig::for_project(
+        project_dir, world_name, engine_shared_lib_dir);
+    config.fluid_bake_request_producer =
+        [backend_factory = std::move(backend_factory)](
+            const matter::HydrologyWorldSettings& settings,
+            const std::optional<matter::RiverNetworkDefinition>& network,
+            FluidBakeRequest& request,
+            hydrology::FluidBakeError& error) {
+            return assemble_legacy_fluid_request(
+                settings, network, backend_factory, request, error);
+        };
+    return config;
+}
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
@@ -1272,17 +1460,30 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         }
     }
     accepted_fluid_artifact_.reset();
-    if (cfg_.fluid_bake_request) {
-        const FluidBakeRequest& request = *cfg_.fluid_bake_request;
+    if (hydrology_settings_ && hydrology_settings_->enabled) {
+        FluidBakeRequest request{};
         hydrology::HydrologyArtifact candidate{};
         hydrology::FluidBakeError fluid_error{};
-        if (!request.backend || !request.terrain ||
+        bool produced = false;
+        try {
+            produced = cfg_.fluid_bake_request_producer &&
+                cfg_.fluid_bake_request_producer(
+                    *hydrology_settings_, river_network_, request,
+                    fluid_error);
+        } catch (const std::exception& exception) {
+            fluid_error = {hydrology::FluidBakeCode::BackendFailure,
+                           exception.what()};
+        } catch (...) {
+            fluid_error = {hydrology::FluidBakeCode::BackendFailure,
+                           "fluid request assembly raised an unknown exception"};
+        }
+        if (!produced || !request.backend || !request.terrain ||
             !run_fluid_bake(request.input, *request.backend,
                             request.callbacks, request.product_settings,
                             request.terrain, candidate, fluid_error)) {
             MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
                         fluid_error.message.empty()
-                            ? "missing backend or terrain sampler"
+                            ? "missing request producer, backend, or terrain sampler"
                             : fluid_error.message.c_str());
         } else {
             accepted_fluid_artifact_ = std::move(candidate);

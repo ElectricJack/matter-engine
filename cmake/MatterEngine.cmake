@@ -82,6 +82,9 @@ target_compile_definitions(matter_engine_core PRIVATE
     MATTER_HAVE_SCRIPT_HOST
     MATTER_VULKAN_ONLY
 )
+if(MATTER_ENABLE_PHYSX)
+    target_compile_definitions(matter_engine_core PRIVATE MATTER_ENABLE_PHYSX)
+endif()
 target_link_libraries(matter_engine_core PUBLIC
     matter_memory
     matter_math
@@ -142,6 +145,9 @@ target_link_libraries(matter_engine_headless PUBLIC
     matter_ozz_offline
     matter_bc7enc
 )
+if(MATTER_ENABLE_PHYSX)
+    target_link_libraries(matter_engine_headless PUBLIC matter_physx_adapter)
+endif()
 matter_apply_project_defaults(matter_engine_headless)
 
 if(BUILD_TESTING)

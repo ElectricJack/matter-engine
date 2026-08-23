@@ -84,6 +84,9 @@ target_link_libraries(matter_editor PRIVATE
 )
 matter_apply_project_defaults(matter_editor)
 target_compile_options(matter_editor PRIVATE /WX)
+if(MATTER_ENABLE_PHYSX)
+    matter_stage_physx_runtime(matter_editor)
+endif()
 set_target_properties(matter_editor PROPERTIES
     OUTPUT_NAME editor
     WIN32_EXECUTABLE TRUE

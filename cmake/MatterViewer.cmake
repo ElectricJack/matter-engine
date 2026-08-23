@@ -80,6 +80,12 @@ target_compile_definitions(matter_engine_viewer_objects PRIVATE
     MATTER_VULKAN_ONLY
     MATTER_HAVE_STREAMLINE=0
 )
+if(MATTER_ENABLE_PHYSX)
+    target_compile_definitions(matter_engine_viewer_objects PRIVATE
+        MATTER_ENABLE_PHYSX)
+    target_link_libraries(matter_engine_viewer_objects PUBLIC
+        matter_physx_adapter)
+endif()
 if(MATTER_ENABLE_AUTOREMESHER)
     target_compile_definitions(matter_engine_viewer_objects PRIVATE
         MATTER_HAVE_AUTOREMESHER)

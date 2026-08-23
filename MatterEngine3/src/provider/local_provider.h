@@ -52,6 +52,13 @@ struct FluidBakeRequest {
     hydrology::TerrainHeightSampler terrain;
 };
 
+using FluidBakeBackendFactory =
+    std::function<std::shared_ptr<hydrology::IFluidBakeBackend>()>;
+using FluidBakeRequestProducer = std::function<bool(
+    const matter::HydrologyWorldSettings&,
+    const std::optional<matter::RiverNetworkDefinition>&,
+    FluidBakeRequest&, hydrology::FluidBakeError&)>;
+
 struct LocalProviderConfig {
     std::string project_dir;
     // The PROJECT-WIDE object tier: objects shared by every scene. Changing a
@@ -189,10 +196,12 @@ struct LocalProviderConfig {
                        const gpu_meshing::BuildControl& control)>
         vk_particle_visual_bake;
 
-    // Optional completed fluid bake submitted by the engine/orchestration
-    // layer.  When present, connect() runs it after the dry world is prepared;
-    // an invalid result is logged and leaves that dry world usable.
-    std::optional<FluidBakeRequest> fluid_bake_request;
+    // Engine-installed synchronous request producer. connect() invokes it only
+    // after the authored world has loaded and only when that world explicitly
+    // enables the legacy hydrology request. The producer owns no lifecycle;
+    // Task 7 replaces its fixed defaults with the expanded imperative DSL and
+    // worker/generation/cache orchestration.
+    FluidBakeRequestProducer fluid_bake_request_producer;
 
     // Task 7: OOM/error injection hook for testing skip-and-continue.
     // Fired once per part processed (install bake + fetch/load); `part_index` is the
@@ -215,6 +224,17 @@ struct LocalProviderConfig {
     // rebuilds operate on a diff of changed files, not a full root-params change).
     std::string root_params_json;
 };
+
+// Builds the shipped engine-to-provider configuration, including the request
+// assembly seam. The backend factory stays lazy: dry/default-off worlds never
+// create a PhysX runtime. Passing an empty factory yields a stable
+// BackendUnavailable request while preserving the dry world and introduces no
+// PhysX/CUDA link dependency.
+LocalProviderConfig make_engine_local_provider_config(
+    const std::string& project_dir,
+    const std::string& world_name,
+    const std::string& engine_shared_lib_dir,
+    FluidBakeBackendFactory backend_factory = {});
 
 inline LocalProviderConfig LocalProviderConfig::for_project(
     const std::string& project_dir_value,

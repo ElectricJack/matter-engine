@@ -81,6 +81,9 @@ namespace viewer { struct VkScenePart; }
 #include "terrain_field.h"
 #include "terrain_river_overlay.h"
 #include "hydrology/river_geometry.h"
+#if defined(MATTER_ENABLE_PHYSX)
+#include "hydrology/physx_runtime.h"
+#endif
 // Volumetric-sectors M0-WP3b: the runtime cross-level seam welder. Pure
 // geometry (see seam_weld.h); this file supplies the two WeldSide lookups over
 // the drawn sector map and owns the resulting weld pool.
@@ -8990,9 +8993,17 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     }
     {
         namespace fs = std::filesystem;
-        simpl->cfg = viewer::LocalProviderConfig::for_project(
+#if defined(MATTER_ENABLE_PHYSX)
+        simpl->cfg = viewer::make_engine_local_provider_config(
+            desc.project_dir, desc.world_name,
+            desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "", [] {
+                return std::make_shared<hydrology::PhysxRuntime>();
+            });
+#else
+        simpl->cfg = viewer::make_engine_local_provider_config(
             desc.project_dir, desc.world_name,
             desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
+#endif
         // At least ONE object root must exist. Requiring the project tier
         // specifically would reject a scene that carries all of its own
         // objects and shares nothing -- which is a legitimate, and in fact the

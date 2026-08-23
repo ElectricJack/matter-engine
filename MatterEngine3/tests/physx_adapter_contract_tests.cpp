@@ -867,7 +867,8 @@ void test_product_keys_follow_the_settings_the_extractors_consume() {
 }
 
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
-bool write_provider_connect_fixture(const std::filesystem::path& root) {
+bool write_provider_connect_fixture(const std::filesystem::path& root,
+                                    bool fluid_enabled = true) {
     std::error_code error;
     std::filesystem::remove_all(root, error);
     std::filesystem::create_directories(root / "objects", error);
@@ -888,6 +889,13 @@ bool write_provider_connect_fixture(const std::filesystem::path& root) {
     }
     std::ofstream world(root / "worlds" / "Demo.js");
     world << "class Demo extends World {\n"
+             "  static hydrology = {\n"
+             "    enabled: " << (fluid_enabled ? "true" : "false") <<
+             ", origin: [0, 0, 0], dimensions: [8, 8, 8],\n"
+             "    cellSize: 1, dt: 0.01, gravity: 9.81, downstream: [1, 0],\n"
+             "    residualGrade: [-0.01, 0], inletFlow: 1, inletHead: 4,\n"
+             "    outletHead: 1, batchSteps: 8, maxSteps: 120\n"
+             "  };\n"
              "  static roots = [{ module: 'FluidBakePart', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }];\n"
              "}\n";
     return static_cast<bool>(world);
@@ -898,8 +906,13 @@ void test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path()
         std::filesystem::temp_directory_path() / "matter-local-fluid-bake-contract";
     CHECK(write_provider_connect_fixture(root),
           "the production fluid request test created its minimal provider world");
-    auto config = viewer::LocalProviderConfig::for_project(
-        root.string(), "Demo", "");
+    auto backend = std::make_shared<RecordingBackend>();
+    int backend_factory_calls = 0;
+    auto config = viewer::make_engine_local_provider_config(
+        root.string(), "Demo", "", [&] {
+            ++backend_factory_calls;
+            return backend;
+        });
     int gpu_run_calls = 0;
     int vk_visual_calls = 0;
     config.gpu_run = [&](const char* name, std::function<bool(std::string&)> work,
@@ -923,49 +936,93 @@ void test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path()
             mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
             return true;
         };
-    hydrology::PhysxFluidBake::ProductBuildSettings settings{};
-    settings.particle_radius_m = 0.65f;
-    settings.coarse_voxel_m = 0.4f;
-    settings.visual_job.bounds_m = {{-1.0f, -1.0f, -1.0f}, {4.0f, 5.0f, 4.0f}};
-    settings.visual_job.voxel_m = 0.25f;
-    settings.visual_job.blend_width_m = 0.1f;
-    settings.visual_job.limits = {16u, 65536u, 65536u, 65536u};
-    settings.gameplay_layout = {{0.0f, 0.0f, 0.0f}, 1.0f, 4u, 4u};
-    settings.semantic = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
-    settings.provenance = {0x10deu, 0x2684u, 1u, 1u, 2u};
-    auto backend = std::make_shared<RecordingBackend>();
-    config.fluid_bake_request = {backend, valid_input(), {}, settings,
-        [](float, float, float& height) { height = 0.0f; return true; }};
+    CHECK(backend_factory_calls == 0,
+          "the engine producer does not create PhysX before authored connect requests it");
     viewer::LocalProvider provider(std::move(config));
     viewer::WorldManifest manifest{};
     std::string connect_error;
     CHECK(provider.connect(manifest, connect_error) &&
+              !manifest.instances.empty() &&
               provider.accepted_fluid_artifact().has_value() &&
               provider.accepted_fluid_artifact()->accepted &&
+              backend_factory_calls == 1 && backend->run_calls == 1 &&
               gpu_run_calls == 1 && vk_visual_calls == 1,
           connect_error.empty()
               ? "the production connect path sends the accepted backend snapshot to vk_particle_visual_bake"
               : connect_error.c_str());
-    std::error_code remove_error;
-    std::filesystem::remove_all(root, remove_error);
-
-    viewer::LocalProviderConfig failing_config{};
+    auto failing_backend = std::make_shared<RecordingBackend>();
+    int failing_backend_factory_calls = 0;
+    auto failing_config = viewer::make_engine_local_provider_config(
+        root.string(), "Demo", "", [&] {
+            ++failing_backend_factory_calls;
+            return failing_backend;
+        });
+    int failing_visual_calls = 0;
     failing_config.vk_particle_visual_bake =
-        [](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
-           gpu_meshing::Stats&, gpu_meshing::Error& error,
-           const gpu_meshing::BuildControl&) {
+        [&](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
+            gpu_meshing::Stats&, gpu_meshing::Error& error,
+            const gpu_meshing::BuildControl&) {
+            ++failing_visual_calls;
             error.message = "deliberate editor visual failure";
             return false;
         };
     viewer::LocalProvider failing_provider(std::move(failing_config));
-    hydrology::HydrologyArtifact rejected{};
-    FluidBakeError error{};
-    CHECK(!failing_provider.run_fluid_bake(
-              valid_input(), *backend, {}, settings,
-              [](float, float, float& height) { height = 0.0f; return true; },
-              rejected, error) && rejected.particles.empty() &&
-              error.code == FluidBakeCode::ProductFailure,
+    viewer::WorldManifest failing_manifest{};
+    std::string failing_connect_error;
+    CHECK(failing_provider.connect(failing_manifest, failing_connect_error) &&
+              !failing_manifest.instances.empty() &&
+              !failing_provider.accepted_fluid_artifact().has_value() &&
+              failing_backend_factory_calls == 1 &&
+              failing_backend->run_calls == 1 && failing_visual_calls == 1,
           "a production renderer failure prevents publication of the completed snapshot");
+
+    auto unavailable_backend = std::make_shared<RecordingBackend>();
+    unavailable_backend->available = false;
+    auto solver_config = viewer::make_engine_local_provider_config(
+        root.string(), "Demo", "",
+        [unavailable_backend] { return unavailable_backend; });
+    int unexpected_visual_calls = 0;
+    solver_config.vk_particle_visual_bake =
+        [&](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
+            gpu_meshing::Stats&, gpu_meshing::Error&,
+            const gpu_meshing::BuildControl&) {
+            ++unexpected_visual_calls;
+            return true;
+        };
+    viewer::LocalProvider solver_failure_provider(std::move(solver_config));
+    viewer::WorldManifest solver_failure_manifest{};
+    std::string solver_connect_error;
+    CHECK(solver_failure_provider.connect(solver_failure_manifest,
+                                          solver_connect_error) &&
+              !solver_failure_manifest.instances.empty() &&
+              !solver_failure_provider.accepted_fluid_artifact().has_value() &&
+              unavailable_backend->probe_calls == 1 &&
+              unavailable_backend->run_calls == 0 &&
+              unexpected_visual_calls == 0,
+          "a production solver failure preserves the dry world and publishes no partial artifact");
+
+    const std::filesystem::path dry_root =
+        std::filesystem::temp_directory_path() /
+        "matter-local-fluid-dry-contract";
+    CHECK(write_provider_connect_fixture(dry_root, false),
+          "the disabled-fluid test created its minimal provider world");
+    int dry_backend_factory_calls = 0;
+    auto dry_config = viewer::make_engine_local_provider_config(
+        dry_root.string(), "Demo", "", [&] {
+            ++dry_backend_factory_calls;
+            return std::make_shared<RecordingBackend>();
+        });
+    viewer::LocalProvider dry_provider(std::move(dry_config));
+    viewer::WorldManifest dry_manifest{};
+    std::string dry_connect_error;
+    CHECK(dry_provider.connect(dry_manifest, dry_connect_error) &&
+              !dry_manifest.instances.empty() &&
+              !dry_provider.accepted_fluid_artifact().has_value() &&
+              dry_backend_factory_calls == 0,
+          "an authored disabled fluid setting preserves the dry path without creating a backend");
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
+    std::filesystem::remove_all(dry_root, remove_error);
 }
 #endif
 
