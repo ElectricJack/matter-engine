@@ -295,6 +295,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/hydrology_artifact_tests.cpp)
     matter_add_engine_cpu_test(physx_adapter_contract_tests
         MatterEngine3/tests/physx_adapter_contract_tests.cpp)
+    target_compile_definitions(physx_adapter_contract_tests PRIVATE
+        MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
     if(MATTER_ENABLE_PHYSX)
         add_executable(physx_fluid_integration_tests
             MatterEngine3/tests/physx_fluid_integration_tests.cpp)

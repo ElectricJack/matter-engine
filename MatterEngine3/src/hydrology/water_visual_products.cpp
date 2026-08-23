@@ -179,6 +179,7 @@ ProductKeys derive_product_keys(
     simulation_common(coarse);
     coarse.point(job.bounds_m.min_m);
     coarse.point(job.bounds_m.max_m);
+    coarse.floating(job.blend_width_m);
     coarse.floating(coarse_voxel_m);
 
     Digest gameplay(0x47414d45504c4159ull);

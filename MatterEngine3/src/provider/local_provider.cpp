@@ -216,6 +216,23 @@ bool LocalProvider::build_accepted_fluid_artifact(
         artifact, error);
 }
 
+bool LocalProvider::run_fluid_bake(
+    const hydrology::FluidBakeInput& input,
+    hydrology::IFluidBakeBackend& backend,
+    const hydrology::FluidBakeCallbacks& callbacks,
+    const hydrology::PhysxFluidBake::ProductBuildSettings& settings,
+    const hydrology::TerrainHeightSampler& terrain,
+    hydrology::HydrologyArtifact& artifact,
+    hydrology::FluidBakeError& error) const {
+    artifact = {};
+    hydrology::FluidBakeOutput output{};
+    if (!hydrology::PhysxFluidBake::run(input, backend, callbacks, output,
+                                        error))
+        return false;
+    return build_accepted_fluid_artifact(output, settings, terrain, artifact,
+                                         error);
+}
+
 bool LocalProvider::build_river_height_overlay(
     hydrology::RiverGeometry& geometry,
     std::shared_ptr<const terrain_field::RiverHeightOverlay>& overlay,

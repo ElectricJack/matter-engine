@@ -244,6 +244,26 @@ void test_gameplay_identity_ignores_visual_job_bounds() {
           "visual and CPU bounds do not spuriously invalidate the gameplay field key");
 }
 
+void test_coarse_identity_includes_cpu_mesher_blend_width() {
+    gpu_meshing::ParticleSample particles[1];
+    const auto job = one_sphere_job(particles);
+    hydrology::ProductIdentitySettings settings{};
+    settings.semantic_key = 92u;
+    const hydrology::GameplayFieldLayout gameplay_layout{
+        {-1.0f, 0.0f, -1.0f}, 0.5f, 4u, 4u};
+    const std::uint64_t snapshot = hydrology::particle_snapshot_digest(particles, 1u);
+    const auto first = hydrology::derive_product_keys(
+        job, snapshot, settings, 0.25f, gameplay_layout);
+    auto blend_changed = job;
+    blend_changed.blend_width_m = 0.1f;
+    const auto second = hydrology::derive_product_keys(
+        blend_changed, snapshot, settings, 0.25f, gameplay_layout);
+    CHECK(first.visual != second.visual &&
+              first.coarse_cpu != second.coarse_cpu &&
+              first.gameplay == second.gameplay,
+          "the CPU mesher blend width invalidates its coarse key without churning gameplay");
+}
+
 }  // namespace
 
 int main() {
@@ -253,5 +273,6 @@ int main() {
     test_reference_scan_covers_empty_zero_max_and_overflow();
     test_mesh_digest_is_stable_and_sensitive();
     test_gameplay_identity_ignores_visual_job_bounds();
+    test_coarse_identity_includes_cpu_mesher_blend_width();
     return check_summary();
 }

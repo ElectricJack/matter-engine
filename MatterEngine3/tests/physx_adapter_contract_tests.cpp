@@ -4,6 +4,9 @@
 #include "hydrology/fluid_emission.h"
 #include "hydrology/physx_collision_input.h"
 #include "hydrology/physx_fluid_bake.h"
+#if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
+#include "provider/local_provider.h"
+#endif
 
 #include <cstdint>
 #include <limits>
@@ -861,6 +864,74 @@ void test_product_keys_follow_the_settings_the_extractors_consume() {
           "mismatched PhysX or adapter provenance cannot become an accepted artifact");
 }
 
+#if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
+void test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path() {
+    viewer::LocalProviderConfig config{};
+    int gpu_run_calls = 0;
+    int vk_visual_calls = 0;
+    config.gpu_run = [&](const char* name, std::function<bool(std::string&)> work,
+                         std::string& runner_error) {
+        ++gpu_run_calls;
+        CHECK(std::string(name) == "hydrology_particle_visual",
+              "the production provider labels the renderer product job");
+        return work(runner_error);
+    };
+    config.vk_particle_visual_bake =
+        [&](const gpu_meshing::ParticleJob& job, gpu_meshing::MeshResult& mesh,
+            gpu_meshing::Stats&, gpu_meshing::Error&,
+            const gpu_meshing::BuildControl&) {
+            ++vk_visual_calls;
+            mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                              0.0f, 1.0f, 0.0f};
+            mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                            0.0f, 0.0f, 1.0f};
+            mesh.indices = {0u, 1u, 2u};
+            mesh.material = job.material;
+            mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+            return true;
+        };
+    viewer::LocalProvider provider(std::move(config));
+    hydrology::PhysxFluidBake::ProductBuildSettings settings{};
+    settings.particle_radius_m = 0.65f;
+    settings.coarse_voxel_m = 0.4f;
+    settings.visual_job.bounds_m = {{-1.0f, -1.0f, -1.0f}, {4.0f, 5.0f, 4.0f}};
+    settings.visual_job.voxel_m = 0.25f;
+    settings.visual_job.blend_width_m = 0.1f;
+    settings.visual_job.limits = {16u, 65536u, 65536u, 65536u};
+    settings.gameplay_layout = {{0.0f, 0.0f, 0.0f}, 1.0f, 4u, 4u};
+    settings.semantic = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
+    settings.provenance = {0x10deu, 0x2684u, 1u, 1u, 2u};
+    RecordingBackend backend;
+    hydrology::HydrologyArtifact artifact{};
+    FluidBakeError error{};
+    CHECK(provider.run_fluid_bake(
+              valid_input(), backend, {}, settings,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              artifact, error) && artifact.accepted && gpu_run_calls == 1 &&
+              vk_visual_calls == 1,
+          error.message.empty()
+              ? "the actual LocalProvider flow sends the accepted backend snapshot to vk_particle_visual_bake"
+              : error.message.c_str());
+
+    viewer::LocalProviderConfig failing_config{};
+    failing_config.vk_particle_visual_bake =
+        [](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
+           gpu_meshing::Stats&, gpu_meshing::Error& error,
+           const gpu_meshing::BuildControl&) {
+            error.message = "deliberate editor visual failure";
+            return false;
+        };
+    viewer::LocalProvider failing_provider(std::move(failing_config));
+    hydrology::HydrologyArtifact rejected{};
+    CHECK(!failing_provider.run_fluid_bake(
+              valid_input(), backend, {}, settings,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              rejected, error) && rejected.particles.empty() &&
+              error.code == FluidBakeCode::ProductFailure,
+          "a production renderer failure prevents publication of the completed snapshot");
+}
+#endif
+
 }  // namespace
 
 int main() {
@@ -880,5 +951,8 @@ int main() {
     test_capacity_statistics_and_sensor_consistency_are_distinct();
     test_accepted_snapshot_builds_all_products_or_publishes_nothing();
     test_product_keys_follow_the_settings_the_extractors_consume();
+#if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
+    test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path();
+#endif
     return check_summary();
 }

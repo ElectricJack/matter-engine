@@ -381,6 +381,19 @@ public:
         hydrology::HydrologyArtifact& artifact,
         hydrology::FluidBakeError& error) const;
 
+    // Synchronous product half of the production fluid bake.  Task 7 owns
+    // when this starts and which worker supplies the backend; once that
+    // backend has accepted its final host snapshot this method is the only
+    // path to publication, including the renderer-owned visual product.
+    bool run_fluid_bake(
+        const hydrology::FluidBakeInput& input,
+        hydrology::IFluidBakeBackend& backend,
+        const hydrology::FluidBakeCallbacks& callbacks,
+        const hydrology::PhysxFluidBake::ProductBuildSettings& settings,
+        const hydrology::TerrainHeightSampler& terrain,
+        hydrology::HydrologyArtifact& artifact,
+        hydrology::FluidBakeError& error) const;
+
     // connect() == install_graph() + compose_world() with unchanged external behavior.
     bool connect(WorldManifest& out, std::string& err) override;
 
