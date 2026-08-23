@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hydrology/physx_collision_input.h"
 #include "hydrology/physx_fluid_types.h"
 
 #include <cstdint>
@@ -61,6 +62,10 @@ public:
              const FluidBakeCallbacks& callbacks,
              FluidBakeOutput& output,
              FluidBakeError& error) override;
+
+    bool run_collision_probe(const FluidCollisionProbeInput& input,
+                             FluidCollisionProbeOutput& output,
+                             FluidBakeError& error);
 
 private:
     struct Impl;

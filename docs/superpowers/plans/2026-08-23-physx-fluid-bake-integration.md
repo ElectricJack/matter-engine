@@ -262,23 +262,23 @@ git commit -m "feat: embed the PhysX GPU runtime"
 - Consumes: world-space terrain triangle mesh, boulder geometry, virtual dam plane/mesh, and dry-collar AABB.
 - Produces: validated indexed `FluidCollisionMesh`; cooked PhysX triangle mesh/static actors; collision probe results and contact/escape counters.
 
-- [ ] **Step 1: Add failing pure collision-input tests**
+- [x] **Step 1: Add failing pure collision-input tests**
 
 Test winding-preserving deduplication, invalid/out-of-range indices, degenerate triangles, non-finite transforms, bounds derivation with dry margin, explicit dam tagging, and absence of generated AABB wall triangles.
 
-- [ ] **Step 2: Implement minimal collision input assembly and pass CPU tests**
+- [x] **Step 2: Implement minimal collision input assembly and pass CPU tests**
 
 The output contains only authored terrain/boulders/backing/dam surfaces. A face-count assertion proves no six-face domain box is synthesized.
 
-- [ ] **Step 3: Add failing GPU collision fixtures**
+- [x] **Step 3: Add failing GPU collision fixtures**
 
 Run one triangle, one box, one sloped ramp, then a short Matter chute. Assert probe particles settle within one collision voxel, the water center of mass moves downhill, all particles remain finite, and the dry collar produces escape failure instead of reflection.
 
-- [ ] **Step 4: Implement PhysX cooking and static actor installation**
+- [x] **Step 4: Implement PhysX cooking and static actor installation**
 
 Cook with exact scale/unit settings, reject warning/error callbacks as categorized results, and retain cooked resources until the scene is destroyed. Do not change PBD constraints or timestep equations.
 
-- [ ] **Step 5: Pass P1 collision and P2 chute tests and commit**
+- [x] **Step 5: Pass P1 collision and P2 chute tests and commit**
 
 ```powershell
 git add MatterEngine3/src/hydrology/physx_collision_input.h MatterEngine3/src/hydrology/physx_collision_input.cpp integrations/physx_adapter/physx_runtime.cpp MatterEngine3/tests/physx_adapter_contract_tests.cpp MatterEngine3/tests/physx_fluid_integration_tests.cpp

@@ -1,5 +1,6 @@
 #include "check.h"
 
+#include "hydrology/physx_collision_input.h"
 #include "hydrology/physx_fluid_bake.h"
 
 #include <cstdint>
@@ -18,7 +19,132 @@ using hydrology::FluidBakeInput;
 using hydrology::FluidBakeOutput;
 using hydrology::FluidBakeProgress;
 using hydrology::FluidBackendProbe;
+using hydrology::FluidCollisionBuildInput;
+using hydrology::FluidCollisionBuildOutput;
+using hydrology::FluidCollisionSurface;
+using hydrology::FluidCollisionSurfaceKind;
 using hydrology::IFluidBakeBackend;
+
+matter::Mat4f identity_transform(float translate_x = 0.0f) {
+    matter::Mat4f result{};
+    result.m[0] = result.m[5] = result.m[10] = result.m[15] = 1.0f;
+    result.m[3] = translate_x;
+    return result;
+}
+
+FluidCollisionSurface triangle_surface(FluidCollisionSurfaceKind kind) {
+    FluidCollisionSurface surface{};
+    surface.kind = kind;
+    surface.local_to_world = identity_transform();
+    surface.mesh.vertices = {
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f},
+    };
+    surface.mesh.indices = {0u, 1u, 2u};
+    return surface;
+}
+
+FluidCollisionBuildInput collision_build_input() {
+    FluidCollisionBuildInput input{};
+    input.section_bounds_m = {{0.0f, -1.0f, 0.0f},
+                              {10.0f, 5.0f, 10.0f}};
+    input.dry_margin_m = 2.0f;
+    return input;
+}
+
+void test_collision_assembly_deduplicates_without_changing_winding() {
+    auto input = collision_build_input();
+    input.surfaces.push_back(
+        triangle_surface(FluidCollisionSurfaceKind::Terrain));
+    auto reversed = triangle_surface(FluidCollisionSurfaceKind::Boulder);
+    reversed.mesh.indices = {0u, 2u, 1u};
+    input.surfaces.push_back(std::move(reversed));
+
+    FluidCollisionBuildOutput output{};
+    FluidBakeError error{};
+    CHECK(hydrology::build_physx_collision_input(input, output, error),
+          error.message.c_str());
+    CHECK(output.mesh.vertices.size() == 3u,
+          "coincident world-space vertices are deduplicated");
+    CHECK(output.mesh.indices ==
+              std::vector<std::uint32_t>({0u, 1u, 2u, 0u, 2u, 1u}),
+          "vertex deduplication preserves each authored triangle winding");
+    CHECK(output.ranges.size() == 2u &&
+              output.ranges[0].kind == FluidCollisionSurfaceKind::Terrain &&
+              output.ranges[0].first_index == 0u &&
+              output.ranges[0].index_count == 3u &&
+              output.ranges[1].kind == FluidCollisionSurfaceKind::Boulder &&
+              output.ranges[1].first_index == 3u &&
+              output.ranges[1].index_count == 3u,
+          "authored collision source tags survive assembly");
+}
+
+void test_collision_assembly_rejects_invalid_geometry_and_transforms() {
+    auto expect_invalid = [](FluidCollisionBuildInput input,
+                             const char* message) {
+        FluidCollisionBuildOutput output{};
+        output.mesh.vertices.push_back({99.0f, 99.0f, 99.0f});
+        FluidBakeError error{};
+        CHECK(!hydrology::build_physx_collision_input(input, output, error),
+              message);
+        CHECK(error.code == FluidBakeCode::InvalidInput &&
+                  output.mesh.vertices.empty() && output.ranges.empty(),
+              "invalid collision input clears output and reports InvalidInput");
+    };
+
+    auto input = collision_build_input();
+    auto surface = triangle_surface(FluidCollisionSurfaceKind::Terrain);
+    surface.mesh.indices.push_back(0u);
+    input.surfaces.push_back(std::move(surface));
+    expect_invalid(std::move(input), "partial collision triangle is rejected");
+
+    input = collision_build_input();
+    surface = triangle_surface(FluidCollisionSurfaceKind::Terrain);
+    surface.mesh.indices[2] = 99u;
+    input.surfaces.push_back(std::move(surface));
+    expect_invalid(std::move(input), "out-of-range collision index is rejected");
+
+    input = collision_build_input();
+    surface = triangle_surface(FluidCollisionSurfaceKind::Terrain);
+    surface.mesh.vertices[2] = {2.0f, 0.0f, 0.0f};
+    input.surfaces.push_back(std::move(surface));
+    expect_invalid(std::move(input), "degenerate collision triangle is rejected");
+
+    input = collision_build_input();
+    surface = triangle_surface(FluidCollisionSurfaceKind::Terrain);
+    surface.local_to_world.m[6] =
+        std::numeric_limits<float>::quiet_NaN();
+    input.surfaces.push_back(std::move(surface));
+    expect_invalid(std::move(input), "non-finite collision transform is rejected");
+}
+
+void test_collision_bounds_and_virtual_dam_do_not_create_hidden_walls() {
+    auto input = collision_build_input();
+    input.surfaces.push_back(
+        triangle_surface(FluidCollisionSurfaceKind::Terrain));
+    auto dam = triangle_surface(FluidCollisionSurfaceKind::VirtualDam);
+    dam.local_to_world = identity_transform(4.0f);
+    input.surfaces.push_back(std::move(dam));
+
+    FluidCollisionBuildOutput output{};
+    FluidBakeError error{};
+    CHECK(hydrology::build_physx_collision_input(input, output, error),
+          error.message.c_str());
+    CHECK(output.mesh.indices.size() == 6u &&
+              output.authored_triangle_count == 2u,
+          "assembly emits exactly the two authored triangles and no AABB walls");
+    CHECK(output.ranges.size() == 2u &&
+              output.ranges[1].kind == FluidCollisionSurfaceKind::VirtualDam,
+          "the downstream virtual dam remains explicitly tagged");
+    CHECK(output.dry_collar_bounds_m.minimum.x == -2.0f &&
+              output.dry_collar_bounds_m.minimum.y == -3.0f &&
+              output.dry_collar_bounds_m.minimum.z == -2.0f &&
+              output.dry_collar_bounds_m.maximum.x == 12.0f &&
+              output.dry_collar_bounds_m.maximum.y == 7.0f &&
+              output.dry_collar_bounds_m.maximum.z == 12.0f,
+          "dry collar is derived from authored section bounds and margin");
+}
 
 enum class BackendBehavior {
     Succeed,
@@ -398,6 +524,9 @@ void test_capacity_statistics_and_sensor_consistency_are_distinct() {
 }  // namespace
 
 int main() {
+    test_collision_assembly_deduplicates_without_changing_winding();
+    test_collision_assembly_rejects_invalid_geometry_and_transforms();
+    test_collision_bounds_and_virtual_dam_do_not_create_hidden_walls();
     test_invalid_input_never_invokes_backend();
     test_every_nested_numeric_input_is_validated();
     test_unavailable_backend_and_cancellation_are_stable();
