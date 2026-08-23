@@ -60,6 +60,7 @@ MatterEngine3/src/render/vk_cloud_shadows.cpp|all
 MatterEngine3/src/render/part_store.cpp|all
 MatterEngine3/src/render/world_state.cpp|all
 MatterEngine3/src/render/lod_trace.cpp|all
+MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp|all
 MatterEngine3/src/render/tileset_slicer.cpp|all
 MatterEngine3/src/render/bc_encode.cpp|all
 MatterEngine3/src/provider/local_provider.cpp|all

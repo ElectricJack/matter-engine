@@ -33,13 +33,14 @@
 - Modify: `cmake/manifests/engine-core.sources`
 - Modify: `cmake/MatterEngine.cmake`
 - Modify: `MatterEngine3/Makefile`
+- Modify: `MatterEngine3/tests/Makefile`
 
 **Interfaces:**
 - Produces `gpu_meshing::ParticleSample`, `Aabb`, `Limits`, `ParticleJob`, `MeshResult`, `Stats`, `GridLayout`, `ErrorCode`, `validate_particle_job`, `evaluate_particle_field_reference`, `exclusive_scan_reference`, and `mesh_content_digest`.
 - `ParticleSample` is exactly four floats (`position_m`, `radius_m`) and has no material field because Phase 1 jobs carry one material.
 - `MeshResult` owns interleaved scalar vectors: three floats per position, three per normal, and `uint32_t` indices.
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Add focused tests whose wished-for calls are:
 
@@ -63,9 +64,9 @@ CHECK(output == std::vector<uint32_t>({0, 3, 3, 5}) && total == 10,
       "exclusive scan and total are exact");
 ```
 
-Cover empty particles, non-finite inputs, inverted bounds, zero voxel/blend/radius, every declared limit, multiplication overflow, particles outside bounds, negative coordinates, hard union, two-sphere smooth union, scan empty/zero/max/overflow, stable digest, and digest changes for every mesh byte stream or material change.
+Cover empty particles, non-finite inputs, inverted bounds, zero voxel/radius, negative blend, every declared limit, multiplication overflow, particles outside bounds, negative coordinates, hard union with zero blend, two-sphere smooth union, scan empty/zero/max/overflow, stable digest, and digest changes for every mesh byte stream or material change.
 
-- [ ] **Step 2: Run the new target and verify RED**
+- [x] **Step 2: Run the new target and verify RED**
 
 Run:
 
@@ -75,7 +76,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target gpu_visual_mesher_cpu_tes
 
 Expected: configure/build fails because `matter/gpu_visual_meshing.h` and the target do not exist.
 
-- [ ] **Step 3: Add the minimal compiler-neutral contract**
+- [x] **Step 3: Add the minimal compiler-neutral contract**
 
 Define the public shapes with this ownership/API surface:
 
@@ -106,7 +107,7 @@ struct BuildControl {
     std::function<bool(uint64_t generation)> generation_is_current;
 };
 struct GridLayout {
-    matter::Float3 origin_m{}, spacing_m{};
+    matter::Float3 origin_m{}, spacing_m{}, bin_origin_m{};
     std::array<uint32_t, 3> sample_dims{}, cell_dims{}, bin_dims{};
     uint32_t grid_vertices = 0, grid_cells = 0, bins = 0;
     float bin_size_m = 0.0f, query_radius_m = 0.0f;
@@ -133,9 +134,9 @@ uint64_t mesh_content_digest(const MeshResult&);
 }
 ```
 
-Derive `sample_dims[axis] = ceil(extent / voxel) + 1`, `cell_dims = sample_dims - 1`, and `spacing = extent / cell_dims`. Use the maximum particle radius as the reference radius and `query_radius = max_radius * 2.5 + blend_width * 4`, matching `surface.c`. Use `bin_size = query_radius` and center-bin particles so a field probe visits the complete integer bin range intersecting its query sphere. The reference field uses the same stable exponential smooth-min equation as `ProbeFieldScalar`.
+Derive `sample_dims[axis] = ceil(extent / voxel) + 1`, `cell_dims = sample_dims - 1`, and `spacing = extent / cell_dims`. Use the maximum particle radius as the reference radius and `query_radius = max_radius * 2.5 + blend_width * 4`, matching `surface.c`; an empty snapshot returns an empty mesh before bin allocation. Use `bin_size = query_radius`, expand the bin domain by one query radius around the scalar bounds, and center-bin every particle in that expanded domain so just-outside particles can still influence boundary samples. A field probe visits the complete integer bin range intersecting its query sphere. The reference field uses the same stable exponential smooth-min equation as `ProbeFieldScalar`.
 
-- [ ] **Step 4: Verify GREEN and the existing CPU graph**
+- [x] **Step 4: Verify GREEN and the existing CPU graph**
 
 Run:
 
@@ -146,7 +147,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target gpu_visual_mesher_cpu_tes
 
 Expected: both tests pass and the new test prints `ALL PASS`.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```powershell
 git add MatterEngine3/include/matter/gpu_visual_meshing.h MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp MatterEngine3/tests/gpu_visual_mesher_cpu_tests.cpp cmake/manifests/engine-core.sources cmake/MatterEngine.cmake MatterEngine3/Makefile
@@ -178,7 +179,7 @@ git commit -m "feat: define GPU visual meshing contracts"
 
 - [ ] **Step 1: Write failing GPU scan/bin tests**
 
-Add a `MATTER_VK_SMOKE_MODE=gpu-mesher` branch to the smoke harness which calls the new functions. Tests upload `{3,0,2,5}`, assert GPU output `{0,3,3,5}` and total `10`, then exercise 257 and 65,537 elements so one-block and recursive block-sum paths are both required. Particle-bin tests use negative-coordinate particles on bin faces and assert every input id appears exactly once, offsets are monotonic, and every bin's ids are ascending after `gpu_mesh_bin_sort.comp`.
+Add a `MATTER_VK_SMOKE_MODE=gpu-mesher` branch to the smoke harness which calls the new functions. Tests upload `{3,0,2,5}`, assert GPU output `{0,3,3,5}` and total `10`, then exercise 257 and 65,537 elements so one-block and recursive block-sum paths are both required. Particle-bin tests use contributing negative-coordinate particles on bin faces and assert every contributing input id appears exactly once, offsets are monotonic, and every bin's ids are ascending after `gpu_mesh_bin_sort.comp`.
 
 - [ ] **Step 2: Verify RED**
 

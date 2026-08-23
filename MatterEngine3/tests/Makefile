@@ -1146,6 +1146,12 @@ HYDROLOGY_SETTINGS_OBJS = $(call obj_list,def,$(HYDROLOGY_SETTINGS_CPP))
 $(foreach s,$(HYDROLOGY_SETTINGS_CPP),$(eval $(call objrule_cpp,def,$(s))))
 $(foreach s,$(RIVER_NETWORK_CPP),$(eval $(call objrule_cpp,def,$(s))))
 
+GPU_VISUAL_MESHER_CPU_TARGET = build/gpu_visual_mesher_cpu_tests
+GPU_VISUAL_MESHER_CPU_CPP = gpu_visual_mesher_cpu_tests.cpp \
+                            ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp
+GPU_VISUAL_MESHER_CPU_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+                          $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
+
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
 PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
@@ -2997,6 +3003,19 @@ run-surfacefield: $(SURFACEFIELD_TARGET)
 clean: clean-surfacefield
 clean-surfacefield:
 	rm -f build/surface_field_tests
+
+$(GPU_VISUAL_MESHER_CPU_TARGET): $(GPU_VISUAL_MESHER_CPU_CPP) \
+        $(GPU_VISUAL_MESHER_CPU_C) ../include/matter/gpu_visual_meshing.h check.h | build
+	$(CC) $(CFLAGS) $(INCLUDE_PATHS) -o $@ \
+	    $(GPU_VISUAL_MESHER_CPU_CPP) $(GPU_VISUAL_MESHER_CPU_C) -lm
+
+run-gpu-visual-mesher-cpu: $(GPU_VISUAL_MESHER_CPU_TARGET)
+	./$(GPU_VISUAL_MESHER_CPU_TARGET)
+
+.PHONY: run-gpu-visual-mesher-cpu clean-gpu-visual-mesher-cpu
+clean: clean-gpu-visual-mesher-cpu
+clean-gpu-visual-mesher-cpu:
+	rm -f $(GPU_VISUAL_MESHER_CPU_TARGET)
 
 # Physical atmosphere CPU reference model (header-only; no graphics runtime).
 ATMOSPHERE_TARGET = build/atmosphere_tests
