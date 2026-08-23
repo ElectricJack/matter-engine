@@ -22,6 +22,15 @@ function Invoke-Checked {
     }
 }
 
+function Get-PythonInterpreterArguments {
+    param([Parameter(Mandatory = $true)][string]$Executable)
+
+    $executableName = [System.IO.Path]::GetFileName($Executable)
+    if ($executableName -ieq 'py.exe' -or $executableName -ieq 'py') {
+        return '-3'
+    }
+}
+
 function Assert-PythonSelection {
     param(
         [string]$Name,
@@ -100,9 +109,20 @@ New-Item -ItemType Directory -Path $alternateLauncherDirectory -Force | Out-Null
 $alternateLauncher = Join-Path $alternateLauncherDirectory 'py.exe'
 Copy-Item -LiteralPath $toolchain.Python -Destination $alternateLauncher
 
-$nativePython = (& $toolchain.Python -3 -c 'import sys; print(sys.executable)' 2>&1 | Out-String).Trim()
+$resolverPythonArguments = @(Get-PythonInterpreterArguments -Executable $toolchain.Python)
+$nativePython = (& $toolchain.Python @resolverPythonArguments -c 'import sys; print(sys.executable)' 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $nativePython -PathType Leaf)) {
     throw "Unable to discover python.exe through $($toolchain.Python): $nativePython"
+}
+$directPythonArguments = @(Get-PythonInterpreterArguments -Executable $nativePython)
+if ($directPythonArguments.Count -ne 0) {
+    throw "Direct python.exe discovery unexpectedly selected launcher arguments: $directPythonArguments"
+}
+$rediscoveredPython = (& $nativePython @directPythonArguments -c 'import sys; print(sys.executable)' 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or
+        (Resolve-Path -LiteralPath $rediscoveredPython).Path -ne
+        (Resolve-Path -LiteralPath $nativePython).Path) {
+    throw "Direct python.exe resolver probe did not preserve the executable: $rediscoveredPython"
 }
 
 Assert-PythonSelection -Name 'alternate-launcher' -Python $alternateLauncher -ExpectLauncher $true

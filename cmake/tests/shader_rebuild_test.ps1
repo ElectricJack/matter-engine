@@ -30,6 +30,11 @@ function Get-Sha256 {
     }
 }
 
+function Get-LastWriteTicks {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-Item -LiteralPath $Path).LastWriteTimeUtc.Ticks
+}
+
 $testRoot = Join-Path $repositoryRoot 'MatterEditor\build\cmake\shader-rebuild-test'
 $sourceDir = Join-Path $testRoot 'source'
 $buildDir = Join-Path $testRoot 'build'
@@ -140,20 +145,34 @@ $first = [ordered]@{
     UnrelatedSpirvHash = Get-Sha256 -Path $unrelatedSpirv
     HeaderHash = Get-Sha256 -Path $headerPath
     UnrelatedHash = Get-Sha256 -Path $unrelatedObject
+    DependentAMtime = Get-LastWriteTicks -Path $dependentASpirv
+    DependentBMtime = Get-LastWriteTicks -Path $dependentBSpirv
+    UnrelatedSpirvMtime = Get-LastWriteTicks -Path $unrelatedSpirv
+    HeaderMtime = Get-LastWriteTicks -Path $headerPath
+    UnrelatedMtime = Get-LastWriteTicks -Path $unrelatedObject
 }
 
-Invoke-Checked -Executable $toolchain.CMake -Arguments @('--build', $buildDir, '--target', 'shader_fixture')
+$noopOutput = (& $toolchain.CMake --build $buildDir --target shader_fixture 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw "No-op shader rebuild failed:`n$noopOutput" }
 $noop = [ordered]@{
     DependentAHash = Get-Sha256 -Path $dependentASpirv
     DependentBHash = Get-Sha256 -Path $dependentBSpirv
     UnrelatedSpirvHash = Get-Sha256 -Path $unrelatedSpirv
     HeaderHash = Get-Sha256 -Path $headerPath
     UnrelatedHash = Get-Sha256 -Path $unrelatedObject
+    DependentAMtime = Get-LastWriteTicks -Path $dependentASpirv
+    DependentBMtime = Get-LastWriteTicks -Path $dependentBSpirv
+    UnrelatedSpirvMtime = Get-LastWriteTicks -Path $unrelatedSpirv
+    HeaderMtime = Get-LastWriteTicks -Path $headerPath
+    UnrelatedMtime = Get-LastWriteTicks -Path $unrelatedObject
 }
 foreach ($key in $first.Keys) {
     if ($first[$key] -ne $noop[$key]) {
         throw "No-op rebuild changed $key (before '$($first[$key])', after '$($noop[$key])')"
     }
+}
+if ($noopOutput -match 'dependent_[ab]\.comp|unrelated\.comp|embedded_spirv|unrelated\.obj|glslc(?:\.exe)?|embed_spirv\.py') {
+    throw "No-op shader build executed a fixture production command:`n$noopOutput"
 }
 
 Set-Utf8NoBomContent -Path $dependentAPath -Value (
