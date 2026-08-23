@@ -1152,6 +1152,14 @@ GPU_VISUAL_MESHER_CPU_CPP = gpu_visual_mesher_cpu_tests.cpp \
 GPU_VISUAL_MESHER_CPU_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
                           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
 
+HYDROLOGY_ARTIFACT_TARGET = build/hydrology_artifact_tests
+HYDROLOGY_ARTIFACT_CPP = hydrology_artifact_tests.cpp \
+                         ../src/hydrology/hydrology_artifact.cpp \
+                         ../src/hydrology/water_visual_products.cpp \
+                         ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp
+HYDROLOGY_ARTIFACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+                       $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
+
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
 PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
@@ -3016,6 +3024,20 @@ run-gpu-visual-mesher-cpu: $(GPU_VISUAL_MESHER_CPU_TARGET)
 clean: clean-gpu-visual-mesher-cpu
 clean-gpu-visual-mesher-cpu:
 	rm -f $(GPU_VISUAL_MESHER_CPU_TARGET)
+
+$(HYDROLOGY_ARTIFACT_TARGET): $(HYDROLOGY_ARTIFACT_CPP) \
+        $(HYDROLOGY_ARTIFACT_C) ../src/hydrology/hydrology_artifact.h \
+        ../src/hydrology/water_visual_products.h check.h | build
+	$(CC) $(CFLAGS) $(INCLUDE_PATHS) -o $@ \
+	    $(HYDROLOGY_ARTIFACT_CPP) $(HYDROLOGY_ARTIFACT_C) -lm
+
+run-hydrology-artifact: $(HYDROLOGY_ARTIFACT_TARGET)
+	./$(HYDROLOGY_ARTIFACT_TARGET)
+
+.PHONY: run-hydrology-artifact clean-hydrology-artifact
+clean: clean-hydrology-artifact
+clean-hydrology-artifact:
+	rm -f $(HYDROLOGY_ARTIFACT_TARGET)
 
 # Physical atmosphere CPU reference model (header-only; no graphics runtime).
 ATMOSPHERE_TARGET = build/atmosphere_tests

@@ -15,6 +15,8 @@ MatterEngine3/src/csg_lowering.cpp|all
 MatterEngine3/src/module_resolver.cpp|all
 MatterEngine3/src/script/world_definition_loader.cpp|all
 MatterEngine3/src/hydrology/hydrology_settings.cpp|all
+MatterEngine3/src/hydrology/water_visual_products.cpp|all
+MatterEngine3/src/hydrology/hydrology_artifact.cpp|all
 MatterEngine3/src/hydrology/river_network_builder.cpp|all
 MatterEngine3/src/hydrology/river_geometry.cpp|all
 MatterEngine3/src/terrain_river_overlay.cpp|all

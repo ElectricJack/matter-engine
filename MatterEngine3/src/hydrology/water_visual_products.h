@@ -1,0 +1,63 @@
+#pragma once
+
+#include "matter/gpu_visual_meshing.h"
+
+#include <cstdint>
+#include <vector>
+
+namespace hydrology {
+
+struct ProductKeys {
+    std::uint64_t visual = 0;
+    std::uint64_t coarse_cpu = 0;
+    std::uint64_t gameplay = 0;
+};
+
+inline bool operator==(const ProductKeys& a, const ProductKeys& b) noexcept {
+    return a.visual == b.visual && a.coarse_cpu == b.coarse_cpu &&
+           a.gameplay == b.gameplay;
+}
+
+struct GameplaySample {
+    float height_m = 0.0f;
+    float depth_m = 0.0f;
+    float velocity_x_mps = 0.0f;
+    float velocity_y_mps = 0.0f;
+    float velocity_z_mps = 0.0f;
+    bool wet_valid = false;
+};
+
+inline bool operator==(const GameplaySample& a,
+                       const GameplaySample& b) noexcept {
+    return a.height_m == b.height_m && a.depth_m == b.depth_m &&
+           a.velocity_x_mps == b.velocity_x_mps &&
+           a.velocity_y_mps == b.velocity_y_mps &&
+           a.velocity_z_mps == b.velocity_z_mps &&
+           a.wet_valid == b.wet_valid;
+}
+
+struct ProductIdentitySettings {
+    float coarse_voxel_m = 0.5f;
+    std::uint32_t field_contract_version = 1;
+    std::uint32_t extraction_contract_version = 1;
+    std::uint32_t output_contract_version = 1;
+    std::uint32_t normal_contract_version = 1;
+    bool smoothing_enabled = false;
+    bool anisotropy_enabled = false;
+    std::vector<std::uint64_t> shader_digests;
+};
+
+std::uint64_t particle_snapshot_digest(
+    const gpu_meshing::ParticleSample* particles, std::uint32_t count);
+
+ProductKeys derive_product_keys(
+    const gpu_meshing::ParticleJob& job,
+    std::uint64_t particle_snapshot_digest,
+    const ProductIdentitySettings& settings);
+
+bool build_cpu_particle_visual(const gpu_meshing::ParticleJob& job,
+                               float coarse_voxel_m,
+                               gpu_meshing::MeshResult& result,
+                               gpu_meshing::Error& error);
+
+}  // namespace hydrology

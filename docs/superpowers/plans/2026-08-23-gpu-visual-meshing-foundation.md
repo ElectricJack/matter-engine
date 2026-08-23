@@ -335,27 +335,27 @@ git commit -m "feat: extract deterministic GPU water meshes"
 - Produces `hydrology::HydrologyArtifact` with `visual_mesh`, `coarse_cpu_mesh`, and `gameplay_field` as independent owned products.
 - Produces `build_cpu_particle_visual`, `serialize_artifact`, `deserialize_artifact`, `save_artifact_atomic`, and `load_artifact_validated`.
 
-- [ ] **Step 1: Write failing artifact/fallback tests**
+- [x] **Step 1: Write failing artifact/fallback tests**
 
 Tests require: coarse CPU mesh from the same particles; visual-only setting changes do not change the CPU/gameplay keys; round-trip exact bytes; corrupt/truncated/oversized payload rejection; invalid indices/non-finite mesh rejection; semantic key and embedded payload digest verification; atomic replace; second load returns the same mesh without invoking a supplied mesher callback; and visual/coarse/gameplay products coexist without sharing vector storage or topology.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Build `hydrology_artifact_tests`. Expected: target and headers do not exist.
 
-- [ ] **Step 3: Implement coarse CPU fallback**
+- [x] **Step 3: Implement coarse CPU fallback**
 
 Convert samples to MatterSurfaceLib `Particle`, choose the smallest cubic `Bounds` and power-of-two grid whose cell size is not finer than the requested coarse voxel, call `GenerateMeshWithScratch`, recompute analytic normals, widen 16-bit indices to `uint32_t`, validate, and free CPU mesh arrays. The GPU-disabled caller invokes this function directly and never links the Vulkan implementation.
 
-- [ ] **Step 4: Implement the versioned artifact**
+- [x] **Step 4: Implement the versioned artifact**
 
 Use fixed magic `MHYDMSH1`, little-endian scalar encoding, explicit byte counts before each array, maximum 512 MiB payload, and a digest over exact serialized product bytes. The visual identity encodes particle snapshot digest, bounds, voxel/radius/blend/isolevel values, field/extraction/output contract versions, every compiled GPU-mesh SPIR-V digest, and explicit normal/smoothing/anisotropy settings; GPU vendor/device/driver are recorded as provenance rather than semantic inputs. Encode product-specific keys, mesh material, positions/normals/indices, and gameplay samples `(height, depth, velocity xyz, wet-valid byte)`. Publish a closed temporary file and atomically replace the semantic-key root only after reopening and validating the payload.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 Run `ctest -R 'hydrology_artifact_tests|gpu_visual_mesher_cpu_tests|surface_field_tests'`. Expected: all pass and corrupt fixture tests fail closed without files outside their temporary cache root.
 
-- [ ] **Step 6: Commit Task 5**
+- [x] **Step 6: Commit Task 5**
 
 ```powershell
 git add MatterEngine3/src/hydrology/hydrology_artifact.h MatterEngine3/src/hydrology/hydrology_artifact.cpp MatterEngine3/src/hydrology/water_visual_products.h MatterEngine3/src/hydrology/water_visual_products.cpp MatterEngine3/tests/hydrology_artifact_tests.cpp cmake/manifests/engine-core.sources cmake/MatterEngine.cmake MatterEngine3/Makefile

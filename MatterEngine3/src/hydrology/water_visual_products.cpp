@@ -1,0 +1,210 @@
+#include "hydrology/water_visual_products.h"
+
+#include "surface.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+
+namespace hydrology {
+namespace {
+
+class Digest {
+public:
+    explicit Digest(std::uint64_t domain) { u64(domain); }
+    void byte(std::uint8_t value) {
+        value_ ^= value;
+        value_ *= 1099511628211ull;
+    }
+    void u32(std::uint32_t value) {
+        for (unsigned shift = 0; shift != 32; shift += 8)
+            byte(static_cast<std::uint8_t>(value >> shift));
+    }
+    void u64(std::uint64_t value) {
+        for (unsigned shift = 0; shift != 64; shift += 8)
+            byte(static_cast<std::uint8_t>(value >> shift));
+    }
+    void floating(float value) {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        u32(bits);
+    }
+    void point(matter::Float3 point) {
+        floating(point.x);
+        floating(point.y);
+        floating(point.z);
+    }
+    std::uint64_t finish() const {
+        return value_ == 0 ? 1u : value_;
+    }
+
+private:
+    std::uint64_t value_ = 1469598103934665603ull;
+};
+
+bool fail(gpu_meshing::Error& error, gpu_meshing::ErrorCode code,
+          const char* message) {
+    error.code = code;
+    error.message = message;
+    return false;
+}
+
+void free_surface_mesh(Mesh& mesh) {
+    std::free(mesh.vertices);
+    std::free(mesh.normals);
+    std::free(mesh.indices);
+    std::free(mesh.colors);
+    mesh = {};
+}
+
+bool finite_mesh(const gpu_meshing::MeshResult& mesh) {
+    if (mesh.positions.size() != mesh.normals.size() ||
+        mesh.positions.size() % 3u != 0u || mesh.indices.size() % 3u != 0u)
+        return false;
+    for (float value : mesh.positions)
+        if (!std::isfinite(value)) return false;
+    for (float value : mesh.normals)
+        if (!std::isfinite(value)) return false;
+    const std::size_t vertices = mesh.positions.size() / 3u;
+    for (std::uint32_t index : mesh.indices)
+        if (index >= vertices) return false;
+    return true;
+}
+
+}  // namespace
+
+std::uint64_t particle_snapshot_digest(
+    const gpu_meshing::ParticleSample* particles, std::uint32_t count) {
+    Digest digest(0x5041525449434c45ull);
+    digest.u32(count);
+    if (particles != nullptr) {
+        for (std::uint32_t i = 0; i != count; ++i) {
+            digest.point(particles[i].position_m);
+            digest.floating(particles[i].radius_m);
+        }
+    }
+    return digest.finish();
+}
+
+ProductKeys derive_product_keys(
+    const gpu_meshing::ParticleJob& job, std::uint64_t snapshot,
+    const ProductIdentitySettings& settings) {
+    const auto common = [&](Digest& digest) {
+        digest.u64(snapshot);
+        digest.point(job.bounds_m.min_m);
+        digest.point(job.bounds_m.max_m);
+        digest.u32(job.material);
+    };
+    Digest visual(0x56495355414c3031ull);
+    common(visual);
+    visual.floating(job.voxel_m);
+    visual.floating(job.blend_width_m);
+    visual.floating(job.iso_value);
+    visual.u32(settings.field_contract_version);
+    visual.u32(settings.extraction_contract_version);
+    visual.u32(settings.output_contract_version);
+    visual.u32(settings.normal_contract_version);
+    visual.u32(settings.smoothing_enabled ? 1u : 0u);
+    visual.u32(settings.anisotropy_enabled ? 1u : 0u);
+    visual.u64(settings.shader_digests.size());
+    for (std::uint64_t shader : settings.shader_digests) visual.u64(shader);
+
+    Digest coarse(0x434f415253453031ull);
+    common(coarse);
+    coarse.floating(settings.coarse_voxel_m);
+
+    Digest gameplay(0x47414d45504c4159ull);
+    common(gameplay);
+    return {visual.finish(), coarse.finish(), gameplay.finish()};
+}
+
+bool build_cpu_particle_visual(const gpu_meshing::ParticleJob& job,
+                               float coarse_voxel_m,
+                               gpu_meshing::MeshResult& result,
+                               gpu_meshing::Error& error) {
+    result = {};
+    error = {};
+    gpu_meshing::GridLayout ignored{};
+    if (!gpu_meshing::validate_particle_job(job, ignored, error)) return false;
+    if (!std::isfinite(coarse_voxel_m) || coarse_voxel_m <= 0.0f)
+        return fail(error, gpu_meshing::ErrorCode::InvalidInput,
+                    "coarse CPU voxel size must be positive and finite");
+    if (job.particle_count == 0u) {
+        result.material = job.material;
+        result.content_digest = gpu_meshing::mesh_content_digest(result);
+        return true;
+    }
+
+    std::vector<Particle> particles(job.particle_count);
+    float max_radius = 0.0f;
+    for (std::uint32_t i = 0; i != job.particle_count; ++i) {
+        const auto& input = job.particles[i];
+        particles[i] = {{input.position_m.x, input.position_m.y,
+                         input.position_m.z},
+                        input.radius_m, static_cast<int>(job.material)};
+        max_radius = std::max(max_radius, input.radius_m);
+    }
+    const matter::Float3 extent{
+        job.bounds_m.max_m.x - job.bounds_m.min_m.x,
+        job.bounds_m.max_m.y - job.bounds_m.min_m.y,
+        job.bounds_m.max_m.z - job.bounds_m.min_m.z};
+    const float side = std::max({extent.x, extent.y, extent.z});
+    int division_power = 1;
+    while (division_power < 8) {
+        const int next_samples = 1 << (division_power + 1);
+        const float next_cell = side / static_cast<float>(next_samples - 1);
+        if (next_cell < coarse_voxel_m) break;
+        ++division_power;
+    }
+    const Bounds bounds{
+        {(job.bounds_m.min_m.x + job.bounds_m.max_m.x) * 0.5f,
+         (job.bounds_m.min_m.y + job.bounds_m.max_m.y) * 0.5f,
+         (job.bounds_m.min_m.z + job.bounds_m.max_m.z) * 0.5f},
+        {side, side, side}, division_power};
+    SurfaceScratch* scratch = CreateSurfaceScratch();
+    if (scratch == nullptr)
+        return fail(error, gpu_meshing::ErrorCode::Unavailable,
+                    "failed to create MatterSurface CPU scratch");
+    Mesh mesh = GenerateMeshWithScratch(
+        scratch, particles.data(), max_radius,
+        static_cast<int>(particles.size()), bounds, job.blend_width_m, nullptr,
+        0, nullptr, 0, 0.0f);
+    if (mesh.vertexCount > 0)
+        ComputeSurfaceNormalsWithScratch(
+            scratch, &mesh, particles.data(), max_radius,
+            static_cast<int>(particles.size()), job.blend_width_m, nullptr, 0,
+            nullptr, 0, 0.0f);
+
+    gpu_meshing::MeshResult candidate{};
+    candidate.material = job.material;
+    if (mesh.vertexCount < 0 || mesh.triangleCount < 0 ||
+        (mesh.vertexCount != 0 &&
+         (mesh.vertices == nullptr || mesh.normals == nullptr)) ||
+        (mesh.triangleCount != 0 && mesh.indices == nullptr)) {
+        free_surface_mesh(mesh);
+        DestroySurfaceScratch(scratch);
+        return fail(error, gpu_meshing::ErrorCode::Unavailable,
+                    "MatterSurface CPU fallback returned an invalid mesh");
+    }
+    if (mesh.vertexCount > 0) {
+        candidate.positions.assign(mesh.vertices,
+                                   mesh.vertices + mesh.vertexCount * 3u);
+        candidate.normals.assign(mesh.normals,
+                                 mesh.normals + mesh.vertexCount * 3u);
+    }
+    candidate.indices.reserve(mesh.triangleCount * 3u);
+    for (int i = 0; i != mesh.triangleCount * 3; ++i)
+        candidate.indices.push_back(mesh.indices[i]);
+    free_surface_mesh(mesh);
+    DestroySurfaceScratch(scratch);
+    if (!finite_mesh(candidate))
+        return fail(error, gpu_meshing::ErrorCode::Unavailable,
+                    "MatterSurface CPU fallback emitted invalid geometry");
+    candidate.content_digest = gpu_meshing::mesh_content_digest(candidate);
+    result = std::move(candidate);
+    return true;
+}
+
+}  // namespace hydrology

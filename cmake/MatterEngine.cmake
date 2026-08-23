@@ -277,6 +277,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/props_tests.cpp)
     matter_add_engine_cpu_test(gpu_visual_mesher_cpu_tests
         MatterEngine3/tests/gpu_visual_mesher_cpu_tests.cpp)
+    matter_add_engine_cpu_test(hydrology_artifact_tests
+        MatterEngine3/tests/hydrology_artifact_tests.cpp)
 
     get_property(matter_engine_cpu_targets GLOBAL PROPERTY MATTER_ENGINE_CPU_TARGETS)
     add_custom_target(matter_engine_cpu_tests)
