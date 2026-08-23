@@ -38,10 +38,30 @@ if (Test-Path -LiteralPath $testRoot) {
 }
 New-Item -ItemType Directory -Path $sourceDir -Force | Out-Null
 
-$shaderPath = Join-Path $sourceDir 'fixture.comp'
+$dependentAPath = Join-Path $sourceDir 'dependent_a.comp'
+$dependentBPath = Join-Path $sourceDir 'dependent_b.comp'
+$unrelatedShaderPath = Join-Path $sourceDir 'unrelated.comp'
+$sharedIncludePath = Join-Path $sourceDir 'shared.glsl'
 $unrelatedInput = Join-Path $sourceDir 'unrelated.txt'
+$dependentShader = @'
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "shared.glsl"
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer TransformProbe {
+    mat4 transform_matrix;
+    vec4 input_value;
+    vec4 output_value;
+} probe;
+void main() {
+    probe.output_value = shared_apply(probe.transform_matrix * probe.input_value);
+}
+'@
+Set-Utf8NoBomContent -Path $dependentAPath -Value $dependentShader
+Set-Utf8NoBomContent -Path $dependentBPath -Value $dependentShader
+Set-Utf8NoBomContent -Path $sharedIncludePath -Value 'vec4 shared_apply(vec4 value) { return value; }'
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'MatterEngine3\shaders_vk\transform_probe.comp') `
-    -Destination $shaderPath
+    -Destination $unrelatedShaderPath
 Set-Utf8NoBomContent -Path $unrelatedInput -Value 'unrelated-object-sentinel'
 
 $cmakeLists = @'
@@ -49,6 +69,10 @@ cmake_minimum_required(VERSION 3.25)
 project(matter_shader_rebuild_fixture LANGUAGES NONE)
 
 include("${MATTER_REPOSITORY_ROOT}/cmake/MatterShaders.cmake")
+matter_resolve_windows_python(
+    EXECUTABLE "${MATTER_PYTHON_EXECUTABLE}"
+    OUT_ARGUMENTS python_arguments
+    OUT_VERSION python_version)
 
 matter_add_vulkan_shader_pipeline(
     PREFIX fixture
@@ -56,9 +80,10 @@ matter_add_vulkan_shader_pipeline(
     OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders"
     EMBEDDED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_spirv.h"
     GLSLC "${MATTER_GLSLC}"
-    PYTHON_LAUNCHER "${MATTER_PYTHON_LAUNCHER}"
+    PYTHON_EXECUTABLE "${MATTER_PYTHON_EXECUTABLE}"
+    PYTHON_ARGUMENTS ${python_arguments}
     EMBED_SCRIPT "${MATTER_REPOSITORY_ROOT}/MatterEngine3/tools/embed_spirv.py"
-    SHADERS fixture.comp
+    SHADERS dependent_a.comp dependent_b.comp unrelated.comp
 )
 
 add_custom_command(
@@ -92,38 +117,38 @@ Invoke-Checked -Executable $toolchain.CMake -Arguments @(
     "-DCMAKE_MAKE_PROGRAM=$($toolchain.Ninja)",
     "-DMATTER_REPOSITORY_ROOT=$repositoryRoot",
     "-DMATTER_GLSLC=$($toolchain.Glslc)",
-    "-DMATTER_PYTHON_LAUNCHER=$($toolchain.Python)"
+    "-DMATTER_PYTHON_EXECUTABLE=$($toolchain.Python)"
 )
 
 Invoke-Checked -Executable $toolchain.CMake -Arguments @('--build', $buildDir, '--target', 'shader_fixture')
 
-$spirvPath = Join-Path $buildDir 'shaders\fixture.comp.spv'
+$dependentASpirv = Join-Path $buildDir 'shaders\dependent_a.comp.spv'
+$dependentBSpirv = Join-Path $buildDir 'shaders\dependent_b.comp.spv'
+$unrelatedSpirv = Join-Path $buildDir 'shaders\unrelated.comp.spv'
 $headerPath = Join-Path $buildDir 'generated\embedded_spirv.h'
 $unrelatedObject = Join-Path $buildDir 'unrelated.obj'
-foreach ($requiredPath in @($spirvPath, $headerPath, $unrelatedObject)) {
+foreach ($requiredPath in @($dependentASpirv, $dependentBSpirv, $unrelatedSpirv,
+        $headerPath, $unrelatedObject)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Expected shader fixture output was not created: $requiredPath"
     }
 }
 
 $first = [ordered]@{
-    SpirvHash = Get-Sha256 -Path $spirvPath
-    SpirvTime = (Get-Item -LiteralPath $spirvPath).LastWriteTimeUtc
+    DependentAHash = Get-Sha256 -Path $dependentASpirv
+    DependentBHash = Get-Sha256 -Path $dependentBSpirv
+    UnrelatedSpirvHash = Get-Sha256 -Path $unrelatedSpirv
     HeaderHash = Get-Sha256 -Path $headerPath
-    HeaderTime = (Get-Item -LiteralPath $headerPath).LastWriteTimeUtc
     UnrelatedHash = Get-Sha256 -Path $unrelatedObject
-    UnrelatedTime = (Get-Item -LiteralPath $unrelatedObject).LastWriteTimeUtc
 }
 
-Start-Sleep -Milliseconds 1100
 Invoke-Checked -Executable $toolchain.CMake -Arguments @('--build', $buildDir, '--target', 'shader_fixture')
 $noop = [ordered]@{
-    SpirvHash = Get-Sha256 -Path $spirvPath
-    SpirvTime = (Get-Item -LiteralPath $spirvPath).LastWriteTimeUtc
+    DependentAHash = Get-Sha256 -Path $dependentASpirv
+    DependentBHash = Get-Sha256 -Path $dependentBSpirv
+    UnrelatedSpirvHash = Get-Sha256 -Path $unrelatedSpirv
     HeaderHash = Get-Sha256 -Path $headerPath
-    HeaderTime = (Get-Item -LiteralPath $headerPath).LastWriteTimeUtc
     UnrelatedHash = Get-Sha256 -Path $unrelatedObject
-    UnrelatedTime = (Get-Item -LiteralPath $unrelatedObject).LastWriteTimeUtc
 }
 foreach ($key in $first.Keys) {
     if ($first[$key] -ne $noop[$key]) {
@@ -131,28 +156,58 @@ foreach ($key in $first.Keys) {
     }
 }
 
-Set-Utf8NoBomContent -Path $shaderPath -Value (
-    (Get-Content -LiteralPath $shaderPath -Raw).Replace(
+Set-Utf8NoBomContent -Path $dependentAPath -Value (
+    (Get-Content -LiteralPath $dependentAPath -Raw).Replace(
         'probe.transform_matrix * probe.input_value',
         '2.0 * probe.transform_matrix * probe.input_value'))
-Start-Sleep -Milliseconds 1100
-Invoke-Checked -Executable $toolchain.CMake -Arguments @('--build', $buildDir, '--target', 'shader_fixture')
-
-$secondSpirvHash = Get-Sha256 -Path $spirvPath
-$secondSpirvTime = (Get-Item -LiteralPath $spirvPath).LastWriteTimeUtc
-$secondHeaderHash = Get-Sha256 -Path $headerPath
-$secondHeaderTime = (Get-Item -LiteralPath $headerPath).LastWriteTimeUtc
-$secondUnrelatedHash = Get-Sha256 -Path $unrelatedObject
-$secondUnrelatedTime = (Get-Item -LiteralPath $unrelatedObject).LastWriteTimeUtc
-
-if ($secondSpirvHash -eq $first.SpirvHash -or $secondSpirvTime -le $first.SpirvTime) {
-    throw 'Shader edit did not change both the SPIR-V hash and timestamp'
+$directOutput = (& $toolchain.CMake --build $buildDir --target shader_fixture 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw "Direct shader rebuild failed:`n$directOutput" }
+$direct = [ordered]@{
+    DependentAHash = Get-Sha256 -Path $dependentASpirv
+    DependentBHash = Get-Sha256 -Path $dependentBSpirv
+    UnrelatedSpirvHash = Get-Sha256 -Path $unrelatedSpirv
+    HeaderHash = Get-Sha256 -Path $headerPath
+    UnrelatedHash = Get-Sha256 -Path $unrelatedObject
 }
-if ($secondHeaderHash -eq $first.HeaderHash -or $secondHeaderTime -le $first.HeaderTime) {
-    throw 'Shader edit did not change both the embedded header hash and timestamp'
+if ($direct.DependentAHash -eq $first.DependentAHash -or
+        $direct.HeaderHash -eq $first.HeaderHash) {
+    throw 'Direct shader edit did not change the dependent SPIR-V and embedded header hashes'
 }
-if ($secondUnrelatedHash -ne $first.UnrelatedHash -or $secondUnrelatedTime -ne $first.UnrelatedTime) {
-    throw 'Shader edit rebuilt the unrelated object'
+foreach ($stableKey in 'DependentBHash', 'UnrelatedSpirvHash', 'UnrelatedHash') {
+    if ($direct[$stableKey] -ne $first[$stableKey]) {
+        throw "Direct shader edit changed unrelated hash $stableKey"
+    }
+}
+if ($directOutput -notmatch 'dependent_a\.comp' -or
+        $directOutput -match 'dependent_b\.comp|unrelated\.comp|unrelated\.obj') {
+    throw "Direct shader edit rebuilt an incorrect command set:`n$directOutput"
+}
+
+Set-Utf8NoBomContent -Path $sharedIncludePath -Value `
+    'vec4 shared_apply(vec4 value) { return 0.5 * value; }'
+$includeOutput = (& $toolchain.CMake --build $buildDir --target shader_fixture 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw "Included shader rebuild failed:`n$includeOutput" }
+$include = [ordered]@{
+    DependentAHash = Get-Sha256 -Path $dependentASpirv
+    DependentBHash = Get-Sha256 -Path $dependentBSpirv
+    UnrelatedSpirvHash = Get-Sha256 -Path $unrelatedSpirv
+    HeaderHash = Get-Sha256 -Path $headerPath
+    UnrelatedHash = Get-Sha256 -Path $unrelatedObject
+}
+foreach ($changedKey in 'DependentAHash', 'DependentBHash', 'HeaderHash') {
+    if ($include[$changedKey] -eq $direct[$changedKey]) {
+        throw "Shared include edit did not change dependent hash $changedKey"
+    }
+}
+foreach ($stableKey in 'UnrelatedSpirvHash', 'UnrelatedHash') {
+    if ($include[$stableKey] -ne $direct[$stableKey]) {
+        throw "Shared include edit changed unrelated hash $stableKey"
+    }
+}
+if ($includeOutput -notmatch 'dependent_a\.comp' -or
+        $includeOutput -notmatch 'dependent_b\.comp' -or
+        $includeOutput -match 'unrelated\.comp|unrelated\.obj') {
+    throw "Shared include edit rebuilt an incorrect command set:`n$includeOutput"
 }
 
 Write-Host 'shader rebuild dependency test: PASS'

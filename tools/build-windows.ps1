@@ -20,7 +20,7 @@ if ($PreflightOnly) {
 
 $preset = "windows-msvc-$($Config.ToLowerInvariant())"
 $developerEnvironment = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} -vcvars_ver={2}' -f $toolchain.VsDevCmd, $toolchain.WindowsSdkVersion, $toolchain.MsvcToolsVersion
-$configure = '{0} && "{1}" --preset "{2}" -DCMAKE_MAKE_PROGRAM="{3}"' -f $developerEnvironment, $toolchain.CMake, $preset, $toolchain.Ninja
+$configure = '{0} && "{1}" --preset "{2}" -DCMAKE_MAKE_PROGRAM="{3}" -DMATTER_PYTHON_EXECUTABLE:FILEPATH="{4}"' -f $developerEnvironment, $toolchain.CMake, $preset, $toolchain.Ninja, $toolchain.Python
 & $env:ComSpec /d /s /c $configure
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

@@ -40,6 +40,32 @@ if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
 
 Import-Module $modulePath -Force
 
+$pythonProbeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("matter-python-probe-" + [System.Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $pythonProbeRoot | Out-Null
+$blockedLauncher = Join-Path $pythonProbeRoot 'py.exe'
+$workingPython = Join-Path $pythonProbeRoot 'python.exe'
+New-Item -ItemType File -Path $blockedLauncher | Out-Null
+New-Item -ItemType File -Path $workingPython | Out-Null
+try {
+    $pythonFallback = & (Get-Module MatterWindowsToolchain) {
+        param([string[]]$Candidates)
+
+        Find-MatterWindowsPython -Candidates $Candidates -Probe {
+            param([string]$Candidate, [string[]]$Arguments)
+
+            if ([System.IO.Path]::GetFileName($Candidate) -ieq 'py.exe') {
+                throw 'simulated unavailable launcher'
+            }
+            return [PSCustomObject]@{ ExitCode = 0; Output = 'Python 3.13.14' }
+        }
+    } @($blockedLauncher, $workingPython)
+    Assert-True ($pythonFallback.Path -eq $workingPython) 'Python discovery did not continue after an unavailable launcher'
+    Assert-True ($pythonFallback.Version -eq 'Python 3.13.14') 'Python fallback returned the wrong version'
+}
+finally {
+    Remove-Item -LiteralPath $pythonProbeRoot -Recurse -Force
+}
+
 $dependencyChecker = Join-Path $repositoryRoot 'tools\check-windows-msvc-deps.ps1'
 Assert-CommandSucceeds -Path (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $dependencyChecker) -Name 'Windows dependency checker'
 
@@ -68,7 +94,12 @@ Assert-True ($toolchain.Glslc -eq 'C:\VulkanSDK\1.4.357.0\Bin\glslc.exe') "Expec
 Assert-CommandSucceeds -Path $toolchain.CMake -Arguments @('--version') -Name 'CMake'
 Assert-CommandSucceeds -Path $toolchain.Ninja -Arguments @('--version') -Name 'Ninja'
 Assert-True ($toolchain.PythonVersion -match '^Python 3\.13\.') "Expected Python 3.13, got $($toolchain.PythonVersion)"
-Assert-CommandSucceeds -Path $toolchain.Python -Arguments @('-3.13', '--version') -Name 'Python 3.13'
+$pythonArguments = if ([System.IO.Path]::GetFileName($toolchain.Python) -ieq 'py.exe') {
+    @('-3.13', '--version')
+} else {
+    @('--version')
+}
+Assert-CommandSucceeds -Path $toolchain.Python -Arguments $pythonArguments -Name 'Python 3.13'
 Assert-CommandSucceeds -Path $toolchain.Glslc -Arguments @('--version') -Name 'Vulkan glslc'
 
 Write-Output 'windows_toolchain_tests: PASS'

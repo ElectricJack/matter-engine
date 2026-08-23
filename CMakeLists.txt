@@ -14,11 +14,11 @@ include(cmake/MatterShaders.cmake)
 
 set(matter_vulkan_sdk_root "C:/VulkanSDK/1.4.357.0")
 set(matter_vulkan_glslc "${matter_vulkan_sdk_root}/Bin/glslc.exe")
-set(matter_python_launcher
-    "$ENV{LOCALAPPDATA}/Programs/Python/Launcher/py.exe")
+set(MATTER_PYTHON_EXECUTABLE "" CACHE FILEPATH
+    "Exact native Windows Python executable discovered by build-windows.ps1")
 foreach(required_shader_tool IN ITEMS
         "${matter_vulkan_glslc}"
-        "${matter_python_launcher}"
+        "${MATTER_PYTHON_EXECUTABLE}"
         "${matter_vulkan_sdk_root}/Include/vulkan/vulkan.h"
         "${matter_vulkan_sdk_root}/Lib/vulkan-1.lib"
         "${matter_vulkan_sdk_root}/Bin/VkLayer_khronos_validation.json")
@@ -27,19 +27,15 @@ foreach(required_shader_tool IN ITEMS
             "Pinned Windows shader dependency was not found: ${required_shader_tool}")
     endif()
 endforeach()
-execute_process(
-    COMMAND "${matter_python_launcher}" -3 --version
-    RESULT_VARIABLE matter_python_result
-    OUTPUT_VARIABLE matter_python_stdout
-    ERROR_VARIABLE matter_python_stderr
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_STRIP_TRAILING_WHITESPACE
-)
-set(matter_python_version "${matter_python_stdout}${matter_python_stderr}")
-if(NOT matter_python_result EQUAL 0 OR
-        NOT matter_python_version MATCHES "^Python 3\\.13\\.14$")
+matter_resolve_windows_python(
+    EXECUTABLE "${MATTER_PYTHON_EXECUTABLE}"
+    OUT_ARGUMENTS matter_python_arguments
+    OUT_VERSION matter_python_version)
+if(NOT matter_python_version MATCHES "^Python 3\\.13\\.14$")
     message(FATAL_ERROR
-        "Pinned Python 3.13.14 is required through py -3; got '${matter_python_version}'")
+        "Pinned native Windows Python 3.13.14 is required; "
+        "'${MATTER_PYTHON_EXECUTABLE} ${matter_python_arguments}' reported "
+        "'${matter_python_version}'")
 endif()
 
 set(matter_shader_source_dir "${CMAKE_SOURCE_DIR}/MatterEngine3/shaders_vk")
@@ -101,7 +97,8 @@ matter_add_vulkan_shader_pipeline(
     EMBEDDED_HEADER
         "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen/embedded_spirv.h"
     GLSLC "${matter_vulkan_glslc}"
-    PYTHON_LAUNCHER "${matter_python_launcher}"
+    PYTHON_EXECUTABLE "${MATTER_PYTHON_EXECUTABLE}"
+    PYTHON_ARGUMENTS ${matter_python_arguments}
     EMBED_SCRIPT "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_spirv.py"
     SHADERS ${matter_vulkan_shader_stages}
     SPECIALIZATIONS

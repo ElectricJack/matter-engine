@@ -10401,10 +10401,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             -> const viewer::TemporalFrame& {
             // By reference: valid until the next begin(), which only happens
             // next frame. Copying it out cost ~8 MB per streaming frame.
+            viewer::TemporalInvalidation invalidation{};
+            invalidation.camera_cut = frame.swapchain_recreated;
             const viewer::TemporalFrame& temporal = impl_->vk_temporal.begin(
                 unjittered, internal_extent, frame.extent, temporal_instances,
                 temporal_jitter_enabled && !temporal_instances.empty(),
-                {.camera_cut = frame.swapchain_recreated});
+                invalidation);
             impl_->vk_temporal_serial = frame.serial;
             impl_->vk_temporal_token = temporal.attempt_token;
             return temporal;

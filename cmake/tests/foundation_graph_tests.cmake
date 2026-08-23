@@ -49,6 +49,12 @@ set(ninja "$ENV{VSINSTALLDIR}/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja
 if(NOT EXISTS "${ninja}")
     message(FATAL_ERROR "VS-bundled Ninja was not found: ${ninja}")
 endif()
+if(NOT DEFINED MATTER_TEST_PYTHON OR NOT EXISTS "${MATTER_TEST_PYTHON}")
+    find_program(MATTER_TEST_PYTHON NAMES py.exe python.exe)
+endif()
+if(NOT EXISTS "${MATTER_TEST_PYTHON}")
+    message(FATAL_ERROR "Native Windows Python was not found on PATH")
+endif()
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
@@ -56,6 +62,7 @@ execute_process(
         -B "${build_dir}"
         -G Ninja
         "-DCMAKE_MAKE_PROGRAM=${ninja}"
+        "-DMATTER_PYTHON_EXECUTABLE:FILEPATH=${MATTER_TEST_PYTHON}"
         -DBUILD_TESTING=OFF
         "-DMATTER_REPOSITORY_ROOT=${repository_root}"
         "-DCMAKE_PROJECT_INCLUDE=${assertion_hook}"

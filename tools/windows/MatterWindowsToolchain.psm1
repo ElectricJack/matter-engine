@@ -13,6 +13,48 @@ function Require-MatterFile {
     return $Path
 }
 
+function Find-MatterWindowsPython {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Candidates,
+        [scriptblock]$Probe
+    )
+
+    if (-not $Probe) {
+        $Probe = {
+            param([string]$Candidate, [string[]]$Arguments)
+
+            $output = (& $Candidate @Arguments 2>&1 | Out-String).Trim()
+            return [PSCustomObject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+        }
+    }
+
+    foreach ($candidate in $Candidates) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+
+        $candidateArguments = if ([System.IO.Path]::GetFileName($candidate) -ieq 'py.exe') {
+            @('-3.13', '--version')
+        } else {
+            @('--version')
+        }
+        try {
+            $probeResult = & $Probe -Candidate $candidate -Arguments $candidateArguments
+        }
+        catch {
+            # App Execution Alias stubs can exist without being executable by the
+            # current account. Continue to the next supported native launcher.
+            continue
+        }
+        if ($probeResult.ExitCode -eq 0 -and $probeResult.Output -match '^Python 3\.13\.') {
+            return [PSCustomObject]@{ Path = $candidate; Version = $probeResult.Output }
+        }
+    }
+
+    return $null
+}
+
 function Resolve-MatterWindowsToolchain {
     [CmdletBinding()]
     param(
@@ -61,26 +103,18 @@ function Resolve-MatterWindowsToolchain {
     Require-MatterFile -Path (Join-Path $windowsKitsRoot "Lib\$windowsSdkVersion\um\x64\kernel32.lib") -Description "Windows SDK $windowsSdkVersion UM x64 import libraries" | Out-Null
     Require-MatterFile -Path (Join-Path $windowsKitsRoot "Lib\$windowsSdkVersion\ucrt\x64\ucrt.lib") -Description "Windows SDK $windowsSdkVersion UCRT x64 import libraries" | Out-Null
 
-    $python = $null
-    $pythonVersion = $null
     $pythonCandidates = @(
         (Join-Path $env:WINDIR 'py.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Launcher\py.exe'),
-        (Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
-    ) | Where-Object { $_ }
-    foreach ($candidate in $pythonCandidates) {
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            $candidateVersion = (& $candidate -3.13 --version 2>&1 | Out-String).Trim()
-            if ($LASTEXITCODE -eq 0 -and $candidateVersion -match '^Python 3\.13\.') {
-                $python = $candidate
-                $pythonVersion = $candidateVersion
-                break
-            }
-        }
+        (Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+        (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
+    ) | Where-Object { $_ } | Select-Object -Unique
+    $pythonDiscovery = Find-MatterWindowsPython -Candidates $pythonCandidates
+    if (-not $pythonDiscovery) {
+        throw 'Native Windows Python 3.13 was not found through py.exe or python.exe. Install Python 3.13.14 with the launcher enabled.'
     }
-    if (-not $python) {
-        throw 'Python launcher py.exe with Python 3.13 was not found. Install Python 3.13.14 so py.exe -3.13 succeeds.'
-    }
+    $python = $pythonDiscovery.Path
+    $pythonVersion = $pythonDiscovery.Version
 
     $vulkanSdk = 'C:\VulkanSDK\1.4.357.0'
     Require-MatterFile -Path (Join-Path $vulkanSdk 'Include\vulkan\vulkan.h') -Description 'Vulkan SDK 1.4.357.0 headers' | Out-Null
