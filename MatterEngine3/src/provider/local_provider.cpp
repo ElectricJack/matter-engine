@@ -1271,6 +1271,23 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             return false;
         }
     }
+    accepted_fluid_artifact_.reset();
+    if (cfg_.fluid_bake_request) {
+        const FluidBakeRequest& request = *cfg_.fluid_bake_request;
+        hydrology::HydrologyArtifact candidate{};
+        hydrology::FluidBakeError fluid_error{};
+        if (!request.backend || !request.terrain ||
+            !run_fluid_bake(request.input, *request.backend,
+                            request.callbacks, request.product_settings,
+                            request.terrain, candidate, fluid_error)) {
+            MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
+                        fluid_error.message.empty()
+                            ? "missing backend or terrain sampler"
+                            : fluid_error.message.c_str());
+        } else {
+            accepted_fluid_artifact_ = std::move(candidate);
+        }
+    }
     return true;
 }
 

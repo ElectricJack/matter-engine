@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -39,6 +40,17 @@ namespace hydrology { struct RiverGeometry; }
 namespace terrain_field { class RiverHeightOverlay; }
 
 namespace viewer {
+
+// The completed-bake handoff is deliberately data-only and synchronous.  Task
+// 7 decides when to create it and which worker owns the backend; LocalProvider
+// consumes it during its existing connect flow and owns publication policy.
+struct FluidBakeRequest {
+    std::shared_ptr<hydrology::IFluidBakeBackend> backend;
+    hydrology::FluidBakeInput input{};
+    hydrology::FluidBakeCallbacks callbacks{};
+    hydrology::PhysxFluidBake::ProductBuildSettings product_settings{};
+    hydrology::TerrainHeightSampler terrain;
+};
 
 struct LocalProviderConfig {
     std::string project_dir;
@@ -176,6 +188,11 @@ struct LocalProviderConfig {
                        gpu_meshing::Error& error,
                        const gpu_meshing::BuildControl& control)>
         vk_particle_visual_bake;
+
+    // Optional completed fluid bake submitted by the engine/orchestration
+    // layer.  When present, connect() runs it after the dry world is prepared;
+    // an invalid result is logged and leaves that dry world usable.
+    std::optional<FluidBakeRequest> fluid_bake_request;
 
     // Task 7: OOM/error injection hook for testing skip-and-continue.
     // Fired once per part processed (install bake + fetch/load); `part_index` is the
@@ -394,6 +411,11 @@ public:
         hydrology::HydrologyArtifact& artifact,
         hydrology::FluidBakeError& error) const;
 
+    const std::optional<hydrology::HydrologyArtifact>&
+    accepted_fluid_artifact() const {
+        return accepted_fluid_artifact_;
+    }
+
     // connect() == install_graph() + compose_world() with unchanged external behavior.
     bool connect(WorldManifest& out, std::string& err) override;
 
@@ -593,6 +615,7 @@ private:
     std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
     std::optional<matter::HydrologyWorldSettings> hydrology_settings_;
     std::optional<matter::RiverNetworkDefinition> river_network_;
+    std::optional<hydrology::HydrologyArtifact> accepted_fluid_artifact_;
     std::vector<FetchFailed> fetch_failed_; // Task 7 fix: per-part load failures from fetch_parts()
     part_graph_snapshot::Snapshot graph_snapshot_;  // Task 9: live-edit graph snapshot
 

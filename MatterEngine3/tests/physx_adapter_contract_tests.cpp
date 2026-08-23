@@ -9,6 +9,8 @@
 #endif
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -865,8 +867,39 @@ void test_product_keys_follow_the_settings_the_extractors_consume() {
 }
 
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
+bool write_provider_connect_fixture(const std::filesystem::path& root) {
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    std::filesystem::create_directories(root / "objects", error);
+    if (error) return false;
+    std::filesystem::create_directories(root / "worlds", error);
+    if (error) return false;
+    {
+        std::ofstream part(root / "objects" / "FluidBakePart.js");
+        part << "class FluidBakePart extends Part {\n"
+                "  build(p) {\n"
+                "    this.fill(MAT.stone);\n"
+                "    this.beginShape(SHAPE.triangles);\n"
+                "    this.vertex(0, 0, 0); this.vertex(1, 0, 0); this.vertex(0, 1, 0);\n"
+                "    this.endShape();\n"
+                "  }\n"
+                "}\n";
+        if (!part) return false;
+    }
+    std::ofstream world(root / "worlds" / "Demo.js");
+    world << "class Demo extends World {\n"
+             "  static roots = [{ module: 'FluidBakePart', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }];\n"
+             "}\n";
+    return static_cast<bool>(world);
+}
+
 void test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path() {
-    viewer::LocalProviderConfig config{};
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "matter-local-fluid-bake-contract";
+    CHECK(write_provider_connect_fixture(root),
+          "the production fluid request test created its minimal provider world");
+    auto config = viewer::LocalProviderConfig::for_project(
+        root.string(), "Demo", "");
     int gpu_run_calls = 0;
     int vk_visual_calls = 0;
     config.gpu_run = [&](const char* name, std::function<bool(std::string&)> work,
@@ -890,7 +923,6 @@ void test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path()
             mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
             return true;
         };
-    viewer::LocalProvider provider(std::move(config));
     hydrology::PhysxFluidBake::ProductBuildSettings settings{};
     settings.particle_radius_m = 0.65f;
     settings.coarse_voxel_m = 0.4f;
@@ -901,17 +933,21 @@ void test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path()
     settings.gameplay_layout = {{0.0f, 0.0f, 0.0f}, 1.0f, 4u, 4u};
     settings.semantic = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
     settings.provenance = {0x10deu, 0x2684u, 1u, 1u, 2u};
-    RecordingBackend backend;
-    hydrology::HydrologyArtifact artifact{};
-    FluidBakeError error{};
-    CHECK(provider.run_fluid_bake(
-              valid_input(), backend, {}, settings,
-              [](float, float, float& height) { height = 0.0f; return true; },
-              artifact, error) && artifact.accepted && gpu_run_calls == 1 &&
-              vk_visual_calls == 1,
-          error.message.empty()
-              ? "the actual LocalProvider flow sends the accepted backend snapshot to vk_particle_visual_bake"
-              : error.message.c_str());
+    auto backend = std::make_shared<RecordingBackend>();
+    config.fluid_bake_request = {backend, valid_input(), {}, settings,
+        [](float, float, float& height) { height = 0.0f; return true; }};
+    viewer::LocalProvider provider(std::move(config));
+    viewer::WorldManifest manifest{};
+    std::string connect_error;
+    CHECK(provider.connect(manifest, connect_error) &&
+              provider.accepted_fluid_artifact().has_value() &&
+              provider.accepted_fluid_artifact()->accepted &&
+              gpu_run_calls == 1 && vk_visual_calls == 1,
+          connect_error.empty()
+              ? "the production connect path sends the accepted backend snapshot to vk_particle_visual_bake"
+              : connect_error.c_str());
+    std::error_code remove_error;
+    std::filesystem::remove_all(root, remove_error);
 
     viewer::LocalProviderConfig failing_config{};
     failing_config.vk_particle_visual_bake =
@@ -923,8 +959,9 @@ void test_local_provider_runs_accepted_snapshot_through_the_editor_visual_path()
         };
     viewer::LocalProvider failing_provider(std::move(failing_config));
     hydrology::HydrologyArtifact rejected{};
+    FluidBakeError error{};
     CHECK(!failing_provider.run_fluid_bake(
-              valid_input(), backend, {}, settings,
+              valid_input(), *backend, {}, settings,
               [](float, float, float& height) { height = 0.0f; return true; },
               rejected, error) && rejected.particles.empty() &&
               error.code == FluidBakeCode::ProductFailure,
