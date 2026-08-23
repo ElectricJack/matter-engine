@@ -1,7 +1,7 @@
 # PhysX PBD fluid-bake integration — design
 
 **Date:** 2026-08-22
-**Status:** draft for user review
+**Status:** approved; implementation in progress (P0 control passed 2026-08-23)
 **Order:** specification 3 of 3; implementation begins only after both
 `2026-08-22-windows-msvc-build-migration-design.md` reaches its migration
 acceptance gate and `2026-08-22-gpu-visual-meshing-foundation-design.md`
@@ -371,13 +371,31 @@ and does not convert a failed simulation into `Ready`.
 ### P0 — dependency and official control
 
 - Resolve the pinned external checkout without network mutation.
-- Build the official supported PhysX configuration and native Matter adapter.
+- Build the official supported PhysX configuration. The native Matter adapter
+  begins only after this control passes.
 - Run unmodified `SnippetPBF` on the target RTX GPU.
 - Record PhysX/CUDA versions, adapter identity, particle count, steps, timing,
   and final finite-state checks.
 
 Failure stops the integration. Matter code is not changed to compensate for a
 broken official control.
+
+Measured P0 control on 2026-08-23:
+
+- upstream repository tag `107.3-physx-5.6.1`, detached commit
+  `5ca9f472105a90d70d957c243cb0ef36fe251a9f`;
+- unmodified `SnippetPBF` release build using MSVC `19.44.35211`, CUDA NVCC
+  `12.8.61`, and the upstream generator-selected Windows SDK `10.0.28000.0`;
+- NVIDIA GeForce RTX 4090, driver `610.74`;
+- the snippet's source configuration of 900,000 particles
+  (`50 * 600 * 30`) at `0.1` particle spacing;
+- 59–61 rendered FPS during the observed control, approximately 80% GPU
+  utilization, and 6,158 MiB GPU memory used; and
+- screenshot `MatterEditor/build/baselines/msvc/physx-p0/snippet-pbf.png`.
+
+This is control provenance, not Matter's integration toolchain. The adapter
+build remains pinned to Matter's Windows SDK `10.0.26100.0` and must pass the
+runtime/header checks before P1 can be accepted.
 
 ### P1 — adapter conformance
 
@@ -439,7 +457,7 @@ Implementation planning may refine filenames, but responsibilities remain:
 
 - `integrations/physx_adapter/` — native MSVC/CUDA adapter implementation with
   PhysX types confined to private translation units;
-- `tools/deps/physx.lock` — pinned external dependency identity;
+- `tools/deps/physx.lock.json` — pinned external dependency identity;
 - `MatterEngine3/src/hydrology/physx_runtime.*` — lifetime, version validation,
   status translation, and the private PhysX implementation boundary;
 - `MatterEngine3/src/hydrology/physx_fluid_bake.*` — Matter orchestration,

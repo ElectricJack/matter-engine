@@ -217,6 +217,20 @@ if(BUILD_TESTING)
     set_tests_properties(compiler_return_address_gnu_tests PROPERTIES
         LABELS compiler-policy
     )
+    add_custom_target(physx_dependency_contract_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/tests/physx_dependency_contract_tests.ps1"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        VERBATIM
+    )
+    add_test(NAME physx_dependency_contract_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/tests/physx_dependency_contract_tests.ps1"
+    )
+    set_tests_properties(physx_dependency_contract_tests PROPERTIES
+        LABELS compiler-policy
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
     add_executable(matter_mesh_allocator_policy_tests
         libs/MatterSurfaceLib/tests/mesh_allocator_policy_tests.cpp
         libs/MatterSurfaceLib/tests/mesh_allocator_graphical_probe.cpp
@@ -289,6 +303,7 @@ if(BUILD_TESTING)
         compiler_portability_tests
         matter_engine_headless_consumer_tests
         matter_mesh_allocator_policy_tests
+        physx_dependency_contract_tests
         ${matter_engine_cpu_targets}
     )
 endif()
