@@ -505,6 +505,13 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     enrich_queue_.clear();
     enrich_queued_slot_.clear();
     variants_.clear();           // grows lazily with the slot high-water mark
+    // VariantRung::context points back into its owning rung's vectors and
+    // atlas. Some standard libraries copy (rather than noexcept-move) this
+    // aggregate during vector growth, leaving those borrowed pointers aimed
+    // at the destroyed pre-growth copies. The slot ceiling is fixed for this
+    // residency lifetime, so reserve it once and make every rung address
+    // stable before any context is adopted.
+    variants_.reserve(max_variants_);
     layer_graveyard_.clear();
     debug_layer_reuse_.clear();
     free_layers_.clear();
@@ -656,6 +663,31 @@ void VtResidency::refresh_indirection_stats() {
     stats_.graveyard_tables = tables_.graveyard_blocks();
     stats_.graveyard_slots = slots_.graveyard_slots();
     stats_.graveyard_layers = static_cast<uint32_t>(layer_graveyard_.size());
+}
+
+bool VtResidency::context_storage_owned_for_test(
+    uint32_t transport_slot) const {
+    if (transport_slot == kVtNoSlot) return false;
+    const uint32_t layer = transport_slot - 1u;
+    if (layer >= variants_.size()) return false;
+    const VariantRung& v = variants_[layer];
+    const auto data_or_null = [](const auto& owned) {
+        return owned.empty() ? nullptr : owned.data();
+    };
+    return v.live && v.context.atlas == &v.atlas &&
+           v.context.positions == data_or_null(v.positions) &&
+           v.context.normals == data_or_null(v.normals) &&
+           v.context.surface_uvs == data_or_null(v.surface_uvs) &&
+           v.context.material_table == data_or_null(v.material_table) &&
+           v.context.material_ids == data_or_null(v.material_ids) &&
+           v.context.tint_rgba == data_or_null(v.tint_rgba) &&
+           v.context.indices == data_or_null(v.indices) &&
+           v.context.surface_weights == data_or_null(v.surface_weights) &&
+           v.context.surface_materials == data_or_null(v.surface_materials) &&
+           v.context.surface_tape_text ==
+               (v.surface_tape_text.empty() ? nullptr
+                                            : v.surface_tape_text.c_str()) &&
+           v.context.surface_lanes == data_or_null(v.surface_lanes);
 }
 
 uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,

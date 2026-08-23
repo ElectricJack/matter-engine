@@ -31,6 +31,7 @@
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/vt_residency.h"
 #include "render/vk_volumetrics.h"
 #include "render/vk_atmosphere.h"
 #include "render/vk_cloud_shadows.h"
@@ -4104,7 +4105,88 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
 // (MATTER_VK_TEST_FORCE_RT_UNAVAILABLE, the existing rt-unavailable pattern) and
 // runs the same fixture: no enricher loads, nothing is ever queued, and every
 // probe reads unoccluded tier-1 content — today's behaviour, unchanged.
+void test_vt_variant_context_storage_lifetime(matter::VulkanDevice& vulkan) {
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    _putenv_s("MATTER_VT_MAX_VARIANTS", "16");
+    _putenv_s("MATTER_VT_INDIRECTION_MB", "1");
+    _putenv_s("MATTER_VT_MESH_BUDGET_MB", "4");
+#else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+    setenv("MATTER_VT_MAX_VARIANTS", "16", 1);
+    setenv("MATTER_VT_INDIRECTION_MB", "1", 1);
+    setenv("MATTER_VT_MESH_BUDGET_MB", "4", 1);
+#endif
+    std::string error;
+    vt::VtResidency residency;
+    CHECK(residency.init(vulkan, error),
+          error.empty() ? "vt lifetime: residency init" : error.c_str());
+    if (!residency.available()) return;
+
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w = 128;
+    atlas.atlas_h = 128;
+    atlas.tri_order = {0};
+    atlas.charts.resize(1);
+    atlas.charts[0].rect_w = 128;
+    atlas.charts[0].rect_h = 128;
+    atlas.charts[0].texels_per_meter = 4.0f;
+    atlas.charts[0].tri_count = 1;
+
+    const float positions[] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                               0.0f, 1.0f, 0.0f};
+    const float normals[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                             0.0f, 0.0f, 1.0f};
+    const float surface_uvs[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    const float material_table[] = {0.8f, 0.7f, 0.6f, 0.5f};
+    const uint32_t material_ids[] = {0u, 0u, 0u};
+    const uint32_t indices[] = {0u, 1u, 2u};
+    const uint8_t tint_rgba[] = {255u, 255u, 255u, 0u,
+                                 255u, 255u, 255u, 0u,
+                                 255u, 255u, 255u, 0u};
+    const uint8_t surface_weights[] = {255u, 255u, 255u};
+    const uint32_t surface_materials[] = {0u};
+    const uint16_t surface_lanes[] = {0u, 0u, 0u};
+    vt::VtPartContext context{};
+    context.positions = positions;
+    context.normals = normals;
+    context.surface_uvs = surface_uvs;
+    context.material_table = material_table;
+    context.material_count = 1;
+    context.material_stride = 4;
+    context.material_ids = material_ids;
+    context.tint_rgba = tint_rgba;
+    context.vertex_count = 3;
+    context.indices = indices;
+    context.triangle_count = 1;
+    context.surface_weights = surface_weights;
+    context.surface_materials = surface_materials;
+    context.surface_material_count = 1;
+    context.surface_tape_hash = 0x1234u;
+    context.surface_tape_text = "return material(0);";
+    context.surface_lanes = surface_lanes;
+    context.surface_lane_count = 1;
+
+    std::vector<uint32_t> slots;
+    for (uint64_t i = 0; i < 12; ++i) {
+        context.variant_hash = 0x9100u + i;
+        const uint32_t slot = residency.register_variant(
+            context.variant_hash, 0, atlas, context);
+        CHECK(slot != vt::kVtNoSlot,
+              "vt lifetime: registration survives vector growth");
+        if (slot != vt::kVtNoSlot) slots.push_back(slot);
+    }
+    for (const uint32_t slot : slots) {
+        CHECK(residency.context_storage_owned_for_test(slot),
+              "vt lifetime: context pointers remain owned after growth");
+    }
+    residency.shutdown();
+}
+
 void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
+    test_vt_variant_context_storage_lifetime(vulkan);
     const bool rt = vulkan.ray_tracing_available();
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;

@@ -73,6 +73,7 @@
 //     writing its scratch -- outlives the batch that referenced it.
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -83,6 +84,26 @@
 namespace matter { class VulkanDevice; }
 
 namespace vt {
+
+// Vulkan acceleration-structure builds require every indexed corner to name a
+// vertex in the supplied position stream. Streamed meshes can retain sentinel
+// corners for triangles that tier-1 chart construction skips; those corners
+// must never cross the tier-2 driver boundary. Enrichment is optional, so a
+// malformed rung fails closed while its already-correct tier-1 page remains.
+inline bool vt_enrich_mesh_indices_valid(const VtPartContext& ctx) noexcept {
+    if (ctx.vertex_count == 0 || ctx.triangle_count == 0 || !ctx.positions ||
+        !ctx.indices) {
+        return false;
+    }
+    if (ctx.triangle_count > std::numeric_limits<size_t>::max() / 3u) {
+        return false;
+    }
+    const size_t index_count = static_cast<size_t>(ctx.triangle_count) * 3u;
+    for (size_t i = 0; i < index_count; ++i) {
+        if (ctx.indices[i] >= ctx.vertex_count) return false;
+    }
+    return true;
+}
 
 class VtEnricher final : public VtPageEnricher {
   public:

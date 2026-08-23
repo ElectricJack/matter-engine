@@ -22,9 +22,9 @@
 
 #include "matter/compiler.h"
 
-// "leak" common namespaces to all compilation units. This is not standard
-// C++ practice but a simplification for template projects.
-using namespace std;
+// Keep standard-library names qualified. A using-directive in this public
+// header makes the Windows SDK's global ::byte ambiguous with C++17
+// std::byte whenever a consumer includes Win32 headers afterward.
 
 // aligned memory allocations
 //

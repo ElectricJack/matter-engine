@@ -31,4 +31,9 @@ if ($Target) {
     $build += ' --target "{0}"' -f $Target
 }
 & $env:ComSpec /d /s /c $build
-exit $LASTEXITCODE
+$buildExitCode = $LASTEXITCODE
+if ($buildExitCode -eq 0) {
+    $artifact = Join-Path $repositoryRoot 'MatterEditor\build\windows-msvc\editor.exe'
+    Write-Output "MATTER_WINDOWS_ARTIFACT=$artifact"
+}
+exit $buildExitCode

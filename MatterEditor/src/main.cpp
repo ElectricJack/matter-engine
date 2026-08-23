@@ -41,6 +41,7 @@
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
 #include "matter/event/property.h"
+#include "matter/windows_compat.h"
 // QA timeline `wait_event`: subscribes directly against session->events()
 // (bake./stream.) and app_hub (cmd.*) by name, so the typed event structs
 // must be visible here (world_session.h only pulls in the legacy events.h).
@@ -79,9 +80,6 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#else
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #endif
 
 namespace {

@@ -1,7 +1,11 @@
 #include "os_open.h"
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
+// This TU alone calls a USER32 shell-display API and does not include raylib.
+// The rest of the editor keeps NOUSER defined to avoid raylib/Win32 names.
+#ifdef NOUSER
+#undef NOUSER
+#endif
 #include <windows.h>
 #include <shellapi.h>
 #else

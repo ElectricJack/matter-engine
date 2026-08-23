@@ -9,6 +9,24 @@
 #include <cstring>
 #include <type_traits>
 
+#if defined(_WIN32)
+// Model the SDK's public ::byte typedef even when the compatibility header's
+// NOGDI boundary omits it. SpatialQuery headers must not leak a global
+// `using namespace std` that makes this ordinary Win32 spelling ambiguous.
+#include "matter/windows_compat.h"
+typedef unsigned char byte;
+static_assert(sizeof(byte) == 1, "Windows SDK byte remains addressable");
+
+// The Vulkan editor exposes Win32 Vulkan declarations and still consumes the
+// remaining raylib POD types.  Those public headers must coexist in one TU.
+#include "raylib.h"
+static_assert(sizeof(Rectangle) == sizeof(float) * 4,
+              "raylib Rectangle remains available beside Win32");
+#ifdef small
+#error "Win32 compatibility headers must not leak the rpcndr.h small macro"
+#endif
+#endif
+
 namespace {
 
 struct MATTER_ALIGN(32) AlignedProbe {

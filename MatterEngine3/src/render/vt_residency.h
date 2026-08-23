@@ -1001,6 +1001,11 @@ class VtResidency {
     // TEST SEAM: inject feedback requests without a GPU readback.
     void inject_feedback_for_test(const VtFeedbackRequest* requests,
                                   size_t count);
+    // TEST SEAM: verifies that a registered context still borrows every
+    // pointer from its own VariantRung after later registrations grow the
+    // slot table. This is deliberately non-dereferencing so a failure reports
+    // the lifetime break before a driver-facing fill or enrichment can use it.
+    bool context_storage_owned_for_test(uint32_t transport_slot) const;
 
   private:
     struct PoolImage {
