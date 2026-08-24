@@ -10,6 +10,11 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-24-sequential-river-sections-waterfall-design.md`
 
+**Execution status:** Complete (2026-08-24). The implementation is recorded in
+commit `3eead18e`; the accepted cold-cache evidence is under
+`MatterEditor/build/baselines/msvc/physx-river-sections/20260824-section-waterfall-02`.
+The task checklists below are retained as the implementation record.
+
 ## Global Constraints
 
 - Water is baked during level construction and remains static during gameplay; players and runtime terrain do not modify it.

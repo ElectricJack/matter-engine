@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24
 
-**Status:** approved; implementation not started
+**Status:** implemented and accepted (2026-08-24)
 
 **Depends on:** `2026-08-22-physx-fluid-bake-integration-design.md`
 **Goal:** extend the accepted single-section PhysX hydrology bake into a
@@ -529,3 +529,65 @@ is complete only when:
 - success and failure diagnostics include screenshots and separated timings;
   and
 - the ready static network artifact loads in the editor as one playable river.
+
+## 15. Implementation evidence (2026-08-24)
+
+The authoritative cold-cache acceptance run is stored as an untracked build
+artifact at:
+
+```text
+MatterEditor/build/baselines/msvc/physx-river-sections/20260824-section-waterfall-02
+```
+
+The run reached `Ready`, accepted both fill sensors at a wet fraction of
+`0.888888896`, and produced the following measured results:
+
+| Measurement | Upper section | Lower section |
+| --- | ---: | ---: |
+| Cache hit | no | no |
+| Setup | 120.340 ms | 127.767 ms |
+| PhysX initialization | 193.970 ms | 132.207 ms |
+| Simulation | 10,864.791 ms | 9,786.633 ms |
+| GPU visual meshing | 1,444.111 ms | 1,227.507 ms |
+| CPU query meshing | 8,059.443 ms | 7,116.635 ms |
+| Accepted particles | 382,067 | 343,860 |
+| Escaped particles | 0 | 0 |
+
+Handoff meshing took 1,691.902 ms, serialization took 841.366 ms, and total
+wall time was 50,363.120 ms. The assembled visual product contains 516,799
+vertices and 1,014,358 triangles. Section one simulated 2,560 fixed steps and
+section two simulated 2,304 fixed steps.
+
+The accepted quality and capacity settings are `particleSpacing: 0.20`,
+`particleRadius: 0.13`, `visualVoxel: 0.15`, `visualBlendWidth: 0.10`, authored
+flow `600`, `maxParticles: 4,000,000`, `maxSteps: 8,192`, and a fixed step of
+`1/120` second. The broad spillway ribbon uses a 6 metre effective depth and a
+10 m/s inherited downstream velocity. The final handoff retains water in the
+temporary dam footprint after removing the collision-only dam, then repairs
+the clipped ownership contours with an explicit derived stitch; no rendered
+or runtime dam geometry remains.
+
+The evidence directory contains matched `.png` and `.done` files for:
+
+1. `overview.png`;
+2. `upper-rapids.png`;
+3. `waterfall-approach.png`;
+4. `waterfall-side.png`;
+5. `plunge-pool.png`;
+6. `spillway.png`;
+7. `lower-rapids.png`;
+8. `second-pool.png`; and
+9. `player-low.png`.
+
+Packaging now stages and validates the complete immutable dependency closure:
+one Ready `.mhyn` network manifest, two version-4 `MHYDMSH3` section artifacts,
+and one version-2 `MHYDHOF1` handoff artifact. It verifies topology, artifact
+paths, file digests, the handoff semantic payload digest, and that no stale
+hydrology artifact is present in the packaged subtree.
+
+The final gates passed with 35/35 default CPU tests, the real opt-in
+PhysX/CUDA integration test, 16/16 package-staging tests, 24/24 Windows package
+safety fixtures, a clean-PATH packaged-editor launch, and the WSL-to-MSVC build
+entry point. The default build remains PhysX-free; the packaged opt-in editor
+contains the required in-process PhysX runtime and the accepted hydrology
+network without launching an external solver process.

@@ -43,13 +43,11 @@ if ($EnablePhysx) {
         }
         $resolvedHydrologyCache = (Resolve-Path -LiteralPath $HydrologyCache).Path
         $configure += ' -DMATTER_DIST_HYDROLOGY_ARTIFACT:PATH="{0}"' -f $resolvedHydrologyCache
-    } else {
-        $configure += ' -DMATTER_DIST_HYDROLOGY_ARTIFACT:PATH=""'
     }
 } else {
     # Always reset the shared preset build tree so an opt-in build cannot make
     # a later ordinary editor build retain PhysX from the CMake cache.
-    $configure += ' -DMATTER_ENABLE_PHYSX=OFF -DMATTER_DIST_HYDROLOGY_ARTIFACT:PATH=""'
+    $configure += ' -DMATTER_ENABLE_PHYSX=OFF'
 }
 & $env:ComSpec /d /s /c $configure
 if ($LASTEXITCODE -ne 0) {

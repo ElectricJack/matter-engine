@@ -28,6 +28,12 @@ engineers reading in context.
 
 ## Design docs
 
+- **[superpowers/specs/2026-08-24-sequential-river-sections-waterfall-design.md](superpowers/specs/2026-08-24-sequential-river-sections-waterfall-design.md)**
+  — accepted design and measured evidence for the two-section static river,
+  12 metre waterfall, filled pools, spillway handoff, and DSL-owned layout.
+- **[superpowers/plans/2026-08-24-sequential-river-sections-waterfall.md](superpowers/plans/2026-08-24-sequential-river-sections-waterfall.md)**
+  — executable implementation record for the sequential PhysX river bake,
+  immutable artifacts, runtime products, packaging, and visual acceptance.
 - **[contour-seam-design-2026-08-13.md](contour-seam-design-2026-08-13.md)** —
   "Seams by shared contour: no overlap, no welder." The decision (2026-08-13,
   from issue `736f92da`) to mesh each tile's boundary against a canonically
@@ -120,7 +126,7 @@ engineers reading in context.
   above rather than read standalone.
 - **`screenshots/`** — reference screenshots for the sub-projects (mostly the
   `Prototypes/` examples), not itemized here.
-- **`superpowers/`** — planning/spec workspace: **81** dated implementation
-  plans in `plans/`, **88** dated design specs in `specs/`, plus top-level
+- **`superpowers/`** — planning/spec workspace: **85** dated implementation
+  plans in `plans/`, **92** dated design specs in `specs/`, plus top-level
   `backlog.md` and `REVIEW-LOG.md`. Not itemized here — treat as a searchable
   archive, not a curated index.
