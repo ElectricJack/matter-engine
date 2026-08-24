@@ -4,6 +4,7 @@
 #include "hydrology/river_presentation_field.h"
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -25,21 +26,14 @@ void test_derives_repeatable_bounded_presentation_field() {
     std::vector<hydrology::PresentationMarkers> markers(kWidth * kDepth);
     std::vector<hydrology::PresentationLocalOverride> overrides(kWidth *
                                                                   kDepth);
-    std::vector<hydrology::FluidParticle> particles;
+    hydrology::GameplayFieldStatistics statistics{};
+    statistics.velocity_variance_mps2.assign(kWidth * kDepth, 0.25f);
 
     for (std::uint32_t z = 1u; z != 4u; ++z) {
         for (std::uint32_t x = 1u; x != 4u; ++x) {
             const std::size_t index = index_of(x, z);
             gameplay[index] = {4.0f + static_cast<float>(x), 2.0f,
                                static_cast<float>(x), 0.0f, 0.0f, true};
-            particles.push_back({{static_cast<float>(x) + 0.25f, 3.5f,
-                                  static_cast<float>(z) + 0.25f},
-                                 {static_cast<float>(x), 0.0f, 0.0f},
-                                 static_cast<std::uint64_t>(particles.size())});
-            particles.push_back({{static_cast<float>(x) + 0.75f, 3.5f,
-                                  static_cast<float>(z) + 0.75f},
-                                 {static_cast<float>(x) + 1.0f, 0.0f, 0.0f},
-                                 static_cast<std::uint64_t>(particles.size())});
         }
     }
 
@@ -59,7 +53,7 @@ void test_derives_repeatable_bounded_presentation_field() {
     hydrology::PresentationDerivationInput input{};
     input.layout = layout;
     input.gameplay = &gameplay;
-    input.particles = &particles;
+    input.gameplay_statistics = &statistics;
     input.terrain_heights_m = &terrain;
     input.wake_distances_m = &wake_distance;
     input.markers = &markers;
@@ -109,9 +103,91 @@ void test_derives_repeatable_bounded_presentation_field() {
           "presentation sampling rejects dry cells");
 }
 
+void test_gameplay_retains_known_velocity_variance() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
+                                                1u, 1u};
+    const std::vector<hydrology::FluidParticle> particles = {
+        {{0.25f, 2.0f, 0.25f}, {1.0f, 0.0f, 0.0f}, 1u},
+        {{0.75f, 2.0f, 0.75f}, {3.0f, 0.0f, 0.0f}, 2u},
+    };
+    std::vector<hydrology::GameplaySample> field;
+    hydrology::GameplayFieldStatistics statistics{};
+    std::string error;
+    CHECK(hydrology::build_fluid_gameplay_field(
+              particles, 0.5f, layout,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              field, error, &statistics), error.c_str());
+    CHECK(statistics.velocity_variance_mps2.size() == 1u &&
+              std::fabs(statistics.velocity_variance_mps2[0] - 1.0f) < 1e-6f,
+          "gameplay extraction retains the population velocity variance");
+}
+
+void test_presentation_sampling_is_strict_and_bilinear() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
+                                                2u, 2u};
+    std::vector<hydrology::PresentationSample> field = {
+        {0.0f, 0.0f, 0.0f, 0.1f, 0.2f, hydrology::RiverFeature::Calm, true},
+        {0.2f, 0.0f, 0.2f, 0.3f, 0.4f, hydrology::RiverFeature::Current, true},
+        {0.0f, 0.2f, 0.4f, 0.5f, 0.6f, hydrology::RiverFeature::Rapid, true},
+        {0.2f, 0.2f, 0.6f, 0.7f, 0.8f, hydrology::RiverFeature::Spillway, true},
+    };
+    hydrology::PresentationSample sample{};
+    CHECK(hydrology::sample_river_presentation_field(layout, field, 1.0f, 1.0f,
+                                                       sample),
+          "wet presentation contributors bilinearly filter");
+    CHECK(std::fabs(sample.turbulence - 0.3f) < 1e-6f &&
+              std::fabs(sample.aeration - 0.4f) < 1e-6f &&
+              std::fabs(sample.foam_potential - 0.5f) < 1e-6f &&
+              sample.feature == hydrology::RiverFeature::Spillway,
+          "continuous presentation values blend while feature chooses nearest cell");
+    CHECK(!hydrology::sample_river_presentation_field(layout, field, -0.01f,
+                                                       0.5f, sample) &&
+              sample == hydrology::PresentationSample{},
+          "presentation sampling rejects out of bounds coordinates and clears output");
+
+    field[3].foam_potential = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!hydrology::sample_river_presentation_field(layout, field, 1.0f, 1.0f,
+                                                       sample) &&
+              sample == hydrology::PresentationSample{},
+          "non-finite nonzero-weight presentation contributors are rejected");
+    field[3].foam_potential = 0.8f;
+    field[2].normal_x = 2.0f;
+    CHECK(!hydrology::sample_river_presentation_field(layout, field, 1.0f, 1.0f,
+                                                       sample) &&
+              sample == hydrology::PresentationSample{},
+          "out-of-contract nonzero-weight presentation contributors are rejected");
+    field[2].normal_x = 0.0f;
+    field[1].normal_x = 2.0f;
+    CHECK(hydrology::sample_river_presentation_field(layout, field, 0.5f, 0.5f,
+                                                      sample),
+          "zero-weight invalid presentation contributors are skipped");
+}
+
+void test_feature_markers_have_explicit_precedence() {
+    hydrology::PresentationDerivationSettings settings{};
+    settings.current_speed_mps = 1.0f;
+    settings.rapid_speed_mps = 2.0f;
+    CHECK(hydrology::classify_river_feature({true, true, true, true}, 3.0f,
+                                            settings) ==
+              hydrology::RiverFeature::Waterfall,
+          "waterfall precedes impact spillway pool and rapid");
+    CHECK(hydrology::classify_river_feature({false, true, true, true}, 3.0f,
+                                            settings) == hydrology::RiverFeature::Impact,
+          "impact precedes spillway pool and rapid");
+    CHECK(hydrology::classify_river_feature({false, false, true, true}, 3.0f,
+                                            settings) == hydrology::RiverFeature::Spillway,
+          "spillway precedes pool and rapid");
+    CHECK(hydrology::classify_river_feature({false, false, false, true}, 3.0f,
+                                            settings) == hydrology::RiverFeature::Pool,
+          "pool precedes rapid");
+}
+
 }  // namespace
 
 int main() {
     test_derives_repeatable_bounded_presentation_field();
+    test_gameplay_retains_known_velocity_variance();
+    test_presentation_sampling_is_strict_and_bilinear();
+    test_feature_markers_have_explicit_precedence();
     return check_summary();
 }

@@ -35,7 +35,7 @@ bool valid_settings(const PresentationDerivationSettings& settings) {
         settings.vorticity_weight, settings.vertical_speed_weight,
         settings.surface_slope_weight, settings.shallows_weight,
         settings.wake_distance_weight, settings.waterfall_weight,
-        settings.impact_weight, settings.spillway_weight, settings.pool_weight,
+        settings.impact_weight, settings.spillway_weight,
         settings.velocity_variance_scale_mps2,
         settings.divergence_scale_per_m, settings.vorticity_scale_per_m,
         settings.vertical_speed_scale_mps, settings.surface_slope_scale,
@@ -80,32 +80,6 @@ float weighted_mean(const float* values, const float* weights,
     return weight_total > 0.0f ? total / weight_total : 0.0f;
 }
 
-float particle_variance(const PresentationDerivationInput& input,
-                        std::uint32_t cell_x, std::uint32_t cell_z,
-                        const GameplaySample& mean) {
-    float sum = 0.0f;
-    std::uint32_t count = 0u;
-    const float min_x = input.layout.origin_m.x +
-                        static_cast<float>(cell_x) * input.layout.cell_size_m;
-    const float min_z = input.layout.origin_m.z +
-                        static_cast<float>(cell_z) * input.layout.cell_size_m;
-    const float max_x = min_x + input.layout.cell_size_m;
-    const float max_z = min_z + input.layout.cell_size_m;
-    for (const FluidParticle& particle : *input.particles) {
-        if (particle.position_m.x < min_x || particle.position_m.x >= max_x ||
-            particle.position_m.z < min_z || particle.position_m.z >= max_z)
-            continue;
-        const float dx = particle.velocity_mps.x - mean.velocity_x_mps;
-        const float dy = particle.velocity_mps.y - mean.velocity_y_mps;
-        const float dz = particle.velocity_mps.z - mean.velocity_z_mps;
-        const float value = dx * dx + dy * dy + dz * dz;
-        if (!finite(value)) return 0.0f;
-        sum += value;
-        ++count;
-    }
-    return count == 0u ? 0.0f : sum / static_cast<float>(count);
-}
-
 RiverFeature feature_for(const PresentationMarkers& markers, float speed,
                          const PresentationDerivationSettings& settings) {
     if (markers.waterfall) return RiverFeature::Waterfall;
@@ -117,6 +91,21 @@ RiverFeature feature_for(const PresentationMarkers& markers, float speed,
     return RiverFeature::Calm;
 }
 
+bool valid_presentation(const PresentationSample& sample) {
+    if (!sample.wet_valid || !finite(sample.normal_x) ||
+        !finite(sample.normal_z) || !finite(sample.turbulence) ||
+        !finite(sample.aeration) || !finite(sample.foam_potential) ||
+        sample.turbulence < 0.0f || sample.turbulence > 1.0f ||
+        sample.aeration < 0.0f || sample.aeration > 1.0f ||
+        sample.foam_potential < 0.0f || sample.foam_potential > 1.0f ||
+        static_cast<std::uint8_t>(sample.feature) >
+            static_cast<std::uint8_t>(RiverFeature::Pool))
+        return false;
+    const float normal_y_squared = 1.0f - sample.normal_x * sample.normal_x -
+                                   sample.normal_z * sample.normal_z;
+    return finite(normal_y_squared) && normal_y_squared >= 0.0f;
+}
+
 }  // namespace
 
 bool build_river_presentation_field(
@@ -126,7 +115,7 @@ bool build_river_presentation_field(
     samples.clear();
     error.clear();
     if (!valid_layout(input.layout) || !valid_settings(settings) ||
-        input.gameplay == nullptr || input.particles == nullptr ||
+        input.gameplay == nullptr || input.gameplay_statistics == nullptr ||
         input.terrain_heights_m == nullptr || input.wake_distances_m == nullptr ||
         input.markers == nullptr || input.local_overrides == nullptr) {
         error = "river presentation field input is invalid";
@@ -134,7 +123,9 @@ bool build_river_presentation_field(
     }
     const std::size_t count = static_cast<std::size_t>(input.layout.width) *
                               input.layout.depth;
-    if (input.gameplay->size() != count || input.terrain_heights_m->size() != count ||
+    if (input.gameplay->size() != count ||
+        input.gameplay_statistics->velocity_variance_mps2.size() != count ||
+        input.terrain_heights_m->size() != count ||
         input.wake_distances_m->size() != count || input.markers->size() != count ||
         input.local_overrides->size() != count) {
         error = "river presentation field input dimensions do not match layout";
@@ -217,7 +208,14 @@ bool build_river_presentation_field(
                 dvz_dz = (gameplay.velocity_z_mps - up->velocity_z_mps) * inv_cell;
                 dvx_dz = (gameplay.velocity_x_mps - up->velocity_x_mps) * inv_cell;
             }
-            const float variance = normalized(particle_variance(input, x, z, gameplay),
+            const float retained_variance =
+                input.gameplay_statistics->velocity_variance_mps2[index];
+            if (!finite(retained_variance) || retained_variance < 0.0f) {
+                samples.clear();
+                error = "river presentation field contains invalid retained variance";
+                return false;
+            }
+            const float variance = normalized(retained_variance,
                                               settings.velocity_variance_scale_mps2);
             const float divergence = normalized(std::fabs(dvx_dx + dvz_dz),
                                                 settings.divergence_scale_per_m);
@@ -279,6 +277,14 @@ bool build_river_presentation_field(
     return true;
 }
 
+RiverFeature classify_river_feature(
+    const PresentationMarkers& markers, float speed_mps,
+    const PresentationDerivationSettings& settings) noexcept {
+    if (!valid_settings(settings) || !finite(speed_mps) || speed_mps < 0.0f)
+        return RiverFeature::Calm;
+    return feature_for(markers, speed_mps, settings);
+}
+
 bool sample_river_presentation_field(
     const GameplayFieldLayout& layout,
     const std::vector<PresentationSample>& samples, float x_m, float z_m,
@@ -305,8 +311,10 @@ bool sample_river_presentation_field(
     const float weights[] = {(1.0f - tx) * (1.0f - tz), tx * (1.0f - tz),
                              (1.0f - tx) * tz, tx * tz};
     for (std::size_t i = 0; i != 4u; ++i)
-        if (weights[i] > 0.0f && !contributors[i]->wet_valid) return false;
+        if (weights[i] > 0.0f && !valid_presentation(*contributors[i]))
+            return false;
     for (std::size_t i = 0; i != 4u; ++i) {
+        if (weights[i] == 0.0f) continue;
         sample.normal_x += contributors[i]->normal_x * weights[i];
         sample.normal_z += contributors[i]->normal_z * weights[i];
         sample.turbulence += contributors[i]->turbulence * weights[i];
@@ -323,7 +331,7 @@ bool sample_river_presentation_field(
     const PresentationSample& nearest = samples[index_of(
         layout, std::min(nearest_x, layout.width - 1u),
         std::min(nearest_z, layout.depth - 1u))];
-    if (!nearest.wet_valid) return false;
+    if (!valid_presentation(nearest)) return false;
     sample.turbulence = clamp01(sample.turbulence);
     sample.aeration = clamp01(sample.aeration);
     sample.foam_potential = clamp01(sample.foam_potential);

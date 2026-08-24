@@ -1175,6 +1175,7 @@ $(foreach s,$(AUTHORED_FLUID_COLLIDERS_CPP),$(eval $(call objrule_cpp,def,$(s)))
 GPU_VISUAL_MESHER_CPU_TARGET = build/gpu_visual_mesher_cpu_tests
 GPU_VISUAL_MESHER_CPU_CPP = gpu_visual_mesher_cpu_tests.cpp \
                             ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp \
+                            ../src/hydrology/fluid_gameplay_field.cpp \
                             ../src/hydrology/water_visual_products.cpp
 GPU_VISUAL_MESHER_CPU_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
                           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c

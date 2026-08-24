@@ -10,7 +10,9 @@ namespace hydrology {
 struct PresentationDerivationInput {
     GameplayFieldLayout layout{};
     const std::vector<GameplaySample>* gameplay = nullptr;
-    const std::vector<FluidParticle>* particles = nullptr;
+    const GameplayFieldStatistics* gameplay_statistics = nullptr;
+    // Height is authoritative at gameplay extraction; presentation uses the
+    // accepted free surface/depth and verifies this terrain record is finite.
     const std::vector<float>* terrain_heights_m = nullptr;
     const std::vector<float>* wake_distances_m = nullptr;
     const std::vector<PresentationMarkers>* markers = nullptr;
@@ -26,5 +28,9 @@ bool sample_river_presentation_field(
     const GameplayFieldLayout& layout,
     const std::vector<PresentationSample>& samples, float x_m, float z_m,
     PresentationSample& sample) noexcept;
+
+RiverFeature classify_river_feature(
+    const PresentationMarkers& markers, float speed_mps,
+    const PresentationDerivationSettings& settings) noexcept;
 
 }  // namespace hydrology

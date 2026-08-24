@@ -29,9 +29,11 @@ bool valid_wet_sample(const GameplaySample& sample) {
 bool build_fluid_gameplay_field(
     const std::vector<FluidParticle>& particles, float particle_radius_m,
     const GameplayFieldLayout& layout, const TerrainHeightSampler& terrain,
-    std::vector<GameplaySample>& samples, std::string& error) {
+    std::vector<GameplaySample>& samples, std::string& error,
+    GameplayFieldStatistics* statistics) {
     samples.clear();
     error.clear();
+    if (statistics != nullptr) statistics->velocity_variance_mps2.clear();
     if (!valid_layout(layout) || !finite(particle_radius_m) ||
         particle_radius_m <= 0.0f || !terrain) {
         error = "fluid gameplay field input is invalid";
@@ -40,6 +42,7 @@ bool build_fluid_gameplay_field(
     const std::size_t count = static_cast<std::size_t>(layout.width) * layout.depth;
     samples.assign(count, {});
     std::vector<float> velocity_weight(count, 0.0f);
+    std::vector<float> velocity_square_weight(count, 0.0f);
     std::vector<float> terrain_height(count, 0.0f);
     const float volume = 4.1887902047863909846f * particle_radius_m *
                          particle_radius_m * particle_radius_m;
@@ -82,6 +85,10 @@ bool build_fluid_gameplay_field(
         sample.velocity_x_mps += particle.velocity_mps.x * volume;
         sample.velocity_y_mps += particle.velocity_mps.y * volume;
         sample.velocity_z_mps += particle.velocity_mps.z * volume;
+        velocity_square_weight[index] +=
+            (particle.velocity_mps.x * particle.velocity_mps.x +
+             particle.velocity_mps.y * particle.velocity_mps.y +
+             particle.velocity_mps.z * particle.velocity_mps.z) * volume;
         velocity_weight[index] += volume;
         sample.wet_valid = true;
     }
@@ -96,6 +103,26 @@ bool build_fluid_gameplay_field(
         sample.velocity_x_mps /= velocity_weight[index];
         sample.velocity_y_mps /= velocity_weight[index];
         sample.velocity_z_mps /= velocity_weight[index];
+    }
+    if (statistics != nullptr) {
+        statistics->velocity_variance_mps2.assign(count, 0.0f);
+        for (std::size_t index = 0; index != count; ++index) {
+            const GameplaySample& sample = samples[index];
+            if (!sample.wet_valid) continue;
+            const float mean_square = sample.velocity_x_mps * sample.velocity_x_mps +
+                                      sample.velocity_y_mps * sample.velocity_y_mps +
+                                      sample.velocity_z_mps * sample.velocity_z_mps;
+            const float variance = velocity_square_weight[index] /
+                                   velocity_weight[index] - mean_square;
+            if (!finite(variance)) {
+                samples.clear();
+                statistics->velocity_variance_mps2.clear();
+                error = "fluid gameplay field variance is non-finite";
+                return false;
+            }
+            statistics->velocity_variance_mps2[index] =
+                std::max(0.0f, variance);
+        }
     }
     return true;
 }
@@ -133,6 +160,7 @@ bool sample_fluid_gameplay_field(const GameplayFieldLayout& layout,
         if (weights[i] > 0.0f && !valid_wet_sample(*contributors[i]))
             return false;
     for (std::size_t i = 0; i != 4u; ++i) {
+        if (weights[i] == 0.0f) continue;
         sample.height_m += contributors[i]->height_m * weights[i];
         sample.depth_m += contributors[i]->depth_m * weights[i];
         sample.velocity_x_mps += contributors[i]->velocity_x_mps * weights[i];

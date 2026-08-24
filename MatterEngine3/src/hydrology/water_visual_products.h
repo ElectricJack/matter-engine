@@ -20,6 +20,16 @@ inline bool operator==(const ProductKeys& a, const ProductKeys& b) noexcept {
            a.gameplay == b.gameplay && a.presentation == b.presentation;
 }
 
+// Hydrology artifact v4 serializes only visual/coarse_cpu/gameplay. This
+// compatibility predicate is intentionally temporary; Task 2 removes it once
+// v5 persists ProductKeys::presentation.
+inline bool v4_persisted_product_keys_match(const ProductKeys& persisted,
+                                            const ProductKeys& expected) noexcept {
+    return persisted.visual == expected.visual &&
+           persisted.coarse_cpu == expected.coarse_cpu &&
+           persisted.gameplay == expected.gameplay;
+}
+
 // Provider-neutral authored values are resolved onto the presentation lattice.
 // The native/QuickJS authoring producer is intentionally a later concern.
 struct PresentationMarkers {
@@ -70,7 +80,6 @@ struct PresentationDerivationSettings {
     float waterfall_weight = 1.0f;
     float impact_weight = 1.0f;
     float spillway_weight = 1.0f;
-    float pool_weight = 1.0f;
     float velocity_variance_scale_mps2 = 1.0f;
     float divergence_scale_per_m = 1.0f;
     float vorticity_scale_per_m = 1.0f;

@@ -283,6 +283,12 @@ void test_gameplay_sampling_requires_all_bilinear_contributors() {
               sample.velocity_z_mps == 6.0f && sample.wet_valid,
           "bilinear sampling preserves all continuous and 3D velocity channels");
 
+    wet[1].height_m = std::numeric_limits<float>::quiet_NaN();
+    CHECK(hydrology::sample_fluid_gameplay_field(layout, wet, 0.5f, 0.5f,
+                                                  sample),
+          "zero-weight invalid gameplay contributors are skipped");
+    wet[1].height_m = 4.0f;
+
     wet[3].wet_valid = false;
     CHECK(!hydrology::sample_fluid_gameplay_field(layout, wet, 1.0f, 1.0f,
                                                    sample) &&
@@ -327,6 +333,18 @@ void test_presentation_identity_is_independent_of_visual_identity() {
           "canonical local overrides change only the presentation key");
 }
 
+void test_v4_cache_keys_ignore_unserialized_presentation_identity() {
+    const hydrology::ProductKeys persisted{11u, 22u, 33u, 0u};
+    const hydrology::ProductKeys expected{11u, 22u, 33u, 44u};
+    CHECK(!(persisted == expected),
+          "strict product equality detects a missing presentation key");
+    CHECK(hydrology::v4_persisted_product_keys_match(persisted, expected),
+          "v4 cache matching compares only its three serialized keys");
+    CHECK(!hydrology::v4_persisted_product_keys_match(
+              persisted, {12u, 22u, 33u, 44u}),
+          "v4 cache matching still rejects a changed persisted key");
+}
+
 }  // namespace
 
 int main() {
@@ -339,5 +357,6 @@ int main() {
     test_coarse_identity_includes_cpu_mesher_blend_width();
     test_gameplay_sampling_requires_all_bilinear_contributors();
     test_presentation_identity_is_independent_of_visual_identity();
+    test_v4_cache_keys_ignore_unserialized_presentation_identity();
     return check_summary();
 }

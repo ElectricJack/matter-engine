@@ -1123,8 +1123,11 @@ bool cache_matches_request(
     const hydrology::ProductKeys expected = hydrology::derive_product_keys(
         visual_job, snapshot, identity, products.coarse_voxel_m,
         products.gameplay_layout);
+    // v4 artifacts do not persist presentation. Task 2 replaces this narrow
+    // compatibility path with strict v5 product-key comparison.
     return snapshot == artifact.particle_snapshot_digest &&
-           expected == artifact.product_keys &&
+           hydrology::v4_persisted_product_keys_match(artifact.product_keys,
+                                                       expected) &&
            artifact.particles.size() <= products.visual_job.limits.max_particles &&
            artifact.visual_mesh.positions.size() / 3u <=
                products.visual_job.limits.max_mesh_vertices &&
