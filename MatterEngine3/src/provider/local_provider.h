@@ -9,6 +9,8 @@
 #include "matter/world_definition.h"
 #include "matter/gpu_visual_meshing.h"
 #include "hydrology/physx_fluid_bake.h"
+#include "hydrology/authored_fluid_request.h"
+#include "hydrology/hydrology_handoff_products.h"
 #include "tileset_slot_allocator.h"  // LRU detail-tileset slot pool (chart-VT C3)
 #include "detail_bake_plan.h"        // DetailBakeRequest / plan_detail_bakes
 
@@ -42,17 +44,6 @@ namespace terrain_field { class RiverHeightOverlay; }
 
 namespace viewer {
 
-// Request-local data assembled from the imperative river network. WorldSession
-// invokes the one authored-fluid lifecycle below on its existing bake worker;
-// connect() has no fluid side path.
-struct FluidBakeRequest {
-    hydrology::FluidBakeInput input{};
-    hydrology::PhysxFluidBake::ProductBuildSettings product_settings{};
-    hydrology::TerrainHeightSampler terrain;
-    std::filesystem::path cache_path;
-    std::uint64_t semantic_key = 0;
-};
-
 using FluidBakeBackendFactory =
     std::function<std::shared_ptr<hydrology::IFluidBakeBackend>()>;
 
@@ -62,12 +53,6 @@ struct FluidDeviceIdentity {
     std::uint32_t vendor_id = 0;
     std::uint32_t device_id = 0;
     std::uint32_t driver_version = 0;
-};
-
-struct FluidBakeRunContext {
-    hydrology::FluidBakeCallbacks callbacks{};
-    hydrology::TerrainHeightSampler terrain;
-    std::uint64_t terrain_revision = 0;
 };
 
 struct LocalProviderConfig {
@@ -304,6 +289,7 @@ struct ProviderWorldDefinition {
     std::vector<matter::Mat4f> root_transforms;
     std::vector<bool> expand_flags;
     std::vector<bool> tileset_flags;
+    std::vector<hydrology::AuthoredFluidCollider> fluid_colliders;
     world_lights::WorldLights lights;
     matter::WorldSettings settings;
     std::optional<matter::HydrologyWorldSettings> hydrology;
@@ -368,6 +354,16 @@ inline ProviderWorldDefinition adapt_world_definition(
         out.root_transforms.push_back(root.transform);
         out.expand_flags.push_back(root.expand);
         out.tileset_flags.push_back(root.tileset);
+        if (root.fluid_collider.shape !=
+            matter::WorldFluidColliderShape::None) {
+            hydrology::AuthoredFluidCollider collider{};
+            collider.id = root.id;
+            collider.object_to_world = root.transform;
+            collider.shape = root.fluid_collider;
+            collider.revision =
+                hydrology::authored_fluid_collider_revision(collider);
+            out.fluid_colliders.push_back(std::move(collider));
+        }
     }
 
     out.settings = definition.settings;
@@ -426,16 +422,17 @@ public:
         const hydrology::PhysxFluidBake::ProductBuildSettings& settings,
         const hydrology::TerrainHeightSampler& terrain,
         hydrology::HydrologyArtifact& artifact,
-        hydrology::FluidBakeError& error) const;
+        hydrology::FluidBakeError& error,
+        hydrology::PhysxFluidBake::ProductBuildTimings* timings = nullptr) const;
 
-    const std::optional<hydrology::HydrologyArtifact>&
-    accepted_fluid_artifact() const {
-        return accepted_fluid_artifact_;
+    const std::optional<hydrology::HydrologyNetworkBakeResult>&
+    accepted_fluid_network() const {
+        return accepted_fluid_network_;
     }
 
-    void commit_accepted_fluid_artifact(
-        hydrology::HydrologyArtifact artifact) {
-        accepted_fluid_artifact_ = std::move(artifact);
+    void commit_accepted_fluid_network(
+        hydrology::HydrologyNetworkBakeResult result) {
+        accepted_fluid_network_ = std::move(result);
     }
 
     bool authored_fluid_requested() const;
@@ -447,7 +444,15 @@ public:
     bool run_authored_fluid_bake(const FluidBakeRunContext& context,
                                  matter::HydrologyStatus& status,
                                  hydrology::FluidBakeError& error,
-                                 hydrology::HydrologyArtifact& artifact);
+                                 hydrology::HydrologyNetworkBakeResult& result);
+
+    // Kept as the one-section execution primitive while the network overload
+    // coordinates multiple requests and publishes only the complete manifest.
+    bool run_authored_fluid_bake(const FluidBakeRunContext& context,
+                                 matter::HydrologyStatus& status,
+                                 hydrology::FluidBakeError& error,
+                                 hydrology::HydrologyArtifact& artifact,
+                                 gpu_meshing::MeshResult& failed_debug_visual);
 
     // connect() == install_graph() + compose_world() with unchanged external behavior.
     bool connect(WorldManifest& out, std::string& err) override;
@@ -648,6 +653,9 @@ private:
     std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
     std::optional<matter::HydrologyWorldSettings> hydrology_settings_;
     std::optional<matter::RiverNetworkDefinition> river_network_;
+    std::vector<hydrology::AuthoredFluidCollider> authored_fluid_colliders_;
+    std::optional<hydrology::HydrologyNetworkBakeResult>
+        accepted_fluid_network_;
     std::optional<hydrology::HydrologyArtifact> accepted_fluid_artifact_;
     std::vector<FetchFailed> fetch_failed_; // Task 7 fix: per-part load failures from fetch_parts()
     part_graph_snapshot::Snapshot graph_snapshot_;  // Task 9: live-edit graph snapshot

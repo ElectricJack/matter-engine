@@ -16,7 +16,17 @@ struct ArtifactProvenance {
     std::uint64_t adapter_version = 0;
 };
 
+struct HydrologySectionIdentity {
+    std::string section_id;
+    std::string river_id;
+    float from_m = 0.0f;
+    float to_m = 0.0f;
+    float visual_from_m = 0.0f;
+    float visual_to_m = 0.0f;
+};
+
 struct HydrologyArtifact {
+    HydrologySectionIdentity section{};
     ProductKeys product_keys{};
     std::uint64_t semantic_key = 0;
     std::uint64_t particle_snapshot_digest = 0;

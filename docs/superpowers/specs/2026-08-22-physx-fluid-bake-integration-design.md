@@ -89,6 +89,17 @@ loaded and initialized only when a PhysX bake is requested. There is no Matter
 bridge DLL, solver executable, command line, GenCase, or temporary worker
 process.
 
+For the pinned Windows build, the staged dynamic closure is exactly
+`PhysXGpu_64.dll`; its recursive import graph requires only Windows System32's
+`KERNEL32.dll` and NVIDIA driver's `nvcuda.dll`. The package includes the
+upstream PhysX license and CUDA EULA as separately hashed files and as entries
+in `THIRD_PARTY_NOTICES.txt`. The manifest marks both `physx` and `cuda` true,
+and the checker rejects alternate/extra PhysX runtime aliases. An opt-in PhysX
+distribution also requires exactly one explicitly selected accepted `.mhyd`
+under the packaged `world_demo/.cache/RiverHydrology/hydrology` tree; ordinary
+source `.cache` directories remain excluded, so stale or rejected artifacts
+cannot enter the package accidentally.
+
 ### 3.3 Adapter responsibilities
 
 The adapter may:
@@ -199,8 +210,15 @@ Collision input includes:
 - the generated downstream virtual dam.
 
 The section AABB and PhysX broadphase bounds have a dry collar. They are not
-represented by colliders. A particle reaching the collar is counted as an
-escape and makes the bake invalid; it is never reflected by an invisible box.
+represented by colliders. A particle reaching the collar is deterministically
+quarantined and is thereafter excluded from the fill sensor and every particle,
+mesh, and gameplay product; it is never reflected by an invisible box.
+Non-finite state remains an immediate hard failure. The cumulative quarantine
+budget is `min(128, max(8, ceil(0.0001 * emitted_particle_count)))`. Exceeding
+that budget is an escape failure. The adapter logs the first eight stable ids
+and first-crossing coordinates, and the artifact records emitted count,
+quarantine count, and budget. A policy-version change invalidates the semantic
+cache identity.
 
 Before fluid work starts, a collision-only fixture drops probe particles above
 the ravine and verifies that they settle on the rendered terrain within one
@@ -218,6 +236,49 @@ as `SnippetPBF`; Matter does not invent alternative PBD parameterization.
 
 The first ravine spike sweeps a small declared set of particle spacings rather
 than tuning arbitrary forces. Each result records its complete PBD settings.
+
+After the initial spacing sweep demonstrated that larger particles alone do not
+add water, the user approved a bounded volume sweep. Particle spacing controls
+discretization and the volume represented by each particle; inlet flow controls
+the total emitted water volume. Increasing spacing while preserving flow emits
+fewer, larger-volume particles but does not deepen the river by itself.
+
+Task 8's approved final sweep fixes physical and product resolution at the
+coarsest candidate-A settings and varies inlet flow only:
+
+| Candidate | inlet flow | volume over 64 s | particle spacing | product radius | visual voxel | visual blend | coarse voxel |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| F4 | 4 m³/s | 256 m³ | 0.30 m | 0.195 m | 0.150 m | 0.075 m | 0.60 m |
+| F8 | 8 m³/s | 512 m³ | 0.30 m | 0.195 m | 0.150 m | 0.075 m | 0.60 m |
+| F12 | 12 m³/s | 768 m³ | 0.30 m | 0.195 m | 0.150 m | 0.075 m | 0.60 m |
+
+All three retain the official SnippetPBF-derived offsets and mass, density
+1000 kg/m³, 1/120 s fixed step, four solver iterations, 96 neighbours, 256-step
+batches, the 64 s emission window, one-million-particle cap, 100 m virtual dam,
+and unchanged PBD mathematics. The oriented acceptance sensor is 8 m long,
+6 by 1 by 3 cells, 6 m high, requires 80% broad occupancy for 32 consecutive
+steps, and requires one particle per cell. Stop at the first flow that passes
+all numerical gates and visibly forms a connected, substantial rapids surface;
+numerical sensor acceptance alone is insufficient. No other values are swept.
+
+Observed Task 8 results on the RTX 4090 (driver 610.74), using PhysX 5.6.1
+commit `5ca9f472105a90d70d957c243cb0ef36fe251a9f` and CUDA 12.8.61:
+
+| Candidate | terminal result | step | oriented sensor max/final | emitted/final/peak | escaped/budget | solver wall |
+|---|---|---:|---:|---:|---:|---:|
+| F4 | `SensorNotReached` | 65,536 | 0.333333 / 0.333333 | 2,264 / 2,264 / 2,264 | 0 / 8 | 167.534303 s |
+| F8 | `EscapedParticles` | 23,552 | 0.666667 / 0.666667 | 4,528 / 4,519 / 4,528 | 9 / 8 | 151.508028 s |
+| F12 | `EscapedParticles` | 4,096 | 0.000000 / 0.000000 | 3,622 / 3,611 / 3,622 | 11 / 8 | 27.384693 s |
+
+All three finite terminal snapshots rendered only through the unaccepted debug
+path. F4 was visually thin and disconnected; F8 widened the curve sheet but
+still left the inlet-to-dam path and sensor/dam view disconnected; F12 failed
+near the inlet before reaching the downstream sensor. F8/F12 first-N escape
+coordinates cluster at the same source-side validation boundary near
+`(-10.960, 42.266, -4.735)`, and increased flow crosses the budget earlier.
+No setting is selected. The declared sweep is exhausted, and any inlet or
+source-geometry change requires a separate explicit design ruling; the escape,
+finite, sensor, capacity, and visual-connectivity gates remain unchanged.
 
 ### 7.2 Emitters
 
@@ -246,14 +307,14 @@ the next section's inlet belongs to a later specification.
    - cancellation;
    - non-finite particle data;
    - PhysX-reported/excluded particles;
-   - dry-collar escapes;
+   - dry-collar quarantine count and budget;
    - particle and memory caps; and
    - fill-sensor wet fraction.
 6. The sensor is complete only after its wet fraction meets
    `crest_wet_fraction` for `stable_wet_steps` consecutive solver steps.
-7. Stop successfully at sensor completion. Stop invalid at `max_steps`, capacity
-   exhaustion, escape, non-finite state, unrecoverable PhysX error, or device
-   loss.
+7. Stop successfully at sensor completion while the quarantine count is within
+   budget. Stop invalid at `max_steps`, capacity exhaustion, quarantine budget
+   overflow, non-finite state, unrecoverable PhysX error, or device loss.
 8. Copy the final particle positions/velocities once and destroy the PhysX
    session after all Matter products have been generated or copied.
 
@@ -266,6 +327,14 @@ The sensor is a thin volume immediately upstream of the virtual dam crest. Its
 wet fraction is the fraction of horizontal sensor cells that contain at least
 the configured minimum particle contribution, not simply a global particle
 count. That prevents a narrow jet from falsely completing a broad section.
+
+The volume is represented by an explicit local frame: world-space origin, unit
+longitudinal and lateral XZ axes, and longitudinal/vertical/lateral extents.
+Horizontal resolution X bins along the channel and Z bins across it. The
+rotated volume's world-axis AABB is retained only for validation and diagnostic
+display; neither the CPU reference nor CUDA occupancy kernel bins that AABB.
+The resolved frame participates in the sensor semantic revision, and invalid
+non-unit/non-orthogonal frames are rejected before backend allocation.
 
 The adapter evaluates the occupancy reduction from device particle positions and
 returns only counts per batch. This small CUDA reduction is data plumbing, not
@@ -321,6 +390,8 @@ that limitation.
 Changing PhysX version, adapter version, PBD material/offset/iteration settings,
 particle spacing, terrain revision, network hash, dam/sensor settings, or
 Matter-mesher contract invalidates the artifact.
+The sensor identity includes its resolved longitudinal/lateral frame, so a
+curved-reach orientation or frame-policy change cannot reuse an AABB-era cache.
 
 ## 12. GPU coexistence and editor behavior
 
@@ -365,6 +436,14 @@ A failed fluid bake never prevents the dry terrain world from loading. It sets
 `HydrologyStatus::Invalid`, retains logs and counters, and renders no result as
 accepted water. A CPU visual fallback may aid diagnosis but is labeled fallback
 and does not convert a failed simulation into `Ready`.
+
+For terminal `SensorNotReached` or quarantine-budget failures that retain a
+finite host snapshot, the normal editor may pass that snapshot through the
+existing Matter GPU visual mesher and material 4 as transient
+`UNACCEPTED DEBUG WATER`. This path publishes no accepted artifact, cache,
+gameplay field, CPU query mesh, or `Ready` state. Non-finite/device/runtime
+failures are never rendered, and cancellation or stale generations cannot
+publish even a debug part.
 
 ## 14. Verification sequence
 
@@ -430,7 +509,8 @@ Use `RiverHydrology.js` from the current branch:
 The acceptance run must:
 
 - reach the fill sensor before `max_steps`;
-- keep every accepted particle finite and within the dry collar;
+- keep every accepted particle finite and within the dry collar, keep the
+  deterministic quarantine within budget, and show no connected leak;
 - show a connected wet path from inlet through the principal curve to the dam;
 - produce nonzero downstream velocity through the curve;
 - produce visual and gameplay artifacts without capacity truncation;

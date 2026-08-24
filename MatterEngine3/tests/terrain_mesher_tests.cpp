@@ -62,23 +62,20 @@ int main() {
         matter::RiverNetworkDefinition network{};
         network.cell_size_m = 1.0f;
         network.seed = 77u;
-        network.first_section_river = "main";
-        network.first_section = {20.0f, 4.0f};
         matter::RiverDefinition river{};
         river.name = "main";
         river.inlet = {{0.0f, 12.0f, 8.0f}, 1.0f};
-        river.spline = {{0.0f, 12.0f, 8.0f}, {16.0f, 11.0f, 8.0f},
-                        {32.0f, 10.0f, 8.0f}};
-        river.reaches = {{32.0f, -0.03f, 0.0f}};
-        river.channel = {6.0f, 2.0f, 0.35f};
-        river.boulders = {0.0f, {0.5f, 1.0f}};
+        river.curve = {{0.0f, 12.0f, 8.0f}, {16.0f, 11.0f, 8.0f},
+                       {32.0f, 10.0f, 8.0f}};
+        river.channel_profile = {{0.0f, 6.0f, 2.0f, 0.35f},
+                                 {32.0f, 6.0f, 2.0f, 0.35f}};
         network.rivers.push_back(river);
         hydrology::RiverGeometry geometry{};
         std::string error;
-        CHECK(hydrology::build_river_geometry(network, geometry, error),
+        CHECK(hydrology::build_river_geometry(network, "main", geometry, error),
               error.c_str());
         std::shared_ptr<const RiverHeightOverlay> overlay;
-        CHECK(RiverHeightOverlay::build(geometry, river.channel, overlay, error),
+        CHECK(RiverHeightOverlay::build(geometry, overlay, error),
               error.c_str());
         FieldProgram program;
         CHECK(FieldProgram::parse(

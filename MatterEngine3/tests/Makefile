@@ -1137,6 +1137,29 @@ RIVER_NETWORK_CPP = river_network_tests.cpp \
                     ../src/hydrology/river_network_builder.cpp
 RIVER_NETWORK_OBJS = $(call obj_list,def,$(RIVER_NETWORK_CPP))
 
+RIVER_SECTION_GRAPH_TARGET = build/river_section_graph_tests
+RIVER_SECTION_GRAPH_CPP = river_section_graph_tests.cpp \
+                          ../src/hydrology/river_section_graph.cpp
+RIVER_SECTION_GRAPH_OBJS = $(call obj_list,def,$(RIVER_SECTION_GRAPH_CPP))
+
+RIVER_SECTION_COORDINATOR_TARGET = build/river_section_coordinator_tests
+RIVER_SECTION_COORDINATOR_CPP = river_section_coordinator_tests.cpp \
+                                ../src/hydrology/river_section_coordinator.cpp
+RIVER_SECTION_COORDINATOR_OBJS = \
+    $(call obj_list,def,$(RIVER_SECTION_COORDINATOR_CPP))
+
+SPILLWAY_HANDOFF_TARGET = build/spillway_handoff_tests
+SPILLWAY_HANDOFF_CPP = spillway_handoff_tests.cpp \
+                       ../src/hydrology/fluid_emitter_layout.cpp \
+                       ../src/hydrology/spillway_handoff.cpp \
+                       ../src/hydrology/fluid_emission.cpp
+SPILLWAY_HANDOFF_OBJS = $(call obj_list,def,$(SPILLWAY_HANDOFF_CPP))
+
+AUTHORED_FLUID_COLLIDERS_TARGET = build/authored_fluid_colliders_tests
+AUTHORED_FLUID_COLLIDERS_CPP = authored_fluid_colliders_tests.cpp \
+                               ../src/hydrology/authored_fluid_colliders.cpp
+AUTHORED_FLUID_COLLIDERS_OBJS = $(call obj_list,def,$(AUTHORED_FLUID_COLLIDERS_CPP))
+
 # Visual river Task 1 — standalone validation and canonical key contract.
 HYDROLOGY_SETTINGS_TARGET = build/hydrology_settings_tests
 HYDROLOGY_SETTINGS_CPP = hydrology_settings_tests.cpp \
@@ -1145,6 +1168,9 @@ HYDROLOGY_SETTINGS_OBJS = $(call obj_list,def,$(HYDROLOGY_SETTINGS_CPP))
 
 $(foreach s,$(HYDROLOGY_SETTINGS_CPP),$(eval $(call objrule_cpp,def,$(s))))
 $(foreach s,$(RIVER_NETWORK_CPP),$(eval $(call objrule_cpp,def,$(s))))
+$(foreach s,$(RIVER_SECTION_GRAPH_CPP),$(eval $(call objrule_cpp,def,$(s))))
+$(foreach s,$(SPILLWAY_HANDOFF_CPP),$(eval $(call objrule_cpp,def,$(s))))
+$(foreach s,$(AUTHORED_FLUID_COLLIDERS_CPP),$(eval $(call objrule_cpp,def,$(s))))
 
 GPU_VISUAL_MESHER_CPU_TARGET = build/gpu_visual_mesher_cpu_tests
 GPU_VISUAL_MESHER_CPU_CPP = gpu_visual_mesher_cpu_tests.cpp \
@@ -1161,6 +1187,24 @@ HYDROLOGY_ARTIFACT_CPP = hydrology_artifact_tests.cpp \
                          ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp
 HYDROLOGY_ARTIFACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
                        $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
+
+HYDROLOGY_NETWORK_ARTIFACT_TARGET = build/hydrology_network_artifact_tests
+HYDROLOGY_NETWORK_ARTIFACT_CPP = hydrology_network_artifact_tests.cpp \
+                                 ../src/hydrology/hydrology_network_artifact.cpp
+
+HYDROLOGY_HANDOFF_PRODUCTS_TARGET = build/hydrology_handoff_products_tests
+HYDROLOGY_HANDOFF_PRODUCTS_CPP = hydrology_handoff_products_tests.cpp \
+                                 ../src/hydrology/hydrology_handoff_products.cpp \
+                                 ../src/hydrology/fluid_gameplay_field.cpp \
+                                 ../src/hydrology/water_visual_products.cpp \
+                                 ../src/hydrology/physx_fluid_bake.cpp \
+                                 ../src/hydrology/spillway_handoff.cpp \
+                                 ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp
+HYDROLOGY_HANDOFF_PRODUCTS_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+                               $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
+HYDROLOGY_HANDOFF_PRODUCTS_OBJS = \
+    $(call obj_list,def,$(HYDROLOGY_HANDOFF_PRODUCTS_CPP)) \
+    $(call obj_list,mslc,$(HYDROLOGY_HANDOFF_PRODUCTS_C))
 
 PHYSX_ADAPTER_CONTRACT_TARGET = build/physx_adapter_contract_tests
 PHYSX_ADAPTER_CONTRACT_CPP = physx_adapter_contract_tests.cpp \
@@ -1515,6 +1559,12 @@ def_CPP_SRCS := $(sort \
     $(SEAMINTEGRATION_CPP) \
     $(GPU_VISUAL_MESHER_CPU_CPP) \
     $(HYDROLOGY_ARTIFACT_CPP) \
+    $(HYDROLOGY_NETWORK_ARTIFACT_CPP) \
+    $(HYDROLOGY_HANDOFF_PRODUCTS_CPP) \
+    $(RIVER_SECTION_GRAPH_CPP) \
+    $(RIVER_SECTION_COORDINATOR_CPP) \
+    $(SPILLWAY_HANDOFF_CPP) \
+    $(AUTHORED_FLUID_COLLIDERS_CPP) \
     $(PHYSX_ADAPTER_CONTRACT_CPP) \
     $(PARTSTORE_CPP))
 
@@ -1707,6 +1757,8 @@ GPU_VISUAL_MESHER_CPU_OBJS = \
 HYDROLOGY_ARTIFACT_OBJS = \
     $(call obj_list,def,$(HYDROLOGY_ARTIFACT_CPP)) \
     $(call obj_list,mslc,$(HYDROLOGY_ARTIFACT_C))
+HYDROLOGY_NETWORK_ARTIFACT_OBJS = \
+    $(call obj_list,def,$(HYDROLOGY_NETWORK_ARTIFACT_CPP))
 PHYSX_ADAPTER_CONTRACT_OBJS = \
     $(call obj_list,def,$(PHYSX_ADAPTER_CONTRACT_CPP)) \
     $(call obj_list,mslc,$(PHYSX_ADAPTER_CONTRACT_C))
@@ -1756,7 +1808,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
 .PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
-.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-river-network run-physics-playground run-terrainmesh run-seamweld run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-worldstream-unpark run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-river-network run-authored-fluid-colliders run-physics-playground run-terrainmesh run-seamweld run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-worldstream-unpark run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2089,6 +2141,50 @@ $(RIVER_NETWORK_TARGET): $(RIVER_NETWORK_OBJS)
 
 run-river-network: $(RIVER_NETWORK_TARGET)
 	./$(RIVER_NETWORK_TARGET)
+
+$(RIVER_SECTION_GRAPH_TARGET): $(RIVER_SECTION_GRAPH_OBJS) | build
+	$(CC) $(RIVER_SECTION_GRAPH_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-river-section-graph: $(RIVER_SECTION_GRAPH_TARGET)
+	./$(RIVER_SECTION_GRAPH_TARGET)
+
+.PHONY: run-river-section-graph clean-river-section-graph
+clean: clean-river-section-graph
+clean-river-section-graph:
+	rm -f $(RIVER_SECTION_GRAPH_TARGET)
+
+$(RIVER_SECTION_COORDINATOR_TARGET): $(RIVER_SECTION_COORDINATOR_OBJS) | build
+	$(CC) $(RIVER_SECTION_COORDINATOR_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-river-section-coordinator: $(RIVER_SECTION_COORDINATOR_TARGET)
+	./$(RIVER_SECTION_COORDINATOR_TARGET)
+
+.PHONY: run-river-section-coordinator clean-river-section-coordinator
+clean: clean-river-section-coordinator
+clean-river-section-coordinator:
+	rm -f $(RIVER_SECTION_COORDINATOR_TARGET)
+
+$(SPILLWAY_HANDOFF_TARGET): $(SPILLWAY_HANDOFF_OBJS) | build
+	$(CC) $(SPILLWAY_HANDOFF_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-spillway-handoff: $(SPILLWAY_HANDOFF_TARGET)
+	./$(SPILLWAY_HANDOFF_TARGET)
+
+.PHONY: run-spillway-handoff clean-spillway-handoff
+clean: clean-spillway-handoff
+clean-spillway-handoff:
+	rm -f $(SPILLWAY_HANDOFF_TARGET)
+
+$(AUTHORED_FLUID_COLLIDERS_TARGET): $(AUTHORED_FLUID_COLLIDERS_OBJS) | build
+	$(CC) $(AUTHORED_FLUID_COLLIDERS_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-authored-fluid-colliders: $(AUTHORED_FLUID_COLLIDERS_TARGET)
+	./$(AUTHORED_FLUID_COLLIDERS_TARGET)
+
+.PHONY: clean-authored-fluid-colliders
+clean: clean-authored-fluid-colliders
+clean-authored-fluid-colliders:
+	rm -f $(AUTHORED_FLUID_COLLIDERS_TARGET)
 
 $(PHYSICS_PLAYGROUND_TARGET): $(PHYSICS_PLAYGROUND_OBJS)
 	$(CC) $(PHYSICS_PLAYGROUND_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
@@ -3075,6 +3171,30 @@ run-hydrology-artifact: $(HYDROLOGY_ARTIFACT_TARGET)
 clean: clean-hydrology-artifact
 clean-hydrology-artifact:
 	rm -f $(HYDROLOGY_ARTIFACT_TARGET)
+
+$(HYDROLOGY_NETWORK_ARTIFACT_TARGET): $(HYDROLOGY_NETWORK_ARTIFACT_OBJS) \
+        ../src/hydrology/hydrology_network_artifact.h check.h | build
+	$(CC) $(HYDROLOGY_NETWORK_ARTIFACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-hydrology-network-artifact: $(HYDROLOGY_NETWORK_ARTIFACT_TARGET)
+	./$(HYDROLOGY_NETWORK_ARTIFACT_TARGET)
+
+.PHONY: run-hydrology-network-artifact clean-hydrology-network-artifact
+clean: clean-hydrology-network-artifact
+clean-hydrology-network-artifact:
+	rm -f $(HYDROLOGY_NETWORK_ARTIFACT_TARGET)
+
+$(HYDROLOGY_HANDOFF_PRODUCTS_TARGET): $(HYDROLOGY_HANDOFF_PRODUCTS_OBJS) \
+        ../src/hydrology/hydrology_handoff_products.h check.h | build
+	$(CC) $(HYDROLOGY_HANDOFF_PRODUCTS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-hydrology-handoff-products: $(HYDROLOGY_HANDOFF_PRODUCTS_TARGET)
+	./$(HYDROLOGY_HANDOFF_PRODUCTS_TARGET)
+
+.PHONY: run-hydrology-handoff-products clean-hydrology-handoff-products
+clean: clean-hydrology-handoff-products
+clean-hydrology-handoff-products:
+	rm -f $(HYDROLOGY_HANDOFF_PRODUCTS_TARGET)
 
 $(PHYSX_ADAPTER_CONTRACT_TARGET): $(PHYSX_ADAPTER_CONTRACT_OBJS) \
         ../src/hydrology/physx_fluid_types.h \

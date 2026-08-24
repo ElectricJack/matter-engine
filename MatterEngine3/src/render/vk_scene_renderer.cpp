@@ -7436,10 +7436,20 @@ bool VkSceneRenderer::build_particle_visual(
     result = {};
     stats = {};
     error = {};
-    if (!initialized_ || !gpu_visual_mesher_) {
-        error.code = gpu_meshing::ErrorCode::Unavailable;
-        error.message = "Vulkan GPU visual mesher is not initialized";
-        return false;
+    // Hydrology runs while the world session is still baking, before the
+    // scene pipeline necessarily has drawable instances and calls init().
+    // The particle mesher owns only VulkanDevice resources, so construct it
+    // independently on the renderer thread instead of coupling it to the
+    // first raster-pipeline initialization.
+    if (!gpu_visual_mesher_) {
+        try {
+            gpu_visual_mesher_ =
+                std::make_unique<gpu_meshing::GpuVisualMesher>(*vulkan_);
+        } catch (const std::bad_alloc&) {
+            error.code = gpu_meshing::ErrorCode::Unavailable;
+            error.message = "Vulkan GPU visual mesher allocation failed";
+            return false;
+        }
     }
     return gpu_visual_mesher_->build_particle_visual(job, result, stats,
                                                       error, control);

@@ -17,22 +17,43 @@ public:
                    std::string& error);
     bool set_inlet(std::size_t river, const matter::RiverInlet& inlet,
                    std::string& error);
-    bool set_spline(std::size_t river, const std::vector<matter::Float3>& spline,
-                    std::string& error);
-    bool add_reach(std::size_t river, const matter::RiverReach& reach,
+    bool set_curve(std::size_t river, const std::vector<matter::Float3>& curve,
                    std::string& error);
-    bool set_channel(std::size_t river, const matter::RiverChannel& channel,
-                     std::string& error);
-    bool set_boulders(std::size_t river, const matter::RiverBoulders& boulders,
-                      std::string& error);
-    bool reserve_join(std::size_t river, std::string& error);
-    bool set_first_section(std::size_t river, const matter::RiverFirstSection& section,
+    bool set_channel_profile(
+        std::size_t river,
+        const std::vector<matter::RiverChannelProfilePoint>& profile,
+        std::string& error);
+    bool add_section(std::size_t river, const std::string& id,
+                     float from_m, float to_m, float dry_margin_m,
+                     std::size_t& section, std::string& error);
+    bool set_section_emitters(std::size_t section,
+                              const std::vector<std::string>& emitter_ids,
+                              std::string& error);
+    bool add_section_waterfall(
+        std::size_t section,
+        const matter::RiverWaterfallDefinition& waterfall,
+        std::string& error);
+    bool set_section_pool(std::size_t section,
+                          const matter::RiverPoolDefinition& pool,
+                          std::string& error);
+    bool set_section_spillway(
+        std::size_t section,
+        const matter::RiverSpillwayDefinition& spillway,
+        std::string& error);
+    bool add_section_after(std::size_t section, const std::string& upstream,
                            std::string& error);
+    bool add_section_from_spillway(std::size_t section,
+                                   const std::string& upstream,
+                                   std::string& error);
+    bool set_bake_sequential(std::string& error);
+    bool reserve_join(std::size_t river, std::string& error);
     bool set_backend(matter::HydrologyBackend backend, std::string& error);
     bool set_pbd(const matter::HydrologyPbdSettings& settings,
                  std::string& error);
     bool set_limits(const matter::HydrologyBakeLimits& limits,
                     std::string& error);
+    bool set_escape_policy(const matter::HydrologyEscapePolicy& policy,
+                           std::string& error);
     bool add_emitter(const matter::HydrologyEmitter& emitter,
                      std::string& error);
     bool set_virtual_dam(const matter::HydrologyVirtualDam& dam,
@@ -48,24 +69,30 @@ private:
     struct RiverState {
         matter::RiverDefinition definition;
         bool has_inlet = false;
-        bool has_spline = false;
-        bool has_channel = false;
-        bool has_boulders = false;
+        bool has_curve = false;
+        bool has_channel_profile = false;
+    };
+
+    struct SectionState {
+        matter::RiverSectionDefinition definition;
+        bool has_emitters = false;
     };
 
     bool mutable_river(std::size_t river, RiverState*& out, std::string& error);
+    bool mutable_section(std::size_t section, SectionState*& out,
+                         std::string& error);
     std::string river_path(std::size_t river) const;
 
     float cell_size_m_ = 0.0f;
     std::uint64_t seed_ = 0;
     std::vector<RiverState> rivers_;
-    std::size_t first_section_river_ = 0;
-    matter::RiverFirstSection first_section_{};
+    std::vector<SectionState> sections_;
     matter::HydrologyFluidRequest fluid_{};
-    bool has_first_section_ = false;
+    bool bake_sequential_ = false;
     bool has_backend_ = false;
     bool has_pbd_ = false;
     bool has_limits_ = false;
+    bool has_escape_policy_ = false;
     bool has_virtual_dam_ = false;
     bool has_fill_sensor_ = false;
     bool has_quality_ = false;

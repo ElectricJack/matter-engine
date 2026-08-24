@@ -18,6 +18,9 @@
 #include "hydrology/hydrology_settings.h"
 #include "hydrology/physx_collision_input.h"
 #include "hydrology/river_geometry.h"
+#include "hydrology/river_section_coordinator.h"
+#include "hydrology/river_section_graph.h"
+#include "hydrology/hydrology_handoff_products.h"
 #include "hydrology/water_visual_products.h"
 #include "terrain_river_overlay.h"
 
@@ -41,6 +44,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <new>         // std::bad_alloc (Task 7 fix: fetch_parts skip-and-continue)
@@ -209,8 +213,10 @@ std::string class_name_from_source(const std::string& source) {
 }
 
 constexpr std::uint64_t kPhysxSdkVersion = 0x05060100u;
-constexpr std::uint64_t kFluidAdapterVersion = 2u;
-constexpr std::uint64_t kFluidMesherContractVersion = 1u;
+constexpr std::uint64_t kFluidAdapterVersion = 4u;
+// v2: finite-to-empty coarse-grid interpolation and deterministic CPU normal
+// repair change authority-mesh bytes, so v1 artifacts must not be reused.
+constexpr std::uint64_t kFluidMesherContractVersion = 3u;
 constexpr std::uint32_t kNvidiaVendorId = 0x10deu;
 
 void hash_bytes(std::uint64_t& hash, const void* data, std::size_t size) {
@@ -224,6 +230,12 @@ void hash_bytes(std::uint64_t& hash, const void* data, std::size_t size) {
 template <typename Value>
 void hash_value(std::uint64_t& hash, const Value& value) {
     hash_bytes(hash, &value, sizeof(value));
+}
+
+void hash_string(std::uint64_t& hash, const std::string& value) {
+    const std::uint64_t size = value.size();
+    hash_value(hash, size);
+    hash_bytes(hash, value.data(), value.size());
 }
 
 std::uint64_t nonzero_hash(std::uint64_t hash) {
@@ -245,12 +257,36 @@ std::uint32_t emitter_id(const std::string& text) {
     return hash == 0u ? 1u : hash;
 }
 
-const matter::RiverDefinition* first_section_river(
+std::string safe_cache_id(const std::string& id) {
+    std::string result;
+    result.reserve(id.size());
+    for (const unsigned char byte : id) {
+        result.push_back(std::isalnum(byte) || byte == '-' || byte == '_'
+                             ? static_cast<char>(byte)
+                             : '_');
+    }
+    return result.empty() ? "section" : result;
+}
+
+const matter::RiverSectionDefinition* initial_section(
     const matter::RiverNetworkDefinition& network) {
+    const matter::RiverSectionDefinition* result = nullptr;
+    for (const auto& section : network.sections) {
+        if (!section.after_section_ids.empty() ||
+            !section.upstream_spillway_section_ids.empty())
+            continue;
+        if (!result || section.id < result->id) result = &section;
+    }
+    return result;
+}
+
+const matter::RiverDefinition* section_river(
+    const matter::RiverNetworkDefinition& network,
+    const matter::RiverSectionDefinition& section) {
     const auto found = std::find_if(
         network.rivers.begin(), network.rivers.end(),
         [&](const matter::RiverDefinition& river) {
-            return river.name == network.first_section_river;
+            return river.name == section.river;
         });
     return found == network.rivers.end() ? nullptr : &*found;
 }
@@ -280,7 +316,9 @@ hydrology::RiverCentrelineSample sample_at_distance(
             blend(previous.lateral.x, next.lateral.x), 0.0f,
             blend(previous.lateral.z, next.lateral.z)};
         result.distance_m = distance_m;
-        result.width_scale = blend(previous.width_scale, next.width_scale);
+        result.width_m = blend(previous.width_m, next.width_m);
+        result.depth_m = blend(previous.depth_m, next.depth_m);
+        result.asymmetry = blend(previous.asymmetry, next.asymmetry);
         return result;
     }
     return geometry.centreline.back();
@@ -295,42 +333,56 @@ bool sample_terrain(const hydrology::TerrainHeightSampler& terrain,
 
 bool build_terrain_surface(
     const hydrology::RiverGeometry& geometry,
-    const matter::RiverDefinition& river,
     const matter::HydrologyFluidRequest& fluid,
+    float from_m,
+    float to_m,
     float cell_size,
+    float dry_margin,
     const hydrology::TerrainHeightSampler& terrain,
     hydrology::FluidCollisionSurface& surface,
     matter::Aabb& section_bounds,
     hydrology::FluidBakeError& error) {
-    const float cutoff = fluid.virtual_dam.distance_m +
-                         fluid.virtual_dam.thickness_m;
+    from_m = std::max(geometry.centreline.front().distance_m, from_m);
+    to_m = std::min(geometry.centreline.back().distance_m,
+                    to_m + fluid.virtual_dam.thickness_m);
     float minimum_x = std::numeric_limits<float>::infinity();
     float minimum_z = std::numeric_limits<float>::infinity();
     float maximum_x = -std::numeric_limits<float>::infinity();
     float maximum_z = -std::numeric_limits<float>::infinity();
-    bool found = false;
-    for (const auto& sample : geometry.centreline) {
-        if (sample.distance_m > cutoff) break;
-        const float half_width = river.channel.width_m * sample.width_scale *
-                                     0.5f +
-                                 cell_size;
+    const auto include_sample = [&](const auto& sample) {
+        const float half_width = sample.width_m * 0.5f + cell_size;
         minimum_x = std::min(minimum_x, sample.position_m.x - half_width);
         minimum_z = std::min(minimum_z, sample.position_m.z - half_width);
         maximum_x = std::max(maximum_x, sample.position_m.x + half_width);
         maximum_z = std::max(maximum_z, sample.position_m.z + half_width);
-        found = true;
+    };
+    include_sample(sample_at_distance(geometry, from_m));
+    for (const auto& sample : geometry.centreline) {
+        if (sample.distance_m <= from_m) continue;
+        if (sample.distance_m >= to_m) break;
+        include_sample(sample);
     }
-    if (!found || !(maximum_x > minimum_x) || !(maximum_z > minimum_z)) {
+    include_sample(sample_at_distance(geometry, to_m));
+    if (!(to_m > from_m) || !(maximum_x > minimum_x) ||
+        !(maximum_z > minimum_z)) {
         error = {hydrology::FluidBakeCode::InvalidInput,
                  "authored fluid section has no finite terrain extent"};
         return false;
     }
+    // The section bounds describe the authored wet domain.  The physical
+    // terrain must continue beyond its validation-only dry collar so a
+    // particle is always supported before the collar can report an escape.
+    // This is sampled terrain, not an artificial wall.
+    const float collision_minimum_x = minimum_x - dry_margin - cell_size;
+    const float collision_minimum_z = minimum_z - dry_margin - cell_size;
+    const float collision_maximum_x = maximum_x + dry_margin + cell_size;
+    const float collision_maximum_z = maximum_z + dry_margin + cell_size;
     const auto dimension = [cell_size](float extent) {
         return static_cast<std::uint32_t>(
             std::max(2.0f, std::ceil(extent / cell_size) + 1.0f));
     };
-    const std::uint32_t nx = dimension(maximum_x - minimum_x);
-    const std::uint32_t nz = dimension(maximum_z - minimum_z);
+    const std::uint32_t nx = dimension(collision_maximum_x - collision_minimum_x);
+    const std::uint32_t nz = dimension(collision_maximum_z - collision_minimum_z);
     const std::uint64_t vertex_count = static_cast<std::uint64_t>(nx) * nz;
     if (vertex_count > 4000000u) {
         error = {hydrology::FluidBakeCode::CapacityExceeded,
@@ -344,11 +396,11 @@ bool build_terrain_surface(
     float maximum_y = -std::numeric_limits<float>::infinity();
     const float fallback_y = geometry.bounds_m.minimum.y;
     for (std::uint32_t z_index = 0; z_index < nz; ++z_index) {
-        const float z = z_index + 1u == nz ? maximum_z
-            : minimum_z + static_cast<float>(z_index) * cell_size;
+        const float z = z_index + 1u == nz ? collision_maximum_z
+            : collision_minimum_z + static_cast<float>(z_index) * cell_size;
         for (std::uint32_t x_index = 0; x_index < nx; ++x_index) {
-            const float x = x_index + 1u == nx ? maximum_x
-                : minimum_x + static_cast<float>(x_index) * cell_size;
+            const float x = x_index + 1u == nx ? collision_maximum_x
+                : collision_minimum_x + static_cast<float>(x_index) * cell_size;
             float y = 0.0f;
             if (!sample_terrain(terrain, fallback_y, x, z, y)) {
                 error = {hydrology::FluidBakeCode::InvalidInput,
@@ -381,7 +433,6 @@ bool build_terrain_surface(
 
 hydrology::FluidCollisionSurface build_dam_surface(
     const hydrology::RiverCentrelineSample& sample,
-    const matter::RiverDefinition& river,
     const matter::HydrologyVirtualDam& dam,
     float bed_y) {
     float tx = sample.tangent.x;
@@ -397,7 +448,7 @@ hydrology::FluidCollisionSurface build_dam_surface(
     float lx = -tz;
     float lz = tx;
     const float half_thickness = dam.thickness_m * 0.5f;
-    const float half_width = river.channel.width_m * sample.width_scale * 0.6f;
+    const float half_width = sample.width_m * 0.6f;
     const auto point = [&](float along, float across, float y) {
         return matter::Float3{sample.position_m.x + tx * along + lx * across,
                               y,
@@ -423,75 +474,429 @@ hydrology::FluidCollisionSurface build_dam_surface(
     return surface;
 }
 
-std::uint64_t pbd_revision(const matter::HydrologyFluidRequest& fluid) {
+matter::Aabb mesh_bounds(const hydrology::FluidCollisionMesh& mesh) {
+    matter::Aabb bounds{{std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::infinity()},
+                         {-std::numeric_limits<float>::infinity(),
+                          -std::numeric_limits<float>::infinity(),
+                          -std::numeric_limits<float>::infinity()}};
+    for (const auto vertex : mesh.vertices) {
+        bounds.minimum.x = std::min(bounds.minimum.x, vertex.x);
+        bounds.minimum.y = std::min(bounds.minimum.y, vertex.y);
+        bounds.minimum.z = std::min(bounds.minimum.z, vertex.z);
+        bounds.maximum.x = std::max(bounds.maximum.x, vertex.x);
+        bounds.maximum.y = std::max(bounds.maximum.y, vertex.y);
+        bounds.maximum.z = std::max(bounds.maximum.z, vertex.z);
+    }
+    return bounds;
+}
+
+std::uint64_t pbd_revision(
+    const matter::HydrologyFluidRequest& fluid,
+    const std::vector<hydrology::FluidEmitter>& emitters) {
     std::uint64_t hash = UINT64_C(14695981039346656037);
     hash_value(hash, fluid.pbd);
     hash_value(hash, fluid.limits);
-    for (const auto& emitter : fluid.emitters) {
-        hash_bytes(hash, emitter.id.data(), emitter.id.size());
+    for (const auto& emitter : emitters) {
+        hash_value(hash, emitter.id);
+        hash_value(hash, emitter.shape);
         hash_value(hash, emitter.position_m);
         hash_value(hash, emitter.direction);
+        hash_value(hash, emitter.lateral_axis);
+        hash_value(hash, emitter.up_axis);
         hash_value(hash, emitter.initial_velocity_mps);
         hash_value(hash, emitter.flow_m3s);
         hash_value(hash, emitter.radius_m);
-        hash_value(hash, emitter.start_time_s);
-        hash_value(hash, emitter.stop_time_s);
+        hash_value(hash, emitter.half_extent_m);
+        hash_value(hash, emitter.channel_depth_m);
+        hash_value(hash, emitter.channel_asymmetry);
+        hash_value(hash, emitter.start_step);
+        hash_value(hash, emitter.stop_step);
     }
     return nonzero_hash(hash);
 }
 
-std::uint64_t dam_revision(const matter::HydrologyVirtualDam& dam) {
+std::uint64_t dam_revision(const matter::HydrologyVirtualDam& dam,
+                           float distance_m,
+                           const matter::Aabb& bounds) {
     std::uint64_t hash = UINT64_C(14695981039346656037);
     hash_value(hash, dam);
+    hash_value(hash, distance_m);
+    hash_value(hash, bounds);
     return nonzero_hash(hash);
 }
 
-std::uint64_t sensor_revision(const matter::HydrologyFillSensor& sensor) {
+std::uint64_t section_revision(
+    const matter::RiverSectionDefinition& section,
+    const std::vector<std::uint64_t>& upstream_handoff_keys) {
+    std::uint64_t hash = UINT64_C(14695981039346656037);
+    hash_string(hash, section.id);
+    hash_string(hash, section.river);
+    hash_value(hash, section.from_m);
+    hash_value(hash, section.to_m);
+    hash_value(hash, section.dry_margin_m);
+    for (const auto& id : section.emitter_ids) hash_string(hash, id);
+    for (const auto& waterfall : section.waterfalls) hash_value(hash, waterfall);
+    if (section.terminal_pool) hash_value(hash, *section.terminal_pool);
+    if (section.terminal_spillway) {
+        hash_string(hash, section.terminal_spillway->id);
+        hash_value(hash, section.terminal_spillway->distance_m);
+        hash_value(hash, section.terminal_spillway->width_m);
+        hash_value(hash, section.terminal_spillway->effective_depth_m);
+        hash_value(hash, section.terminal_spillway->overlap_m);
+        hash_value(hash, section.terminal_spillway->dam_offset_m);
+    }
+    for (const auto key : upstream_handoff_keys) hash_value(hash, key);
+    return nonzero_hash(hash);
+}
+
+std::uint64_t collision_mesh_revision(
+    const hydrology::FluidCollisionMesh& mesh) {
+    std::uint64_t hash = UINT64_C(14695981039346656037);
+    for (const auto vertex : mesh.vertices) hash_value(hash, vertex);
+    for (const auto index : mesh.indices) hash_value(hash, index);
+    return nonzero_hash(hash);
+}
+
+std::uint64_t sensor_revision(
+    const matter::HydrologyFillSensor& sensor,
+    const hydrology::FluidFillSensor& resolved) {
     std::uint64_t hash = UINT64_C(14695981039346656037);
     hash_value(hash, sensor);
+    hash_value(hash, resolved.frame_origin_m);
+    hash_value(hash, resolved.longitudinal_axis_xz);
+    hash_value(hash, resolved.lateral_axis_xz);
+    hash_value(hash, resolved.frame_extent_m);
     return nonzero_hash(hash);
 }
 
-bool assemble_authored_fluid_request(
+bool write_obj(const std::filesystem::path& path,
+               const std::vector<float>& positions,
+               const std::vector<std::uint32_t>& indices,
+               std::string& error) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        error = "could not open " + path.string();
+        return false;
+    }
+    stream << std::setprecision(9);
+    for (std::size_t offset = 0; offset + 2u < positions.size(); offset += 3u)
+        stream << "v " << positions[offset] << ' ' << positions[offset + 1u]
+               << ' ' << positions[offset + 2u] << '\n';
+    for (std::size_t offset = 0; offset + 2u < indices.size(); offset += 3u)
+        stream << "f " << indices[offset] + 1u << ' '
+               << indices[offset + 1u] + 1u << ' '
+               << indices[offset + 2u] + 1u << '\n';
+    if (!stream) {
+        error = "could not write " + path.string();
+        return false;
+    }
+    return true;
+}
+
+bool write_obj(const std::filesystem::path& path,
+               const hydrology::FluidCollisionMesh& mesh,
+               std::string& error) {
+    std::vector<float> positions;
+    positions.reserve(mesh.vertices.size() * 3u);
+    for (const matter::Float3 vertex : mesh.vertices) {
+        positions.push_back(vertex.x);
+        positions.push_back(vertex.y);
+        positions.push_back(vertex.z);
+    }
+    return write_obj(path, positions, mesh.indices, error);
+}
+
+bool write_particle_trace(
+    const FluidBakeRequest& request,
+    const hydrology::FluidBakeOutput& output,
+    hydrology::FluidBakeCode terminal_code,
+    const gpu_meshing::MeshResult& visual,
+    bool accepted,
+    std::string& error) {
+    const char* configured = std::getenv("MATTER_HYDROLOGY_TRACE_DIR");
+    if (!configured || configured[0] == '\0') return true;
+
+    const std::filesystem::path configured_root(configured);
+    if (!configured_root.is_absolute()) {
+        error = "MATTER_HYDROLOGY_TRACE_DIR must be an absolute path";
+        return false;
+    }
+    const std::filesystem::path root =
+        request.input.network.sections.size() > 1u
+            ? configured_root / request.section_id
+            : configured_root;
+    std::error_code filesystem_error;
+    std::filesystem::create_directories(root, filesystem_error);
+    if (filesystem_error) {
+        error = "could not create particle trace directory " + root.string() +
+                ": " + filesystem_error.message();
+        return false;
+    }
+
+    {
+        std::ofstream stream(root / "particles.csv",
+                             std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            error = "could not open particle trace CSV";
+            return false;
+        }
+        stream << "id,x_m,y_m,z_m,vx_mps,vy_mps,vz_mps\n"
+               << std::setprecision(9);
+        for (const hydrology::FluidParticle& particle : output.particles) {
+            stream << particle.id << ',' << particle.position_m.x << ','
+                   << particle.position_m.y << ',' << particle.position_m.z
+                   << ',' << particle.velocity_mps.x << ','
+                   << particle.velocity_mps.y << ','
+                   << particle.velocity_mps.z << '\n';
+        }
+        if (!stream) {
+            error = "could not write particle trace CSV";
+            return false;
+        }
+    }
+    {
+        std::ofstream stream(root / "quarantined.csv",
+                             std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            error = "could not open quarantined-particle trace CSV";
+            return false;
+        }
+        stream << "id,x_m,y_m,z_m\n" << std::setprecision(9);
+        for (const hydrology::FluidQuarantinedParticle& particle :
+             output.quarantined_particles) {
+            stream << particle.id << ',' << particle.position_m.x << ','
+                   << particle.position_m.y << ',' << particle.position_m.z
+                   << '\n';
+        }
+        if (!stream) {
+            error = "could not write quarantined-particle trace CSV";
+            return false;
+        }
+    }
+    {
+        std::ofstream stream(root / "centreline.csv",
+                             std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            error = "could not open centreline trace CSV";
+            return false;
+        }
+        stream << "distance_m,x_m,y_m,z_m,tx,ty,tz,lx,ly,lz,width_m,depth_m,asymmetry\n"
+               << std::setprecision(9);
+        for (const hydrology::RiverCentrelineSample& sample :
+             request.input.geometry.centreline) {
+            stream << sample.distance_m << ',' << sample.position_m.x << ','
+                   << sample.position_m.y << ',' << sample.position_m.z << ','
+                   << sample.tangent.x << ',' << sample.tangent.y << ','
+                   << sample.tangent.z << ',' << sample.lateral.x << ','
+                   << sample.lateral.y << ',' << sample.lateral.z << ','
+                   << sample.width_m << ',' << sample.depth_m << ','
+                   << sample.asymmetry << '\n';
+        }
+        if (!stream) {
+            error = "could not write centreline trace CSV";
+            return false;
+        }
+    }
+    {
+        std::ofstream stream(root / "metadata.txt",
+                             std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            error = "could not open particle trace metadata";
+            return false;
+        }
+        stream << std::boolalpha << std::setprecision(9)
+               << "accepted=" << accepted << '\n'
+               << "terminal_code=" << static_cast<unsigned>(terminal_code)
+               << "\nsteps=" << output.stats.simulated_steps
+               << "\nparticles=" << output.particles.size()
+               << "\nemitted=" << output.stats.emitted_particles
+               << "\nescaped=" << output.stats.escaped_particles
+               << "\nescape_budget=" << output.stats.escape_budget
+               << "\nwall_seconds=" << output.stats.wall_seconds
+               << "\nparticle_spacing_m="
+               << request.input.settings.particle_spacing_m
+               << "\nproduct_particle_radius_m="
+               << request.product_settings.particle_radius_m
+               << "\nsensor_max=" << output.sensor.maximum_wet_fraction
+               << "\nsensor_final=" << output.sensor.final_wet_fraction
+               << "\nvisual_vertices=" << visual.positions.size() / 3u
+               << "\nvisual_triangles=" << visual.indices.size() / 3u
+               << '\n';
+        if (!stream) {
+            error = "could not write particle trace metadata";
+            return false;
+        }
+    }
+    if (!write_obj(root / "visual.obj", visual.positions, visual.indices,
+                   error) ||
+        !write_obj(root / "collision.obj", request.input.collision, error))
+        return false;
+
+    std::fprintf(stderr, "[hydrology] particle trace written to %s\n",
+                 root.string().c_str());
+    error.clear();
+    return true;
+}
+
+bool write_network_timing_trace(
+    const hydrology::HydrologyNetworkBakeResult& result,
+    std::string& error) {
+    const char* configured = std::getenv("MATTER_HYDROLOGY_TRACE_DIR");
+    if (!configured || configured[0] == '\0') return true;
+    const std::filesystem::path root(configured);
+    if (!root.is_absolute()) {
+        error = "MATTER_HYDROLOGY_TRACE_DIR must be an absolute path";
+        return false;
+    }
+    std::error_code filesystem_error;
+    std::filesystem::create_directories(root, filesystem_error);
+    if (filesystem_error) {
+        error = "could not create network timing trace directory";
+        return false;
+    }
+    std::ofstream stream(root / "timings.json",
+                         std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        error = "could not open network timing trace";
+        return false;
+    }
+    stream << std::fixed << std::setprecision(3)
+           << "{\n  \"networkState\": \"Ready\",\n  \"sections\": [\n";
+    for (std::size_t index = 0u;
+         index != result.timings.sections.size(); ++index) {
+        const auto& timing = result.timings.sections[index];
+        const auto section = std::find_if(
+            result.sections.begin(), result.sections.end(),
+            [&](const auto& value) {
+                return value.section.section_id == timing.id;
+            });
+        const std::uint32_t particles = section == result.sections.end()
+            ? 0u : section->stats.active_particles;
+        const std::uint32_t escaped = section == result.sections.end()
+            ? 0u : section->stats.escaped_particles;
+        stream << "    {\"id\":" << std::quoted(timing.id)
+               << ",\"cacheHit\":" << std::boolalpha << timing.cache_hit
+               << ",\"setupMs\":" << timing.setup_ms
+               << ",\"physxInitMs\":" << timing.physx_init_ms
+               << ",\"simulateMs\":" << timing.simulate_ms
+               << ",\"gpuMeshMs\":" << timing.gpu_mesh_ms
+               << ",\"cpuMeshMs\":" << timing.cpu_mesh_ms
+               << ",\"particles\":" << particles
+               << ",\"escaped\":" << escaped << "}"
+               << (index + 1u == result.timings.sections.size() ? "\n" : ",\n");
+    }
+    stream << "  ],\n  \"handoffMeshMs\":"
+           << result.timings.handoff_mesh_ms
+           << ",\n  \"serializeMs\":" << result.timings.serialize_ms
+           << ",\n  \"totalWallMs\":" << result.timings.total_wall_ms
+           << ",\n  \"visualVertices\":"
+           << result.products.visual_mesh.positions.size() / 3u
+           << ",\n  \"visualTriangles\":"
+           << result.products.visual_mesh.indices.size() / 3u
+           << "\n}\n";
+    if (!stream) {
+        error = "could not write network timing trace";
+        return false;
+    }
+    std::fprintf(stderr, "[hydrology] network timing trace written to %s\n",
+                 (root / "timings.json").string().c_str());
+    error.clear();
+    return true;
+}
+
+} // namespace
+
+bool assemble_authored_fluid_section_request(
     const matter::RiverNetworkDefinition& network,
+    const hydrology::RiverGeometry& geometry,
+    const matter::RiverSectionDefinition& section,
+    const std::vector<hydrology::SpillwayHandoffRecord>& upstream,
+    const std::vector<hydrology::AuthoredFluidCollider>& colliders,
     const FluidBakeRunContext& context,
     const std::string& cache_root,
     FluidBakeRequest& request,
     hydrology::FluidBakeError& error) {
     request = {};
     error = {};
-    const matter::RiverDefinition* river = first_section_river(network);
-    if (!river) {
+    const matter::RiverDefinition* river = section_river(network, section);
+    if (!river || !section.terminal_spillway ||
+        !section.terminal_pool || geometry.centreline.size() < 2u) {
         error = {hydrology::FluidBakeCode::InvalidInput,
-                 "authored first-section river was not found"};
+                 "authored river section is incomplete"};
         return false;
     }
+    if (upstream.size() > 1u) {
+        error = {hydrology::FluidBakeCode::InvalidInput,
+                 "tributary fan-in execution is outside the two-section milestone"};
+        return false;
+    }
+    if (!upstream.empty() && !section.emitter_ids.empty()) {
+        error = {hydrology::FluidBakeCode::InvalidInput,
+                 "inherited river section cannot also name authored emitters"};
+        return false;
+    }
+    request.section_id = section.id;
+    request.river_id = section.river;
+    request.from_m = section.from_m;
+    request.to_m = section.to_m;
+    request.visual_from_m = section.from_m -
+        (upstream.empty() ? 0.0f : upstream.front().overlap_m * 0.5f);
+    request.visual_to_m = section.to_m +
+        section.terminal_spillway->overlap_m * 0.5f;
+    for (const auto& handoff : upstream) {
+        if (handoff.semantic_key == 0u ||
+            handoff.downstream_section_id != section.id) {
+            error = {hydrology::FluidBakeCode::InvalidInput,
+                     "upstream spillway handoff does not target this section"};
+            request = {};
+            return false;
+        }
+        request.upstream_handoff_keys.push_back(handoff.semantic_key);
+    }
+    std::sort(request.upstream_handoff_keys.begin(),
+              request.upstream_handoff_keys.end());
     request.input.network = network;
-    std::string geometry_error;
-    if (!hydrology::build_river_geometry(network, request.input.geometry,
-                                          geometry_error)) {
-        error = {hydrology::FluidBakeCode::InvalidInput,
-                 std::move(geometry_error)};
-        return false;
-    }
+    request.input.geometry = geometry;
     const auto& fluid = network.fluid;
+    const float spillway_distance = section.terminal_spillway->distance_m;
+    const float dam_distance = spillway_distance +
+                               section.terminal_spillway->dam_offset_m;
+    const float collision_from_m = section.from_m -
+        (upstream.empty() ? 0.0f : upstream.front().overlap_m);
     hydrology::FluidCollisionSurface terrain_surface{};
     matter::Aabb section_bounds{};
-    if (!build_terrain_surface(request.input.geometry, *river, fluid,
-                               network.cell_size_m, context.terrain,
+    if (!build_terrain_surface(request.input.geometry, fluid,
+                               collision_from_m, dam_distance,
+                               network.cell_size_m,
+                               section.dry_margin_m,
+                               context.terrain,
                                terrain_surface, section_bounds, error))
         return false;
     const auto dam_sample = sample_at_distance(
-        request.input.geometry, fluid.virtual_dam.distance_m);
+        request.input.geometry, dam_distance);
     float dam_bed = section_bounds.minimum.y;
     sample_terrain(context.terrain, dam_bed, dam_sample.position_m.x,
                    dam_sample.position_m.z, dam_bed);
     hydrology::FluidCollisionBuildInput collision_input{};
     collision_input.surfaces.push_back(std::move(terrain_surface));
-    collision_input.surfaces.push_back(build_dam_surface(
-        dam_sample, *river, fluid.virtual_dam, dam_bed));
+    std::vector<hydrology::FluidCollisionSurface> authored_surfaces;
+    std::uint64_t authored_collider_revision = 0;
+    if (!hydrology::build_authored_fluid_collision_surfaces(
+            colliders, section_bounds, authored_surfaces,
+            authored_collider_revision, error))
+        return false;
+    collision_input.surfaces.insert(
+        collision_input.surfaces.end(),
+        std::make_move_iterator(authored_surfaces.begin()),
+        std::make_move_iterator(authored_surfaces.end()));
+    auto dam_surface = build_dam_surface(
+        dam_sample, fluid.virtual_dam, dam_bed);
+    request.temporary_dam_bounds_m = mesh_bounds(dam_surface.mesh);
+    collision_input.surfaces.push_back(std::move(dam_surface));
     collision_input.section_bounds_m = section_bounds;
-    collision_input.dry_margin_m = network.first_section.dry_margin_m;
+    collision_input.dry_margin_m = section.dry_margin_m;
     hydrology::FluidCollisionBuildOutput collision_output{};
     if (!hydrology::build_physx_collision_input(
             collision_input, collision_output, error))
@@ -499,14 +904,15 @@ bool assemble_authored_fluid_request(
     request.input.collision = std::move(collision_output.mesh);
     request.input.dry_collar_bounds_m = collision_output.dry_collar_bounds_m;
 
-    std::unordered_set<std::uint32_t> ids;
-    for (const auto& authored : fluid.emitters) {
-        const std::uint32_t id = emitter_id(authored.id);
-        if (!ids.insert(id).second) {
-            error = {hydrology::FluidBakeCode::InvalidInput,
-                     "authored emitter stable ids collide after canonical hashing"};
-            return false;
-        }
+    request.input.settings = {
+        fluid.pbd.particle_spacing_m, fluid.pbd.rest_density_kg_m3,
+        fluid.pbd.fixed_step_seconds, fluid.pbd.solver_iterations,
+        fluid.pbd.max_neighbors, fluid.limits.batch_steps,
+        fluid.limits.max_steps, fluid.limits.max_particles,
+        fluid.limits.escape_policy};
+
+    const auto convert_authored = [&](const matter::HydrologyEmitter& authored,
+                                      hydrology::FluidEmitter& emitter) {
         const auto step = [&](float seconds) -> std::uint64_t {
             return static_cast<std::uint64_t>(std::llround(
                 static_cast<double>(seconds) / fluid.pbd.fixed_step_seconds));
@@ -519,19 +925,54 @@ bool assemble_authored_fluid_request(
                      "authored emitter time range exceeds the bake step budget"};
             return false;
         }
-        request.input.emitters.push_back({
-            id, authored.position_m, authored.direction,
-            authored.initial_velocity_mps, authored.flow_m3s,
-            authored.radius_m, static_cast<std::uint32_t>(start),
-            static_cast<std::uint32_t>(stop)});
+        emitter = {};
+        emitter.id = emitter_id(authored.id);
+        emitter.shape = hydrology::FluidEmitterShape::Disc;
+        emitter.position_m = authored.position_m;
+        emitter.direction = authored.direction;
+        emitter.initial_velocity_mps = authored.initial_velocity_mps;
+        emitter.flow_m3s = authored.flow_m3s;
+        emitter.radius_m = authored.radius_m;
+        emitter.start_step = static_cast<std::uint32_t>(start);
+        emitter.stop_step = static_cast<std::uint32_t>(stop);
+        return true;
+    };
+    if (!upstream.empty()) {
+        hydrology::FluidEmitter emitter{};
+        if (!hydrology::make_spillway_emitter(
+                upstream.front(), request.input.settings, emitter, error))
+            return false;
+        request.input.emitters.push_back(emitter);
+    } else {
+        if (section.emitter_ids.empty()) {
+            error = {hydrology::FluidBakeCode::InvalidInput,
+                     "initial river section requires authored emitter ids"};
+            return false;
+        }
+        std::unordered_set<std::uint32_t> ids;
+        for (const auto& authored_id : section.emitter_ids) {
+            const auto found = std::find_if(
+                fluid.emitters.begin(), fluid.emitters.end(),
+                [&](const matter::HydrologyEmitter& emitter) {
+                    return emitter.id == authored_id;
+                });
+            if (found == fluid.emitters.end()) {
+                error = {hydrology::FluidBakeCode::InvalidInput,
+                         "section names an unknown authored emitter"};
+                return false;
+            }
+            hydrology::FluidEmitter emitter{};
+            if (!convert_authored(*found, emitter)) return false;
+            if (!ids.insert(emitter.id).second) {
+                error = {hydrology::FluidBakeCode::InvalidInput,
+                         "authored emitter stable ids collide after canonical hashing"};
+                return false;
+            }
+            request.input.emitters.push_back(emitter);
+        }
     }
-    request.input.settings = {
-        fluid.pbd.particle_spacing_m, fluid.pbd.rest_density_kg_m3,
-        fluid.pbd.fixed_step_seconds, fluid.pbd.solver_iterations,
-        fluid.pbd.max_neighbors, fluid.limits.batch_steps,
-        fluid.limits.max_steps, fluid.limits.max_particles};
 
-    const float sensor_distance = fluid.virtual_dam.distance_m -
+    const float sensor_distance = spillway_distance -
         fluid.fill_sensor.upstream_offset_m - fluid.fill_sensor.length_m * 0.5f;
     const auto sensor_sample = sample_at_distance(
         request.input.geometry, std::max(0.0f, sensor_distance));
@@ -543,8 +984,7 @@ bool assemble_authored_fluid_request(
     const float lx = -tz;
     const float lz = tx;
     const float half_length = fluid.fill_sensor.length_m * 0.5f;
-    const float half_width = river->channel.width_m *
-                             sensor_sample.width_scale * 0.5f;
+    const float half_width = section.terminal_spillway->width_m * 0.5f;
     float sensor_min_x = std::numeric_limits<float>::infinity();
     float sensor_min_z = std::numeric_limits<float>::infinity();
     float sensor_max_x = -std::numeric_limits<float>::infinity();
@@ -559,20 +999,35 @@ bool assemble_authored_fluid_request(
             sensor_max_z = std::max(sensor_max_z, z);
         }
     }
-    float sensor_bed = section_bounds.minimum.y;
-    sample_terrain(context.terrain, sensor_bed, sensor_sample.position_m.x,
-                   sensor_sample.position_m.z, sensor_bed);
-    request.input.sensor = {
-        {{sensor_min_x, sensor_bed, sensor_min_z},
-         {sensor_max_x, sensor_bed + fluid.fill_sensor.height_m, sensor_max_z}},
-        {fluid.fill_sensor.resolution_x, fluid.fill_sensor.resolution_y,
-         fluid.fill_sensor.resolution_z},
-        fluid.fill_sensor.crest_wet_fraction,
-        fluid.fill_sensor.stable_wet_steps,
-        fluid.fill_sensor.minimum_particles_per_cell};
+    const float sensor_top = section.terminal_pool->fill_level_m;
+    const float sensor_bottom = sensor_top - fluid.fill_sensor.height_m;
+    request.input.sensor.bounds_m = {
+        {sensor_min_x, sensor_bottom, sensor_min_z},
+        {sensor_max_x, sensor_top, sensor_max_z}};
+    request.input.sensor.resolution = {
+        fluid.fill_sensor.resolution_x, fluid.fill_sensor.resolution_y,
+        fluid.fill_sensor.resolution_z};
+    request.input.sensor.required_wet_fraction =
+        fluid.fill_sensor.crest_wet_fraction;
+    request.input.sensor.stable_steps =
+        fluid.fill_sensor.stable_wet_steps;
+    request.input.sensor.minimum_particles_per_cell =
+        fluid.fill_sensor.minimum_particles_per_cell;
+    request.input.sensor.frame_origin_m = {
+        sensor_sample.position_m.x - tx * half_length - lx * half_width,
+        sensor_bottom,
+        sensor_sample.position_m.z - tz * half_length - lz * half_width};
+    request.input.sensor.longitudinal_axis_xz = {tx, tz};
+    request.input.sensor.lateral_axis_xz = {lx, lz};
+    request.input.sensor.frame_extent_m = {
+        fluid.fill_sensor.length_m, fluid.fill_sensor.height_m,
+        half_width * 2.0f};
 
     const auto& quality = fluid.quality;
     auto& products = request.product_settings;
+    products.section = {request.section_id, request.river_id,
+                        request.from_m, request.to_m,
+                        request.visual_from_m, request.visual_to_m};
     products.particle_radius_m = quality.particle_radius_m;
     products.coarse_voxel_m = quality.coarse_voxel_m;
     products.visual_job.bounds_m = {
@@ -599,14 +1054,28 @@ bool assemble_authored_fluid_request(
 
     const std::uint64_t terrain_revision = context.terrain_revision != 0u
         ? context.terrain_revision : request.input.geometry.revision;
-    const std::uint64_t dam_key = dam_revision(fluid.virtual_dam);
-    std::uint64_t collision_revision = request.input.geometry.revision;
+    const std::uint64_t dam_key = dam_revision(
+        fluid.virtual_dam, dam_distance, request.temporary_dam_bounds_m);
+    const std::uint64_t section_key = section_revision(
+        section, request.upstream_handoff_keys);
+    std::uint64_t collision_revision = collision_mesh_revision(
+        request.input.collision);
+    hash_value(collision_revision, request.input.geometry.revision);
     hash_value(collision_revision, terrain_revision);
+    hash_value(collision_revision, authored_collider_revision);
     hash_value(collision_revision, dam_key);
+    hash_value(collision_revision, section_key);
     products.semantic = {
-        kPhysxSdkVersion, kFluidAdapterVersion, pbd_revision(fluid),
-        nonzero_hash(collision_revision), network.canonical_hash,
-        terrain_revision, dam_key, sensor_revision(fluid.fill_sensor),
+        kPhysxSdkVersion, kFluidAdapterVersion,
+        pbd_revision(fluid, request.input.emitters),
+        nonzero_hash(collision_revision),
+        // Keep section artifacts independently reusable. The collision key
+        // already carries the sampled river geometry/terrain and section
+        // ownership; hashing the complete network here would invalidate an
+        // accepted upstream section for a downstream-only pool edit.
+        section_key,
+        terrain_revision, dam_key,
+        sensor_revision(fluid.fill_sensor, request.input.sensor),
         kFluidMesherContractVersion};
     request.semantic_key = hydrology::derive_hydrology_semantic_key(
         products.semantic);
@@ -622,22 +1091,37 @@ bool assemble_authored_fluid_request(
         };
     }
     request.cache_path = std::filesystem::path(cache_root) / "hydrology" /
-                         (hex64(request.semantic_key) + ".mhyd");
+                         "sections" /
+                         (safe_cache_id(section.id) + "-" +
+                          hex64(request.semantic_key) + ".mhyd");
     return true;
 }
+
+namespace {
 
 bool cache_matches_request(
     const hydrology::HydrologyArtifact& artifact,
     const FluidBakeRequest& request) {
     if (!artifact.accepted || artifact.semantic_key != request.semantic_key)
         return false;
+    if (artifact.section.section_id != request.section_id ||
+        artifact.section.river_id != request.river_id ||
+        artifact.section.from_m != request.from_m ||
+        artifact.section.to_m != request.to_m ||
+        artifact.section.visual_from_m != request.visual_from_m ||
+        artifact.section.visual_to_m != request.visual_to_m)
+        return false;
     const auto& products = request.product_settings;
     const std::uint64_t snapshot = hydrology::fluid_particle_snapshot_digest(
         artifact.particles, products.particle_radius_m);
     hydrology::ProductIdentitySettings identity = products.identity;
     identity.semantic_key = request.semantic_key;
+    const gpu_meshing::ParticleJob visual_job =
+        hydrology::PhysxFluidBake::resolved_visual_job(
+            artifact.particles, products.particle_radius_m,
+            products.visual_job);
     const hydrology::ProductKeys expected = hydrology::derive_product_keys(
-        products.visual_job, snapshot, identity, products.coarse_voxel_m,
+        visual_job, snapshot, identity, products.coarse_voxel_m,
         products.gameplay_layout);
     return snapshot == artifact.particle_snapshot_digest &&
            expected == artifact.product_keys &&
@@ -686,10 +1170,11 @@ bool LocalProvider::build_accepted_fluid_artifact(
     const hydrology::PhysxFluidBake::ProductBuildSettings& settings,
     const hydrology::TerrainHeightSampler& terrain,
     hydrology::HydrologyArtifact& artifact,
-    hydrology::FluidBakeError& error) const {
+    hydrology::FluidBakeError& error,
+    hydrology::PhysxFluidBake::ProductBuildTimings* timings) const {
     return hydrology::PhysxFluidBake::build_accepted_artifact_on_renderer(
         output, settings, terrain, cfg_.gpu_run, cfg_.vk_particle_visual_bake,
-        artifact, error);
+        artifact, error, timings);
 }
 
 bool LocalProvider::authored_fluid_requested() const {
@@ -701,9 +1186,11 @@ bool LocalProvider::run_authored_fluid_bake(
     const FluidBakeRunContext& context,
     matter::HydrologyStatus& status,
     hydrology::FluidBakeError& fluid_error,
-    hydrology::HydrologyArtifact& artifact) {
+    hydrology::HydrologyArtifact& artifact,
+    gpu_meshing::MeshResult& failed_debug_visual) {
     accepted_fluid_artifact_.reset();
     artifact = {};
+    failed_debug_visual = {};
     fluid_error = {};
     status = {};
     if (!authored_fluid_requested()) return false;
@@ -712,8 +1199,22 @@ bool LocalProvider::run_authored_fluid_bake(
     hydrology::HydrologyArtifact candidate{};
     status.state = matter::HydrologyState::Baking;
     try {
-        if (!assemble_authored_fluid_request(
-                *river_network_, context, abs_cache_root_, request,
+        const matter::RiverSectionDefinition* section =
+            initial_section(*river_network_);
+        hydrology::RiverGeometry geometry{};
+        std::string geometry_error;
+        if (!section || !hydrology::build_river_geometry(
+                *river_network_, section->river, geometry, geometry_error)) {
+            fluid_error = {hydrology::FluidBakeCode::InvalidInput,
+                           section ? geometry_error
+                                   : "river network has no initial section"};
+            status.state = matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+        if (!assemble_authored_fluid_section_request(
+                *river_network_, geometry, *section, {},
+                authored_fluid_colliders_, context, abs_cache_root_, request,
                 fluid_error)) {
             status.state = matter::HydrologyState::Invalid;
             status.failure_reason = fluid_error.message;
@@ -750,6 +1251,23 @@ bool LocalProvider::run_authored_fluid_bake(
                 static_cast<double>(candidate.stats.simulated_steps) *
                 request.input.settings.fixed_step_seconds;
             status.payload_digest = hex64(candidate.payload_digest);
+            std::fprintf(
+                stderr,
+                "[hydrology] accepted cache_hit=true steps=%u active=%u peak=%u escaped=%u emitted=%u budget=%u sensor_max=%.6f sensor_final=%.6f sensor_stable=%.6f visual_vertices=%zu visual_triangles=%zu gameplay_cells=%zu payload=%s\n",
+                candidate.stats.simulated_steps,
+                candidate.stats.active_particles,
+                candidate.stats.peak_particles,
+                candidate.stats.escaped_particles,
+                candidate.stats.emitted_particles,
+                candidate.stats.escape_budget,
+                static_cast<double>(candidate.sensor.maximum_wet_fraction),
+                static_cast<double>(candidate.sensor.final_wet_fraction),
+                static_cast<double>(
+                    candidate.sensor.stable_window_wet_fraction),
+                candidate.visual_mesh.positions.size() / 3u,
+                candidate.visual_mesh.indices.size() / 3u,
+                candidate.gameplay_field.size(),
+                status.payload_digest.c_str());
             artifact = std::move(candidate);
             return true;
         }
@@ -817,19 +1335,105 @@ bool LocalProvider::run_authored_fluid_bake(
             kFluidAdapterVersion};
 
         hydrology::FluidBakeOutput output{};
-        if (!hydrology::PhysxFluidBake::run(
-                request.input, *backend, context.callbacks, output,
-                fluid_error)) {
+        const bool simulation_accepted = hydrology::PhysxFluidBake::run(
+            request.input, *backend, context.callbacks, output, fluid_error);
+        // The finite diagnostic snapshot is deliberately consumed only after
+        // the backend has released every PhysX/CUDA scene resource.
+        backend.reset();
+        if (!simulation_accepted) {
             status.state = fluid_error.code == hydrology::FluidBakeCode::Cancelled
                 ? matter::HydrologyState::Stale
                 : matter::HydrologyState::Invalid;
             status.failure_reason = fluid_error.message;
+            if (!output.particles.empty()) {
+                matter::Float3 particle_min = output.particles.front().position_m;
+                matter::Float3 particle_max = particle_min;
+                std::uint32_t final_sensor_particles = 0u;
+                for (const hydrology::FluidParticle& particle :
+                     output.particles) {
+                    particle_min.x = std::min(particle_min.x,
+                                              particle.position_m.x);
+                    particle_min.y = std::min(particle_min.y,
+                                              particle.position_m.y);
+                    particle_min.z = std::min(particle_min.z,
+                                              particle.position_m.z);
+                    particle_max.x = std::max(particle_max.x,
+                                              particle.position_m.x);
+                    particle_max.y = std::max(particle_max.y,
+                                              particle.position_m.y);
+                    particle_max.z = std::max(particle_max.z,
+                                              particle.position_m.z);
+                    const matter::Float3 local =
+                        hydrology::fluid_fill_sensor_local_position(
+                            request.input.sensor, particle.position_m);
+                    if (local.x >= 0.0f &&
+                        local.x <= request.input.sensor.frame_extent_m.x &&
+                        local.y >= 0.0f &&
+                        local.y <= request.input.sensor.frame_extent_m.y &&
+                        local.z >= 0.0f &&
+                        local.z <= request.input.sensor.frame_extent_m.z)
+                        ++final_sensor_particles;
+                }
+                std::fprintf(
+                    stderr,
+                    "[hydrology] finite failed snapshot code=%u steps=%u active=%u peak=%u escaped=%u emitted=%u budget=%u sensor_max=%.6f sensor_final=%.6f wall_seconds=%.6f particle_bounds=[%.6f,%.6f,%.6f]-[%.6f,%.6f,%.6f] sensor_bounds=[%.6f,%.6f,%.6f]-[%.6f,%.6f,%.6f] sensor_particles=%u\n",
+                    static_cast<unsigned>(fluid_error.code),
+                    output.stats.simulated_steps,
+                    output.stats.active_particles,
+                    output.stats.peak_particles,
+                    output.stats.escaped_particles,
+                    output.stats.emitted_particles,
+                    output.stats.escape_budget,
+                    static_cast<double>(
+                        output.sensor.maximum_wet_fraction),
+                    static_cast<double>(output.sensor.final_wet_fraction),
+                    output.stats.wall_seconds,
+                    static_cast<double>(particle_min.x),
+                    static_cast<double>(particle_min.y),
+                    static_cast<double>(particle_min.z),
+                    static_cast<double>(particle_max.x),
+                    static_cast<double>(particle_max.y),
+                    static_cast<double>(particle_max.z),
+                    static_cast<double>(request.input.sensor.bounds_m.minimum.x),
+                    static_cast<double>(request.input.sensor.bounds_m.minimum.y),
+                    static_cast<double>(request.input.sensor.bounds_m.minimum.z),
+                    static_cast<double>(request.input.sensor.bounds_m.maximum.x),
+                    static_cast<double>(request.input.sensor.bounds_m.maximum.y),
+                    static_cast<double>(request.input.sensor.bounds_m.maximum.z),
+                    final_sensor_particles);
+            }
+            if (fluid_error.code != hydrology::FluidBakeCode::Cancelled &&
+                (!context.callbacks.cancelled ||
+                 !context.callbacks.cancelled()) &&
+                (fluid_error.code ==
+                     hydrology::FluidBakeCode::SensorNotReached ||
+                 fluid_error.code == hydrology::FluidBakeCode::Escaped)) {
+                hydrology::FluidBakeError debug_error{};
+                if (!hydrology::PhysxFluidBake::
+                        build_failed_debug_visual_on_renderer(
+                            output, fluid_error.code,
+                            request.product_settings, cfg_.gpu_run,
+                            cfg_.vk_particle_visual_bake,
+                            failed_debug_visual, debug_error)) {
+                    std::fprintf(
+                        stderr,
+                        "[hydrology] UNACCEPTED DEBUG WATER visual rejected: code=%u message=%s\n",
+                        static_cast<unsigned>(debug_error.code),
+                        debug_error.message.c_str());
+                    failed_debug_visual = {};
+                }
+            }
+            std::string trace_error;
+            if (!write_particle_trace(
+                    request, output, fluid_error.code, failed_debug_visual,
+                    false,
+                    trace_error)) {
+                std::fprintf(stderr,
+                             "[hydrology] particle trace rejected: %s\n",
+                             trace_error.c_str());
+            }
             return false;
         }
-        // The backend owns all PhysX/CUDA scene state. Dropping it here makes
-        // host snapshot completion and scene release an explicit happens-before
-        // edge for the renderer-owned Vulkan callback below.
-        backend.reset();
         if (context.callbacks.cancelled && context.callbacks.cancelled()) {
             fluid_error = {hydrology::FluidBakeCode::Cancelled,
                            "authored fluid bake was superseded before visual meshing"};
@@ -843,6 +1447,14 @@ bool LocalProvider::run_authored_fluid_bake(
             status.state = matter::HydrologyState::Invalid;
             status.failure_reason = fluid_error.message;
             return false;
+        }
+        std::string trace_error;
+        if (!write_particle_trace(
+                request, output, hydrology::FluidBakeCode::Ready,
+                candidate.visual_mesh, true, trace_error)) {
+            std::fprintf(stderr,
+                         "[hydrology] particle trace rejected: %s\n",
+                         trace_error.c_str());
         }
         if (context.callbacks.cancelled && context.callbacks.cancelled()) {
             fluid_error = {hydrology::FluidBakeCode::Cancelled,
@@ -892,6 +1504,26 @@ bool LocalProvider::run_authored_fluid_bake(
             static_cast<double>(validated.stats.simulated_steps) *
             request.input.settings.fixed_step_seconds;
         status.payload_digest = hex64(validated.payload_digest);
+        std::fprintf(
+            stderr,
+            "[hydrology] accepted cache_hit=false steps=%u active=%u peak=%u escaped=%u emitted=%u budget=%u wall_seconds=%.6f sensor_max=%.6f sensor_final=%.6f sensor_stable=%.6f visual_vertices=%zu visual_triangles=%zu coarse_vertices=%zu coarse_triangles=%zu gameplay_cells=%zu payload=%s\n",
+            validated.stats.simulated_steps,
+            validated.stats.active_particles,
+            validated.stats.peak_particles,
+            validated.stats.escaped_particles,
+            validated.stats.emitted_particles,
+            validated.stats.escape_budget,
+            validated.stats.wall_seconds,
+            static_cast<double>(validated.sensor.maximum_wet_fraction),
+            static_cast<double>(validated.sensor.final_wet_fraction),
+            static_cast<double>(
+                validated.sensor.stable_window_wet_fraction),
+            validated.visual_mesh.positions.size() / 3u,
+            validated.visual_mesh.indices.size() / 3u,
+            validated.coarse_cpu_mesh.positions.size() / 3u,
+            validated.coarse_cpu_mesh.indices.size() / 3u,
+            validated.gameplay_field.size(),
+            status.payload_digest.c_str());
         artifact = std::move(validated);
         return true;
     } catch (const std::exception& exception) {
@@ -906,6 +1538,587 @@ bool LocalProvider::run_authored_fluid_bake(
     return false;
 }
 
+bool LocalProvider::run_authored_fluid_bake(
+    const FluidBakeRunContext& context,
+    matter::HydrologyStatus& status,
+    hydrology::FluidBakeError& fluid_error,
+    hydrology::HydrologyNetworkBakeResult& network_result) {
+    accepted_fluid_network_.reset();
+    network_result = {};
+    fluid_error = {};
+    status = {};
+    if (!authored_fluid_requested()) return false;
+    const auto network_wall_start = std::chrono::steady_clock::now();
+    status.state = matter::HydrologyState::Baking;
+    status.total_sections = static_cast<std::uint32_t>(
+        river_network_->sections.size());
+
+    std::vector<hydrology::RiverGeometry> geometries;
+    geometries.reserve(river_network_->rivers.size());
+    std::unordered_map<std::string, std::size_t> geometry_by_river;
+    std::string graph_error;
+    for (std::size_t index = 0u; index < river_network_->rivers.size(); ++index) {
+        hydrology::RiverGeometry geometry{};
+        if (!hydrology::build_river_geometry(
+                *river_network_, river_network_->rivers[index].name,
+                geometry, graph_error)) {
+            fluid_error = {hydrology::FluidBakeCode::InvalidInput, graph_error};
+            status.state = matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+        geometry_by_river.emplace(river_network_->rivers[index].name, index);
+        geometries.push_back(std::move(geometry));
+    }
+    hydrology::RiverSectionGraph graph{};
+    if (!hydrology::build_river_section_graph(
+            *river_network_, geometries, graph, graph_error)) {
+        fluid_error = {hydrology::FluidBakeCode::InvalidInput, graph_error};
+        status.state = matter::HydrologyState::Invalid;
+        status.failure_reason = fluid_error.message;
+        return false;
+    }
+
+    const auto combined_bounds = [&]() {
+        matter::Aabb bounds = geometries.front().bounds_m;
+        for (const auto& geometry : geometries) {
+            bounds.minimum.x = std::min(bounds.minimum.x,
+                                        geometry.bounds_m.minimum.x);
+            bounds.minimum.y = std::min(bounds.minimum.y,
+                                        geometry.bounds_m.minimum.y);
+            bounds.minimum.z = std::min(bounds.minimum.z,
+                                        geometry.bounds_m.minimum.z);
+            bounds.maximum.x = std::max(bounds.maximum.x,
+                                        geometry.bounds_m.maximum.x);
+            bounds.maximum.y = std::max(bounds.maximum.y,
+                                        geometry.bounds_m.maximum.y);
+            bounds.maximum.z = std::max(bounds.maximum.z,
+                                        geometry.bounds_m.maximum.z);
+        }
+        return bounds;
+    }();
+    const std::uint64_t terrain_revision = context.terrain_revision != 0u
+        ? context.terrain_revision : geometries.front().revision;
+
+    const auto finalize_manifest = [&](hydrology::HydrologyNetworkBakeResult& out) {
+        hydrology::HydrologyNetworkArtifact manifest{};
+        manifest.state = hydrology::HydrologyNetworkState::Ready;
+        manifest.network_key = river_network_->canonical_hash;
+        manifest.terrain_revision = terrain_revision;
+        manifest.bounds_m = combined_bounds;
+        for (const auto index : graph.topological_order) {
+            const auto& section = river_network_->sections[index];
+            const auto found = std::find_if(
+                out.sections.begin(), out.sections.end(),
+                [&](const auto& artifact) {
+                    return artifact.section.section_id == section.id;
+                });
+            if (found == out.sections.end()) {
+                fluid_error = {hydrology::FluidBakeCode::ProductFailure,
+                               "ready network is missing a section artifact"};
+                return false;
+            }
+            manifest.topological_order.push_back(section.id);
+            manifest.sections.push_back({
+                section.id,
+                "hydrology/sections/" + safe_cache_id(section.id) + "-" +
+                    hex64(found->semantic_key) + ".mhyd",
+                section.after_section_ids,
+                found->semantic_key,
+                found->payload_digest});
+        }
+        for (const auto& handoff : out.handoffs) {
+            manifest.handoffs.push_back({
+                handoff.id,
+                "hydrology/handoffs/" + safe_cache_id(handoff.id) + "-" +
+                    hex64(handoff.semantic_key) + ".mhyd",
+                {handoff.handoff.upstream_section_id,
+                 handoff.handoff.downstream_section_id},
+                handoff.semantic_key,
+                handoff.payload_digest});
+        }
+        if (context.callbacks.cancelled && context.callbacks.cancelled()) {
+            fluid_error = {hydrology::FluidBakeCode::Cancelled,
+                           "authored fluid network was superseded before manifest publication"};
+            return false;
+        }
+        const auto manifest_path = std::filesystem::path(abs_cache_root_) /
+            "hydrology" /
+            ("network-" + hex64(manifest.network_key) + "-" +
+             hex64(manifest.terrain_revision) + ".mhyn");
+        gpu_meshing::Error artifact_error{};
+        const auto serialize_start = std::chrono::steady_clock::now();
+        if (!hydrology::save_network_artifact_atomic(
+                manifest_path, manifest, artifact_error) ||
+            !hydrology::load_network_artifact_validated(
+                manifest_path, manifest.network_key,
+                manifest.terrain_revision, out.manifest, artifact_error)) {
+            fluid_error = {hydrology::FluidBakeCode::ProductFailure,
+                           artifact_error.message};
+            return false;
+        }
+        out.timings.serialize_ms +=
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - serialize_start).count();
+        return true;
+    };
+
+    // Preserve the established one-section lifecycle and cache behavior for
+    // existing worlds while publishing it through the network contract.
+    if (river_network_->sections.size() == 1u) {
+        hydrology::HydrologyArtifact section{};
+        gpu_meshing::MeshResult debug{};
+        const bool accepted = run_authored_fluid_bake(
+            context, status, fluid_error, section, debug);
+        status.total_sections = 1u;
+        status.current_section = accepted ? 1u : 0u;
+        status.completed_sections = accepted ? 1u : 0u;
+        status.current_section_id = river_network_->sections.front().id;
+        if (!accepted) {
+            network_result.failed_debug_visual = std::move(debug);
+            return false;
+        }
+        network_result.sections.push_back(section);
+        network_result.products.visual_mesh = section.visual_mesh;
+        network_result.products.coarse_cpu_mesh = section.coarse_cpu_mesh;
+        network_result.products.gameplay_layout = section.gameplay_layout;
+        network_result.products.gameplay_field = section.gameplay_field;
+        if (!finalize_manifest(network_result)) {
+            status.state = fluid_error.code == hydrology::FluidBakeCode::Cancelled
+                ? matter::HydrologyState::Stale
+                : matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+        status.state = matter::HydrologyState::Ready;
+        status.payload_digest = hex64(network_result.manifest.payload_digest);
+        return true;
+    }
+
+    std::unordered_map<std::string, FluidBakeRequest> requests;
+    gpu_meshing::MeshResult failed_section_debug{};
+    std::size_t executing_order = 0u;
+    bool all_cache_hits = true;
+    const auto append_mesh = [](gpu_meshing::MeshResult& destination,
+                                const gpu_meshing::MeshResult& source) {
+        if (source.positions.empty() || source.indices.empty()) return;
+        const auto base = static_cast<std::uint32_t>(
+            destination.positions.size() / 3u);
+        destination.positions.insert(destination.positions.end(),
+                                     source.positions.begin(),
+                                     source.positions.end());
+        destination.normals.insert(destination.normals.end(),
+                                   source.normals.begin(), source.normals.end());
+        for (const auto index : source.indices)
+            destination.indices.push_back(base + index);
+        destination.material = 4u;
+        destination.content_digest =
+            gpu_meshing::mesh_content_digest(destination);
+    };
+
+    hydrology::SectionBakeExecutor executor =
+        [&](const matter::RiverSectionDefinition& section,
+            const std::vector<hydrology::SpillwayHandoffRecord>& upstream,
+            hydrology::SectionBakeResult& section_result,
+            hydrology::FluidBakeError& section_error) {
+        const std::size_t order = executing_order++;
+        hydrology::HydrologySectionTimings section_timings{};
+        section_timings.id = section.id;
+        const auto setup_start = std::chrono::steady_clock::now();
+        status.current_section = static_cast<std::uint32_t>(order + 1u);
+        status.current_section_id = section.id;
+        const auto geometry_index = geometry_by_river.find(section.river);
+        if (geometry_index == geometry_by_river.end()) {
+            section_error = {hydrology::FluidBakeCode::InvalidInput,
+                             "section river geometry is unavailable"};
+            return false;
+        }
+        FluidBakeRunContext section_context = context;
+        section_context.callbacks.progress =
+            [&, order](const hydrology::FluidBakeProgress& progress) {
+                const float local = progress.total_steps == 0u ? 0.0f
+                    : static_cast<float>(progress.completed_steps) /
+                      static_cast<float>(progress.total_steps);
+                status.progress = (static_cast<float>(order) + local) /
+                    static_cast<float>(river_network_->sections.size());
+                status.completed_steps = progress.completed_steps;
+                if (context.callbacks.progress) {
+                    const std::uint64_t total =
+                        static_cast<std::uint64_t>(progress.total_steps) *
+                        river_network_->sections.size();
+                    const std::uint64_t completed =
+                        static_cast<std::uint64_t>(order) *
+                            progress.total_steps + progress.completed_steps;
+                    context.callbacks.progress({
+                        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                            completed, std::numeric_limits<std::uint32_t>::max())),
+                        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                            total, std::numeric_limits<std::uint32_t>::max())),
+                        progress.active_particles,
+                        progress.sensor_wet_fraction});
+                }
+            };
+        FluidBakeRequest request{};
+        if (!assemble_authored_fluid_section_request(
+                *river_network_, geometries[geometry_index->second], section,
+                upstream, authored_fluid_colliders_, section_context,
+                abs_cache_root_, request, section_error))
+            return false;
+        requests[section.id] = request;
+        status.input_key = hex64(request.semantic_key);
+        hydrology::HydrologyArtifact candidate{};
+        const bool cache_hit = load_semantic_cache(request, candidate);
+        section_timings.cache_hit = cache_hit;
+        section_timings.setup_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - setup_start).count();
+        if (cache_hit) {
+            section_result.cache_hit = true;
+        } else {
+            all_cache_hits = false;
+            if (!cfg_.fluid_renderer_device.luid_valid) {
+                section_error = {
+                    hydrology::FluidBakeCode::BackendUnavailable,
+                    "Vulkan render adapter identity is unavailable for the PhysX fluid bake"};
+                return false;
+            }
+            if (!cfg_.fluid_bake_backend_factory) {
+                section_error = {hydrology::FluidBakeCode::BackendUnavailable,
+                                 "PhysX fluid support is disabled in this build"};
+                return false;
+            }
+            const auto physx_init_start = std::chrono::steady_clock::now();
+            auto backend = cfg_.fluid_bake_backend_factory();
+            if (!backend) {
+                section_error = {hydrology::FluidBakeCode::BackendUnavailable,
+                                 "PhysX fluid backend factory returned no runtime"};
+                return false;
+            }
+            const auto probe = backend->probe();
+            section_timings.physx_init_ms =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - physx_init_start).count();
+            if (!probe.available || !probe.device_luid_valid ||
+                probe.device_luid != cfg_.fluid_renderer_device.luid) {
+                section_error = {
+                    hydrology::FluidBakeCode::BackendUnavailable,
+                    !probe.available
+                        ? (probe.message.empty()
+                               ? "PhysX fluid backend probe failed"
+                               : probe.message)
+                        : (!probe.device_luid_valid
+                               ? "CUDA device identity is unavailable for the Vulkan render adapter comparison"
+                               : "CUDA device identity does not match the Vulkan render adapter")};
+                return false;
+            }
+            request.product_settings.provenance = {
+                cfg_.fluid_renderer_device.vendor_id != 0u
+                    ? cfg_.fluid_renderer_device.vendor_id : kNvidiaVendorId,
+                cfg_.fluid_renderer_device.device_id != 0u
+                    ? cfg_.fluid_renderer_device.device_id : 1u,
+                probe.cuda_driver_version > 0
+                    ? static_cast<std::uint32_t>(probe.cuda_driver_version)
+                    : (cfg_.fluid_renderer_device.driver_version != 0u
+                           ? cfg_.fluid_renderer_device.driver_version : 1u),
+                probe.sdk_version_hex != 0u ? probe.sdk_version_hex
+                                            : kPhysxSdkVersion,
+                kFluidAdapterVersion};
+            hydrology::FluidBakeOutput output{};
+            const auto simulate_start = std::chrono::steady_clock::now();
+            const bool accepted = hydrology::PhysxFluidBake::run(
+                request.input, *backend, section_context.callbacks,
+                output, section_error);
+            section_timings.simulate_ms =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - simulate_start).count();
+            backend.reset();
+            if (!accepted) {
+                if (section_error.code != hydrology::FluidBakeCode::Cancelled &&
+                    (section_error.code ==
+                         hydrology::FluidBakeCode::SensorNotReached ||
+                     section_error.code == hydrology::FluidBakeCode::Escaped)) {
+                    hydrology::FluidBakeError debug_error{};
+                    (void)hydrology::PhysxFluidBake::
+                        build_failed_debug_visual_on_renderer(
+                            output, section_error.code,
+                            request.product_settings, cfg_.gpu_run,
+                            cfg_.vk_particle_visual_bake,
+                            failed_section_debug, debug_error);
+                }
+                std::string trace_error;
+                (void)write_particle_trace(
+                    request, output, section_error.code,
+                    failed_section_debug, false, trace_error);
+                return false;
+            }
+            if (context.callbacks.cancelled && context.callbacks.cancelled()) {
+                section_error = {hydrology::FluidBakeCode::Cancelled,
+                                 "authored fluid section was superseded before visual meshing"};
+                return false;
+            }
+            hydrology::PhysxFluidBake::ProductBuildTimings product_timings{};
+            if (!build_accepted_fluid_artifact(
+                    output, request.product_settings, request.terrain,
+                    candidate, section_error, &product_timings))
+                return false;
+            section_timings.gpu_mesh_ms = product_timings.gpu_mesh_ms;
+            section_timings.cpu_mesh_ms = product_timings.cpu_mesh_ms;
+            std::string trace_error;
+            (void)write_particle_trace(
+                request, output, hydrology::FluidBakeCode::Ready,
+                candidate.visual_mesh, true, trace_error);
+            gpu_meshing::Error artifact_error{};
+            const auto serialize_start = std::chrono::steady_clock::now();
+            if (!hydrology::save_artifact_atomic(
+                    request.cache_path, candidate, artifact_error) ||
+                !hydrology::load_artifact_validated(
+                    request.cache_path, candidate.product_keys.visual,
+                    candidate, artifact_error, request.semantic_key)) {
+                section_error = {hydrology::FluidBakeCode::ProductFailure,
+                                 artifact_error.message};
+                return false;
+            }
+            network_result.timings.serialize_ms +=
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - serialize_start).count();
+        }
+
+        section_result.artifact = candidate;
+        const matter::RiverSectionDefinition* downstream = nullptr;
+        for (const auto& possible : river_network_->sections) {
+            if (std::find(possible.after_section_ids.begin(),
+                          possible.after_section_ids.end(), section.id) ==
+                possible.after_section_ids.end())
+                continue;
+            if (downstream) {
+                section_error = {
+                    hydrology::FluidBakeCode::InvalidInput,
+                    "river section fan-out is outside the two-section milestone"};
+                return false;
+            }
+            downstream = &possible;
+        }
+        if (downstream) {
+            const auto river = std::find_if(
+                river_network_->rivers.begin(), river_network_->rivers.end(),
+                [&](const auto& value) { return value.name == section.river; });
+            hydrology::SpillwayHandoffRecord handoff{};
+            if (river == river_network_->rivers.end() ||
+                !hydrology::resolve_spillway_handoff(
+                    section, *downstream,
+                    geometries[geometry_index->second],
+                    river->inlet.flow_m3s, handoff, section_error))
+                return false;
+            handoff.temporary_dam_exclusion_bounds_m =
+                request.temporary_dam_bounds_m;
+            handoff.semantic_key =
+                hydrology::spillway_handoff_semantic_key(handoff);
+            section_result.downstream_handoff = handoff;
+        }
+        status.completed_sections = static_cast<std::uint32_t>(order + 1u);
+        status.progress = static_cast<float>(order + 1u) /
+            static_cast<float>(river_network_->sections.size());
+        network_result.timings.sections.push_back(
+            std::move(section_timings));
+        return true;
+    };
+
+    hydrology::RiverSectionSequenceResult sequence{};
+    hydrology::RiverSectionSequenceCallbacks sequence_callbacks{};
+    sequence_callbacks.cancelled = context.callbacks.cancelled;
+    sequence_callbacks.progress = [&](float fraction, const std::string& id) {
+        status.progress = std::max(status.progress, fraction);
+        if (!id.empty()) status.current_section_id = id;
+    };
+    if (!hydrology::run_river_section_sequence(
+            *river_network_, graph, executor, sequence_callbacks,
+            sequence, fluid_error)) {
+        for (const auto& accepted : sequence.sections) {
+            network_result.sections.push_back(accepted.artifact);
+            append_mesh(network_result.failed_debug_visual,
+                        accepted.artifact.visual_mesh);
+        }
+        append_mesh(network_result.failed_debug_visual, failed_section_debug);
+        network_result.manifest = sequence.manifest;
+        status.state = fluid_error.code == hydrology::FluidBakeCode::Cancelled
+            ? matter::HydrologyState::Stale
+            : matter::HydrologyState::Invalid;
+        status.failure_reason = fluid_error.message;
+        return false;
+    }
+
+    for (auto& accepted : sequence.sections)
+        network_result.sections.push_back(std::move(accepted.artifact));
+    std::vector<hydrology::SpillwayHandoffRecord> handoff_records;
+    for (const auto& accepted : sequence.sections)
+        if (accepted.downstream_handoff)
+            handoff_records.push_back(*accepted.downstream_handoff);
+    if (handoff_records.size() != 1u ||
+        network_result.sections.size() != 2u) {
+        fluid_error = {hydrology::FluidBakeCode::InvalidInput,
+                       "the sequential provider milestone requires exactly two sections and one handoff"};
+        status.state = matter::HydrologyState::Invalid;
+        status.failure_reason = fluid_error.message;
+        return false;
+    }
+    const auto& handoff = handoff_records.front();
+    const auto upstream = std::find_if(
+        network_result.sections.begin(), network_result.sections.end(),
+        [&](const auto& value) {
+            return value.section.section_id == handoff.upstream_section_id;
+        });
+    const auto downstream = std::find_if(
+        network_result.sections.begin(), network_result.sections.end(),
+        [&](const auto& value) {
+            return value.section.section_id == handoff.downstream_section_id;
+        });
+    if (upstream == network_result.sections.end() ||
+        downstream == network_result.sections.end()) {
+        fluid_error = {hydrology::FluidBakeCode::ProductFailure,
+                       "accepted handoff section artifacts are missing"};
+        status.state = matter::HydrologyState::Invalid;
+        status.failure_reason = fluid_error.message;
+        return false;
+    }
+    const auto& upstream_request = requests.at(handoff.upstream_section_id);
+    const auto& downstream_request = requests.at(handoff.downstream_section_id);
+    hydrology::HandoffProductSettings handoff_settings{};
+    handoff_settings.visual_job = upstream_request.product_settings.visual_job;
+    handoff_settings.visual_job.bounds_m.min_m = {
+        std::min(upstream_request.product_settings.visual_job.bounds_m.min_m.x,
+                 downstream_request.product_settings.visual_job.bounds_m.min_m.x),
+        std::min(upstream_request.product_settings.visual_job.bounds_m.min_m.y,
+                 downstream_request.product_settings.visual_job.bounds_m.min_m.y),
+        std::min(upstream_request.product_settings.visual_job.bounds_m.min_m.z,
+                 downstream_request.product_settings.visual_job.bounds_m.min_m.z)};
+    handoff_settings.visual_job.bounds_m.max_m = {
+        std::max(upstream_request.product_settings.visual_job.bounds_m.max_m.x,
+                 downstream_request.product_settings.visual_job.bounds_m.max_m.x),
+        std::max(upstream_request.product_settings.visual_job.bounds_m.max_m.y,
+                 downstream_request.product_settings.visual_job.bounds_m.max_m.y),
+        std::max(upstream_request.product_settings.visual_job.bounds_m.max_m.z,
+                 downstream_request.product_settings.visual_job.bounds_m.max_m.z)};
+    handoff_settings.particle_radius_m =
+        upstream_request.product_settings.particle_radius_m;
+    const float gameplay_cell =
+        upstream_request.product_settings.gameplay_layout.cell_size_m;
+    const auto gameplay_min_x = std::min(
+        upstream->gameplay_layout.origin_m.x,
+        downstream->gameplay_layout.origin_m.x);
+    const auto gameplay_min_z = std::min(
+        upstream->gameplay_layout.origin_m.z,
+        downstream->gameplay_layout.origin_m.z);
+    const auto gameplay_max_x = std::max(
+        upstream->gameplay_layout.origin_m.x +
+            upstream->gameplay_layout.width * gameplay_cell,
+        downstream->gameplay_layout.origin_m.x +
+            downstream->gameplay_layout.width * gameplay_cell);
+    const auto gameplay_max_z = std::max(
+        upstream->gameplay_layout.origin_m.z +
+            upstream->gameplay_layout.depth * gameplay_cell,
+        downstream->gameplay_layout.origin_m.z +
+            downstream->gameplay_layout.depth * gameplay_cell);
+    handoff_settings.gameplay_layout = {
+        {gameplay_min_x, 0.0f, gameplay_min_z}, gameplay_cell,
+        static_cast<std::uint32_t>(std::ceil(
+            (gameplay_max_x - gameplay_min_x) / gameplay_cell)),
+        static_cast<std::uint32_t>(std::ceil(
+            (gameplay_max_z - gameplay_min_z) / gameplay_cell))};
+    const hydrology::PhysxFluidBake::VisualMesher handoff_mesher =
+        [this](const gpu_meshing::ParticleJob& job,
+               gpu_meshing::MeshResult& mesh, gpu_meshing::Stats& stats,
+               gpu_meshing::Error& error,
+               const gpu_meshing::BuildControl& control) {
+            std::string run_error;
+            const auto invoke = [&](std::string&) {
+                return cfg_.vk_particle_visual_bake(
+                    job, mesh, stats, error, control);
+            };
+            const bool completed = cfg_.gpu_run
+                ? cfg_.gpu_run("hydrology_handoff_visual", invoke, run_error)
+                : invoke(run_error);
+            if (!completed && error.message.empty()) {
+                error = {gpu_meshing::ErrorCode::VulkanFailure,
+                         run_error.empty()
+                             ? "Vulkan handoff meshing failed"
+                             : run_error};
+            }
+            return completed;
+    };
+    hydrology::HydrologyHandoffArtifact handoff_artifact{};
+    const auto handoff_mesh_start = std::chrono::steady_clock::now();
+    if (!hydrology::build_handoff_artifact(
+            *upstream, *downstream, handoff, handoff_settings,
+            handoff_mesher, handoff_artifact, network_result.products,
+            fluid_error)) {
+        status.state = matter::HydrologyState::Invalid;
+        status.failure_reason = fluid_error.message;
+        return false;
+    }
+    network_result.timings.handoff_mesh_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - handoff_mesh_start).count();
+    const auto handoff_path = std::filesystem::path(abs_cache_root_) /
+        "hydrology" / "handoffs" /
+        (safe_cache_id(handoff_artifact.id) + "-" +
+         hex64(handoff_artifact.semantic_key) + ".mhyd");
+    gpu_meshing::Error artifact_error{};
+    hydrology::HydrologyHandoffArtifact reopened_handoff{};
+    const auto handoff_serialize_start = std::chrono::steady_clock::now();
+    if (!hydrology::save_handoff_artifact_atomic(
+            handoff_path, handoff_artifact, artifact_error) ||
+        !hydrology::load_handoff_artifact_validated(
+            handoff_path, handoff_artifact.semantic_key,
+            handoff_artifact.upstream_payload_digest,
+            handoff_artifact.downstream_payload_digest,
+            reopened_handoff, artifact_error)) {
+        fluid_error = {hydrology::FluidBakeCode::ProductFailure,
+                       artifact_error.message};
+        status.state = matter::HydrologyState::Invalid;
+        status.failure_reason = fluid_error.message;
+        return false;
+    }
+    network_result.timings.serialize_ms +=
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - handoff_serialize_start).count();
+    network_result.handoffs.push_back(std::move(reopened_handoff));
+    if (!finalize_manifest(network_result)) {
+        status.state = fluid_error.code == hydrology::FluidBakeCode::Cancelled
+            ? matter::HydrologyState::Stale
+            : matter::HydrologyState::Invalid;
+        status.failure_reason = fluid_error.message;
+        return false;
+    }
+    status.state = matter::HydrologyState::Ready;
+    status.cache_hit = all_cache_hits;
+    status.progress = 1.0f;
+    status.completed_sections = status.total_sections;
+    status.current_section = status.total_sections;
+    status.wet_cells = static_cast<std::uint32_t>(std::count_if(
+        network_result.products.gameplay_field.begin(),
+        network_result.products.gameplay_field.end(),
+        [](const auto& sample) { return sample.wet_valid; }));
+    status.mesh_triangles = static_cast<std::uint32_t>(
+        network_result.products.visual_mesh.indices.size() / 3u);
+    status.completed_steps = 0u;
+    status.simulated_time_s = 0.0;
+    for (const auto& section : network_result.sections) {
+        status.completed_steps += section.stats.simulated_steps;
+        status.simulated_time_s +=
+            static_cast<double>(section.stats.simulated_steps) *
+            river_network_->fluid.pbd.fixed_step_seconds;
+    }
+    status.payload_digest = hex64(network_result.manifest.payload_digest);
+    network_result.timings.total_wall_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - network_wall_start).count();
+    std::string timing_trace_error;
+    if (!write_network_timing_trace(network_result, timing_trace_error))
+        std::fprintf(stderr, "[hydrology] network timing trace rejected: %s\n",
+                     timing_trace_error.c_str());
+    return true;
+}
+
 bool LocalProvider::build_river_height_overlay(
     hydrology::RiverGeometry& geometry,
     std::shared_ptr<const terrain_field::RiverHeightOverlay>& overlay,
@@ -916,22 +2129,20 @@ bool LocalProvider::build_river_height_overlay(
         error.clear();
         return true;
     }
-    hydrology::RiverGeometry built_geometry{};
-    if (!hydrology::build_river_geometry(*river_network_, built_geometry,
-                                         error))
-        return false;
-    const auto river = std::find_if(
-        river_network_->rivers.begin(), river_network_->rivers.end(),
-        [&](const matter::RiverDefinition& candidate) {
-            return candidate.name == river_network_->first_section_river;
-        });
-    if (river == river_network_->rivers.end()) {
-        error = "LocalProvider: first-section river was not found";
+    const matter::RiverSectionDefinition* section =
+        initial_section(*river_network_);
+    if (!section) {
+        error = "river network has no initial section";
         return false;
     }
+    hydrology::RiverGeometry built_geometry{};
+    if (!hydrology::build_river_geometry(
+            *river_network_, section->river,
+            built_geometry, error))
+        return false;
     std::shared_ptr<const terrain_field::RiverHeightOverlay> built_overlay;
     if (!terrain_field::RiverHeightOverlay::build(
-            built_geometry, river->channel, built_overlay, error))
+            built_geometry, built_overlay, error))
         return false;
     geometry = std::move(built_geometry);
     overlay = std::move(built_overlay);
@@ -982,6 +2193,7 @@ bool LocalProvider::load_authored_world(std::string& err) {
     root_transforms_.clear();
     expand_flags_.clear();
     tileset_flags_.clear();
+    authored_fluid_colliders_.clear();
     world_module_.clear();
     authored_lights_ = world_lights::WorldLights{};
     world_settings_ = matter::WorldSettings{};
@@ -1018,6 +2230,7 @@ bool LocalProvider::load_authored_world(std::string& err) {
     root_transforms_ = std::move(adapted.root_transforms);
     expand_flags_ = std::move(adapted.expand_flags);
     tileset_flags_ = std::move(adapted.tileset_flags);
+    authored_fluid_colliders_ = std::move(adapted.fluid_colliders);
     authored_lights_ = std::move(adapted.lights);
     world_settings_ = adapted.settings;
     hydrology_settings_ = std::move(adapted.hydrology);
@@ -1106,6 +2319,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     root_transforms_.clear();
     expand_flags_.clear();
     tileset_flags_.clear();
+    authored_fluid_colliders_.clear();
     roots_for_install_.clear();
     install_to_orig_.clear();
     tileset_indices_.clear();
@@ -2082,6 +3296,7 @@ bool LocalProvider::restore_from_cache(
     root_transforms_.clear();
     expand_flags_.clear();
     tileset_flags_.clear();
+    authored_fluid_colliders_.clear();
     roots_for_install_.clear();
     install_to_orig_.clear();
     tileset_indices_.clear();

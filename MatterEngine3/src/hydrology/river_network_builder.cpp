@@ -1,12 +1,12 @@
 #include "river_network_builder.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <limits>
 #include <string_view>
 
 namespace hydrology {
-using matter::Float2;
 using matter::Float3;
 using matter::HydrologyBackend;
 using matter::HydrologyBakeLimits;
@@ -15,13 +15,14 @@ using matter::HydrologyFillSensor;
 using matter::HydrologyPbdSettings;
 using matter::HydrologyQualitySettings;
 using matter::HydrologyVirtualDam;
-using matter::RiverBoulders;
-using matter::RiverChannel;
+using matter::RiverChannelProfilePoint;
 using matter::RiverDefinition;
-using matter::RiverFirstSection;
 using matter::RiverInlet;
 using matter::RiverNetworkDefinition;
-using matter::RiverReach;
+using matter::RiverPoolDefinition;
+using matter::RiverSectionDefinition;
+using matter::RiverSpillwayDefinition;
+using matter::RiverWaterfallDefinition;
 namespace {
 
 bool fail(std::string& error, const std::string& path,
@@ -31,8 +32,6 @@ bool fail(std::string& error, const std::string& path,
 }
 
 bool finite(float value) { return std::isfinite(value); }
-
-bool finite(Float2 value) { return finite(value.x) && finite(value.y); }
 
 bool finite(Float3 value) {
     return finite(value.x) && finite(value.y) && finite(value.z);
@@ -58,14 +57,6 @@ void append_uint(std::string& text, std::uint64_t value) {
     char buffer[32];
     const auto converted = std::to_chars(buffer, buffer + sizeof(buffer), value);
     text.append(buffer, converted.ptr);
-}
-
-void append_float2(std::string& text, Float2 value) {
-    text.push_back('[');
-    append_float(text, value.x);
-    text.push_back(',');
-    append_float(text, value.y);
-    text.push_back(']');
 }
 
 void append_float3(std::string& text, Float3 value) {
@@ -105,7 +96,7 @@ std::uint64_t fnv1a64(std::string_view text) {
 std::string canonical_text(const RiverNetworkDefinition& network) {
     std::string text;
     text.reserve(512);
-    text += "river-network-v3\ncell-size=";
+    text += "river-network-v5\ncell-size=";
     append_float(text, network.cell_size_m);
     text += "\nseed=";
     append_uint(text, network.seed);
@@ -116,38 +107,84 @@ std::string canonical_text(const RiverNetworkDefinition& network) {
         append_float3(text, river.inlet.position_m);
         text.push_back(',');
         append_float(text, river.inlet.flow_m3s);
-        text += "\nspline=";
-        for (std::size_t point = 0; point < river.spline.size(); ++point) {
+        text += "\ncurve=";
+        for (std::size_t point = 0; point < river.curve.size(); ++point) {
             if (point != 0) text.push_back(';');
-            append_float3(text, river.spline[point]);
+            append_float3(text, river.curve[point]);
         }
-        for (const RiverReach& reach : river.reaches) {
-            text += "\nreach=";
-            append_float(text, reach.until_m);
+        for (const RiverChannelProfilePoint& point : river.channel_profile) {
+            text += "\nchannel-profile=";
+            append_float(text, point.distance_m);
             text.push_back(',');
-            append_float(text, reach.base_grade);
+            append_float(text, point.width_m);
             text.push_back(',');
-            append_float(text, reach.meander);
+            append_float(text, point.depth_m);
             text.push_back(',');
-            append_float(text, reach.width_scale);
+            append_float(text, point.asymmetry);
         }
-        text += "\nchannel=";
-        append_float(text, river.channel.width_m);
-        text.push_back(',');
-        append_float(text, river.channel.depth_m);
-        text.push_back(',');
-        append_float(text, river.channel.asymmetry);
-        text += "\nboulders=";
-        append_float(text, river.boulders.density);
-        text.push_back(',');
-        append_float2(text, river.boulders.radius_m);
     }
-    text += "\nfirst-section=";
-    append_quoted(text, network.first_section_river);
-    text.push_back(',');
-    append_float(text, network.first_section.minimum_length_m);
-    text.push_back(',');
-    append_float(text, network.first_section.dry_margin_m);
+    std::vector<const RiverSectionDefinition*> sections;
+    sections.reserve(network.sections.size());
+    for (const auto& section : network.sections) sections.push_back(&section);
+    std::sort(sections.begin(), sections.end(),
+              [](const auto* a, const auto* b) { return a->id < b->id; });
+    for (const auto* section : sections) {
+        text += "\nsection=";
+        append_quoted(text, section->id);
+        text.push_back(',');
+        append_quoted(text, section->river);
+        text.push_back(',');
+        append_float(text, section->from_m);
+        text.push_back(',');
+        append_float(text, section->to_m);
+        text.push_back(',');
+        append_float(text, section->dry_margin_m);
+        auto append_ids = [&](const char* label,
+                              const std::vector<std::string>& authored) {
+            std::vector<std::string> ids = authored;
+            std::sort(ids.begin(), ids.end());
+            for (const auto& id : ids) {
+                text += label;
+                append_quoted(text, id);
+            }
+        };
+        append_ids("\nsection-emitter=", section->emitter_ids);
+        for (const auto& waterfall : section->waterfalls) {
+            text += "\nsection-waterfall=";
+            append_float(text, waterfall.lip_distance_m);
+            text.push_back(',');
+            append_float(text, waterfall.landing_distance_m);
+            text.push_back(',');
+            append_float(text, waterfall.expected_drop_m);
+        }
+        if (section->terminal_pool) {
+            text += "\nsection-pool=";
+            append_float(text, section->terminal_pool->start_distance_m);
+            text.push_back(',');
+            append_float(text, section->terminal_pool->end_distance_m);
+            text.push_back(',');
+            append_float(text, section->terminal_pool->fill_level_m);
+        }
+        if (section->terminal_spillway) {
+            text += "\nsection-spillway=";
+            append_quoted(text, section->terminal_spillway->id);
+            text.push_back(',');
+            append_float(text, section->terminal_spillway->distance_m);
+            text.push_back(',');
+            append_float(text, section->terminal_spillway->width_m);
+            text.push_back(',');
+            append_float(text, section->terminal_spillway->effective_depth_m);
+            text.push_back(',');
+            append_float(text, section->terminal_spillway->overlap_m);
+            text.push_back(',');
+            append_float(text, section->terminal_spillway->dam_offset_m);
+        }
+        append_ids("\nsection-after=", section->after_section_ids);
+        append_ids("\nsection-from-spillway=",
+                   section->upstream_spillway_section_ids);
+    }
+    text += "\nbake-sequential=";
+    text += network.bake_sequential ? "true" : "false";
 
     text += "\nfluid-backend=";
     text += network.fluid.backend == HydrologyBackend::Physx ? "physx" : "disabled";
@@ -167,6 +204,10 @@ std::string canonical_text(const RiverNetworkDefinition& network) {
     append_uint(text, network.fluid.limits.max_steps);
     text.push_back(',');
     append_uint(text, network.fluid.limits.max_particles);
+    text += "\nescape-policy=";
+    append_uint(text, network.fluid.limits.escape_policy.absolute_count);
+    text.push_back(',');
+    append_float(text, network.fluid.limits.escape_policy.ratio);
     for (const HydrologyEmitter& emitter : network.fluid.emitters) {
         text += "\nemitter=";
         append_quoted(text, emitter.id);
@@ -186,8 +227,6 @@ std::string canonical_text(const RiverNetworkDefinition& network) {
         append_float(text, emitter.stop_time_s);
     }
     text += "\nvirtual-dam=";
-    append_float(text, network.fluid.virtual_dam.distance_m);
-    text.push_back(',');
     append_float(text, network.fluid.virtual_dam.height_m);
     text.push_back(',');
     append_float(text, network.fluid.virtual_dam.thickness_m);
@@ -250,6 +289,16 @@ bool RiverNetworkBuilder::mutable_river(std::size_t river, RiverState*& out,
     return true;
 }
 
+bool RiverNetworkBuilder::mutable_section(std::size_t section,
+                                          SectionState*& out,
+                                          std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    if (section >= sections_.size())
+        return fail(error, "hydrology.section", "section handle is invalid");
+    out = &sections_[section];
+    return true;
+}
+
 bool RiverNetworkBuilder::add_river(const std::string& name, std::size_t& river,
                                     std::string& error) {
     if (finished_) return fail(error, "hydrology.build", "network is already built");
@@ -280,87 +329,221 @@ bool RiverNetworkBuilder::set_inlet(std::size_t river, const RiverInlet& inlet,
     return true;
 }
 
-bool RiverNetworkBuilder::set_spline(std::size_t river,
-                                     const std::vector<Float3>& spline,
-                                     std::string& error) {
-    RiverState* state = nullptr;
-    if (!mutable_river(river, state, error)) return false;
-    const std::string path = river_path(river) + ".spline";
-    if (spline.size() < 2u)
-        return fail(error, path, "spline requires at least two points");
-    for (std::size_t point = 0; point < spline.size(); ++point) {
-        if (!finite(spline[point]))
-            return fail(error, path + "[" + std::to_string(point) + "]",
-                        "spline point must be finite");
-    }
-    if (state->has_spline) return fail(error, path, "spline may be declared only once");
-    state->definition.spline = spline;
-    state->has_spline = true;
-    return true;
-}
-
-bool RiverNetworkBuilder::add_reach(std::size_t river, const RiverReach& reach,
+bool RiverNetworkBuilder::set_curve(std::size_t river,
+                                    const std::vector<Float3>& curve,
                                     std::string& error) {
     RiverState* state = nullptr;
     if (!mutable_river(river, state, error)) return false;
-    const std::size_t index = state->definition.reaches.size();
-    const std::string path = river_path(river) + ".reach[" +
-                             std::to_string(index) + "]";
-    if (!finite(reach.until_m) || reach.until_m <= 0.0f)
-        return fail(error, path + ".until", "until must be finite and positive");
-    if (index != 0 &&
-        reach.until_m <= state->definition.reaches.back().until_m)
-        return fail(error, path + ".until", "until values must strictly increase");
-    if (!finite(reach.base_grade) || reach.base_grade > 0.0f)
-        return fail(error, path + ".baseGrade",
-                    "baseGrade must be finite and nonpositive");
-    if (!finite(reach.meander) || reach.meander < 0.0f || reach.meander > 1.0f)
-        return fail(error, path + ".meander", "meander must lie in [0, 1]");
-    if (!finite(reach.width_scale) || reach.width_scale <= 0.0f ||
-        reach.width_scale > 3.0f)
-        return fail(error, path + ".widthScale",
-                    "widthScale must lie in (0, 3]");
-    state->definition.reaches.push_back(reach);
+    const std::string path = river_path(river) + ".curve";
+    if (curve.size() < 2u)
+        return fail(error, path, "curve requires at least two points");
+    for (std::size_t point = 0; point < curve.size(); ++point) {
+        if (!finite(curve[point]))
+            return fail(error, path + "[" + std::to_string(point) + "]",
+                        "curve point must be finite");
+        if (point != 0u &&
+            length_squared({curve[point].x - curve[point - 1u].x,
+                            curve[point].y - curve[point - 1u].y,
+                            curve[point].z - curve[point - 1u].z}) <= 1.0e-12f)
+            return fail(error, path + "[" + std::to_string(point) + "]",
+                        "adjacent curve points must be distinct");
+    }
+    if (state->has_curve)
+        return fail(error, path, "curve may be declared only once");
+    state->definition.curve = curve;
+    state->has_curve = true;
     return true;
 }
 
-bool RiverNetworkBuilder::set_channel(std::size_t river,
-                                      const RiverChannel& channel,
+bool RiverNetworkBuilder::set_channel_profile(
+    std::size_t river, const std::vector<RiverChannelProfilePoint>& profile,
+    std::string& error) {
+    RiverState* state = nullptr;
+    if (!mutable_river(river, state, error)) return false;
+    const std::string path = river_path(river) + ".channelProfile";
+    if (profile.empty())
+        return fail(error, path, "channelProfile requires at least one point");
+    for (std::size_t index = 0; index < profile.size(); ++index) {
+        const auto& point = profile[index];
+        const std::string point_path = path + "[" + std::to_string(index) + "]";
+        if (!nonnegative(point.distance_m))
+            return fail(error, point_path + ".at", "at must be finite and nonnegative");
+        if (index != 0u &&
+            point.distance_m <= profile[index - 1u].distance_m)
+            return fail(error, point_path + ".at", "at values must strictly increase");
+        if (!positive(point.width_m))
+            return fail(error, point_path + ".width", "width must be finite and positive");
+        if (!positive(point.depth_m))
+            return fail(error, point_path + ".depth", "depth must be finite and positive");
+        if (!finite(point.asymmetry) || point.asymmetry < -1.0f ||
+            point.asymmetry > 1.0f)
+            return fail(error, point_path + ".asymmetry", "asymmetry must lie in [-1, 1]");
+    }
+    if (state->has_channel_profile)
+        return fail(error, path, "channelProfile may be declared only once");
+    state->definition.channel_profile = profile;
+    state->has_channel_profile = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::add_section(std::size_t river,
+                                      const std::string& id,
+                                      float from_m, float to_m,
+                                      float dry_margin_m,
+                                      std::size_t& section,
                                       std::string& error) {
-    RiverState* state = nullptr;
-    if (!mutable_river(river, state, error)) return false;
-    const std::string path = river_path(river) + ".channel";
-    if (!finite(channel.width_m) || channel.width_m <= 0.0f)
-        return fail(error, path + ".width", "width must be finite and positive");
-    if (!finite(channel.depth_m) || channel.depth_m <= 0.0f)
-        return fail(error, path + ".depth", "depth must be finite and positive");
-    if (!finite(channel.asymmetry) || channel.asymmetry < -1.0f ||
-        channel.asymmetry > 1.0f)
-        return fail(error, path + ".asymmetry", "asymmetry must lie in [-1, 1]");
-    if (state->has_channel)
-        return fail(error, path, "channel may be declared only once");
-    state->definition.channel = channel;
-    state->has_channel = true;
+    RiverState* river_state = nullptr;
+    if (!mutable_river(river, river_state, error)) return false;
+    const std::string path = "hydrology.section." + id;
+    if (id.empty()) return fail(error, "hydrology.section.id", "id must not be empty");
+    for (const auto& existing : sections_) {
+        if (existing.definition.id == id)
+            return fail(error, path + ".id", "section id must be unique");
+    }
+    if (!nonnegative(from_m))
+        return fail(error, path + ".from", "from must be finite and nonnegative");
+    if (!finite(to_m) || to_m <= from_m)
+        return fail(error, path + ".to", "to must be finite and greater than from");
+    if (!positive(dry_margin_m))
+        return fail(error, path + ".dryMargin",
+                    "dryMargin must be finite and positive");
+    section = sections_.size();
+    sections_.push_back(SectionState{});
+    auto& definition = sections_.back().definition;
+    definition.id = id;
+    definition.river = river_state->definition.name;
+    definition.from_m = from_m;
+    definition.to_m = to_m;
+    definition.dry_margin_m = dry_margin_m;
     return true;
 }
 
-bool RiverNetworkBuilder::set_boulders(std::size_t river,
-                                       const RiverBoulders& boulders,
-                                       std::string& error) {
-    RiverState* state = nullptr;
-    if (!mutable_river(river, state, error)) return false;
-    const std::string path = river_path(river) + ".boulders";
-    if (!finite(boulders.density) || boulders.density < 0.0f ||
-        boulders.density > 1.0f)
-        return fail(error, path + ".density", "density must lie in [0, 1]");
-    if (!finite(boulders.radius_m) || boulders.radius_m.x <= 0.0f ||
-        boulders.radius_m.y < boulders.radius_m.x)
-        return fail(error, path + ".radius",
-                    "radius must be finite, positive, and ordered");
-    if (state->has_boulders)
-        return fail(error, path, "boulders may be declared only once");
-    state->definition.boulders = boulders;
-    state->has_boulders = true;
+bool RiverNetworkBuilder::set_section_emitters(
+    std::size_t section, const std::vector<std::string>& emitter_ids,
+    std::string& error) {
+    SectionState* state = nullptr;
+    if (!mutable_section(section, state, error)) return false;
+    const std::string path = "hydrology.section." + state->definition.id +
+                             ".emitters";
+    if (state->has_emitters)
+        return fail(error, path, "emitters may be declared only once");
+    if (emitter_ids.empty())
+        return fail(error, path, "emitters requires at least one stable id");
+    std::vector<std::string> sorted = emitter_ids;
+    std::sort(sorted.begin(), sorted.end());
+    if (sorted.front().empty())
+        return fail(error, path, "emitter ids must not be empty");
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        return fail(error, path, "emitter ids must be unique");
+    state->definition.emitter_ids = std::move(sorted);
+    state->has_emitters = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::add_section_waterfall(
+    std::size_t section, const RiverWaterfallDefinition& waterfall,
+    std::string& error) {
+    SectionState* state = nullptr;
+    if (!mutable_section(section, state, error)) return false;
+    const std::string path = "hydrology.section." + state->definition.id +
+                             ".waterfall";
+    if (!nonnegative(waterfall.lip_distance_m))
+        return fail(error, path + ".lipAt", "lipAt must be finite and nonnegative");
+    if (!finite(waterfall.landing_distance_m) ||
+        waterfall.landing_distance_m <= waterfall.lip_distance_m)
+        return fail(error, path + ".landingAt",
+                    "landingAt must be finite and greater than lipAt");
+    if (!positive(waterfall.expected_drop_m))
+        return fail(error, path + ".expectedDrop",
+                    "expectedDrop must be finite and positive");
+    state->definition.waterfalls.push_back(waterfall);
+    return true;
+}
+
+bool RiverNetworkBuilder::set_section_pool(std::size_t section,
+                                           const RiverPoolDefinition& pool,
+                                           std::string& error) {
+    SectionState* state = nullptr;
+    if (!mutable_section(section, state, error)) return false;
+    const std::string path = "hydrology.section." + state->definition.id +
+                             ".pool";
+    if (state->definition.terminal_pool)
+        return fail(error, path, "pool may be declared only once");
+    if (!nonnegative(pool.start_distance_m))
+        return fail(error, path + ".from", "from must be finite and nonnegative");
+    if (!finite(pool.end_distance_m) ||
+        pool.end_distance_m <= pool.start_distance_m)
+        return fail(error, path + ".to", "to must be finite and greater than from");
+    if (!finite(pool.fill_level_m))
+        return fail(error, path + ".fillLevel", "fillLevel must be finite");
+    state->definition.terminal_pool = pool;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_section_spillway(
+    std::size_t section, const RiverSpillwayDefinition& spillway,
+    std::string& error) {
+    SectionState* state = nullptr;
+    if (!mutable_section(section, state, error)) return false;
+    const std::string path = "hydrology.section." + state->definition.id +
+                             ".spillway";
+    if (state->definition.terminal_spillway)
+        return fail(error, path, "spillway may be declared only once");
+    if (spillway.id.empty())
+        return fail(error, path + ".id", "id must not be empty");
+    if (!nonnegative(spillway.distance_m))
+        return fail(error, path + ".at", "at must be finite and nonnegative");
+    if (!positive(spillway.width_m))
+        return fail(error, path + ".width", "width must be finite and positive");
+    if (!positive(spillway.effective_depth_m))
+        return fail(error, path + ".effectiveDepth",
+                    "effectiveDepth must be finite and positive");
+    if (!positive(spillway.overlap_m))
+        return fail(error, path + ".overlap", "overlap must be finite and positive");
+    if (!nonnegative(spillway.dam_offset_m))
+        return fail(error, path + ".damOffset",
+                    "damOffset must be finite and nonnegative");
+    state->definition.terminal_spillway = spillway;
+    return true;
+}
+
+bool RiverNetworkBuilder::add_section_after(std::size_t section,
+                                            const std::string& upstream,
+                                            std::string& error) {
+    SectionState* state = nullptr;
+    if (!mutable_section(section, state, error)) return false;
+    const std::string path = "hydrology.section." + state->definition.id +
+                             ".after";
+    if (upstream.empty()) return fail(error, path, "upstream id must not be empty");
+    auto& ids = state->definition.after_section_ids;
+    if (std::find(ids.begin(), ids.end(), upstream) != ids.end())
+        return fail(error, path, "upstream id must be unique");
+    ids.push_back(upstream);
+    std::sort(ids.begin(), ids.end());
+    return true;
+}
+
+bool RiverNetworkBuilder::add_section_from_spillway(
+    std::size_t section, const std::string& upstream, std::string& error) {
+    SectionState* state = nullptr;
+    if (!mutable_section(section, state, error)) return false;
+    const std::string path = "hydrology.section." + state->definition.id +
+                             ".fromSpillway";
+    if (upstream.empty()) return fail(error, path, "upstream id must not be empty");
+    auto& ids = state->definition.upstream_spillway_section_ids;
+    if (std::find(ids.begin(), ids.end(), upstream) != ids.end())
+        return fail(error, path, "upstream id must be unique");
+    ids.push_back(upstream);
+    std::sort(ids.begin(), ids.end());
+    return true;
+}
+
+bool RiverNetworkBuilder::set_bake_sequential(std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    if (bake_sequential_)
+        return fail(error, "hydrology.bakeSequential",
+                    "bakeSequential may be declared only once");
+    bake_sequential_ = true;
     return true;
 }
 
@@ -370,26 +553,6 @@ bool RiverNetworkBuilder::reserve_join(std::size_t river, std::string& error) {
     (void)state;
     return fail(error, river_path(river) + ".joins",
                 "tributary joins are reserved but not implemented");
-}
-
-bool RiverNetworkBuilder::set_first_section(
-    std::size_t river, const RiverFirstSection& section, std::string& error) {
-    RiverState* state = nullptr;
-    if (!mutable_river(river, state, error)) return false;
-    (void)state;
-    const std::string path = "hydrology.firstSection";
-    if (has_first_section_)
-        return fail(error, path, "firstSection may be declared only once");
-    if (!finite(section.minimum_length_m) || section.minimum_length_m <= 0.0f)
-        return fail(error, path + ".minimumLength",
-                    "minimumLength must be finite and positive");
-    if (!finite(section.dry_margin_m) || section.dry_margin_m <= 0.0f)
-        return fail(error, path + ".dryMargin",
-                    "dryMargin must be finite and positive");
-    first_section_river_ = river;
-    first_section_ = section;
-    has_first_section_ = true;
-    return true;
 }
 
 bool RiverNetworkBuilder::set_backend(HydrologyBackend backend,
@@ -433,8 +596,24 @@ bool RiverNetworkBuilder::set_limits(const HydrologyBakeLimits& limits,
         return fail(error, path + ".maxSteps", "maxSteps must be at least batchSteps");
     if (limits.max_particles == 0u)
         return fail(error, path + ".maxParticles", "maxParticles must be positive");
+    const auto authored_escape_policy = fluid_.limits.escape_policy;
     fluid_.limits = limits;
+    if (has_escape_policy_)
+        fluid_.limits.escape_policy = authored_escape_policy;
     has_limits_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_escape_policy(
+    const matter::HydrologyEscapePolicy& policy, std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.escapePolicy";
+    if (has_escape_policy_)
+        return fail(error, path, "escapePolicy may be declared only once");
+    if (!finite(policy.ratio) || policy.ratio < 0.0f)
+        return fail(error, path + ".ratio", "ratio must be finite and nonnegative");
+    fluid_.limits.escape_policy = policy;
+    has_escape_policy_ = true;
     return true;
 }
 
@@ -472,8 +651,6 @@ bool RiverNetworkBuilder::set_virtual_dam(const HydrologyVirtualDam& dam,
     const std::string path = "hydrology.virtualDam";
     if (has_virtual_dam_)
         return fail(error, path, "virtualDam may be declared only once");
-    if (!positive(dam.distance_m))
-        return fail(error, path + ".distance", "distance must be finite and positive");
     if (!positive(dam.height_m))
         return fail(error, path + ".height", "height must be finite and positive");
     if (!positive(dam.thickness_m))
@@ -545,16 +722,22 @@ bool RiverNetworkBuilder::finish(RiverNetworkDefinition& out,
     for (const RiverState& river : rivers_) {
         const std::string path = "hydrology." + river.definition.name;
         if (!river.has_inlet) return fail(error, path + ".inlet", "inlet is required");
-        if (!river.has_spline) return fail(error, path + ".spline", "spline is required");
-        if (river.definition.reaches.empty())
-            return fail(error, path + ".reach", "at least one reach is required");
-        if (!river.has_channel)
-            return fail(error, path + ".channel", "channel is required");
-        if (!river.has_boulders)
-            return fail(error, path + ".boulders", "boulders are required");
+        if (!river.has_curve) return fail(error, path + ".curve", "curve is required");
+        if (!river.has_channel_profile)
+            return fail(error, path + ".channelProfile", "channelProfile is required");
     }
-    if (!has_first_section_)
-        return fail(error, "hydrology.firstSection", "firstSection is required");
+    if (sections_.empty())
+        return fail(error, "hydrology.section", "at least one section is required");
+    if (!bake_sequential_)
+        return fail(error, "hydrology.bakeSequential",
+                    "bakeSequential is required");
+    for (const auto& section : sections_) {
+        const std::string path = "hydrology.section." + section.definition.id;
+        if (!section.definition.terminal_pool)
+            return fail(error, path + ".pool", "terminal pool is required");
+        if (!section.definition.terminal_spillway)
+            return fail(error, path + ".spillway", "terminal spillway is required");
+    }
     if (fluid_.backend == HydrologyBackend::Physx) {
         if (fluid_.emitters.empty())
             return fail(error, "hydrology.emitter", "at least one emitter is required for the PhysX backend");
@@ -570,8 +753,10 @@ bool RiverNetworkBuilder::finish(RiverNetworkDefinition& out,
     result.rivers.reserve(rivers_.size());
     for (const RiverState& river : rivers_)
         result.rivers.push_back(river.definition);
-    result.first_section_river = rivers_[first_section_river_].definition.name;
-    result.first_section = first_section_;
+    result.sections.reserve(sections_.size());
+    for (const auto& section : sections_)
+        result.sections.push_back(section.definition);
+    result.bake_sequential = bake_sequential_;
     result.fluid = fluid_;
     result.canonical_text = canonical_text(result);
     result.canonical_hash = fnv1a64(result.canonical_text);

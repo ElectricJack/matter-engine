@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +19,71 @@ SPEC = importlib.util.spec_from_file_location("matter_package_stager", STAGER)
 assert SPEC and SPEC.loader
 stager = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(stager)
+
+
+def hydrology_digest(payload: bytes) -> int:
+    digest = 1469598103934665603
+    for byte in payload:
+        digest ^= byte
+        digest = (digest * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return digest or 1
+
+
+def hydrology_string(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return struct.pack("<I", len(encoded)) + encoded
+
+
+def write_hydrology_artifact(
+    path: Path, payload: bytes, magic: bytes = b"MHYDMSH3", version: int = 4
+) -> int:
+    digest = hydrology_digest(payload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        magic + struct.pack("<IQQ", version, len(payload), digest) + payload
+    )
+    return digest
+
+
+def write_ready_hydrology_network(root: Path) -> Path:
+    references = [
+        ("upper", "hydrology/sections/upper.mhyd", [], b"upper"),
+        ("lower", "hydrology/sections/lower.mhyd", ["upper"], b"lower"),
+        ("pool-one", "hydrology/handoffs/pool-one.mhyd", ["upper", "lower"], b"handoff"),
+    ]
+    digests: dict[str, int] = {}
+    for identity, relative, _dependencies, payload in references:
+        if relative.startswith("hydrology/handoffs/"):
+            semantic_digest = 0xA000 + len(identity)
+            write_hydrology_artifact(
+                root / relative,
+                payload + struct.pack("<Q", semantic_digest),
+                b"MHYDHOF1",
+                2,
+            )
+            digests[identity] = semantic_digest
+        else:
+            digests[identity] = write_hydrology_artifact(root / relative, payload)
+
+    def reference(identity: str, relative: str, dependencies: list[str]) -> bytes:
+        encoded = hydrology_string(identity) + hydrology_string(relative)
+        encoded += struct.pack("<I", len(dependencies))
+        encoded += b"".join(hydrology_string(value) for value in dependencies)
+        encoded += struct.pack("<QQ", len(identity) + 1, digests[identity])
+        return encoded
+
+    payload = struct.pack("<BQQ6f", 2, 0x1234, 0x5678, 0, 0, 0, 10, 10, 10)
+    payload += struct.pack("<I", 2) + hydrology_string("upper") + hydrology_string("lower")
+    payload += struct.pack("<I", 2)
+    payload += reference(*references[0][:3]) + reference(*references[1][:3])
+    payload += struct.pack("<I", 1) + reference(*references[2][:3])
+    digest = hydrology_digest(payload)
+    manifest = root / "hydrology" / "network.mhyn"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_bytes(
+        b"MHYDNET1" + struct.pack("<IQQ", 1, len(payload), digest) + payload
+    )
+    return manifest
 
 
 def make_directory_junction(link: Path, target: Path) -> None:
@@ -355,7 +421,6 @@ class DirectChildSafetyTests(unittest.TestCase):
                 remove_directory_alias(dist_root)
                 if parked_dist.exists() and not dist_root.exists():
                     os.rename(parked_dist, dist_root)
-
     @unittest.skipUnless(os.name == "nt", "Windows junction contract")
     def test_rechecks_original_root_after_rmtree_before_recreation(self) -> None:
         """A root swapped after safe deletion cannot redirect mkdir/copy."""
@@ -397,6 +462,118 @@ class DirectChildSafetyTests(unittest.TestCase):
                 remove_directory_alias(dist_root)
                 if parked_dist.exists() and not dist_root.exists():
                     os.rename(parked_dist, dist_root)
+
+
+class PhysxRuntimeStageTests(unittest.TestCase):
+    def test_stages_exact_physx_gpu_runtime_and_nvidia_notices(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matter-stage-physx-") as temporary:
+            root = Path(temporary)
+            dist = root / "dist"
+            dist.mkdir()
+            runtime = root / "PhysXGpu_64.dll"
+            physx_license = root / "physx-license.md"
+            cuda_license = root / "cuda-eula.txt"
+            runtime.write_bytes(b"pinned physx gpu runtime")
+            physx_license.write_text("PhysX license content", encoding="utf-8")
+            cuda_license.write_text("CUDA EULA content", encoding="utf-8")
+
+            runtime_dlls, notice_components = stager.stage_physx_runtime_bundle(
+                dist,
+                enabled=True,
+                runtime=runtime,
+                physx_license=physx_license,
+                cuda_license=cuda_license,
+            )
+
+            self.assertEqual(runtime_dlls, ["PhysXGpu_64.dll"])
+            self.assertEqual(
+                [component[0] for component in notice_components],
+                ["nvidia_physx", "nvidia_cuda"],
+            )
+            self.assertEqual(
+                (dist / "PhysXGpu_64.dll").read_bytes(), runtime.read_bytes()
+            )
+            self.assertEqual(
+                (dist / "licenses" / "NVIDIA_PhysX_LICENSE.md").read_text(
+                    encoding="utf-8"
+                ),
+                physx_license.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                (dist / "licenses" / "NVIDIA_CUDA_EULA.txt").read_text(
+                    encoding="utf-8"
+                ),
+                cuda_license.read_text(encoding="utf-8"),
+            )
+
+    def test_rejects_physx_runtime_alias(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="matter-stage-physx-alias-"
+        ) as temporary:
+            root = Path(temporary)
+            dist = root / "dist"
+            dist.mkdir()
+            runtime = root / "PhysXGpu_64-copy.dll"
+            physx_license = root / "physx-license.md"
+            cuda_license = root / "cuda-eula.txt"
+            runtime.write_bytes(b"alias")
+            physx_license.write_text("PhysX license content", encoding="utf-8")
+            cuda_license.write_text("CUDA EULA content", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "PhysXGpu_64.dll"):
+                stager.stage_physx_runtime_bundle(
+                    dist,
+                    enabled=True,
+                    runtime=runtime,
+                    physx_license=physx_license,
+                    cuda_license=cuda_license,
+                )
+
+    def test_stages_one_explicit_ready_river_hydrology_network(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="matter-stage-fluid-cache-"
+        ) as temporary:
+            root = Path(temporary)
+            dist = root / "dist"
+            dist.mkdir()
+            cache = root / "accepted-network"
+            cache.mkdir()
+            write_ready_hydrology_network(cache)
+
+            relatives = stager.stage_hydrology_network_cache(
+                dist, "world_demo", cache
+            )
+
+            prefix = "projects/world_demo/.cache/RiverHydrology/hydrology/"
+            self.assertEqual(
+                relatives,
+                [
+                    prefix + "handoffs/pool-one.mhyd",
+                    prefix + "network.mhyn",
+                    prefix + "sections/lower.mhyd",
+                    prefix + "sections/upper.mhyd",
+                ],
+            )
+            for relative in relatives:
+                source = cache / relative.removeprefix(
+                    "projects/world_demo/.cache/RiverHydrology/"
+                )
+                self.assertEqual((dist / relative).read_bytes(), source.read_bytes())
+
+    def test_rejects_hydrology_network_with_missing_referenced_section(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="matter-stage-fluid-cache-missing-"
+        ) as temporary:
+            root = Path(temporary)
+            dist = root / "dist"
+            dist.mkdir()
+            cache = root / "accepted-network"
+            cache.mkdir()
+            write_ready_hydrology_network(cache)
+            (cache / "hydrology" / "sections" / "lower.mhyd").unlink()
+
+            with self.assertRaisesRegex(ValueError, "referenced hydrology artifact"):
+                stager.stage_hydrology_network_cache(dist, "world_demo", cache)
 
 
 if __name__ == "__main__":

@@ -458,6 +458,18 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
 
     std::string renderer_error;
     viewer::VkSceneRenderer renderer(vulkan);
+    gpu_meshing::MeshResult pre_pipeline{};
+    gpu_meshing::Stats pre_pipeline_stats{};
+    gpu_meshing::Error pre_pipeline_error{};
+    GPU_CHECK(renderer.build_particle_visual(
+                  job, pre_pipeline, pre_pipeline_stats,
+                  pre_pipeline_error),
+              pre_pipeline_error.message.empty()
+                  ? "renderer-owned water mesher is available before the full scene pipeline"
+                  : pre_pipeline_error.message.c_str());
+    GPU_CHECK(!pre_pipeline.positions.empty() &&
+                  !pre_pipeline.indices.empty(),
+              "pre-pipeline hydrology meshing produces a complete transient surface");
     GPU_CHECK(renderer.init(renderer_error),
               renderer_error.empty()
                   ? "initialize renderer-owned GPU water mesher"
@@ -500,10 +512,28 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
         0x636c617373696679ull, 0x656d69742d763175ull};
 
     hydrology::HydrologyArtifact artifact{};
+    artifact.section = {"synthetic", "main", 0.0f, 15.0f,
+                        0.0f, 15.0f};
     artifact.particle_snapshot_digest = snapshot_digest;
+    artifact.semantic_key = 0x73796e74682d7062ull;
+    artifact.accepted = true;
+    artifact.particle_radius_m = particles.front().radius_m;
+    artifact.particles.reserve(particles.size());
+    for (std::size_t i = 0; i < particles.size(); ++i) {
+        artifact.particles.push_back(
+            {particles[i].position_m, {}, static_cast<std::uint64_t>(i + 1u)});
+    }
+    artifact.stats.simulated_steps = 1u;
+    artifact.stats.active_particles =
+        static_cast<std::uint32_t>(artifact.particles.size());
+    artifact.stats.peak_particles = artifact.stats.active_particles;
+    artifact.stats.emitted_particles = artifact.stats.active_particles;
+    artifact.stats.escape_budget = hydrology::fluid_escape_budget(
+        artifact.stats.emitted_particles);
+    artifact.sensor = {0.8f, 1u, 1u, true, 0.8f, 0.8f, 0.8f, 1u};
     constexpr float kCoarseVoxelM = 0.48f;
     const hydrology::GameplayFieldLayout gameplay_layout{
-        job.bounds_m.min_m, 0.48f, 32u, 32u};
+        job.bounds_m.min_m, 0.48f, 15u, 1u};
     artifact.product_keys =
         hydrology::derive_product_keys(job, snapshot_digest, identity,
                                        kCoarseVoxelM, gameplay_layout);
@@ -555,7 +585,8 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
                                      .count();
     artifact.gameplay_field =
         gpu_meshing::fixtures::synthetic_flowing_water_gameplay();
-    artifact.provenance = {0x10deu, 0x2684u, 0u};
+    artifact.gameplay_layout = gameplay_layout;
+    artifact.provenance = {0x10deu, 0x2684u, 1u, 0x05060100u, 3u};
 
     std::filesystem::path artifact_path =
         std::filesystem::temp_directory_path() /

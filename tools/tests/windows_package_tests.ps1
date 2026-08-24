@@ -44,6 +44,7 @@ $expectedNotices = @(
     'bc7enc', 'box3d', 'flecs', 'glfw', 'dear_imgui', 'imguizmo',
     'ozz_animation', 'quickjs_ng', 'vulkan_headers'
 )
+$nvidiaNotices = @('nvidia_physx', 'nvidia_cuda')
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -89,7 +90,10 @@ function Write-Manifest(
     [string]$CompilerId = 'MSVC',
     [string]$Configuration = 'RelWithDebInfo',
     [string[]]$RuntimeDlls = @('fixture_runtime.dll'),
-    [bool]$TrackedDirty = $false
+    [bool]$TrackedDirty = $false,
+    [bool]$Physx = $false,
+    [bool]$Cuda = $false,
+    [string[]]$Notices = $expectedNotices
 ) {
     $files = [ordered]@{}
     Get-ChildItem -LiteralPath $DistPath -Recurse -File |
@@ -116,12 +120,12 @@ function Write-Manifest(
             vulkan_sdk = $pinnedVulkanSdk
         }
         dependencies = New-DependencyManifest
-        notices = @($expectedNotices)
+        notices = @($Notices)
         features = [ordered]@{
             autoremesher = $true
             streamline = $false
-            physx = $false
-            cuda = $false
+            physx = $Physx
+            cuda = $Cuda
             vulkan_renderer = $true
         }
         runtime_dlls = @($RuntimeDlls | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
@@ -136,6 +140,7 @@ function Initialize-RealPeFixture {
     New-Item -ItemType Directory -Force -Path $fixtureBin, $developerDllDirectory | Out-Null
     $dllSource = Join-Path $scratch 'fixture_runtime.c'
     $exeSource = Join-Path $scratch 'fixture_launcher.c'
+    $standaloneSource = Join-Path $scratch 'fixture_standalone.c'
     Set-Content -LiteralPath $dllSource -Encoding ascii -Value '__declspec(dllexport) int fixture_value(void) { return 42; }'
     Set-Content -LiteralPath $exeSource -Encoding ascii -Value @'
 #include <stdio.h>
@@ -146,9 +151,17 @@ int main(void) {
     return 0;
 }
 '@
+    Set-Content -LiteralPath $standaloneSource -Encoding ascii -Value @'
+#include <stdio.h>
+int main(void) {
+    puts("MATTER_REGISTRATION_CENSUS_JSON={}");
+    return 0;
+}
+'@
     $dll = Join-Path $developerDllDirectory 'fixture_runtime.dll'
     $importLibrary = Join-Path $developerDllDirectory 'fixture_runtime.lib'
     $exe = Join-Path $fixtureBin 'editor.exe'
+    $standaloneExe = Join-Path $fixtureBin 'standalone-editor.exe'
     Push-Location $scratch
     try {
         $compileDll = '{0} && cl /nologo /LD /MT "{1}" /Fo"{2}" /link /OUT:"{3}" /IMPLIB:"{4}"' -f `
@@ -159,23 +172,34 @@ int main(void) {
             $developerEnvironment, $exeSource, $importLibrary, (Join-Path $scratch 'fixture_launcher.obj'), $exe
         & $env:ComSpec /d /s /c $compileExe | Out-Null
         Assert-True ($LASTEXITCODE -eq 0) 'failed to compile the real fixture executable'
+        $compileStandalone = '{0} && cl /nologo /MT "{1}" /Fo"{2}" /Fe:"{3}"' -f `
+            $developerEnvironment, $standaloneSource, (Join-Path $scratch 'fixture_standalone.obj'), $standaloneExe
+        & $env:ComSpec /d /s /c $compileStandalone | Out-Null
+        Assert-True ($LASTEXITCODE -eq 0) 'failed to compile the standalone fixture executable'
     } finally {
         Pop-Location
     }
-    return [pscustomobject]@{ Editor = $exe; RuntimeDll = $dll }
+    return [pscustomobject]@{
+        Editor = $exe
+        StandaloneEditor = $standaloneExe
+        RuntimeDll = $dll
+    }
 }
 
 function New-ValidFixture(
     [string]$Name,
     [string]$Configuration = 'RelWithDebInfo',
     [switch]$WithoutRuntimeDll,
-    [switch]$CompleteContent
+    [switch]$CompleteContent,
+    [switch]$Physx
 ) {
     $dist = Join-Path $scratch $Name
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
-    Copy-Item -LiteralPath $script:peFixture.Editor -Destination (Join-Path $dist 'editor.exe')
+    $fixtureEditor = if ($Physx) { $script:peFixture.StandaloneEditor } else { $script:peFixture.Editor }
+    Copy-Item -LiteralPath $fixtureEditor -Destination (Join-Path $dist 'editor.exe')
     if (-not $WithoutRuntimeDll) {
-        Copy-Item -LiteralPath $script:peFixture.RuntimeDll -Destination (Join-Path $dist 'fixture_runtime.dll')
+        $runtimeName = if ($Physx) { 'PhysXGpu_64.dll' } else { 'fixture_runtime.dll' }
+        Copy-Item -LiteralPath $script:peFixture.RuntimeDll -Destination (Join-Path $dist $runtimeName)
     }
     if ($Configuration -eq 'RelWithDebInfo') {
         Set-Content -LiteralPath (Join-Path $dist 'editor.pdb') -Value 'fixture PDB identity' -Encoding ascii
@@ -193,14 +217,47 @@ function New-ValidFixture(
         Set-Content -LiteralPath (Join-Path $dist 'MatterEngine3\shared-lib\fixture-runtime.js') `
             -Value '// package fixture engine shared library' -Encoding ascii
     }
+    # The real stager excludes developer caches. Complete-content fixtures copy
+    # the live project tree, so remove that copied cache before constructing the
+    # explicit accepted-network fixture below.
+    $copiedProjectCache = Join-Path $dist 'projects\world_demo\.cache'
+    if (Test-Path -LiteralPath $copiedProjectCache) {
+        Remove-Item -LiteralPath $copiedProjectCache -Recurse -Force
+    }
     $notice = @('MatterEngine third-party notices')
     foreach ($label in $expectedNotices) {
         $notice += "===== ${label}: fixture-license.txt ====="
         $notice += "Fixture license content for ${label}. $([string]('x' * 80))"
     }
+    if ($Physx) {
+        $licenses = Join-Path $dist 'licenses'
+        New-Item -ItemType Directory -Force -Path $licenses | Out-Null
+        Set-Content -LiteralPath (Join-Path $licenses 'NVIDIA_PhysX_LICENSE.md') `
+            -Value 'Fixture NVIDIA PhysX license content.' -Encoding utf8
+        Set-Content -LiteralPath (Join-Path $licenses 'NVIDIA_CUDA_EULA.txt') `
+            -Value 'Fixture NVIDIA CUDA EULA content.' -Encoding utf8
+        foreach ($label in $nvidiaNotices) {
+            $notice += "===== ${label}: licenses/fixture.txt ====="
+            $notice += "Fixture license content for ${label}. $([string]('x' * 80))"
+        }
+        $hydrologyCache = Join-Path $dist 'projects\world_demo\.cache\RiverHydrology\hydrology'
+        New-Item -ItemType Directory -Force `
+            -Path $hydrologyCache, (Join-Path $hydrologyCache 'sections'), `
+                  (Join-Path $hydrologyCache 'handoffs') | Out-Null
+        Set-Content -LiteralPath (Join-Path $hydrologyCache 'network.mhyn') `
+            -Value 'Accepted MHYDNET fixture content.' -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $hydrologyCache 'sections\upper.mhyd') `
+            -Value 'Accepted upper MHYD fixture content.' -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $hydrologyCache 'sections\lower.mhyd') `
+            -Value 'Accepted lower MHYD fixture content.' -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $hydrologyCache 'handoffs\pool-one.mhyd') `
+            -Value 'Accepted handoff MHYD fixture content.' -Encoding ascii
+    }
     Set-Content -LiteralPath (Join-Path $dist 'THIRD_PARTY_NOTICES.txt') -Value $notice -Encoding utf8
-    $runtime = if ($WithoutRuntimeDll) { @() } else { @('fixture_runtime.dll') }
-    Write-Manifest $dist -Configuration $Configuration -RuntimeDlls $runtime
+    $runtime = if ($WithoutRuntimeDll) { @() } elseif ($Physx) { @('PhysXGpu_64.dll') } else { @('fixture_runtime.dll') }
+    $notices = if ($Physx) { @($expectedNotices + $nvidiaNotices) } else { @($expectedNotices) }
+    Write-Manifest $dist -Configuration $Configuration -RuntimeDlls $runtime `
+        -Physx $Physx.IsPresent -Cuda $Physx.IsPresent -Notices $notices
     return $dist
 }
 
@@ -344,11 +401,44 @@ exit 0
     }
     Assert-Rejected 'developer-PATH-only launch' $pathOnly 'fixture_runtime\.dll.*missing|clean.PATH|developer.PATH' '' $null
 
+    $featureMismatch = New-ValidFixture 'physx-cuda-feature-mismatch'
+    Write-Manifest $featureMismatch -Physx $true -Cuda $false
+    Assert-Rejected 'PhysX/CUDA feature mismatch' $featureMismatch `
+        'PhysX.*CUDA|CUDA.*PhysX|feature.*mismatch' $fakeDumpbin @('KERNEL32.dll', 'fixture_runtime.dll')
+
+    $runtimeAlias = New-ValidFixture 'physx-runtime-alias' -Physx
+    Move-Item -LiteralPath (Join-Path $runtimeAlias 'PhysXGpu_64.dll') `
+        -Destination (Join-Path $runtimeAlias 'PhysXGpu_64-copy.dll')
+    Write-Manifest $runtimeAlias -RuntimeDlls @('PhysXGpu_64-copy.dll') `
+        -Physx $true -Cuda $true -Notices @($expectedNotices + $nvidiaNotices)
+    Assert-Rejected 'PhysX runtime alias' $runtimeAlias `
+        'PhysXGpu_64\.dll|runtime alias|exact.*runtime' $fakeDumpbin @('KERNEL32.dll')
+
+    $missingNvidiaNotice = New-ValidFixture 'physx-missing-nvidia-notice' -Physx
+    Remove-Item -LiteralPath (Join-Path $missingNvidiaNotice 'licenses\NVIDIA_CUDA_EULA.txt')
+    Write-Manifest $missingNvidiaNotice -RuntimeDlls @('PhysXGpu_64.dll') `
+        -Physx $true -Cuda $true -Notices @($expectedNotices + $nvidiaNotices)
+    Assert-Rejected 'missing NVIDIA notice file' $missingNvidiaNotice `
+        'NVIDIA_CUDA_EULA|NVIDIA.*notice|CUDA.*EULA' $fakeDumpbin @('KERNEL32.dll')
+
+    $missingHydrologyArtifact = New-ValidFixture 'physx-missing-hydrology-artifact' -Physx
+    Remove-Item -LiteralPath `
+        (Join-Path $missingHydrologyArtifact 'projects\world_demo\.cache\RiverHydrology\hydrology\sections\lower.mhyd')
+    Write-Manifest $missingHydrologyArtifact -RuntimeDlls @('PhysXGpu_64.dll') `
+        -Physx $true -Cuda $true -Notices @($expectedNotices + $nvidiaNotices)
+    Assert-Rejected 'missing accepted hydrology artifact' $missingHydrologyArtifact `
+        'RiverHydrology|\.mhyd|hydrology (artifact|network)' $fakeDumpbin @('KERNEL32.dll')
+
     $valid = New-ValidFixture 'valid' -CompleteContent
     $validResult = Invoke-Checker $valid '' $null
     Assert-True ($validResult.ExitCode -eq 0) "valid package failed:`n$($validResult.Output)"
     Assert-True ($validResult.Output -match 'MSVC package: PASS') 'valid package omitted PASS summary'
-    Write-Output 'Windows MSVC package fixtures: PASS (19/19; real recursive PE closure and standalone dumpbin discovery)'
+    $validPhysx = New-ValidFixture 'valid-physx' -CompleteContent -Physx
+    $validPhysxResult = Invoke-Checker $validPhysx '' $null
+    Assert-True ($validPhysxResult.ExitCode -eq 0) "valid PhysX package failed:`n$($validPhysxResult.Output)"
+    Assert-True ($validPhysxResult.Output -match 'MSVC package: PASS') `
+        'valid PhysX package omitted PASS summary'
+    Write-Output 'Windows MSVC package fixtures: PASS (24/24; PhysX runtime/notices/network, real recursive PE closure, and standalone dumpbin discovery)'
 } finally {
     if ($env:MATTER_KEEP_PACKAGE_TESTS) {
         Write-Output "MATTER_PACKAGE_TEST_SCRATCH=$scratch"

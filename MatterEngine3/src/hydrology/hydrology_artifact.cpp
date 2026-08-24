@@ -19,9 +19,10 @@
 namespace hydrology {
 namespace {
 
-constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'M', 'S', 'H', '2'};
-constexpr std::uint32_t kVersion = 2u;
+constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'M', 'S', 'H', '3'};
+constexpr std::uint32_t kVersion = 4u;
 constexpr std::uint64_t kMaxPayloadBytes = 512ull * 1024ull * 1024ull;
+constexpr std::uint32_t kMaxIdentityBytes = 1024u;
 constexpr std::size_t kHeaderBytes = 28u;
 
 bool fail(gpu_meshing::Error& error, const char* message) {
@@ -53,6 +54,10 @@ public:
     }
     void raw(const std::uint8_t* data, std::size_t size) {
         bytes.insert(bytes.end(), data, data + size);
+    }
+    void string(const std::string& value) {
+        u32(static_cast<std::uint32_t>(value.size()));
+        raw(reinterpret_cast<const std::uint8_t*>(value.data()), value.size());
     }
     std::vector<std::uint8_t> bytes;
 };
@@ -95,6 +100,15 @@ public:
         std::uint64_t bits = 0;
         if (!u64(bits)) return false;
         std::memcpy(&value, &bits, sizeof(value));
+        return true;
+    }
+    bool string(std::string& value) {
+        std::uint32_t size = 0;
+        if (!u32(size) || size > kMaxIdentityBytes || size > remaining)
+            return false;
+        value.assign(reinterpret_cast<const char*>(current), size);
+        current += size;
+        remaining -= size;
         return true;
     }
     const std::uint8_t* current = nullptr;
@@ -179,7 +193,19 @@ bool read_mesh(Reader& reader, gpu_meshing::MeshResult& mesh) {
 }
 
 bool validate_artifact(const HydrologyArtifact& artifact) {
-    if (artifact.product_keys.visual == 0u ||
+    if (artifact.section.section_id.empty() ||
+        artifact.section.river_id.empty() ||
+        artifact.section.section_id.size() > kMaxIdentityBytes ||
+        artifact.section.river_id.size() > kMaxIdentityBytes ||
+        !std::isfinite(artifact.section.from_m) ||
+        !std::isfinite(artifact.section.to_m) ||
+        !std::isfinite(artifact.section.visual_from_m) ||
+        !std::isfinite(artifact.section.visual_to_m) ||
+        !(artifact.section.to_m > artifact.section.from_m) ||
+        !(artifact.section.visual_to_m > artifact.section.visual_from_m) ||
+        artifact.section.visual_from_m > artifact.section.from_m ||
+        artifact.section.visual_to_m < artifact.section.to_m ||
+        artifact.product_keys.visual == 0u ||
         artifact.product_keys.coarse_cpu == 0u ||
         artifact.product_keys.gameplay == 0u ||
         artifact.semantic_key == 0u || !artifact.accepted ||
@@ -199,6 +225,17 @@ bool validate_artifact(const HydrologyArtifact& artifact) {
     if (!std::isfinite(artifact.stats.wall_seconds) || artifact.stats.wall_seconds < 0.0 ||
         artifact.stats.active_particles != artifact.particles.size() ||
         artifact.stats.peak_particles < artifact.stats.active_particles ||
+        artifact.stats.emitted_particles !=
+            artifact.stats.active_particles + artifact.stats.retired_particles ||
+        artifact.stats.escaped_particles > artifact.stats.retired_particles ||
+        artifact.stats.peak_particles < artifact.stats.emitted_particles ||
+        !std::isfinite(artifact.stats.escape_policy.ratio) ||
+        artifact.stats.escape_policy.ratio < 0.0f ||
+        artifact.stats.escape_budget !=
+            fluid_escape_budget(artifact.stats.emitted_particles,
+                                artifact.stats.escape_policy) ||
+        artifact.stats.escaped_particles > artifact.stats.escape_budget ||
+        artifact.stats.non_finite_particles != 0u ||
         !artifact.sensor.complete ||
         !std::isfinite(artifact.sensor.wet_fraction) ||
         !std::isfinite(artifact.sensor.maximum_wet_fraction) ||
@@ -286,6 +323,12 @@ bool serialize_artifact(const HydrologyArtifact& artifact,
     if (!validate_artifact(artifact))
         return fail(error, "hydrology artifact products are invalid");
     Writer payload;
+    payload.string(artifact.section.section_id);
+    payload.string(artifact.section.river_id);
+    payload.floating(artifact.section.from_m);
+    payload.floating(artifact.section.to_m);
+    payload.floating(artifact.section.visual_from_m);
+    payload.floating(artifact.section.visual_to_m);
     payload.u64(artifact.product_keys.visual);
     payload.u64(artifact.product_keys.coarse_cpu);
     payload.u64(artifact.product_keys.gameplay);
@@ -304,6 +347,11 @@ bool serialize_artifact(const HydrologyArtifact& artifact,
     payload.u32(artifact.stats.escaped_particles);
     payload.u32(artifact.stats.non_finite_particles);
     payload.f64(artifact.stats.wall_seconds);
+    payload.u32(artifact.stats.emitted_particles);
+    payload.u32(artifact.stats.escape_budget);
+    payload.u32(artifact.stats.retired_particles);
+    payload.u32(artifact.stats.escape_policy.absolute_count);
+    payload.floating(artifact.stats.escape_policy.ratio);
     payload.floating(artifact.sensor.wet_fraction);
     payload.u32(artifact.sensor.stable_steps);
     payload.u32(artifact.sensor.completion_step);
@@ -377,7 +425,13 @@ bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
     HydrologyArtifact candidate{};
     std::uint8_t accepted = 0;
     std::uint8_t sensor_complete = 0;
-    if (!reader.u64(candidate.product_keys.visual) ||
+    if (!reader.string(candidate.section.section_id) ||
+        !reader.string(candidate.section.river_id) ||
+        !reader.floating(candidate.section.from_m) ||
+        !reader.floating(candidate.section.to_m) ||
+        !reader.floating(candidate.section.visual_from_m) ||
+        !reader.floating(candidate.section.visual_to_m) ||
+        !reader.u64(candidate.product_keys.visual) ||
         !reader.u64(candidate.product_keys.coarse_cpu) ||
         !reader.u64(candidate.product_keys.gameplay) ||
         !reader.u64(candidate.semantic_key) ||
@@ -395,6 +449,11 @@ bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
         !reader.u32(candidate.stats.escaped_particles) ||
         !reader.u32(candidate.stats.non_finite_particles) ||
         !reader.f64(candidate.stats.wall_seconds) ||
+        !reader.u32(candidate.stats.emitted_particles) ||
+        !reader.u32(candidate.stats.escape_budget) ||
+        !reader.u32(candidate.stats.retired_particles) ||
+        !reader.u32(candidate.stats.escape_policy.absolute_count) ||
+        !reader.floating(candidate.stats.escape_policy.ratio) ||
         !reader.floating(candidate.sensor.wet_fraction) ||
         !reader.u32(candidate.sensor.stable_steps) ||
         !reader.u32(candidate.sensor.completion_step) ||

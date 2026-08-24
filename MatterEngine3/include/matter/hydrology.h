@@ -47,10 +47,16 @@ struct HydrologyPbdSettings {
     std::uint32_t max_neighbors = 96;
 };
 
+struct HydrologyEscapePolicy {
+    std::uint32_t absolute_count = 32u;
+    float ratio = 0.0001f;
+};
+
 struct HydrologyBakeLimits {
     std::uint32_t batch_steps = 256;
     std::uint32_t max_steps = 65536;
     std::uint32_t max_particles = 1000000;
+    HydrologyEscapePolicy escape_policy{};
 };
 
 struct HydrologyEmitter {
@@ -65,7 +71,6 @@ struct HydrologyEmitter {
 };
 
 struct HydrologyVirtualDam {
-    float distance_m = 0.0f;
     float height_m = 0.0f;
     float thickness_m = 0.0f;
 };
@@ -114,6 +119,10 @@ struct HydrologyStatus {
     std::uint32_t wet_cells = 0;
     std::uint32_t invalid_cells = 0;
     std::uint32_t mesh_triangles = 0;
+    std::uint32_t current_section = 0;
+    std::uint32_t completed_sections = 0;
+    std::uint32_t total_sections = 0;
+    std::string current_section_id;
     double simulated_time_s = 0.0;
     std::string input_key;
     std::string payload_digest;

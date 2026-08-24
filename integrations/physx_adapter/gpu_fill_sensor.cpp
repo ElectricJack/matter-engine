@@ -36,6 +36,14 @@ struct GpuFillSensor::Impl {
             (void)context->memFree(device_columns);
             device_columns = 0;
         }
+        if (device_quarantine != 0) {
+            (void)context->memFree(device_quarantine);
+            device_quarantine = 0;
+        }
+        if (device_quarantine_positions != 0) {
+            (void)context->memFree(device_quarantine_positions);
+            device_quarantine_positions = 0;
+        }
         if (module != nullptr) {
             (void)context->moduleUnload(module);
             module = nullptr;
@@ -49,8 +57,11 @@ struct GpuFillSensor::Impl {
     CUfunction count_wet = nullptr;
     CUdeviceptr device_columns = 0;
     CUdeviceptr device_results = 0;
+    CUdeviceptr device_quarantine = 0;
+    CUdeviceptr device_quarantine_positions = 0;
     std::uint32_t maximum_horizontal_cells = 0;
     std::uint32_t maximum_batch_steps = 0;
+    std::uint32_t maximum_particles = 0;
     std::uint32_t queued_samples = 0;
     std::uint32_t last_cuda_error = 0;
 };
@@ -61,10 +72,12 @@ GpuFillSensor::~GpuFillSensor() = default;
 bool GpuFillSensor::initialize(physx::PxCudaContextManager& cuda,
                                std::uint32_t maximum_horizontal_cells,
                                std::uint32_t maximum_batch_steps,
+                               std::uint32_t maximum_particles,
                                std::string& error) {
     error.clear();
     impl_->last_cuda_error = 0u;
-    if (maximum_horizontal_cells == 0u || maximum_batch_steps == 0u) {
+    if (maximum_horizontal_cells == 0u || maximum_batch_steps == 0u ||
+        maximum_particles == 0u) {
         error = "GPU fill sensor requires nonzero grid and batch capacities";
         return false;
     }
@@ -72,6 +85,7 @@ bool GpuFillSensor::initialize(physx::PxCudaContextManager& cuda,
     impl_->cuda = &cuda;
     impl_->maximum_horizontal_cells = maximum_horizontal_cells;
     impl_->maximum_batch_steps = maximum_batch_steps;
+    impl_->maximum_particles = maximum_particles;
     impl_->queued_samples = 0u;
 
     physx::PxCUresult result = 0u;
@@ -95,6 +109,22 @@ bool GpuFillSensor::initialize(physx::PxCudaContextManager& cuda,
                 &impl_->device_columns,
                 static_cast<std::size_t>(maximum_horizontal_cells) *
                     sizeof(std::uint32_t));
+        }
+        if (result == 0) {
+            result = context->memAlloc(
+                &impl_->device_quarantine,
+                static_cast<std::size_t>(maximum_particles) *
+                    sizeof(std::uint32_t));
+        }
+        if (result == 0) {
+            result = context->memsetD32(
+                impl_->device_quarantine, 0u, maximum_particles);
+        }
+        if (result == 0) {
+            result = context->memAlloc(
+                &impl_->device_quarantine_positions,
+                static_cast<std::size_t>(maximum_particles) *
+                    sizeof(physx::PxVec4));
         }
         if (result == 0) {
             result = context->memAlloc(
@@ -127,8 +157,11 @@ bool GpuFillSensor::enqueue(
     const std::uint64_t horizontal_cells_64 =
         static_cast<std::uint64_t>(sensor.resolution.x) *
         static_cast<std::uint64_t>(sensor.resolution.z);
-    if (!impl_->cuda || !device_positions || horizontal_cells_64 == 0u ||
+    if (!impl_->cuda || !device_positions ||
+        !hydrology::valid_fluid_fill_sensor_frame(sensor) ||
+        horizontal_cells_64 == 0u ||
         horizontal_cells_64 > impl_->maximum_horizontal_cells ||
+        particle_count > impl_->maximum_particles ||
         impl_->queued_samples >= impl_->maximum_batch_steps) {
         error = "GPU fill sensor input exceeds initialized capacity";
         return false;
@@ -148,12 +181,16 @@ bool GpuFillSensor::enqueue(
     }
 
     CUdeviceptr positions = reinterpret_cast<CUdeviceptr>(device_positions);
-    float sensor_min_x = sensor.bounds_m.minimum.x;
-    float sensor_min_y = sensor.bounds_m.minimum.y;
-    float sensor_min_z = sensor.bounds_m.minimum.z;
-    float sensor_max_x = sensor.bounds_m.maximum.x;
-    float sensor_max_y = sensor.bounds_m.maximum.y;
-    float sensor_max_z = sensor.bounds_m.maximum.z;
+    float sensor_origin_x = sensor.frame_origin_m.x;
+    float sensor_origin_y = sensor.frame_origin_m.y;
+    float sensor_origin_z = sensor.frame_origin_m.z;
+    float sensor_longitudinal_x = sensor.longitudinal_axis_xz.x;
+    float sensor_longitudinal_z = sensor.longitudinal_axis_xz.y;
+    float sensor_lateral_x = sensor.lateral_axis_xz.x;
+    float sensor_lateral_z = sensor.lateral_axis_xz.y;
+    float sensor_extent_x = sensor.frame_extent_m.x;
+    float sensor_extent_y = sensor.frame_extent_m.y;
+    float sensor_extent_z = sensor.frame_extent_m.z;
     std::uint32_t sensor_cells_x = sensor.resolution.x;
     std::uint32_t sensor_cells_z = sensor.resolution.z;
     float collar_min_x = dry_collar_bounds_m.minimum.x;
@@ -168,11 +205,15 @@ bool GpuFillSensor::enqueue(
         sample_results + 2u * sizeof(std::uint32_t);
     void* classify_params[] = {
         &positions, &particle_count,
-        &sensor_min_x, &sensor_min_y, &sensor_min_z,
-        &sensor_max_x, &sensor_max_y, &sensor_max_z,
+        &sensor_origin_x, &sensor_origin_y, &sensor_origin_z,
+        &sensor_longitudinal_x, &sensor_longitudinal_z,
+        &sensor_lateral_x, &sensor_lateral_z,
+        &sensor_extent_x, &sensor_extent_y, &sensor_extent_z,
         &sensor_cells_x, &sensor_cells_z,
         &collar_min_x, &collar_min_y, &collar_min_z,
         &collar_max_x, &collar_max_y, &collar_max_z,
+        &impl_->device_quarantine,
+        &impl_->device_quarantine_positions,
         &impl_->device_columns, &escaped, &non_finite,
     };
     if (result == 0 && particle_count != 0u) {
@@ -209,6 +250,41 @@ bool GpuFillSensor::enqueue(
         return false;
     }
     ++impl_->queued_samples;
+    return true;
+}
+
+bool GpuFillSensor::read_quarantine(
+    std::uint32_t particle_count, std::vector<std::uint32_t>& flags,
+    std::vector<physx::PxVec4>& first_positions, std::string& error) {
+    flags.clear();
+    first_positions.clear();
+    error.clear();
+    impl_->last_cuda_error = 0u;
+    if (!impl_->cuda || particle_count > impl_->maximum_particles) {
+        error = "GPU fill sensor quarantine read exceeds capacity";
+        return false;
+    }
+    flags.resize(particle_count);
+    first_positions.resize(particle_count);
+    physx::PxCUresult result = 0u;
+    if (particle_count != 0u) {
+        physx::PxScopedCudaLock lock(*impl_->cuda);
+        result = impl_->cuda->getCudaContext()->memcpyDtoH(
+            flags.data(), impl_->device_quarantine,
+            flags.size() * sizeof(std::uint32_t));
+        if (result == 0) {
+            result = impl_->cuda->getCudaContext()->memcpyDtoH(
+                first_positions.data(), impl_->device_quarantine_positions,
+                first_positions.size() * sizeof(physx::PxVec4));
+        }
+    }
+    if (result != 0) {
+        impl_->last_cuda_error = result.value;
+        error = cuda_failure("reading Matter quarantine flags", result);
+        flags.clear();
+        first_positions.clear();
+        return false;
+    }
     return true;
 }
 

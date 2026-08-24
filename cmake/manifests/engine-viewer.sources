@@ -16,5 +16,4 @@ MatterEngine3/src/render/vt_compositor.cpp|all
 MatterEngine3/src/render/vt_enrich.cpp|all
 MatterEngine3/src/render/vt_residency.cpp|all
 MatterEngine3/src/render/vt_stub_filler.cpp|all
-MatterEngine3/src/ecs/scene_registry.cpp|all
 MatterEngine3/src/ecs/dynamic_scene_bridge.cpp|all

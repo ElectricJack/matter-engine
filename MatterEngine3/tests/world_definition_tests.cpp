@@ -3,6 +3,8 @@
 #include "../src/provider/local_provider.h"
 #include "../src/script/world_definition_loader.h"
 #include "../src/detail_bake_plan.h"
+#include "../src/hydrology/river_geometry.h"
+#include "../src/terrain_river_overlay.h"
 #include "../src/tileset_slot_allocator.h"
 
 extern "C" {
@@ -266,6 +268,7 @@ class FixtureWorld extends World {
     });
   }
 }
+
 )JS");
 
     matter::WorldDefinition definition;
@@ -314,6 +317,76 @@ class FixtureWorld extends World {
                   "{\"SeedProbe\":{\"difficulty\":3,\"seed\":77}}",
               "seed and canonical parameters are explicit build bindings");
     }
+}
+
+void test_world_loader_preserves_root_fluid_colliders() {
+    Fixture fixture;
+    const fs::path path = fixture.write("FluidColliderRoots.js", R"JS(
+class FluidColliderRoots extends World {
+  static roots = [{
+    id: "upper-midstream-rock",
+    module: "Rock",
+    params: { seed: 41, size: 3.2, detail: 1.0 },
+    transform: [1,0,0,52, 0,1,0,24, 0,0,1,-3, 0,0,0,1],
+    fluidCollider: { shape: "sphere", radius: 2.4, center: [0, 1.2, 0] },
+  }];
+}
+)JS");
+    matter::WorldDefinition definition{};
+    matter::WorldLoadError error{};
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.roots.size() == 1u,
+          "a collider-bearing rendered root is not duplicated");
+    if (definition.roots.size() != 1u) return;
+    CHECK(definition.roots[0].id == "upper-midstream-rock",
+          "fluid collider roots preserve their stable DSL id");
+    CHECK(definition.roots[0].fluid_collider.shape ==
+              matter::WorldFluidColliderShape::Sphere &&
+              definition.roots[0].fluid_collider.radius_m == 2.4f &&
+              definition.roots[0].fluid_collider.center_m.y == 1.2f,
+          "root collider shape, dimensions, and local center survive world loading");
+    const viewer::ProviderWorldDefinition adapted =
+        viewer::adapt_world_definition(definition);
+    CHECK(adapted.roots.size() == 1u && adapted.fluid_colliders.size() == 1u &&
+              adapted.fluid_colliders[0].id == "upper-midstream-rock" &&
+              adapted.fluid_colliders[0].object_to_world.m[3] == 52.0f,
+          "provider adaptation retains one collider beside one rendered root");
+}
+
+void test_world_loader_rejects_invalid_root_fluid_colliders() {
+    Fixture fixture;
+    const auto rejects = [&](const char* name, const char* root,
+                             const char* expected_path) {
+        const fs::path path = fixture.write(
+            name, std::string("class Reject extends World { static roots=[") +
+                      root + "]; }\n");
+        matter::WorldDefinition definition{};
+        matter::WorldLoadError error{};
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition,
+                                             error),
+              name);
+        CHECK(error.property_path == expected_path, expected_path);
+    };
+    rejects("MissingColliderId.js",
+            "{module:'Rock',fluidCollider:{shape:'sphere',radius:2}}",
+            "roots[0].id");
+    rejects("UnknownColliderShape.js",
+            "{id:'rock',module:'Rock',fluidCollider:{shape:'capsule',radius:2}}",
+            "roots[0].fluidCollider.shape");
+    rejects("BadSphereRadius.js",
+            "{id:'rock',module:'Rock',fluidCollider:{shape:'sphere',radius:0}}",
+            "roots[0].fluidCollider.radius");
+    rejects("BadColliderCenter.js",
+            "{id:'rock',module:'Rock',fluidCollider:{shape:'sphere',radius:1,center:[0,1]}}",
+            "roots[0].fluidCollider.center");
+    rejects("ShearedCollider.js",
+            "{id:'rock',module:'Rock',transform:[1,.5,0,0,0,1,0,0,0,0,1,0,0,0,0,1],fluidCollider:{shape:'box',halfExtents:[1,1,1]}}",
+            "roots[0].transform");
+    rejects("DuplicateColliderId.js",
+            "{id:'same',module:'Rock',fluidCollider:{shape:'sphere',radius:1}},"
+            "{id:'same',module:'Rock',fluidCollider:{shape:'sphere',radius:1}}",
+            "roots[1].id");
 }
 
 void test_engine_shared_fallback_and_no_entity_world() {
@@ -2042,50 +2115,139 @@ void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
           "the checked-in river scene publishes an imperative canonical network");
     if (!definition.river_network) return;
     const auto& network = *definition.river_network;
-    CHECK(network.rivers.size() == 1u &&
-              network.first_section_river == "main",
-          "the checked-in scene selects one named first-section river");
+    CHECK(network.rivers.size() == 1u && network.sections.size() == 2u &&
+              network.sections[0].river == "main" &&
+              network.sections[0].id == "upper" &&
+              network.sections[1].id == "lower" &&
+              network.sections[1].after_section_ids ==
+                  std::vector<std::string>{"upper"} &&
+              network.sections[1].upstream_spillway_section_ids ==
+                  std::vector<std::string>{"upper"} &&
+              network.bake_sequential,
+          "the checked-in scene selects two serial river sections");
     if (network.rivers.empty()) return;
     const auto& river = network.rivers.front();
-    CHECK(river.spline.size() == 4u &&
-              river.spline.front().y == 42.0f &&
-              river.spline[1].x == 38.0f && river.spline[1].y == 35.5f &&
-              river.spline[1].z == 16.0f &&
-              river.spline[2].x == 82.0f && river.spline[2].y == 29.8f &&
-              river.spline[2].z == -16.0f &&
-              river.spline.back().x == 142.0f &&
-              river.spline.back().y == 19.5f &&
-              river.spline.back().z == 6.0f &&
-              river.reaches.size() == 3u &&
-              river.reaches[0].base_grade == -0.17f &&
-              river.reaches[0].width_scale == 0.78f &&
-              river.reaches[1].base_grade == -0.115f &&
-              river.reaches[1].width_scale == 1.30f &&
-              river.reaches[2].base_grade == -0.17f &&
-              river.reaches[2].width_scale == 0.92f,
-          "the visual spike retains the steep variable-width 142 m spline");
-    CHECK(river.channel.width_m == 14.0f &&
-              river.channel.depth_m == 7.0f &&
-              river.channel.asymmetry == 0.18f &&
-              river.boulders.density == 0.0f,
-          "the visual spike retains the rounded-V channel and frozen roots");
-    CHECK(network.first_section.dry_margin_m == 5.0f &&
+    CHECK(river.curve.size() > 600u &&
+              river.curve.front().x == 0.0f &&
+              river.curve.front().y == 72.0f &&
+              river.curve.front().z == 0.0f &&
+              river.curve.back().x == 294.0f &&
+              river.curve.back().y == 22.0f &&
+              river.curve.back().z == 0.0f,
+          "the acceptance world retains its complete descending authored curve");
+    CHECK(river.channel_profile.size() == 13u &&
+              nearly_equal(river.channel_profile.front().width_m, 14.0f) &&
+              river.channel_profile[1].width_m == 24.0f &&
+              river.channel_profile[4].width_m == 34.0f &&
+              river.channel_profile[8].width_m == 22.0f &&
+              river.channel_profile[9].width_m == 28.0f &&
+              river.channel_profile[11].width_m == 38.0f &&
+              river.channel_profile.front().depth_m == 8.0f &&
+              river.channel_profile[0].asymmetry == 0.18f,
+          "the DSL profile widens both rapids and pools before each spillway");
+    CHECK(network.canonical_text.find("boulders=") == std::string::npos,
+          "native boulder generation is absent from the canonical contract");
+    CHECK(network.sections[0].dry_margin_m == 15.0f &&
+              network.sections[1].dry_margin_m == 15.0f &&
+              network.sections[0].to_m - network.sections[0].from_m >= 100.0f &&
+              network.sections[1].to_m - network.sections[1].from_m >= 100.0f &&
+              network.sections[0].waterfalls.size() == 1u &&
+              nearly_equal(network.sections[0].waterfalls[0].expected_drop_m,
+                           12.0f) &&
               network.fluid.backend == matter::HydrologyBackend::Physx &&
               network.fluid.limits.batch_steps == 256u &&
-              network.fluid.limits.max_steps == 65536u &&
-              network.fluid.limits.max_particles == 1000000u &&
+              network.fluid.limits.max_steps == 8192u &&
+              network.fluid.limits.max_particles == 4000000u &&
               network.fluid.fill_sensor.crest_wet_fraction == 0.80f &&
               network.fluid.fill_sensor.stable_wet_steps == 32u,
           "the scene retains the dry margin, explicit work budget, and sensor rule");
     CHECK(network.fluid.emitters.size() == 1u &&
               network.fluid.emitters[0].id == "upstream-inlet" &&
-              network.fluid.virtual_dam.distance_m == 100.0f &&
+              network.fluid.emitters[0].flow_m3s == 600.0f &&
+              nearly_equal(network.fluid.emitters[0].radius_m, 4.472136f) &&
+              network.fluid.emitters[0].position_m.y == 84.0f &&
+              network.fluid.emitters[0].initial_velocity_mps.x == 1.72f &&
+              network.fluid.emitters[0].initial_velocity_mps.y == -0.28f &&
+              nearly_equal(
+                  network.fluid.emitters[0].stop_time_s,
+                  network.fluid.pbd.fixed_step_seconds *
+                      static_cast<float>(network.fluid.limits.max_steps)) &&
+              river.inlet.flow_m3s == 600.0f &&
+              network.sections[0].terminal_spillway &&
+              network.sections[1].terminal_spillway &&
+              network.sections[0].terminal_spillway->width_m == 10.0f &&
+              network.sections[1].terminal_spillway->width_m == 10.0f &&
+              network.sections[0].terminal_spillway->dam_offset_m == 4.0f &&
               network.fluid.pbd.particle_spacing_m == 0.20f &&
               network.fluid.pbd.fixed_step_seconds == 1.0f / 120.0f &&
-              network.fluid.quality.visual_voxel_m == 0.10f &&
-              network.fluid.quality.coarse_voxel_m == 0.40f &&
+              network.fluid.quality.particle_radius_m == 0.13f &&
+              network.fluid.quality.visual_voxel_m == 0.15f &&
+              network.fluid.quality.visual_blend_width_m == 0.10f &&
+              network.fluid.quality.coarse_voxel_m == 0.65f &&
               network.fluid.quality.gameplay_cell_m == 0.50f,
-          "the checked-in scene explicitly authors inlet, dam, solver, and every product quality");
+          "the checked-in scene keeps the bounded 0.20 m / 600 m3s experiment and authors every product quality");
+    CHECK(definition.roots.size() == 12u &&
+              std::all_of(definition.roots.begin(), definition.roots.end(),
+                          [](const matter::WorldRoot& root) {
+                              const auto& m = root.transform.m;
+                              const float x_scale = std::hypot(m[0], m[8]);
+                              const float y_scale = std::fabs(m[5]);
+                              const float z_scale = std::hypot(m[2], m[10]);
+                              return !root.id.empty() &&
+                                  nearly_equal(x_scale, 1.0f) &&
+                                  nearly_equal(y_scale, 1.0f) &&
+                                  nearly_equal(z_scale, 1.0f) &&
+                                  root.fluid_collider.shape ==
+                                      matter::WorldFluidColliderShape::Sphere;
+                          }),
+          "all twelve deterministic DSL boulders use unit-scale placement transforms and matching fluid colliders");
+
+    hydrology::RiverGeometry geometry{};
+    std::string geometry_error;
+    CHECK(hydrology::build_river_geometry(network, "main", geometry,
+                                           geometry_error),
+          geometry_error.c_str());
+    std::shared_ptr<const terrain_field::RiverHeightOverlay> overlay;
+    CHECK(terrain_field::RiverHeightOverlay::build(
+              geometry, overlay, geometry_error),
+          geometry_error.c_str());
+    bool collider_footprints_clear_terrain = overlay != nullptr;
+    if (overlay) {
+        constexpr float kPi = 3.14159265358979323846f;
+        for (const auto& root : definition.roots) {
+            const auto& transform = root.transform.m;
+            const auto local = root.fluid_collider.center_m;
+            const matter::Float3 center{
+                transform[0] * local.x + transform[1] * local.y +
+                    transform[2] * local.z + transform[3],
+                transform[4] * local.x + transform[5] * local.y +
+                    transform[6] * local.z + transform[7],
+                transform[8] * local.x + transform[9] * local.y +
+                    transform[10] * local.z + transform[11],
+            };
+            const float radius = root.fluid_collider.radius_m;
+            for (float radial_fraction : {0.0f, 0.25f, 0.5f, 0.75f, 0.95f}) {
+                const float radial = radius * radial_fraction;
+                const float bottom = center.y -
+                    std::sqrt(std::max(0.0f, radius * radius - radial * radial));
+                for (int sector = 0; sector < 32; ++sector) {
+                    const float angle = 2.0f * kPi *
+                        static_cast<float>(sector) / 32.0f;
+                    const float x = center.x + radial * std::cos(angle);
+                    const float z = center.z + radial * std::sin(angle);
+                    const float terrain = overlay->height_at(x, z, 200.0f);
+                    if (!(bottom >= terrain + 0.05f)) {
+                        collider_footprints_clear_terrain = false;
+                        break;
+                    }
+                }
+                if (!collider_footprints_clear_terrain) break;
+            }
+            if (!collider_footprints_clear_terrain) break;
+        }
+    }
+    CHECK(collider_footprints_clear_terrain,
+          "every boulder collider clears the rounded-V terrain across its footprint");
 }
 
 void test_world_loader_leaves_hydrology_empty_when_absent() {
@@ -2210,23 +2372,26 @@ class River extends World {
       seed: this.worldSeed ^ 0x52495645,
     });
     const main = network.river("main")
-      .inlet([0, 18, 0], { flow: 1.0 })
-      .spline([[0, 18, 0], [34, 14, 11], [72, 9, -9], [128, 3, 5]])
-      .reach({ until: 64, baseGrade: -0.035, meander: 0.15 })
-      .reach({ until: 128, baseGrade: -0.012, meander: 0.65 })
-      .channel({ width: 7, depth: 2.5, asymmetry: 0.35 })
-      .boulders({ density: 0.08, radius: [0.5, 2.0] });
+      .inlet([0, 36, 0], { flow: 1.0 })
+      .curve([[0,36,0], [105,30,0], [117,18,0], [145,18,0],
+              [255,3,0], [275,3,0]])
+      .channelProfile([
+        {at: 0, width: 7, depth: 2.5, asymmetry: 0.35},
+        {at: 145, width: 10, depth: 3, asymmetry: -0.2},
+        {at: 275, width: 8, depth: 2.25, asymmetry: 0.1},
+      ]);
     network.backend("physx");
     network.pbd({particleSpacing: .2, restDensity: 1000, fixedStep: 1 / 120,
                  iterations: 4, maxNeighbors: 96});
     network.limits({batchSteps: 256, maxSteps: 65536, maxParticles: 1000000});
+    network.escapePolicy({absoluteCount: 32, ratio: .0001});
     network.emitter({id: "main-inlet", position: [0,18,0], direction: [1,0,0],
                      initialVelocity: [1,0,0], flow: 1, radius: 2,
                      startTime: 0, stopTime: 64});
     network.emitter({id: "future-tributary", position: [32,14,8], direction: [1,0,0],
                      initialVelocity: [1,0,0], flow: .25, radius: 1,
                      startTime: 2, stopTime: 32});
-    network.virtualDam({distance: 100, height: 8, thickness: .5});
+    network.virtualDam({height: 8, thickness: .5});
     network.fillSensor({upstreamOffset: 2, length: 1, height: 6,
                         resolution: [24,1,12], crestWetFraction: .8,
                         stableWetSteps: 32, minimumParticlesPerCell: 1});
@@ -2234,12 +2399,23 @@ class River extends World {
                      visualBlendWidth: .05, coarseVoxel: .4, gameplayCell: .5,
                      maxVisualParticles: 1000000, maxGridVertices: 4194304,
                      maxMeshVertices: 12582912, maxMeshIndices: 12582912});
-    network.firstSection(main, {
-      minimumLength: 100, dryMargin: 4,
-    });
+    main.section("upper", {from: 0, to: 145, dryMargin: 15})
+      .emitters(["main-inlet"])
+      .waterfall({lipAt: 105, landingAt: 117, expectedDrop: 12})
+      .pool({from: 117, to: 145, fillLevel: 24})
+      .spillway({id: "pool-one", at: 145, width: 10,
+                 effectiveDepth: 2, overlap: 5, damOffset: 4});
+    main.section("lower", {from: 145, to: 275, dryMargin: 15})
+      .after("upper")
+      .fromSpillway("upper")
+      .pool({from: 255, to: 275, fillLevel: 3})
+      .spillway({id: "pool-two", at: 275, width: 10,
+                 effectiveDepth: 2, overlap: 5, damOffset: 4});
+    network.bakeSequential();
     network.build();
   }
 }
+
 )JS");
     matter::WorldDefinition definition;
     matter::WorldLoadError error;
@@ -2251,15 +2427,27 @@ class River extends World {
     CHECK(definition.river_network->rivers.size() == 1u &&
               definition.river_network->rivers[0].name == "main",
           "the loader retains the canonical named river");
-    CHECK(definition.river_network->rivers[0].reaches.size() == 2u &&
-              definition.river_network->rivers[0].reaches[1].meander == 0.65f,
-          "the loader retains two ordered reaches including gentle meander");
-    CHECK(definition.river_network->first_section.minimum_length_m == 100.0f &&
+    CHECK(definition.river_network->rivers[0].curve.size() == 6u &&
+              definition.river_network->rivers[0].channel_profile.size() == 3u &&
+              definition.river_network->rivers[0].channel_profile[1].width_m == 10.0f,
+          "the loader retains the completed curve and ordered channel profile");
+    CHECK(definition.river_network->sections.size() == 2u &&
+              definition.river_network->sections[0].id == "upper" &&
+              definition.river_network->sections[0].waterfalls.size() == 1u &&
+              definition.river_network->sections[0].waterfalls[0].expected_drop_m == 12.0f &&
+              definition.river_network->sections[1].id == "lower" &&
+              definition.river_network->sections[1].after_section_ids ==
+                  std::vector<std::string>{"upper"} &&
+              definition.river_network->sections[1].upstream_spillway_section_ids ==
+                  std::vector<std::string>{"upper"} &&
+              definition.river_network->bake_sequential &&
               definition.river_network->fluid.backend ==
                   matter::HydrologyBackend::Physx &&
               definition.river_network->fluid.emitters.size() == 2u &&
-              definition.river_network->fluid.limits.batch_steps == 256u,
-          "the loader retains first-section geometry and authored fluid settings");
+              definition.river_network->fluid.limits.batch_steps == 256u &&
+              definition.river_network->fluid.limits.escape_policy.absolute_count == 32u &&
+              definition.river_network->fluid.limits.escape_policy.ratio == 0.0001f,
+          "the loader retains builder-style sections and authored fluid settings");
     CHECK(!definition.river_network->canonical_text.empty() &&
               definition.river_network->canonical_hash != 0u,
           "the loader publishes canonical bytes and their deterministic key");
@@ -2270,6 +2458,62 @@ class River extends World {
               adapted->canonical_hash ==
                   definition.river_network->canonical_hash,
           "the provider adapter preserves canonical river bytes and key unchanged");
+}
+
+void test_world_loader_preserves_completed_dsl_curve_and_profile() {
+    Fixture fixture;
+    const fs::path path = fixture.write("AuthoredCurve.js", R"JS(
+import { riverCurve } from 'shared-lib/river_curve';
+class AuthoredCurve extends World {
+  hydrology() {
+    const curve = riverCurve([0, 18, 0]);
+    curve.lineTo([30, 12, 8]).lineTo([65, 4, -3]);
+    const network = riverNetwork({cellSize: 0.5, seed: 77});
+    const main = network.river("main")
+      .inlet([0, 18, 0], {flow: 1})
+      .curve(curve.build())
+      .channelProfile([
+        {at: 0, width: 7, depth: 2.5, asymmetry: 0.35},
+        {at: 40, width: 10, depth: 3, asymmetry: -0.25},
+        {at: 80, width: 8, depth: 2, asymmetry: 0.1},
+      ]);
+    main.section("upper", {from: 0, to: 60, dryMargin: 4})
+      .pool({from: 55, to: 60, fillLevel: 4})
+      .spillway({id: "pool-one", at: 60, width: 8,
+                 effectiveDepth: 2, overlap: 4, damOffset: 2});
+    network.bakeSequential();
+    network.build();
+  }
+}
+)JS");
+    auto desc = fixture.desc(path);
+    desc.engine_shared_lib_dir = "../shared-lib";
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(desc, definition, error),
+          error.message.c_str());
+    CHECK(definition.river_network.has_value(),
+          "completed DSL curve publishes a canonical river network");
+    if (!definition.river_network ||
+        definition.river_network->rivers.empty()) return;
+    const std::vector<matter::Float3> expected_curve = {
+        {0.0f, 18.0f, 0.0f}, {30.0f, 12.0f, 8.0f},
+        {65.0f, 4.0f, -3.0f}};
+    const auto& river = definition.river_network->rivers.front();
+    CHECK(river.curve.size() == expected_curve.size() &&
+              river.curve[1].x == expected_curve[1].x &&
+              river.curve[1].y == expected_curve[1].y &&
+              river.curve[1].z == expected_curve[1].z,
+          "the completed DSL curve is the native source of truth");
+    CHECK(river.channel_profile.size() == 3u &&
+              river.channel_profile[1].distance_m == 40.0f &&
+              river.channel_profile[1].width_m == 10.0f &&
+              river.channel_profile[1].depth_m == 3.0f &&
+              river.channel_profile[1].asymmetry == -0.25f,
+          "channelProfile survives world loading unchanged");
+    CHECK(definition.river_network->canonical_text.find("boulders=") ==
+              std::string::npos,
+          "native boulder generation is absent from the canonical contract");
 }
 
 void test_world_loader_rejects_imperative_river_failures() {
@@ -2293,26 +2537,29 @@ void test_world_loader_rejects_imperative_river_failures() {
       const n=riverNetwork({cellSize:.5,seed:1});
       const r=n.river("main")
         .inlet([0,1,0],{flow:1})
-        .spline([[0,1,0],[100,0,0]])
-        .reach({until:100,baseGrade:-.01,meander:.2})
-        .channel({width:5,depth:2,asymmetry:0})
-        .boulders({density:.1,radius:[.5,1]});
-      n.firstSection(r,{minimumLength:100,dryMargin:4});
+        .curve([[0,1,0],[100,0,0]])
+        .channelProfile([{at:0,width:5,depth:2,asymmetry:0}]);
+      r.section("upper",{from:0,to:100,dryMargin:4})
+        .pool({from:90,to:100,fillLevel:2})
+        .spillway({id:"pool-one",at:100,width:5,effectiveDepth:1,overlap:2,damOffset:1});
+      n.bakeSequential();
       n.build(); n.build();
     )JS", "hydrology.build");
     rejects("Nonfinite.js",
             "const n=riverNetwork({cellSize:Infinity,seed:1}); n.build();",
             "hydrology.cellSize");
-    rejects("DecreasingReach.js", R"JS(
+    rejects("DecreasingProfile.js", R"JS(
       const n=riverNetwork({cellSize:.5,seed:1});
       const r=n.river("main");
-      r.reach({until:64,baseGrade:-.02,meander:.2});
-      r.reach({until:32,baseGrade:-.01,meander:.3});
-    )JS", "hydrology.main.reach[1].until");
-    rejects("ShortSpline.js", R"JS(
+      r.channelProfile([
+        {at:64,width:5,depth:2,asymmetry:0},
+        {at:32,width:5,depth:2,asymmetry:0},
+      ]);
+    )JS", "hydrology.main.channelProfile[1].at");
+    rejects("ShortCurve.js", R"JS(
       const n=riverNetwork({cellSize:.5,seed:1});
-      n.river("main").spline([[0,0,0]]);
-    )JS", "hydrology.main.spline");
+      n.river("main").curve([[0,0,0]]);
+    )JS", "hydrology.main.curve");
     rejects("JoinsReserved.js", R"JS(
       const n=riverNetwork({cellSize:.5,seed:1});
       const main=n.river("main");
@@ -2353,12 +2600,12 @@ void test_world_loader_rejects_module_scope_river_build() {
 const network = riverNetwork({cellSize: 0.5, seed: 1});
 const main = network.river("main")
   .inlet([0, 1, 0], {flow: 1})
-  .spline([[0, 1, 0], [100, 0, 0]])
-  .reach({until: 100, baseGrade: -0.01, meander: 0.2})
-  .channel({width: 5, depth: 2, asymmetry: 0})
-  .boulders({density: 0.1, radius: [0.5, 1]});
-network.firstSection(main, {minimumLength: 100, dryMargin: 4,
-});
+  .curve([[0, 1, 0], [100, 0, 0]])
+  .channelProfile([{at: 0, width: 5, depth: 2, asymmetry: 0}]);
+main.section("upper", {from:0,to:100,dryMargin:4})
+  .pool({from:90,to:100,fillLevel:2})
+  .spillway({id:"pool-one",at:100,width:5,effectiveDepth:1,overlap:2,damOffset:1});
+network.bakeSequential();
 network.build();
 class ModuleScopeRiver extends World { hydrology() {} }
 )JS");
@@ -2381,12 +2628,12 @@ class BuildEntitiesRiver extends World {
     const network = riverNetwork({cellSize: 0.5, seed: 1});
     const main = network.river("main")
       .inlet([0, 1, 0], {flow: 1})
-      .spline([[0, 1, 0], [100, 0, 0]])
-      .reach({until: 100, baseGrade: -0.01, meander: 0.2})
-      .channel({width: 5, depth: 2, asymmetry: 0})
-      .boulders({density: 0.1, radius: [0.5, 1]});
-    network.firstSection(main, {minimumLength: 100, dryMargin: 4,
-    });
+      .curve([[0, 1, 0], [100, 0, 0]])
+      .channelProfile([{at: 0, width: 5, depth: 2, asymmetry: 0}]);
+    main.section("upper", {from:0,to:100,dryMargin:4})
+      .pool({from:90,to:100,fillLevel:2})
+      .spillway({id:"pool-one",at:100,width:5,effectiveDepth:1,overlap:2,damOffset:1});
+    network.bakeSequential();
     network.build();
   }
 }
@@ -2411,12 +2658,12 @@ class LateRiverHandle extends World {
     const network = riverNetwork({cellSize: 0.5, seed: 1});
     const main = network.river("main")
       .inlet([0, 1, 0], {flow: 1})
-      .spline([[0, 1, 0], [100, 0, 0]])
-      .reach({until: 100, baseGrade: -0.01, meander: 0.2})
-      .channel({width: 5, depth: 2, asymmetry: 0})
-      .boulders({density: 0.1, radius: [0.5, 1]});
-    network.firstSection(main, {minimumLength: 100, dryMargin: 4,
-    });
+      .curve([[0, 1, 0], [100, 0, 0]])
+      .channelProfile([{at: 0, width: 5, depth: 2, asymmetry: 0}]);
+    main.section("upper", {from:0,to:100,dryMargin:4})
+      .pool({from:90,to:100,fillLevel:2})
+      .spillway({id:"pool-one",at:100,width:5,effectiveDepth:1,overlap:2,damOffset:1});
+    network.bakeSequential();
     network.build();
     this.savedNetwork = network;
   }
@@ -2449,6 +2696,8 @@ int main() {
     test_example_worlds_preserve_manifest_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
+    test_world_loader_preserves_root_fluid_colliders();
+    test_world_loader_rejects_invalid_root_fluid_colliders();
     test_engine_shared_fallback_and_no_entity_world();
     test_authored_entity_override_cannot_intercept_collection();
     test_rejects_undefined_or_non_json_owned_values();
@@ -2491,6 +2740,7 @@ int main() {
     test_world_loader_rejects_every_unknown_hydrology_property();
     test_world_loader_rejects_uint32_overflow_before_narrowing();
     test_world_loader_builds_imperative_river_network();
+    test_world_loader_preserves_completed_dsl_curve_and_profile();
     test_world_loader_rejects_imperative_river_failures();
     test_world_loader_rejects_dual_hydrology_configuration();
     test_world_loader_rejects_module_scope_river_build();

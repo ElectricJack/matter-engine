@@ -18,10 +18,28 @@
 
 namespace matter {
 
+enum class WorldFluidColliderShape : std::uint8_t {
+    None = 0,
+    Sphere,
+    Box,
+};
+
+struct WorldFluidCollider {
+    WorldFluidColliderShape shape = WorldFluidColliderShape::None;
+    float radius_m = 0.0f;
+    Float3 half_extents_m{};
+    Float3 center_m{};
+};
+
 struct WorldRoot {
+    std::string id;
     std::string module;
     std::string params_json = "{}";
-    Mat4f transform{};
+    Mat4f transform{{1.0f, 0.0f, 0.0f, 0.0f,
+                     0.0f, 1.0f, 0.0f, 0.0f,
+                     0.0f, 0.0f, 1.0f, 0.0f,
+                     0.0f, 0.0f, 0.0f, 1.0f}};
+    WorldFluidCollider fluid_collider{};
     bool expand = false;
     bool tileset = false;
 };

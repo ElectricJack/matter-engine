@@ -40,7 +40,9 @@ bool update_fill_sensor(const FluidFillSensor& sensor,
     const std::uint64_t horizontal_cells =
         static_cast<std::uint64_t>(sensor.resolution.x) *
         static_cast<std::uint64_t>(sensor.resolution.z);
-    if (!valid_bounds(sensor.bounds_m) || sensor.resolution.x == 0u ||
+    if (!valid_bounds(sensor.bounds_m) ||
+        !valid_fluid_fill_sensor_frame(sensor) ||
+        sensor.resolution.x == 0u ||
         sensor.resolution.y == 0u || sensor.resolution.z == 0u ||
         horizontal_cells > std::numeric_limits<std::size_t>::max() ||
         horizontal_cells > std::numeric_limits<std::uint32_t>::max() ||
@@ -56,30 +58,27 @@ bool update_fill_sensor(const FluidFillSensor& sensor,
 
     std::vector<std::uint32_t> contributions(
         static_cast<std::size_t>(horizontal_cells), 0u);
-    const float extent_x = sensor.bounds_m.maximum.x - sensor.bounds_m.minimum.x;
-    const float extent_z = sensor.bounds_m.maximum.z - sensor.bounds_m.minimum.z;
     for (matter::Float3 position : particle_positions) {
         if (!finite(position)) {
             return fail(FluidBakeCode::NonFinite,
                         "fill sensor received a non-finite particle", result,
                         error);
         }
-        if (position.x < sensor.bounds_m.minimum.x ||
-            position.x >= sensor.bounds_m.maximum.x ||
-            position.y < sensor.bounds_m.minimum.y ||
-            position.y >= sensor.bounds_m.maximum.y ||
-            position.z < sensor.bounds_m.minimum.z ||
-            position.z >= sensor.bounds_m.maximum.z) {
+        const matter::Float3 local =
+            fluid_fill_sensor_local_position(sensor, position);
+        if (local.x < 0.0f || local.x >= sensor.frame_extent_m.x ||
+            local.y < 0.0f || local.y >= sensor.frame_extent_m.y ||
+            local.z < 0.0f || local.z >= sensor.frame_extent_m.z) {
             continue;
         }
         const auto x = std::min(
             static_cast<std::uint32_t>(
-                (position.x - sensor.bounds_m.minimum.x) / extent_x *
+                local.x / sensor.frame_extent_m.x *
                 sensor.resolution.x),
             sensor.resolution.x - 1u);
         const auto z = std::min(
             static_cast<std::uint32_t>(
-                (position.z - sensor.bounds_m.minimum.z) / extent_z *
+                local.z / sensor.frame_extent_m.z *
                 sensor.resolution.z),
             sensor.resolution.z - 1u);
         std::uint32_t& count = contributions[
@@ -109,7 +108,9 @@ bool update_fill_sensor_counts(const FluidFillSensor& sensor,
     const std::uint64_t expected_horizontal_cells =
         static_cast<std::uint64_t>(sensor.resolution.x) *
         static_cast<std::uint64_t>(sensor.resolution.z);
-    if (!valid_bounds(sensor.bounds_m) || sensor.resolution.x == 0u ||
+    if (!valid_bounds(sensor.bounds_m) ||
+        !valid_fluid_fill_sensor_frame(sensor) ||
+        sensor.resolution.x == 0u ||
         sensor.resolution.y == 0u || sensor.resolution.z == 0u ||
         expected_horizontal_cells != total_horizontal_cells ||
         wet_horizontal_cells > total_horizontal_cells ||

@@ -94,6 +94,11 @@ ProductKeys derive_product_keys(
     const ProductIdentitySettings& settings, float coarse_voxel_m,
     const GameplayFieldLayout& gameplay_layout);
 
+// Repairs only missing or non-finite CPU mesh normals from valid triangle
+// geometry. Invalid positions or triangle indices remain hard failures.
+bool repair_nonfinite_cpu_mesh_normals(
+    gpu_meshing::MeshResult& mesh) noexcept;
+
 bool build_cpu_particle_visual(const gpu_meshing::ParticleJob& job,
                                float coarse_voxel_m,
                                gpu_meshing::MeshResult& result,

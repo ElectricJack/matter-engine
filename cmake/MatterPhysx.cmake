@@ -86,11 +86,18 @@ set(matter_physx_control_bin
     "${matter_physx_sdk_root}/bin/win.x86_64.vc143.mt/release")
 set(matter_physx_gpu_runtime
     "${matter_physx_control_bin}/PhysXGpu_64.dll")
+set(matter_physx_license "${MATTER_PHYSX_ROOT}/LICENSE.md")
+set(matter_cuda_license "${MATTER_CUDA_ROOT}/EULA.txt")
 if(NOT EXISTS "${matter_physx_gpu_runtime}")
     message(FATAL_ERROR
         "Pinned PhysX GPU runtime is missing '${matter_physx_gpu_runtime}'. "
         "Run tools/physx/build-physx-control.ps1 -Mode Build first.")
 endif()
+foreach(notice IN ITEMS "${matter_physx_license}" "${matter_cuda_license}")
+    if(NOT EXISTS "${notice}")
+        message(FATAL_ERROR "Pinned NVIDIA package notice is missing '${notice}'")
+    endif()
+endforeach()
 
 # The upstream control uses the official shared Windows preset. Matter builds
 # a separate static-core SDK variant into its own build tree so editor startup

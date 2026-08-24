@@ -9,12 +9,9 @@
 
 namespace {
 
-using matter::RiverBoulders;
-using matter::RiverChannel;
-using matter::RiverFirstSection;
+using matter::RiverChannelProfilePoint;
 using matter::RiverInlet;
 using matter::RiverNetworkDefinition;
-using matter::RiverReach;
 using matter::HydrologyBackend;
 using matter::HydrologyBakeLimits;
 using matter::HydrologyEmitter;
@@ -33,22 +30,31 @@ std::uint64_t expected_fnv1a64(const std::string& text) {
     return hash;
 }
 
-bool build_valid_network(float second_grade, RiverNetworkDefinition& out,
+bool build_valid_network(float terminal_depth, RiverNetworkDefinition& out,
                          std::string& error) {
     RiverNetworkBuilder builder(0.5f, 0x52495645u);
     std::size_t main = 0;
-    return builder.add_river("main", main, error) &&
-           builder.set_inlet(main, {{0.0f, 18.0f, 0.0f}, 1.0f}, error) &&
-           builder.set_spline(main,
-                              {{0.0f, 18.0f, 0.0f},
-                               {34.0f, 14.0f, 11.0f},
-                               {72.0f, 9.0f, -9.0f},
-                               {128.0f, 3.0f, 5.0f}}, error) &&
-           builder.add_reach(main, {64.0f, -0.035f, 0.15f, 0.75f}, error) &&
-           builder.add_reach(main, {128.0f, second_grade, 0.65f, 1.35f}, error) &&
-           builder.set_channel(main, {7.0f, 2.5f, 0.35f}, error) &&
-           builder.set_boulders(main, {0.08f, {0.5f, 2.0f}}, error) &&
-           builder.set_first_section(main, {100.0f, 4.0f}, error) &&
+    std::size_t upper = 0;
+    if (!builder.add_river("main", main, error) ||
+        !builder.set_inlet(main, {{0.0f, 18.0f, 0.0f}, 1.0f}, error))
+        return false;
+    return builder.set_curve(main,
+                             {{0.0f, 18.0f, 0.0f},
+                              {34.0f, 14.0f, 11.0f},
+                              {72.0f, 9.0f, -9.0f},
+                              {128.0f, 3.0f, 5.0f}}, error) &&
+           builder.set_channel_profile(main,
+                                       {{0.0f, 7.0f, 2.5f, 0.35f},
+                                        {64.0f, 5.25f, 2.2f, 0.10f},
+                                        {128.0f, 9.45f, terminal_depth, -0.20f}},
+                                       error) &&
+           builder.add_section(main, "upper", 0.0f, 100.0f, 4.0f,
+                               upper, error) &&
+           builder.set_section_pool(upper, {90.0f, 100.0f, 3.0f}, error) &&
+           builder.set_section_spillway(
+               upper, {"pool-one", 100.0f, 9.45f, 2.0f, 4.0f, 2.0f},
+               error) &&
+           builder.set_bake_sequential(error) &&
            builder.finish(out, error);
 }
 
@@ -63,6 +69,8 @@ enum class FluidVariation {
     BatchSteps,
     MaxSteps,
     MaxParticles,
+    EscapeAbsolute,
+    EscapeRatio,
     EmitterPosition,
     EmitterDirection,
     EmitterVelocity,
@@ -70,7 +78,7 @@ enum class FluidVariation {
     EmitterRadius,
     EmitterStart,
     EmitterStop,
-    DamDistance,
+    SpillwayDistance,
     DamHeight,
     DamThickness,
     SensorOffset,
@@ -101,12 +109,12 @@ bool build_authored_fluid_network(FluidVariation variation,
     std::size_t main = 0;
     if (!builder.add_river("main", main, error) ||
         !builder.set_inlet(main, {{0.0f, 18.0f, 0.0f}, 1.0f}, error) ||
-        !builder.set_spline(main, {{0.0f, 18.0f, 0.0f},
-                                   {128.0f, 3.0f, 5.0f}}, error) ||
-        !builder.add_reach(main, {128.0f, -0.012f, 0.65f}, error) ||
-        !builder.set_channel(main, {7.0f, 2.5f, 0.35f}, error) ||
-        !builder.set_boulders(main, {0.08f, {0.5f, 2.0f}}, error) ||
-        !builder.set_first_section(main, {100.0f, 4.0f}, error) ||
+        !builder.set_curve(main, {{0.0f, 18.0f, 0.0f},
+                                  {128.0f, 3.0f, 5.0f}}, error) ||
+        !builder.set_channel_profile(main,
+                                     {{0.0f, 7.0f, 2.5f, 0.35f},
+                                      {128.0f, 9.45f, 2.8f, -0.20f}},
+                                     error) ||
         !builder.set_backend(variation == FluidVariation::BackendDisabled
                                  ? HydrologyBackend::Disabled
                                  : HydrologyBackend::Physx,
@@ -129,6 +137,11 @@ bool build_authored_fluid_network(FluidVariation variation,
     limits.max_steps = variation == FluidVariation::MaxSteps ? 32768u : 65536u;
     limits.max_particles = variation == FluidVariation::MaxParticles
                                ? 999999u : 1000000u;
+    matter::HydrologyEscapePolicy escape_policy{};
+    escape_policy.absolute_count =
+        variation == FluidVariation::EscapeAbsolute ? 33u : 32u;
+    escape_policy.ratio =
+        variation == FluidVariation::EscapeRatio ? 0.0002f : 0.0001f;
 
     HydrologyQualitySettings quality{};
     quality.particle_radius_m = variation == FluidVariation::ParticleRadius
@@ -152,11 +165,13 @@ bool build_authored_fluid_network(FluidVariation variation,
 
     if (quality_before_pbd) {
         if (!builder.set_quality(quality, error) ||
+            !builder.set_escape_policy(escape_policy, error) ||
             !builder.set_limits(limits, error) ||
             !builder.set_pbd(pbd, error)) return false;
     } else {
         if (!builder.set_pbd(pbd, error) ||
             !builder.set_limits(limits, error) ||
+            !builder.set_escape_policy(escape_policy, error) ||
             !builder.set_quality(quality, error)) return false;
     }
 
@@ -188,7 +203,6 @@ bool build_authored_fluid_network(FluidVariation variation,
     if (!builder.add_emitter(tributary, error)) return false;
 
     HydrologyVirtualDam dam{};
-    dam.distance_m = variation == FluidVariation::DamDistance ? 101.0f : 100.0f;
     dam.height_m = variation == FluidVariation::DamHeight ? 8.5f : 8.0f;
     dam.thickness_m = variation == FluidVariation::DamThickness ? 0.6f : 0.5f;
     if (!builder.set_virtual_dam(dam, error)) return false;
@@ -206,39 +220,58 @@ bool build_authored_fluid_network(FluidVariation variation,
         variation == FluidVariation::SensorStableSteps ? 33u : 32u;
     sensor.minimum_particles_per_cell =
         variation == FluidVariation::SensorMinimumParticles ? 2u : 1u;
-    return builder.set_fill_sensor(sensor, error) && builder.finish(out, error);
+    const float spillway_distance =
+        variation == FluidVariation::SpillwayDistance ? 101.0f : 100.0f;
+    std::size_t upper = 0;
+    return builder.set_fill_sensor(sensor, error) &&
+           builder.add_section(main, "upper", 0.0f, spillway_distance,
+                               4.0f, upper, error) &&
+           builder.set_section_emitters(
+               upper, {"main-inlet", "future-tributary"}, error) &&
+           builder.set_section_pool(
+               upper, {90.0f, spillway_distance, 3.0f}, error) &&
+           builder.set_section_spillway(
+               upper, {"pool-one", spillway_distance, 9.45f, 2.0f,
+                       4.0f, 2.0f}, error) &&
+           builder.set_bake_sequential(error) &&
+           builder.finish(out, error);
 }
 
 void test_records_in_insertion_order_and_keys_every_field() {
     RiverNetworkDefinition first;
     RiverNetworkDefinition same;
-    RiverNetworkDefinition changed_grade;
+    RiverNetworkDefinition changed_profile;
     std::string error;
-    CHECK(build_valid_network(-0.012f, first, error), error.c_str());
+    CHECK(build_valid_network(2.8f, first, error), error.c_str());
     error.clear();
-    CHECK(build_valid_network(-0.012f, same, error), error.c_str());
+    CHECK(build_valid_network(2.8f, same, error), error.c_str());
     error.clear();
-    CHECK(build_valid_network(-0.013f, changed_grade, error), error.c_str());
+    CHECK(build_valid_network(2.9f, changed_profile, error), error.c_str());
 
     CHECK(first.rivers.size() == 1u && first.rivers[0].name == "main",
           "the canonical builder retains named rivers in declaration order");
-    CHECK(first.rivers[0].reaches.size() == 2u &&
-              first.rivers[0].reaches[0].until_m == 64.0f &&
-              first.rivers[0].reaches[1].meander == 0.65f &&
-              first.rivers[0].reaches[0].width_scale == 0.75f &&
-              first.rivers[0].reaches[1].width_scale == 1.35f,
-          "reach declarations retain their authored order and values");
-    CHECK(first.first_section_river == "main" &&
-              first.first_section.minimum_length_m == 100.0f,
-          "the first-section request names its river and keeps its minimum length");
+    CHECK(first.rivers[0].curve.size() == 4u &&
+              first.rivers[0].curve[1].x == 34.0f &&
+              first.rivers[0].curve[1].y == 14.0f &&
+              first.rivers[0].curve[1].z == 11.0f &&
+              first.rivers[0].channel_profile.size() == 3u &&
+              first.rivers[0].channel_profile[1].width_m == 5.25f &&
+              first.rivers[0].channel_profile[2].asymmetry == -0.20f,
+          "completed curve and channel profile retain authored order and values");
+    CHECK(first.sections.size() == 1u &&
+              first.sections[0].river == "main" &&
+              first.sections[0].to_m == 100.0f && first.bake_sequential,
+          "the section request names its river and keeps its physical range");
     CHECK(first.canonical_text == same.canonical_text &&
               first.canonical_hash == same.canonical_hash,
           "identical declarations produce identical canonical bytes and keys");
     CHECK(first.canonical_hash == expected_fnv1a64(first.canonical_text),
           "the canonical key is FNV-1a-64 over the preserved canonical bytes");
-    CHECK(first.canonical_text != changed_grade.canonical_text &&
-              first.canonical_hash != changed_grade.canonical_hash,
-          "base grade participates in canonical serialization and keying");
+    CHECK(first.canonical_text != changed_profile.canonical_text &&
+              first.canonical_hash != changed_profile.canonical_hash,
+          "every channel profile value participates in canonical serialization and keying");
+    CHECK(first.canonical_text.find("boulders=") == std::string::npos,
+          "native boulder generation is absent from the canonical contract");
 }
 
 void test_rejects_duplicate_names_and_invalid_declarations() {
@@ -267,31 +300,32 @@ void test_rejects_duplicate_names_and_invalid_declarations() {
         std::size_t main = 0;
         std::string error;
         CHECK(builder.add_river("main", main, error), error.c_str());
-        CHECK(!builder.set_spline(main, {{0.0f, 0.0f, 0.0f}}, error) &&
-                  error.find("hydrology.main.spline") != std::string::npos,
-              "a spline shorter than two points is rejected");
+        CHECK(!builder.set_curve(main, {{0.0f, 0.0f, 0.0f}}, error) &&
+                  error.find("hydrology.main.curve") != std::string::npos,
+              "a curve shorter than two points is rejected");
     }
     {
         RiverNetworkBuilder builder(0.5f, 1u);
         std::size_t main = 0;
         std::string error;
         CHECK(builder.add_river("main", main, error), error.c_str());
-        CHECK(builder.add_reach(main, {64.0f, -0.02f, 0.2f}, error),
-              error.c_str());
-        CHECK(!builder.add_reach(main, {32.0f, -0.01f, 0.3f}, error) &&
-                  error.find("hydrology.main.reach[1].until") !=
+        CHECK(!builder.set_channel_profile(
+                  main, {{64.0f, 7.0f, 2.0f, 0.0f},
+                         {32.0f, 8.0f, 2.0f, 0.0f}}, error) &&
+                  error.find("hydrology.main.channelProfile[1].at") !=
                       std::string::npos,
-              "decreasing reach boundaries are rejected at the second boundary");
+              "decreasing profile distances are rejected at the second point");
     }
     {
         RiverNetworkBuilder builder(0.5f, 1u);
         std::size_t main = 0;
         std::string error;
         CHECK(builder.add_river("main", main, error), error.c_str());
-        CHECK(!builder.add_reach(main, {64.0f, -0.02f, 0.2f, 0.0f}, error) &&
-                  error.find("hydrology.main.reach[0].widthScale") !=
+        CHECK(!builder.set_channel_profile(
+                  main, {{0.0f, 0.0f, 2.0f, 0.0f}}, error) &&
+                  error.find("hydrology.main.channelProfile[0].width") !=
                       std::string::npos,
-              "nonpositive width scales are rejected at the authored reach");
+              "nonpositive widths are rejected at the authored profile point");
     }
     {
         RiverNetworkBuilder builder(0.5f, 1u);
@@ -312,16 +346,22 @@ void test_finish_is_single_use() {
     CHECK(builder.add_river("main", main, error), error.c_str());
     CHECK(builder.set_inlet(main, {{0.0f, 18.0f, 0.0f}, 1.0f}, error),
           error.c_str());
-    CHECK(builder.set_spline(main, {{0.0f, 18.0f, 0.0f},
-                                    {128.0f, 3.0f, 5.0f}}, error),
+    CHECK(builder.set_curve(main, {{0.0f, 18.0f, 0.0f},
+                                   {128.0f, 3.0f, 5.0f}}, error),
           error.c_str());
-    CHECK(builder.add_reach(main, {128.0f, -0.012f, 0.65f}, error),
+    CHECK(builder.set_channel_profile(
+              main, {{0.0f, 7.0f, 2.5f, 0.35f},
+                     {128.0f, 9.45f, 2.8f, -0.20f}}, error),
           error.c_str());
-    CHECK(builder.set_channel(main, {7.0f, 2.5f, 0.35f}, error),
+    std::size_t upper = 0;
+    CHECK(builder.add_section(main, "upper", 0.0f, 100.0f, 4.0f,
+                              upper, error), error.c_str());
+    CHECK(builder.set_section_pool(upper, {90.0f, 100.0f, 3.0f}, error),
           error.c_str());
-    CHECK(builder.set_boulders(main, {0.08f, {0.5f, 2.0f}}, error),
-          error.c_str());
-    CHECK(builder.set_first_section(main, {100.0f, 4.0f}, error), error.c_str());
+    CHECK(builder.set_section_spillway(
+              upper, {"pool-one", 100.0f, 9.45f, 2.0f, 4.0f, 2.0f},
+              error), error.c_str());
+    CHECK(builder.set_bake_sequential(error), error.c_str());
     CHECK(builder.finish(first, error), error.c_str());
     RiverNetworkDefinition repeated;
     error.clear();
@@ -333,7 +373,7 @@ void test_finish_is_single_use() {
 void test_authored_fluid_defaults_are_dry_and_hermetic() {
     RiverNetworkDefinition network;
     std::string error;
-    CHECK(build_valid_network(-0.012f, network, error), error.c_str());
+    CHECK(build_valid_network(2.8f, network, error), error.c_str());
     CHECK(network.fluid.backend == HydrologyBackend::Disabled,
           "a river network stays dry until the imperative DSL requests a backend");
     CHECK(network.fluid.pbd.particle_spacing_m == 0.20f &&
@@ -349,7 +389,7 @@ void test_authored_fluid_defaults_are_dry_and_hermetic() {
 #endif
     RiverNetworkDefinition with_environment;
     error.clear();
-    CHECK(build_valid_network(-0.012f, with_environment, error), error.c_str());
+    CHECK(build_valid_network(2.8f, with_environment, error), error.c_str());
     CHECK(with_environment.canonical_text == network.canonical_text &&
               with_environment.canonical_hash == network.canonical_hash,
           "environment variables cannot request or tune an authored fluid bake");

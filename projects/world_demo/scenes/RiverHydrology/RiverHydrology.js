@@ -1,101 +1,233 @@
-// One authored upstream section. Fluid baking is explicit and defaults off in
-// every other river world; these values are part of this scene's strict key.
+import { riverCurve, sampleRiverCurve } from 'shared-lib/river_curve';
+
+const BOULDER_SPECS = [
+  { id: "rock-01", at: 24, lateral: -3.0, size: 2.7, seed: 41 },
+  { id: "rock-02", at: 47, lateral:  4.5, size: 4.0, seed: 42 },
+  { id: "rock-03", at: 73, lateral: -5.0, size: 3.1, seed: 43 },
+  { id: "rock-04", at: 92, lateral:  2.0, size: 3.5, seed: 44 },
+];
+
+function channelProfileAt(profile, distance) {
+  if (distance <= profile[0].at) return profile[0];
+  for (let i = 1; i < profile.length; ++i) {
+    const previous = profile[i - 1];
+    const next = profile[i];
+    if (distance <= next.at) {
+      const t = (distance - previous.at) / (next.at - previous.at);
+      return {
+        width: previous.width + (next.width - previous.width) * t,
+        depth: previous.depth + (next.depth - previous.depth) * t,
+        asymmetry: previous.asymmetry +
+          (next.asymmetry - previous.asymmetry) * t,
+      };
+    }
+  }
+  return profile[profile.length - 1];
+}
+
+function roundedV(t) {
+  const clamped = Math.min(1, Math.max(0, t));
+  const roundness = 0.08;
+  const denominator = Math.sqrt(1 + roundness * roundness) - roundness;
+  return (Math.sqrt(clamped * clamped + roundness * roundness) - roundness) /
+    denominator;
+}
+
+function roundedVSlope(t) {
+  const clamped = Math.min(1, Math.max(0, t));
+  const roundness = 0.08;
+  const denominator = Math.sqrt(1 + roundness * roundness) - roundness;
+  return clamped /
+    (Math.sqrt(clamped * clamped + roundness * roundness) * denominator);
+}
+
+function boulderRoot(spec, curve, channelProfile) {
+  const sample = sampleRiverCurve(curve, spec.at);
+  const channel = channelProfileAt(channelProfile, spec.at);
+  const halfWidth = channel.width * 0.5;
+  const lateralFraction = Math.abs(spec.lateral) / halfWidth;
+  const signedAsymmetry = spec.lateral >= 0 ?
+    channel.asymmetry : -channel.asymmetry;
+  const bankRise = channel.depth * (1 + 0.85 * signedAsymmetry);
+  const terrainY = sample.position[1] + bankRise * roundedV(lateralFraction);
+  const x = sample.position[0] + sample.lateral[0] * spec.lateral;
+  // Rock's generated body extends about 0.18 * size below its local origin.
+  // Sink it slightly into the rounded-V bank so the rendered mesh feels seated.
+  const y = terrainY + spec.size * 0.15;
+  const z = sample.position[2] + sample.lateral[2] * spec.lateral;
+  const yaw = Math.atan2(sample.tangent[2], sample.tangent[0]);
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  const colliderRadius = spec.size * 0.45;
+  const lateralSlope = bankRise * roundedVSlope(lateralFraction) / halfWidth;
+  const horizontalTangent = Math.hypot(sample.tangent[0], sample.tangent[2]);
+  const longitudinalSlope = sample.tangent[1] / horizontalTangent;
+  // Lift the sphere along Y far enough to clear the local sloped terrain
+  // plane. The final 0.25 m leaves more than one particle radius between the
+  // independent terrain and boulder meshes, preventing a PhysX contact seam.
+  const colliderWorldLift = colliderRadius * Math.sqrt(
+    1 + lateralSlope * lateralSlope + longitudinalSlope * longitudinalSlope) +
+    0.25;
+  const colliderLocalY = colliderWorldLift - spec.size * 0.15;
+  return {
+    id: spec.id,
+    module: "Rock",
+    params: { seed: spec.seed, size: spec.size, detail: 1.0 },
+    transform: Object.freeze([
+      c, 0, -s, x,
+      0, 1, 0, y,
+      s, 0, c, z,
+      0, 0, 0, 1,
+    ]),
+    fluidCollider: Object.freeze({
+      shape: "sphere",
+      radius: colliderRadius,
+      center: Object.freeze([0, colliderLocalY, 0]),
+    }),
+  };
+}
+
+// Pure scene construction keeps the build-phase DSL deterministic and lets
+// the acceptance contract inspect exact curve-derived feature distances.
+export function buildRiverHydrologyDefinition(worldSeed) {
+  const path = riverCurve([0, 72, 0], { maxSegmentLength: 0.5 });
+  path.cubicTo([32, 67, 18], [70, 61, -22], [106, 56, 8]);
+  const waterfallLip = path.distance();
+  path.lineTo([111, 44, 5]);
+  const waterfallLanding = path.distance();
+  path.cubicTo([121, 44, 2], [136, 44, -3], [148, 44, 0]);
+  const firstSpillway = path.distance();
+  path.cubicTo([184, 38, -24], [222, 31, 28], [258, 24, 4]);
+  const secondPoolApproach = path.distance();
+  // Continue the preceding cubic's terminal derivative at one-third scale so
+  // the fast reach eases into the pool without an accidental high-curvature
+  // kink at secondPoolApproach.
+  path.cubicTo([270, 21.666667, -4], [282, 22, -2], [294, 22, 0]);
+  const secondSpillway = path.distance();
+  const mainCurve = path.build();
+
+  const boulderSpecs = BOULDER_SPECS.concat([
+    { id: "rock-05", at: waterfallLanding + 8, lateral: -4.0, size: 4.2, seed: 45 },
+    { id: "rock-06", at: firstSpillway + 18, lateral:  3.0, size: 2.9, seed: 46 },
+    { id: "rock-07", at: firstSpillway + 37, lateral: -5.5, size: 3.4, seed: 47 },
+    { id: "rock-08", at: firstSpillway + 55, lateral:  6.0, size: 2.6, seed: 48 },
+    { id: "rock-09", at: firstSpillway + 74, lateral: -2.0, size: 4.1, seed: 49 },
+    { id: "rock-10", at: firstSpillway + 91, lateral:  4.0, size: 3.0, seed: 50 },
+    { id: "rock-11", at: secondSpillway - 31, lateral: -6.0, size: 3.7, seed: 51 },
+    { id: "rock-12", at: secondSpillway - 14, lateral:  2.5, size: 2.8, seed: 52 },
+  ]);
+
+  const channelProfile = [
+    { at: 0, width: 14, depth: 8.0, asymmetry: 0.18 },
+    { at: waterfallLip - 34, width: 24, depth: 8.5, asymmetry: -0.14 },
+    { at: waterfallLip, width: 18, depth: 7.5, asymmetry: 0.10 },
+    { at: waterfallLanding, width: 26, depth: 8.0, asymmetry: -0.08 },
+    { at: waterfallLanding + 12, width: 34, depth: 8.0, asymmetry: 0.05 },
+    { at: firstSpillway - 12, width: 34, depth: 8.0, asymmetry: 0.05 },
+    { at: firstSpillway, width: 10, depth: 6.0, asymmetry: 0.0 },
+    { at: firstSpillway + 12, width: 16, depth: 7.5, asymmetry: -0.16 },
+    { at: firstSpillway + 42, width: 22, depth: 8.0, asymmetry: 0.20 },
+    { at: firstSpillway + 78, width: 28, depth: 8.5, asymmetry: -0.18 },
+    { at: secondPoolApproach, width: 20, depth: 7.5, asymmetry: 0.12 },
+    { at: secondSpillway - 24, width: 38, depth: 8.0, asymmetry: 0.0 },
+    { at: secondSpillway, width: 10, depth: 6.0, asymmetry: 0.0 },
+  ];
+
+  return Object.freeze({
+    worldSeed,
+    curve: mainCurve,
+    channelProfile,
+    sections: Object.freeze([
+      Object.freeze({ id: "upper", from: 0, to: firstSpillway,
+                      length: firstSpillway }),
+      Object.freeze({ id: "lower", from: firstSpillway, to: secondSpillway,
+                      length: secondSpillway - firstSpillway }),
+    ]),
+    waterfall: Object.freeze({
+      lipAt: waterfallLip,
+      landingAt: waterfallLanding,
+      drop: 12,
+    }),
+    firstPool: Object.freeze({
+      from: waterfallLanding, to: firstSpillway, fillLevel: 50,
+    }),
+    secondPool: Object.freeze({
+      from: secondSpillway - 22, to: secondSpillway, fillLevel: 28,
+    }),
+    spillway: Object.freeze({
+      id: "pool-one", at: firstSpillway, width: 10,
+      effectiveDepth: 6, overlap: 5, damOffset: 4,
+    }),
+    finalSpillway: Object.freeze({
+      id: "pool-two", at: secondSpillway, width: 10,
+      effectiveDepth: 6, overlap: 5, damOffset: 4,
+    }),
+    roots: Object.freeze(boulderSpecs.map(spec =>
+      Object.freeze(boulderRoot(spec, mainCurve, channelProfile)))),
+  });
+}
+
 class RiverHydrology extends World {
-  static world = { sectorSize: 64, yMin: -32, yMax: 112 };
-  static camera = { position: [10, 86, 76], target: [76, 28, 0] };
+  static world = { sectorSize: 64, yMin: -48, yMax: 144 };
+  static camera = { position: [142, 138, 190], target: [150, 29, 0] };
   static volumetrics = { enabled: false };
   static streaming = {
     nestedSectors: true, volumetricSectors: true,
     terrainBands: [
-      { radius: 96, lod: 5 }, { radius: 192, lod: 4 },
-      { radius: 384, lod: 3 }, { radius: 640, lod: 2 },
+      { radius: 128, lod: 5 }, { radius: 256, lod: 4 },
+      { radius: 448, lod: 3 }, { radius: 704, lod: 2 },
     ],
   };
+  static roots = buildRiverHydrologyDefinition(0).roots;
 
-  // Visual-spike boulders. Their transforms are the deterministic output of
-  // Box3D dropping box colliders onto a 0.5 m heightfield sampled from this
-  // rounded-V ravine (pose hash 12269188910788852377). They are frozen roots
-  // after the settle; the future fluid bake consumes the same static shapes.
-  static roots = [
-    { module: "Rock", params: { seed: 41, size: 2.670, detail: 1.0 },
-      transform: [0.7550433,-0.1629142,0.6351131,7.361481, 0.0346428,0.9771993,0.2094789,30.02128, -0.6547592,-0.1361635,0.7434715,6.764603, 0,0,0,1] },
-    { module: "Rock", params: { seed: 42, size: 3.951, detail: 1.0 },
-      transform: [0.2879658,0.3068895,0.9071354,19.29967, 0.684561,0.5964394,-0.4190898,28.0458, -0.6696656,0.741673,-0.03833044,12.83865, 0,0,0,1] },
-    { module: "Rock", params: { seed: 43, size: 3.046, detail: 1.0 },
-      transform: [-0.5098388,-0.1447511,0.8480045,26.87498, -0.01338275,0.9869575,0.1604239,27.63829, -0.8601658,0.07044168,-0.5051264,13.12453, 0,0,0,1] },
-    { module: "Rock", params: { seed: 44, size: 3.468, detail: 1.0 },
-      transform: [-0.9171859,0.05120316,0.395157,38.87733, 0.3857588,0.3625024,0.8483999,26.66475, -0.09980465,0.9305753,-0.3522344,13.67122, 0,0,0,1] },
-    { module: "Rock", params: { seed: 45, size: 3.393, detail: 1.0 },
-      transform: [0.5283359,-0.8385499,0.1330239,50.38034, -0.04915017,0.1262063,0.9907857,23.39183, -0.8476117,-0.5300058,0.02546442,3.928261, 0,0,0,1] },
-    { module: "Rock", params: { seed: 47, size: 2.830, detail: 1.0 },
-      transform: [0.250814,-0.0410415,-0.9671649,55.28326, 0.006033782,0.9991477,-0.04083395,26.2485, 0.9680165,0.004406063,0.2508479,-3.829102, 0,0,0,1] },
-    { module: "Rock", params: { seed: 49, size: 3.125, detail: 1.0 },
-      transform: [-0.4137534,-0.281293,-0.8658422,67.72156, 0.6066865,-0.7943027,-0.03186113,22.751, -0.6787784,-0.5384773,0.4993018,-13.82998, 0,0,0,1] },
-    { module: "Rock", params: { seed: 50, size: 1.840, detail: 1.0 },
-      transform: [-0.4246843,-0.06700588,0.9028586,76.64369, -0.002730414,-0.9971582,-0.07528867,24.80307, 0.9053376,-0.03443908,0.4232942,-7.947372, 0,0,0,1] },
-    { module: "Rock", params: { seed: 51, size: 2.621, detail: 1.0 },
-      transform: [0.09803504,-0.01519009,0.9950671,98.76965, 0.9696603,0.2264539,-0.09207514,23.61595, -0.2239383,0.9739035,0.03692955,-5.463898, 0,0,0,1] },
-    { module: "Rock", params: { seed: 52, size: 4.233, detail: 1.0 },
-      transform: [0.3939269,0.7535845,0.5262433,116.158, 0.7381748,0.08174998,-0.669638,22.44537, -0.5476493,0.652248,-0.5240736,0.7588348, 0,0,0,1] },
-  ];
   hydrology() {
+    const authored = buildRiverHydrologyDefinition(this.worldSeed);
+    const fixedStep = 1 / 120;
+    const maxSteps = 8192;
     const network = riverNetwork({
       cellSize: 0.5,
       seed: this.worldSeed ^ 0x52495645,
     });
-
     const main = network.river("main")
-      .inlet([0, 42, 0], { flow: 1.0 })
-      .spline([
-        [0, 42, 0],
-        [38, 35.5, 16],
-        [82, 29.8, -16],
-        [142, 19.5, 6],
-      ])
-      .reach({ until: 48, baseGrade: -0.17, meander: 0.25, widthScale: 0.78 })
-      .reach({ until: 108, baseGrade: -0.115, meander: 0.65, widthScale: 1.30 })
-      .reach({ until: 165, baseGrade: -0.17, meander: 0.28, widthScale: 0.92 })
-      .channel({ width: 14, depth: 7.0, asymmetry: 0.18 })
-      .boulders({ density: 0.0, radius: [0.9, 2.4] });
+      .inlet(authored.curve[0], { flow: 600.0 })
+      .curve(authored.curve)
+      .channelProfile(authored.channelProfile);
 
     network.backend("physx");
     network.pbd({
       particleSpacing: 0.20,
       restDensity: 1000,
-      fixedStep: 1 / 120,
+      fixedStep,
       iterations: 4,
       maxNeighbors: 96,
     });
-    network.limits({
-      batchSteps: 256,
-      maxSteps: 65536,
-      maxParticles: 1000000,
-    });
+    network.limits({ batchSteps: 256, maxSteps, maxParticles: 4000000 });
+    network.escapePolicy({ absoluteCount: 32, ratio: 0.0001 });
     network.emitter({
       id: "upstream-inlet",
-      position: [0, 42, 0],
-      direction: [1, -0.17, 0],
-      initialVelocity: [1.0, -0.17, 0],
-      flow: 1.0,
-      radius: 2.0,
+      position: [0, 84, 0],
+      direction: [0.86, -0.14, 0.49],
+      initialVelocity: [1.72, -0.28, 0.98],
+      flow: 600.0,
+      radius: 4.472136,
       startTime: 0,
-      stopTime: 64,
+      stopTime: maxSteps * fixedStep,
     });
-    network.virtualDam({ distance: 100, height: 8, thickness: 0.5 });
+    network.virtualDam({ height: 8, thickness: 0.5 });
     network.fillSensor({
       upstreamOffset: 2,
-      length: 1,
+      length: 8,
       height: 6,
-      resolution: [24, 1, 12],
+      resolution: [6, 1, 3],
       crestWetFraction: 0.80,
       stableWetSteps: 32,
       minimumParticlesPerCell: 1,
     });
     network.quality({
       particleRadius: 0.13,
-      visualVoxel: 0.10,
-      visualBlendWidth: 0.05,
-      coarseVoxel: 0.40,
+      visualVoxel: 0.15,
+      visualBlendWidth: 0.10,
+      coarseVoxel: 0.65,
       gameplayCell: 0.50,
       maxVisualParticles: 1000000,
       maxGridVertices: 4194304,
@@ -103,25 +235,42 @@ class RiverHydrology extends World {
       maxMeshIndices: 12582912,
     });
 
-    network.firstSection(main, {
-      minimumLength: 100,
-      dryMargin: 5,
-    });
+    main.section("upper", {
+      from: authored.sections[0].from,
+      to: authored.sections[0].to,
+      dryMargin: 15,
+    })
+      .emitters(["upstream-inlet"])
+      .waterfall({
+        lipAt: authored.waterfall.lipAt,
+        landingAt: authored.waterfall.landingAt,
+        expectedDrop: authored.waterfall.drop,
+      })
+      .pool(authored.firstPool)
+      .spillway(authored.spillway);
+    main.section("lower", {
+      from: authored.sections[1].from,
+      to: authored.sections[1].to,
+      dryMargin: 15,
+    })
+      .after("upper")
+      .fromSpillway("upper")
+      .pool(authored.secondPool)
+      .spillway(authored.finalSpillway);
+    network.bakeSequential();
     network.build();
   }
 
   field(p) {
-    // A compact alpine field: the whole landscape follows the river's 15%
-    // downstream plane while warped ridges and coarse/fine relief make it read
-    // like the mountain world rather than a procedural slab. The river overlay
-    // subtracts its rounded-V corridor from this surface afterward.
-    const grade = worldX().mul(-0.15).add(48.0);
-    const broad = noise2(p.worldSeed ^ 0x31, 1 / 190, 4).mul(18.0);
+    // A 15% descending mountain field gives the channel sustained energy while
+    // broad ridges remain high enough that the ravine, not bake bounds, contains
+    // the river. The rounded-V river overlay is applied after this base field.
+    const grade = worldX().mul(-0.15).add(78.0);
+    const broad = noise2(p.worldSeed ^ 0x31, 1 / 190, 4).mul(22.0);
     const ridges = ridge2(p.worldSeed ^ 0x51, 1 / 80, 3, 0.52, 2.0)
-      .add(1).mul(0.5).pow(1.75).mul(20.0);
-    const height = grade.add(broad).add(ridges);
+      .add(1).mul(0.5).pow(1.75).mul(30.0);
     return {
-      density: heightToDensity(height),
+      density: heightToDensity(grade.add(broad).add(ridges)),
       moisture: noise2(p.worldSeed ^ 0x91, 1 / 90, 2),
       relief: noise2(p.worldSeed ^ 0x92, 1 / 120, 2),
       seaLevel: -100.0,
@@ -129,6 +278,9 @@ class RiverHydrology extends World {
   }
 
   biomes() {
-    return { __terrain: { material: "dirt" }, foothills: {}, meadow: {}, mountains: {}, ocean: {} };
+    return {
+      __terrain: { material: "dirt" },
+      foothills: {}, meadow: {}, mountains: {}, ocean: {},
+    };
   }
 }

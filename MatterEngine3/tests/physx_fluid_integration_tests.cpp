@@ -1,7 +1,13 @@
 #include "check.h"
 
+#include "hydrology/authored_fluid_request.h"
+#include "hydrology/hydrology_handoff_products.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/physx_runtime.h"
+#include "hydrology/water_visual_products.h"
+#include "provider/local_provider.h"
+#include "script/world_definition_loader.h"
+#include "terrain_river_overlay.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -15,7 +21,12 @@
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#define CloseWindow CloseWindowWin32
+#define ShowCursor ShowCursorWin32
 #include <windows.h>
+#undef ShowCursor
+#undef CloseWindow
 #endif
 
 namespace {
@@ -148,17 +159,25 @@ bool finite(matter::Float3 value) {
 hydrology::FluidBakeInput pbd_basin_input() {
     hydrology::FluidBakeInput input{};
     input.network.cell_size_m = 1.0f;
-    input.network.first_section_river = "main";
     matter::RiverDefinition river{};
     river.name = "main";
     river.inlet = {{0.0f, 1.5f, 0.0f}, 1.0f};
-    river.spline = {{0.0f, 1.5f, -0.5f}, {0.0f, 0.5f, 1.0f}};
+    river.curve = {{0.0f, 1.5f, -0.5f}, {0.0f, 0.5f, 1.0f}};
+    river.channel_profile = {{0.0f, 4.0f, 2.0f, 0.0f},
+                             {2.0f, 4.0f, 2.0f, 0.0f}};
     input.network.rivers.push_back(river);
+    matter::RiverSectionDefinition section{};
+    section.id = "basin";
+    section.river = "main";
+    section.to_m = 2.0f;
+    section.dry_margin_m = 1.0f;
+    input.network.sections.push_back(section);
+    input.network.bake_sequential = true;
     input.geometry.centreline = {
         {{0.0f, 1.5f, -0.5f}, {0.0f, -0.5f, 1.0f},
-         {-1.0f, 0.0f, 0.0f}, 0.0f, 0.1f, 0.0f, 1.0f},
+         {-1.0f, 0.0f, 0.0f}, 0.0f, 4.0f, 2.0f, 0.0f},
         {{0.0f, 0.5f, 1.0f}, {0.0f, -0.5f, 1.0f},
-         {-1.0f, 0.0f, 0.0f}, 2.0f, 0.1f, 0.0f, 1.0f},
+         {-1.0f, 0.0f, 0.0f}, 2.0f, 4.0f, 2.0f, 0.0f},
     };
     input.geometry.bounds_m = {{-2.0f, 0.0f, -2.0f},
                                {2.0f, 4.0f, 2.0f}};
@@ -169,13 +188,16 @@ hydrology::FluidBakeInput pbd_basin_input() {
     const float particle_volume =
         1.333f * 3.14159f * 0.2f * 0.2f * 0.2f;
     input.emitters = {
-        {7u, {0.0f, 1.5f, 0.0f}, {0.0f, 0.0f, 1.0f},
+        {7u, hydrology::FluidEmitterShape::Disc,
+         {0.0f, 1.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {}, {},
          {0.0f, 0.0f, 0.25f}, particle_volume * 60.0f,
-         0.35f, 0u, 24u},
+         0.35f, {}, 0u, 24u},
     };
     input.sensor = {{{-0.75f, 0.0f, -0.75f},
                      {0.75f, 3.0f, 0.75f}},
                     {1u, 1u, 1u}, 1.0f, 2u, 1u};
+    input.sensor.frame_origin_m = input.sensor.bounds_m.minimum;
+    input.sensor.frame_extent_m = {1.5f, 3.0f, 1.5f};
     input.dry_collar_bounds_m = {{-3.0f, -1.0f, -3.0f},
                                  {3.0f, 5.0f, 3.0f}};
     return input;
@@ -288,12 +310,39 @@ void test_pbd_batch_loop_uses_gpu_sensor_and_returns_one_snapshot() {
           "sensor counts return to the host once after the fixed-step batch");
 }
 
+void test_pbd_ribbon_emitter_activates_a_broad_grid() {
+    auto input = pbd_basin_input();
+    auto& emitter = input.emitters.front();
+    emitter.shape = hydrology::FluidEmitterShape::Ribbon;
+    emitter.lateral_axis = {1.0f, 0.0f, 0.0f};
+    emitter.up_axis = {0.0f, 1.0f, 0.0f};
+    emitter.radius_m = 0.0f;
+    emitter.half_extent_m = {0.4f, 0.2f};
+    hydrology::PhysxRuntime runtime;
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::PhysxFluidBake::run(
+              input, runtime, {}, output, error),
+          error.message.c_str());
+    float minimum_x = std::numeric_limits<float>::infinity();
+    float maximum_x = -std::numeric_limits<float>::infinity();
+    for (const auto& particle : output.particles) {
+        minimum_x = std::min(minimum_x, particle.position_m.x);
+        maximum_x = std::max(maximum_x, particle.position_m.x);
+    }
+    CHECK(output.sensor.complete && output.particles.size() == 4u &&
+              maximum_x - minimum_x > 0.15f,
+          "real PhysX activation preserves the ribbon's broad cross-stream layout");
+}
+
 void test_pbd_particles_reach_and_rest_on_authored_collision() {
     auto input = pbd_basin_input();
     input.settings.max_steps = 120u;
     input.emitters[0].stop_step = 4u;
     input.sensor.bounds_m = {{-1.0f, 0.0f, -1.0f},
                              {1.0f, 0.6f, 1.0f}};
+    input.sensor.frame_origin_m = input.sensor.bounds_m.minimum;
+    input.sensor.frame_extent_m = {2.0f, 0.6f, 2.0f};
     input.sensor.stable_steps = 3u;
     input.dry_collar_bounds_m.minimum.y = -0.5f;
 
@@ -312,9 +361,48 @@ void test_pbd_particles_reach_and_rest_on_authored_collision() {
           "PBD particles reach the lower sensor and remain above the authored basin floor");
 }
 
+void test_native_quarantine_excludes_escaped_ids_from_sensor_and_snapshot() {
+    auto input = pbd_basin_input();
+    input.dry_collar_bounds_m.minimum.x = -0.15f;
+    input.dry_collar_bounds_m.maximum.x = 0.15f;
+
+    hydrology::PhysxRuntime runtime;
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::PhysxFluidBake::run(
+              input, runtime, {}, output, error),
+          error.message.c_str());
+    bool quarantined_id_leaked = false;
+    for (const auto& particle : output.particles) {
+        for (const auto& quarantined : output.quarantined_particles)
+            quarantined_id_leaked = quarantined_id_leaked ||
+                                    particle.id == quarantined.id;
+    }
+    bool accepted_inside = true;
+    for (const auto& particle : output.particles) {
+        accepted_inside = accepted_inside &&
+            particle.position_m.x >= input.dry_collar_bounds_m.minimum.x &&
+            particle.position_m.x <= input.dry_collar_bounds_m.maximum.x;
+    }
+    CHECK(output.sensor.complete && output.stats.emitted_particles == 4u &&
+              output.stats.escaped_particles >= 1u &&
+              output.stats.escaped_particles <= output.stats.escape_budget &&
+              output.stats.active_particles == output.particles.size() &&
+              output.stats.active_particles + output.stats.retired_particles ==
+                  output.stats.emitted_particles &&
+              output.stats.escaped_particles <=
+                  output.stats.retired_particles &&
+              output.quarantined_particles.size() ==
+                  output.stats.escaped_particles &&
+              !quarantined_id_leaked && accepted_inside,
+          "native GPU quarantine permanently excludes escaped stable ids from sensor completion and final particles");
+}
+
 void test_pbd_cancellation_is_sampled_between_batches() {
     auto input = pbd_basin_input();
     input.sensor.bounds_m = {{1.0f, 0.0f, 1.0f}, {1.5f, 1.0f, 1.5f}};
+    input.sensor.frame_origin_m = input.sensor.bounds_m.minimum;
+    input.sensor.frame_extent_m = {0.5f, 1.0f, 0.5f};
     std::uint32_t progress_calls = 0u;
     hydrology::FluidBakeCallbacks callbacks{};
     callbacks.progress = [&](const hydrology::FluidBakeProgress&) {
@@ -336,6 +424,8 @@ void test_pbd_capacity_fails_before_a_second_particle_write() {
     auto input = pbd_basin_input();
     input.settings.max_particles = 1u;
     input.sensor.bounds_m = {{1.0f, 0.0f, 1.0f}, {1.5f, 1.0f, 1.5f}};
+    input.sensor.frame_origin_m = input.sensor.bounds_m.minimum;
+    input.sensor.frame_extent_m = {0.5f, 1.0f, 0.5f};
     hydrology::PhysxRuntime runtime;
     hydrology::FluidBakeOutput output{};
     hydrology::FluidBakeError error{};
@@ -483,6 +573,238 @@ void test_short_matter_chute_moves_probes_downhill_without_domain_walls() {
           "short varying-width Matter chute moves finite probes downhill to its authored dam");
 }
 
+void test_checked_in_ravine_collision_covers_the_validation_collar() {
+    namespace fs = std::filesystem;
+    const fs::path project = fs::path("../../projects/world_demo");
+    matter::WorldLoadDesc load{};
+    load.world_path =
+        (project / "scenes/RiverHydrology/RiverHydrology.js").string();
+    load.objects_dir = (project / "objects").string();
+    load.project_shared_lib_dir = (project / "shared-lib").string();
+    load.engine_shared_lib_dir = "../shared-lib";
+    matter::WorldDefinition definition{};
+    matter::WorldLoadError load_error{};
+    CHECK(matter::load_world_definition(load, definition, load_error),
+          load_error.message.c_str());
+    CHECK(definition.river_network.has_value(),
+          "the real RiverHydrology scene publishes its authored network");
+    if (!definition.river_network) return;
+
+    const auto& network = *definition.river_network;
+    const auto& river = network.rivers.front();
+    float horizontal_length_m = 0.0f;
+    for (std::size_t index = 1; index < river.curve.size(); ++index) {
+        const float dx = river.curve[index].x - river.curve[index - 1u].x;
+        const float dz = river.curve[index].z - river.curve[index - 1u].z;
+        horizontal_length_m += std::hypot(dx, dz);
+    }
+    const float descent_fraction =
+        (river.curve.front().y - river.curve.back().y) /
+        horizontal_length_m;
+    CHECK(horizontal_length_m >= 100.0f &&
+              descent_fraction >= 0.13f && descent_fraction <= 0.17f &&
+              river.channel_profile.size() >= 3u &&
+              river.channel_profile.front().width_m !=
+                  river.channel_profile[2u].width_m &&
+              river.channel_profile.front().depth_m > 0.0f &&
+              std::fabs(river.channel_profile.front().asymmetry) < 0.25f,
+          "the real first section is a 100 m+, profile-varied, roughly 15% rounded-V ravine");
+    const auto& authored_emitter = network.fluid.emitters.front();
+    const float solid_rest_offset =
+        0.5f * network.fluid.pbd.particle_spacing_m / 0.6f;
+    const auto& inlet_profile = river.channel_profile.front();
+    const float inlet_half_width = inlet_profile.width_m * 0.5f;
+    const float lateral_fraction = std::min(
+        1.0f, authored_emitter.radius_m / inlet_half_width);
+    constexpr float kRavineRoundness = 0.08f;
+    const float rounded_lateral =
+        (std::sqrt(lateral_fraction * lateral_fraction +
+                   kRavineRoundness * kRavineRoundness) -
+         kRavineRoundness) /
+        (std::sqrt(1.0f + kRavineRoundness * kRavineRoundness) -
+         kRavineRoundness);
+    const float maximum_inlet_bank_rise = inlet_profile.depth_m *
+        (1.0f + 0.85f * std::fabs(inlet_profile.asymmetry)) *
+        rounded_lateral;
+    CHECK(authored_emitter.position_m.y - authored_emitter.radius_m >=
+              river.curve.front().y + maximum_inlet_bank_rise +
+                  solid_rest_offset,
+          "the real inlet emitter disk starts fully above the rounded-V bank collision surface");
+
+    viewer::FluidBakeRunContext context{};
+    context.terrain = [](float, float, float& height) {
+        height = 0.0f;
+        return true;
+    };
+    viewer::FluidBakeRequest request{};
+    hydrology::FluidBakeError error{};
+    hydrology::RiverGeometry geometry{};
+    std::string geometry_error;
+    CHECK(hydrology::build_river_geometry(
+              network, network.sections.front().river, geometry,
+              geometry_error),
+          geometry_error.c_str());
+    CHECK(viewer::assemble_authored_fluid_section_request(
+              network, geometry, network.sections.front(), {}, {}, context,
+              "ravine-acceptance-cache", request, error),
+          error.message.c_str());
+    if (request.input.collision.vertices.empty()) return;
+
+    float minimum_x = std::numeric_limits<float>::infinity();
+    float minimum_z = std::numeric_limits<float>::infinity();
+    float maximum_x = -std::numeric_limits<float>::infinity();
+    float maximum_z = -std::numeric_limits<float>::infinity();
+    for (const auto& vertex : request.input.collision.vertices) {
+        minimum_x = std::min(minimum_x, vertex.x);
+        minimum_z = std::min(minimum_z, vertex.z);
+        maximum_x = std::max(maximum_x, vertex.x);
+        maximum_z = std::max(maximum_z, vertex.z);
+    }
+    constexpr float kCoverageEpsilon = 0.01f;
+    const auto& collar = request.input.dry_collar_bounds_m;
+    CHECK(minimum_x <= collar.minimum.x - kCoverageEpsilon &&
+              minimum_z <= collar.minimum.z - kCoverageEpsilon &&
+              maximum_x >= collar.maximum.x + kCoverageEpsilon &&
+              maximum_z >= collar.maximum.z + kCoverageEpsilon,
+          "the physical terrain surface covers every side of the dry-collar escape sensor");
+}
+
+void test_real_two_section_river_reaches_ready() {
+    namespace fs = std::filesystem;
+    const fs::path project = fs::absolute("../../projects/world_demo");
+    const fs::path cache = fs::temp_directory_path() /
+                           "matter-real-two-section-river-acceptance";
+    std::error_code filesystem_error;
+    fs::remove_all(cache, filesystem_error);
+
+    hydrology::FluidBackendProbe probe{};
+    {
+        hydrology::PhysxRuntime identity_runtime;
+        probe = identity_runtime.probe();
+    }
+    CHECK(probe.available, probe.message.c_str());
+    if (!probe.available) return;
+
+    auto config = viewer::make_engine_local_provider_config(
+        project.string(), "RiverHydrology",
+        fs::absolute("../shared-lib").string(),
+        [] { return std::make_shared<hydrology::PhysxRuntime>(); });
+    config.cache_root = cache.string();
+    config.fluid_renderer_device.luid = probe.device_luid;
+    config.fluid_renderer_device.luid_valid = probe.device_luid_valid;
+    config.fluid_renderer_device.vendor_id = 0x10deu;
+    config.fluid_renderer_device.device_id = 1u;
+    config.fluid_renderer_device.driver_version =
+        static_cast<std::uint32_t>(probe.cuda_driver_version);
+    config.gpu_run = [](const char*, std::function<bool(std::string&)> run,
+                        std::string& error) { return run(error); };
+    config.vk_particle_visual_bake = [](
+        const gpu_meshing::ParticleJob& job,
+        gpu_meshing::MeshResult& mesh, gpu_meshing::Stats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl&) {
+        if (job.particle_count == 0u) {
+            error = {gpu_meshing::ErrorCode::InvalidInput,
+                     "acceptance visual requires fluid particles"};
+            return false;
+        }
+        if (!hydrology::build_cpu_particle_visual(
+                job, 0.65f, mesh, error))
+            return false;
+        stats.particles = job.particle_count;
+        stats.triangles = static_cast<std::uint32_t>(
+            mesh.indices.size() / 3u);
+        error = {};
+        return true;
+    };
+
+    viewer::LocalProvider provider(std::move(config));
+    viewer::WorldManifest dry_manifest{};
+    std::string provider_error;
+    CHECK(provider.connect(dry_manifest, provider_error),
+          provider_error.c_str());
+    if (!provider_error.empty()) {
+        fs::remove_all(cache, filesystem_error);
+        return;
+    }
+
+    hydrology::RiverGeometry acceptance_geometry{};
+    std::shared_ptr<const terrain_field::RiverHeightOverlay>
+        acceptance_overlay;
+    CHECK(provider.build_river_height_overlay(
+              acceptance_geometry, acceptance_overlay, provider_error),
+          provider_error.c_str());
+    if (!acceptance_overlay) {
+        fs::remove_all(cache, filesystem_error);
+        return;
+    }
+
+    viewer::FluidBakeRunContext context{};
+    context.terrain_revision = acceptance_overlay->hash();
+    context.terrain = [acceptance_overlay](float x, float z, float& height) {
+        // Represent the mountainous base field surrounding the rounded-V
+        // overlay, then apply the provider-owned carve exactly as FieldRuntime
+        // does in the editor.
+        const float base_height = 118.0f - 0.15f * x;
+        height = acceptance_overlay->height_at(x, z, base_height);
+        return std::isfinite(height);
+    };
+    matter::HydrologyStatus status{};
+    hydrology::FluidBakeError error{};
+    hydrology::HydrologyNetworkBakeResult result{};
+    const bool ready = provider.run_authored_fluid_bake(
+        context, status, error, result);
+    CHECK(ready, error.message.c_str());
+    CHECK(result.manifest.state ==
+              hydrology::HydrologyNetworkState::Ready,
+          "real network reaches Ready");
+    CHECK(result.sections.size() == 2u && result.handoffs.size() == 1u,
+          "real network accepts both sections and one spillway");
+    if (result.sections.size() == 2u) {
+        CHECK(result.sections[0].sensor.complete &&
+                  result.sections[1].sensor.complete,
+              "both terminal pools satisfy their fill sensors");
+        CHECK(result.sections[0].stats.non_finite_particles == 0u &&
+                  result.sections[1].stats.non_finite_particles == 0u,
+              "both snapshots remain finite");
+        CHECK(result.sections[0].stats.escaped_particles <=
+                      result.sections[0].stats.escape_budget &&
+                  result.sections[1].stats.escaped_particles <=
+                      result.sections[1].stats.escape_budget,
+              "both sections satisfy the authored escape policy");
+    }
+    CHECK(!result.products.visual_mesh.indices.empty() &&
+              !result.products.coarse_cpu_mesh.indices.empty() &&
+              !result.products.gameplay_field.empty(),
+          "real network publishes visual, query, and gameplay products");
+    CHECK(result.timings.sections.size() == 2u &&
+              result.timings.sections[0].simulate_ms > 0.0 &&
+              result.timings.sections[0].gpu_mesh_ms > 0.0 &&
+              result.timings.sections[0].cpu_mesh_ms > 0.0 &&
+              result.timings.sections[1].simulate_ms > 0.0 &&
+              result.timings.sections[1].gpu_mesh_ms > 0.0 &&
+              result.timings.sections[1].cpu_mesh_ms > 0.0 &&
+              result.timings.handoff_mesh_ms > 0.0 &&
+              result.timings.serialize_ms > 0.0 &&
+              result.timings.total_wall_ms > 0.0,
+          "real acceptance records separated simulation, product, handoff, serialization, and wall timings");
+    if (result.handoffs.size() == 1u) {
+        hydrology::FluidBakeError seam_error{};
+        CHECK(hydrology::validate_handoff_products(
+                  result.handoffs.front(), result.products,
+                  result.handoffs.front().handoff, seam_error),
+              seam_error.message.c_str());
+        const auto& dam = result.handoffs.front().handoff
+                              .temporary_dam_exclusion_bounds_m;
+        CHECK(result.products.visual_mesh.material == 4u &&
+                  dam.minimum.x <= dam.maximum.x &&
+                  dam.minimum.y <= dam.maximum.y &&
+                  dam.minimum.z <= dam.maximum.z,
+              "real aggregate remains a water-only mesh after the temporary dam is removed");
+    }
+    fs::remove_all(cache, filesystem_error);
+}
+
 void test_core_sdk_is_statically_linked() {
 #ifdef _WIN32
     CHECK(GetModuleHandleA("PhysX_64.dll") == nullptr &&
@@ -581,7 +903,9 @@ int main() {
     test_initialization_exceptions_do_not_cross_the_backend_boundary();
     test_exact_sdk_cuda_context_and_rtx_identity();
     test_pbd_batch_loop_uses_gpu_sensor_and_returns_one_snapshot();
+    test_pbd_ribbon_emitter_activates_a_broad_grid();
     test_pbd_particles_reach_and_rest_on_authored_collision();
+    test_native_quarantine_excludes_escaped_ids_from_sensor_and_snapshot();
     test_pbd_cancellation_is_sampled_between_batches();
     test_pbd_capacity_fails_before_a_second_particle_write();
     test_pbd_hardware_error_is_device_lost();
@@ -590,6 +914,8 @@ int main() {
     test_dry_collar_is_an_escape_sensor_not_a_collider();
     test_invalid_triangle_cooking_is_a_categorized_failure();
     test_short_matter_chute_moves_probes_downhill_without_domain_walls();
+    test_checked_in_ravine_collision_covers_the_validation_collar();
+    test_real_two_section_river_reaches_ready();
     test_missing_gpu_runtime_is_a_stable_probe_failure();
     return check_summary();
 }

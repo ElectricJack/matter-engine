@@ -6,6 +6,7 @@ param(
     [switch]$EnablePhysx,
     [string]$PhysxRoot = $env:MATTER_PHYSX_ROOT,
     [string]$CudaRoot = $env:CUDA_PATH_V12_8,
+    [string]$HydrologyCache,
     [switch]$PreflightOnly
 )
 
@@ -32,10 +33,23 @@ if ($EnablePhysx) {
         throw '-EnablePhysx requires -CudaRoot or CUDA_PATH_V12_8.'
     }
     $configure += ' -DMATTER_ENABLE_PHYSX=ON -DMATTER_PHYSX_ROOT:PATH="{0}" -DMATTER_CUDA_ROOT:PATH="{1}"' -f $PhysxRoot, $CudaRoot
+    if ($Target -eq 'matter_dist') {
+        if (-not $HydrologyCache) {
+            $HydrologyCache = Join-Path $repositoryRoot `
+                'projects\world_demo\.cache\RiverHydrology'
+        }
+        if (-not (Test-Path -LiteralPath $HydrologyCache -PathType Container)) {
+            throw "matter_dist with PhysX requires an accepted RiverHydrology network cache: $HydrologyCache"
+        }
+        $resolvedHydrologyCache = (Resolve-Path -LiteralPath $HydrologyCache).Path
+        $configure += ' -DMATTER_DIST_HYDROLOGY_ARTIFACT:PATH="{0}"' -f $resolvedHydrologyCache
+    } else {
+        $configure += ' -DMATTER_DIST_HYDROLOGY_ARTIFACT:PATH=""'
+    }
 } else {
     # Always reset the shared preset build tree so an opt-in build cannot make
     # a later ordinary editor build retain PhysX from the CMake cache.
-    $configure += ' -DMATTER_ENABLE_PHYSX=OFF'
+    $configure += ' -DMATTER_ENABLE_PHYSX=OFF -DMATTER_DIST_HYDROLOGY_ARTIFACT:PATH=""'
 }
 & $env:ComSpec /d /s /c $configure
 if ($LASTEXITCODE -ne 0) {

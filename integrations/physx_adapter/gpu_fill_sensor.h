@@ -28,6 +28,7 @@ public:
     bool initialize(physx::PxCudaContextManager& cuda,
                     std::uint32_t maximum_horizontal_cells,
                     std::uint32_t maximum_batch_steps,
+                    std::uint32_t maximum_particles,
                     std::string& error);
     void begin_batch() noexcept;
     bool enqueue(const physx::PxVec4* device_positions,
@@ -37,6 +38,10 @@ public:
                  std::string& error);
     bool read_batch(std::vector<GpuFillSensorCounts>& counts,
                     std::string& error);
+    bool read_quarantine(std::uint32_t particle_count,
+                         std::vector<std::uint32_t>& flags,
+                         std::vector<physx::PxVec4>& first_positions,
+                         std::string& error);
     std::uint32_t last_cuda_error() const noexcept;
 
 private:

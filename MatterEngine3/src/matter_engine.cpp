@@ -700,6 +700,18 @@ struct WorldSession::Impl {
     // explicit absolute-path environment hook and never invokes the mesher.
     std::shared_ptr<const viewer::VkScenePart> gpu_mesher_acceptance_part;
     viewer::VkSceneInstance gpu_mesher_acceptance_instance{};
+    // Normal authored-water publication.  The visual mesh is already in
+    // world space, so its single renderer instance is always identity.  The
+    // atomic shared_ptr operations pair with accepted_fluid_artifact's
+    // release/acquire publication and keep replacement safe across render and
+    // bake threads.
+    struct AuthoredFluidRenderBinding {
+        std::shared_ptr<const viewer::VkScenePart> part;
+        viewer::VkSceneInstance instance{};
+    };
+    std::shared_ptr<const AuthoredFluidRenderBinding> authored_fluid_binding;
+    std::shared_ptr<const AuthoredFluidRenderBinding>
+        failed_fluid_debug_binding;
     viewer::VulkanInstanceCache vk_instance_cache;
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
@@ -2516,6 +2528,12 @@ void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind) {
     std::lock_guard<std::recursive_mutex> generation_lock(
         hydrology_generation_mutex);
     accepted_fluid_artifact.store(false, std::memory_order_release);
+#ifdef MATTER_VULKAN_VIEWER
+    std::atomic_store_explicit(
+        &failed_fluid_debug_binding,
+        std::shared_ptr<const AuthoredFluidRenderBinding>{},
+        std::memory_order_release);
+#endif
     {
         std::lock_guard<std::mutex> status_lock(hydrology_status_mutex);
         hydrology_status_copy = {};
@@ -3357,9 +3375,52 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
 
     matter::HydrologyStatus result{};
     hydrology::FluidBakeError error{};
-    hydrology::HydrologyArtifact artifact{};
+    hydrology::HydrologyNetworkBakeResult network_result{};
     const bool accepted = provider->run_authored_fluid_bake(
-        context, result, error, artifact);
+        context, result, error, network_result);
+    bool publication_accepted = accepted;
+#ifdef MATTER_VULKAN_VIEWER
+    std::shared_ptr<const viewer::VkScenePart> authored_part;
+    viewer::VkSceneInstance authored_instance{};
+    if (accepted) {
+        std::uint64_t instance_id = 0u;
+        gpu_meshing::Error render_error{};
+        if (!gpu_meshing::build_water_scene_part(
+                network_result.products.visual_mesh,
+                network_result.manifest.payload_digest, authored_part,
+                instance_id, render_error) || !authored_part) {
+            publication_accepted = false;
+            error = {hydrology::FluidBakeCode::ProductFailure,
+                     render_error.message.empty()
+                         ? "accepted authored water produced no renderable mesh"
+                         : render_error.message};
+            result.state = matter::HydrologyState::Invalid;
+            result.failure_reason = error.message;
+        } else {
+            authored_instance.part_hash = authored_part->part_hash;
+            authored_instance.object_to_world = viewer::mat4_identity();
+            authored_instance.instance_id = instance_id;
+        }
+    }
+    std::shared_ptr<const viewer::VkScenePart> failed_debug_part;
+    viewer::VkSceneInstance failed_debug_instance{};
+    if (!accepted &&
+        !network_result.failed_debug_visual.positions.empty()) {
+        std::uint64_t instance_id = 0u;
+        gpu_meshing::Error render_error{};
+        if (gpu_meshing::build_water_scene_part(
+                network_result.failed_debug_visual,
+                network_result.failed_debug_visual.content_digest,
+                failed_debug_part, instance_id, render_error) &&
+            failed_debug_part) {
+            failed_debug_instance.part_hash = failed_debug_part->part_hash;
+            failed_debug_instance.object_to_world = viewer::mat4_identity();
+            failed_debug_instance.instance_id = instance_id;
+        } else {
+            failed_debug_part.reset();
+        }
+    }
+#endif
     std::function<void()> before_publication_hook;
     std::function<void()> after_publication_hook;
     {
@@ -3373,17 +3434,44 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         std::lock_guard<std::recursive_mutex> generation_lock(
             hydrology_generation_mutex);
         if (!token || !token->is_cancelled()) {
-            if (accepted)
-                provider->commit_accepted_fluid_artifact(std::move(artifact));
+            if (publication_accepted)
+                provider->commit_accepted_fluid_network(
+                    std::move(network_result));
+#ifdef MATTER_VULKAN_VIEWER
+            if (publication_accepted) {
+                auto binding = std::make_shared<AuthoredFluidRenderBinding>();
+                binding->part = std::move(authored_part);
+                binding->instance = authored_instance;
+                std::atomic_store_explicit(
+                    &authored_fluid_binding,
+                    std::shared_ptr<const AuthoredFluidRenderBinding>(
+                        std::move(binding)),
+                    std::memory_order_release);
+            }
+            if (!publication_accepted && failed_debug_part) {
+                auto binding = std::make_shared<AuthoredFluidRenderBinding>();
+                binding->part = std::move(failed_debug_part);
+                binding->instance = failed_debug_instance;
+                std::atomic_store_explicit(
+                    &failed_fluid_debug_binding,
+                    std::shared_ptr<const AuthoredFluidRenderBinding>(
+                        std::move(binding)),
+                    std::memory_order_release);
+                MATTER_LOGI(
+                    "hydrology",
+                    "UNACCEPTED DEBUG WATER: finite terminal-failure snapshot rendered; no artifact, cache, CPU mesh, or gameplay product was published\n");
+            }
+#endif
             {
                 std::lock_guard<std::mutex> lock(hydrology_status_mutex);
                 hydrology_status_copy = result;
             }
-            accepted_fluid_artifact.store(accepted, std::memory_order_release);
-            if (accepted) {
+            accepted_fluid_artifact.store(publication_accepted,
+                                           std::memory_order_release);
+            if (publication_accepted) {
                 events::BakePartDone event;
-                event.done = 1;
-                event.total = 1;
+                event.done = static_cast<int>(result.completed_sections);
+                event.total = static_cast<int>(result.total_sections);
                 event.phase = "hydrology";
                 hub_.emit(std::move(event));
             } else if (!error.message.empty()) {
@@ -10996,6 +11084,32 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         acceptance_instances = cached_instances;
         acceptance_instances.push_back(
             impl_->gpu_mesher_acceptance_instance);
+        instance_view = &acceptance_instances;
+    }
+    const bool authored_fluid_accepted =
+        impl_->accepted_fluid_artifact.load(std::memory_order_acquire);
+    const auto authored_fluid_binding = authored_fluid_accepted
+        ? std::atomic_load_explicit(&impl_->authored_fluid_binding,
+                                    std::memory_order_acquire)
+        : nullptr;
+    if (authored_fluid_binding && authored_fluid_binding->part) {
+        if (impl_->vk_scene->ensure_part(*authored_fluid_binding->part, err) < 0)
+            return false;
+        if (instance_view != &acceptance_instances)
+            acceptance_instances = cached_instances;
+        acceptance_instances.push_back(authored_fluid_binding->instance);
+        instance_view = &acceptance_instances;
+    }
+    const auto failed_fluid_debug_binding = std::atomic_load_explicit(
+        &impl_->failed_fluid_debug_binding, std::memory_order_acquire);
+    if (failed_fluid_debug_binding && failed_fluid_debug_binding->part) {
+        if (impl_->vk_scene->ensure_part(
+                *failed_fluid_debug_binding->part, err) < 0)
+            return false;
+        if (instance_view != &acceptance_instances)
+            acceptance_instances = cached_instances;
+        acceptance_instances.push_back(
+            failed_fluid_debug_binding->instance);
         instance_view = &acceptance_instances;
     }
     const auto& instances = *instance_view;

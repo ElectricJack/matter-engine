@@ -19,7 +19,6 @@ public:
 class RiverHeightOverlay final : public HeightOverlay {
 public:
     static bool build(const hydrology::RiverGeometry& geometry,
-                      const matter::RiverChannel& channel,
                       std::shared_ptr<const RiverHeightOverlay>& out,
                       std::string& error);
 
@@ -35,20 +34,14 @@ private:
         float distance_m = 0.0f;
         float thalweg_y = 0.0f;
         float half_width_m = 0.0f;
-    };
-    struct Boulder {
-        float x = 0.0f;
-        float z = 0.0f;
-        float bed_y = 0.0f;
-        float radius_m = 0.0f;
+        float depth_m = 0.0f;
+        float asymmetry = 0.0f;
     };
 
     float terrain_height(float x, float z, float base_height) const;
     std::size_t nearest_sample(float x, float z) const;
 
-    matter::RiverChannel channel_{};
     std::vector<Sample> samples_;
-    std::vector<Boulder> boulders_;
     std::uint64_t terrain_seed_ = 0;
     std::uint64_t hash_ = 0;
 };

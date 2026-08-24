@@ -3,7 +3,9 @@
 #include "../src/terrain_field.h"
 #include "../src/terrain_river_overlay.h"
 #include "../src/hydrology/river_geometry.h"
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -20,18 +22,42 @@ static matter::RiverNetworkDefinition overlay_network(std::uint64_t seed = 101u)
     matter::RiverNetworkDefinition network{};
     network.cell_size_m = 1.0f;
     network.seed = seed;
-    network.first_section_river = "main";
-    network.first_section = {100.0f, 4.0f};
     matter::RiverDefinition river{};
     river.name = "main";
     river.inlet = {{0.0f, 30.0f, 0.0f}, 1.0f};
-    river.spline = {{0.0f, 30.0f, 0.0f}, {64.0f, 26.0f, 0.0f},
-                    {128.0f, 24.0f, 0.0f}};
-    river.reaches = {{64.0f, -0.04f, 0.1f},
-                     {128.0f, -0.015f, 0.4f}};
-    river.channel = {10.0f, 2.5f, 0.45f};
-    river.boulders = {0.0f, {0.5f, 1.5f}};
+    river.curve = {{0.0f, 30.0f, 0.0f}, {64.0f, 26.0f, 0.0f},
+                   {128.0f, 24.0f, 0.0f}};
+    river.channel_profile = {{0.0f, 10.0f, 2.5f, 0.45f},
+                             {64.0f, 10.0f, 2.5f, 0.45f},
+                             {128.0f, 10.0f, 2.5f, 0.45f}};
     network.rivers.push_back(river);
+    return network;
+}
+
+static matter::RiverNetworkDefinition sectional_waterfall_network() {
+    matter::RiverNetworkDefinition network{};
+    network.cell_size_m = 0.5f;
+    network.seed = 0x12345678u;
+    matter::RiverDefinition river{};
+    river.name = "main";
+    river.inlet = {{0.0f, 72.0f, 0.0f}, 600.0f};
+    river.curve = {
+        {0.0f, 72.0f, 0.0f},
+        {105.0f, 56.0f, 0.0f},
+        {110.0f, 44.0f, 0.0f},
+        {145.0f, 44.0f, 0.0f},
+        {260.0f, 22.0f, 0.0f},
+        {294.0f, 22.0f, 0.0f},
+    };
+    river.channel_profile = {
+        {0.0f, 14.0f, 8.0f, 0.18f},
+        {106.212f, 18.0f, 7.5f, 0.10f},
+        {119.212f, 26.0f, 8.0f, -0.08f},
+        {154.212f, 34.0f, 8.0f, 0.05f},
+        {271.296f, 20.0f, 7.5f, 0.12f},
+        {305.296f, 38.0f, 8.0f, 0.0f},
+    };
+    network.rivers.push_back(std::move(river));
     return network;
 }
 
@@ -39,11 +65,10 @@ static std::shared_ptr<const RiverHeightOverlay> make_overlay(
     const matter::RiverNetworkDefinition& network) {
     hydrology::RiverGeometry geometry{};
     std::string error;
-    if (!hydrology::build_river_geometry(network, geometry, error))
+    if (!hydrology::build_river_geometry(network, "main", geometry, error))
         printf("geometry err: %s\n", error.c_str());
     std::shared_ptr<const RiverHeightOverlay> overlay;
-    if (!RiverHeightOverlay::build(geometry, network.rivers[0].channel,
-                                   overlay, error))
+    if (!RiverHeightOverlay::build(geometry, overlay, error))
         printf("overlay err: %s\n", error.c_str());
     return overlay;
 }
@@ -144,6 +169,77 @@ int main() {
                   "const 80\nconst 0.5\nconst 0.2\n"
                   "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n").hash(),
               "the overlay revision participates in the field hash");
+
+        // The inlet needs a short terrain-carved apron under the emitter, but
+        // the spline must not extend that trough indefinitely behind its first
+        // control point.  A smooth terrain headwall closes the finite source
+        // basin before the dry-collar boundary without adding a hidden wall.
+        const float source_bed = overlay->height_at(0.0f, 0.0f, 80.0f);
+        const float apron_bed = overlay->height_at(-1.0f, 0.0f, 80.0f);
+        const float headwall = overlay->height_at(-4.0f, 0.0f, 80.0f);
+        const float upstream_terrain = overlay->height_at(-8.0f, 0.0f, 80.0f);
+        CHECK(std::fabs(apron_bed - source_bed) < 1.0e-4f,
+              "the terrain-carved source apron supports the complete inlet disk");
+        CHECK(headwall > apron_bed && headwall < upstream_terrain,
+              "the source apron rises through a finite terrain headwall");
+        CHECK(std::fabs(upstream_terrain - 80.0f) < 1.0e-4f,
+              "the river overlay stops carving before the upstream dry collar");
+    }
+    // --- acceptance ravine: waterfall, flat pools, and terrain banks -------
+    {
+        const auto network = sectional_waterfall_network();
+        hydrology::RiverGeometry geometry{};
+        std::string error;
+        CHECK(hydrology::build_river_geometry(network, "main", geometry, error),
+              error.c_str());
+        auto nearest = [&](float distance_m)
+            -> const hydrology::RiverCentrelineSample& {
+            return *std::min_element(
+                geometry.centreline.begin(), geometry.centreline.end(),
+                [=](const auto& a, const auto& b) {
+                    return std::fabs(a.distance_m - distance_m) <
+                           std::fabs(b.distance_m - distance_m);
+                });
+        };
+        constexpr float waterfall_lip_m = 106.212f;
+        constexpr float waterfall_landing_m = 119.212f;
+        CHECK(std::fabs((nearest(waterfall_lip_m).position_m.y -
+                         nearest(waterfall_landing_m).position_m.y) -
+                        12.0f) <= 0.5f,
+              "the authored waterfall drops twelve metres before the first pool");
+
+        const auto pool_range = [&](float from_m, float to_m) {
+            float minimum = std::numeric_limits<float>::infinity();
+            float maximum = -std::numeric_limits<float>::infinity();
+            for (const auto& sample : geometry.centreline) {
+                if (sample.distance_m < from_m || sample.distance_m > to_m)
+                    continue;
+                minimum = std::min(minimum, sample.position_m.y);
+                maximum = std::max(maximum, sample.position_m.y);
+            }
+            return maximum - minimum;
+        };
+        CHECK(pool_range(120.0f, 153.0f) <= 0.5f &&
+                  pool_range(284.0f, 305.0f) <= 0.5f,
+              "both authored terminal pool floors remain level within half a metre");
+
+        std::shared_ptr<const RiverHeightOverlay> overlay;
+        CHECK(RiverHeightOverlay::build(geometry, overlay, error), error.c_str());
+        const auto& cross = nearest(60.0f);
+        const float half_width = cross.width_m * 0.5f;
+        const auto probe = [&](float lateral_m) {
+            return overlay->height_at(
+                cross.position_m.x + cross.lateral.x * lateral_m,
+                cross.position_m.z + cross.lateral.z * lateral_m, 180.0f);
+        };
+        const float bed = probe(0.0f);
+        CHECK(probe(-half_width) > bed + 3.0f &&
+                  probe(half_width) > bed + 3.0f &&
+                  probe(-half_width * 1.5f) < 180.0f &&
+                  probe(half_width * 1.5f) < 180.0f &&
+                  std::fabs(probe(-half_width * 3.25f) - 180.0f) < 1.0e-4f &&
+                  std::fabs(probe(half_width * 3.25f) - 180.0f) < 1.0e-4f,
+              "rounded-V terrain banks contain cross-channel probes without AABB faces");
     }
     // --- first-slice overlays fail closed for general 3D density -----------
     {

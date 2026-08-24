@@ -73,7 +73,96 @@ bool finite_mesh(const gpu_meshing::MeshResult& mesh) {
     return true;
 }
 
+bool validate_cpu_mesh_positions_topology(
+    const gpu_meshing::MeshResult& mesh, std::string* reason = nullptr) {
+    const auto reject = [reason](std::string message) {
+        if (reason != nullptr) *reason = std::move(message);
+        return false;
+    };
+    if (mesh.positions.size() % 3u != 0u)
+        return reject("position stream is not float3-aligned");
+    if (mesh.indices.size() % 3u != 0u)
+        return reject("index stream is not triangle-aligned");
+    for (std::size_t component = 0; component < mesh.positions.size();
+         ++component) {
+        if (!std::isfinite(mesh.positions[component]))
+            return reject("non-finite position component " +
+                          std::to_string(component) + " of " +
+                          std::to_string(mesh.positions.size()));
+    }
+    const std::size_t vertex_count = mesh.positions.size() / 3u;
+    for (std::size_t offset = 0; offset < mesh.indices.size(); ++offset) {
+        if (mesh.indices[offset] >= vertex_count)
+            return reject("out-of-range index " +
+                          std::to_string(mesh.indices[offset]) + " at " +
+                          std::to_string(offset) + " for " +
+                          std::to_string(vertex_count) + " vertices");
+    }
+    return true;
+}
+
 }  // namespace
+
+bool repair_nonfinite_cpu_mesh_normals(
+    gpu_meshing::MeshResult& mesh) noexcept {
+    if (!validate_cpu_mesh_positions_topology(mesh)) return false;
+    const std::size_t vertex_count = mesh.positions.size() / 3u;
+    const bool normals_need_repair =
+        mesh.normals.size() != mesh.positions.size() ||
+        std::any_of(mesh.normals.begin(), mesh.normals.end(),
+                    [](const float component) {
+                        return !std::isfinite(component);
+                    });
+    if (!normals_need_repair) return true;
+
+    mesh.normals.assign(mesh.positions.size(), 0.0f);
+    for (std::size_t triangle = 0; triangle < mesh.indices.size();
+         triangle += 3u) {
+        const std::uint32_t ia = mesh.indices[triangle + 0u];
+        const std::uint32_t ib = mesh.indices[triangle + 1u];
+        const std::uint32_t ic = mesh.indices[triangle + 2u];
+
+        const float ax = mesh.positions[ia * 3u + 0u];
+        const float ay = mesh.positions[ia * 3u + 1u];
+        const float az = mesh.positions[ia * 3u + 2u];
+        const float abx = mesh.positions[ib * 3u + 0u] - ax;
+        const float aby = mesh.positions[ib * 3u + 1u] - ay;
+        const float abz = mesh.positions[ib * 3u + 2u] - az;
+        const float acx = mesh.positions[ic * 3u + 0u] - ax;
+        const float acy = mesh.positions[ic * 3u + 1u] - ay;
+        const float acz = mesh.positions[ic * 3u + 2u] - az;
+        const float nx = aby * acz - abz * acy;
+        const float ny = abz * acx - abx * acz;
+        const float nz = abx * acy - aby * acx;
+
+        const std::uint32_t triangle_indices[] = {ia, ib, ic};
+        for (const std::uint32_t index : triangle_indices) {
+            mesh.normals[index * 3u + 0u] += nx;
+            mesh.normals[index * 3u + 1u] += ny;
+            mesh.normals[index * 3u + 2u] += nz;
+        }
+    }
+
+    constexpr float kNormalLengthSquaredEpsilon = 1.0e-20f;
+    for (std::size_t vertex = 0; vertex < vertex_count; ++vertex) {
+        float& nx = mesh.normals[vertex * 3u + 0u];
+        float& ny = mesh.normals[vertex * 3u + 1u];
+        float& nz = mesh.normals[vertex * 3u + 2u];
+        const float length_squared = nx * nx + ny * ny + nz * nz;
+        if (std::isfinite(length_squared) &&
+            length_squared > kNormalLengthSquaredEpsilon) {
+            const float inverse_length = 1.0f / std::sqrt(length_squared);
+            nx *= inverse_length;
+            ny *= inverse_length;
+            nz *= inverse_length;
+        } else {
+            nx = 0.0f;
+            ny = 1.0f;
+            nz = 0.0f;
+        }
+    }
+    return true;
+}
 
 std::uint64_t particle_snapshot_digest(
     const gpu_meshing::ParticleSample* particles, std::uint32_t count) {
@@ -235,17 +324,26 @@ bool build_cpu_particle_visual(const gpu_meshing::ParticleJob& job,
          (job.bounds_m.min_m.y + job.bounds_m.max_m.y) * 0.5f,
          (job.bounds_m.min_m.z + job.bounds_m.max_m.z) * 0.5f},
         {side, side, side}, division_power};
+    const float coarse_cell_m =
+        side / static_cast<float>((1 << division_power) - 1);
+    // MatterSurface uses its reference radius both to bound field queries and
+    // to apply a coarse-LOD isovalue offset. Passing the fine particle radius
+    // to a much coarser lattice shrinks the implicit surface far enough to
+    // erase dense water completely. A conservative reference radius at least
+    // as large as the actual lattice cell disables that shrink without
+    // changing any particle's authored SDF radius.
+    const float field_reference_radius = std::max(max_radius, coarse_cell_m);
     SurfaceScratch* scratch = CreateSurfaceScratch();
     if (scratch == nullptr)
         return fail(error, gpu_meshing::ErrorCode::Unavailable,
                     "failed to create MatterSurface CPU scratch");
     Mesh mesh = GenerateMeshWithScratch(
-        scratch, particles.data(), max_radius,
+        scratch, particles.data(), field_reference_radius,
         static_cast<int>(particles.size()), bounds, job.blend_width_m, nullptr,
         0, nullptr, 0, 0.0f);
     if (mesh.vertexCount > 0)
         ComputeSurfaceNormalsWithScratch(
-            scratch, &mesh, particles.data(), max_radius,
+            scratch, &mesh, particles.data(), field_reference_radius,
             static_cast<int>(particles.size()), job.blend_width_m, nullptr, 0,
             nullptr, 0, 0.0f);
 
@@ -271,6 +369,16 @@ bool build_cpu_particle_visual(const gpu_meshing::ParticleJob& job,
         candidate.indices.push_back(mesh.indices[i]);
     free_surface_mesh(mesh);
     DestroySurfaceScratch(scratch);
+    std::string invalid_geometry_reason;
+    if (!validate_cpu_mesh_positions_topology(candidate,
+                                              &invalid_geometry_reason))
+        return fail(error, gpu_meshing::ErrorCode::Unavailable,
+                    ("MatterSurface CPU fallback emitted invalid positions or topology: " +
+                     invalid_geometry_reason)
+                        .c_str());
+    if (!repair_nonfinite_cpu_mesh_normals(candidate))
+        return fail(error, gpu_meshing::ErrorCode::Unavailable,
+                    "MatterSurface CPU fallback emitted invalid positions or topology");
     if (!finite_mesh(candidate))
         return fail(error, gpu_meshing::ErrorCode::Unavailable,
                     "MatterSurface CPU fallback emitted invalid geometry");

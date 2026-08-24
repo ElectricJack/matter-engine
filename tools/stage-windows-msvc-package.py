@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 DEPENDENCIES = {
@@ -476,6 +478,249 @@ def ignored(_directory: str, names: list[str]) -> set[str]:
     }
 
 
+def stage_physx_runtime_bundle(
+    dist: Path,
+    *,
+    enabled: bool,
+    runtime: Path | None,
+    physx_license: Path | None,
+    cuda_license: Path | None,
+) -> tuple[list[str], list[tuple[str, Path]]]:
+    """Stage the single pinned dynamic PhysX module and NVIDIA notices."""
+    supplied = (runtime, physx_license, cuda_license)
+    if not enabled:
+        if any(path is not None for path in supplied):
+            raise ValueError("disabled PhysX packaging cannot accept runtime aliases")
+        return [], []
+    if any(path is None for path in supplied):
+        raise ValueError(
+            "enabled PhysX packaging requires its runtime and both NVIDIA notices"
+        )
+
+    assert runtime is not None
+    assert physx_license is not None
+    assert cuda_license is not None
+    if runtime.name != "PhysXGpu_64.dll":
+        raise ValueError(
+            f"PhysX runtime must use the exact pinned name PhysXGpu_64.dll: {runtime}"
+        )
+    for path, label in (
+        (runtime, "PhysX GPU runtime"),
+        (physx_license, "NVIDIA PhysX license"),
+        (cuda_license, "NVIDIA CUDA EULA"),
+    ):
+        if not path.is_file():
+            raise ValueError(f"{label} is missing: {path}")
+
+    shutil.copy2(runtime, dist / runtime.name)
+    licenses = dist / "licenses"
+    licenses.mkdir()
+    staged_physx_license = licenses / "NVIDIA_PhysX_LICENSE.md"
+    staged_cuda_license = licenses / "NVIDIA_CUDA_EULA.txt"
+    shutil.copy2(physx_license, staged_physx_license)
+    shutil.copy2(cuda_license, staged_cuda_license)
+    return [runtime.name], [
+        ("nvidia_physx", staged_physx_license),
+        ("nvidia_cuda", staged_cuda_license),
+    ]
+
+
+def _hydrology_digest(payload: bytes) -> int:
+    digest = 1469598103934665603
+    for byte in payload:
+        digest ^= byte
+        digest = (digest * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return digest or 1
+
+
+class _HydrologyReader:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.offset = 0
+
+    def take(self, format_string: str) -> tuple[object, ...]:
+        size = struct.calcsize(format_string)
+        if self.offset + size > len(self.payload):
+            raise ValueError("hydrology network manifest is truncated")
+        values = struct.unpack_from(format_string, self.payload, self.offset)
+        self.offset += size
+        return values
+
+    def string(self) -> str:
+        (size,) = self.take("<I")
+        if not isinstance(size, int) or size > 4096 or self.offset + size > len(self.payload):
+            raise ValueError("hydrology network manifest contains an invalid string")
+        raw = self.payload[self.offset : self.offset + size]
+        self.offset += size
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("hydrology network manifest contains non-UTF-8 text") from error
+
+
+def _read_hydrology_artifact_digest(path: Path) -> int:
+    data = path.read_bytes()
+    artifact_headers = {
+        b"MHYDMSH3": 4,
+        b"MHYDHOF1": 2,
+    }
+    if len(data) < 28 or data[:8] not in artifact_headers:
+        raise ValueError(f"referenced hydrology artifact has invalid magic: {path}")
+    version, payload_size, expected_digest = struct.unpack_from("<IQQ", data, 8)
+    payload = data[28:]
+    if version != artifact_headers[data[:8]] or payload_size != len(payload):
+        raise ValueError(f"referenced hydrology artifact has an invalid header: {path}")
+    if _hydrology_digest(payload) != expected_digest:
+        raise ValueError(f"referenced hydrology artifact has an invalid digest: {path}")
+    if data[:8] == b"MHYDHOF1":
+        if len(payload) < 8:
+            raise ValueError(f"referenced hydrology handoff has no semantic digest: {path}")
+        (semantic_digest,) = struct.unpack_from("<Q", payload, len(payload) - 8)
+        if semantic_digest == 0:
+            raise ValueError(f"referenced hydrology handoff has an invalid semantic digest: {path}")
+        return semantic_digest
+    return expected_digest
+
+
+def _cache_relative_hydrology_path(value: str, category: str) -> PurePosixPath:
+    path = PurePosixPath(value)
+    if (
+        not value
+        or "\\" in value
+        or path.is_absolute()
+        or any(part in ("", ".", "..") for part in path.parts)
+        or path.as_posix() != value
+        or len(path.parts) != 3
+        or path.parts[0] != "hydrology"
+        or path.parts[1] != category
+        or path.suffix.lower() != ".mhyd"
+    ):
+        raise ValueError(f"hydrology network manifest contains unsafe {category} path: {value!r}")
+    return path
+
+
+def _read_ready_hydrology_network(cache: Path) -> tuple[Path, list[PurePosixPath]]:
+    manifests = sorted(cache.glob("hydrology/*.mhyn"))
+    if len(manifests) != 1:
+        raise ValueError("accepted hydrology cache must contain exactly one network .mhyn manifest")
+    manifest = manifests[0]
+    data = manifest.read_bytes()
+    if len(data) < 28 or data[:8] != b"MHYDNET1":
+        raise ValueError("hydrology network manifest has invalid magic")
+    version, payload_size, expected_digest = struct.unpack_from("<IQQ", data, 8)
+    payload = data[28:]
+    if version != 1 or payload_size != len(payload) or _hydrology_digest(payload) != expected_digest:
+        raise ValueError("hydrology network manifest has an invalid header or digest")
+
+    reader = _HydrologyReader(payload)
+    state, network_key, terrain_revision, *bounds = reader.take("<BQQ6f")
+    if (
+        state != 2
+        or network_key == 0
+        or terrain_revision == 0
+        or not all(math.isfinite(float(value)) for value in bounds)
+        or not all(float(bounds[index]) < float(bounds[index + 3]) for index in range(3))
+    ):
+        raise ValueError("hydrology network manifest is not a finite Ready network")
+
+    (order_count,) = reader.take("<I")
+    if not isinstance(order_count, int) or order_count == 0 or order_count > 4096:
+        raise ValueError("hydrology network manifest has an invalid section order")
+    order = [reader.string() for _ in range(order_count)]
+    if len(set(order)) != len(order):
+        raise ValueError("hydrology network manifest has duplicate section order entries")
+
+    def references(category: str) -> list[tuple[str, PurePosixPath, list[str], int]]:
+        (count,) = reader.take("<I")
+        if not isinstance(count, int) or count > 4096 or (category == "sections" and count == 0):
+            raise ValueError(f"hydrology network manifest has an invalid {category} count")
+        result: list[tuple[str, PurePosixPath, list[str], int]] = []
+        identities: set[str] = set()
+        for _ in range(count):
+            identity = reader.string()
+            relative = _cache_relative_hydrology_path(reader.string(), category)
+            (dependency_count,) = reader.take("<I")
+            if not isinstance(dependency_count, int) or dependency_count > 4096:
+                raise ValueError("hydrology network manifest has too many dependencies")
+            dependencies = [reader.string() for _ in range(dependency_count)]
+            semantic_key, payload_digest = reader.take("<QQ")
+            if (
+                not identity
+                or identity in identities
+                or semantic_key == 0
+                or payload_digest == 0
+                or len(set(dependencies)) != len(dependencies)
+            ):
+                raise ValueError(f"hydrology network manifest contains an invalid {category} reference")
+            identities.add(identity)
+            result.append((identity, relative, dependencies, int(payload_digest)))
+        return result
+
+    sections = references("sections")
+    handoffs = references("handoffs")
+    if reader.offset != len(payload):
+        raise ValueError("hydrology network manifest has trailing payload bytes")
+
+    section_ids = {identity for identity, *_rest in sections}
+    if set(order) != section_ids or len(order) != len(sections):
+        raise ValueError("hydrology network section order does not match its references")
+    positions = {identity: index for index, identity in enumerate(order)}
+    for identity, _relative, dependencies, _digest in sections:
+        if any(dependency not in positions or positions[dependency] >= positions[identity]
+               for dependency in dependencies):
+            raise ValueError("hydrology network section dependencies are not topological")
+    for _identity, _relative, dependencies, _digest in handoffs:
+        if any(dependency not in section_ids for dependency in dependencies):
+            raise ValueError("hydrology network handoff references an unknown section")
+
+    referenced: list[PurePosixPath] = []
+    for _identity, relative, _dependencies, payload_digest in sections + handoffs:
+        native_relative = Path(*relative.parts)
+        artifact = cache / native_relative
+        if not artifact.is_file():
+            raise ValueError(f"referenced hydrology artifact is missing: {relative.as_posix()}")
+        if _read_hydrology_artifact_digest(artifact) != payload_digest:
+            raise ValueError(f"referenced hydrology artifact digest does not match: {relative.as_posix()}")
+        referenced.append(relative)
+    if len({path.as_posix() for path in referenced}) != len(referenced):
+        raise ValueError("hydrology network manifest references an artifact more than once")
+
+    expected_files = {manifest.name, *(path.as_posix() for path in referenced)}
+    expected_files.remove(manifest.name)
+    expected_files.add(manifest.relative_to(cache).as_posix())
+    actual_files = {
+        path.relative_to(cache).as_posix()
+        for path in (cache / "hydrology").rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        raise ValueError("accepted hydrology cache contains unreferenced or missing files")
+    return manifest, sorted(referenced, key=lambda value: value.as_posix())
+
+
+def stage_hydrology_network_cache(
+    dist: Path, project_name: str, cache: Path
+) -> list[str]:
+    """Validate and stage one complete, explicitly accepted Ready network."""
+    validate_project_name(project_name)
+    if not cache.is_dir():
+        raise ValueError(f"accepted hydrology cache must be a directory: {cache}")
+    manifest, referenced = _read_ready_hydrology_network(cache)
+    destination_root = (
+        dist / "projects" / project_name / ".cache" / "RiverHydrology"
+    )
+    destination_root.mkdir(parents=True, exist_ok=True)
+    sources = [manifest, *(cache / Path(*relative.parts) for relative in referenced)]
+    staged: list[str] = []
+    for source in sources:
+        relative = source.relative_to(cache)
+        destination = destination_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        staged.append(destination.relative_to(dist).as_posix())
+    return sorted(staged)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, type=Path)
@@ -489,6 +734,11 @@ def main() -> int:
     parser.add_argument("--windows-sdk", required=True)
     parser.add_argument("--vulkan-sdk", required=True)
     parser.add_argument("--autoremesher", choices=("true", "false"), required=True)
+    parser.add_argument("--physx", choices=("true", "false"), required=True)
+    parser.add_argument("--physx-runtime", type=Path)
+    parser.add_argument("--physx-license", type=Path)
+    parser.add_argument("--cuda-license", type=Path)
+    parser.add_argument("--hydrology-cache", type=Path)
     parser.add_argument("--dependency-library", action="append", default=[])
     args = parser.parse_args()
 
@@ -529,6 +779,14 @@ def main() -> int:
     required = [(editor, "editor executable"), (project, "project"), (engine_shared, "engine shared library")]
     if args.config == "RelWithDebInfo":
         required.append((pdb, "RelWithDebInfo PDB"))
+    if args.physx == "true":
+        if args.hydrology_cache is None:
+            raise SystemExit(
+                "enabled PhysX packaging requires one accepted RiverHydrology network cache"
+            )
+        required.append((args.hydrology_cache, "accepted RiverHydrology network cache"))
+    elif args.hydrology_cache is not None:
+        raise SystemExit("disabled PhysX packaging cannot stage a hydrology network cache")
     for path, label in required:
         if not path.exists():
             raise SystemExit(f"{label} is missing: {path}")
@@ -562,6 +820,23 @@ def main() -> int:
         shutil.copy2(pdb, dist / "editor.pdb")
     shutil.copytree(project, dist / "projects" / project_name, ignore=ignored)
     shutil.copytree(engine_shared, dist / "MatterEngine3" / "shared-lib", ignore=ignored)
+
+    try:
+        runtime_dlls, nvidia_notices = stage_physx_runtime_bundle(
+            dist,
+            enabled=args.physx == "true",
+            runtime=args.physx_runtime,
+            physx_license=args.physx_license,
+            cuda_license=args.cuda_license,
+        )
+    except ValueError as error:
+        raise SystemExit(f"invalid PhysX package inputs: {error}") from error
+    assert args.hydrology_cache is not None or args.physx == "false"
+    if args.hydrology_cache is not None:
+        try:
+            stage_hydrology_network_cache(dist, project_name, args.hydrology_cache)
+        except ValueError as error:
+            raise SystemExit(f"invalid hydrology network cache: {error}") from error
 
     dependency_manifest: dict[str, dict[str, object]] = {}
     for identity, specification in DEPENDENCIES.items():
@@ -602,6 +877,13 @@ def main() -> int:
         notice_labels.append(identity)
         text = read_notice(license_path, mode)
         notice_parts.append(f"\n===== {identity}: {relative_license} =====\n{text}\n")
+    for identity, license_path in nvidia_notices:
+        notice_labels.append(identity)
+        text = read_notice(license_path, "full")
+        relative_license = license_path.relative_to(dist).as_posix()
+        notice_parts.append(
+            f"\n===== {identity}: {relative_license} =====\n{text}\n"
+        )
     notices = dist / "THIRD_PARTY_NOTICES.txt"
     notices.write_text("".join(notice_parts), encoding="utf-8", newline="\n")
 
@@ -635,17 +917,20 @@ def main() -> int:
         "features": {
             "autoremesher": args.autoremesher == "true",
             "streamline": False,
-            "physx": False,
-            "cuda": False,
+            "physx": args.physx == "true",
+            "cuda": args.physx == "true",
             "vulkan_renderer": True,
         },
-        "runtime_dlls": [],
+        "runtime_dlls": runtime_dlls,
         "files": file_hashes,
     }
     (dist / "build_features.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
     )
-    print(f"MSVC dist staged: {dist} ({len(file_hashes)} hashed files, 0 staged runtime DLLs)")
+    print(
+        f"MSVC dist staged: {dist} "
+        f"({len(file_hashes)} hashed files, {len(runtime_dlls)} staged runtime DLLs)"
+    )
     return 0
 
 

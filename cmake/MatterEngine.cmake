@@ -256,6 +256,21 @@ if(BUILD_TESTING)
 
     matter_add_engine_cpu_test(world_definition_tests
         MatterEngine3/tests/world_definition_tests.cpp)
+    matter_add_engine_cpu_test(shared_lib_tests
+        MatterEngine3/tests/shared_lib_tests.cpp)
+    matter_add_engine_cpu_test(river_network_tests
+        MatterEngine3/tests/river_network_tests.cpp)
+    matter_add_engine_cpu_test(river_geometry_tests
+        MatterEngine3/tests/river_geometry_tests.cpp)
+    matter_add_engine_cpu_test(authored_fluid_colliders_tests
+        MatterEngine3/tests/authored_fluid_colliders_tests.cpp)
+    matter_add_engine_cpu_test(river_section_graph_tests
+        MatterEngine3/tests/river_section_graph_tests.cpp)
+    matter_add_engine_cpu_test(spillway_handoff_tests
+        MatterEngine3/tests/spillway_handoff_tests.cpp)
+    matter_add_engine_cpu_test(dsl_determinism_tests
+        MatterEngine3/tests/dsl_determinism_tests.cpp
+        MatterEngine3/tests/field_probe.cpp)
     matter_add_engine_cpu_test(script_host_tests
         MatterEngine3/tests/script_host_tests.cpp)
     matter_add_engine_cpu_test(eval_world_tests
@@ -299,11 +314,18 @@ if(BUILD_TESTING)
         MatterEngine3/tests/gpu_visual_mesher_cpu_tests.cpp)
     matter_add_engine_cpu_test(hydrology_artifact_tests
         MatterEngine3/tests/hydrology_artifact_tests.cpp)
+    matter_add_engine_cpu_test(hydrology_network_artifact_tests
+        MatterEngine3/tests/hydrology_network_artifact_tests.cpp)
+    matter_add_engine_cpu_test(river_section_coordinator_tests
+        MatterEngine3/tests/river_section_coordinator_tests.cpp)
+    matter_add_engine_cpu_test(hydrology_handoff_products_tests
+        MatterEngine3/tests/hydrology_handoff_products_tests.cpp)
     matter_add_engine_cpu_test(physx_adapter_contract_tests
-        MatterEngine3/tests/physx_adapter_contract_tests.cpp
-        MatterEngine3/src/ecs/scene_registry.cpp)
+        MatterEngine3/tests/physx_adapter_contract_tests.cpp)
     target_compile_definitions(physx_adapter_contract_tests PRIVATE
         MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
+    matter_add_engine_cpu_test(async_bake_tests
+        MatterEngine3/tests/async_bake_tests.cpp)
     if(MATTER_ENABLE_PHYSX)
         add_executable(physx_fluid_integration_tests
             MatterEngine3/tests/physx_fluid_integration_tests.cpp)

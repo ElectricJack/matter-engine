@@ -430,15 +430,17 @@ git commit -m "feat: orchestrate PhysX river bakes in the editor"
 
 - [ ] **Step 1: Add failing P3/P4 acceptance assertions**
 
-Require at least 100 m inlet-to-dam, about 15% overall fall with reach variation, variable-width rounded-V channel, dry-collar clearance, fill completion before max steps, finite/non-escaped particles, connected wet path, nonzero downstream velocity through the curve, no truncation, no more than two million active particles, and under five wall-clock minutes on the RTX 4090.
+Require at least 100 m inlet-to-dam, about 15% overall fall with reach variation, variable-width rounded-V channel, dry-collar clearance, fill completion before max steps, finite accepted particles, deterministic escaped-particle quarantine within the declared 0.01% clamped budget with no connected leak, connected wet path, nonzero downstream velocity through the curve, no truncation, no more than two million active particles, and under five wall-clock minutes on the RTX 4090.
 
-- [ ] **Step 2: Run a bounded declared particle-spacing sweep**
+- [x] **Step 2: Run a bounded declared particle-spacing sweep**
 
-Test only the spec-declared spacings/settings, persist every result and rejection reason, and select the coarsest setting that passes all geometry, sensor, gameplay, visual, capacity, and time gates. Do not tune or replace PhysX solver mathematics.
+Use the user-approved 0.30 m physical spacing and matched candidate-A product settings, then sweep inlet flow only at 4, 8, and 12 m³/s through the unchanged 64-second window. Persist every result/rejection reason and stop at the first flow that passes geometry, sensor, gameplay, visual, capacity, time, and substantial-connected-rapids visual gates. Do not tune or replace PhysX solver mathematics.
+
+Observed result: no candidate passed. F4 ended `SensorNotReached` at step 65,536 (sensor 0.333333, 0/8 escapes, 167.534303 s); F8 ended `EscapedParticles` at step 23,552 (sensor 0.666667, 9/8 escapes, 151.508028 s); F12 ended `EscapedParticles` at step 4,096 (sensor 0.0, 11/8 escapes, 27.384693 s). F8/F12 escapes cluster at the source-side boundary near `(-10.960, 42.266, -4.735)`. No selected/accepted setting exists; pause at the explicit inlet-architecture decision boundary without weakening gates.
 
 - [ ] **Step 3: Capture and inspect the accepted water**
 
-Generate overview, principal curve, downstream/dam, and low-water captures using the normal editor and existing glass material. Inspect the files for connected flow, terrain containment, boulder interaction, bank clearance, and visible absence of hidden domain walls.
+Generate at least eight normal-editor captures using the existing glass material: overview, inlet, curve approach, curve exit, boulder interaction, downstream/dam, low-water upstream, and low-water downstream. Also retain descriptive failed-candidate views when a rejected finite snapshot produces `UNACCEPTED DEBUG WATER`. Inspect every file for connected flow, terrain containment, boulder interaction, bank clearance, and visible absence of hidden domain walls.
 
 - [ ] **Step 4: Prove cache and lifecycle behavior**
 

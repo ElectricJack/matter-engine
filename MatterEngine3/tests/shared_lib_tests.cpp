@@ -77,6 +77,22 @@ static void test_resolve_specifier() {
           "path traversal rejected");
 }
 
+static void test_river_curve_module_is_engine_owned_and_foldable() {
+    std::string path;
+    std::string error;
+    CHECK(module_resolver::resolve_specifier(
+              "shared-lib/river_curve", "../shared-lib", path, error),
+          ("resolve engine river_curve module: " + error).c_str());
+    const std::string importer =
+        "import { riverCurve, sampleRiverCurve } from 'shared-lib/river_curve';\n";
+    module_resolver::FoldResult folded;
+    CHECK(module_resolver::fold_sources(importer, "../shared-lib", folded, error),
+          ("fold engine river_curve module: " + error).c_str());
+    CHECK(folded.resolved_specifiers.size() == 1u &&
+              folded.resolved_specifiers.front() == "shared-lib/river_curve",
+          "river curve helper participates in canonical source folding");
+}
+
 // ---- Task 3: transitive gather + canonical fold ---------------------------
 static void test_fold_transitive_and_canonical() {
     const std::string root = "shared-lib-fixtures";
@@ -473,6 +489,7 @@ static void test_script_host_ordered_roots_affect_hash_identity() {
 int main() {
     test_parse_imports();
     test_resolve_specifier();
+    test_river_curve_module_is_engine_owned_and_foldable();
     test_fold_transitive_and_canonical();
     test_ordered_roots_shadow_and_transitive_fallback();
     test_fold_changes_resolved_hash();

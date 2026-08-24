@@ -18,10 +18,17 @@ MatterEngine3/src/hydrology/hydrology_settings.cpp|all
 MatterEngine3/src/hydrology/water_visual_products.cpp|all
 MatterEngine3/src/hydrology/fluid_gameplay_field.cpp|all
 MatterEngine3/src/hydrology/hydrology_artifact.cpp|all
+MatterEngine3/src/hydrology/hydrology_network_artifact.cpp|all
+MatterEngine3/src/hydrology/hydrology_handoff_products.cpp|all
 MatterEngine3/src/hydrology/river_network_builder.cpp|all
 MatterEngine3/src/hydrology/river_geometry.cpp|all
 MatterEngine3/src/hydrology/physx_fluid_bake.cpp|all
 MatterEngine3/src/hydrology/physx_collision_input.cpp|all
+MatterEngine3/src/hydrology/authored_fluid_colliders.cpp|all
+MatterEngine3/src/hydrology/river_section_graph.cpp|all
+MatterEngine3/src/hydrology/river_section_coordinator.cpp|all
+MatterEngine3/src/hydrology/fluid_emitter_layout.cpp|all
+MatterEngine3/src/hydrology/spillway_handoff.cpp|all
 MatterEngine3/src/hydrology/fluid_emission.cpp|all
 MatterEngine3/src/hydrology/fill_sensor.cpp|all
 MatterEngine3/src/terrain_river_overlay.cpp|all
@@ -72,6 +79,7 @@ MatterEngine3/src/render/tileset_slicer.cpp|all
 MatterEngine3/src/render/bc_encode.cpp|all
 MatterEngine3/src/provider/local_provider.cpp|all
 MatterEngine3/src/provider/resolvers.cpp|all
+MatterEngine3/src/ecs/scene_registry.cpp|all
 MatterEngine3/src/ecs/ecs_runtime.cpp|all
 MatterEngine3/src/ecs/simulation_control.cpp|all
 MatterEngine3/src/ecs/physics_context.cpp|all

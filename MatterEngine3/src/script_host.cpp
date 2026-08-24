@@ -6,6 +6,7 @@ extern "C" {
 #include "tileset_base.js.h"
 #include "world_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
+#include "part_bundle.h"
 #include "animation/animation_validate.h"
 #include "animation/anim_asset.h"
 #include "animation/anim_bundle.h"
@@ -75,14 +76,19 @@ void report_animation_diagnostics(BakeResult& out,
     report_animation_diagnostics(out, diagnostics.items);
 }
 
-uint64_t part_body_checksum(const std::filesystem::path& path) {
-    FILE* f = std::fopen(path.string().c_str(), "rb");
-    if (!f) return 0;
-    std::fseek(f, 0, SEEK_END); const long size = std::ftell(f); std::fseek(f, 0, SEEK_SET);
-    std::vector<unsigned char> bytes(size > 40 ? size_t(size) : 0);
-    const bool ok = !bytes.empty() && std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
-    std::fclose(f); if (!ok) return 0;
-    uint64_t h=1469598103934665603ull; for (size_t i=40;i<bytes.size();++i) { h^=bytes[i]; h*=1099511628211ull; } return h;
+uint64_t part_body_checksum(const std::filesystem::path& path,
+                            uint64_t resolved_hash) {
+    std::vector<uint8_t> bytes;
+    if (!part_bundle::read_section(path.string(), resolved_hash,
+                                   part_bundle::kSectionRep0, bytes) ||
+        bytes.size() < 40u)
+        return 0u;
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (size_t index = 40u; index < bytes.size(); ++index) {
+        hash ^= bytes[index];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
 }
 
 // Resolve the authored direct-triangle claims while the original build stream
@@ -2308,7 +2314,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                  part_asset::save_v2(part_candidate.string(),blas,tlas,kids.empty()?nullptr:kids.data(),kids.size(),lods,emitters,link,r.resolved_hash) &&
                  matter::animation::save_anim_candidate(asset,anim_candidate,diagnostics);
             matter::animation::BundleIdentity identity; identity.resolved_hash=r.resolved_hash; identity.nonce=nonce;
-            identity.part_body_checksum=part_body_checksum(part_candidate); identity.anim_body_checksum=matter::animation::anim_body_checksum(asset);
+            identity.part_body_checksum=part_body_checksum(part_candidate,r.resolved_hash); identity.anim_body_checksum=matter::animation::anim_body_checksum(asset);
             identity.target_abi_tag=matter::animation::kAnimationTargetAbiTag; identity.ozz_tag_hash=matter::animation::kAnimationOzzTagHash;
             identity.lods=matter::animation::manifest_lod_signatures(binding);
             if (ok) ok=matter::animation::publish_animation_bundle({part_candidate,anim_candidate,root},identity,diagnostics);

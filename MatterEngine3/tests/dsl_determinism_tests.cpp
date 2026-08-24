@@ -320,12 +320,11 @@ bool build_fluid_network(bool quality_first,
     std::size_t river = 0;
     if (!builder.add_river("main", river, error) ||
         !builder.set_inlet(river, {{0.0f, 18.0f, 0.0f}, 1.0f}, error) ||
-        !builder.set_spline(river, {{0.0f, 18.0f, 0.0f},
-                                    {128.0f, 3.0f, 5.0f}}, error) ||
-        !builder.add_reach(river, {128.0f, -0.012f, 0.65f}, error) ||
-        !builder.set_channel(river, {7.0f, 2.5f, 0.35f}, error) ||
-        !builder.set_boulders(river, {0.08f, {0.5f, 2.0f}}, error) ||
-        !builder.set_first_section(river, {100.0f, 5.0f}, error) ||
+        !builder.set_curve(river, {{0.0f, 18.0f, 0.0f},
+                                   {128.0f, 3.0f, 5.0f}}, error) ||
+        !builder.set_channel_profile(
+            river, {{0.0f, 7.0f, 2.5f, 0.35f},
+                    {128.0f, 7.0f, 2.5f, 0.35f}}, error) ||
         !builder.set_backend(matter::HydrologyBackend::Physx, error))
         return false;
 
@@ -363,10 +362,21 @@ bool build_fluid_network(bool quality_first,
     sensor.crest_wet_fraction = 0.8f;
     sensor.stable_wet_steps = 32u;
     sensor.minimum_particles_per_cell = 1u;
+    std::size_t section = 0;
     return builder.add_emitter(inlet, error) &&
            builder.add_emitter(tributary, error) &&
-           builder.set_virtual_dam({100.0f, 8.0f, 0.5f}, error) &&
+           builder.set_virtual_dam({8.0f, 0.5f}, error) &&
            builder.set_fill_sensor(sensor, error) &&
+           builder.add_section(river, "upper", 0.0f, 100.0f, 5.0f,
+                               section, error) &&
+           builder.set_section_emitters(section,
+                                        {"upstream-inlet", "future-tributary"},
+                                        error) &&
+           builder.set_section_pool(section, {90.0f, 100.0f, 6.0f}, error) &&
+           builder.set_section_spillway(
+               section, {"pool-one", 100.0f, 7.0f, 2.0f, 4.0f, 2.0f},
+               error) &&
+           builder.set_bake_sequential(error) &&
            builder.finish(network, error);
 }
 

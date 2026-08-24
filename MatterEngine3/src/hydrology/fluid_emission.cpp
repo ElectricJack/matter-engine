@@ -12,11 +12,6 @@ namespace {
 constexpr float kSnippetVolumeScale = 1.333f * 3.14159f;
 constexpr double kIntegerSnapTolerance = 1.0e-6;
 
-bool finite(matter::Float3 value) {
-    return std::isfinite(value.x) && std::isfinite(value.y) &&
-           std::isfinite(value.z);
-}
-
 bool fail(FluidBakeCode code, const char* message,
           std::vector<FluidParticleActivation>& activations,
           FluidBakeError& error) {
@@ -58,13 +53,7 @@ bool schedule_fluid_emission_step(
     }
     std::unordered_set<std::uint32_t> emitter_ids;
     for (const FluidEmitter& emitter : emitters) {
-        if (!finite(emitter.position_m) || !finite(emitter.direction) ||
-            !finite(emitter.initial_velocity_mps) ||
-            !std::isfinite(emitter.flow_m3s) ||
-            !(emitter.flow_m3s > 0.0f) ||
-            !std::isfinite(emitter.radius_m) ||
-            !(emitter.radius_m > 0.0f) ||
-            emitter.start_step >= emitter.stop_step ||
+        if (!valid_fluid_emitter(emitter) ||
             !emitter_ids.insert(emitter.id).second) {
             return fail(FluidBakeCode::InvalidInput,
                         "fluid emitter schedule input is invalid",

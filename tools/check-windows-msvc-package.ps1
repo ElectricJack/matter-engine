@@ -44,6 +44,7 @@ $expectedNotices = @(
     'bc7enc', 'box3d', 'flecs', 'glfw', 'dear_imgui', 'imguizmo',
     'ozz_animation', 'quickjs_ng', 'vulkan_headers'
 )
+$nvidiaNotices = @('nvidia_physx', 'nvidia_cuda')
 
 $dist = if (Test-Path -LiteralPath $DistPath -PathType Container) {
     (Resolve-Path -LiteralPath $DistPath).Path
@@ -280,9 +281,23 @@ foreach ($entry in $expectedDependencies.GetEnumerator()) {
     }
 }
 
-Assert-ExactStrings 'notice component list' @($manifest.notices) $expectedNotices
+Assert-ExactProperties 'features' $manifest.features @('autoremesher', 'streamline', 'physx', 'cuda', 'vulkan_renderer')
+if (-not $manifest.features.vulkan_renderer) { throw 'Vulkan renderer feature must be enabled' }
+foreach ($flag in @('autoremesher', 'streamline', 'physx', 'cuda', 'vulkan_renderer')) {
+    if ($manifest.features.$flag -isnot [bool]) { throw "feature $flag must be boolean" }
+}
+if ($manifest.features.physx -ne $manifest.features.cuda) {
+    throw 'PhysX and CUDA package feature flags must be enabled or disabled together'
+}
+$requiredNotices = if ($manifest.features.physx) {
+    @($expectedNotices + $nvidiaNotices)
+} else {
+    @($expectedNotices)
+}
+
+Assert-ExactStrings 'notice component list' @($manifest.notices) $requiredNotices
 $noticeText = Get-Content -LiteralPath $noticePath -Raw
-foreach ($label in $expectedNotices) {
+foreach ($label in $requiredNotices) {
     $escaped = [regex]::Escape($label)
     $match = [regex]::Match(
         $noticeText,
@@ -293,11 +308,9 @@ foreach ($label in $expectedNotices) {
         throw "required notice component '$label' has no substantive license content"
     }
 }
-
-Assert-ExactProperties 'features' $manifest.features @('autoremesher', 'streamline', 'physx', 'cuda', 'vulkan_renderer')
-if (-not $manifest.features.vulkan_renderer) { throw 'Vulkan renderer feature must be enabled' }
-foreach ($flag in @('autoremesher', 'streamline', 'physx', 'cuda', 'vulkan_renderer')) {
-    if ($manifest.features.$flag -isnot [bool]) { throw "feature $flag must be boolean" }
+if ($manifest.features.physx) {
+    [void](Require-PackageFile 'licenses/NVIDIA_PhysX_LICENSE.md' 'NVIDIA PhysX license')
+    [void](Require-PackageFile 'licenses/NVIDIA_CUDA_EULA.txt' 'NVIDIA CUDA EULA')
 }
 
 $hasPdb = Test-Path -LiteralPath (Join-Path $dist 'editor.pdb') -PathType Leaf
@@ -335,12 +348,38 @@ foreach ($relative in $manifestFileSet) {
     if (-not $diskFileSet.Contains($relative)) { throw "manifest file is absent from package: $relative" }
 }
 
+if ($manifest.features.physx) {
+    $hydrologyRoot = Join-Path $dist `
+        ("projects\{0}\.cache\RiverHydrology\hydrology" -f [string]$manifest.project)
+    $networkManifests = if (Test-Path -LiteralPath $hydrologyRoot -PathType Container) {
+        @(Get-ChildItem -LiteralPath $hydrologyRoot -File -Filter '*.mhyn')
+    } else { @() }
+    $sectionRoot = Join-Path $hydrologyRoot 'sections'
+    $handoffRoot = Join-Path $hydrologyRoot 'handoffs'
+    $sectionArtifacts = if (Test-Path -LiteralPath $sectionRoot -PathType Container) {
+        @(Get-ChildItem -LiteralPath $sectionRoot -File -Filter '*.mhyd')
+    } else { @() }
+    $handoffArtifacts = if (Test-Path -LiteralPath $handoffRoot -PathType Container) {
+        @(Get-ChildItem -LiteralPath $handoffRoot -File -Filter '*.mhyd')
+    } else { @() }
+    $allHydrologyArtifacts = @(Get-ChildItem -LiteralPath $dist -Recurse -File -Filter '*.mhyd')
+    $allNetworkManifests = @(Get-ChildItem -LiteralPath $dist -Recurse -File -Filter '*.mhyn')
+    if ($networkManifests.Count -ne 1 -or $sectionArtifacts.Count -ne 2 -or
+        $handoffArtifacts.Count -ne 1 -or $allHydrologyArtifacts.Count -ne 3 -or
+        $allNetworkManifests.Count -ne 1) {
+        throw 'PhysX package requires one accepted Ready RiverHydrology network with two section artifacts and one handoff artifact in its canonical project cache'
+    }
+}
+
 $runtimeDlls = @($manifest.runtime_dlls | ForEach-Object { [string]$_ })
 if (($runtimeDlls | Select-Object -Unique).Count -ne $runtimeDlls.Count) { throw 'runtime_dlls contains duplicates' }
 foreach ($runtime in $runtimeDlls) {
     if ($runtime -notmatch '^[A-Za-z0-9_.+\-]+\.dll$' -or [IO.Path]::GetFileName($runtime) -ne $runtime) {
         throw "runtime_dlls contains invalid staged DLL name '$runtime'"
     }
+}
+if ($manifest.features.physx) {
+    Assert-ExactStrings 'PhysX runtime DLL closure' @($runtimeDlls) @('PhysXGpu_64.dll')
 }
 $stagedDlls = @(Get-ChildItem -LiteralPath $dist -Recurse -File -Filter '*.dll' | ForEach-Object { Get-RelativePackagePath $_.FullName })
 Assert-ExactStrings 'runtime_dlls/staged DLL closure' @($stagedDlls | Sort-Object) @($runtimeDlls | Sort-Object)
@@ -353,6 +392,11 @@ $pending.Enqueue($editor)
 $visited = @{}
 $allImports = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $reachableStaged = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+if ($manifest.features.physx) {
+    $physxGpuRuntime = Require-PackageFile 'PhysXGpu_64.dll' 'Pinned PhysX GPU runtime'
+    [void]$reachableStaged.Add('PhysXGpu_64.dll')
+    $pending.Enqueue($physxGpuRuntime)
+}
 while ($pending.Count -gt 0) {
     $binary = $pending.Dequeue()
     if ($visited.ContainsKey($binary)) { continue }

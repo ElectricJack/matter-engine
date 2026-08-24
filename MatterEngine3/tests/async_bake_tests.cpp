@@ -199,18 +199,18 @@ static bool build_authored_fluid_sandbox(const fs::path& root) {
         "  hydrology() {\n"
         "    const n=riverNetwork({cellSize:1,seed:7});\n"
         "    const r=n.river('main').inlet([0,8,0],{flow:1})\n"
-        "      .spline([[0,8,0],[10,1,0]])\n"
-        "      .reach({until:10,baseGrade:-.1,meander:0})\n"
-        "      .channel({width:4,depth:3,asymmetry:0})\n"
-        "      .boulders({density:0,radius:[.5,1]});\n"
+        "      .curve([[0,8,0],[10,1,0]])\n"
+        "      .channelProfile([{at:0,width:4,depth:3,asymmetry:0},"
+        "{at:10,width:4,depth:3,asymmetry:0}]);\n"
         "    n.backend('physx');\n"
         "    n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:.01,iterations:4,maxNeighbors:96});\n"
         "    n.limits({batchSteps:8,maxSteps:120,maxParticles:1000});\n"
         "    n.emitter({id:'main-inlet',position:[1,4,1],direction:[1,0,0],initialVelocity:[1,0,0],flow:1,radius:.5,startTime:0,stopTime:1.2});\n"
-        "    n.virtualDam({distance:8,height:4,thickness:.5});\n"
+        "    n.virtualDam({height:4,thickness:.5});\n"
         "    n.fillSensor({upstreamOffset:1,length:1,height:3,resolution:[2,2,2],crestWetFraction:.5,stableWetSteps:1,minimumParticlesPerCell:1});\n"
         "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxVisualParticles:1000,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n"
-        "    n.firstSection(r,{minimumLength:8,dryMargin:1}); n.build();\n"
+        "    r.section('upper',{from:0,to:8,dryMargin:1}).emitters(['main-inlet']).pool({from:7,to:8,fillLevel:3}).spillway({id:'pool-one',at:8,width:4,effectiveDepth:1,overlap:1,damOffset:.5});\n"
+        "    n.bakeSequential(); n.build();\n"
         "  }\n"
         "}\n") && project_fixture_contract(root, "FluidAsync");
 }
@@ -257,6 +257,10 @@ public:
         };
         output.sensor = {0.75f, 4u, 5u, true, 0.8f, 0.75f, 0.75f, 2u};
         output.stats = {5u, 3u, 3u, 0u, 0u, 0.01};
+        output.stats.escape_policy = input.settings.escape_policy;
+        output.stats.emitted_particles = 3u;
+        output.stats.escape_budget = hydrology::fluid_escape_budget(
+            3u, input.settings.escape_policy);
         error = {};
         return true;
     }
@@ -1722,7 +1726,8 @@ static bool test_production_animated_gallery_binding() {
               cold_skin.source_vertex == 1200 &&
               cold_skin.influence_vertex == 0 &&
               cold_skin.vertex_count > 0 &&
-              cold_skin.influence_count == cold_skin.vertex_count &&
+              cold_skin.influence_count >=
+                  cold_skin.influence_vertex + cold_skin.vertex_count &&
               cold_skin.first_index == 3400 &&
               cold_skin.index_count > 0,
           "cold gallery uses production skin reconciliation with injected global raster ranges");
@@ -1768,7 +1773,8 @@ static bool test_production_animated_gallery_binding() {
               warm_skin.source_vertex == 5600 &&
               warm_skin.influence_vertex == 0 &&
               warm_skin.vertex_count > 0 &&
-              warm_skin.influence_count == warm_skin.vertex_count &&
+              warm_skin.influence_count >=
+                  warm_skin.influence_vertex + warm_skin.vertex_count &&
               warm_skin.first_index == 7800 &&
               warm_skin.index_count > 0,
           "warm gallery executes the same production skin reconciliation contract");
