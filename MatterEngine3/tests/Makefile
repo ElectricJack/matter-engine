@@ -1179,6 +1179,15 @@ GPU_VISUAL_MESHER_CPU_CPP = gpu_visual_mesher_cpu_tests.cpp \
 GPU_VISUAL_MESHER_CPU_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
                           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
 
+RIVER_PRESENTATION_FIELD_TARGET = build/river_presentation_field_tests
+RIVER_PRESENTATION_FIELD_CPP = river_presentation_field_tests.cpp \
+                               ../src/hydrology/fluid_gameplay_field.cpp \
+                               ../src/hydrology/river_presentation_field.cpp \
+                               ../src/hydrology/water_visual_products.cpp
+RIVER_PRESENTATION_FIELD_OBJS = $(call obj_list,def,$(RIVER_PRESENTATION_FIELD_CPP))
+
+$(foreach s,$(RIVER_PRESENTATION_FIELD_CPP),$(eval $(call objrule_cpp,def,$(s))))
+
 HYDROLOGY_ARTIFACT_TARGET = build/hydrology_artifact_tests
 HYDROLOGY_ARTIFACT_CPP = hydrology_artifact_tests.cpp \
                          ../src/hydrology/hydrology_artifact.cpp \
@@ -3158,6 +3167,18 @@ run-gpu-visual-mesher-cpu: $(GPU_VISUAL_MESHER_CPU_TARGET)
 clean: clean-gpu-visual-mesher-cpu
 clean-gpu-visual-mesher-cpu:
 	rm -f $(GPU_VISUAL_MESHER_CPU_TARGET)
+
+$(RIVER_PRESENTATION_FIELD_TARGET): $(RIVER_PRESENTATION_FIELD_OBJS) \
+        ../src/hydrology/river_presentation_field.h check.h | build
+	$(CC) $(RIVER_PRESENTATION_FIELD_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-river-presentation-field: $(RIVER_PRESENTATION_FIELD_TARGET)
+	./$(RIVER_PRESENTATION_FIELD_TARGET)
+
+.PHONY: run-river-presentation-field clean-river-presentation-field
+clean: clean-river-presentation-field
+clean-river-presentation-field:
+	rm -f $(RIVER_PRESENTATION_FIELD_TARGET)
 
 $(HYDROLOGY_ARTIFACT_TARGET): $(HYDROLOGY_ARTIFACT_OBJS) \
         ../src/hydrology/hydrology_artifact.h \

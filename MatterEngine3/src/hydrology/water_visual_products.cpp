@@ -278,7 +278,46 @@ ProductKeys derive_product_keys(
     gameplay.u32(gameplay_layout.width);
     gameplay.u32(gameplay_layout.depth);
     gameplay.u32(settings.field_contract_version);
-    return {visual.finish(), coarse.finish(), gameplay.finish()};
+
+    const PresentationDerivationSettings& presentation_settings =
+        settings.presentation;
+    Digest presentation(0x50524553454e5431ull);
+    presentation.u64(snapshot);
+    presentation.u64(settings.semantic_key);
+    presentation.point(gameplay_layout.origin_m);
+    presentation.floating(gameplay_layout.cell_size_m);
+    presentation.u32(gameplay_layout.width);
+    presentation.u32(gameplay_layout.depth);
+    presentation.u32(presentation_settings.contract_version);
+    presentation.floating(presentation_settings.velocity_variance_weight);
+    presentation.floating(presentation_settings.divergence_weight);
+    presentation.floating(presentation_settings.vorticity_weight);
+    presentation.floating(presentation_settings.vertical_speed_weight);
+    presentation.floating(presentation_settings.surface_slope_weight);
+    presentation.floating(presentation_settings.shallows_weight);
+    presentation.floating(presentation_settings.wake_distance_weight);
+    presentation.floating(presentation_settings.waterfall_weight);
+    presentation.floating(presentation_settings.impact_weight);
+    presentation.floating(presentation_settings.spillway_weight);
+    presentation.floating(presentation_settings.pool_weight);
+    presentation.floating(presentation_settings.velocity_variance_scale_mps2);
+    presentation.floating(presentation_settings.divergence_scale_per_m);
+    presentation.floating(presentation_settings.vorticity_scale_per_m);
+    presentation.floating(presentation_settings.vertical_speed_scale_mps);
+    presentation.floating(presentation_settings.surface_slope_scale);
+    presentation.floating(presentation_settings.shallow_depth_m);
+    presentation.floating(presentation_settings.wake_distance_scale_m);
+    presentation.floating(presentation_settings.current_speed_mps);
+    presentation.floating(presentation_settings.rapid_speed_mps);
+    presentation.u64(settings.presentation_local_overrides.size());
+    for (const PresentationLocalOverride& local_override :
+         settings.presentation_local_overrides) {
+        presentation.floating(local_override.turbulence_multiplier);
+        presentation.floating(local_override.aeration_multiplier);
+        presentation.floating(local_override.foam_multiplier);
+    }
+    return {visual.finish(), coarse.finish(), gameplay.finish(),
+            presentation.finish()};
 }
 
 bool build_cpu_particle_visual(const gpu_meshing::ParticleJob& job,

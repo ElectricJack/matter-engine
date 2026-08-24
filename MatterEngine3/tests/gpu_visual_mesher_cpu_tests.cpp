@@ -1,6 +1,7 @@
 #include "check.h"
 
 #include "matter/gpu_visual_meshing.h"
+#include "hydrology/fluid_gameplay_field.h"
 #include "hydrology/water_visual_products.h"
 #include "surface.h"
 
@@ -264,6 +265,68 @@ void test_coarse_identity_includes_cpu_mesher_blend_width() {
           "the CPU mesher blend width invalidates its coarse key without churning gameplay");
 }
 
+void test_gameplay_sampling_requires_all_bilinear_contributors() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
+                                                2u, 2u};
+    std::vector<hydrology::GameplaySample> wet = {
+        {2.0f, 1.0f, 1.0f, 2.0f, 3.0f, true},
+        {4.0f, 3.0f, 3.0f, 4.0f, 5.0f, true},
+        {6.0f, 5.0f, 5.0f, 6.0f, 7.0f, true},
+        {8.0f, 7.0f, 7.0f, 8.0f, 9.0f, true},
+    };
+    hydrology::GameplaySample sample{};
+    CHECK(hydrology::sample_fluid_gameplay_field(layout, wet, 1.0f, 1.0f,
+                                                  sample),
+          "cell-centre bilinear sampling accepts wet contributors");
+    CHECK(sample.height_m == 5.0f && sample.depth_m == 4.0f &&
+              sample.velocity_x_mps == 4.0f && sample.velocity_y_mps == 5.0f &&
+              sample.velocity_z_mps == 6.0f && sample.wet_valid,
+          "bilinear sampling preserves all continuous and 3D velocity channels");
+
+    wet[3].wet_valid = false;
+    CHECK(!hydrology::sample_fluid_gameplay_field(layout, wet, 1.0f, 1.0f,
+                                                   sample) &&
+              sample == hydrology::GameplaySample{},
+          "wet dry edge returns no partially blended gameplay surface");
+    CHECK(!hydrology::sample_fluid_gameplay_field(layout, wet, -0.01f, 0.5f,
+                                                   sample),
+          "gameplay sampling does not clamp out of bounds coordinates");
+    wet[0].wet_valid = false;
+    CHECK(!hydrology::sample_fluid_gameplay_field(layout, wet, 0.5f, 0.5f,
+                                                   sample),
+          "gameplay sampling rejects a dry border cell");
+}
+
+void test_presentation_identity_is_independent_of_visual_identity() {
+    gpu_meshing::ParticleSample particles[1];
+    const auto job = one_sphere_job(particles);
+    hydrology::ProductIdentitySettings settings{};
+    settings.semantic_key = 93u;
+    const hydrology::GameplayFieldLayout gameplay_layout{
+        {-1.0f, 0.0f, -1.0f}, 0.5f, 4u, 4u};
+    const auto first = hydrology::derive_product_keys(
+        job, hydrology::particle_snapshot_digest(particles, 1u), settings,
+        0.25f, gameplay_layout);
+    settings.presentation.wake_distance_weight += 0.25f;
+    const auto second = hydrology::derive_product_keys(
+        job, hydrology::particle_snapshot_digest(particles, 1u), settings,
+        0.25f, gameplay_layout);
+    CHECK(first.visual == second.visual && first.coarse_cpu == second.coarse_cpu &&
+              first.gameplay == second.gameplay &&
+              first.presentation != second.presentation,
+          "presentation-only settings change only the presentation key");
+
+    settings.presentation_local_overrides.push_back({1.0f, 1.0f, 1.5f});
+    const auto overridden = hydrology::derive_product_keys(
+        job, hydrology::particle_snapshot_digest(particles, 1u), settings,
+        0.25f, gameplay_layout);
+    CHECK(second.visual == overridden.visual &&
+              second.coarse_cpu == overridden.coarse_cpu &&
+              second.gameplay == overridden.gameplay &&
+              second.presentation != overridden.presentation,
+          "canonical local overrides change only the presentation key");
+}
+
 }  // namespace
 
 int main() {
@@ -274,5 +337,7 @@ int main() {
     test_mesh_digest_is_stable_and_sensitive();
     test_gameplay_identity_ignores_visual_job_bounds();
     test_coarse_identity_includes_cpu_mesher_blend_width();
+    test_gameplay_sampling_requires_all_bilinear_contributors();
+    test_presentation_identity_is_independent_of_visual_identity();
     return check_summary();
 }

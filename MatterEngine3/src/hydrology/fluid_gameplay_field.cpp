@@ -1,5 +1,6 @@
 #include "hydrology/fluid_gameplay_field.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -15,6 +16,12 @@ bool valid_layout(const GameplayFieldLayout& layout) {
            layout.depth != 0u &&
            static_cast<std::uint64_t>(layout.width) * layout.depth <=
                16ull * 1024ull * 1024ull;
+}
+
+bool valid_wet_sample(const GameplaySample& sample) {
+    return sample.wet_valid && finite(sample.height_m) &&
+           finite(sample.depth_m) && finite(sample.velocity_x_mps) &&
+           finite(sample.velocity_y_mps) && finite(sample.velocity_z_mps);
 }
 
 }  // namespace
@@ -101,14 +108,42 @@ bool sample_fluid_gameplay_field(const GameplayFieldLayout& layout,
     if (!valid_layout(layout) || !finite(x_m) || !finite(z_m) ||
         samples.size() != static_cast<std::size_t>(layout.width) * layout.depth)
         return false;
-    const int x = static_cast<int>(std::floor((x_m - layout.origin_m.x) /
-                                               layout.cell_size_m));
-    const int z = static_cast<int>(std::floor((z_m - layout.origin_m.z) /
-                                               layout.cell_size_m));
-    if (x < 0 || z < 0 || x >= static_cast<int>(layout.width) ||
-        z >= static_cast<int>(layout.depth))
+    const float cell_x = (x_m - layout.origin_m.x) / layout.cell_size_m -
+                         0.5f;
+    const float cell_z = (z_m - layout.origin_m.z) / layout.cell_size_m -
+                         0.5f;
+    if (cell_x < 0.0f || cell_z < 0.0f ||
+        cell_x > static_cast<float>(layout.width - 1u) ||
+        cell_z > static_cast<float>(layout.depth - 1u))
         return false;
-    sample = samples[static_cast<std::size_t>(z) * layout.width + x];
+    const std::uint32_t x0 = static_cast<std::uint32_t>(std::floor(cell_x));
+    const std::uint32_t z0 = static_cast<std::uint32_t>(std::floor(cell_z));
+    const std::uint32_t x1 = std::min(x0 + 1u, layout.width - 1u);
+    const std::uint32_t z1 = std::min(z0 + 1u, layout.depth - 1u);
+    const float tx = cell_x - static_cast<float>(x0);
+    const float tz = cell_z - static_cast<float>(z0);
+    const GameplaySample* contributors[] = {
+        &samples[static_cast<std::size_t>(z0) * layout.width + x0],
+        &samples[static_cast<std::size_t>(z0) * layout.width + x1],
+        &samples[static_cast<std::size_t>(z1) * layout.width + x0],
+        &samples[static_cast<std::size_t>(z1) * layout.width + x1]};
+    const float weights[] = {(1.0f - tx) * (1.0f - tz), tx * (1.0f - tz),
+                             (1.0f - tx) * tz, tx * tz};
+    for (std::size_t i = 0; i != 4u; ++i)
+        if (weights[i] > 0.0f && !valid_wet_sample(*contributors[i]))
+            return false;
+    for (std::size_t i = 0; i != 4u; ++i) {
+        sample.height_m += contributors[i]->height_m * weights[i];
+        sample.depth_m += contributors[i]->depth_m * weights[i];
+        sample.velocity_x_mps += contributors[i]->velocity_x_mps * weights[i];
+        sample.velocity_y_mps += contributors[i]->velocity_y_mps * weights[i];
+        sample.velocity_z_mps += contributors[i]->velocity_z_mps * weights[i];
+    }
+    sample.wet_valid = finite(sample.height_m) && finite(sample.depth_m) &&
+                       finite(sample.velocity_x_mps) &&
+                       finite(sample.velocity_y_mps) &&
+                       finite(sample.velocity_z_mps);
+    if (!sample.wet_valid) sample = {};
     return sample.wet_valid;
 }
 

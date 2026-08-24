@@ -312,6 +312,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/props_tests.cpp)
     matter_add_engine_cpu_test(gpu_visual_mesher_cpu_tests
         MatterEngine3/tests/gpu_visual_mesher_cpu_tests.cpp)
+    matter_add_engine_cpu_test(river_presentation_field_tests
+        MatterEngine3/tests/river_presentation_field_tests.cpp)
     matter_add_engine_cpu_test(hydrology_artifact_tests
         MatterEngine3/tests/hydrology_artifact_tests.cpp)
     matter_add_engine_cpu_test(hydrology_network_artifact_tests
