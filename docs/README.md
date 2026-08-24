@@ -34,6 +34,9 @@ engineers reading in context.
 - **[superpowers/plans/2026-08-24-sequential-river-sections-waterfall.md](superpowers/plans/2026-08-24-sequential-river-sections-waterfall.md)**
   — executable implementation record for the sequential PhysX river bake,
   immutable artifacts, runtime products, packaging, and visual acceptance.
+- **[superpowers/specs/2026-08-24-real-time-river-presentation-floating-bodies-design.md](superpowers/specs/2026-08-24-real-time-river-presentation-floating-bodies-design.md)**
+  — approved architecture for passive floating crates/rafts, flow-animated
+  waves and whitewater, and real-time ray-traced water optics.
 - **[contour-seam-design-2026-08-13.md](contour-seam-design-2026-08-13.md)** —
   "Seams by shared contour: no overlap, no welder." The decision (2026-08-13,
   from issue `736f92da`) to mesh each tile's boundary against a canonically
@@ -127,6 +130,6 @@ engineers reading in context.
 - **`screenshots/`** — reference screenshots for the sub-projects (mostly the
   `Prototypes/` examples), not itemized here.
 - **`superpowers/`** — planning/spec workspace: **85** dated implementation
-  plans in `plans/`, **92** dated design specs in `specs/`, plus top-level
+  plans in `plans/`, **93** dated design specs in `specs/`, plus top-level
   `backlog.md` and `REVIEW-LOG.md`. Not itemized here — treat as a searchable
   archive, not a curated index.
