@@ -331,6 +331,15 @@ void test_presentation_identity_is_independent_of_visual_identity() {
               second.gameplay == overridden.gameplay &&
               second.presentation != overridden.presentation,
           "canonical local overrides change only the presentation key");
+    settings.presentation.pool_weight = 2.0f;
+    const auto pool_changed = hydrology::derive_product_keys(
+        job, hydrology::particle_snapshot_digest(particles, 1u), settings,
+        0.25f, gameplay_layout);
+    CHECK(overridden.visual == pool_changed.visual &&
+              overridden.coarse_cpu == pool_changed.coarse_cpu &&
+              overridden.gameplay == pool_changed.gameplay &&
+              overridden.presentation != pool_changed.presentation,
+          "pool calm evidence changes only the presentation key");
 }
 
 void test_v4_cache_keys_ignore_unserialized_presentation_identity() {

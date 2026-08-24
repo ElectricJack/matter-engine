@@ -24,6 +24,25 @@ bool valid_wet_sample(const GameplaySample& sample) {
            finite(sample.velocity_y_mps) && finite(sample.velocity_z_mps);
 }
 
+struct VelocityWelford {
+    std::uint32_t count = 0u;
+    double mean_x = 0.0, mean_y = 0.0, mean_z = 0.0;
+    double m2 = 0.0;
+    bool add(const matter::Float3& velocity) {
+        if (count == std::numeric_limits<std::uint32_t>::max()) return false;
+        const double next = static_cast<double>(count) + 1.0;
+        const double dx = static_cast<double>(velocity.x) - mean_x;
+        const double dy = static_cast<double>(velocity.y) - mean_y;
+        const double dz = static_cast<double>(velocity.z) - mean_z;
+        mean_x += dx / next; mean_y += dy / next; mean_z += dz / next;
+        m2 += dx * (static_cast<double>(velocity.x) - mean_x) +
+              dy * (static_cast<double>(velocity.y) - mean_y) +
+              dz * (static_cast<double>(velocity.z) - mean_z);
+        ++count;
+        return std::isfinite(m2) && m2 >= 0.0;
+    }
+};
+
 }  // namespace
 
 bool build_fluid_gameplay_field(
@@ -42,10 +61,14 @@ bool build_fluid_gameplay_field(
     const std::size_t count = static_cast<std::size_t>(layout.width) * layout.depth;
     samples.assign(count, {});
     std::vector<float> velocity_weight(count, 0.0f);
-    std::vector<float> velocity_square_weight(count, 0.0f);
+    std::vector<VelocityWelford> velocity_statistics(count);
     std::vector<float> terrain_height(count, 0.0f);
     const float volume = 4.1887902047863909846f * particle_radius_m *
                          particle_radius_m * particle_radius_m;
+    if (!finite(volume) || volume <= 0.0f) {
+        error = "fluid gameplay field particle volume is non-finite";
+        return false;
+    }
     for (std::uint32_t z = 0; z != layout.depth; ++z) {
         for (std::uint32_t x = 0; x != layout.width; ++x) {
             const std::size_t index = static_cast<std::size_t>(z) * layout.width + x;
@@ -85,10 +108,11 @@ bool build_fluid_gameplay_field(
         sample.velocity_x_mps += particle.velocity_mps.x * volume;
         sample.velocity_y_mps += particle.velocity_mps.y * volume;
         sample.velocity_z_mps += particle.velocity_mps.z * volume;
-        velocity_square_weight[index] +=
-            (particle.velocity_mps.x * particle.velocity_mps.x +
-             particle.velocity_mps.y * particle.velocity_mps.y +
-             particle.velocity_mps.z * particle.velocity_mps.z) * volume;
+        if (!velocity_statistics[index].add(particle.velocity_mps)) {
+            samples.clear();
+            error = "fluid gameplay field velocity statistics overflow";
+            return false;
+        }
         velocity_weight[index] += volume;
         sample.wet_valid = true;
     }
@@ -109,19 +133,18 @@ bool build_fluid_gameplay_field(
         for (std::size_t index = 0; index != count; ++index) {
             const GameplaySample& sample = samples[index];
             if (!sample.wet_valid) continue;
-            const float mean_square = sample.velocity_x_mps * sample.velocity_x_mps +
-                                      sample.velocity_y_mps * sample.velocity_y_mps +
-                                      sample.velocity_z_mps * sample.velocity_z_mps;
-            const float variance = velocity_square_weight[index] /
-                                   velocity_weight[index] - mean_square;
-            if (!finite(variance)) {
+            const VelocityWelford& accumulator = velocity_statistics[index];
+            const double variance = accumulator.count == 0u ? 0.0 :
+                accumulator.m2 / static_cast<double>(accumulator.count);
+            if (!std::isfinite(variance) || variance < 0.0 ||
+                variance > std::numeric_limits<float>::max()) {
                 samples.clear();
                 statistics->velocity_variance_mps2.clear();
                 error = "fluid gameplay field variance is non-finite";
                 return false;
             }
             statistics->velocity_variance_mps2[index] =
-                std::max(0.0f, variance);
+                static_cast<float>(variance);
         }
     }
     return true;

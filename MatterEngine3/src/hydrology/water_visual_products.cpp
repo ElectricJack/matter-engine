@@ -299,6 +299,7 @@ ProductKeys derive_product_keys(
     presentation.floating(presentation_settings.waterfall_weight);
     presentation.floating(presentation_settings.impact_weight);
     presentation.floating(presentation_settings.spillway_weight);
+    presentation.floating(presentation_settings.pool_weight);
     presentation.floating(presentation_settings.velocity_variance_scale_mps2);
     presentation.floating(presentation_settings.divergence_scale_per_m);
     presentation.floating(presentation_settings.vorticity_scale_per_m);

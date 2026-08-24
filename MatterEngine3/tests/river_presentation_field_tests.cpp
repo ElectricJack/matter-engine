@@ -122,6 +122,79 @@ void test_gameplay_retains_known_velocity_variance() {
           "gameplay extraction retains the population velocity variance");
 }
 
+void test_gameplay_retains_stable_large_velocity_variance() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
+                                                1u, 1u};
+    const std::vector<hydrology::FluidParticle> particles = {
+        {{0.25f, 2.0f, 0.25f}, {10000.0f, 0.0f, 0.0f}, 1u},
+        {{0.75f, 2.0f, 0.75f}, {10002.0f, 0.0f, 0.0f}, 2u},
+    };
+    std::vector<hydrology::GameplaySample> field;
+    hydrology::GameplayFieldStatistics statistics{};
+    std::string error;
+    CHECK(hydrology::build_fluid_gameplay_field(
+              particles, 0.5f, layout,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              field, error, &statistics), error.c_str());
+    CHECK(std::fabs(statistics.velocity_variance_mps2[0] - 1.0f) < 1e-6f,
+          "retained variance is stable for large nearby velocities");
+}
+
+void test_presentation_rejects_overflowing_intermediates() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
+                                                2u, 1u};
+    std::vector<hydrology::GameplaySample> gameplay = {
+        {-3.0e38f, 1.0f, 1.0f, 0.0f, 0.0f, true},
+        {3.0e38f, 1.0f, 1.0f, 0.0f, 0.0f, true},
+    };
+    hydrology::GameplayFieldStatistics statistics{{0.0f, 0.0f}};
+    std::vector<float> terrain(2u, 0.0f), wake(2u, 1.0f);
+    std::vector<hydrology::PresentationMarkers> markers(2u);
+    std::vector<hydrology::PresentationLocalOverride> overrides(2u);
+    hydrology::PresentationDerivationInput input{
+        layout, &gameplay, &statistics, &terrain, &wake, &markers, &overrides};
+    hydrology::PresentationDerivationSettings settings{};
+    std::vector<hydrology::PresentationSample> output;
+    std::string error;
+    CHECK(!hydrology::build_river_presentation_field(input, settings, output, error) &&
+              output.empty() && !error.empty(),
+          "finite inputs whose derivatives overflow fail closed");
+
+    gameplay = {{2.0f, 1.0f, 1.0f, 0.0f, 0.0f, true},
+                {2.0f, 1.0f, 1.0f, 0.0f, 0.0f, true}};
+    statistics.velocity_variance_mps2 = {1.0f, 1.0f};
+    settings.velocity_variance_weight = std::numeric_limits<float>::max();
+    settings.divergence_weight = std::numeric_limits<float>::max();
+    CHECK(hydrology::build_river_presentation_field(input, settings, output, error) &&
+              output[0].turbulence >= 0.0f && output[0].turbulence <= 1.0f,
+          "large finite weights use stable arithmetic without overflow");
+}
+
+void test_pool_weight_is_calm_evidence() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
+                                                1u, 1u};
+    std::vector<hydrology::GameplaySample> gameplay = {
+        {2.0f, 0.1f, 3.0f, 1.0f, 0.0f, true}};
+    hydrology::GameplayFieldStatistics statistics{{1.0f}};
+    std::vector<float> terrain(1u, 0.0f), wake(1u, 0.0f);
+    std::vector<hydrology::PresentationMarkers> markers(1u, {false, false, false, true});
+    std::vector<hydrology::PresentationLocalOverride> overrides(1u);
+    hydrology::PresentationDerivationInput input{
+        layout, &gameplay, &statistics, &terrain, &wake, &markers, &overrides};
+    hydrology::PresentationDerivationSettings settings{};
+    std::vector<hydrology::PresentationSample> weak, strong;
+    std::string error;
+    settings.pool_weight = 0.0f;
+    CHECK(hydrology::build_river_presentation_field(input, settings, weak, error), error.c_str());
+    settings.pool_weight = 10.0f;
+    CHECK(hydrology::build_river_presentation_field(input, settings, strong, error), error.c_str());
+    CHECK(strong[0].turbulence < weak[0].turbulence &&
+              strong[0].aeration < weak[0].aeration &&
+              strong[0].foam_potential < weak[0].foam_potential &&
+              strong[0].feature == hydrology::RiverFeature::Pool,
+          "pool weight adds calm evidence without changing pool precedence");
+}
+
 void test_presentation_sampling_is_strict_and_bilinear() {
     const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
                                                 2u, 2u};
@@ -180,6 +253,15 @@ void test_feature_markers_have_explicit_precedence() {
     CHECK(hydrology::classify_river_feature({false, false, false, true}, 3.0f,
                                             settings) == hydrology::RiverFeature::Pool,
           "pool precedes rapid");
+    CHECK(hydrology::classify_river_feature({}, 3.0f, settings) ==
+              hydrology::RiverFeature::Rapid,
+          "rapid precedes current and calm");
+    CHECK(hydrology::classify_river_feature({}, 1.0f, settings) ==
+              hydrology::RiverFeature::Current,
+          "current precedes calm");
+    CHECK(hydrology::classify_river_feature({}, 0.0f, settings) ==
+              hydrology::RiverFeature::Calm,
+          "calm is the final classification rung");
 }
 
 }  // namespace
@@ -187,6 +269,9 @@ void test_feature_markers_have_explicit_precedence() {
 int main() {
     test_derives_repeatable_bounded_presentation_field();
     test_gameplay_retains_known_velocity_variance();
+    test_gameplay_retains_stable_large_velocity_variance();
+    test_presentation_rejects_overflowing_intermediates();
+    test_pool_weight_is_calm_evidence();
     test_presentation_sampling_is_strict_and_bilinear();
     test_feature_markers_have_explicit_precedence();
     return check_summary();

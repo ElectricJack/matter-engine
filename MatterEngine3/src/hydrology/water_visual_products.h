@@ -80,6 +80,9 @@ struct PresentationDerivationSettings {
     float waterfall_weight = 1.0f;
     float impact_weight = 1.0f;
     float spillway_weight = 1.0f;
+    // Pool cells add this zero-valued calm observation to every presentation
+    // mean; it does not affect feature precedence.
+    float pool_weight = 1.0f;
     float velocity_variance_scale_mps2 = 1.0f;
     float divergence_scale_per_m = 1.0f;
     float vorticity_scale_per_m = 1.0f;

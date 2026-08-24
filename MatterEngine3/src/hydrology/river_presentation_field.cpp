@@ -35,7 +35,7 @@ bool valid_settings(const PresentationDerivationSettings& settings) {
         settings.vorticity_weight, settings.vertical_speed_weight,
         settings.surface_slope_weight, settings.shallows_weight,
         settings.wake_distance_weight, settings.waterfall_weight,
-        settings.impact_weight, settings.spillway_weight,
+        settings.impact_weight, settings.spillway_weight, settings.pool_weight,
         settings.velocity_variance_scale_mps2,
         settings.divergence_scale_per_m, settings.vorticity_scale_per_m,
         settings.vertical_speed_scale_mps, settings.surface_slope_scale,
@@ -71,13 +71,17 @@ float normalized(float value, float scale) {
 
 float weighted_mean(const float* values, const float* weights,
                     std::size_t count) {
-    float total = 0.0f;
-    float weight_total = 0.0f;
+    double total = 0.0;
+    double weight_total = 0.0;
     for (std::size_t i = 0; i != count; ++i) {
-        total += values[i] * weights[i];
+        total += static_cast<double>(values[i]) * weights[i];
         weight_total += weights[i];
     }
-    return weight_total > 0.0f ? total / weight_total : 0.0f;
+    const double result = weight_total > 0.0 ? total / weight_total : 0.0;
+    return std::isfinite(result) &&
+                   result <= std::numeric_limits<float>::max()
+               ? static_cast<float>(result)
+               : std::numeric_limits<float>::quiet_NaN();
 }
 
 RiverFeature feature_for(const PresentationMarkers& markers, float speed,
@@ -178,8 +182,16 @@ bool build_river_presentation_field(
                 gradient_z = (down->height_m - gameplay.height_m) * inv_cell;
             else if (has_up)
                 gradient_z = (gameplay.height_m - up->height_m) * inv_cell;
+            if (!finite(gradient_x) || !finite(gradient_z)) {
+                samples.clear(); error = "river presentation field gradient overflow";
+                return false;
+            }
             const float normal_length = std::sqrt(
                 gradient_x * gradient_x + 1.0f + gradient_z * gradient_z);
+            if (!finite(normal_length) || normal_length <= 0.0f) {
+                samples.clear(); error = "river presentation field normal overflow";
+                return false;
+            }
             PresentationSample result{};
             result.normal_x = -gradient_x / normal_length;
             result.normal_z = -gradient_z / normal_length;
@@ -208,6 +220,11 @@ bool build_river_presentation_field(
                 dvz_dz = (gameplay.velocity_z_mps - up->velocity_z_mps) * inv_cell;
                 dvx_dz = (gameplay.velocity_x_mps - up->velocity_x_mps) * inv_cell;
             }
+            if (!finite(dvx_dx) || !finite(dvz_dz) || !finite(dvz_dx) ||
+                !finite(dvx_dz)) {
+                samples.clear(); error = "river presentation field derivative overflow";
+                return false;
+            }
             const float retained_variance =
                 input.gameplay_statistics->velocity_variance_mps2[index];
             if (!finite(retained_variance) || retained_variance < 0.0f) {
@@ -233,37 +250,44 @@ bool build_river_presentation_field(
             const PresentationMarkers& markers = (*input.markers)[index];
             const PresentationLocalOverride& local_override =
                 (*input.local_overrides)[index];
-            const float turbulence_values[] = {
-                variance, divergence, vorticity, vertical_speed, slope, shallow};
             const float turbulence_weights[] = {
                 settings.velocity_variance_weight, settings.divergence_weight,
                 settings.vorticity_weight, settings.vertical_speed_weight,
-                settings.surface_slope_weight, settings.shallows_weight};
-            result.turbulence = clamp01(
-                weighted_mean(turbulence_values, turbulence_weights, 6u) *
-                local_override.turbulence_multiplier);
-            const float aeration_values[] = {
-                vertical_speed, variance, markers.waterfall ? 1.0f : 0.0f,
-                markers.impact ? 1.0f : 0.0f};
+                settings.surface_slope_weight, settings.shallows_weight,
+                markers.pool ? settings.pool_weight : 0.0f};
+            const float turbulence_values_with_pool[] = {
+                variance, divergence, vorticity, vertical_speed, slope, shallow, 0.0f};
+            const float raw_turbulence = weighted_mean(
+                turbulence_values_with_pool, turbulence_weights, 7u) *
+                local_override.turbulence_multiplier;
+            if (!finite(raw_turbulence)) { samples.clear(); error = "river presentation turbulence overflow"; return false; }
+            result.turbulence = clamp01(raw_turbulence);
             const float aeration_weights[] = {
                 settings.vertical_speed_weight, settings.velocity_variance_weight,
-                settings.waterfall_weight, settings.impact_weight};
-            result.aeration = clamp01(
-                weighted_mean(aeration_values, aeration_weights, 4u) *
-                local_override.aeration_multiplier);
+                settings.waterfall_weight, settings.impact_weight,
+                markers.pool ? settings.pool_weight : 0.0f};
+            const float aeration_values_with_pool[] = {
+                vertical_speed, variance, markers.waterfall ? 1.0f : 0.0f,
+                markers.impact ? 1.0f : 0.0f, 0.0f};
+            const float raw_aeration = weighted_mean(aeration_values_with_pool,
+                aeration_weights, 5u) * local_override.aeration_multiplier;
+            if (!finite(raw_aeration)) { samples.clear(); error = "river presentation aeration overflow"; return false; }
+            result.aeration = clamp01(raw_aeration);
             const float wake = settings.wake_distance_scale_m > 0.0f
                                    ? clamp01(1.0f - (*input.wake_distances_m)[index] /
                                                         settings.wake_distance_scale_m)
                                    : 0.0f;
-            const float foam_values[] = {
-                result.turbulence, result.aeration, shallow, wake,
-                markers.spillway ? 1.0f : 0.0f};
             const float foam_weights[] = {
                 1.0f, 1.0f, settings.shallows_weight,
-                settings.wake_distance_weight, settings.spillway_weight};
-            result.foam_potential = clamp01(
-                weighted_mean(foam_values, foam_weights, 5u) *
-                local_override.foam_multiplier);
+                settings.wake_distance_weight, settings.spillway_weight,
+                markers.pool ? settings.pool_weight : 0.0f};
+            const float foam_values_with_pool[] = {
+                result.turbulence, result.aeration, shallow, wake,
+                markers.spillway ? 1.0f : 0.0f, 0.0f};
+            const float raw_foam = weighted_mean(foam_values_with_pool,
+                foam_weights, 6u) * local_override.foam_multiplier;
+            if (!finite(raw_foam)) { samples.clear(); error = "river presentation foam overflow"; return false; }
+            result.foam_potential = clamp01(raw_foam);
             const float speed = std::sqrt(gameplay.velocity_x_mps * gameplay.velocity_x_mps +
                                           gameplay.velocity_z_mps * gameplay.velocity_z_mps);
             result.feature = feature_for(markers, speed, settings);
