@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24
 
-**Status:** approved in conversation; awaiting review of the written specification
+**Status:** approved (2026-08-24)
 
 **Depends on:**
 `2026-08-24-sequential-river-sections-waterfall-design.md`

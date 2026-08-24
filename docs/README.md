@@ -37,6 +37,9 @@ engineers reading in context.
 - **[superpowers/specs/2026-08-24-real-time-river-presentation-floating-bodies-design.md](superpowers/specs/2026-08-24-real-time-river-presentation-floating-bodies-design.md)**
   — approved architecture for passive floating crates/rafts, flow-animated
   waves and whitewater, and real-time ray-traced water optics.
+- **[superpowers/plans/2026-08-24-real-time-river-presentation-floating-bodies.md](superpowers/plans/2026-08-24-real-time-river-presentation-floating-bodies.md)**
+  — executable test-first plan for immutable river-field publication, Box3D
+  float bodies, shared raster/RT water animation, optics, and measured proof.
 - **[contour-seam-design-2026-08-13.md](contour-seam-design-2026-08-13.md)** —
   "Seams by shared contour: no overlap, no welder." The decision (2026-08-13,
   from issue `736f92da`) to mesh each tile's boundary against a canonically
@@ -129,7 +132,7 @@ engineers reading in context.
   above rather than read standalone.
 - **`screenshots/`** — reference screenshots for the sub-projects (mostly the
   `Prototypes/` examples), not itemized here.
-- **`superpowers/`** — planning/spec workspace: **85** dated implementation
+- **`superpowers/`** — planning/spec workspace: **86** dated implementation
   plans in `plans/`, **93** dated design specs in `specs/`, plus top-level
   `backlog.md` and `REVIEW-LOG.md`. Not itemized here — treat as a searchable
   archive, not a curated index.
