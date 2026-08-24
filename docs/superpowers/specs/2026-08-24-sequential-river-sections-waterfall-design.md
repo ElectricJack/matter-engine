@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24
 
-**Status:** approved in conversation; awaiting written-spec review
+**Status:** approved; implementation not started
 
 **Depends on:** `2026-08-22-physx-fluid-bake-integration-design.md`
 **Goal:** extend the accepted single-section PhysX hydrology bake into a
