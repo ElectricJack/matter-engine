@@ -104,29 +104,34 @@ static size_t zero_area_triangle_count(const SectorMesh& mesh) {
     return zeros;
 }
 
-static bool has_ravine_plateau_mate_coverage(const SectorMesh& mesh) {
-    constexpr float anchor_x = 61.5f;
-    constexpr float anchor_y = 44.0f;
-    constexpr float anchor_z = 0.5f;
-    for (const auto& bucket : mesh.buckets) {
+struct TriangleOccurrence {
+    size_t matches = 0;
+    size_t bucket_index = 0;
+    uint32_t material = 0;
+    size_t triangle_index = 0;
+};
+
+static TriangleOccurrence find_ravine_plateau_mate(const SectorMesh& mesh) {
+    constexpr std::array<float, 9> expected = {
+        61.5f, 44.0f, 0.5f,
+        61.7f, 44.0138016f, 0.3f,
+        61.3f, 44.0247993f, 0.3f,
+    };
+    TriangleOccurrence found{};
+    for (size_t bucket_index = 0; bucket_index < mesh.buckets.size();
+         ++bucket_index) {
+        const auto& bucket = mesh.buckets[bucket_index];
         for (size_t offset = 0; offset + 8 < bucket.positions.size(); offset += 9) {
-            bool has_anchor = false;
-            bool reaches_negative_x = false;
-            bool reaches_positive_x = false;
-            for (size_t vertex = 0; vertex < 3; ++vertex) {
-                const size_t base = offset + vertex * 3;
-                const float x = bucket.positions[base + 0];
-                const float y = bucket.positions[base + 1];
-                const float z = bucket.positions[base + 2];
-                has_anchor |= x == anchor_x && y == anchor_y && z == anchor_z;
-                reaches_negative_x |= x < anchor_x;
-                reaches_positive_x |= x > anchor_x;
-            }
-            if (has_anchor && reaches_negative_x && reaches_positive_x)
-                return true;
+            if (!std::equal(expected.begin(), expected.end(),
+                            bucket.positions.begin() + offset))
+                continue;
+            ++found.matches;
+            found.bucket_index = bucket_index;
+            found.material = bucket.material;
+            found.triangle_index = offset / 9;
         }
     }
-    return false;
+    return found;
 }
 
 int main() {
@@ -237,8 +242,16 @@ int main() {
                   "every steep rounded-V triangle faces its emitted normals");
             CHECK(zero_area_triangle_count(mesh) == 0,
                   "steep rounded-V terrain emits no exact zero-area triangles");
-            CHECK(has_ravine_plateau_mate_coverage(mesh),
-                  "half-collapsed ravine quad retains its nonzero mate coverage");
+            const TriangleOccurrence mate = find_ravine_plateau_mate(mesh);
+            CHECK(mate.matches == 1,
+                  "half-collapsed ravine quad retains its exact ordered nonzero mate");
+            if (mate.matches == 1) {
+                CHECK(mate.bucket_index == 0 && mate.material == 0,
+                      "ravine mate remains in its original material bucket");
+                const size_t expected_triangle = contour_seams ? 0 : 18;
+                CHECK(mate.triangle_index == expected_triangle,
+                      "ravine mate retains its deterministic emission occurrence");
+            }
         }
         bake_mode::forced_contour_seams() = 0;
     }
