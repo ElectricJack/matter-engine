@@ -48,6 +48,10 @@ void push_oriented_tri(MaterialBucket& b,
     const double cx = uy * vz - uz * vy;
     const double cy = uz * vx - ux * vz;
     const double cz = ux * vy - uy * vx;
+    // Surface-nets cell vertices can coincide along flat carved plateaus. Omit
+    // only the collapsed triangle so a nondegenerate mate from the same quad
+    // remains in its original material bucket and emission order.
+    if (cx == 0.0 && cy == 0.0 && cz == 0.0) return;
     const double nx = static_cast<double>(a.n.x) + c.n.x + d.n.x;
     const double ny = static_cast<double>(a.n.y) + c.n.y + d.n.y;
     const double nz = static_cast<double>(a.n.z) + c.n.z + d.n.z;

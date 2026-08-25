@@ -81,6 +81,54 @@ static bool every_nondegenerate_triangle_faces_its_normals(
     return outward;
 }
 
+static size_t zero_area_triangle_count(const SectorMesh& mesh) {
+    size_t zeros = 0;
+    for (const auto& bucket : mesh.buckets) {
+        for (size_t offset = 0; offset + 8 < bucket.positions.size(); offset += 9) {
+            const double ax = bucket.positions[offset + 0];
+            const double ay = bucket.positions[offset + 1];
+            const double az = bucket.positions[offset + 2];
+            const double ux = double(bucket.positions[offset + 3]) - ax;
+            const double uy = double(bucket.positions[offset + 4]) - ay;
+            const double uz = double(bucket.positions[offset + 5]) - az;
+            const double vx = double(bucket.positions[offset + 6]) - ax;
+            const double vy = double(bucket.positions[offset + 7]) - ay;
+            const double vz = double(bucket.positions[offset + 8]) - az;
+            const double cx = uy * vz - uz * vy;
+            const double cy = uz * vx - ux * vz;
+            const double cz = ux * vy - uy * vx;
+            if (cx * cx + cy * cy + cz * cz > 0.0) continue;
+            ++zeros;
+        }
+    }
+    return zeros;
+}
+
+static bool has_ravine_plateau_mate_coverage(const SectorMesh& mesh) {
+    constexpr float anchor_x = 61.5f;
+    constexpr float anchor_y = 44.0f;
+    constexpr float anchor_z = 0.5f;
+    for (const auto& bucket : mesh.buckets) {
+        for (size_t offset = 0; offset + 8 < bucket.positions.size(); offset += 9) {
+            bool has_anchor = false;
+            bool reaches_negative_x = false;
+            bool reaches_positive_x = false;
+            for (size_t vertex = 0; vertex < 3; ++vertex) {
+                const size_t base = offset + vertex * 3;
+                const float x = bucket.positions[base + 0];
+                const float y = bucket.positions[base + 1];
+                const float z = bucket.positions[base + 2];
+                has_anchor |= x == anchor_x && y == anchor_y && z == anchor_z;
+                reaches_negative_x |= x < anchor_x;
+                reaches_positive_x |= x > anchor_x;
+            }
+            if (has_anchor && reaches_negative_x && reaches_positive_x)
+                return true;
+        }
+    }
+    return false;
+}
+
 int main() {
     // THIS SUITE PINS THE WELDER PATH, so it names that path rather than
     // inheriting whichever is default.
@@ -135,11 +183,11 @@ int main() {
         CHECK(minimum_y < 13.0f,
                "terrain meshing carves the shared river overlay below the base field");
     }
-    // A steep rounded-V carve over the same broad grade/noise/ridge shape used
-    // by RiverFloatLab makes individual surface-nets quads strongly nonplanar.
-    // The ordinary (non-contour) path must orient each emitted triangle against
-    // the outward density-gradient normals rather than trusting one density-sign
-    // order for both halves of a quad.
+    // A production-representative steep rounded-V carve over the same broad
+    // grade/noise/ridge shape used by RiverFloatLab makes individual
+    // surface-nets quads strongly nonplanar and sometimes collapses one or both
+    // halves. Both seam modes must omit exact zero-area triangles while retaining
+    // the nonzero mate that spans the plateau edge of a half-collapsed quad.
     {
         matter::RiverNetworkDefinition network{};
         network.cell_size_m = 0.5f;
@@ -148,10 +196,15 @@ int main() {
         river.name = "main";
         river.inlet = {{0.0f, 72.0f, 0.0f}, 600.0f};
         river.curve = {{0.0f, 72.0f, 0.0f}, {32.0f, 67.0f, 18.0f},
-                       {64.0f, 62.0f, 0.0f}};
+                       {70.0f, 61.0f, -22.0f}, {106.0f, 56.0f, 8.0f},
+                       {111.0f, 44.0f, 5.0f}, {121.0f, 44.0f, 2.0f},
+                       {136.0f, 44.0f, -3.0f}, {148.0f, 44.0f, 0.0f},
+                       {184.0f, 38.0f, -24.0f}};
         river.channel_profile = {{0.0f, 14.0f, 8.0f, 0.18f},
-                                 {40.0f, 24.0f, 8.5f, -0.14f},
-                                 {80.0f, 18.0f, 7.5f, 0.10f}};
+                                 {100.0f, 18.0f, 7.5f, 0.10f},
+                                 {120.0f, 26.0f, 8.0f, -0.08f},
+                                 {150.0f, 34.0f, 8.0f, 0.05f},
+                                 {250.0f, 22.0f, 8.0f, 0.20f}};
         network.rivers.push_back(river);
         hydrology::RiverGeometry geometry{};
         std::string error;
@@ -170,16 +223,24 @@ int main() {
                   "seaLevel -100\nbiome 0.65 0.35\n",
                   program, error), error.c_str());
         FieldRuntime field(std::move(program), overlay);
-        SectorMesh mesh;
-        CHECK(mesh_sector_tiled(field, 0, 1, 0, 2, 64.0f,
-                                mesh, nullptr, error), error.c_str());
-        size_t scanned = 0;
-        const bool outward =
-            every_nondegenerate_triangle_faces_its_normals(mesh, scanned);
-        CHECK(scanned > 0,
-              "steep rounded-V overlay fixture emits nondegenerate terrain");
-        CHECK(outward,
-              "every steep rounded-V ordinary triangle faces its emitted normals");
+        for (int contour_seams = 0; contour_seams <= 1; ++contour_seams) {
+            bake_mode::forced_contour_seams() = contour_seams;
+            SectorMesh mesh;
+            CHECK(mesh_sector_tiled(field, 1, 0, 0, 2, 64.0f,
+                                    mesh, nullptr, error), error.c_str());
+            size_t scanned = 0;
+            const bool outward =
+                every_nondegenerate_triangle_faces_its_normals(mesh, scanned);
+            CHECK(scanned > 0,
+                  "steep rounded-V overlay fixture emits nondegenerate terrain");
+            CHECK(outward,
+                  "every steep rounded-V triangle faces its emitted normals");
+            CHECK(zero_area_triangle_count(mesh) == 0,
+                  "steep rounded-V terrain emits no exact zero-area triangles");
+            CHECK(has_ravine_plateau_mate_coverage(mesh),
+                  "half-collapsed ravine quad retains its nonzero mate coverage");
+        }
+        bake_mode::forced_contour_seams() = 0;
     }
     // --- flat field, rung 0: counts, height, orientation -------------------
     {
@@ -1244,8 +1305,8 @@ int main() {
         };
         // Recorded from the pre-band build at the current mesher semantic
         // version. DO NOT re-record to make a band-related failure go away --
-        // see the note above. The version-2 values differ only because emitted
-        // triangles whose winding opposed their normals are now reoriented.
+        // see the note above. The version-3 values differ only for fixtures that
+        // contained collapsed triangles, which the producer now omits.
         static const Pin kPins[] = {
             {"flat rung0",       0,  0,  0,  0,  16.0f,  -64.0f, 192.0f,
              0xf365ecbc92387da2ULL, 0x30e41a9fde0d546aULL},
@@ -1256,9 +1317,9 @@ int main() {
             {"noise fine L2",    1,  2,  0, -2, 256.0f, -300.0f, 300.0f,
              0x74997d3f0eab559fULL, 0xc918717a908ded36ULL},
             {"cave rung0 (1,1)", 2,  1,  1,  0,  64.0f, -128.0f, 192.0f,
-             0x9d6b3d722bd18f48ULL, 0x3a13b481acc73546ULL},
+             0xa1ea20ec9a6c3ab7ULL, 0x3a13b481acc73546ULL},
             {"cave rung-1(-3,2)",2, -3,  2, -1, 128.0f, -128.0f, 192.0f,
-             0x61d8431fc365504dULL, 0x7a22b1626ce78d5fULL},
+             0x0cbc4e2e5e0117adULL, 0x7a22b1626ce78d5fULL},
         };
         FieldRuntime ff = make(kFlat5), fn = make(kNoise), fc = make(kCave);
         int pinned = 0;
