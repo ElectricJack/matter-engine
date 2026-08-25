@@ -638,3 +638,122 @@ check, all focused builds, viewer-object compilation, and the seven-test CTest
 gate passed. Only the three scoped code/test files were included in the repair
 commit; unrelated untracked files were preserved. No known Task 2 blocker
 remains.
+
+## Confined IO Re-review Repair Round 5 (2026-08-24)
+
+### Architecture Decision and Outcome
+
+The three manifest-publication findings were repaired in code/test commit
+`5e4c2480` (`fix: publish immutable hydrology manifests`). The production
+manifest path is already a semantic cache slot derived from `network_key` and
+`terrain_revision`:
+
+`hydrology/network-<network-key>-<terrain-revision>.mhyn`
+
+No production caller requires in-place overwrite. Manifest save therefore now
+uses an immutable create-if-absent contract without changing the path scheme:
+an identical existing file is accepted, while different bytes at the same
+semantic slot fail closed and require cache maintenance to remove the stale or
+corrupt entry. This avoids a new path migration while eliminating the POSIX
+mutable-name replacement race.
+
+### TDD RED and Focused Correction
+
+Tests were added first for same-key/terrain differing-payload collision,
+identical existing success, post-validation Windows temporary write/delete/
+replace denial, exact-byte commit, and after-commit parent namespace swap.
+The captured RED command was:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_network_artifact_tests
+```
+
+MSVC compiled the new tests and then failed at link with `LNK2019`/`LNK1120`
+for the deliberately missing `set_hydrology_manifest_publication_test_hook`.
+
+The first focused GREEN attempt exposed one obsolete fixture assumption: a test
+persisted a Ready manifest, then overwrote that same path with an Incomplete
+diagnostic manifest. Save correctly rejected the differing immutable bytes.
+The diagnostic now uses its own distinct manifest path, preserving its original
+"persisted but never Ready" assertion without weakening immutable publication.
+The rebuilt verbose persistence test then printed `ALL PASS` with no `SKIP`.
+
+### Publication Protocol and Audit
+
+- Windows creates the manifest temporary relative to the held trusted parent
+  with `FILE_SHARE_READ` only. The owner retains read/write/delete access, but
+  external post-validation opens for write or delete, `DeleteFile`, and
+  replace-existing `MoveFileEx` all fail. The same owner handle is written,
+  flushed, rewound, reread with exact EOF/bytes, and deserialized.
+- The deterministic BeforeCommit hook runs after validation. The allocation
+  failure seam and the final named-parent/native-identity check run before the
+  create-new native rename. The handle-relative rename with
+  `replace_if_exists = FALSE` is the sole Windows commit point.
+- Immediately after successful rename, the temporary deletion guard is
+  disarmed and its handle is closed. The noexcept AfterCommit hook is purely
+  observational; no fallible check follows the commit and save returns success.
+  The executed hook renamed the manifest parent after commit, and the API still
+  returned true with the exact committed file retained in the renamed parent.
+- On Windows create-new collision, the existing leaf is opened relative to the
+  held parent with reparse rejection and `FILE_SHARE_READ` only, then complete
+  size/content/EOF bytes are compared through that same handle. Exact bytes
+  succeed; different bytes or a non-regular/reparse entry fail without
+  replacement.
+- POSIX creates an anonymous manifest using
+  `openat(parent_fd, ".", O_TMPFILE | O_RDWR | O_CLOEXEC)`, retains the
+  RAII-owned descriptor through write, `fsync`, rewind, exact byte/EOF
+  validation, and deserialization, then publishes only with
+  `linkat(temp_fd, "", parent_fd, target, AT_EMPTY_PATH)`. There is no named
+  temporary and no mutable source-name interval.
+- POSIX `EEXIST` opens the canonical leaf using `openat`/`O_NOFOLLOW`, requires
+  one descriptor/directory-entry device-and-inode identity before and after the
+  same-handle read, and accepts only exact bytes. A successful new link verifies
+  the retained descriptor identity and flushes the containing directory. Hosts
+  without `O_TMPFILE` plus `AT_EMPTY_PATH` fail closed.
+- Ready field closure is still reopened and fully validated before any
+  manifest temporary is created. Field data is durably published first, and a
+  differing/partial manifest can never replace an accepted Ready slot. The
+  closed confined field paths and single CPU/render publication identity were
+  unchanged.
+
+Every Windows native resource is immediately owned by existing move-only RAII
+wrappers. All allocations, injected failures, namespace checks, and exact-byte
+comparison failures before create-new leave the guard armed; cleanup is
+deletion-by-handle. No path-based manifest mutation was introduced.
+
+### Final GREEN Evidence
+
+All final targets were built only with:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target <target>
+```
+
+The seven required focused targets and `matter_engine_viewer_objects` all
+succeeded. The dependency contract reported PASS and the renderer-conditioned
+network artifact source compiled. The one final focused test command was:
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo -C RelWithDebInfo -R '^(hydrology_artifact_tests|hydrology_network_artifact_tests|hydrology_handoff_products_tests|river_runtime_tests|async_bake_tests|physx_dependency_contract_tests|physx_adapter_contract_tests)$' --output-on-failure
+```
+
+Result: **7/7 passed**, 0 failed, 14.54 seconds. Per instruction, no broad CPU
+suite was rerun; the earlier single **37/37** CPU-suite result remains retained.
+
+### Round 5 Files, Process, and Limitation
+
+- `MatterEngine3/src/hydrology/hydrology_field_artifact.h`
+- `MatterEngine3/src/hydrology/hydrology_network_artifact.h`
+- `MatterEngine3/src/hydrology/hydrology_network_artifact.cpp`
+- `MatterEngine3/tests/hydrology_network_artifact_tests.cpp`
+
+No subagents or reviewers were spawned. No Make, GCC, g++, MinGW, MSYS2, or
+collect2 command was invoked. Builds used the prescribed Windows wrapper and
+tests used Visual Studio CTest in the prescribed build tree. `git diff --check`
+and the staged diff check passed; unrelated untracked files were preserved.
+
+Windows sharing, collision, and pre/post-commit interference behavior was
+executed on the mandated MSVC host. The POSIX branch was source-audited but
+could not be compiled or executed without violating the MSVC-only instruction;
+its deliberate platform limitation is fail-closed publication where Linux does
+not expose both `O_TMPFILE` and `AT_EMPTY_PATH`. No known Task 2 blocker remains.
