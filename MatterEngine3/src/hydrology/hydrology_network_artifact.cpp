@@ -54,6 +54,9 @@ std::atomic<void*> g_field_validation_context{nullptr};
 std::atomic<HydrologyNamespaceValidationTestHook>
     g_namespace_validation_hook{nullptr};
 std::atomic<void*> g_namespace_validation_context{nullptr};
+std::atomic<HydrologyManifestPublicationTestHook>
+    g_manifest_publication_hook{nullptr};
+std::atomic<void*> g_manifest_publication_context{nullptr};
 std::atomic<HydrologyFieldIoFailurePoint> g_field_io_failure{
     HydrologyFieldIoFailurePoint::None};
 
@@ -71,6 +74,15 @@ void invoke_namespace_validation_hook(
             std::memory_order_acquire))
         hook(path, g_namespace_validation_context.load(
                        std::memory_order_acquire));
+}
+
+void invoke_manifest_publication_hook(
+    HydrologyManifestPublicationTestStage stage,
+    const std::filesystem::path& path) noexcept {
+    if (const auto hook = g_manifest_publication_hook.load(
+            std::memory_order_acquire))
+        hook(stage, path, g_manifest_publication_context.load(
+                              std::memory_order_acquire));
 }
 
 bool fail(gpu_meshing::Error& error, const char* message) {
@@ -765,40 +777,6 @@ private:
     std::vector<UniqueNativeFd> descriptors_;
 };
 
-class PosixNamedTemporaryFile {
-public:
-    PosixNamedTemporaryFile(int descriptor,
-                            int directory,
-                            const std::filesystem::path& name) noexcept
-        : descriptor_(descriptor), directory_(directory), name_(&name) {
-        valid_identity_ = descriptor_ &&
-            ::fstat(descriptor_.get(), &identity_) == 0 &&
-            S_ISREG(identity_.st_mode);
-    }
-    ~PosixNamedTemporaryFile() noexcept {
-        if (!armed_ || !valid_identity_ || name_ == nullptr) return;
-        struct stat named{};
-        if (::fstatat(directory_, name_->c_str(), &named,
-                      AT_SYMLINK_NOFOLLOW) == 0 &&
-            S_ISREG(named.st_mode) && named.st_dev == identity_.st_dev &&
-            named.st_ino == identity_.st_ino)
-            ::unlinkat(directory_, name_->c_str(), 0);
-    }
-    PosixNamedTemporaryFile(const PosixNamedTemporaryFile&) = delete;
-    PosixNamedTemporaryFile& operator=(const PosixNamedTemporaryFile&) = delete;
-    int get() const noexcept { return descriptor_.get(); }
-    explicit operator bool() const noexcept { return valid_identity_; }
-    const struct stat& identity() const noexcept { return identity_; }
-    void disarm() noexcept { armed_ = false; }
-private:
-    UniqueNativeFd descriptor_;
-    int directory_ = -1;
-    const std::filesystem::path* name_ = nullptr;
-    struct stat identity_{};
-    bool valid_identity_ = false;
-    bool armed_ = true;
-};
-
 #endif
 
 bool decode_field_product_bytes(
@@ -1014,16 +992,19 @@ public:
     HANDLE get() const noexcept { return handle_.get(); }
     explicit operator bool() const noexcept { return static_cast<bool>(handle_); }
     void disarm() noexcept { armed_ = false; }
+    void disarm_and_close() noexcept {
+        armed_ = false;
+        handle_.reset();
+    }
 private:
     UniqueNativeHandle handle_;
     bool armed_ = true;
 };
 
-bool publish_file_relative(
+bool publish_file_create_new_relative(
     HANDLE source_handle,
     const std::wstring& target_name,
-    HANDLE trusted_directory,
-    bool replace_existing) {
+    HANDLE trusted_directory) {
     struct NativeIoStatusBlock {
         union { long status; void* pointer; } value;
         std::uintptr_t information;
@@ -1048,7 +1029,7 @@ bool publish_file_relative(
     std::vector<std::uint8_t> storage(bytes, 0u);
     auto* const rename = reinterpret_cast<NativeFileRenameInformation*>(
         storage.data());
-    rename->replace_if_exists = replace_existing ? TRUE : FALSE;
+    rename->replace_if_exists = FALSE;
     rename->root_directory = trusted_directory;
     rename->file_name_length =
         static_cast<DWORD>(target_name.size() * sizeof(wchar_t));
@@ -1063,22 +1044,25 @@ bool publish_file_relative(
     return published;
 }
 
-bool relative_leaf_is_regular_or_missing(
+bool read_windows_relative_bytes_exact(
     HANDLE directory,
     const std::wstring& leaf,
+    const std::filesystem::path& diagnostic_path,
+    const std::vector<std::uint8_t>& expected,
     gpu_meshing::Error& error) {
     UniqueNativeHandle existing(open_relative_file(
-        directory, leaf, FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+        directory, leaf, GENERIC_READ | SYNCHRONIZE, FILE_SHARE_READ, FILE_OPEN,
         FILE_SYNCHRONOUS_IO_NONALERT));
-    if (!existing) return true;
-    FILE_ATTRIBUTE_TAG_INFO attributes{};
-    if (!GetFileInformationByHandleEx(
-            existing.get(), FileAttributeTagInfo, &attributes,
-            sizeof(attributes)) ||
-        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u ||
-        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u)
-        return fail(error, "hydrology manifest leaf is not a regular file");
+    if (!existing)
+        return fail(error, "could not open existing immutable hydrology manifest");
+    std::vector<std::uint8_t> existing_bytes;
+    if (!read_windows_handle(
+            existing.get(), diagnostic_path, kHeaderBytes,
+            kHeaderBytes + kMaxPayloadBytes, existing_bytes, error, false))
+        return false;
+    if (existing_bytes != expected)
+        return fail(error,
+                    "immutable hydrology manifest already has different bytes");
     return true;
 }
 
@@ -1148,6 +1132,13 @@ void set_hydrology_namespace_validation_test_hook(
     void* context) noexcept {
     g_namespace_validation_context.store(context, std::memory_order_release);
     g_namespace_validation_hook.store(hook, std::memory_order_release);
+}
+
+void set_hydrology_manifest_publication_test_hook(
+    HydrologyManifestPublicationTestHook hook,
+    void* context) noexcept {
+    g_manifest_publication_context.store(context, std::memory_order_release);
+    g_manifest_publication_hook.store(hook, std::memory_order_release);
 }
 
 bool hydrology_file_identity_stable(
@@ -1469,8 +1460,8 @@ static bool save_hydrology_field_product_atomic_impl(
             false) || reopened != bytes) {
         return fail(error, "hydrology field temporary validation failed");
     }
-    const bool published = publish_file_relative(
-        temporary.get(), target_native, directory_guard.leaf(), false);
+    const bool published = publish_file_create_new_relative(
+        temporary.get(), target_native, directory_guard.leaf());
     if (!published) {
         mark_file_delete(temporary.get());
         UniqueNativeHandle existing_handle(open_relative_file(
@@ -1709,10 +1700,11 @@ static bool save_network_artifact_atomic_impl(
     const std::filesystem::path target_name = path.filename();
     if (target_name.empty())
         return fail(error, "hydrology manifest target is invalid");
+#ifdef _WIN32
     static std::atomic<std::uint64_t> serial{0u};
     const std::filesystem::path temporary_name =
         target_name.string() + ".tmp-" + std::to_string(++serial);
-#ifdef _WIN32
+    const std::filesystem::path temporary_path = parent / temporary_name;
     WindowsDirectoryGuard parent_guard;
     if (!parent_guard.open(parent, {}, error, false, true)) return false;
     inject_field_io_failure(
@@ -1721,15 +1713,12 @@ static bool save_network_artifact_atomic_impl(
     if (!windows_named_directory_matches(parent, parent_guard.leaf()))
         return fail(error, "hydrology manifest parent identity changed");
     const std::wstring target_native = target_name.native();
-    if (!relative_leaf_is_regular_or_missing(
-            parent_guard.leaf(), target_native, error))
-        return false;
     const std::wstring temporary_native = temporary_name.native();
-    invoke_namespace_validation_hook(parent / temporary_name);
+    invoke_namespace_validation_hook(temporary_path);
     WindowsTemporaryFile temporary(open_relative_file(
         parent_guard.leaf(), temporary_native,
         GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_CREATE,
+        FILE_SHARE_READ, FILE_CREATE,
         FILE_SYNCHRONOUS_IO_NONALERT | FILE_WRITE_THROUGH));
     if (!temporary)
         return fail(error, "could not create confined hydrology manifest temporary");
@@ -1757,13 +1746,22 @@ static bool save_network_artifact_atomic_impl(
         return fail(error, "could not validate hydrology manifest temporary");
     HydrologyNetworkArtifact validated{};
     if (!deserialize_network_artifact(reopened, validated, error)) return false;
+    invoke_manifest_publication_hook(
+        HydrologyManifestPublicationTestStage::BeforeCommit, temporary_path);
     inject_field_io_failure(HydrologyFieldIoFailurePoint::BeforeManifestRename);
-    if (!publish_file_relative(
-            temporary.get(), target_native, parent_guard.leaf(), true))
-        return fail(error, "could not publish hydrology network manifest");
     if (!windows_named_directory_matches(parent, parent_guard.leaf()))
         return fail(error, "hydrology manifest parent identity changed");
-    temporary.disarm();
+    if (publish_file_create_new_relative(
+            temporary.get(), target_native, parent_guard.leaf())) {
+        temporary.disarm_and_close();
+        invoke_manifest_publication_hook(
+            HydrologyManifestPublicationTestStage::AfterCommit, path);
+        return true;
+    }
+    if (!read_windows_relative_bytes_exact(
+            parent_guard.leaf(), target_native, path, bytes, error) ||
+        !windows_named_directory_matches(parent, parent_guard.leaf()))
+        return false;
     return true;
 #else
     PosixDirectoryGuard parent_guard;
@@ -1774,19 +1772,9 @@ static bool save_network_artifact_atomic_impl(
     if (!posix_named_directory_matches(parent, parent_guard.leaf()))
         return fail(error, "hydrology manifest parent identity changed");
     const int directory = parent_guard.leaf();
-    struct stat existing_target{};
-    if (::fstatat(directory, target_name.c_str(), &existing_target,
-                  AT_SYMLINK_NOFOLLOW) == 0) {
-        if (!S_ISREG(existing_target.st_mode))
-            return fail(error, "hydrology manifest leaf is not a regular file");
-    } else if (errno != ENOENT) {
-        return fail(error, "could not inspect hydrology manifest leaf");
-    }
-    invoke_namespace_validation_hook(parent / temporary_name);
-    PosixNamedTemporaryFile temporary(
-        ::openat(directory, temporary_name.c_str(),
-                 O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600),
-        directory, temporary_name);
+#if defined(O_TMPFILE) && defined(AT_EMPTY_PATH)
+    UniqueNativeFd temporary(::openat(
+        directory, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600));
     if (!temporary)
         return fail(error, "could not create hydrology manifest temporary");
     inject_field_io_failure(
@@ -1811,19 +1799,29 @@ static bool save_network_artifact_atomic_impl(
         return fail(error, "could not validate hydrology manifest temporary");
     HydrologyNetworkArtifact validated{};
     if (!deserialize_network_artifact(reopened, validated, error)) return false;
-    struct stat named_temporary{};
-    if (::fstatat(directory, temporary_name.c_str(), &named_temporary,
-                  AT_SYMLINK_NOFOLLOW) != 0 ||
-        !S_ISREG(named_temporary.st_mode) ||
-        !hydrology_file_identity_stable(
-            native_file_identity(reopened_status),
-            native_file_identity(named_temporary),
-            native_file_identity(named_temporary)))
-        return fail(error, "hydrology manifest temporary identity changed");
+    invoke_manifest_publication_hook(
+        HydrologyManifestPublicationTestStage::BeforeCommit, path);
     inject_field_io_failure(HydrologyFieldIoFailurePoint::BeforeManifestRename);
-    if (::renameat(directory, temporary_name.c_str(), directory,
-                   target_name.c_str()) != 0)
-        return fail(error, "could not publish hydrology network manifest");
+    if (!posix_named_directory_matches(parent, parent_guard.leaf()))
+        return fail(error, "hydrology manifest parent identity changed");
+    errno = 0;
+    if (::linkat(temporary.get(), "", directory, target_name.c_str(),
+                 AT_EMPTY_PATH) != 0) {
+        if (errno != EEXIST)
+            return fail(error, "could not publish hydrology network manifest");
+        std::vector<std::uint8_t> existing;
+        struct stat existing_status{};
+        if (!read_posix_relative_bytes_stable(
+                directory, target_name, path, kHeaderBytes,
+                kHeaderBytes + kMaxPayloadBytes, existing, existing_status,
+                error) || existing != bytes)
+            return fail(
+                error,
+                "immutable hydrology manifest already has different bytes");
+        if (!posix_named_directory_matches(parent, parent_guard.leaf()))
+            return fail(error, "hydrology manifest parent identity changed");
+        return true;
+    }
     struct stat published{};
     if (::fstatat(directory, target_name.c_str(), &published,
                   AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(published.st_mode) ||
@@ -1831,12 +1829,16 @@ static bool save_network_artifact_atomic_impl(
             native_file_identity(reopened_status),
             native_file_identity(published), native_file_identity(published)))
         return fail(error, "hydrology manifest publication identity changed");
-    if (!posix_named_directory_matches(parent, parent_guard.leaf()))
-        return fail(error, "hydrology manifest parent identity changed");
-    temporary.disarm();
     if (::fsync(directory) != 0)
         return fail(error, "could not flush hydrology manifest directory");
+    invoke_manifest_publication_hook(
+        HydrologyManifestPublicationTestStage::AfterCommit, path);
     return true;
+#else
+    (void)directory;
+    return fail(error,
+                "secure POSIX hydrology manifest publication is unavailable");
+#endif
 #endif
 }
 

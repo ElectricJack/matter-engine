@@ -51,6 +51,18 @@ void set_hydrology_namespace_validation_test_hook(
     HydrologyNamespaceValidationTestHook hook,
     void* context) noexcept;
 
+enum class HydrologyManifestPublicationTestStage : std::uint8_t {
+    BeforeCommit = 0,
+    AfterCommit = 1,
+};
+using HydrologyManifestPublicationTestHook = void (*)(
+    HydrologyManifestPublicationTestStage,
+    const std::filesystem::path&,
+    void*) noexcept;
+void set_hydrology_manifest_publication_test_hook(
+    HydrologyManifestPublicationTestHook hook,
+    void* context) noexcept;
+
 struct HydrologyFileIdentity {
     std::uint64_t device = 0u;
     std::uint64_t file = 0u;

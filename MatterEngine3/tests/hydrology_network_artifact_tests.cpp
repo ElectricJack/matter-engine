@@ -240,6 +240,53 @@ struct ManifestTemporaryReparse {
     bool created = false;
 };
 
+struct ManifestCommitInterference {
+    std::filesystem::path replacement;
+    bool before_invoked = false;
+    bool write_succeeded = false;
+    bool delete_succeeded = false;
+    bool replace_succeeded = false;
+};
+
+void attempt_manifest_commit_interference(
+    hydrology::HydrologyManifestPublicationTestStage stage,
+    const std::filesystem::path& path,
+    void* opaque) noexcept {
+    auto& context = *static_cast<ManifestCommitInterference*>(opaque);
+    if (stage != hydrology::HydrologyManifestPublicationTestStage::BeforeCommit)
+        return;
+    context.before_invoked = true;
+#ifdef _WIN32
+    const HANDLE writer = CreateFileW(
+        path.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    context.write_succeeded = writer != INVALID_HANDLE_VALUE;
+    if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+    context.delete_succeeded = DeleteFileW(path.c_str()) != 0;
+    context.replace_succeeded = MoveFileExW(
+        context.replacement.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+    (void)path;
+#endif
+}
+
+struct ManifestAfterCommitSwap {
+    DirectoryNamespaceSwap swap;
+    bool invoked = false;
+};
+
+void swap_manifest_parent_after_commit(
+    hydrology::HydrologyManifestPublicationTestStage stage,
+    const std::filesystem::path& path,
+    void* opaque) noexcept {
+    auto& context = *static_cast<ManifestAfterCommitSwap*>(opaque);
+    if (stage != hydrology::HydrologyManifestPublicationTestStage::AfterCommit)
+        return;
+    context.invoked = true;
+    attempt_directory_namespace_swap(path, &context.swap);
+}
+
 void inject_manifest_temporary_reparse(
     const std::filesystem::path& opened, void* opaque) noexcept {
     auto& context = *static_cast<ManifestTemporaryReparse*>(opaque);
@@ -550,10 +597,12 @@ void test_typed_field_wire_format_and_ready_package_closure() {
     incomplete.runtime_field_digest = 0u;
     incomplete.presentation_field_digest = 0u;
     incomplete.field_products.clear();
-    CHECK(hydrology::save_network_artifact_atomic(path, incomplete, error),
+    const auto incomplete_path = root / "river-incomplete.mhydnet";
+    CHECK(hydrology::save_network_artifact_atomic(
+              incomplete_path, incomplete, error),
           error.message.c_str());
     CHECK(!hydrology::load_network_artifact_validated(
-              path, 101u, 202u, loaded, error),
+              incomplete_path, 101u, 202u, loaded, error),
           "an incomplete manifest is persisted for diagnostics but is never ready");
     check_manifest_preserved(
         loaded, loaded_sentinel,
@@ -775,9 +824,19 @@ void test_manifest_publication_is_confined_and_transactional() {
     const auto path = root / "river.mhydnet";
     auto original = fixture_manifest();
     auto replacement = original;
-    replacement.network_key = 303u;
+    replacement.bounds_m.maximum.x += 1.0f;
     gpu_meshing::Error error{};
     CHECK(save_field_pair(root, error), error.message.c_str());
+
+    std::vector<std::uint8_t> original_bytes;
+    CHECK(hydrology::serialize_network_artifact(
+              original, original_bytes, error), error.message.c_str());
+    CHECK(hydrology::save_network_artifact_atomic(path, original, error) &&
+              hydrology::save_network_artifact_atomic(path, original, error),
+          "an identical existing immutable manifest is accepted");
+    CHECK(!hydrology::save_network_artifact_atomic(path, replacement, error) &&
+              read_bytes(path) == original_bytes,
+          "a differing immutable manifest collision is rejected without replacement");
 
     for (const auto point : {
              hydrology::HydrologyFieldIoFailurePoint::AfterManifestParentHandle,
@@ -887,6 +946,44 @@ void test_manifest_publication_is_confined_and_transactional() {
           "manifest publication fails closed after a POSIX parent namespace swap");
 #endif
     restore_directory_namespace(swap);
+
+    const auto commit_path = root / "commit-boundary.mhydnet";
+    const auto replacement_path = root / "manifest-replacement.tmp";
+    const std::vector<std::uint8_t> replacement_bytes = {5u, 4u, 3u, 2u};
+    CHECK(write_bytes(replacement_path, replacement_bytes),
+          "manifest replacement fixture was written");
+    ManifestCommitInterference interference{replacement_path};
+    hydrology::set_hydrology_manifest_publication_test_hook(
+        attempt_manifest_commit_interference, &interference);
+    const bool commit_saved = hydrology::save_network_artifact_atomic(
+        commit_path, original, error);
+    hydrology::set_hydrology_manifest_publication_test_hook(nullptr, nullptr);
+#ifdef _WIN32
+    CHECK(commit_saved && interference.before_invoked &&
+              !interference.write_succeeded &&
+              !interference.delete_succeeded &&
+              !interference.replace_succeeded &&
+              read_bytes(commit_path) == original_bytes &&
+              read_bytes(replacement_path) == replacement_bytes,
+          "validated Windows manifest temporary denies write/delete/replace until exact bytes commit");
+#else
+    CHECK(commit_saved && interference.before_invoked &&
+              read_bytes(commit_path) == original_bytes,
+          "validated POSIX manifest descriptor publishes its exact bytes");
+#endif
+
+    const auto after_path = root / "after-commit.mhydnet";
+    ManifestAfterCommitSwap after{{root, base / "cache-after-held", outside}};
+    hydrology::set_hydrology_manifest_publication_test_hook(
+        swap_manifest_parent_after_commit, &after);
+    const bool after_saved = hydrology::save_network_artifact_atomic(
+        after_path, original, error);
+    hydrology::set_hydrology_manifest_publication_test_hook(nullptr, nullptr);
+    CHECK(after_saved && after.invoked && after.swap.rename_succeeded &&
+              read_bytes(after.swap.held / after_path.filename()) ==
+                  original_bytes,
+          "manifest create-new commit is final before observational postcommit work");
+    restore_directory_namespace(after.swap);
     std::filesystem::remove_all(base);
 }
 
