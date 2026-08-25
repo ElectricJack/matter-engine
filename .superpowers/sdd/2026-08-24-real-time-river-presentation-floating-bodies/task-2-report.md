@@ -263,3 +263,138 @@ No known Task 2 repair blocker remains. Unreferenced content-addressed field
 files may remain after cancellation or a second-file write failure, but no Ready
 manifest can reference an incomplete or invalid pair; later cache maintenance
 may garbage-collect such orphan files.
+
+## Independent Re-review Repair Round 2 (2026-08-24)
+
+### Outcome
+
+The remaining two Important findings were repaired in code/test commit
+`ee0f955b` (`fix: linearize river publication and field storage`) plus the
+contained IO-audit follow-up `b9828d70` (`fix: anchor immutable field
+publication`). The final implementation has one observable CPU/render
+publication identity, transactionally rejects sampling across replacement, and
+uses exact digest-derived, confined, immutable, durably ordered field blobs.
+
+### TDD RED Evidence
+
+The retained-identity, mid-batch replacement, prior-gap, canonical-path,
+immutable-overwrite, growth/trailing-byte, concurrent mutation, and reparse
+tests were authored before the corresponding production changes.
+
+The captured RED command was:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target river_runtime_tests
+```
+
+MSVC failed compilation on the intentionally missing
+`RiverRuntimePublicationSlot`, `RiverRuntimePublicationIdentity`, `publish`,
+and batch-hook contracts. This was the expected RED rather than an environment
+or unrelated failure. The first sandboxed invocation could not discover native
+Windows Python; the same required build entry point was rerun with host-tool
+access to capture the compiler RED.
+
+The first post-implementation persistence run also exposed a fixture regression:
+the test still enumerated `root/fields` after canonical paths moved blobs to
+`root/hydrology/fields`. After fixing that stale fixture, the focused runtime
+and persistence pair passed. A later audit test run exposed that holding a
+non-sharing Windows directory handle through `MoveFileEx` prevents the rename;
+the final follow-up uses a handle-relative, create-new native rename anchored
+to the validated fields directory instead.
+
+### Implementation and Contract Audit
+
+- `RiverRuntimePublicationSlot::current` is the sole atomic publication point.
+  The immutable `AuthoredFluidPublication` is that identity and contains both
+  CPU runtime and renderer state. There is no separate validity boolean.
+- CPU and renderer readers load the slot, validate that the binding carries the
+  same slot/identity, and retry unless the slot remains unchanged. A successful
+  replacement's single store is the only event that stales the incumbent;
+  cancellation, failed candidates, and pre-publication work preserve it.
+- Scalar sampling validates identity before computation and again before
+  assignment. Batch sampling validates once at entry, samples without
+  per-element lease checks or allocations, then validates once at exit; any
+  mid-batch replacement clears every output and returns zero.
+- Session teardown clears the same slot atomically. The public runtime header
+  remains renderer/provider-free; the dependency contract target passed.
+- Runtime and Presentation references must equal the one canonical path helper:
+  `hydrology/fields/<kind>-<16 lowercase digest hex>.mhydfield`. Alternate,
+  parent-traversing, absolute, duplicate, extra, stale, or type-swapped paths
+  cannot serialize or load as Ready.
+- Ready validation holds trusted cache/directory handles, rejects every
+  symlink/reparse component, opens the final file without following its leaf,
+  reads size/content/EOF from one handle, and verifies stable file identity.
+  Concurrent write/delete replacement is denied on Windows; POSIX uses
+  `openat`/`O_NOFOLLOW` plus descriptor and namespace identity checks.
+- Field publication is immutable and create-if-absent. Existing canonical
+  blobs are accepted only when their complete bytes exactly match; different
+  bytes are never replaced. Windows flushes the temporary file and performs a
+  handle-relative native rename into the trusted directory. POSIX uses
+  `fsync`, `linkat`, and directory `fsync` before and after temporary unlink.
+- Manifest temporaries are OS-flushed before rename. Windows uses
+  `FlushFileBuffers` plus write-through replacement; POSIX uses file `fsync`,
+  rename, and containing-directory `fsync`. Both field blobs are reopened,
+  parsed, type/digest checked, and package-closure checked before Ready becomes
+  visible. A partial pair can leave only unreferenced immutable blobs.
+- Prior transactional artifact/network destination preservation remains
+  covered and passed unchanged.
+
+### Final GREEN Evidence
+
+All final builds used only:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target <target>
+```
+
+These seven required targets built successfully:
+
+- `hydrology_artifact_tests`
+- `hydrology_network_artifact_tests`
+- `hydrology_handoff_products_tests`
+- `river_runtime_tests`
+- `async_bake_tests`
+- `physx_dependency_contract_tests`
+- `physx_adapter_contract_tests`
+
+`matter_engine_viewer_objects` also built successfully after the final IO
+follow-up, compiling the renderer-conditioned publication reader.
+
+The definitive focused test command against the exact committed code was:
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo -C RelWithDebInfo -R '^(hydrology_artifact_tests|hydrology_network_artifact_tests|hydrology_handoff_products_tests|river_runtime_tests|async_bake_tests|physx_dependency_contract_tests|physx_adapter_contract_tests)$' --output-on-failure
+```
+
+Result: **7/7 passed**, 0 failed, 7.72 seconds. Per instruction, no broad
+suite was rerun; the retained prior evidence remains the single 37/37 CPU run.
+
+### Round 2 Files
+
+- `MatterEngine3/include/matter/world_session.h`
+- `MatterEngine3/src/hydrology/hydrology_field_artifact.h`
+- `MatterEngine3/src/hydrology/hydrology_network_artifact.cpp`
+- `MatterEngine3/src/hydrology/river_runtime.cpp`
+- `MatterEngine3/src/hydrology/river_runtime_internal.h`
+- `MatterEngine3/src/matter_engine.cpp`
+- `MatterEngine3/src/provider/local_provider.cpp`
+- `MatterEngine3/tests/async_bake_tests.cpp`
+- `MatterEngine3/tests/hydrology_network_artifact_tests.cpp`
+- `MatterEngine3/tests/river_runtime_tests.cpp`
+
+### Process, Self-review, and Remaining Concerns
+
+- No subagents or reviewers were spawned. No Make, GCC, g++, MinGW, MSYS2,
+  or collect2 command was invoked. Builds used the prescribed Windows script;
+  tests used Visual Studio CTest in the prescribed tree.
+- `git diff --check` and staged diff checks passed. Only scoped files were
+  staged; unrelated untracked files were preserved. Test-owned temporary
+  directories left by a diagnostic failure were resolved beneath the Windows
+  temp root before their exact Task 2-prefixed paths were removed.
+- Sampling adds shared-pointer atomic loads only; it performs no dynamic
+  allocation in the scalar or batch hot path.
+- Windows handle-relative rename is dynamically resolved from the native NT
+  API and fails closed if unavailable. The exercised Windows 11/MSVC host
+  supports it. POSIX durable/openat branches were source-reviewed but could not
+  be executed under the mandated MSVC-only verification policy; that is the
+  only platform-specific verification limitation.
