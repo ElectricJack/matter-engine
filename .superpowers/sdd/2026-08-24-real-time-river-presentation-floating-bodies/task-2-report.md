@@ -122,3 +122,144 @@ Tests and dependency/build registration:
 ## Concerns
 
 No known blockers or remaining Task 2 concerns. Task 6 is expected to replace the intentionally neutral presentation marker/wake/local-override inputs with authored values, and Task 7 is expected to extend the existing publication record rather than introduce a second swap boundary.
+
+## Independent Review Repair (2026-08-24)
+
+### Outcome
+
+The three Important review findings were repaired in code/test commit
+`ba542f02` (`fix: harden river runtime publication`) on top of `0bcb87bf`.
+The repair adds retained-binding lifetime rejection, real typed field-product
+files and Ready package validation, and transactional preservation across all
+artifact/network decode and load failures.
+
+### TDD RED Evidence
+
+Tests were changed before the corresponding production repairs.
+
+- `tools/build-windows.ps1 -Config RelWithDebInfo -Target river_runtime_tests`
+  failed to compile because `RiverRuntimePublicationLease`, the internal
+  binding access seam, and the lease-bearing build input did not exist.
+- `tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_network_artifact_tests`
+  failed to compile because `hydrology_field_artifact.h` and the typed field
+  persistence API did not exist.
+- After building `hydrology_artifact_tests`, Visual Studio CTest with
+  `-R '^hydrology_artifact_tests$'` failed 11 preservation assertions: corrupt,
+  truncated, digest-invalid, version-invalid, stale-key, and file-load failures
+  all cleared the caller's valid sentinel.
+- A later focused `hydrology_artifact_tests` RED run failed the additional
+  `load_or_build_artifact` sentinel check, proving its failed-load/failed-build
+  path still cleared prior output.
+
+The first async repair run exposed a test-fixture issue rather than a
+publication defect: changing only the network seed reused an accepted section
+cache, so the injected visual failure never ran. The fixture now changes a
+simulation-keyed PBD value for the failed generation; the corrected test proves
+cancelled and failed replacements preserve the incumbent lease.
+
+### Implementation
+
+- `AuthoredFluidPublication` now owns a shared atomic publication lease also
+  retained by immutable runtime storage. Sampling checks that lease without
+  allocation. Under `hydrology_generation_mutex`, a successful replacement
+  invalidates the prior lease and swaps the single CPU/render publication
+  record; cancelled or failed candidates do neither. Session destruction also
+  invalidates its final retained publication.
+- The internal analytic runtime fixture covers exact bilinear scalar values,
+  batch partial counts and null contracts, OOB/dry rejection, zero/stale/null
+  metadata, invalid layout/feature rejection, and retained-lease invalidation.
+- Field products use a bounded little-endian wire format: a 32-byte typed
+  header, a 24-byte layout, and exact 21-byte Runtime or 22-byte Presentation
+  records. Decode validates version, reserved bytes, kind, dimensions, exact
+  remaining bytes, enums, wet bytes, finite/channel/normal constraints, and a
+  recomputed canonical field digest before assignment.
+- Each field file is written through a unique temporary, flushed, reopened,
+  fully decoded and digest/type checked, then atomically replaced. The provider
+  writes and revalidates both content-addressed files before publishing Ready.
+  A cancellation recheck occurs after the pair and before manifest publication.
+- Ready save/load validation requires exactly one canonical cache-relative
+  Runtime ref and one distinct Presentation ref. It loads both actual files,
+  checks their typed structure and manifest digests, then checks exact layout,
+  count, and wet-mask agreement. Missing, corrupt, truncated, swapped,
+  stale-digest, duplicate, and extra closure cases are covered.
+- `deserialize_artifact`, `load_artifact_validated`,
+  `load_or_build_artifact`, `deserialize_network_artifact`, and
+  `load_network_artifact_validated` now parse/load into local candidates and
+  assign only after all checks succeed.
+- No new core translation unit was added: the field wire implementation lives
+  with the network artifact implementation, so the established 123/166 source
+  census remains unchanged.
+
+### GREEN Evidence
+
+All repair builds used only the required Windows entry point:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target river_runtime_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_artifact_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_network_artifact_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_handoff_products_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target async_bake_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target physx_adapter_contract_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target physx_dependency_contract_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_engine_viewer_objects
+```
+
+Every target succeeded. The dependency target reported provider-free river
+runtime API PASS, and the renderer-conditioned viewer object graph compiled.
+
+Final focused command, run from
+`MatterEditor/build/cmake/windows-msvc/relwithdebinfo`:
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' -C RelWithDebInfo -R '^(hydrology_artifact_tests|hydrology_network_artifact_tests|hydrology_handoff_products_tests|river_runtime_tests|async_bake_tests|physx_dependency_contract_tests|physx_adapter_contract_tests)$' --output-on-failure
+```
+
+Result: **7/7 passed**, 0 failed, 7.79 seconds.
+
+Per the repair instruction, the broad CPU suite was not rerun. The prior
+post-feature evidence remains exactly one full `-L cpu -j 8` run with
+**37/37 passed**.
+
+### Repair Files
+
+- `MatterEngine3/include/matter/river_runtime.h`
+- `MatterEngine3/include/matter/world_session.h`
+- `MatterEngine3/src/hydrology/hydrology_artifact.cpp`
+- `MatterEngine3/src/hydrology/hydrology_field_artifact.h`
+- `MatterEngine3/src/hydrology/hydrology_handoff_products.h`
+- `MatterEngine3/src/hydrology/hydrology_network_artifact.cpp`
+- `MatterEngine3/src/hydrology/hydrology_network_artifact.h`
+- `MatterEngine3/src/hydrology/river_runtime.cpp`
+- `MatterEngine3/src/hydrology/river_runtime_internal.h`
+- `MatterEngine3/src/matter_engine.cpp`
+- `MatterEngine3/src/provider/local_provider.cpp`
+- `MatterEngine3/tests/async_bake_tests.cpp`
+- `MatterEngine3/tests/hydrology_artifact_tests.cpp`
+- `MatterEngine3/tests/hydrology_network_artifact_tests.cpp`
+- `MatterEngine3/tests/river_runtime_tests.cpp`
+
+### Process and Self-Review Audit
+
+- No subagents or reviewers were spawned for the repair.
+- No Make, GCC, g++, MinGW, MSYS2, or collect2 command was invoked. Builds used
+  `tools/build-windows.ps1`; tests used Visual Studio CTest in the prescribed
+  build tree. The first sandboxed build preflight could not execute the native
+  Python launcher, so the same approved build script was rerun with the needed
+  host-tool access.
+- `git diff --check` and the staged diff check passed. Only the listed repair
+  files were staged; unrelated pre-existing untracked files were preserved.
+- Sampling remains renderer/provider-free and allocation-free. The lease load
+  is the only new hot-path operation.
+- The successful replacement boundary is deliberately fail-closed: the old
+  lease is invalidated immediately before the one atomic record store while the
+  generation lock is held. Thus a concurrent reader can observe an invalid old
+  binding during the handoff, but can never keep sampling old data after the new
+  CPU/render record is visible.
+
+### Remaining Concerns
+
+No known Task 2 repair blocker remains. Unreferenced content-addressed field
+files may remain after cancellation or a second-file write failure, but no Ready
+manifest can reference an incomplete or invalid pair; later cache maintenance
+may garbage-collect such orphan files.
