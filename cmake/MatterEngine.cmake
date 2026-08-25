@@ -316,6 +316,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/props_tests.cpp)
     matter_add_engine_cpu_test(physics_tests
         MatterEngine3/tests/physics_tests.cpp)
+    matter_add_engine_cpu_test(terrain_collision_physics_tests
+        MatterEngine3/tests/terrain_collision_physics_tests.cpp)
     matter_add_engine_cpu_test(river_float_system_tests
         MatterEngine3/tests/river_float_system_tests.cpp)
     matter_add_engine_cpu_test(scene_registry_tests

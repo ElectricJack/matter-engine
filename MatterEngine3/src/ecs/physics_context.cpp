@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -15,6 +17,7 @@
 
 #include "matter/event/event_hub.h"
 #include "matter/events/physics_events.h"
+#include "terrain_collision/terrain_collision_artifact.h"
 
 namespace matter::physics::detail {
 namespace {
@@ -267,6 +270,73 @@ struct HullDeleter {
     }
 };
 
+struct TerrainCollisionTileRuntime {
+    terrain_collision::SectorCoordinate coordinate{};
+    Float3 origin_m{};
+    std::uint64_t tile_key = 0;
+    std::vector<b3Vec3> vertices;
+    std::vector<std::int32_t> indices;
+    b3MeshData* mesh_data = nullptr;
+    b3BodyId body = b3_nullBodyId;
+    b3ShapeId shape = b3_nullShapeId;
+
+    TerrainCollisionTileRuntime() = default;
+    TerrainCollisionTileRuntime(const TerrainCollisionTileRuntime&) = delete;
+    TerrainCollisionTileRuntime& operator=(
+        const TerrainCollisionTileRuntime&) = delete;
+
+    TerrainCollisionTileRuntime(
+        TerrainCollisionTileRuntime&& other) noexcept
+        : coordinate(other.coordinate),
+          origin_m(other.origin_m),
+          tile_key(other.tile_key),
+          vertices(std::move(other.vertices)),
+          indices(std::move(other.indices)),
+          mesh_data(std::exchange(other.mesh_data, nullptr)),
+          body(std::exchange(other.body, b3_nullBodyId)),
+          shape(std::exchange(other.shape, b3_nullShapeId)) {}
+
+    TerrainCollisionTileRuntime& operator=(
+        TerrainCollisionTileRuntime&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+        reset();
+        coordinate = other.coordinate;
+        origin_m = other.origin_m;
+        tile_key = other.tile_key;
+        vertices = std::move(other.vertices);
+        indices = std::move(other.indices);
+        mesh_data = std::exchange(other.mesh_data, nullptr);
+        body = std::exchange(other.body, b3_nullBodyId);
+        shape = std::exchange(other.shape, b3_nullShapeId);
+        return *this;
+    }
+
+    ~TerrainCollisionTileRuntime() {
+        reset();
+    }
+
+    void reset() noexcept {
+        // A body owns its attached shape. Destroying it first both destroys
+        // the shape and ends every reference to mesh_data.
+        if (b3Body_IsValid(body)) {
+            b3DestroyBody(body);
+        }
+        shape = b3_nullShapeId;
+        body = b3_nullBodyId;
+        if (mesh_data != nullptr) {
+            b3DestroyMesh(mesh_data);
+            mesh_data = nullptr;
+        }
+    }
+};
+
+struct TerrainCollisionRuntime {
+    TerrainCollisionPhysicsStats stats{};
+    std::vector<TerrainCollisionTileRuntime> tiles;
+};
+
 } // namespace
 
 struct PhysicsContext::Impl {
@@ -299,9 +369,123 @@ struct PhysicsContext::Impl {
     uint64_t ray_query_candidate_attempts_for_test = 0;
     uint64_t overlap_query_candidate_attempts_for_test = 0;
     bool stepping = false;
+    std::thread::id owner_thread{};
+    std::unique_ptr<TerrainCollisionRuntime> terrain_collision;
 };
 
 namespace {
+
+bool validate_and_build_terrain_tile(
+    b3WorldId world_id,
+    const terrain_collision::TileCandidate& candidate,
+    float friction,
+    float restitution,
+    TerrainCollisionTileRuntime& tile,
+    std::string& error) {
+    const std::size_t vertex_count = candidate.vertices.size();
+    const std::size_t index_count = candidate.indices.size();
+    if (vertex_count == 0 || index_count == 0) {
+        error = "terrain collision tile has mismatched empty geometry";
+        return false;
+    }
+    if (vertex_count < 3 ||
+        vertex_count > static_cast<std::size_t>(
+            std::numeric_limits<int>::max())) {
+        error = "terrain collision tile vertex count exceeds Box3D limits";
+        return false;
+    }
+    if (index_count % 3 != 0) {
+        error = "terrain collision tile index count is not divisible by three";
+        return false;
+    }
+    const std::size_t triangle_count = index_count / 3;
+    if (triangle_count == 0 ||
+        triangle_count >= static_cast<std::size_t>(
+            std::numeric_limits<int>::max())) {
+        error = "terrain collision tile triangle count exceeds Box3D limits";
+        return false;
+    }
+    if (!finite(candidate.origin_m)) {
+        error = "terrain collision tile origin is not finite";
+        return false;
+    }
+    for (const Float3 vertex : candidate.vertices) {
+        if (!finite(vertex)) {
+            error = "terrain collision tile vertex is not finite";
+            return false;
+        }
+    }
+    for (const std::uint32_t index : candidate.indices) {
+        if (static_cast<std::size_t>(index) >= vertex_count) {
+            error = "terrain collision tile index is out of range";
+            return false;
+        }
+    }
+
+    tile.coordinate = candidate.coordinate;
+    tile.origin_m = candidate.origin_m;
+    tile.tile_key = candidate.tile_key;
+    tile.vertices.reserve(vertex_count);
+    for (const Float3 vertex : candidate.vertices) {
+        tile.vertices.push_back(box_vector(vertex));
+    }
+    tile.indices.reserve(index_count);
+    for (const std::uint32_t index : candidate.indices) {
+        tile.indices.push_back(static_cast<std::int32_t>(index));
+    }
+
+    b3BodyDef body_definition = b3DefaultBodyDef();
+    body_definition.type = b3_staticBody;
+    body_definition.position = box_position(candidate.origin_m);
+    tile.body = b3CreateBody(world_id, &body_definition);
+    if (!b3Body_IsValid(tile.body)) {
+        error = "Box3D failed to create a terrain collision body";
+        return false;
+    }
+
+    b3MeshDef mesh_definition{};
+    mesh_definition.vertices = tile.vertices.data();
+    mesh_definition.indices = tile.indices.data();
+    mesh_definition.vertexCount = static_cast<int>(vertex_count);
+    mesh_definition.triangleCount = static_cast<int>(triangle_count);
+    mesh_definition.weldVertices = false;
+    mesh_definition.identifyEdges = true;
+    mesh_definition.useMedianSplit = true;
+    std::vector<int> degenerate_indices(triangle_count + 1, -1);
+    tile.mesh_data = b3CreateMesh(
+        &mesh_definition,
+        degenerate_indices.data(),
+        static_cast<int>(degenerate_indices.size()));
+    if (tile.mesh_data == nullptr) {
+        error = "Box3D rejected a terrain collision mesh";
+        return false;
+    }
+    if (std::any_of(
+            degenerate_indices.begin(), degenerate_indices.end(),
+            [](int index) { return index != -1; })) {
+        error = "Box3D reported a degenerate terrain collision triangle";
+        return false;
+    }
+    if (tile.mesh_data->byteCount <= 0) {
+        error = "Box3D returned invalid terrain collision retained bytes";
+        return false;
+    }
+
+    b3ShapeDef shape_definition = b3DefaultShapeDef();
+    shape_definition.baseMaterial.friction = friction;
+    shape_definition.baseMaterial.restitution = restitution;
+    const ColliderProperties engine_default_filter{};
+    shape_definition.filter.categoryBits =
+        engine_default_filter.category_bits;
+    shape_definition.filter.maskBits = engine_default_filter.mask_bits;
+    tile.shape = b3CreateMeshShape(
+        tile.body, &shape_definition, tile.mesh_data, b3Vec3_one);
+    if (!b3Shape_IsValid(tile.shape)) {
+        error = "Box3D failed to create a terrain collision shape";
+        return false;
+    }
+    return true;
+}
 
 bool is_live_dynamic_bridge(const BridgeRecord& bridge) {
     return bridge.live && bridge.type == RigidBodyType::Dynamic &&
@@ -521,6 +705,7 @@ PhysicsCommandTraceEntry trace_entry(const QueuedCommand& command) {
 
 PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
     : impl_(std::make_unique<Impl>()) {
+    impl_->owner_thread = std::this_thread::get_id();
     impl_->forces.reserve(kForceCommandCapacity);
     impl_->force_drain_buffer.reserve(kForceCommandCapacity);
     b3WorldDef world_def = b3DefaultWorldDef();
@@ -540,6 +725,7 @@ PhysicsContext::~PhysicsContext() {
     if (impl_ == nullptr) {
         return;
     }
+    clear_terrain_collision();
     for (auto& entry : impl_->bridges) {
         BridgeRecord& bridge = *entry.second;
         if (impl_->query_tree_valid && bridge.query_proxy >= 0) {
@@ -576,6 +762,114 @@ PhysicsStats PhysicsContext::stats() const noexcept {
 
 bool PhysicsContext::world_is_valid() const noexcept {
     return impl_ != nullptr && b3World_IsValid(impl_->world_id);
+}
+
+bool PhysicsContext::replace_terrain_collision(
+    const terrain_collision::TerrainCollisionCandidate& candidate,
+    std::string& error) {
+    error.clear();
+    if (impl_ == nullptr || !b3World_IsValid(impl_->world_id)) {
+        error = "terrain collision replacement requires a live physics world";
+        return false;
+    }
+    if (std::this_thread::get_id() != impl_->owner_thread) {
+        error = "terrain collision replacement requires the physics owner thread";
+        return false;
+    }
+    if (impl_->stepping) {
+        error = "terrain collision replacement is forbidden while stepping";
+        return false;
+    }
+    if (impl_->terrain_collision != nullptr &&
+        impl_->terrain_collision->stats.installation_key ==
+            candidate.installation_key) {
+        return true;
+    }
+    if (!std::isfinite(candidate.friction) || candidate.friction < 0.0f ||
+        candidate.friction > 1.0f ||
+        !std::isfinite(candidate.restitution) ||
+        candidate.restitution < 0.0f || candidate.restitution > 1.0f) {
+        error = "terrain collision material must be finite and in [0, 1]";
+        return false;
+    }
+
+    try {
+        std::size_t non_empty_count = 0;
+        for (const terrain_collision::TileCandidate& tile : candidate.tiles) {
+            if (!tile.vertices.empty() || !tile.indices.empty()) {
+                ++non_empty_count;
+            }
+        }
+        if (non_empty_count > static_cast<std::size_t>(
+                std::numeric_limits<std::uint32_t>::max())) {
+            error = "terrain collision shape count exceeds runtime limits";
+            return false;
+        }
+
+        auto replacement = std::make_unique<TerrainCollisionRuntime>();
+        replacement->tiles.reserve(non_empty_count);
+        replacement->stats.installation_key = candidate.installation_key;
+        replacement->stats.replacements = impl_->terrain_collision != nullptr
+            ? (impl_->terrain_collision->stats.replacements ==
+                       std::numeric_limits<std::uint64_t>::max()
+                   ? std::numeric_limits<std::uint64_t>::max()
+                   : impl_->terrain_collision->stats.replacements + 1)
+            : 0;
+
+        for (const terrain_collision::TileCandidate& source : candidate.tiles) {
+            if (source.vertices.empty() && source.indices.empty()) {
+                if (!finite(source.origin_m)) {
+                    error = "empty terrain collision tile origin is not finite";
+                    return false;
+                }
+                continue;
+            }
+            TerrainCollisionTileRuntime tile;
+            if (!validate_and_build_terrain_tile(
+                    impl_->world_id, source, candidate.friction,
+                    candidate.restitution, tile, error)) {
+                return false;
+            }
+            const std::uint64_t tile_bytes =
+                static_cast<std::uint64_t>(tile.mesh_data->byteCount);
+            if (replacement->stats.retained_bytes >
+                std::numeric_limits<std::uint64_t>::max() - tile_bytes) {
+                error = "terrain collision retained byte count overflow";
+                return false;
+            }
+            replacement->stats.retained_bytes += tile_bytes;
+            replacement->tiles.push_back(std::move(tile));
+        }
+        replacement->stats.shape_count =
+            static_cast<std::uint32_t>(replacement->tiles.size());
+
+        std::unique_ptr<TerrainCollisionRuntime> retired =
+            std::move(impl_->terrain_collision);
+        impl_->terrain_collision = std::move(replacement);
+        // Publish first, then retire. TerrainCollisionTileRuntime destroys the
+        // body (and its attached shape) before releasing retained mesh data.
+        retired.reset();
+        return true;
+    } catch (const std::bad_alloc&) {
+        error = "terrain collision replacement allocation failed";
+        return false;
+    } catch (...) {
+        error = "terrain collision replacement failed";
+        return false;
+    }
+}
+
+void PhysicsContext::clear_terrain_collision() noexcept {
+    if (impl_ != nullptr) {
+        impl_->terrain_collision.reset();
+    }
+}
+
+TerrainCollisionPhysicsStats
+PhysicsContext::terrain_collision_stats() const noexcept {
+    return impl_ != nullptr && impl_->terrain_collision != nullptr
+        ? impl_->terrain_collision->stats
+        : TerrainCollisionPhysicsStats{};
 }
 
 void PhysicsContext::mark_for_reconcile(flecs::entity_t entity) noexcept {
@@ -1665,6 +1959,63 @@ void PhysicsContext::set_guarded_batch_post_first_row_hook_for_test(
     if (impl_ == nullptr) return;
     impl_->guarded_batch_hook_context = context;
     impl_->guarded_batch_post_first_row_hook = hook;
+}
+
+bool PhysicsContext::terrain_collision_tile_state_for_test(
+    std::size_t index,
+    TerrainCollisionPhysicsTileState& state) const noexcept {
+    state = {};
+    if (impl_ == nullptr || impl_->terrain_collision == nullptr ||
+        index >= impl_->terrain_collision->tiles.size()) {
+        return false;
+    }
+    const TerrainCollisionTileRuntime& tile =
+        impl_->terrain_collision->tiles[index];
+    if (!b3Body_IsValid(tile.body) || !b3Shape_IsValid(tile.shape) ||
+        tile.mesh_data == nullptr || tile.mesh_data->byteCount <= 0) {
+        return false;
+    }
+    const b3Filter filter = b3Shape_GetFilter(tile.shape);
+    state.coordinate_x = tile.coordinate.x;
+    state.coordinate_y = tile.coordinate.y;
+    state.coordinate_z = tile.coordinate.z;
+    state.tile_key = tile.tile_key;
+    state.body_handle = b3StoreBodyId(tile.body);
+    state.shape_handle = b3StoreShapeId(tile.shape);
+    state.retained_bytes =
+        static_cast<std::uint64_t>(tile.mesh_data->byteCount);
+    state.origin_m = tile.origin_m;
+    state.friction = b3Shape_GetFriction(tile.shape);
+    state.restitution = b3Shape_GetRestitution(tile.shape);
+    state.category_bits = filter.categoryBits;
+    state.mask_bits = filter.maskBits;
+    state.group_index = filter.groupIndex;
+    state.body_is_static = b3Body_GetType(tile.body) == b3_staticBody;
+    state.body_user_data_is_null = b3Body_GetUserData(tile.body) == nullptr;
+    state.shape_user_data_is_null = b3Shape_GetUserData(tile.shape) == nullptr;
+    return true;
+}
+
+bool PhysicsContext::terrain_collision_handles_are_valid_for_test(
+    std::uint64_t body_handle,
+    std::uint64_t shape_handle) const noexcept {
+    return body_handle != 0 && shape_handle != 0 &&
+           b3Body_IsValid(b3LoadBodyId(body_handle)) &&
+           b3Shape_IsValid(b3LoadShapeId(shape_handle));
+}
+
+TerrainCollisionPhysicsWorldState
+PhysicsContext::terrain_collision_world_state_for_test() const noexcept {
+    TerrainCollisionPhysicsWorldState state{};
+    if (impl_ == nullptr || !b3World_IsValid(impl_->world_id)) {
+        return state;
+    }
+    const b3Counters counters = b3World_GetCounters(impl_->world_id);
+    state.body_count = counters.bodyCount > 0
+        ? static_cast<std::uint32_t>(counters.bodyCount) : 0;
+    state.shape_count = counters.shapeCount > 0
+        ? static_cast<std::uint32_t>(counters.shapeCount) : 0;
+    return state;
 }
 
 PhysicsContext& context(flecs::world& world) {

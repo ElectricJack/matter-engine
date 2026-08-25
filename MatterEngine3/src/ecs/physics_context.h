@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "matter/physics.h"
@@ -11,7 +12,45 @@ namespace matter::evt {
 class Hub;
 }  // namespace matter::evt
 
+namespace matter::terrain_collision {
+struct TerrainCollisionCandidate;
+}  // namespace matter::terrain_collision
+
 namespace matter::physics::detail {
+
+struct TerrainCollisionPhysicsStats {
+    std::uint64_t installation_key = 0;
+    std::uint32_t shape_count = 0;
+    std::uint64_t retained_bytes = 0;
+    std::uint64_t replacements = 0;
+};
+
+// Read-only, src-private terrain lifetime seam. Opaque handle words let the
+// behavior suite prove retirement without leaking Box3D types out of the
+// PhysicsContext implementation boundary.
+struct TerrainCollisionPhysicsTileState {
+    std::int64_t coordinate_x = 0;
+    std::int64_t coordinate_y = 0;
+    std::int64_t coordinate_z = 0;
+    std::uint64_t tile_key = 0;
+    std::uint64_t body_handle = 0;
+    std::uint64_t shape_handle = 0;
+    std::uint64_t retained_bytes = 0;
+    Float3 origin_m{};
+    float friction = 0.0f;
+    float restitution = 0.0f;
+    std::uint64_t category_bits = 0;
+    std::uint64_t mask_bits = 0;
+    std::int32_t group_index = 0;
+    bool body_is_static = false;
+    bool body_user_data_is_null = false;
+    bool shape_user_data_is_null = false;
+};
+
+struct TerrainCollisionPhysicsWorldState {
+    std::uint32_t body_count = 0;
+    std::uint32_t shape_count = 0;
+};
 
 enum class PhysicsSystemStage : uint8_t { Reconcile, Push, Step, Pull };
 
@@ -70,6 +109,11 @@ public:
     // by the owning WorldSession via ecs_runtime::Runtime::set_physics_event_hub.
     void set_event_hub(matter::evt::Hub* hub) noexcept;
     bool world_is_valid() const noexcept;
+    bool replace_terrain_collision(
+        const terrain_collision::TerrainCollisionCandidate& candidate,
+        std::string& error);
+    void clear_terrain_collision() noexcept;
+    TerrainCollisionPhysicsStats terrain_collision_stats() const noexcept;
     void mark_for_reconcile(flecs::entity_t entity) noexcept;
     void mark_transform_for_reconcile(flecs::entity entity) noexcept;
     void reconcile(flecs::world& world);
@@ -154,6 +198,14 @@ public:
     void set_stepping_for_test(bool stepping) noexcept;
     void set_guarded_batch_post_first_row_hook_for_test(
         void* context, GuardedBatchPostFirstRowHook hook) noexcept;
+    bool terrain_collision_tile_state_for_test(
+        std::size_t index,
+        TerrainCollisionPhysicsTileState& state) const noexcept;
+    bool terrain_collision_handles_are_valid_for_test(
+        std::uint64_t body_handle,
+        std::uint64_t shape_handle) const noexcept;
+    TerrainCollisionPhysicsWorldState
+    terrain_collision_world_state_for_test() const noexcept;
 
 private:
     void capture_events(flecs::world& world);

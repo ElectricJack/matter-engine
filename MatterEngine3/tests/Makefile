@@ -280,6 +280,13 @@ PHYSICS_TARGET = build/physics-tests
 PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
 
+# Terrain collision Box3D lifetime/behavior suite. Rollback-only source
+# closure; acceptance executes the MSVC/CMake target, never this recipe.
+TERRAIN_COLLISION_PHYSICS_TARGET = build/terrain_collision_physics_tests
+TERRAIN_COLLISION_PHYSICS_CPP = terrain_collision_physics_tests.cpp \
+    $(filter-out physics_tests.cpp,$(PHYSICS_CPP))
+TERRAIN_COLLISION_PHYSICS_C = $(PHYSICS_C)
+
 # River floating is registered here only for rollback source-census parity.
 # Acceptance executes the MSVC/CMake target, never this legacy Make target.
 RIVER_FLOAT_SYSTEM_TARGET = build/river_float_system_tests
@@ -1575,6 +1582,7 @@ def_CPP_SRCS := $(sort \
     $(ANIMATION_STORE_CPP) \
     $(ANIMATION_BUDGET_CPP) \
     $(PHYSICS_CPP) \
+    $(TERRAIN_COLLISION_PHYSICS_CPP) \
     $(RIVER_FLOAT_SYSTEM_TEST_CPP) \
     $(ANIMATION_SYSTEMS_CPP) \
     $(ANIMATION_SIMULATION_CPP) \
@@ -1759,6 +1767,7 @@ EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
 
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
+TERRAIN_COLLISION_PHYSICS_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_PHYSICS_CPP)) $(call obj_list,physicsc,$(TERRAIN_COLLISION_PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
 RIVER_FLOAT_SYSTEM_OBJS = $(call obj_list,def,$(RIVER_FLOAT_SYSTEM_TEST_CPP)) $(call obj_list,physicsc,$(RIVER_FLOAT_SYSTEM_C)) $(EVENT_IMPL_DEF_OBJS)
 # The animation suites below reach physics_context.cpp through the same ECS
 # runtime closure (ANIMATION_ECS_RUNTIME_REQUIRED / ANIMATION_STORE_CPP), so
@@ -2057,6 +2066,14 @@ $(PHYSICS_TARGET): check-physics-animation-sources $(PHYSICS_OBJS) $(BOX3D_LIB) 
 
 run-physics: $(PHYSICS_TARGET)
 	./$(PHYSICS_TARGET)
+
+$(TERRAIN_COLLISION_PHYSICS_TARGET): $(TERRAIN_COLLISION_PHYSICS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(TERRAIN_COLLISION_PHYSICS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
+
+run-terrain-collision-physics: $(TERRAIN_COLLISION_PHYSICS_TARGET)
+	./$(TERRAIN_COLLISION_PHYSICS_TARGET)
+
+.PHONY: run-terrain-collision-physics
 
 $(RIVER_FLOAT_SYSTEM_TARGET): $(RIVER_FLOAT_SYSTEM_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(RIVER_FLOAT_SYSTEM_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
