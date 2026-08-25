@@ -10,6 +10,10 @@ Review-repair implementation/tests commit:
 `2dbbe564527c959341a0261c8c52da93b605de0d`
 (`fix: harden river float force delivery`)
 
+Round-two review-repair implementation/tests commit:
+`6cca472ec97bfba3ab2a7253dc906050352c4604`
+(`fix: apply guarded physics batches atomically`)
+
 ## Outcome
 
 Task 4 is implemented. Authored `RiverFloatBody` Box3D bodies now consume the
@@ -66,6 +70,27 @@ system is registered as `matter::physics::MatterRiverFloatForces`, so an
 unqualified lookup returned zero. Correcting the test to the registered full
 path made the structural check exercise the intended single callback. All
 production-contract assertions were already green.
+
+### Round-two atomic-batch RED/GREEN
+
+The second independent review reported 0 Critical and 1 Important finding: the
+queue admitted a body atomically, but Push still validated and mutated each row
+independently, allowing both partial application and a publication store between
+rows. Tests were changed first and both focused MSVC targets produced the
+intended compile-time RED:
+
+- `river_float_system_tests` failed because the publication slot had no write
+  exclusion and PhysicsContext had no deterministic post-first-row seam.
+- `physics_tests` failed because the generic guarded API accepted only one
+  per-row validator instead of a batch begin/end contract.
+
+The first implemented run passed all lock/publication assertions but exposed a
+fixture assumption: the body was placed on the 2x2 interpolation boundary, so
+only one probe produced a force row. Moving the unchanged four-probe body to the
+field interior made the test exercise a real four-row batch. It then proved a B
+publisher reaches the production pre-write point after A row 1, cannot become
+visible or complete while A holds the read guard, and becomes visible only
+after all four A rows apply and trace.
 
 ## Final verification
 
@@ -134,10 +159,10 @@ both measurements are non-gating and the phase-local result remains 0/0/0.
 The source boundaries prove those whole-tick allocations occur outside
 `RiverFloatForces`: `PhysicsContext::push` creates local unordered maps, sets,
 and vectors and reserves its entity/trace scratch storage
-(`physics_context.cpp:964-1001`); `PhysicsContext::step` calls `b3World_Step`
-before `capture_events` (`physics_context.cpp:1101-1113`); and `capture_events`
-constructs a fresh `PhysicsEvents` value (`physics_context.cpp:1207-1209`). The
-single float callback brackets only `river_float_system.cpp:712-859`. Per the
+(`physics_context.cpp:982-1019`); `PhysicsContext::step` calls `b3World_Step`
+before `capture_events` (`physics_context.cpp:1172-1184`); and `capture_events`
+constructs a fresh `PhysicsEvents` value (`physics_context.cpp:1278-1280`). The
+single float callback brackets only `river_float_system.cpp:715-847`. Per the
 parent ruling and Task 4 ownership boundary, the repair did not change Box3D or
 weaken the owned kernel/phase/queue zero-allocation gate.
 
@@ -148,18 +173,28 @@ private ECS binding state. The callback loads the existing
 `authored_fluid_publication_slot`; therefore CPU floating and rendering observe
 the same successful publication linearization and no second generation channel
 exists. Each production body enqueues all of its at-most-64 rows atomically with
-the exact sampled `shared_ptr<RiverRuntimeBinding>` erased to
-`shared_ptr<const void>` plus a `noexcept` validator. Immediately before Box3D
-mutation, `PhysicsPush` asks `RiverRuntimeBindingAccess` whether that binding's
-publication slot still contains the same identity. A replacement published
-after sampling drops every stale row; a failed/cancelled replacement performs
-no store and leaves every A row valid. Capacity failure rejects the whole body
-batch without admitting a partial row.
+an explicit batch id/count/index boundary. Only the first row owns the exact
+sampled `shared_ptr<RiverRuntimeBinding>` erased to `shared_ptr<const void>` and
+the generic `noexcept` begin/end callbacks. Immediately before any Box3D
+mutation, `PhysicsPush` validates the complete boundary and live body once, then
+calls the begin guard once. Rejection applies/traces no rows and increments
+`failed_commands` once; acceptance applies/traces every row before an RAII scope
+calls end once. Ordinary Force and ForceAtPoint ordering is unchanged.
+
+River's begin callback takes the publication slot's shared lock and verifies
+the expected identity while holding it. Every successful publication takes the
+matching exclusive lock around the repository's sole atomic slot store. Thus a
+replacement that wins before batch begin drops all A rows, while a replacement
+attempted after row 1 waits until the entire A batch has mutated and traced. A
+failed/cancelled replacement performs no store and leaves every A row valid.
+Capacity failure still rejects the whole body batch without admitting a partial
+row.
 
 This guarded seam is hydrology-agnostic: `PhysicsContext` owns only the erased
-validation owner and function pointer. River-specific current-slot/identity
-logic stays in the hydrology internal access type. The public Task 3 bridge and
-direct-Box3D boundary are unchanged. The acquisition callback is cleared under
+guard owner, boundary metadata, and begin/end function pointers. River-specific
+current-slot/identity locking stays in the hydrology internal access type. The
+public Task 3 bridge and direct-Box3D boundary are unchanged. The acquisition
+callback is cleared under
 the same hydrology-generation lock before destructor publication reset,
 preventing a dangling session context.
 
@@ -220,12 +255,15 @@ proved SimulationControl is the sole Play/Stop component/state restoration path;
 the parent explicitly authorized extending it rather than creating a parallel
 snapshot mechanism.
 
-The review repair's scoped `physics_tests.cpp` addition tests the generic
+The review repairs' scoped `physics_tests.cpp` additions test the generic
 physics concern at its owner: after independently discovering the bounded force
 lane capacity, it leaves one slot free, rejects a two-row guarded batch exactly
 once, ticks Push, and proves neither sentinel row entered the command trace. This
 keeps capacity atomicity out of the River-specific fixture while retaining the
-earlier Task 4 phase-dependency assertion in the same focused target.
+earlier Task 4 phase-dependency assertion in the same focused target. Round two
+also mixes a rejected two-row guarded batch with ordinary centre/point forces,
+proving one begin, zero end, one batch-level failure, no guarded trace rows, and
+unchanged ordinary force ordering.
 
 ## Toolchain audit
 
@@ -242,7 +280,7 @@ legacy executable, or subagent was used.
 
 - Whole runtime ticks are not globally allocation-free for the documented
   pre-existing physics/Box3D reasons; Task 4's owned phase is proven zero.
-- The measurement and post-enqueue hooks are internal and inert unless a test
-  installs them.
+- The measurement, post-enqueue, post-first-row, and pre-publication hooks are
+  internal and inert unless a test installs them.
 - Private invalid/checksum state is restored by SimulationControl but is never
   exposed as authored scene recipe data.
