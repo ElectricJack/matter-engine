@@ -743,6 +743,7 @@ struct WorldSession::Impl {
 #endif
     struct AuthoredFluidPublication {
         std::shared_ptr<const matter::RiverRuntimeBinding> runtime;
+        std::shared_ptr<matter::detail::RiverRuntimePublicationLease> lease;
 #ifdef MATTER_VULKAN_VIEWER
         std::shared_ptr<const AuthoredFluidRenderBinding> render;
 #endif
@@ -3384,13 +3385,22 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         context, result, error, network_result);
     bool publication_accepted = accepted;
     std::shared_ptr<const matter::RiverRuntimeBinding> runtime_binding;
+    std::shared_ptr<matter::detail::RiverRuntimePublicationLease>
+        runtime_lease;
     if (accepted) {
+        try {
+            runtime_lease = std::make_shared<
+                matter::detail::RiverRuntimePublicationLease>();
+        } catch (const std::bad_alloc&) {
+            publication_accepted = false;
+        }
         const matter::detail::RiverRuntimeBuildInput runtime_input{
             network_result.manifest.payload_digest,
             network_result.manifest.runtime_field_digest,
             network_result.manifest.presentation_field_digest,
-            &network_result.products};
-        runtime_binding = matter::WorldSession::make_river_runtime_binding(
+            &network_result.products,
+            runtime_lease};
+        runtime_binding = matter::detail::RiverRuntimeBindingAccess::build(
             runtime_input);
         if (!runtime_binding) {
             publication_accepted = false;
@@ -3451,6 +3461,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         if (publication_accepted) {
             auto publication = std::make_shared<AuthoredFluidPublication>();
             publication->runtime = std::move(runtime_binding);
+            publication->lease = std::move(runtime_lease);
 #ifdef MATTER_VULKAN_VIEWER
             auto render = std::make_shared<AuthoredFluidRenderBinding>();
             render->part = std::move(authored_part);
@@ -3495,6 +3506,11 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
                 provider->commit_accepted_fluid_network(
                     std::move(network_result));
             if (publication_accepted) {
+                const auto prior = std::atomic_load_explicit(
+                    &authored_fluid_publication, std::memory_order_acquire);
+                if (prior)
+                    matter::detail::RiverRuntimeBindingAccess::invalidate(
+                        prior->lease);
                 std::atomic_store_explicit(
                     &authored_fluid_publication,
                     std::move(publication_candidate),
@@ -9501,6 +9517,11 @@ WorldSession::~WorldSession() {
     {
         std::lock_guard<std::recursive_mutex> generation_lock(
             impl_->hydrology_generation_mutex);
+        const auto prior = std::atomic_load_explicit(
+            &impl_->authored_fluid_publication, std::memory_order_acquire);
+        if (prior)
+            matter::detail::RiverRuntimeBindingAccess::invalidate(
+                prior->lease);
         std::atomic_store_explicit(
             &impl_->authored_fluid_publication,
             std::shared_ptr<const WorldSession::Impl::AuthoredFluidPublication>{},

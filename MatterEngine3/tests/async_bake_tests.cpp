@@ -2251,11 +2251,13 @@ static bool test_cancelled_fluid_generation_publishes_neither_half(
           "B binding generation and field digests match its accepted manifest");
 
     bool sampled = false;
+    matter::Float3 wet_position{};
     if (binding) {
         for (float z = -10.0f; z <= 20.0f && !sampled; z += 0.5f) {
             for (float x = -10.0f; x <= 20.0f && !sampled; x += 0.5f) {
                 matter::RiverFieldSample field{};
                 if (binding->sample({x, 0.0f, z}, field)) {
+                    wet_position = {x, 0.0f, z};
                     sampled = field.wet_valid &&
                               std::isfinite(field.surface_position_m.y) &&
                               std::isfinite(field.surface_normal.y) &&
@@ -2276,12 +2278,110 @@ static bool test_cancelled_fluid_generation_publishes_neither_half(
     CHECK(sampled,
           "published runtime binding combines finite gameplay and presentation channels");
 
+    int replacement_before_calls = 0;
+    int replacement_after_calls = 0;
+    bool release_replacement_before = false;
+    bool release_replacement_after = false;
+    session->set_test_fluid_before_publication_hook([&] {
+        std::unique_lock<std::mutex> lock(barrier_mutex);
+        ++replacement_before_calls;
+        barrier_cv.notify_all();
+        if (replacement_before_calls == 1)
+            barrier_cv.wait(lock, [&] { return release_replacement_before; });
+    });
+    session->set_test_fluid_after_publication_hook([&] {
+        std::unique_lock<std::mutex> lock(barrier_mutex);
+        ++replacement_after_calls;
+        barrier_cv.notify_all();
+        if (replacement_after_calls == 1)
+            barrier_cv.wait(lock, [&] { return release_replacement_after; });
+    });
+    const std::size_t seed_b = world_source.find("seed:8");
+    CHECK(seed_b != std::string::npos, "accepted B seed was found");
+    if (seed_b != std::string::npos)
+        world_source.replace(seed_b, 6u, "seed:9");
+    CHECK(write_file(world_path, world_source),
+          "generation C changes accepted network identity");
+    session->reload();
+    CHECK(wait_for_barrier([&] { return replacement_before_calls == 1; }),
+          "generation C parks before replacing accepted B");
+    matter::RiverFieldSample retained_sample{};
+    CHECK(binding && binding->sample(wet_position, retained_sample),
+          "accepted B remains sampleable while C is only a candidate");
+
+    const std::size_t seed_c = world_source.find("seed:9");
+    CHECK(seed_c != std::string::npos, "candidate C seed was found");
+    if (seed_c != std::string::npos)
+        world_source.replace(seed_c, 6u, "seed:10");
+    CHECK(write_file(world_path, world_source),
+          "generation D supersedes candidate C");
+    session->reload();
+    {
+        std::lock_guard<std::mutex> lock(barrier_mutex);
+        release_replacement_before = true;
+    }
+    barrier_cv.notify_all();
+    CHECK(wait_for_barrier([&] { return replacement_after_calls == 1; }),
+          "cancelled C reaches its commit-or-skip observation point");
+    retained_sample = {};
+    CHECK(session->river_runtime_binding() == binding && binding &&
+              binding->sample(wet_position, retained_sample),
+          "cancelled C leaves retained accepted B's lease valid");
+    {
+        std::lock_guard<std::mutex> lock(barrier_mutex);
+        release_replacement_after = true;
+    }
+    barrier_cv.notify_all();
+    FullBakeLog replacement_events;
+    const bool replacement_finished =
+        drive_bake_tolerant(*session, replacement_events, 60);
+    const auto replacement_binding = session->river_runtime_binding();
+    retained_sample.wet_valid = true;
+    CHECK(replacement_finished && replacement_binding &&
+              replacement_binding != binding &&
+              replacement_binding->generation() != binding->generation() &&
+              !binding->sample(wet_position, retained_sample) &&
+              !retained_sample.wet_valid,
+          "successful D atomically invalidates a caller-retained B binding");
+
     session->set_test_fluid_before_publication_hook({});
     session->set_test_fluid_after_publication_hook({});
+    session->set_test_fluid_bake_dependencies(
+        [backend_state] {
+            ++backend_state->factory_calls;
+            return std::make_shared<AsyncFluidBackend>(backend_state);
+        },
+        [](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
+           gpu_meshing::Stats&, gpu_meshing::Error& visual_error,
+           const gpu_meshing::BuildControl&) {
+            visual_error = {gpu_meshing::ErrorCode::VulkanFailure,
+                            "injected replacement visual failure"};
+            return false;
+        });
+    const std::size_t seed_d = world_source.find("seed:10");
+    CHECK(seed_d != std::string::npos, "accepted D seed was found");
+    if (seed_d != std::string::npos)
+        world_source.replace(seed_d, 7u, "seed:11");
+    const std::size_t spacing = world_source.find("particleSpacing:.2");
+    CHECK(spacing != std::string::npos,
+          "accepted D simulation contract was found");
+    if (spacing != std::string::npos)
+        world_source.replace(spacing, 18u, "particleSpacing:.21");
+    CHECK(write_file(world_path, world_source),
+          "generation E changes the section simulation contract");
+    session->reload();
+    FullBakeLog failed_events;
+    drive_bake_tolerant(*session, failed_events, 60);
+    matter::RiverFieldSample replacement_sample{};
+    CHECK(replacement_binding &&
+              session->river_runtime_binding() == replacement_binding &&
+              replacement_binding->sample(wet_position, replacement_sample),
+          "failed E leaves retained accepted D's lease valid");
+
     session.reset();
     engine.reset();
     remove_tree(root);
-    return finished && found_manifest && sampled;
+    return finished && found_manifest && sampled && replacement_finished;
 }
 
 int main() {

@@ -898,9 +898,6 @@ public:
     WorldSession& operator=(const WorldSession&) = delete;
 
 private:
-    static std::shared_ptr<const RiverRuntimeBinding>
-    make_river_runtime_binding(
-        const detail::RiverRuntimeBuildInput& input) noexcept;
     std::unique_ptr<Impl> impl_;
 };
 

@@ -1,6 +1,5 @@
 #include "matter/river_runtime.h"
 
-#include "matter/world_session.h"
 #include "hydrology/river_runtime_internal.h"
 #include "hydrology/river_presentation_field.h"
 
@@ -16,6 +15,7 @@ struct RiverRuntimeBinding::Storage {
     hydrology::GameplayFieldLayout layout{};
     std::vector<hydrology::GameplaySample> gameplay;
     std::vector<hydrology::PresentationSample> presentation;
+    std::shared_ptr<detail::RiverRuntimePublicationLease> lease;
 };
 
 namespace {
@@ -70,7 +70,9 @@ std::uint64_t RiverRuntimeBinding::presentation_digest() const noexcept {
 bool RiverRuntimeBinding::sample(Float3 world_position_m,
                                  RiverFieldSample& out) const noexcept {
     out = {};
-    if (!storage_ || storage_->generation == 0u ||
+    if (!storage_ || !storage_->lease ||
+        !storage_->lease->valid.load(std::memory_order_acquire) ||
+        storage_->generation == 0u ||
         storage_->runtime_digest == 0u ||
         storage_->presentation_digest == 0u || !finite(world_position_m))
         return false;
@@ -121,11 +123,13 @@ std::size_t RiverRuntimeBinding::sample_batch(
 }
 
 std::shared_ptr<const RiverRuntimeBinding>
-WorldSession::make_river_runtime_binding(
+detail::RiverRuntimeBindingAccess::build(
     const detail::RiverRuntimeBuildInput& input) noexcept {
     try {
         if (input.generation == 0u || input.runtime_digest == 0u ||
             input.presentation_digest == 0u || input.products == nullptr ||
+            !input.lease ||
+            !input.lease->valid.load(std::memory_order_acquire) ||
             hydrology::hydrology_runtime_field_digest(
                 input.products->gameplay_layout,
                 input.products->gameplay_field) != input.runtime_digest ||
@@ -155,12 +159,18 @@ WorldSession::make_river_runtime_binding(
         storage->layout = input.products->gameplay_layout;
         storage->gameplay = input.products->gameplay_field;
         storage->presentation = input.products->presentation_field;
+        storage->lease = input.lease;
         auto binding = std::make_shared<RiverRuntimeBinding>();
         binding->storage_ = std::move(storage);
         return binding;
     } catch (...) {
         return {};
     }
+}
+
+void detail::RiverRuntimeBindingAccess::invalidate(
+    const std::shared_ptr<detail::RiverRuntimePublicationLease>& lease) noexcept {
+    if (lease) lease->valid.store(false, std::memory_order_release);
 }
 
 }  // namespace matter

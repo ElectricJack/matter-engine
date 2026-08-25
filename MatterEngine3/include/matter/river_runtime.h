@@ -8,6 +8,10 @@
 
 namespace matter {
 
+namespace detail {
+class RiverRuntimeBindingAccess;
+}
+
 enum class RiverFeature : std::uint8_t {
     Calm = 0,
     Current = 1,
@@ -47,7 +51,7 @@ public:
 private:
     struct Storage;
     std::shared_ptr<const Storage> storage_;
-    friend class WorldSession;
+    friend class detail::RiverRuntimeBindingAccess;
 };
 
 }  // namespace matter

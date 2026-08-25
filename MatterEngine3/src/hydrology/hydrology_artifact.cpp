@@ -444,7 +444,6 @@ bool serialize_artifact(const HydrologyArtifact& artifact,
 bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
                           HydrologyArtifact& artifact,
                           gpu_meshing::Error& error) {
-    artifact = {};
     error = {};
     if (bytes.size() < kHeaderBytes)
         return fail(error, "hydrology artifact is truncated");
@@ -629,16 +628,17 @@ bool load_artifact_validated(const std::filesystem::path& path,
                              HydrologyArtifact& artifact,
                              gpu_meshing::Error& error,
                              std::uint64_t expected_semantic_key) {
-    artifact = {};
     std::vector<std::uint8_t> bytes;
+    HydrologyArtifact candidate{};
     if (!read_file(path, bytes, error) ||
-        !deserialize_artifact(bytes, artifact, error))
+        !deserialize_artifact(bytes, candidate, error))
         return false;
-    if (artifact.product_keys.visual != expected_visual_key ||
-        (expected_semantic_key != 0u && artifact.semantic_key != expected_semantic_key)) {
-        artifact = {};
+    if (candidate.product_keys.visual != expected_visual_key ||
+        (expected_semantic_key != 0u &&
+         candidate.semantic_key != expected_semantic_key)) {
         return fail(error, "hydrology artifact semantic key is stale");
     }
+    artifact = std::move(candidate);
     return true;
 }
 
@@ -652,7 +652,6 @@ bool load_or_build_artifact(const std::filesystem::path& path,
         load_artifact_validated(path, expected_visual_key, artifact, error,
                                 expected_semantic_key))
         return true;
-    artifact = {};
     error = {};
     if (!builder)
         return fail(error, "hydrology artifact builder is unavailable");

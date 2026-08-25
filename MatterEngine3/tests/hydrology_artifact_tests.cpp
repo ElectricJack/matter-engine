@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <vector>
 
@@ -290,6 +291,17 @@ void test_artifact_round_trip_and_corruption_closure() {
     CHECK(loaded.visual_mesh.positions.data() !=
               loaded.coarse_cpu_mesh.positions.data(),
           "visual and CPU mesh products never share vector storage");
+    const auto reject_without_mutation =
+        [&](const std::vector<std::uint8_t>& rejected,
+            const char* rejection_message,
+            const char* preservation_message) {
+            CHECK(!hydrology::deserialize_artifact(rejected, loaded, error),
+                  rejection_message);
+            std::vector<std::uint8_t> preserved;
+            CHECK(hydrology::serialize_artifact(loaded, preserved, error) &&
+                      preserved == round_trip,
+                  preservation_message);
+        };
 
     constexpr std::size_t kGameplayRecordBytes = 21u;
     constexpr std::size_t kPresentationRecordBytes = 22u;
@@ -300,32 +312,41 @@ void test_artifact_round_trip_and_corruption_closure() {
         artifact.gameplay_field.size() * kGameplayRecordBytes;
     auto corrupt = bytes;
     corrupt[gameplay_payload_offset] ^= 0x80u;
-    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "gameplay payload corruption is rejected by the stable digest");
+    reject_without_mutation(
+        corrupt, "gameplay payload corruption is rejected by the stable digest",
+        "gameplay corruption preserves the caller's prior valid artifact");
     corrupt = bytes;
     corrupt[bytes.size() - kPresentationRecordBytes] ^= 0x80u;
-    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "presentation payload corruption is rejected by the stable digest");
+    reject_without_mutation(
+        corrupt,
+        "presentation payload corruption is rejected by the stable digest",
+        "presentation corruption preserves the caller's prior valid artifact");
     corrupt = bytes;
     corrupt[0] = 'X';
-    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "wrong magic is rejected");
+    reject_without_mutation(
+        corrupt, "wrong magic is rejected",
+        "invalid headers preserve the caller's prior valid artifact");
     corrupt = bytes;
     corrupt[7] = '1';
-    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "legacy artifacts are explicitly rejected rather than silently migrated");
+    reject_without_mutation(
+        corrupt,
+        "legacy artifacts are explicitly rejected rather than silently migrated",
+        "version rejection preserves the caller's prior valid artifact");
     corrupt = bytes;
     corrupt.resize(corrupt.size() - 1u);
-    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "truncated presentation section is rejected");
+    reject_without_mutation(
+        corrupt, "truncated presentation section is rejected",
+        "truncation preserves the caller's prior valid artifact");
     corrupt = bytes;
     corrupt.resize(bytes.size() - presentation_section_bytes - 1u);
-    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "truncated gameplay section is rejected");
+    reject_without_mutation(
+        corrupt, "truncated gameplay section is rejected",
+        "deep truncation preserves the caller's prior valid artifact");
     corrupt = bytes;
     for (size_t i = 12u; i != 20u; ++i) corrupt[i] = 0xffu;
-    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "oversized declared payload is rejected before allocation");
+    reject_without_mutation(
+        corrupt, "oversized declared payload is rejected before allocation",
+        "oversized headers preserve the caller's prior valid artifact");
 
     auto invalid = artifact;
     invalid.visual_mesh.indices[2] = 99u;
@@ -397,10 +418,18 @@ void test_atomic_save_validated_load_and_cache_hit() {
     CHECK(loaded.visual_mesh.content_digest ==
               artifact.visual_mesh.content_digest,
           "validated file load retains visual mesh bytes");
+    std::vector<std::uint8_t> loaded_before_stale;
+    CHECK(hydrology::serialize_artifact(
+              loaded, loaded_before_stale, error), error.message.c_str());
     CHECK(!hydrology::load_artifact_validated(
               path, artifact.product_keys.visual, loaded, error,
               artifact.semantic_key + 1u),
           "a changed hydrology semantic key invalidates a cached product");
+    std::vector<std::uint8_t> preserved_after_stale_load;
+    CHECK(hydrology::serialize_artifact(
+              loaded, preserved_after_stale_load, error) &&
+              preserved_after_stale_load == loaded_before_stale,
+          "a stale cache load preserves the caller's prior valid artifact");
 
     int builder_calls = 0;
     hydrology::HydrologyArtifact cached{};
@@ -425,6 +454,49 @@ void test_atomic_save_validated_load_and_cache_hit() {
               path, replacement.product_keys.visual, loaded, error) &&
               loaded.visual_mesh.positions[0] == 0.125f,
           "atomic replacement publishes the complete new artifact");
+
+    std::vector<std::uint8_t> replacement_bytes;
+    CHECK(hydrology::serialize_artifact(
+              loaded, replacement_bytes, error), error.message.c_str());
+    const auto write_bytes = [&](const std::vector<std::uint8_t>& value) {
+        std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+        stream.write(reinterpret_cast<const char*>(value.data()),
+                     static_cast<std::streamsize>(value.size()));
+        return static_cast<bool>(stream);
+    };
+    const auto rejected_load_preserves =
+        [&](std::vector<std::uint8_t> rejected, const char* message) {
+            CHECK(write_bytes(rejected), "corrupt artifact fixture was written");
+            CHECK(!hydrology::load_artifact_validated(
+                      path, replacement.product_keys.visual, loaded, error),
+                  message);
+            std::vector<std::uint8_t> after;
+            CHECK(hydrology::serialize_artifact(loaded, after, error) &&
+                      after == replacement_bytes,
+                  "failed artifact loads transactionally preserve prior output");
+        };
+    auto rejected = replacement_bytes;
+    rejected[0] ^= 0x40u;
+    rejected_load_preserves(rejected, "corrupt artifact files are rejected");
+    rejected = replacement_bytes;
+    rejected.pop_back();
+    rejected_load_preserves(rejected, "truncated artifact files are rejected");
+    rejected = replacement_bytes;
+    rejected.back() ^= 0x80u;
+    rejected_load_preserves(rejected,
+                            "digest-invalid artifact files are rejected");
+    CHECK(!hydrology::load_or_build_artifact(
+              path, replacement.product_keys.visual,
+              [](hydrology::HydrologyArtifact&, gpu_meshing::Error&) {
+                  return false;
+              },
+              loaded, error),
+          "a corrupt cache plus failed rebuild is rejected");
+    std::vector<std::uint8_t> after_failed_rebuild;
+    CHECK(hydrology::serialize_artifact(
+              loaded, after_failed_rebuild, error) &&
+              after_failed_rebuild == replacement_bytes,
+          "load-or-build preserves prior output when both paths fail");
     std::filesystem::remove_all(root);
 }
 

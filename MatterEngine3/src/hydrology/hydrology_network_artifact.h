@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hydrology/hydrology_field_artifact.h"
 #include "hydrology/hydrology_artifact.h"
 #include "matter/bounds.h"
 
@@ -14,11 +15,6 @@ enum class HydrologyNetworkState : std::uint8_t {
     Incomplete,
     Failed,
     Ready,
-};
-
-enum class HydrologyFieldProductKind : std::uint8_t {
-    Runtime = 0,
-    Presentation = 1,
 };
 
 struct HydrologyFieldProductReference {

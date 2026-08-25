@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hydrology/hydrology_artifact.h"
+#include "hydrology/hydrology_field_artifact.h"
 #include "hydrology/hydrology_network_artifact.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/spillway_handoff.h"
@@ -27,14 +28,6 @@ struct HydrologyNetworkProducts {
     std::vector<GameplaySample> gameplay_field;
     std::vector<PresentationSample> presentation_field;
 };
-
-std::uint64_t hydrology_runtime_field_digest(
-    const GameplayFieldLayout& layout,
-    const std::vector<GameplaySample>& field) noexcept;
-
-std::uint64_t hydrology_presentation_field_digest(
-    const GameplayFieldLayout& layout,
-    const std::vector<PresentationSample>& field) noexcept;
 
 struct HydrologySectionTimings {
     std::string id;

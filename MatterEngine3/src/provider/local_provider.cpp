@@ -1672,6 +1672,35 @@ bool LocalProvider::run_authored_fluid_bake(
              hex64(manifest.terrain_revision) + ".mhyn");
         gpu_meshing::Error artifact_error{};
         const auto serialize_start = std::chrono::steady_clock::now();
+        hydrology::HydrologyFieldProduct runtime_product{};
+        runtime_product.kind =
+            hydrology::HydrologyFieldProductKind::Runtime;
+        runtime_product.layout = out.products.gameplay_layout;
+        runtime_product.gameplay = out.products.gameplay_field;
+        runtime_product.payload_digest = manifest.runtime_field_digest;
+        hydrology::HydrologyFieldProduct presentation_product{};
+        presentation_product.kind =
+            hydrology::HydrologyFieldProductKind::Presentation;
+        presentation_product.layout = out.products.gameplay_layout;
+        presentation_product.presentation = out.products.presentation_field;
+        presentation_product.payload_digest =
+            manifest.presentation_field_digest;
+        const auto cache_root = std::filesystem::path(abs_cache_root_);
+        if (!hydrology::save_hydrology_field_product_atomic(
+                cache_root / manifest.field_products[0].relative_path,
+                runtime_product, artifact_error) ||
+            !hydrology::save_hydrology_field_product_atomic(
+                cache_root / manifest.field_products[1].relative_path,
+                presentation_product, artifact_error)) {
+            fluid_error = {hydrology::FluidBakeCode::ProductFailure,
+                           artifact_error.message};
+            return false;
+        }
+        if (context.callbacks.cancelled && context.callbacks.cancelled()) {
+            fluid_error = {hydrology::FluidBakeCode::Cancelled,
+                           "authored fluid network was superseded before manifest publication"};
+            return false;
+        }
         if (!hydrology::save_network_artifact_atomic(
                 manifest_path, manifest, artifact_error) ||
             !hydrology::load_network_artifact_validated(
