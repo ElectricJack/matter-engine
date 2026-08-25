@@ -6,8 +6,10 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <limits>
+#include <new>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -17,6 +19,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winternl.h>
 #else
 #include <cerrno>
 #include <fcntl.h>
@@ -44,11 +47,52 @@ constexpr std::uint64_t kGameplayRecordBytes = 21u;
 constexpr std::uint64_t kPresentationRecordBytes = 22u;
 std::atomic<HydrologyFieldValidationTestHook> g_field_validation_hook{nullptr};
 std::atomic<void*> g_field_validation_context{nullptr};
+std::atomic<HydrologyFieldIoFailurePoint> g_field_io_failure{
+    HydrologyFieldIoFailurePoint::None};
+
+void inject_field_io_failure(HydrologyFieldIoFailurePoint point) {
+    auto expected = point;
+    if (g_field_io_failure.compare_exchange_strong(
+            expected, HydrologyFieldIoFailurePoint::None,
+            std::memory_order_acq_rel))
+        throw std::bad_alloc();
+}
 
 bool fail(gpu_meshing::Error& error, const char* message) {
     error.code = gpu_meshing::ErrorCode::ArtifactFailure;
     error.message = message;
     return false;
+}
+
+bool fail_from_exception(gpu_meshing::Error& error,
+                         const char* message) noexcept {
+    error.code = gpu_meshing::ErrorCode::ArtifactFailure;
+    try {
+        error.message = message;
+    } catch (...) {
+        error.message.clear();
+    }
+    return false;
+}
+
+template <typename Operation>
+bool translate_artifact_exceptions(gpu_meshing::Error& error,
+                                   Operation operation) noexcept {
+    try {
+        return operation();
+    } catch (const std::bad_alloc&) {
+        return fail_from_exception(error,
+                                   "hydrology artifact allocation failed");
+    } catch (const std::filesystem::filesystem_error&) {
+        return fail_from_exception(error,
+                                   "hydrology artifact filesystem operation failed");
+    } catch (const std::exception&) {
+        return fail_from_exception(error,
+                                   "hydrology artifact operation failed");
+    } catch (...) {
+        return fail_from_exception(error,
+                                   "hydrology artifact operation failed");
+    }
 }
 
 class Writer {
@@ -383,6 +427,67 @@ bool read_reference(Reader& reader, HydrologyArtifactReference& reference) {
            reader.u64(reference.payload_digest);
 }
 
+#ifdef _WIN32
+class UniqueNativeHandle {
+public:
+    UniqueNativeHandle() noexcept = default;
+    explicit UniqueNativeHandle(HANDLE handle) noexcept : handle_(handle) {}
+    ~UniqueNativeHandle() noexcept { reset(); }
+    UniqueNativeHandle(const UniqueNativeHandle&) = delete;
+    UniqueNativeHandle& operator=(const UniqueNativeHandle&) = delete;
+    UniqueNativeHandle(UniqueNativeHandle&& other) noexcept
+        : handle_(other.release()) {}
+    UniqueNativeHandle& operator=(UniqueNativeHandle&& other) noexcept {
+        if (this != &other) reset(other.release());
+        return *this;
+    }
+    HANDLE get() const noexcept { return handle_; }
+    explicit operator bool() const noexcept {
+        return handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr;
+    }
+    HANDLE release() noexcept {
+        const HANDLE result = handle_;
+        handle_ = INVALID_HANDLE_VALUE;
+        return result;
+    }
+    void reset(HANDLE handle = INVALID_HANDLE_VALUE) noexcept {
+        if (*this) CloseHandle(handle_);
+        handle_ = handle;
+    }
+private:
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+};
+#else
+class UniqueNativeFd {
+public:
+    UniqueNativeFd() noexcept = default;
+    explicit UniqueNativeFd(int descriptor) noexcept
+        : descriptor_(descriptor) {}
+    ~UniqueNativeFd() noexcept { reset(); }
+    UniqueNativeFd(const UniqueNativeFd&) = delete;
+    UniqueNativeFd& operator=(const UniqueNativeFd&) = delete;
+    UniqueNativeFd(UniqueNativeFd&& other) noexcept
+        : descriptor_(other.release()) {}
+    UniqueNativeFd& operator=(UniqueNativeFd&& other) noexcept {
+        if (this != &other) reset(other.release());
+        return *this;
+    }
+    int get() const noexcept { return descriptor_; }
+    explicit operator bool() const noexcept { return descriptor_ >= 0; }
+    int release() noexcept {
+        const int result = descriptor_;
+        descriptor_ = -1;
+        return result;
+    }
+    void reset(int descriptor = -1) noexcept {
+        if (*this) ::close(descriptor_);
+        descriptor_ = descriptor;
+    }
+private:
+    int descriptor_ = -1;
+};
+#endif
+
 #ifndef _WIN32
 bool read_posix_descriptor(int file,
                            const std::filesystem::path& path,
@@ -418,6 +523,52 @@ bool read_posix_descriptor(int file,
         return fail(error, "hydrology artifact changed while being read");
     return true;
 }
+#else
+bool read_windows_handle(HANDLE file,
+                         const std::filesystem::path& path,
+                         std::uint64_t minimum_size,
+                         std::uint64_t maximum_size,
+                         std::vector<std::uint8_t>& bytes,
+                         gpu_meshing::Error& error,
+                         bool invoke_test_hook = true) {
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    LARGE_INTEGER size{};
+    const bool valid =
+        GetFileInformationByHandleEx(file, FileAttributeTagInfo, &attributes,
+                                     sizeof(attributes)) != 0 &&
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0u &&
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0u &&
+        GetFileSizeEx(file, &size) != 0 && size.QuadPart >= 0 &&
+        static_cast<std::uint64_t>(size.QuadPart) >= minimum_size &&
+        static_cast<std::uint64_t>(size.QuadPart) <= maximum_size;
+    if (!valid)
+        return fail(error, "hydrology artifact file size or type is invalid");
+    if (invoke_test_hook) {
+        if (const auto hook = g_field_validation_hook.load(
+                std::memory_order_acquire))
+            hook(path,
+                 g_field_validation_context.load(std::memory_order_acquire));
+    }
+    bytes.resize(static_cast<std::size_t>(size.QuadPart));
+    std::size_t offset = 0u;
+    while (offset != bytes.size()) {
+        const DWORD request = static_cast<DWORD>(std::min<std::size_t>(
+            bytes.size() - offset, std::numeric_limits<DWORD>::max()));
+        DWORD read = 0u;
+        if (!ReadFile(file, bytes.data() + offset, request, &read, nullptr) ||
+            read == 0u)
+            return fail(error, "could not read hydrology artifact");
+        offset += read;
+    }
+    std::uint8_t trailing = 0u;
+    DWORD trailing_read = 0u;
+    LARGE_INTEGER final_size{};
+    if (ReadFile(file, &trailing, 1u, &trailing_read, nullptr) == 0 ||
+        trailing_read != 0u || GetFileSizeEx(file, &final_size) == 0 ||
+        final_size.QuadPart != size.QuadPart)
+        return fail(error, "hydrology artifact changed while being read");
+    return true;
+}
 #endif
 
 bool read_file_same_handle(const std::filesystem::path& path,
@@ -426,58 +577,22 @@ bool read_file_same_handle(const std::filesystem::path& path,
                            std::vector<std::uint8_t>& bytes,
                            gpu_meshing::Error& error) {
 #ifdef _WIN32
-    const HANDLE file = CreateFileW(
+    UniqueNativeHandle file(CreateFileW(
         path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (file == INVALID_HANDLE_VALUE)
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!file)
         return fail(error, "could not open hydrology artifact");
-    FILE_ATTRIBUTE_TAG_INFO attributes{};
-    LARGE_INTEGER size{};
-    const bool valid =
-        GetFileInformationByHandleEx(file, FileAttributeTagInfo, &attributes,
-                                     sizeof(attributes)) != 0 &&
-        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0u &&
-        GetFileSizeEx(file, &size) != 0 && size.QuadPart >= 0 &&
-        static_cast<std::uint64_t>(size.QuadPart) >= minimum_size &&
-        static_cast<std::uint64_t>(size.QuadPart) <= maximum_size;
-    if (!valid) {
-        CloseHandle(file);
-        return fail(error, "hydrology artifact file size or type is invalid");
-    }
-    if (const auto hook = g_field_validation_hook.load(
-            std::memory_order_acquire))
-        hook(path, g_field_validation_context.load(std::memory_order_acquire));
-    bytes.resize(static_cast<std::size_t>(size.QuadPart));
-    std::size_t offset = 0u;
-    while (offset != bytes.size()) {
-        const DWORD request = static_cast<DWORD>(std::min<std::size_t>(
-            bytes.size() - offset, std::numeric_limits<DWORD>::max()));
-        DWORD read = 0u;
-        if (!ReadFile(file, bytes.data() + offset, request, &read, nullptr) ||
-            read == 0u) {
-            CloseHandle(file);
-            return fail(error, "could not read hydrology artifact");
-        }
-        offset += read;
-    }
-    std::uint8_t trailing = 0u;
-    DWORD trailing_read = 0u;
-    LARGE_INTEGER final_size{};
-    const bool stable =
-        ReadFile(file, &trailing, 1u, &trailing_read, nullptr) != 0 &&
-        trailing_read == 0u && GetFileSizeEx(file, &final_size) != 0 &&
-        final_size.QuadPart == size.QuadPart;
-    CloseHandle(file);
-    if (!stable)
-        return fail(error, "hydrology artifact changed while being read");
-    return true;
+    inject_field_io_failure(HydrologyFieldIoFailurePoint::AfterFileHandle);
+    return read_windows_handle(file.get(), path, minimum_size, maximum_size,
+                               bytes, error);
 #else
-    const int file = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (file < 0) return fail(error, "could not open hydrology artifact");
+    UniqueNativeFd file(
+        ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (!file) return fail(error, "could not open hydrology artifact");
+    inject_field_io_failure(HydrologyFieldIoFailurePoint::AfterFileHandle);
     struct stat initial{};
     const bool stable = read_posix_descriptor(
-        file, path, minimum_size, maximum_size, bytes, initial, error);
-    ::close(file);
+        file.get(), path, minimum_size, maximum_size, bytes, initial, error);
     return stable;
 #endif
 }
@@ -508,90 +623,156 @@ bool confined_field_components(const std::filesystem::path& cache_root,
 #ifdef _WIN32
 class WindowsDirectoryGuard {
 public:
-    ~WindowsDirectoryGuard() {
-        for (HANDLE handle : handles_) CloseHandle(handle);
-    }
-
     bool open(const std::filesystem::path& cache_root,
               const std::filesystem::path& relative_directory,
               gpu_meshing::Error& error,
+              bool create_missing = false,
               bool allow_handle_relative_mutation = false) {
         share_mode_ = allow_handle_relative_mutation
             ? FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
             : FILE_SHARE_READ;
-        std::filesystem::path current = cache_root;
-        if (!open_one(current))
+        handles_.reserve(3u);
+        UniqueNativeHandle root(CreateFileW(
+            cache_root.c_str(), GENERIC_READ, share_mode_, nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr));
+        if (!valid_directory(root.get()))
             return fail(error,
                         "hydrology cache root is not a trusted directory");
+        inject_field_io_failure(HydrologyFieldIoFailurePoint::AfterRootHandle);
+        handles_.push_back(std::move(root));
         for (const auto& part : relative_directory) {
-            current /= part;
-            if (!open_one(current))
+            const std::wstring name = part.native();
+            UniqueNativeHandle child(open_relative_directory(
+                handles_.back().get(), name, create_missing));
+            if (!valid_directory(child.get()))
                 return fail(error,
                             "hydrology field directory is not confined");
+            inject_field_io_failure(
+                HydrologyFieldIoFailurePoint::AfterDirectoryHandle);
+            handles_.push_back(std::move(child));
         }
         return true;
     }
 
     HANDLE leaf() const noexcept {
-        return handles_.empty() ? INVALID_HANDLE_VALUE : handles_.back();
+        return handles_.empty() ? INVALID_HANDLE_VALUE : handles_.back().get();
     }
 
 private:
-    bool open_one(const std::filesystem::path& directory) {
-        const HANDLE handle = CreateFileW(
-            directory.c_str(), GENERIC_READ, share_mode_, nullptr,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            nullptr);
-        if (handle == INVALID_HANDLE_VALUE) return false;
+    static bool valid_directory(HANDLE handle) noexcept {
+        if (handle == INVALID_HANDLE_VALUE || handle == nullptr) return false;
         FILE_ATTRIBUTE_TAG_INFO attributes{};
         if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
                                           &attributes, sizeof(attributes)) ||
             (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u ||
-            (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0u) {
-            CloseHandle(handle);
+            (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0u)
             return false;
-        }
-        handles_.push_back(handle);
         return true;
     }
 
-    std::vector<HANDLE> handles_;
+    HANDLE open_relative_directory(HANDLE root,
+                                   const std::wstring& name,
+                                   bool create_missing) const noexcept {
+        using NtCreateFileFunction = NTSTATUS (NTAPI *)(
+            PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+            PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+        const auto create_file = reinterpret_cast<NtCreateFileFunction>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+        if (create_file == nullptr ||
+            name.size() > std::numeric_limits<USHORT>::max() /
+                              sizeof(wchar_t))
+            return INVALID_HANDLE_VALUE;
+        UNICODE_STRING unicode{};
+        unicode.Buffer = const_cast<PWSTR>(name.data());
+        unicode.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+        unicode.MaximumLength = unicode.Length;
+        OBJECT_ATTRIBUTES attributes{};
+        InitializeObjectAttributes(&attributes, &unicode, OBJ_CASE_INSENSITIVE,
+                                   root, nullptr);
+        IO_STATUS_BLOCK status{};
+        HANDLE result = INVALID_HANDLE_VALUE;
+        const NTSTATUS native_status = create_file(
+            &result, GENERIC_READ | SYNCHRONIZE, &attributes, &status, nullptr,
+            FILE_ATTRIBUTE_DIRECTORY, share_mode_,
+            create_missing ? FILE_OPEN_IF : FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT |
+                FILE_OPEN_REPARSE_POINT,
+            nullptr, 0u);
+        return native_status >= 0 ? result : INVALID_HANDLE_VALUE;
+    }
+
+    std::vector<UniqueNativeHandle> handles_;
     DWORD share_mode_ = FILE_SHARE_READ;
 };
 #else
 class PosixDirectoryGuard {
 public:
-    ~PosixDirectoryGuard() {
-        for (int descriptor : descriptors_) ::close(descriptor);
-    }
-
     bool open(const std::filesystem::path& cache_root,
               const std::filesystem::path& relative_directory,
-              gpu_meshing::Error& error) {
-        int current = ::open(cache_root.c_str(), O_RDONLY | O_DIRECTORY |
-                             O_CLOEXEC | O_NOFOLLOW);
-        if (current < 0)
+              gpu_meshing::Error& error,
+              bool create_missing = false) {
+        descriptors_.reserve(3u);
+        UniqueNativeFd root(::open(cache_root.c_str(), O_RDONLY | O_DIRECTORY |
+                                   O_CLOEXEC | O_NOFOLLOW));
+        if (!root)
             return fail(error,
                         "hydrology cache root is not a trusted directory");
-        descriptors_.push_back(current);
+        inject_field_io_failure(HydrologyFieldIoFailurePoint::AfterRootHandle);
+        descriptors_.push_back(std::move(root));
         for (const auto& part : relative_directory) {
-            current = ::openat(current, part.c_str(), O_RDONLY | O_DIRECTORY |
-                               O_CLOEXEC | O_NOFOLLOW);
-            if (current < 0)
+            const auto name = part.native();
+            int child = ::openat(descriptors_.back().get(), name.c_str(),
+                                 O_RDONLY | O_DIRECTORY | O_CLOEXEC |
+                                     O_NOFOLLOW);
+            if (child < 0 && create_missing && errno == ENOENT &&
+                ::mkdirat(descriptors_.back().get(), name.c_str(), 0700) == 0)
+                child = ::openat(descriptors_.back().get(), name.c_str(),
+                                 O_RDONLY | O_DIRECTORY | O_CLOEXEC |
+                                     O_NOFOLLOW);
+            UniqueNativeFd owned_child(child);
+            if (!owned_child)
                 return fail(error,
                             "hydrology field directory is not confined");
-            descriptors_.push_back(current);
+            inject_field_io_failure(
+                HydrologyFieldIoFailurePoint::AfterDirectoryHandle);
+            descriptors_.push_back(std::move(owned_child));
         }
         return true;
     }
 
     int leaf() const noexcept {
-        return descriptors_.empty() ? -1 : descriptors_.back();
+        return descriptors_.empty() ? -1 : descriptors_.back().get();
     }
 
 private:
-    std::vector<int> descriptors_;
+    std::vector<UniqueNativeFd> descriptors_;
+};
+
+class PosixTemporaryFile {
+public:
+    PosixTemporaryFile(int descriptor,
+                       int directory,
+                       const std::filesystem::path& name) noexcept
+        : descriptor_(descriptor), directory_(directory), name_(&name) {}
+    ~PosixTemporaryFile() noexcept {
+        if (armed_ && name_ != nullptr)
+            ::unlinkat(directory_, name_->c_str(), 0);
+    }
+    PosixTemporaryFile(const PosixTemporaryFile&) = delete;
+    PosixTemporaryFile& operator=(const PosixTemporaryFile&) = delete;
+    int get() const noexcept { return descriptor_.get(); }
+    explicit operator bool() const noexcept {
+        return static_cast<bool>(descriptor_);
+    }
+    void close() noexcept { descriptor_.reset(); }
+    void disarm() noexcept { armed_ = false; }
+private:
+    UniqueNativeFd descriptor_;
+    int directory_ = -1;
+    const std::filesystem::path* name_ = nullptr;
+    bool armed_ = true;
 };
 #endif
 
@@ -617,17 +798,17 @@ bool load_confined_field_product(
     if (!directories.open(cache_root, relative.parent_path(), error))
         return false;
     const int current = directories.leaf();
-    const int field = ::openat(
-        current, relative.filename().c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (field < 0) {
+    UniqueNativeFd field(::openat(
+        current, relative.filename().c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (!field) {
         return fail(error, "could not open confined hydrology field");
     }
+    inject_field_io_failure(HydrologyFieldIoFailurePoint::AfterFileHandle);
     struct stat opened{};
     std::vector<std::uint8_t> bytes;
     const bool opened_ok = read_posix_descriptor(
-        field, cache_root / relative, kFieldHeaderBytes,
+        field.get(), cache_root / relative, kFieldHeaderBytes,
         kFieldHeaderBytes + kMaxFieldPayloadBytes, bytes, opened, error);
-    ::close(field);
     HydrologyFieldProduct candidate{};
     const bool parsed = opened_ok &&
         deserialize_hydrology_field_product(bytes, candidate, error);
@@ -654,9 +835,10 @@ bool write_file_durable(const std::filesystem::path& path,
                         const std::vector<std::uint8_t>& bytes,
                         gpu_meshing::Error& error) {
 #ifdef _WIN32
-    const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0u, nullptr,
-                                    CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE)
+    UniqueNativeHandle file(CreateFileW(
+        path.c_str(), GENERIC_WRITE, 0u, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!file)
         return fail(error, "could not create hydrology temporary");
     std::size_t offset = 0u;
     bool okay = true;
@@ -664,31 +846,29 @@ bool write_file_durable(const std::filesystem::path& path,
         const DWORD request = static_cast<DWORD>(std::min<std::size_t>(
             bytes.size() - offset, std::numeric_limits<DWORD>::max()));
         DWORD written = 0u;
-        if (!WriteFile(file, bytes.data() + offset, request, &written,
+        if (!WriteFile(file.get(), bytes.data() + offset, request, &written,
                        nullptr) || written == 0u) {
             okay = false;
             break;
         }
         offset += written;
     }
-    if (okay) okay = FlushFileBuffers(file) != 0;
-    CloseHandle(file);
+    if (okay) okay = FlushFileBuffers(file.get()) != 0;
     if (!okay) return fail(error, "could not durably write hydrology temporary");
     return true;
 #else
-    const int file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL |
-                            O_CLOEXEC, 0600);
-    if (file < 0) return fail(error, "could not create hydrology temporary");
+    UniqueNativeFd file(::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL |
+                              O_CLOEXEC, 0600));
+    if (!file) return fail(error, "could not create hydrology temporary");
     std::size_t offset = 0u;
     bool okay = true;
     while (offset != bytes.size()) {
-        const ssize_t written = ::write(file, bytes.data() + offset,
+        const ssize_t written = ::write(file.get(), bytes.data() + offset,
                                         bytes.size() - offset);
         if (written <= 0) { okay = false; break; }
         offset += static_cast<std::size_t>(written);
     }
-    if (okay) okay = ::fsync(file) == 0;
-    if (::close(file) != 0) okay = false;
+    if (okay) okay = ::fsync(file.get()) == 0;
     if (!okay) return fail(error, "could not durably write hydrology temporary");
     return true;
 #endif
@@ -699,11 +879,10 @@ bool flush_directory(const std::filesystem::path& directory) {
     (void)directory;
     return true;
 #else
-    const int descriptor = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY |
-                                  O_CLOEXEC | O_NOFOLLOW);
-    if (descriptor < 0) return false;
-    const bool okay = ::fsync(descriptor) == 0;
-    ::close(descriptor);
+    UniqueNativeFd descriptor(::open(
+        directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (!descriptor) return false;
+    const bool okay = ::fsync(descriptor.get()) == 0;
     return okay;
 #endif
 }
@@ -720,16 +899,65 @@ bool replace_file_durable(const std::filesystem::path& source,
 }
 
 #ifdef _WIN32
+HANDLE open_relative_file(HANDLE root,
+                          const std::wstring& name,
+                          ACCESS_MASK desired_access,
+                          ULONG share_access,
+                          ULONG disposition,
+                          ULONG options) noexcept {
+    using NtCreateFileFunction = NTSTATUS (NTAPI *)(
+        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+        PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+    const auto create_file = reinterpret_cast<NtCreateFileFunction>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+    if (create_file == nullptr ||
+        name.size() > std::numeric_limits<USHORT>::max() / sizeof(wchar_t))
+        return INVALID_HANDLE_VALUE;
+    UNICODE_STRING unicode{};
+    unicode.Buffer = const_cast<PWSTR>(name.data());
+    unicode.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+    unicode.MaximumLength = unicode.Length;
+    OBJECT_ATTRIBUTES attributes{};
+    InitializeObjectAttributes(&attributes, &unicode, OBJ_CASE_INSENSITIVE,
+                               root, nullptr);
+    IO_STATUS_BLOCK status{};
+    HANDLE result = INVALID_HANDLE_VALUE;
+    const NTSTATUS native_status = create_file(
+        &result, desired_access, &attributes, &status, nullptr,
+        FILE_ATTRIBUTE_NORMAL, share_access, disposition,
+        options | FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT, nullptr,
+        0u);
+    return native_status >= 0 ? result : INVALID_HANDLE_VALUE;
+}
+
+void mark_file_delete(HANDLE handle) noexcept {
+    if (handle == INVALID_HANDLE_VALUE || handle == nullptr) return;
+    FILE_DISPOSITION_INFO disposition{};
+    disposition.DeleteFile = TRUE;
+    SetFileInformationByHandle(handle, FileDispositionInfo, &disposition,
+                               sizeof(disposition));
+}
+
+class WindowsTemporaryFile {
+public:
+    explicit WindowsTemporaryFile(HANDLE handle) noexcept : handle_(handle) {}
+    ~WindowsTemporaryFile() noexcept {
+        if (armed_ && handle_) mark_file_delete(handle_.get());
+    }
+    WindowsTemporaryFile(const WindowsTemporaryFile&) = delete;
+    WindowsTemporaryFile& operator=(const WindowsTemporaryFile&) = delete;
+    HANDLE get() const noexcept { return handle_.get(); }
+    explicit operator bool() const noexcept { return static_cast<bool>(handle_); }
+    void disarm() noexcept { armed_ = false; }
+private:
+    UniqueNativeHandle handle_;
+    bool armed_ = true;
+};
+
 bool publish_file_create_new_relative(
-    const std::filesystem::path& source,
-    const std::filesystem::path& target_name,
+    HANDLE source_handle,
+    const std::wstring& target_name,
     HANDLE trusted_directory) {
-    const HANDLE source_handle = CreateFileW(
-        source.c_str(), DELETE | SYNCHRONIZE, 0u, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
-            FILE_FLAG_OPEN_REPARSE_POINT,
-        nullptr);
-    if (source_handle == INVALID_HANDLE_VALUE) return false;
     struct NativeIoStatusBlock {
         union { long status; void* pointer; } value;
         std::uintptr_t information;
@@ -746,28 +974,26 @@ bool publish_file_create_new_relative(
         GetProcAddress(GetModuleHandleW(L"ntdll.dll"),
                        "NtSetInformationFile"));
     if (set_information == nullptr) {
-        CloseHandle(source_handle);
         return false;
     }
-    const std::wstring name = target_name.native();
     const std::size_t bytes =
         offsetof(NativeFileRenameInformation, file_name) +
-        name.size() * sizeof(wchar_t);
+        target_name.size() * sizeof(wchar_t);
     std::vector<std::uint8_t> storage(bytes, 0u);
     auto* const rename = reinterpret_cast<NativeFileRenameInformation*>(
         storage.data());
     rename->replace_if_exists = FALSE;
     rename->root_directory = trusted_directory;
     rename->file_name_length =
-        static_cast<DWORD>(name.size() * sizeof(wchar_t));
-    std::memcpy(rename->file_name, name.data(), rename->file_name_length);
+        static_cast<DWORD>(target_name.size() * sizeof(wchar_t));
+    std::memcpy(rename->file_name, target_name.data(),
+                rename->file_name_length);
     NativeIoStatusBlock status{};
     constexpr int kFileRenameInformation = 10;
     const long native_status = set_information(
         source_handle, &status, rename, static_cast<ULONG>(storage.size()),
         kFileRenameInformation);
     const bool published = native_status >= 0;
-    CloseHandle(source_handle);
     return published;
 }
 #endif
@@ -800,7 +1026,12 @@ void set_hydrology_field_validation_test_hook(
     g_field_validation_hook.store(hook, std::memory_order_release);
 }
 
-bool serialize_hydrology_field_product(
+void set_hydrology_field_io_failure_for_test(
+    HydrologyFieldIoFailurePoint point) noexcept {
+    g_field_io_failure.store(point, std::memory_order_release);
+}
+
+static bool serialize_hydrology_field_product_impl(
     const HydrologyFieldProduct& product,
     std::vector<std::uint8_t>& bytes,
     gpu_meshing::Error& error) {
@@ -880,7 +1111,16 @@ bool serialize_hydrology_field_product(
     return true;
 }
 
-bool deserialize_hydrology_field_product(
+bool serialize_hydrology_field_product(
+    const HydrologyFieldProduct& product,
+    std::vector<std::uint8_t>& bytes,
+    gpu_meshing::Error& error) {
+    return translate_artifact_exceptions(error, [&] {
+        return serialize_hydrology_field_product_impl(product, bytes, error);
+    });
+}
+
+static bool deserialize_hydrology_field_product_impl(
     const std::vector<std::uint8_t>& bytes,
     HydrologyFieldProduct& product,
     gpu_meshing::Error& error) {
@@ -969,7 +1209,16 @@ bool deserialize_hydrology_field_product(
     return true;
 }
 
-bool save_hydrology_field_product_atomic(
+bool deserialize_hydrology_field_product(
+    const std::vector<std::uint8_t>& bytes,
+    HydrologyFieldProduct& product,
+    gpu_meshing::Error& error) {
+    return translate_artifact_exceptions(error, [&] {
+        return deserialize_hydrology_field_product_impl(bytes, product, error);
+    });
+}
+
+static bool save_hydrology_field_product_atomic_impl(
     const std::filesystem::path& path,
     const HydrologyFieldProduct& product,
     gpu_meshing::Error& error) {
@@ -982,108 +1231,137 @@ bool save_hydrology_field_product_atomic(
         path.parent_path().filename() != "fields" ||
         path.parent_path().parent_path().filename() != "hydrology")
         return fail(error, "hydrology field target is not canonical");
-    std::error_code filesystem_error;
-    if (!path.parent_path().empty()) {
-        std::filesystem::create_directories(path.parent_path(), filesystem_error);
-        if (filesystem_error)
-            return fail(error, "could not create hydrology field directory");
-    }
     const auto cache_root = path.parent_path().parent_path().parent_path();
-    if (!confined_field_components(
-            cache_root, canonical_path.parent_path().generic_string(), error))
-        return false;
 #ifdef _WIN32
     WindowsDirectoryGuard directory_guard;
     if (!directory_guard.open(cache_root, canonical_path.parent_path(), error,
-                              true))
+                              true, true))
         return false;
 #else
     PosixDirectoryGuard directory_guard;
-    if (!directory_guard.open(cache_root, canonical_path.parent_path(), error))
+    if (!directory_guard.open(cache_root, canonical_path.parent_path(), error,
+                              true))
         return false;
 #endif
     static std::atomic<std::uint64_t> serial{0u};
-    const std::filesystem::path temporary =
-        path.string() + ".tmp-" + std::to_string(++serial);
+    const std::filesystem::path temporary_name =
+        path.filename().string() + ".tmp-" + std::to_string(++serial);
 #ifndef _WIN32
-    const auto temporary_name = temporary.filename();
     const auto target_name = path.filename();
     const int directory = directory_guard.leaf();
-    int temporary_file = ::openat(
-        directory, temporary_name.c_str(), O_RDWR | O_CREAT | O_EXCL |
-        O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (temporary_file < 0)
+    PosixTemporaryFile temporary_file(
+        ::openat(directory, temporary_name.c_str(), O_RDWR | O_CREAT |
+                     O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600),
+        directory, temporary_name);
+    if (!temporary_file)
         return fail(error, "could not create hydrology field temporary");
+    inject_field_io_failure(HydrologyFieldIoFailurePoint::AfterFileHandle);
     std::size_t offset = 0u;
     bool written = true;
     while (offset != bytes.size()) {
-        const ssize_t count = ::write(temporary_file, bytes.data() + offset,
+        const ssize_t count = ::write(temporary_file.get(), bytes.data() + offset,
                                       bytes.size() - offset);
         if (count <= 0) { written = false; break; }
         offset += static_cast<std::size_t>(count);
     }
-    if (written) written = ::fsync(temporary_file) == 0 &&
-                           ::lseek(temporary_file, 0, SEEK_SET) == 0;
+    if (written) written = ::fsync(temporary_file.get()) == 0 &&
+                           ::lseek(temporary_file.get(), 0, SEEK_SET) == 0;
     std::vector<std::uint8_t> reopened;
     struct stat reopened_status{};
     if (!written || !read_posix_descriptor(
-            temporary_file, temporary, kFieldHeaderBytes,
+            temporary_file.get(), temporary_name, kFieldHeaderBytes,
             kFieldHeaderBytes + kMaxFieldPayloadBytes, reopened,
             reopened_status, error) || reopened != bytes) {
-        ::close(temporary_file);
         ::unlinkat(directory, temporary_name.c_str(), 0);
         return fail(error, "hydrology field temporary validation failed");
     }
-    ::close(temporary_file);
+    temporary_file.close();
     const bool published = ::linkat(directory, temporary_name.c_str(),
                                     directory, target_name.c_str(), 0) == 0;
     if (!published) {
-        const int existing_file = ::openat(
-            directory, target_name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        UniqueNativeFd existing_file(::openat(
+            directory, target_name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
         std::vector<std::uint8_t> existing;
         struct stat existing_status{};
-        const bool exact = existing_file >= 0 && read_posix_descriptor(
-            existing_file, path, kFieldHeaderBytes,
+        const bool exact = existing_file && read_posix_descriptor(
+            existing_file.get(), path, kFieldHeaderBytes,
             kFieldHeaderBytes + kMaxFieldPayloadBytes, existing,
             existing_status, error) && existing == bytes;
-        if (existing_file >= 0) ::close(existing_file);
-        ::unlinkat(directory, temporary_name.c_str(), 0);
         if (!exact)
             return fail(error,
                         "immutable hydrology field already has different bytes");
         return true;
     }
     if (::fsync(directory) != 0 ||
-        ::unlinkat(directory, temporary_name.c_str(), 0) != 0 ||
-        ::fsync(directory) != 0)
+        ::unlinkat(directory, temporary_name.c_str(), 0) != 0)
+        return fail(error, "could not flush hydrology field directory");
+    temporary_file.disarm();
+    if (::fsync(directory) != 0)
         return fail(error, "could not flush hydrology field directory");
     return true;
 #else
-    if (!write_file_durable(temporary, bytes, error)) return false;
+    const std::wstring temporary_native = temporary_name.native();
+    const std::wstring target_native = path.filename().native();
+    WindowsTemporaryFile temporary(open_relative_file(
+        directory_guard.leaf(), temporary_native,
+        GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
+        FILE_SHARE_READ, FILE_CREATE,
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_WRITE_THROUGH));
+    if (!temporary)
+        return fail(error, "could not create confined hydrology temporary");
+    inject_field_io_failure(HydrologyFieldIoFailurePoint::AfterFileHandle);
+    std::size_t offset = 0u;
+    while (offset != bytes.size()) {
+        const DWORD request = static_cast<DWORD>(std::min<std::size_t>(
+            bytes.size() - offset, std::numeric_limits<DWORD>::max()));
+        DWORD written = 0u;
+        if (!WriteFile(temporary.get(), bytes.data() + offset, request,
+                       &written, nullptr) || written == 0u)
+            return fail(error, "could not write confined hydrology temporary");
+        offset += written;
+    }
+    LARGE_INTEGER beginning{};
+    if (FlushFileBuffers(temporary.get()) == 0 ||
+        SetFilePointerEx(temporary.get(), beginning, nullptr, FILE_BEGIN) == 0)
+        return fail(error, "could not flush confined hydrology temporary");
     std::vector<std::uint8_t> reopened;
-    if (!read_file_same_handle(temporary, kFieldHeaderBytes,
-                               kFieldHeaderBytes + kMaxFieldPayloadBytes,
-                               reopened, error) || reopened != bytes) {
-        std::filesystem::remove(temporary, filesystem_error);
+    if (!read_windows_handle(
+            temporary.get(), temporary_name, kFieldHeaderBytes,
+            kFieldHeaderBytes + kMaxFieldPayloadBytes, reopened, error,
+            false) || reopened != bytes) {
         return fail(error, "hydrology field temporary validation failed");
     }
     const bool published = publish_file_create_new_relative(
-        temporary, path.filename(), directory_guard.leaf());
+        temporary.get(), target_native, directory_guard.leaf());
     if (!published) {
-        std::filesystem::remove(temporary, filesystem_error);
-        std::vector<std::uint8_t> existing;
-        if (!read_file_same_handle(path, kFieldHeaderBytes,
-                                   kFieldHeaderBytes + kMaxFieldPayloadBytes,
-                                   existing, error) || existing != bytes)
+        mark_file_delete(temporary.get());
+        UniqueNativeHandle existing_handle(open_relative_file(
+            directory_guard.leaf(), target_native, GENERIC_READ | SYNCHRONIZE,
+            FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT));
+        std::vector<std::uint8_t> existing_bytes;
+        if (!existing_handle || !read_windows_handle(
+                existing_handle.get(), path.filename(), kFieldHeaderBytes,
+                kFieldHeaderBytes + kMaxFieldPayloadBytes, existing_bytes,
+                error, false) || existing_bytes != bytes)
             return fail(error,
                         "immutable hydrology field already has different bytes");
         return true;
     }
+    temporary.disarm();
     return true;
 #endif
 }
 
-bool load_hydrology_field_product_validated(
+bool save_hydrology_field_product_atomic(
+    const std::filesystem::path& path,
+    const HydrologyFieldProduct& product,
+    gpu_meshing::Error& error) {
+    return translate_artifact_exceptions(error, [&] {
+        return save_hydrology_field_product_atomic_impl(path, product, error);
+    });
+}
+
+static bool load_hydrology_field_product_validated_impl(
     const std::filesystem::path& path,
     HydrologyFieldProductKind expected_kind,
     std::uint64_t expected_payload_digest,
@@ -1105,9 +1383,22 @@ bool load_hydrology_field_product_validated(
     return true;
 }
 
-bool serialize_network_artifact(const HydrologyNetworkArtifact& artifact,
-                                std::vector<std::uint8_t>& bytes,
-                                gpu_meshing::Error& error) {
+bool load_hydrology_field_product_validated(
+    const std::filesystem::path& path,
+    HydrologyFieldProductKind expected_kind,
+    std::uint64_t expected_payload_digest,
+    HydrologyFieldProduct& product,
+    gpu_meshing::Error& error) {
+    return translate_artifact_exceptions(error, [&] {
+        return load_hydrology_field_product_validated_impl(
+            path, expected_kind, expected_payload_digest, product, error);
+    });
+}
+
+static bool serialize_network_artifact_impl(
+    const HydrologyNetworkArtifact& artifact,
+    std::vector<std::uint8_t>& bytes,
+    gpu_meshing::Error& error) {
     bytes.clear();
     error = {};
     HydrologyNetworkArtifact canonical = artifact;
@@ -1160,9 +1451,18 @@ bool serialize_network_artifact(const HydrologyNetworkArtifact& artifact,
     return true;
 }
 
-bool deserialize_network_artifact(const std::vector<std::uint8_t>& bytes,
-                                  HydrologyNetworkArtifact& artifact,
-                                  gpu_meshing::Error& error) {
+bool serialize_network_artifact(const HydrologyNetworkArtifact& artifact,
+                                std::vector<std::uint8_t>& bytes,
+                                gpu_meshing::Error& error) {
+    return translate_artifact_exceptions(error, [&] {
+        return serialize_network_artifact_impl(artifact, bytes, error);
+    });
+}
+
+static bool deserialize_network_artifact_impl(
+    const std::vector<std::uint8_t>& bytes,
+    HydrologyNetworkArtifact& artifact,
+    gpu_meshing::Error& error) {
     error = {};
     if (bytes.size() < kHeaderBytes ||
         std::memcmp(bytes.data(), kMagic, sizeof(kMagic)) != 0)
@@ -1239,9 +1539,18 @@ bool deserialize_network_artifact(const std::vector<std::uint8_t>& bytes,
     return true;
 }
 
-bool save_network_artifact_atomic(const std::filesystem::path& path,
-                                  const HydrologyNetworkArtifact& artifact,
+bool deserialize_network_artifact(const std::vector<std::uint8_t>& bytes,
+                                  HydrologyNetworkArtifact& artifact,
                                   gpu_meshing::Error& error) {
+    return translate_artifact_exceptions(error, [&] {
+        return deserialize_network_artifact_impl(bytes, artifact, error);
+    });
+}
+
+static bool save_network_artifact_atomic_impl(
+    const std::filesystem::path& path,
+    const HydrologyNetworkArtifact& artifact,
+    gpu_meshing::Error& error) {
     std::vector<std::uint8_t> bytes;
     if (!serialize_network_artifact(artifact, bytes, error)) return false;
     if (!validate_field_package(path, artifact, error)) return false;
@@ -1274,7 +1583,15 @@ bool save_network_artifact_atomic(const std::filesystem::path& path,
     return true;
 }
 
-bool load_network_artifact_validated(
+bool save_network_artifact_atomic(const std::filesystem::path& path,
+                                  const HydrologyNetworkArtifact& artifact,
+                                  gpu_meshing::Error& error) {
+    return translate_artifact_exceptions(error, [&] {
+        return save_network_artifact_atomic_impl(path, artifact, error);
+    });
+}
+
+static bool load_network_artifact_validated_impl(
     const std::filesystem::path& path,
     std::uint64_t expected_network_key,
     std::uint64_t expected_terrain_revision,
@@ -1297,6 +1614,19 @@ bool load_network_artifact_validated(
     if (!validate_field_package(path, candidate, error)) return false;
     artifact = std::move(candidate);
     return true;
+}
+
+bool load_network_artifact_validated(
+    const std::filesystem::path& path,
+    std::uint64_t expected_network_key,
+    std::uint64_t expected_terrain_revision,
+    HydrologyNetworkArtifact& artifact,
+    gpu_meshing::Error& error) {
+    return translate_artifact_exceptions(error, [&] {
+        return load_network_artifact_validated_impl(
+            path, expected_network_key, expected_terrain_revision, artifact,
+            error);
+    });
 }
 
 } // namespace hydrology

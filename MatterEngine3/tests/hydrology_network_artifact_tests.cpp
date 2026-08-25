@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -16,6 +18,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winioctl.h>
 #endif
 
 namespace {
@@ -111,6 +114,9 @@ std::vector<std::uint8_t> read_bytes(const std::filesystem::path& path) {
 
 bool save_field_pair(const std::filesystem::path& root,
                      gpu_meshing::Error& error) {
+    std::error_code filesystem_error;
+    std::filesystem::create_directories(root, filesystem_error);
+    if (filesystem_error) return false;
     const auto manifest = fixture_manifest();
     return hydrology::save_hydrology_field_product_atomic(
                root / manifest.field_products[0].relative_path,
@@ -119,6 +125,60 @@ bool save_field_pair(const std::filesystem::path& root,
                root / manifest.field_products[1].relative_path,
                fixture_presentation_product(), error);
 }
+
+#ifdef _WIN32
+bool create_junction(const std::filesystem::path& link,
+                     const std::filesystem::path& target) {
+    struct JunctionReparseBuffer {
+        DWORD tag;
+        USHORT data_length;
+        USHORT reserved;
+        USHORT substitute_offset;
+        USHORT substitute_length;
+        USHORT print_offset;
+        USHORT print_length;
+        WCHAR path[1];
+    };
+    std::error_code error;
+    std::filesystem::create_directories(link, error);
+    if (error) return false;
+    const std::wstring substitute = L"\\??\\" +
+        std::filesystem::absolute(target).native();
+    const std::wstring print = std::filesystem::absolute(target).native();
+    const std::size_t path_bytes =
+        (substitute.size() + print.size() + 2u) * sizeof(wchar_t);
+    std::vector<std::uint8_t> storage(
+        offsetof(JunctionReparseBuffer, path) + path_bytes,
+        0u);
+    auto* const reparse = reinterpret_cast<JunctionReparseBuffer*>(
+        storage.data());
+    reparse->tag = IO_REPARSE_TAG_MOUNT_POINT;
+    reparse->substitute_offset = 0u;
+    reparse->substitute_length =
+        static_cast<USHORT>(substitute.size() * sizeof(wchar_t));
+    reparse->print_offset =
+        static_cast<USHORT>((substitute.size() + 1u) * sizeof(wchar_t));
+    reparse->print_length =
+        static_cast<USHORT>(print.size() * sizeof(wchar_t));
+    std::memcpy(reparse->path,
+                substitute.c_str(), (substitute.size() + 1u) * sizeof(wchar_t));
+    std::memcpy(
+        reinterpret_cast<std::uint8_t*>(reparse->path) + reparse->print_offset,
+        print.c_str(), (print.size() + 1u) * sizeof(wchar_t));
+    reparse->data_length = static_cast<USHORT>(storage.size() - 8u);
+    const HANDLE directory = CreateFileW(
+        link.c_str(), GENERIC_WRITE, 0u, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (directory == INVALID_HANDLE_VALUE) return false;
+    DWORD returned = 0u;
+    const bool result = DeviceIoControl(
+        directory, FSCTL_SET_REPARSE_POINT, reparse,
+        static_cast<DWORD>(storage.size()), nullptr, 0u, &returned, nullptr) != 0;
+    CloseHandle(directory);
+    if (!result) std::filesystem::remove(link, error);
+    return result;
+}
+#endif
 
 struct ConcurrentFieldMutation {
     std::filesystem::path target;
@@ -384,16 +444,16 @@ void test_typed_field_wire_format_and_ready_package_closure() {
     std::filesystem::remove(presentation_path);
     CHECK(save_field_pair(root, error), error.message.c_str());
 
-    auto stale_runtime = fixture_runtime_product();
-    stale_runtime.gameplay[0].height_m += 1.0f;
-    stale_runtime.payload_digest = hydrology::hydrology_runtime_field_digest(
-        stale_runtime.layout, stale_runtime.gameplay);
+    auto corrupt_canonical = read_bytes(runtime_path);
+    corrupt_canonical.back() ^= 0x20u;
+    CHECK(write_bytes(runtime_path, corrupt_canonical),
+          "canonical immutable corruption fixture was written");
     CHECK(!hydrology::save_hydrology_field_product_atomic(
-              runtime_path, stale_runtime, error),
-          "an immutable content-addressed field cannot be replaced by stale bytes");
-    CHECK(hydrology::load_network_artifact_validated(
-              path, 101u, 202u, loaded, error),
-          "a rejected overwrite preserves the existing Ready package");
+              runtime_path, fixture_runtime_product(), error) &&
+              read_bytes(runtime_path) == corrupt_canonical,
+          "an immutable canonical leaf with changed bytes is rejected without replacement");
+    std::filesystem::remove(runtime_path);
+    CHECK(save_field_pair(root, error), error.message.c_str());
 
     CHECK(!hydrology::load_network_artifact_validated(
               path, 999u, 202u, loaded, error),
@@ -437,25 +497,130 @@ void test_ready_package_rejects_reparse_escape_when_supported() {
     const auto path = root / "river.mhydnet";
     gpu_meshing::Error error{};
     std::filesystem::create_directories(root);
-    CHECK(save_field_pair(outside, error), error.message.c_str());
+    std::filesystem::create_directories(outside);
     const auto manifest = fixture_manifest();
     std::vector<std::uint8_t> bytes;
     CHECK(hydrology::serialize_network_artifact(manifest, bytes, error) &&
               write_bytes(path, bytes),
           "reparse Ready manifest fixture was written");
+    bool linked = false;
+#ifdef _WIN32
+    linked = create_junction(root / "hydrology", outside);
+#else
     std::error_code link_error;
     std::filesystem::create_directory_symlink(
-        outside / "hydrology", root / "hydrology", link_error);
-    if (!link_error) {
+        outside, root / "hydrology", link_error);
+    linked = !link_error;
+#endif
+    if (linked) {
         hydrology::HydrologyNetworkArtifact loaded{};
         CHECK(!save_field_pair(root, error),
               "field publication cannot traverse a symlink or reparse directory");
+        CHECK(!std::filesystem::exists(outside / "fields"),
+              "reparse rejection creates no directory or file outside the cache root");
         CHECK(!hydrology::load_network_artifact_validated(
                   path, 101u, 202u, loaded, error),
               "a Ready package cannot traverse a symlink or reparse directory");
+    } else {
+        std::printf("SKIP: platform could not create hydrology reparse fixture\n");
+    }
+
+    std::error_code cleanup_error;
+    std::filesystem::remove(root / "hydrology", cleanup_error);
+    cleanup_error.clear();
+    CHECK(save_field_pair(root, error), error.message.c_str());
+    const auto runtime_path =
+        root / manifest.field_products[0].relative_path;
+    const auto runtime_bytes = read_bytes(runtime_path);
+    const auto outside_leaf = outside / "runtime-external.mhydfield";
+    CHECK(write_bytes(outside_leaf, runtime_bytes),
+          "outside leaf reparse target fixture was written");
+    std::filesystem::remove(runtime_path, cleanup_error);
+    cleanup_error.clear();
+    std::filesystem::create_symlink(outside_leaf, runtime_path, cleanup_error);
+    if (!cleanup_error) {
+        hydrology::HydrologyNetworkArtifact loaded{};
+        CHECK(!hydrology::save_hydrology_field_product_atomic(
+                  runtime_path, fixture_runtime_product(), error) &&
+                  read_bytes(outside_leaf) == runtime_bytes,
+              "field publication rejects a canonical leaf reparse without changing its target");
+        CHECK(!hydrology::load_network_artifact_validated(
+                  path, 101u, 202u, loaded, error),
+              "Ready validation rejects a canonical leaf reparse");
+    } else {
+        std::printf("SKIP: platform could not create hydrology leaf reparse fixture\n");
     }
     std::filesystem::remove_all(root);
     std::filesystem::remove_all(outside);
+}
+
+void test_allocation_failure_closes_native_resources_transactionally() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto base = std::filesystem::temp_directory_path() /
+        ("matter-hydrology-allocation-" + std::to_string(stamp));
+    const auto manifest = fixture_manifest();
+    const auto product = fixture_runtime_product();
+    gpu_meshing::Error error{};
+    for (const auto point : {
+             hydrology::HydrologyFieldIoFailurePoint::AfterRootHandle,
+             hydrology::HydrologyFieldIoFailurePoint::AfterDirectoryHandle,
+             hydrology::HydrologyFieldIoFailurePoint::AfterFileHandle}) {
+        const auto root = base / std::to_string(static_cast<unsigned>(point));
+        std::filesystem::create_directories(root);
+        const auto field = root / manifest.field_products[0].relative_path;
+        hydrology::set_hydrology_field_io_failure_for_test(point);
+        const bool saved = hydrology::save_hydrology_field_product_atomic(
+            field, product, error);
+        const bool allocation_error_populated =
+            error.code == gpu_meshing::ErrorCode::ArtifactFailure;
+        hydrology::set_hydrology_field_io_failure_for_test(
+            hydrology::HydrologyFieldIoFailurePoint::None);
+        bool temporary_exists = false;
+        const auto field_directory = root / "hydrology" / "fields";
+        if (std::filesystem::exists(field_directory)) {
+            for (const auto& entry :
+                 std::filesystem::directory_iterator(field_directory))
+                temporary_exists = temporary_exists ||
+                    entry.path().filename().string().find(".tmp-") !=
+                        std::string::npos;
+        }
+        const auto network_path = root / "river.mhydnet";
+        const bool ready_saved = hydrology::save_network_artifact_atomic(
+            network_path, manifest, error);
+        CHECK(!saved && !temporary_exists &&
+                  !std::filesystem::exists(field) && !ready_saved &&
+                  !std::filesystem::exists(network_path) &&
+                  allocation_error_populated,
+               "injected allocation failure publishes no mutable canonical field");
+        std::error_code remove_error;
+        std::filesystem::remove_all(root, remove_error);
+        CHECK(!remove_error,
+              "injected allocation failure closes every acquired native resource");
+    }
+
+    const auto load_root = base / "load";
+    CHECK(save_field_pair(load_root, error), error.message.c_str());
+    const auto runtime_path = load_root / manifest.field_products[0].relative_path;
+    hydrology::HydrologyFieldProduct sentinel = fixture_presentation_product();
+    std::vector<std::uint8_t> sentinel_bytes;
+    CHECK(hydrology::serialize_hydrology_field_product(
+              sentinel, sentinel_bytes, error), error.message.c_str());
+    hydrology::set_hydrology_field_io_failure_for_test(
+        hydrology::HydrologyFieldIoFailurePoint::AfterFileHandle);
+    const bool loaded = hydrology::load_hydrology_field_product_validated(
+        runtime_path, hydrology::HydrologyFieldProductKind::Runtime,
+        product.payload_digest, sentinel, error);
+    hydrology::set_hydrology_field_io_failure_for_test(
+        hydrology::HydrologyFieldIoFailurePoint::None);
+    std::vector<std::uint8_t> preserved_bytes;
+    CHECK(hydrology::serialize_hydrology_field_product(
+              sentinel, preserved_bytes, error), error.message.c_str());
+    CHECK(!loaded && preserved_bytes == sentinel_bytes,
+           "allocation failure after file acquisition preserves the caller output");
+    std::error_code remove_error;
+    std::filesystem::remove_all(base, remove_error);
+    CHECK(!remove_error,
+          "allocation-failed load closes its file handle for immediate cleanup");
 }
 
 } // namespace
@@ -464,5 +629,6 @@ int main() {
     test_manifest_round_trip_is_canonical_and_transactional();
     test_typed_field_wire_format_and_ready_package_closure();
     test_ready_package_rejects_reparse_escape_when_supported();
+    test_allocation_failure_closes_native_resources_transactionally();
     return check_summary();
 }

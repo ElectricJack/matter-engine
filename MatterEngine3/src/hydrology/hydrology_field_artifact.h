@@ -33,6 +33,15 @@ void set_hydrology_field_validation_test_hook(
     HydrologyFieldValidationTestHook hook,
     void* context) noexcept;
 
+enum class HydrologyFieldIoFailurePoint : std::uint8_t {
+    None = 0,
+    AfterRootHandle = 1,
+    AfterDirectoryHandle = 2,
+    AfterFileHandle = 3,
+};
+void set_hydrology_field_io_failure_for_test(
+    HydrologyFieldIoFailurePoint point) noexcept;
+
 std::uint64_t hydrology_runtime_field_digest(
     const GameplayFieldLayout& layout,
     const std::vector<GameplaySample>& field) noexcept;
