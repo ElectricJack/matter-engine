@@ -8,9 +8,20 @@ namespace hydrology {
 namespace {
 
 bool finite(float value) { return std::isfinite(value); }
+bool finite(double value) { return std::isfinite(value); }
 
-float clamp01(float value) {
-    return finite(value) ? std::max(0.0f, std::min(1.0f, value)) : 0.0f;
+bool finite_float(double value, float& result) {
+    if (!finite(value) || value < -std::numeric_limits<float>::max() ||
+        value > std::numeric_limits<float>::max())
+        return false;
+    result = static_cast<float>(value);
+    return finite(result);
+}
+
+bool clamp01(double value, double& result) {
+    if (!finite(value)) return false;
+    result = std::max(0.0, std::min(1.0, value));
+    return true;
 }
 
 bool valid_layout(const GameplayFieldLayout& layout) {
@@ -65,23 +76,25 @@ bool neighbour(const PresentationDerivationInput& input, int x, int z,
     return true;
 }
 
-float normalized(float value, float scale) {
-    return scale > 0.0f ? clamp01(value / scale) : 0.0f;
+bool normalized(double value, double scale, double& result) {
+    if (!finite(value) || !finite(scale) || value < 0.0 || scale < 0.0)
+        return false;
+    return scale == 0.0 ? (result = 0.0, true) : clamp01(value / scale, result);
 }
 
-float weighted_mean(const float* values, const float* weights,
-                    std::size_t count) {
+bool weighted_mean(const double* values, const double* weights,
+                   std::size_t count, double& result) {
     double total = 0.0;
     double weight_total = 0.0;
     for (std::size_t i = 0; i != count; ++i) {
-        total += static_cast<double>(values[i]) * weights[i];
+        if (!finite(values[i]) || !finite(weights[i]) || weights[i] < 0.0)
+            return false;
+        total += values[i] * weights[i];
         weight_total += weights[i];
+        if (!finite(total) || !finite(weight_total)) return false;
     }
-    const double result = weight_total > 0.0 ? total / weight_total : 0.0;
-    return std::isfinite(result) &&
-                   result <= std::numeric_limits<float>::max()
-               ? static_cast<float>(result)
-               : std::numeric_limits<float>::quiet_NaN();
+    result = weight_total > 0.0 ? total / weight_total : 0.0;
+    return finite(result);
 }
 
 RiverFeature feature_for(const PresentationMarkers& markers, float speed,
@@ -105,9 +118,12 @@ bool valid_presentation(const PresentationSample& sample) {
         static_cast<std::uint8_t>(sample.feature) >
             static_cast<std::uint8_t>(RiverFeature::Pool))
         return false;
-    const float normal_y_squared = 1.0f - sample.normal_x * sample.normal_x -
-                                   sample.normal_z * sample.normal_z;
-    return finite(normal_y_squared) && normal_y_squared >= 0.0f;
+    const double normal_y_squared = 1.0 -
+        static_cast<double>(sample.normal_x) * sample.normal_x -
+        static_cast<double>(sample.normal_z) * sample.normal_z;
+    // Float rounding of a normalized double vector can cross the unit circle
+    // by one ulp; it still represents the positive hemisphere contract.
+    return finite(normal_y_squared) && normal_y_squared >= -1.0e-6;
 }
 
 }  // namespace
@@ -152,7 +168,12 @@ bool build_river_presentation_field(
         }
     }
     samples.assign(count, {});
-    const float inv_cell = 1.0f / input.layout.cell_size_m;
+    const auto fail = [&](const char* message) {
+        samples.clear();
+        error = message;
+        return false;
+    };
+    const double inv_cell = 1.0 / static_cast<double>(input.layout.cell_size_m);
     for (std::uint32_t z = 0; z != input.layout.depth; ++z) {
         for (std::uint32_t x = 0; x != input.layout.width; ++x) {
             const std::size_t index = index_of(input.layout, x, z);
@@ -168,133 +189,140 @@ bool build_river_presentation_field(
                                           static_cast<int>(z) - 1, up);
             const bool has_down = neighbour(input, static_cast<int>(x),
                                             static_cast<int>(z) + 1, down);
-            float gradient_x = 0.0f;
-            float gradient_z = 0.0f;
+            double gradient_x = 0.0;
+            double gradient_z = 0.0;
             if (has_left && has_right)
-                gradient_x = (right->height_m - left->height_m) * 0.5f * inv_cell;
+                gradient_x = (static_cast<double>(right->height_m) - left->height_m) * 0.5 * inv_cell;
             else if (has_right)
-                gradient_x = (right->height_m - gameplay.height_m) * inv_cell;
+                gradient_x = (static_cast<double>(right->height_m) - gameplay.height_m) * inv_cell;
             else if (has_left)
-                gradient_x = (gameplay.height_m - left->height_m) * inv_cell;
+                gradient_x = (static_cast<double>(gameplay.height_m) - left->height_m) * inv_cell;
             if (has_up && has_down)
-                gradient_z = (down->height_m - up->height_m) * 0.5f * inv_cell;
+                gradient_z = (static_cast<double>(down->height_m) - up->height_m) * 0.5 * inv_cell;
             else if (has_down)
-                gradient_z = (down->height_m - gameplay.height_m) * inv_cell;
+                gradient_z = (static_cast<double>(down->height_m) - gameplay.height_m) * inv_cell;
             else if (has_up)
-                gradient_z = (gameplay.height_m - up->height_m) * inv_cell;
+                gradient_z = (static_cast<double>(gameplay.height_m) - up->height_m) * inv_cell;
             if (!finite(gradient_x) || !finite(gradient_z)) {
-                samples.clear(); error = "river presentation field gradient overflow";
-                return false;
+                return fail("river presentation field gradient overflow");
             }
-            const float normal_length = std::sqrt(
-                gradient_x * gradient_x + 1.0f + gradient_z * gradient_z);
+            const double slope_length = std::hypot(gradient_x, gradient_z);
+            const double normal_length = std::hypot(1.0, slope_length);
             if (!finite(normal_length) || normal_length <= 0.0f) {
-                samples.clear(); error = "river presentation field normal overflow";
-                return false;
+                return fail("river presentation field normal overflow");
             }
             PresentationSample result{};
-            result.normal_x = -gradient_x / normal_length;
-            result.normal_z = -gradient_z / normal_length;
+            if (!finite_float(-gradient_x / normal_length, result.normal_x) ||
+                !finite_float(-gradient_z / normal_length, result.normal_z))
+                return fail("river presentation field normal is not representable");
 
-            float dvx_dx = 0.0f;
-            float dvz_dz = 0.0f;
-            float dvz_dx = 0.0f;
-            float dvx_dz = 0.0f;
+            double dvx_dx = 0.0;
+            double dvz_dz = 0.0;
+            double dvz_dx = 0.0;
+            double dvx_dz = 0.0;
             if (has_left && has_right) {
-                dvx_dx = (right->velocity_x_mps - left->velocity_x_mps) * 0.5f * inv_cell;
-                dvz_dx = (right->velocity_z_mps - left->velocity_z_mps) * 0.5f * inv_cell;
+                dvx_dx = (static_cast<double>(right->velocity_x_mps) - left->velocity_x_mps) * 0.5 * inv_cell;
+                dvz_dx = (static_cast<double>(right->velocity_z_mps) - left->velocity_z_mps) * 0.5 * inv_cell;
             } else if (has_right) {
-                dvx_dx = (right->velocity_x_mps - gameplay.velocity_x_mps) * inv_cell;
-                dvz_dx = (right->velocity_z_mps - gameplay.velocity_z_mps) * inv_cell;
+                dvx_dx = (static_cast<double>(right->velocity_x_mps) - gameplay.velocity_x_mps) * inv_cell;
+                dvz_dx = (static_cast<double>(right->velocity_z_mps) - gameplay.velocity_z_mps) * inv_cell;
             } else if (has_left) {
-                dvx_dx = (gameplay.velocity_x_mps - left->velocity_x_mps) * inv_cell;
-                dvz_dx = (gameplay.velocity_z_mps - left->velocity_z_mps) * inv_cell;
+                dvx_dx = (static_cast<double>(gameplay.velocity_x_mps) - left->velocity_x_mps) * inv_cell;
+                dvz_dx = (static_cast<double>(gameplay.velocity_z_mps) - left->velocity_z_mps) * inv_cell;
             }
             if (has_up && has_down) {
-                dvz_dz = (down->velocity_z_mps - up->velocity_z_mps) * 0.5f * inv_cell;
-                dvx_dz = (down->velocity_x_mps - up->velocity_x_mps) * 0.5f * inv_cell;
+                dvz_dz = (static_cast<double>(down->velocity_z_mps) - up->velocity_z_mps) * 0.5 * inv_cell;
+                dvx_dz = (static_cast<double>(down->velocity_x_mps) - up->velocity_x_mps) * 0.5 * inv_cell;
             } else if (has_down) {
-                dvz_dz = (down->velocity_z_mps - gameplay.velocity_z_mps) * inv_cell;
-                dvx_dz = (down->velocity_x_mps - gameplay.velocity_x_mps) * inv_cell;
+                dvz_dz = (static_cast<double>(down->velocity_z_mps) - gameplay.velocity_z_mps) * inv_cell;
+                dvx_dz = (static_cast<double>(down->velocity_x_mps) - gameplay.velocity_x_mps) * inv_cell;
             } else if (has_up) {
-                dvz_dz = (gameplay.velocity_z_mps - up->velocity_z_mps) * inv_cell;
-                dvx_dz = (gameplay.velocity_x_mps - up->velocity_x_mps) * inv_cell;
+                dvz_dz = (static_cast<double>(gameplay.velocity_z_mps) - up->velocity_z_mps) * inv_cell;
+                dvx_dz = (static_cast<double>(gameplay.velocity_x_mps) - up->velocity_x_mps) * inv_cell;
             }
             if (!finite(dvx_dx) || !finite(dvz_dz) || !finite(dvz_dx) ||
                 !finite(dvx_dz)) {
-                samples.clear(); error = "river presentation field derivative overflow";
-                return false;
+                return fail("river presentation field derivative overflow");
             }
-            const float retained_variance =
+            const double retained_variance =
                 input.gameplay_statistics->velocity_variance_mps2[index];
             if (!finite(retained_variance) || retained_variance < 0.0f) {
-                samples.clear();
-                error = "river presentation field contains invalid retained variance";
-                return false;
+                return fail("river presentation field contains invalid retained variance");
             }
-            const float variance = normalized(retained_variance,
-                                              settings.velocity_variance_scale_mps2);
-            const float divergence = normalized(std::fabs(dvx_dx + dvz_dz),
-                                                settings.divergence_scale_per_m);
-            const float vorticity = normalized(std::fabs(dvz_dx - dvx_dz),
-                                               settings.vorticity_scale_per_m);
-            const float vertical_speed = normalized(std::fabs(gameplay.velocity_y_mps),
-                                                    settings.vertical_speed_scale_mps);
-            const float slope = normalized(std::sqrt(gradient_x * gradient_x +
-                                                      gradient_z * gradient_z),
-                                           settings.surface_slope_scale);
-            const float shallow = settings.shallow_depth_m > 0.0f
-                                      ? clamp01(1.0f - gameplay.depth_m /
-                                                           settings.shallow_depth_m)
-                                      : 0.0f;
+            double variance = 0.0, divergence = 0.0, vorticity = 0.0;
+            double vertical_speed = 0.0, slope = 0.0, shallow = 0.0;
+            if (!normalized(retained_variance, settings.velocity_variance_scale_mps2, variance) ||
+                !normalized(std::fabs(dvx_dx + dvz_dz), settings.divergence_scale_per_m, divergence) ||
+                !normalized(std::fabs(dvz_dx - dvx_dz), settings.vorticity_scale_per_m, vorticity) ||
+                !normalized(std::fabs(static_cast<double>(gameplay.velocity_y_mps)), settings.vertical_speed_scale_mps, vertical_speed) ||
+                !normalized(slope_length, settings.surface_slope_scale, slope) ||
+                (settings.shallow_depth_m > 0.0f &&
+                 !clamp01(1.0 - static_cast<double>(gameplay.depth_m) /
+                                      settings.shallow_depth_m, shallow)))
+                return fail("river presentation field metric is non-finite");
             const PresentationMarkers& markers = (*input.markers)[index];
             const PresentationLocalOverride& local_override =
                 (*input.local_overrides)[index];
-            const float turbulence_weights[] = {
+            const double turbulence_weights[] = {
                 settings.velocity_variance_weight, settings.divergence_weight,
                 settings.vorticity_weight, settings.vertical_speed_weight,
                 settings.surface_slope_weight, settings.shallows_weight,
                 markers.pool ? settings.pool_weight : 0.0f};
-            const float turbulence_values_with_pool[] = {
+            const double turbulence_values_with_pool[] = {
                 variance, divergence, vorticity, vertical_speed, slope, shallow, 0.0f};
-            const float raw_turbulence = weighted_mean(
-                turbulence_values_with_pool, turbulence_weights, 7u) *
-                local_override.turbulence_multiplier;
-            if (!finite(raw_turbulence)) { samples.clear(); error = "river presentation turbulence overflow"; return false; }
-            result.turbulence = clamp01(raw_turbulence);
-            const float aeration_weights[] = {
+            double raw_turbulence = 0.0;
+            if (!weighted_mean(turbulence_values_with_pool, turbulence_weights, 7u,
+                               raw_turbulence) ||
+                !clamp01(raw_turbulence * local_override.turbulence_multiplier,
+                         raw_turbulence) ||
+                !finite_float(raw_turbulence, result.turbulence))
+                return fail("river presentation turbulence overflow");
+            const double aeration_weights[] = {
                 settings.vertical_speed_weight, settings.velocity_variance_weight,
                 settings.waterfall_weight, settings.impact_weight,
                 markers.pool ? settings.pool_weight : 0.0f};
-            const float aeration_values_with_pool[] = {
+            const double aeration_values_with_pool[] = {
                 vertical_speed, variance, markers.waterfall ? 1.0f : 0.0f,
                 markers.impact ? 1.0f : 0.0f, 0.0f};
-            const float raw_aeration = weighted_mean(aeration_values_with_pool,
-                aeration_weights, 5u) * local_override.aeration_multiplier;
-            if (!finite(raw_aeration)) { samples.clear(); error = "river presentation aeration overflow"; return false; }
-            result.aeration = clamp01(raw_aeration);
-            const float wake = settings.wake_distance_scale_m > 0.0f
-                                   ? clamp01(1.0f - (*input.wake_distances_m)[index] /
-                                                        settings.wake_distance_scale_m)
-                                   : 0.0f;
-            const float foam_weights[] = {
+            double raw_aeration = 0.0;
+            if (!weighted_mean(aeration_values_with_pool, aeration_weights, 5u,
+                               raw_aeration) ||
+                !clamp01(raw_aeration * local_override.aeration_multiplier,
+                         raw_aeration) ||
+                !finite_float(raw_aeration, result.aeration))
+                return fail("river presentation aeration overflow");
+            double wake = 0.0;
+            if (settings.wake_distance_scale_m > 0.0f &&
+                !clamp01(1.0 - static_cast<double>((*input.wake_distances_m)[index]) /
+                                     settings.wake_distance_scale_m, wake))
+                return fail("river presentation wake metric is non-finite");
+            const double foam_weights[] = {
                 1.0f, 1.0f, settings.shallows_weight,
                 settings.wake_distance_weight, settings.spillway_weight,
                 markers.pool ? settings.pool_weight : 0.0f};
-            const float foam_values_with_pool[] = {
+            const double foam_values_with_pool[] = {
                 result.turbulence, result.aeration, shallow, wake,
                 markers.spillway ? 1.0f : 0.0f, 0.0f};
-            const float raw_foam = weighted_mean(foam_values_with_pool,
-                foam_weights, 6u) * local_override.foam_multiplier;
-            if (!finite(raw_foam)) { samples.clear(); error = "river presentation foam overflow"; return false; }
-            result.foam_potential = clamp01(raw_foam);
-            const float speed = std::sqrt(gameplay.velocity_x_mps * gameplay.velocity_x_mps +
-                                          gameplay.velocity_z_mps * gameplay.velocity_z_mps);
-            result.feature = feature_for(markers, speed, settings);
+            double raw_foam = 0.0;
+            if (!weighted_mean(foam_values_with_pool, foam_weights, 6u, raw_foam) ||
+                !clamp01(raw_foam * local_override.foam_multiplier, raw_foam) ||
+                !finite_float(raw_foam, result.foam_potential))
+                return fail("river presentation foam overflow");
+            const double speed = std::hypot(static_cast<double>(gameplay.velocity_x_mps),
+                                            static_cast<double>(gameplay.velocity_z_mps));
+            if (!finite(speed)) return fail("river presentation speed is non-finite");
+            result.feature = feature_for(markers, static_cast<float>(
+                std::min(speed, static_cast<double>(std::numeric_limits<float>::max()))), settings);
             result.wet_valid = finite(result.normal_x) && finite(result.normal_z) &&
                                finite(result.turbulence) && finite(result.aeration) &&
-                               finite(result.foam_potential);
-            if (!result.wet_valid) result = {};
+                               finite(result.foam_potential) &&
+                               result.turbulence >= 0.0f && result.turbulence <= 1.0f &&
+                               result.aeration >= 0.0f && result.aeration <= 1.0f &&
+                               result.foam_potential >= 0.0f && result.foam_potential <= 1.0f;
+            const double result_normal_sq = static_cast<double>(result.normal_x) * result.normal_x +
+                                            static_cast<double>(result.normal_z) * result.normal_z;
+            if (!result.wet_valid || !finite(result_normal_sq) || result_normal_sq > 1.000001)
+                return fail("river presentation field output is invalid");
             samples[index] = result;
         }
     }
@@ -356,9 +384,9 @@ bool sample_river_presentation_field(
         layout, std::min(nearest_x, layout.width - 1u),
         std::min(nearest_z, layout.depth - 1u))];
     if (!valid_presentation(nearest)) return false;
-    sample.turbulence = clamp01(sample.turbulence);
-    sample.aeration = clamp01(sample.aeration);
-    sample.foam_potential = clamp01(sample.foam_potential);
+    sample.turbulence = std::max(0.0f, std::min(1.0f, sample.turbulence));
+    sample.aeration = std::max(0.0f, std::min(1.0f, sample.aeration));
+    sample.foam_potential = std::max(0.0f, std::min(1.0f, sample.foam_potential));
     sample.feature = nearest.feature;
     sample.wet_valid = true;
     return true;

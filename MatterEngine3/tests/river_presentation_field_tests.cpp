@@ -140,6 +140,33 @@ void test_gameplay_retains_stable_large_velocity_variance() {
           "retained variance is stable for large nearby velocities");
 }
 
+void test_gameplay_uses_checked_stable_means_and_depths() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
+                                                1u, 1u};
+    const float maximum = std::numeric_limits<float>::max();
+    const std::vector<hydrology::FluidParticle> particles = {
+        {{0.25f, 2.0f, 0.25f}, {maximum, 0.0f, 0.0f}, 1u},
+        {{0.75f, 2.0f, 0.75f}, {maximum, 0.0f, 0.0f}, 2u},
+    };
+    std::vector<hydrology::GameplaySample> field;
+    std::string error;
+    CHECK(hydrology::build_fluid_gameplay_field(
+              particles, 0.5f, layout,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              field, error) && field.size() == 1u && field[0].wet_valid &&
+              field[0].velocity_x_mps == maximum,
+          "finite equal near-FLT_MAX velocities retain their representable mean");
+
+    const std::vector<hydrology::FluidParticle> tall = {
+        {{0.25f, 2.0e38f, 0.25f}, {0.0f, 0.0f, 0.0f}, 1u},
+    };
+    CHECK(!hydrology::build_fluid_gameplay_field(
+              tall, 0.5f, layout,
+              [](float, float, float& height) { height = -2.0e38f; return true; },
+              field, error) && field.empty() && !error.empty(),
+          "an unrepresentable required gameplay depth fails closed");
+}
+
 void test_presentation_rejects_overflowing_intermediates() {
     const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
                                                 2u, 1u};
@@ -156,9 +183,10 @@ void test_presentation_rejects_overflowing_intermediates() {
     hydrology::PresentationDerivationSettings settings{};
     std::vector<hydrology::PresentationSample> output;
     std::string error;
-    CHECK(!hydrology::build_river_presentation_field(input, settings, output, error) &&
-              output.empty() && !error.empty(),
-          "finite inputs whose derivatives overflow fail closed");
+    CHECK(hydrology::build_river_presentation_field(input, settings, output, error) &&
+              output.size() == 2u && output[0].wet_valid &&
+              std::isfinite(output[0].normal_x),
+          "finite huge gradients retain a bounded representable normal");
 
     gameplay = {{2.0f, 1.0f, 1.0f, 0.0f, 0.0f, true},
                 {2.0f, 1.0f, 1.0f, 0.0f, 0.0f, true}};
@@ -168,6 +196,32 @@ void test_presentation_rejects_overflowing_intermediates() {
     CHECK(hydrology::build_river_presentation_field(input, settings, output, error) &&
               output[0].turbulence >= 0.0f && output[0].turbulence <= 1.0f,
           "large finite weights use stable arithmetic without overflow");
+}
+
+void test_presentation_keeps_huge_finite_metrics_bounded() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
+                                                1u, 1u};
+    const float maximum = std::numeric_limits<float>::max();
+    std::vector<hydrology::GameplaySample> gameplay = {
+        {2.0f, maximum, maximum, 0.0f, maximum, true}};
+    hydrology::GameplayFieldStatistics statistics{{maximum}};
+    std::vector<float> terrain(1u, 0.0f), wake(1u, maximum);
+    std::vector<hydrology::PresentationMarkers> markers(1u);
+    std::vector<hydrology::PresentationLocalOverride> overrides(1u);
+    hydrology::PresentationDerivationInput input{
+        layout, &gameplay, &statistics, &terrain, &wake, &markers, &overrides};
+    hydrology::PresentationDerivationSettings settings{};
+    settings.velocity_variance_scale_mps2 = std::numeric_limits<float>::denorm_min();
+    settings.shallow_depth_m = std::numeric_limits<float>::denorm_min();
+    settings.wake_distance_scale_m = std::numeric_limits<float>::denorm_min();
+    settings.rapid_speed_mps = 1.0f;
+    std::vector<hydrology::PresentationSample> output;
+    std::string error;
+    CHECK(hydrology::build_river_presentation_field(input, settings, output, error) &&
+              output.size() == 1u && output[0].wet_valid &&
+              output[0].turbulence > 0.0f &&
+              output[0].feature == hydrology::RiverFeature::Rapid,
+          "huge finite variance and speed use double ratios and hypot rather than zeroing");
 }
 
 void test_pool_weight_is_calm_evidence() {
@@ -270,7 +324,9 @@ int main() {
     test_derives_repeatable_bounded_presentation_field();
     test_gameplay_retains_known_velocity_variance();
     test_gameplay_retains_stable_large_velocity_variance();
+    test_gameplay_uses_checked_stable_means_and_depths();
     test_presentation_rejects_overflowing_intermediates();
+    test_presentation_keeps_huge_finite_metrics_bounded();
     test_pool_weight_is_calm_evidence();
     test_presentation_sampling_is_strict_and_bilinear();
     test_feature_markers_have_explicit_precedence();

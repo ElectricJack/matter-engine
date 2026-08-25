@@ -8,6 +8,15 @@ namespace hydrology {
 namespace {
 
 bool finite(float value) { return std::isfinite(value); }
+bool finite(double value) { return std::isfinite(value); }
+
+bool to_float(double value, float& result) {
+    if (!finite(value) || value < -std::numeric_limits<float>::max() ||
+        value > std::numeric_limits<float>::max())
+        return false;
+    result = static_cast<float>(value);
+    return finite(result);
+}
 
 bool valid_layout(const GameplayFieldLayout& layout) {
     return finite(layout.origin_m.x) && finite(layout.origin_m.y) &&
@@ -60,15 +69,18 @@ bool build_fluid_gameplay_field(
     }
     const std::size_t count = static_cast<std::size_t>(layout.width) * layout.depth;
     samples.assign(count, {});
-    std::vector<float> velocity_weight(count, 0.0f);
-    std::vector<VelocityWelford> velocity_statistics(count);
+    // GameplaySample stores the running mean; this count is the only extra
+    // storage necessary when variance statistics are not requested.
+    std::vector<std::uint32_t> particle_count(count, 0u);
+    std::vector<VelocityWelford> velocity_statistics;
+    if (statistics != nullptr) velocity_statistics.resize(count);
     std::vector<float> terrain_height(count, 0.0f);
-    const float volume = 4.1887902047863909846f * particle_radius_m *
-                         particle_radius_m * particle_radius_m;
-    if (!finite(volume) || volume <= 0.0f) {
-        error = "fluid gameplay field particle volume is non-finite";
+    const auto fail = [&](const char* message) {
+        samples.clear();
+        if (statistics != nullptr) statistics->velocity_variance_mps2.clear();
+        error = message;
         return false;
-    }
+    };
     for (std::uint32_t z = 0; z != layout.depth; ++z) {
         for (std::uint32_t x = 0; x != layout.width; ++x) {
             const std::size_t index = static_cast<std::size_t>(z) * layout.width + x;
@@ -78,9 +90,7 @@ bool build_fluid_gameplay_field(
                 (static_cast<float>(z) + 0.5f) * layout.cell_size_m;
             if (!terrain(world_x, world_z, terrain_height[index]) ||
                 !finite(terrain_height[index])) {
-                samples.clear();
-                error = "terrain height sampling failed for fluid gameplay field";
-                return false;
+                return fail("terrain height sampling failed for fluid gameplay field");
             }
         }
     }
@@ -88,9 +98,7 @@ bool build_fluid_gameplay_field(
         if (!finite(particle.position_m.x) || !finite(particle.position_m.y) ||
             !finite(particle.position_m.z) || !finite(particle.velocity_mps.x) ||
             !finite(particle.velocity_mps.y) || !finite(particle.velocity_mps.z)) {
-            samples.clear();
-            error = "fluid gameplay field particle is non-finite";
-            return false;
+            return fail("fluid gameplay field particle is non-finite");
         }
         const int x = static_cast<int>(std::floor(
             (particle.position_m.x - layout.origin_m.x) / layout.cell_size_m));
@@ -102,18 +110,31 @@ bool build_fluid_gameplay_field(
         const std::size_t index = static_cast<std::size_t>(z) * layout.width +
                                   static_cast<std::size_t>(x);
         GameplaySample& sample = samples[index];
-        const float surface = particle.position_m.y + particle_radius_m;
-        if (!sample.wet_valid || surface > sample.height_m)
-            sample.height_m = surface;
-        sample.velocity_x_mps += particle.velocity_mps.x * volume;
-        sample.velocity_y_mps += particle.velocity_mps.y * volume;
-        sample.velocity_z_mps += particle.velocity_mps.z * volume;
-        if (!velocity_statistics[index].add(particle.velocity_mps)) {
-            samples.clear();
-            error = "fluid gameplay field velocity statistics overflow";
-            return false;
-        }
-        velocity_weight[index] += volume;
+        float surface = 0.0f;
+        if (!to_float(static_cast<double>(particle.position_m.y) +
+                          static_cast<double>(particle_radius_m), surface))
+            return fail("fluid gameplay field surface is not representable");
+        if (particle_count[index] == std::numeric_limits<std::uint32_t>::max())
+            return fail("fluid gameplay field particle count overflow");
+        const double next = static_cast<double>(particle_count[index]) + 1.0;
+        const auto add_velocity = [&](float current, float incoming,
+                                      float& result) {
+            return to_float(static_cast<double>(current) +
+                                (static_cast<double>(incoming) - current) / next,
+                            result);
+        };
+        float velocity_x = 0.0f, velocity_y = 0.0f, velocity_z = 0.0f;
+        if (!add_velocity(sample.velocity_x_mps, particle.velocity_mps.x, velocity_x) ||
+            !add_velocity(sample.velocity_y_mps, particle.velocity_mps.y, velocity_y) ||
+            !add_velocity(sample.velocity_z_mps, particle.velocity_mps.z, velocity_z))
+            return fail("fluid gameplay field velocity is not representable");
+        if (!sample.wet_valid || surface > sample.height_m) sample.height_m = surface;
+        sample.velocity_x_mps = velocity_x;
+        sample.velocity_y_mps = velocity_y;
+        sample.velocity_z_mps = velocity_z;
+        ++particle_count[index];
+        if (statistics != nullptr && !velocity_statistics[index].add(particle.velocity_mps))
+            return fail("fluid gameplay field velocity statistics overflow");
         sample.wet_valid = true;
     }
     for (std::size_t index = 0; index != samples.size(); ++index) {
@@ -123,10 +144,11 @@ bool build_fluid_gameplay_field(
             sample = {};
             continue;
         }
-        sample.depth_m = sample.height_m - terrain_height[index];
-        sample.velocity_x_mps /= velocity_weight[index];
-        sample.velocity_y_mps /= velocity_weight[index];
-        sample.velocity_z_mps /= velocity_weight[index];
+        if (!to_float(static_cast<double>(sample.height_m) - terrain_height[index],
+                      sample.depth_m))
+            return fail("fluid gameplay field depth is not representable");
+        if (!valid_wet_sample(sample))
+            return fail("fluid gameplay field produced a non-finite wet sample");
     }
     if (statistics != nullptr) {
         statistics->velocity_variance_mps2.assign(count, 0.0f);
@@ -138,10 +160,7 @@ bool build_fluid_gameplay_field(
                 accumulator.m2 / static_cast<double>(accumulator.count);
             if (!std::isfinite(variance) || variance < 0.0 ||
                 variance > std::numeric_limits<float>::max()) {
-                samples.clear();
-                statistics->velocity_variance_mps2.clear();
-                error = "fluid gameplay field variance is non-finite";
-                return false;
+                return fail("fluid gameplay field variance is non-finite");
             }
             statistics->velocity_variance_mps2[index] =
                 static_cast<float>(variance);
