@@ -346,15 +346,7 @@ bool validate_definition_and_field(const terrain_field::FieldRuntime& field,
         ? field.height_overlay()->hash() : 0u;
     if (actual_overlay_hash != definition.source.overlay_hash)
         return fail(error, "terrain collision source overlay hash does not match the field");
-    std::uint64_t expected_runtime_hash = definition.source.field_hash;
-    if (has_overlay) {
-        for (unsigned byte = 0u; byte != 8u; ++byte) {
-            expected_runtime_hash ^=
-                static_cast<std::uint8_t>(actual_overlay_hash >> (byte * 8u));
-            expected_runtime_hash *= kFnvPrime;
-        }
-    }
-    if (field.hash() != expected_runtime_hash)
+    if (field.hash() != definition.source.field_hash)
         return fail(error, "terrain collision source field hash does not match the runtime");
     return true;
 }

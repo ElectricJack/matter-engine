@@ -55,7 +55,6 @@ private:
 };
 
 struct TestField {
-    std::uint64_t base_hash = 0;
     terrain_field::FieldRuntime runtime;
 };
 
@@ -66,14 +65,12 @@ TestField make_field(
     std::string error;
     const bool parsed = terrain_field::FieldProgram::parse(text, program, error);
     CHECK(parsed, error.c_str());
-    const std::uint64_t base_hash = program.hash();
-    return {base_hash,
-            terrain_field::FieldRuntime(std::move(program), std::move(overlay))};
+    return {terrain_field::FieldRuntime(std::move(program), std::move(overlay))};
 }
 
 SourceIdentity source_for(const TestField& field) {
     SourceIdentity source{};
-    source.field_hash = field.base_hash;
+    source.field_hash = field.runtime.hash();
     source.overlay_hash = field.runtime.height_overlay()
         ? field.runtime.height_overlay()->hash() : 0u;
     source.bake_mode_salt = bake_mode::salt();
@@ -408,6 +405,60 @@ std::shared_ptr<const terrain_field::RiverHeightOverlay> make_river_overlay() {
     CHECK(terrain_field::RiverHeightOverlay::build(geometry, overlay, error),
           error.c_str());
     return overlay;
+}
+
+void test_source_identity_validates_runtime_and_overlay_independently() {
+    constexpr const char* kOverlayField =
+        "const 6.3\nconst 0.5\nheight r0\nmoisture r1\nrelief r1\n"
+        "seaLevel -100\nbiome 0.65 0.35\n";
+
+    TestField plain = make_field(kOverlayField);
+    const CanonicalDefinition plain_definition = definition_for(plain);
+    TempRoot plain_root("source-identity-plain");
+    TerrainCollisionCandidate candidate{};
+    std::string error;
+    CHECK(matter::terrain_collision::load_or_build_candidate(
+              plain.runtime, plain_definition, plain_root.path, {}, candidate,
+              error),
+          "a runtime without an overlay accepts its direct runtime hash");
+
+    TestField overlaid = make_field(kOverlayField, make_river_overlay());
+    const CanonicalDefinition overlaid_definition = definition_for(overlaid);
+    CHECK(overlaid_definition.source.field_hash == overlaid.runtime.hash() &&
+              overlaid_definition.source.overlay_hash ==
+                  overlaid.runtime.height_overlay()->hash(),
+          "the test source identity has the production runtime and overlay hashes");
+    TempRoot overlaid_root("source-identity-overlaid");
+    candidate = {};
+    error.clear();
+    CHECK(matter::terrain_collision::load_or_build_candidate(
+              overlaid.runtime, overlaid_definition, overlaid_root.path, {},
+              candidate, error),
+          error.c_str());
+
+    CanonicalDefinition overlay_mismatch = overlaid_definition;
+    overlay_mismatch.source.overlay_hash ^= UINT64_C(1);
+    TempRoot overlay_mismatch_root("source-identity-overlay-mismatch");
+    candidate = {};
+    error.clear();
+    CHECK(!matter::terrain_collision::load_or_build_candidate(
+              overlaid.runtime, overlay_mismatch, overlay_mismatch_root.path,
+              {}, candidate, error) &&
+              error ==
+                  "terrain collision source overlay hash does not match the field",
+          "an overlay identity mismatch is rejected independently");
+
+    CanonicalDefinition runtime_mismatch = overlaid_definition;
+    runtime_mismatch.source.field_hash ^= UINT64_C(1);
+    TempRoot runtime_mismatch_root("source-identity-runtime-mismatch");
+    candidate = {};
+    error.clear();
+    CHECK(!matter::terrain_collision::load_or_build_candidate(
+              overlaid.runtime, runtime_mismatch, runtime_mismatch_root.path,
+              {}, candidate, error) &&
+              error ==
+                  "terrain collision source field hash does not match the runtime",
+          "a runtime identity mismatch is rejected independently");
 }
 
 void test_final_overlaid_runtime_is_meshed() {
@@ -1241,6 +1292,7 @@ int main() {
     test_fixture_conversion_is_valid_and_repeatable();
     test_all_material_buckets_are_flattened();
     test_uniform_density_tiles_succeed_empty();
+    test_source_identity_validates_runtime_and_overlay_independently();
     test_final_overlaid_runtime_is_meshed();
     test_contour_coverage_validator_rejects_middle_gap();
     test_equal_rung_neighbors_share_vertices_on_every_axis();
