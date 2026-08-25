@@ -524,6 +524,7 @@ bool validate_and_build_terrain_tile(
     }
 
     bool has_non_degenerate_triangle = false;
+    b3AABB accepted_triangle_bounds{};
     const float minimum_area =
         0.01f * B3_LINEAR_SLOP * B3_LINEAR_SLOP;
     for (std::int32_t triangle = 0;
@@ -549,11 +550,23 @@ bool validate_and_build_terrain_tile(
             return false;
         }
         if (area >= minimum_area) {
+            const b3AABB triangle_bounds = {
+                b3Min(vertex1, b3Min(vertex2, vertex3)),
+                b3Max(vertex1, b3Max(vertex2, vertex3)),
+            };
+            accepted_triangle_bounds = has_non_degenerate_triangle
+                ? b3AABB_Union(
+                      accepted_triangle_bounds, triangle_bounds)
+                : triangle_bounds;
             has_non_degenerate_triangle = true;
         }
     }
     if (!has_non_degenerate_triangle) {
         error = "terrain collision mesh has no triangle above Box3D's minimum area";
+        return false;
+    }
+    if (!b3IsSaneAABB(accepted_triangle_bounds)) {
+        error = "terrain collision mesh bounds exceed Box3D sanity limits";
         return false;
     }
 

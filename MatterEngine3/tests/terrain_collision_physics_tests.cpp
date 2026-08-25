@@ -875,6 +875,142 @@ void test_box3d_mesh_boundaries_and_degenerate_preflight() {
           "repeated triangle indices reject before native allocation and preserve active terrain");
 }
 
+void test_sane_bounds_preflight_avoids_box3d_clone_leak() {
+    PhysicsFixture fixture;
+    std::string error;
+    error.reserve(256);
+    const auto active = candidate(
+        1601, {xz_quad({0, 0, 0}, {}, -4.0f, 4.0f, -4.0f, 4.0f,
+                       0.0f, 0.0f, true, 74)});
+    if (!install(fixture, active, error)) return;
+    TerrainCollisionPhysicsTileState active_tile{};
+    fixture.context->terrain_collision_tile_state_for_test(0, active_tile);
+
+    auto triangle_tile = [](
+        std::uint64_t tile_key,
+        Float3 first,
+        Float3 second,
+        Float3 third) {
+        TileCandidate tile{};
+        tile.coordinate = {static_cast<std::int64_t>(tile_key), 0, 0};
+        tile.tile_key = tile_key;
+        tile.digest = tile_key ^ 0x75757575ULL;
+        tile.vertices = {first, second, third};
+        tile.indices = {0, 1, 2};
+        return tile;
+    };
+    auto check_out_of_sanity_rejection = [&](const char* side,
+                                              std::uint64_t installation_key,
+                                              TileCandidate tile) {
+        const std::uint64_t allocations_before = g_box_allocations.load();
+        const std::uint64_t frees_before = g_box_frees.load();
+        const int32_t bytes_before = b3GetByteCount();
+        error.clear();
+        const bool installed = fixture.context->replace_terrain_collision(
+            candidate(installation_key, {std::move(tile)}), error);
+        const std::uint64_t allocation_delta =
+            g_box_allocations.load() - allocations_before;
+        const std::uint64_t free_delta =
+            g_box_frees.load() - frees_before;
+        const int32_t retained_delta = b3GetByteCount() - bytes_before;
+        std::printf(
+            "TERRAIN_SANITY_PREFLIGHT side=%s allocations=%llu frees=%llu retained_delta=%d\n",
+            side,
+            static_cast<unsigned long long>(allocation_delta),
+            static_cast<unsigned long long>(free_delta), retained_delta);
+        CHECK(!installed && !error.empty() && allocation_delta == 0 &&
+                  free_delta == 0 && retained_delta == 0 &&
+                  fixture.context->terrain_collision_stats().installation_key ==
+                      1601 &&
+                  fixture.context->terrain_collision_handles_are_valid_for_test(
+                      active_tile.body_handle, active_tile.shape_handle),
+              "finite nondegenerate geometry outside Box3D sanity bounds rejects before native allocation and preserves active terrain");
+    };
+
+    check_out_of_sanity_rejection(
+        "positive", 1602,
+        triangle_tile(
+            75, {200000.0f, 0.0f, 0.0f},
+            {200001.0f, 0.0f, 0.0f},
+            {200000.0f, 0.0f, 1.0f}));
+    check_out_of_sanity_rejection(
+        "negative", 1603,
+        triangle_tile(
+            76, {-200000.0f, 0.0f, 0.0f},
+            {-199999.0f, 0.0f, 0.0f},
+            {-200000.0f, 0.0f, 1.0f}));
+
+    TileCandidate unreferenced = xz_quad(
+        {3, 0, 0}, {}, -2.0f, 2.0f, -2.0f, 2.0f,
+        0.0f, 0.0f, true, 77);
+    unreferenced.vertices.push_back({200000.0f, 0.0f, 0.0f});
+    unreferenced.vertices.push_back({-200000.0f, 0.0f, 0.0f});
+    const auto ignores_unreferenced = candidate(1604, {unreferenced});
+    if (!install(fixture, ignores_unreferenced, error)) return;
+    TerrainCollisionPhysicsTileState unreferenced_tile{};
+    fixture.context->terrain_collision_tile_state_for_test(
+        0, unreferenced_tile);
+    CHECK(fixture.context->terrain_collision_stats().installation_key == 1604 &&
+              fixture.context->terrain_collision_handles_are_valid_for_test(
+                  unreferenced_tile.body_handle,
+                  unreferenced_tile.shape_handle),
+          "out-of-range unreferenced vertices do not enter Box3D mesh sanity bounds");
+
+    TileCandidate ignored_degenerate{};
+    ignored_degenerate.coordinate = {4, 0, 0};
+    ignored_degenerate.tile_key = 78;
+    ignored_degenerate.vertices = {
+        {-2.0f, 0.0f, -2.0f},
+        {2.0f, 0.0f, -2.0f},
+        {0.0f, 0.0f, 2.0f},
+        {200000.0f, 0.0f, 0.0f},
+        {200000.0f, 0.0f, 0.0f},
+        {200000.0f, 0.0f, 0.0f},
+    };
+    ignored_degenerate.indices = {0, 2, 1, 3, 4, 5};
+    const std::uint64_t degenerate_allocations_before =
+        g_box_allocations.load();
+    const int32_t degenerate_bytes_before = b3GetByteCount();
+    error.clear();
+    CHECK(!fixture.context->replace_terrain_collision(
+              candidate(1605, {ignored_degenerate}), error) &&
+              !error.empty() &&
+              g_box_allocations.load() > degenerate_allocations_before &&
+              b3GetByteCount() == degenerate_bytes_before &&
+              fixture.context->terrain_collision_stats().installation_key ==
+                  1604 &&
+              fixture.context->terrain_collision_handles_are_valid_for_test(
+                  unreferenced_tile.body_handle,
+                  unreferenced_tile.shape_handle),
+          "out-of-range vertices used only by an ignored degenerate triangle follow the balanced Box3D degenerate-report path");
+
+    struct LengthUnitsGuard {
+        float previous = b3GetLengthUnitsPerMeter();
+        explicit LengthUnitsGuard(float value) {
+            b3SetLengthUnitsPerMeter(value);
+        }
+        ~LengthUnitsGuard() {
+            b3SetLengthUnitsPerMeter(previous);
+        }
+    };
+    {
+        LengthUnitsGuard length_units(2.0f);
+        PhysicsFixture scaled_fixture;
+        const auto scaled_sane = candidate(
+            1606,
+            {triangle_tile(
+                79, {150000.0f, 0.0f, 0.0f},
+                {150001.0f, 0.0f, 0.0f},
+                {150000.0f, 0.0f, 1.0f})});
+        error.clear();
+        CHECK(scaled_fixture.context->replace_terrain_collision(
+                  scaled_sane, error) && error.empty() &&
+                  scaled_fixture.context->terrain_collision_stats()
+                          .installation_key == 1606,
+              "terrain sanity bounds use Box3D's current length-units scale rather than a hard-coded meter limit");
+    }
+}
+
 void test_boundary_validation_and_steady_ticks_allocate_no_terrain_work() {
     PhysicsFixture fixture;
     std::string error;
@@ -1058,6 +1194,7 @@ int main() {
     test_native_static_material_filter_empty_and_retained_byte_semantics();
     test_transactional_failure_replacement_noop_material_and_rejections();
     test_box3d_mesh_boundaries_and_degenerate_preflight();
+    test_sane_bounds_preflight_avoids_box3d_clone_leak();
     test_boundary_validation_and_steady_ticks_allocate_no_terrain_work();
     test_context_destruction_releases_terrain_meshes_bodies_and_shapes();
 
