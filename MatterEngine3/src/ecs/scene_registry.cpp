@@ -887,6 +887,10 @@ bool instantiate(flecs::world& world,
                 if (extract_float_field(rj, "linearDamping", f)) rb.linear_damping = f;
                 if (extract_float_field(rj, "angularDamping", f)) rb.angular_damping = f;
                 if (extract_float_field(rj, "gravityScale", f)) rb.gravity_scale = f;
+                if (extract_float_field(rj, "sleepThreshold", f)) rb.sleep_threshold = f;
+                bool flag;
+                if (extract_bool_field(rj, "enableSleep", flag)) rb.enable_sleep = flag;
+                if (extract_bool_field(rj, "continuous", flag)) rb.continuous = flag;
                 e.set<physics::RigidBody>(rb);
                 break;
             }

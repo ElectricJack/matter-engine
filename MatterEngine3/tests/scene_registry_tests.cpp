@@ -601,6 +601,32 @@ static void test_instantiate_river_float_exact_and_independent() {
           "instantiation preserves exact float values without cross-component aliasing");
 }
 
+static void test_instantiate_preserves_reference_traverser_body_flags() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    world.import<streaming::StreamingModule>();
+    world.import<SceneModule>();
+    std::vector<EntityRecipe> recipes = {{
+        "reference-traverser", "Reference Traverser", "",
+        R"({"RigidBody":{"type":"dynamic","linearDamping":0.1,"angularDamping":0.2,"gravityScale":1,"sleepThreshold":0.125,"enableSleep":false,"continuous":true},"BoxCollider":{"halfExtents":[1.5,1.5,1.5]},"RiverFloatBody":{"effectiveDensityKgM3":620}})"
+    }};
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(instantiate(world, recipes.data(), 1, generation, error),
+          "reference traverser recipe instantiates");
+    flecs::entity entity;
+    world.each([&](flecs::entity candidate, const SceneEntityId&) {
+        entity = candidate;
+    });
+    const physics::RigidBody body = entity.get<physics::RigidBody>();
+    CHECK(body.type == physics::RigidBodyType::Dynamic &&
+              body.linear_damping == 0.1f && body.angular_damping == 0.2f &&
+              body.gravity_scale == 1.0f && body.sleep_threshold == 0.125f &&
+              !body.enable_sleep && body.continuous,
+          "instantiation preserves every authored RigidBody transport flag");
+}
+
 // ---------------------------------------------------------------------------
 // Batch validation tests.
 // ---------------------------------------------------------------------------
@@ -836,6 +862,7 @@ int main() {
     test_instantiate_adds_components();
     test_instantiate_empty_is_noop();
     test_instantiate_river_float_exact_and_independent();
+    test_instantiate_preserves_reference_traverser_body_flags();
 
     test_authored_ids_produce_stable_hashes();
 

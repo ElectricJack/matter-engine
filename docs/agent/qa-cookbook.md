@@ -263,6 +263,31 @@ which has its own module resolution and wouldn't see one), so a plain
 `node file.mjs` dies with "is a CommonJS module" — the `--experimental-default-type=module`
 flag (or `--experimental-detect-module` on Node ≥ 20.10) is required every time.
 
+## 12. RiverFloatLab visual playtest
+
+The visual-first floating-body slice has two native Node scene-contract tests
+and an opt-in PhysX MSVC editor build:
+
+```powershell
+node projects/world_demo/tests/river_hydrology_scene_tests.mjs
+node projects/world_demo/tests/river_float_lab_scene_tests.mjs
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor `
+    -EnablePhysx -PhysxRoot $physxRoot -CudaRoot $cudaRoot
+```
+
+Before a cold visual run, resolve the cache root and verify the deletion target
+is exactly `projects/world_demo/.cache/RiverFloatLab`; never clear the project
+cache broadly. Launch only `MatterEditor/build/windows-msvc/editor.exe` with
+`MATTER_WORLD=RiverFloatLab`, wait for `bake.finished`, and enter Play. A live
+review window should remain visible and open; do not set `MATTER_HIDE_UI` or put
+`quit` in its FIFO.
+
+This recipe is a visual playtest, not the automated traversal acceptance gate.
+The body CSV/diagnostics seam, marker-order assertions, and the dedicated
+`river_float_physics.timeline`/PowerShell runner remain deferred until that
+read-only control surface exists. Do not infer or fabricate those results from
+screenshots.
+
 ---
 
 ## Traps
