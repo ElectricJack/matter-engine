@@ -2282,6 +2282,8 @@ static bool test_cancelled_fluid_generation_publishes_neither_half(
     int replacement_after_calls = 0;
     bool release_replacement_before = false;
     bool release_replacement_after = false;
+    bool prior_valid_at_publication_point = false;
+    bool prior_visible_at_publication_point = false;
     session->set_test_fluid_before_publication_hook([&] {
         std::unique_lock<std::mutex> lock(barrier_mutex);
         ++replacement_before_calls;
@@ -2295,6 +2297,13 @@ static bool test_cancelled_fluid_generation_publishes_neither_half(
         barrier_cv.notify_all();
         if (replacement_after_calls == 1)
             barrier_cv.wait(lock, [&] { return release_replacement_after; });
+    });
+    session->set_test_fluid_during_publication_hook([&] {
+        matter::RiverFieldSample during_sample{};
+        prior_visible_at_publication_point =
+            session->river_runtime_binding() == binding;
+        prior_valid_at_publication_point =
+            binding && binding->sample(wet_position, during_sample);
     });
     const std::size_t seed_b = world_source.find("seed:8");
     CHECK(seed_b != std::string::npos, "accepted B seed was found");
@@ -2343,9 +2352,13 @@ static bool test_cancelled_fluid_generation_publishes_neither_half(
               !binding->sample(wet_position, retained_sample) &&
               !retained_sample.wet_valid,
           "successful D atomically invalidates a caller-retained B binding");
+    CHECK(prior_visible_at_publication_point &&
+              prior_valid_at_publication_point,
+          "the prior binding stays visible and valid until the single publication store");
 
     session->set_test_fluid_before_publication_hook({});
     session->set_test_fluid_after_publication_hook({});
+    session->set_test_fluid_during_publication_hook({});
     session->set_test_fluid_bake_dependencies(
         [backend_state] {
             ++backend_state->factory_calls;

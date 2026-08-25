@@ -63,7 +63,9 @@ hydrology::HydrologyNetworkProducts analytic_products() {
 
 std::shared_ptr<const matter::RiverRuntimeBinding> analytic_binding(
     hydrology::HydrologyNetworkProducts& products,
-    const std::shared_ptr<matter::detail::RiverRuntimePublicationLease>& lease) {
+    const std::shared_ptr<matter::detail::RiverRuntimePublicationSlot>& slot,
+    const std::shared_ptr<const matter::detail::RiverRuntimePublicationIdentity>&
+        identity) {
     const matter::detail::RiverRuntimeBuildInput input{
         701u,
         hydrology::hydrology_runtime_field_digest(
@@ -71,14 +73,32 @@ std::shared_ptr<const matter::RiverRuntimeBinding> analytic_binding(
         hydrology::hydrology_presentation_field_digest(
             products.gameplay_layout, products.presentation_field),
         &products,
-        lease};
+        slot,
+        identity};
     return matter::detail::RiverRuntimeBindingAccess::build(input);
+}
+
+struct BatchReplacementContext {
+    std::shared_ptr<matter::detail::RiverRuntimePublicationSlot> slot;
+    std::shared_ptr<const matter::detail::RiverRuntimePublicationIdentity>
+        replacement;
+    std::size_t calls = 0u;
+};
+
+void replace_during_batch(void* opaque) noexcept {
+    auto& context = *static_cast<BatchReplacementContext*>(opaque);
+    if (++context.calls == 1u)
+        matter::detail::RiverRuntimeBindingAccess::publish(
+            context.slot, context.replacement);
 }
 
 void test_analytic_sampling_and_publication_lease() {
     auto products = analytic_products();
-    auto lease = std::make_shared<matter::detail::RiverRuntimePublicationLease>();
-    const auto binding = analytic_binding(products, lease);
+    auto slot = std::make_shared<matter::detail::RiverRuntimePublicationSlot>();
+    auto identity =
+        std::make_shared<matter::detail::RiverRuntimePublicationIdentity>();
+    const auto binding = analytic_binding(products, slot, identity);
+    matter::detail::RiverRuntimeBindingAccess::publish(slot, identity);
     CHECK(binding && binding->generation() == 701u,
           "an internally valid accepted field creates a public binding");
     if (!binding) return;
@@ -104,25 +124,53 @@ void test_analytic_sampling_and_publication_lease() {
     auto dry_products = analytic_products();
     dry_products.gameplay_field[0] = {};
     dry_products.presentation_field[0] = {};
-    auto dry_lease =
-        std::make_shared<matter::detail::RiverRuntimePublicationLease>();
-    const auto dry_binding = analytic_binding(dry_products, dry_lease);
+    auto dry_slot =
+        std::make_shared<matter::detail::RiverRuntimePublicationSlot>();
+    auto dry_identity =
+        std::make_shared<matter::detail::RiverRuntimePublicationIdentity>();
+    const auto dry_binding = analytic_binding(
+        dry_products, dry_slot, dry_identity);
+    matter::detail::RiverRuntimeBindingAccess::publish(
+        dry_slot, dry_identity);
     CHECK(dry_binding &&
               !dry_binding->sample({0.5f, 0.0f, 0.5f}, sample) &&
               !sample.wet_valid,
           "a dry analytic cell rejects instead of fabricating stationary water");
 
-    matter::detail::RiverRuntimeBindingAccess::invalidate(lease);
+    auto replacement =
+        std::make_shared<matter::detail::RiverRuntimePublicationIdentity>();
+    matter::detail::RiverRuntimeBindingAccess::publish(slot, replacement);
     sample.wet_valid = true;
     CHECK(!binding->sample({1.0f, 0.0f, 1.0f}, sample) &&
               !sample.wet_valid &&
               binding->sample_batch(positions, samples, 3u) == 0u,
-          "a retained binding fails closed after its publication lease is invalidated");
+          "a retained binding fails closed after the publication slot changes identity");
+
+    auto batch_products = analytic_products();
+    auto batch_slot =
+        std::make_shared<matter::detail::RiverRuntimePublicationSlot>();
+    auto batch_identity =
+        std::make_shared<matter::detail::RiverRuntimePublicationIdentity>();
+    const auto batch_binding = analytic_binding(
+        batch_products, batch_slot, batch_identity);
+    matter::detail::RiverRuntimeBindingAccess::publish(
+        batch_slot, batch_identity);
+    BatchReplacementContext context{batch_slot, replacement};
+    matter::detail::RiverRuntimeBindingAccess::set_batch_test_hook(
+        batch_slot, replace_during_batch, &context);
+    for (auto& output : samples) output.wet_valid = true;
+    CHECK(batch_binding &&
+              batch_binding->sample_batch(positions, samples, 3u) == 0u &&
+              !samples[0].wet_valid && !samples[1].wet_valid &&
+              !samples[2].wet_valid,
+          "a mid-batch publication change transactionally clears every output");
 }
 
 void test_binding_rejects_invalid_metadata_and_layout() {
     auto products = analytic_products();
-    auto lease = std::make_shared<matter::detail::RiverRuntimePublicationLease>();
+    auto slot = std::make_shared<matter::detail::RiverRuntimePublicationSlot>();
+    auto identity =
+        std::make_shared<matter::detail::RiverRuntimePublicationIdentity>();
     matter::detail::RiverRuntimeBuildInput input{
         701u,
         hydrology::hydrology_runtime_field_digest(
@@ -130,7 +178,8 @@ void test_binding_rejects_invalid_metadata_and_layout() {
         hydrology::hydrology_presentation_field_digest(
             products.gameplay_layout, products.presentation_field),
         &products,
-        lease};
+        slot,
+        identity};
     input.generation = 0u;
     CHECK(!matter::detail::RiverRuntimeBindingAccess::build(input),
           "zero accepted generation metadata is rejected");
@@ -140,10 +189,14 @@ void test_binding_rejects_invalid_metadata_and_layout() {
           "stale runtime field metadata is rejected");
     input.runtime_digest = hydrology::hydrology_runtime_field_digest(
         products.gameplay_layout, products.gameplay_field);
-    input.lease.reset();
+    input.slot.reset();
     CHECK(!matter::detail::RiverRuntimeBindingAccess::build(input),
-          "a binding without a publication lifetime lease is rejected");
-    input.lease = lease;
+          "a binding without a publication slot is rejected");
+    input.slot = slot;
+    input.identity.reset();
+    CHECK(!matter::detail::RiverRuntimeBindingAccess::build(input),
+          "a binding without a publication identity is rejected");
+    input.identity = identity;
     products.gameplay_layout.cell_size_m = 0.0f;
     CHECK(!matter::detail::RiverRuntimeBindingAccess::build(input),
           "invalid field layout metadata is rejected");

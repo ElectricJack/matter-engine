@@ -1622,12 +1622,14 @@ bool LocalProvider::run_authored_fluid_bake(
         }
         manifest.field_products = {
             {hydrology::HydrologyFieldProductKind::Runtime,
-             "hydrology/fields/runtime-" +
-                 hex64(manifest.runtime_field_digest) + ".mhydfield",
+             hydrology::hydrology_field_product_relative_path(
+                 hydrology::HydrologyFieldProductKind::Runtime,
+                 manifest.runtime_field_digest),
              manifest.runtime_field_digest},
             {hydrology::HydrologyFieldProductKind::Presentation,
-             "hydrology/fields/presentation-" +
-                 hex64(manifest.presentation_field_digest) + ".mhydfield",
+             hydrology::hydrology_field_product_relative_path(
+                 hydrology::HydrologyFieldProductKind::Presentation,
+                 manifest.presentation_field_digest),
              manifest.presentation_field_digest},
         };
         for (const auto index : graph.topological_order) {

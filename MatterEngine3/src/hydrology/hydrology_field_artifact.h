@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace hydrology {
@@ -21,6 +22,16 @@ struct HydrologyFieldProduct {
     std::vector<PresentationSample> presentation;
     std::uint64_t payload_digest = 0u;
 };
+
+std::string hydrology_field_product_relative_path(
+    HydrologyFieldProductKind kind,
+    std::uint64_t payload_digest);
+
+using HydrologyFieldValidationTestHook = void (*)(
+    const std::filesystem::path&, void*) noexcept;
+void set_hydrology_field_validation_test_hook(
+    HydrologyFieldValidationTestHook hook,
+    void* context) noexcept;
 
 std::uint64_t hydrology_runtime_field_digest(
     const GameplayFieldLayout& layout,

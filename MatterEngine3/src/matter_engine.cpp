@@ -741,14 +741,35 @@ struct WorldSession::Impl {
     // instances_dirty even when the resolved instance set itself is unchanged.
     bool vk_hide_children_applied_ = false;
 #endif
-    struct AuthoredFluidPublication {
+    struct AuthoredFluidPublication
+        : matter::detail::RiverRuntimePublicationIdentity {
         std::shared_ptr<const matter::RiverRuntimeBinding> runtime;
-        std::shared_ptr<matter::detail::RiverRuntimePublicationLease> lease;
 #ifdef MATTER_VULKAN_VIEWER
         std::shared_ptr<const AuthoredFluidRenderBinding> render;
 #endif
     };
-    std::shared_ptr<const AuthoredFluidPublication> authored_fluid_publication;
+    std::shared_ptr<matter::detail::RiverRuntimePublicationSlot>
+        authored_fluid_publication_slot = std::make_shared<
+            matter::detail::RiverRuntimePublicationSlot>();
+
+    std::shared_ptr<const AuthoredFluidPublication>
+    load_authored_fluid_publication() const noexcept {
+        for (;;) {
+            const auto identity =
+                matter::detail::RiverRuntimeBindingAccess::load(
+                    authored_fluid_publication_slot);
+            if (!identity) return {};
+            const auto publication = std::static_pointer_cast<
+                const AuthoredFluidPublication>(identity);
+            if (publication->runtime &&
+                matter::detail::RiverRuntimeBindingAccess::matches(
+                    *publication->runtime, authored_fluid_publication_slot,
+                    identity) &&
+                matter::detail::RiverRuntimeBindingAccess::load(
+                    authored_fluid_publication_slot) == identity)
+                return publication;
+        }
+    }
     lod_select::PartLodTable                lods;
 
     // Sky clear color: derived from tone-mapped sky_color in bake_once().
@@ -784,6 +805,7 @@ struct WorldSession::Impl {
     mutable std::mutex hydrology_status_mutex;
     matter::HydrologyStatus hydrology_status_copy{};
     std::function<void()> test_fluid_before_publication_hook;
+    std::function<void()> test_fluid_during_publication_hook;
     std::function<void()> test_fluid_after_publication_hook;
 
     // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
@@ -3385,12 +3407,11 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         context, result, error, network_result);
     bool publication_accepted = accepted;
     std::shared_ptr<const matter::RiverRuntimeBinding> runtime_binding;
-    std::shared_ptr<matter::detail::RiverRuntimePublicationLease>
-        runtime_lease;
+    std::shared_ptr<AuthoredFluidPublication> publication_candidate;
     if (accepted) {
         try {
-            runtime_lease = std::make_shared<
-                matter::detail::RiverRuntimePublicationLease>();
+            publication_candidate =
+                std::make_shared<AuthoredFluidPublication>();
         } catch (const std::bad_alloc&) {
             publication_accepted = false;
         }
@@ -3399,7 +3420,8 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             network_result.manifest.runtime_field_digest,
             network_result.manifest.presentation_field_digest,
             &network_result.products,
-            runtime_lease};
+            authored_fluid_publication_slot,
+            publication_candidate};
         runtime_binding = matter::detail::RiverRuntimeBindingAccess::build(
             runtime_input);
         if (!runtime_binding) {
@@ -3452,23 +3474,19 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         }
     }
 #endif
-    std::shared_ptr<const AuthoredFluidPublication> publication_candidate;
 #ifdef MATTER_VULKAN_VIEWER
     std::shared_ptr<const AuthoredFluidRenderBinding>
         failed_debug_binding_candidate;
 #endif
     try {
         if (publication_accepted) {
-            auto publication = std::make_shared<AuthoredFluidPublication>();
-            publication->runtime = std::move(runtime_binding);
-            publication->lease = std::move(runtime_lease);
+            publication_candidate->runtime = std::move(runtime_binding);
 #ifdef MATTER_VULKAN_VIEWER
             auto render = std::make_shared<AuthoredFluidRenderBinding>();
             render->part = std::move(authored_part);
             render->instance = authored_instance;
-            publication->render = std::move(render);
+            publication_candidate->render = std::move(render);
 #endif
-            publication_candidate = std::move(publication);
         }
 #ifdef MATTER_VULKAN_VIEWER
         if (!publication_accepted && failed_debug_part) {
@@ -3490,11 +3508,13 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         result.failure_reason = error.message;
     }
     std::function<void()> before_publication_hook;
+    std::function<void()> during_publication_hook;
     std::function<void()> after_publication_hook;
     {
         std::lock_guard<std::recursive_mutex> generation_lock(
             hydrology_generation_mutex);
         before_publication_hook = test_fluid_before_publication_hook;
+        during_publication_hook = test_fluid_during_publication_hook;
         after_publication_hook = test_fluid_after_publication_hook;
     }
     if (before_publication_hook) before_publication_hook();
@@ -3506,15 +3526,10 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
                 provider->commit_accepted_fluid_network(
                     std::move(network_result));
             if (publication_accepted) {
-                const auto prior = std::atomic_load_explicit(
-                    &authored_fluid_publication, std::memory_order_acquire);
-                if (prior)
-                    matter::detail::RiverRuntimeBindingAccess::invalidate(
-                        prior->lease);
-                std::atomic_store_explicit(
-                    &authored_fluid_publication,
-                    std::move(publication_candidate),
-                    std::memory_order_release);
+                if (during_publication_hook) during_publication_hook();
+                matter::detail::RiverRuntimeBindingAccess::publish(
+                    authored_fluid_publication_slot,
+                    std::move(publication_candidate));
 #ifdef MATTER_VULKAN_VIEWER
                 std::atomic_store_explicit(
                     &failed_fluid_debug_binding,
@@ -3524,8 +3539,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             }
 #ifdef MATTER_VULKAN_VIEWER
             if (!publication_accepted && failed_debug_binding_candidate) {
-                const auto prior = std::atomic_load_explicit(
-                    &authored_fluid_publication, std::memory_order_acquire);
+                const auto prior = load_authored_fluid_publication();
                 if (!prior) {
                     std::atomic_store_explicit(
                         &failed_fluid_debug_binding,
@@ -9517,15 +9531,8 @@ WorldSession::~WorldSession() {
     {
         std::lock_guard<std::recursive_mutex> generation_lock(
             impl_->hydrology_generation_mutex);
-        const auto prior = std::atomic_load_explicit(
-            &impl_->authored_fluid_publication, std::memory_order_acquire);
-        if (prior)
-            matter::detail::RiverRuntimeBindingAccess::invalidate(
-                prior->lease);
-        std::atomic_store_explicit(
-            &impl_->authored_fluid_publication,
-            std::shared_ptr<const WorldSession::Impl::AuthoredFluidPublication>{},
-            std::memory_order_release);
+        matter::detail::RiverRuntimeBindingAccess::publish(
+            impl_->authored_fluid_publication_slot, {});
         {
             std::lock_guard<std::mutex> status_lock(
                 impl_->hydrology_status_mutex);
@@ -9632,17 +9639,22 @@ void WorldSession::set_test_fluid_after_publication_hook(
     impl_->test_fluid_after_publication_hook = std::move(hook);
 }
 
+void WorldSession::set_test_fluid_during_publication_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
+    impl_->test_fluid_during_publication_hook = std::move(hook);
+}
+
 bool WorldSession::has_accepted_fluid_artifact_for_test() const {
     std::lock_guard<std::recursive_mutex> generation_lock(
         impl_->hydrology_generation_mutex);
-    return static_cast<bool>(std::atomic_load_explicit(
-        &impl_->authored_fluid_publication, std::memory_order_acquire));
+    return static_cast<bool>(impl_->load_authored_fluid_publication());
 }
 
 std::shared_ptr<const RiverRuntimeBinding>
 WorldSession::river_runtime_binding() const noexcept {
-    const auto publication = std::atomic_load_explicit(
-        &impl_->authored_fluid_publication, std::memory_order_acquire);
+    const auto publication = impl_->load_authored_fluid_publication();
     return publication ? publication->runtime : nullptr;
 }
 
@@ -11174,8 +11186,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->gpu_mesher_acceptance_instance);
         instance_view = &acceptance_instances;
     }
-    const auto authored_fluid_publication = std::atomic_load_explicit(
-        &impl_->authored_fluid_publication, std::memory_order_acquire);
+    const auto authored_fluid_publication =
+        impl_->load_authored_fluid_publication();
     const auto authored_fluid_binding = authored_fluid_publication
         ? authored_fluid_publication->render : nullptr;
     if (authored_fluid_binding && authored_fluid_binding->part) {

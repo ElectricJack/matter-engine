@@ -881,6 +881,9 @@ public:
     // Parks the bake worker after a fluid candidate has been prepared but
     // before its generation-guarded publication commit. Test-only.
     void set_test_fluid_before_publication_hook(std::function<void()> hook);
+    // Runs under the generation lock immediately before the single atomic
+    // CPU/render publication store. Test-only.
+    void set_test_fluid_during_publication_hook(std::function<void()> hook);
     // Parks the worker after the commit-or-skip decision, before it can begin
     // a queued replacement generation. Test-only.
     void set_test_fluid_after_publication_hook(std::function<void()> hook);
