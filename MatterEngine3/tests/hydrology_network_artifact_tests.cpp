@@ -187,6 +187,80 @@ struct ConcurrentFieldMutation {
     bool replace_succeeded = false;
 };
 
+struct DirectoryNamespaceSwap {
+    std::filesystem::path active;
+    std::filesystem::path held;
+    std::filesystem::path replacement;
+    bool invoked = false;
+    bool rename_succeeded = false;
+    bool link_succeeded = false;
+};
+
+void attempt_directory_namespace_swap(
+    const std::filesystem::path& opened, void* opaque) noexcept {
+    auto& context = *static_cast<DirectoryNamespaceSwap*>(opaque);
+    if (context.invoked || opened.parent_path() != context.active) return;
+    context.invoked = true;
+#ifdef _WIN32
+    context.rename_succeeded = MoveFileExW(
+        context.active.c_str(), context.held.c_str(), 0u) != 0;
+#else
+    context.rename_succeeded =
+        std::rename(context.active.c_str(), context.held.c_str()) == 0;
+#endif
+    if (!context.rename_succeeded) return;
+    std::error_code link_error;
+    std::filesystem::create_directory_symlink(
+        context.replacement, context.active, link_error);
+    context.link_succeeded = !link_error;
+}
+
+void restore_directory_namespace(DirectoryNamespaceSwap& context) {
+    if (!context.rename_succeeded) return;
+    std::error_code error;
+    if (context.link_succeeded)
+        std::filesystem::remove(context.active, error);
+    error.clear();
+    std::filesystem::rename(context.held, context.active, error);
+}
+
+bool contains_temporary(const std::filesystem::path& directory) {
+    if (!std::filesystem::exists(directory)) return false;
+    for (const auto& entry : std::filesystem::directory_iterator(directory))
+        if (entry.path().filename().string().find(".tmp-") !=
+            std::string::npos)
+            return true;
+    return false;
+}
+
+struct ManifestTemporaryReparse {
+    std::filesystem::path outside_target;
+    std::filesystem::path created_leaf;
+    bool attempted = false;
+    bool created = false;
+};
+
+void inject_manifest_temporary_reparse(
+    const std::filesystem::path& opened, void* opaque) noexcept {
+    auto& context = *static_cast<ManifestTemporaryReparse*>(opaque);
+#ifdef _WIN32
+    const bool temporary = opened.native().find(L".tmp-") !=
+        std::wstring::npos;
+#else
+    const bool temporary = opened.native().find(".tmp-") !=
+        std::string::npos;
+#endif
+    if (context.attempted ||
+        !temporary)
+        return;
+    context.attempted = true;
+    context.created_leaf = opened;
+    std::error_code error;
+    std::filesystem::create_symlink(
+        context.outside_target, opened, error);
+    context.created = !error;
+}
+
 void attempt_concurrent_field_mutation(
     const std::filesystem::path& opened, void* opaque) noexcept {
     auto& context = *static_cast<ConcurrentFieldMutation*>(opaque);
@@ -623,6 +697,199 @@ void test_allocation_failure_closes_native_resources_transactionally() {
           "allocation-failed load closes its file handle for immediate cleanup");
 }
 
+void test_file_identity_requires_one_stable_native_object() {
+    const hydrology::HydrologyFileIdentity original{11u, 22u};
+    CHECK(hydrology::hydrology_file_identity_stable(
+              original, original, original),
+          "one native object remains a stable publication identity");
+    CHECK(!hydrology::hydrology_file_identity_stable(
+              original, {11u, 23u}, original) &&
+              !hydrology::hydrology_file_identity_stable(
+                  original, original, {12u, 22u}),
+          "a namespace replacement before or after IO invalidates publication identity");
+}
+
+void test_confined_field_open_uses_the_held_directory_identity() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto base = std::filesystem::temp_directory_path() /
+        ("matter-hydrology-field-namespace-" + std::to_string(stamp));
+    const auto root = base / "cache";
+    const auto outside = base / "outside";
+    const auto manifest_path = root / "river.mhydnet";
+    gpu_meshing::Error error{};
+    std::filesystem::create_directories(outside);
+    CHECK(save_field_pair(root, error), error.message.c_str());
+    const auto manifest = fixture_manifest();
+    CHECK(hydrology::save_network_artifact_atomic(
+              manifest_path, manifest, error), error.message.c_str());
+
+    DirectoryNamespaceSwap swap{
+        root / "hydrology" / "fields",
+        root / "hydrology" / "fields-held", outside};
+    hydrology::set_hydrology_namespace_validation_test_hook(
+        attempt_directory_namespace_swap, &swap);
+    hydrology::HydrologyNetworkArtifact loaded{};
+    const bool accepted = hydrology::load_network_artifact_validated(
+        manifest_path, 101u, 202u, loaded, error);
+    hydrology::set_hydrology_namespace_validation_test_hook(nullptr, nullptr);
+#ifdef _WIN32
+    CHECK(accepted && swap.invoked && !swap.rename_succeeded,
+          "held Windows field directory prevents a namespace swap before relative leaf open");
+#else
+    CHECK(!accepted && swap.invoked && swap.rename_succeeded,
+          "relative POSIX field open remains anchored and fails closed after a namespace swap");
+#endif
+    restore_directory_namespace(swap);
+
+    DirectoryNamespaceSwap direct_swap{
+        root / "hydrology" / "fields",
+        root / "hydrology" / "fields-held-direct", outside};
+    hydrology::set_hydrology_namespace_validation_test_hook(
+        attempt_directory_namespace_swap, &direct_swap);
+    hydrology::HydrologyFieldProduct direct_product =
+        fixture_presentation_product();
+    const bool direct_accepted =
+        hydrology::load_hydrology_field_product_validated(
+            root / manifest.field_products[0].relative_path,
+            hydrology::HydrologyFieldProductKind::Runtime,
+            fixture_runtime_product().payload_digest, direct_product, error);
+    hydrology::set_hydrology_namespace_validation_test_hook(nullptr, nullptr);
+#ifdef _WIN32
+    CHECK(direct_accepted && direct_swap.invoked &&
+              !direct_swap.rename_succeeded,
+          "direct Windows field load opens relative to and locks its trusted parent");
+#else
+    CHECK(!direct_accepted && direct_swap.invoked &&
+              direct_swap.rename_succeeded,
+          "direct POSIX field load rejects a changed trusted-parent identity");
+#endif
+    restore_directory_namespace(direct_swap);
+    std::filesystem::remove_all(base);
+}
+
+void test_manifest_publication_is_confined_and_transactional() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto base = std::filesystem::temp_directory_path() /
+        ("matter-hydrology-manifest-io-" + std::to_string(stamp));
+    const auto root = base / "cache";
+    const auto path = root / "river.mhydnet";
+    auto original = fixture_manifest();
+    auto replacement = original;
+    replacement.network_key = 303u;
+    gpu_meshing::Error error{};
+    CHECK(save_field_pair(root, error), error.message.c_str());
+
+    for (const auto point : {
+             hydrology::HydrologyFieldIoFailurePoint::AfterManifestParentHandle,
+             hydrology::HydrologyFieldIoFailurePoint::AfterManifestFileHandle,
+             hydrology::HydrologyFieldIoFailurePoint::BeforeManifestRename}) {
+        CHECK(hydrology::save_network_artifact_atomic(path, original, error),
+              error.message.c_str());
+        const auto before = read_bytes(path);
+        hydrology::set_hydrology_field_io_failure_for_test(point);
+        const bool saved = hydrology::save_network_artifact_atomic(
+            path, replacement, error);
+        hydrology::set_hydrology_field_io_failure_for_test(
+            hydrology::HydrologyFieldIoFailurePoint::None);
+        CHECK(!saved && read_bytes(path) == before &&
+                  !contains_temporary(root),
+              "manifest allocation failure preserves the old manifest and leaves no temporary");
+    }
+
+    CHECK(hydrology::save_network_artifact_atomic(path, original, error),
+          error.message.c_str());
+    const auto before_temp_attack = read_bytes(path);
+    const auto temp_attack_target = base / "temporary-external.mhydnet";
+    const std::vector<std::uint8_t> temp_attack_bytes = {9u, 8u, 7u};
+    CHECK(write_bytes(temp_attack_target, temp_attack_bytes),
+          "manifest temporary reparse target fixture was written");
+    ManifestTemporaryReparse temp_attack{temp_attack_target};
+    hydrology::set_hydrology_namespace_validation_test_hook(
+        inject_manifest_temporary_reparse, &temp_attack);
+    const bool temp_attack_saved = hydrology::save_network_artifact_atomic(
+        path, replacement, error);
+    hydrology::set_hydrology_namespace_validation_test_hook(nullptr, nullptr);
+    if (temp_attack.created) {
+        CHECK(!temp_attack_saved && read_bytes(path) == before_temp_attack &&
+                  read_bytes(temp_attack_target) == temp_attack_bytes &&
+                  std::filesystem::is_symlink(std::filesystem::symlink_status(
+                      temp_attack.created_leaf)),
+              "manifest temporary reparse is rejected without deleting the replacement or old manifest");
+        std::error_code remove_error;
+        std::filesystem::remove(temp_attack.created_leaf, remove_error);
+    } else {
+        std::printf("SKIP: platform could not create manifest temporary reparse fixture\n");
+    }
+
+    const auto outside = base / "outside";
+    const auto linked_parent = base / "linked-cache";
+    CHECK(save_field_pair(outside, error), error.message.c_str());
+    bool parent_linked = false;
+#ifdef _WIN32
+    parent_linked = create_junction(linked_parent, outside);
+#else
+    std::error_code parent_link_error;
+    std::filesystem::create_directory_symlink(
+        outside, linked_parent, parent_link_error);
+    parent_linked = !parent_link_error;
+#endif
+    if (parent_linked) {
+        auto incomplete = original;
+        incomplete.state = hydrology::HydrologyNetworkState::Incomplete;
+        incomplete.runtime_field_digest = 0u;
+        incomplete.presentation_field_digest = 0u;
+        incomplete.field_products.clear();
+        incomplete.sections.clear();
+        incomplete.handoffs.clear();
+        incomplete.topological_order.clear();
+        CHECK(!hydrology::save_network_artifact_atomic(
+                  linked_parent / "river.mhydnet", incomplete, error) &&
+                  !std::filesystem::exists(outside / "river.mhydnet"),
+              "manifest publication rejects a reparse parent without outside mutation");
+        std::error_code remove_error;
+        std::filesystem::remove(linked_parent, remove_error);
+    } else {
+        std::printf("SKIP: platform could not create manifest parent reparse fixture\n");
+    }
+
+    const auto outside_leaf = outside / "manifest-external.mhydnet";
+    const std::vector<std::uint8_t> outside_bytes = {1u, 2u, 3u, 4u};
+    CHECK(write_bytes(outside_leaf, outside_bytes),
+          "manifest leaf reparse target fixture was written");
+    std::error_code leaf_error;
+    std::filesystem::remove(path, leaf_error);
+    leaf_error.clear();
+    std::filesystem::create_symlink(outside_leaf, path, leaf_error);
+    if (!leaf_error) {
+        CHECK(!hydrology::save_network_artifact_atomic(path, original, error) &&
+                  read_bytes(outside_leaf) == outside_bytes &&
+                  std::filesystem::is_symlink(
+                      std::filesystem::symlink_status(path)),
+              "manifest publication rejects a reparse leaf without replacing its target");
+        std::filesystem::remove(path, leaf_error);
+    } else {
+        std::printf("SKIP: platform could not create manifest leaf reparse fixture\n");
+    }
+
+    CHECK(hydrology::save_network_artifact_atomic(path, original, error),
+          error.message.c_str());
+    DirectoryNamespaceSwap swap{root, base / "cache-held", outside};
+    hydrology::set_hydrology_namespace_validation_test_hook(
+        attempt_directory_namespace_swap, &swap);
+    const bool namespace_saved = hydrology::save_network_artifact_atomic(
+        path, replacement, error);
+    hydrology::set_hydrology_namespace_validation_test_hook(nullptr, nullptr);
+#ifdef _WIN32
+    CHECK(!namespace_saved && swap.invoked && swap.rename_succeeded,
+          "Windows manifest publication remains handle-confined and fails closed after a parent swap");
+#else
+    CHECK(!namespace_saved && swap.invoked && swap.rename_succeeded,
+          "manifest publication fails closed after a POSIX parent namespace swap");
+#endif
+    restore_directory_namespace(swap);
+    std::filesystem::remove_all(base);
+}
+
 } // namespace
 
 int main() {
@@ -630,5 +897,8 @@ int main() {
     test_typed_field_wire_format_and_ready_package_closure();
     test_ready_package_rejects_reparse_escape_when_supported();
     test_allocation_failure_closes_native_resources_transactionally();
+    test_file_identity_requires_one_stable_native_object();
+    test_confined_field_open_uses_the_held_directory_identity();
+    test_manifest_publication_is_confined_and_transactional();
     return check_summary();
 }

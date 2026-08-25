@@ -38,9 +38,27 @@ enum class HydrologyFieldIoFailurePoint : std::uint8_t {
     AfterRootHandle = 1,
     AfterDirectoryHandle = 2,
     AfterFileHandle = 3,
+    AfterManifestParentHandle = 4,
+    AfterManifestFileHandle = 5,
+    BeforeManifestRename = 6,
 };
 void set_hydrology_field_io_failure_for_test(
     HydrologyFieldIoFailurePoint point) noexcept;
+
+using HydrologyNamespaceValidationTestHook = void (*)(
+    const std::filesystem::path&, void*) noexcept;
+void set_hydrology_namespace_validation_test_hook(
+    HydrologyNamespaceValidationTestHook hook,
+    void* context) noexcept;
+
+struct HydrologyFileIdentity {
+    std::uint64_t device = 0u;
+    std::uint64_t file = 0u;
+};
+bool hydrology_file_identity_stable(
+    HydrologyFileIdentity opened,
+    HydrologyFileIdentity named_before,
+    HydrologyFileIdentity named_after) noexcept;
 
 std::uint64_t hydrology_runtime_field_digest(
     const GameplayFieldLayout& layout,
