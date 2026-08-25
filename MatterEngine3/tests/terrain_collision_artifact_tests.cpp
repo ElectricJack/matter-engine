@@ -455,6 +455,16 @@ void test_final_overlaid_runtime_is_meshed() {
 using VertexBits = std::array<std::uint32_t, 3>;
 using EdgeBits = std::pair<VertexBits, VertexBits>;
 
+struct ExpectedInterfaceContour {
+    std::size_t interface_axis = 0u;
+    float interface_coordinate = 0.0f;
+    std::size_t varying_axis = 0u;
+    float varying_min = 0.0f;
+    float varying_max = 0.0f;
+    std::size_t fixed_axis = 0u;
+    float fixed_coordinate = 0.0f;
+};
+
 std::uint32_t float_bits(float value) {
     std::uint32_t bits = 0u;
     std::memcpy(&bits, &value, sizeof(bits));
@@ -489,8 +499,83 @@ std::set<EdgeBits> interface_edges(const TileCandidate& tile,
     return result;
 }
 
+bool interface_edges_cover_expected_contour(
+    const std::set<EdgeBits>& first,
+    const std::set<EdgeBits>& second,
+    const ExpectedInterfaceContour& expected) {
+    std::set<EdgeBits> edge_union = first;
+    edge_union.insert(second.begin(), second.end());
+    if (edge_union.empty() || expected.interface_axis >= 3u ||
+        expected.varying_axis >= 3u ||
+        expected.fixed_axis >= 3u ||
+        expected.interface_axis == expected.varying_axis ||
+        expected.interface_axis == expected.fixed_axis ||
+        expected.varying_axis == expected.fixed_axis)
+        return false;
+
+    const std::uint32_t interface_bits =
+        float_bits(expected.interface_coordinate);
+    const std::uint32_t fixed_bits = float_bits(expected.fixed_coordinate);
+    const std::uint32_t minimum_bits = float_bits(expected.varying_min);
+    const std::uint32_t maximum_bits = float_bits(expected.varying_max);
+    struct ProjectedInterval {
+        float minimum = 0.0f;
+        float maximum = 0.0f;
+        std::uint32_t minimum_bits = 0u;
+        std::uint32_t maximum_bits = 0u;
+    };
+    std::vector<ProjectedInterval> intervals;
+    intervals.reserve(edge_union.size());
+    for (const EdgeBits& edge : edge_union) {
+        if (edge.first[expected.interface_axis] != interface_bits ||
+            edge.second[expected.interface_axis] != interface_bits ||
+            edge.first[expected.fixed_axis] != fixed_bits ||
+            edge.second[expected.fixed_axis] != fixed_bits)
+            return false;
+        float a = 0.0f;
+        float b = 0.0f;
+        const std::uint32_t a_bits = edge.first[expected.varying_axis];
+        const std::uint32_t b_bits = edge.second[expected.varying_axis];
+        std::memcpy(&a, &a_bits, sizeof(a));
+        std::memcpy(&b, &b_bits, sizeof(b));
+        if (!std::isfinite(a) || !std::isfinite(b) || a == b) return false;
+        if (b < a)
+            intervals.push_back({b, a, b_bits, a_bits});
+        else
+            intervals.push_back({a, b, a_bits, b_bits});
+    }
+    std::sort(intervals.begin(), intervals.end(),
+              [](const ProjectedInterval& a, const ProjectedInterval& b) {
+                  if (a.minimum != b.minimum) return a.minimum < b.minimum;
+                  return a.maximum < b.maximum;
+              });
+    if (intervals.front().minimum_bits != minimum_bits ||
+        intervals.back().maximum_bits != maximum_bits)
+        return false;
+    for (std::size_t index = 1u; index != intervals.size(); ++index)
+        if (intervals[index - 1u].maximum_bits !=
+            intervals[index].minimum_bits)
+            return false;
+    return true;
+}
+
+VertexBits vertex_bits(float x, float y, float z) {
+    return {float_bits(x), float_bits(y), float_bits(z)};
+}
+
+void test_contour_coverage_validator_rejects_middle_gap() {
+    std::set<EdgeBits> gapped{
+        {vertex_bits(8.0f, 4.0f, 0.0f), vertex_bits(8.0f, 4.0f, 2.0f)},
+        {vertex_bits(8.0f, 4.0f, 4.0f), vertex_bits(8.0f, 4.0f, 8.0f)},
+    };
+    CHECK(!interface_edges_cover_expected_contour(
+              gapped, gapped, {0u, 8.0f, 2u, 0.0f, 8.0f, 1u, 4.0f}),
+          "matching interface edge sets with a missing middle segment are rejected");
+}
+
 void assert_equal_rung_pair(const char* label, const char* field_text,
-                            Float3 max_m, std::size_t axis) {
+                            Float3 max_m,
+                            const ExpectedInterfaceContour& expected) {
     TestField field = make_field(field_text);
     const CanonicalDefinition definition = definition_for(
         field, {0.0f, 0.0f, 0.0f}, max_m);
@@ -504,22 +589,29 @@ void assert_equal_rung_pair(const char* label, const char* field_text,
           "the neighbor fixture canonicalizes to exactly two tiles");
     if (candidate.tiles.size() != 2u) return;
     const std::set<EdgeBits> first =
-        interface_edges(candidate.tiles[0], axis, kSectorSize);
+        interface_edges(candidate.tiles[0], expected.interface_axis,
+                        expected.interface_coordinate);
     const std::set<EdgeBits> second =
-        interface_edges(candidate.tiles[1], axis, kSectorSize);
+        interface_edges(candidate.tiles[1], expected.interface_axis,
+                        expected.interface_coordinate);
     CHECK(!first.empty(),
           "the fixture surface has explicit triangle edges on the interface plane");
     CHECK(first == second,
-          "both tiles own the same complete interface-plane edge set with no gap");
+          "both tiles own a bit-identical interface-plane edge set");
+    CHECK(interface_edges_cover_expected_contour(first, second, expected),
+          "the shared interface contour is covered exactly from face minimum to maximum");
 }
 
 void test_equal_rung_neighbors_share_vertices_on_every_axis() {
     assert_equal_rung_pair("neighbor-x", kPlaneField,
-                           {2.0f * kSectorSize, kSectorSize, kSectorSize}, 0u);
+                           {2.0f * kSectorSize, kSectorSize, kSectorSize},
+                           {0u, 8.0f, 2u, 0.0f, 8.0f, 1u, 4.0f});
     assert_equal_rung_pair("neighbor-y", kVerticalPlaneField,
-                           {kSectorSize, 2.0f * kSectorSize, kSectorSize}, 1u);
+                           {kSectorSize, 2.0f * kSectorSize, kSectorSize},
+                           {1u, 8.0f, 2u, 0.0f, 8.0f, 0u, 4.0f});
     assert_equal_rung_pair("neighbor-z", kPlaneField,
-                           {kSectorSize, kSectorSize, 2.0f * kSectorSize}, 2u);
+                           {kSectorSize, kSectorSize, 2.0f * kSectorSize},
+                           {2u, 8.0f, 0u, 0.0f, 8.0f, 1u, 4.0f});
 }
 
 terrain_mesher::SectorMesh one_triangle_mesh() {
@@ -1150,6 +1242,7 @@ int main() {
     test_all_material_buckets_are_flattened();
     test_uniform_density_tiles_succeed_empty();
     test_final_overlaid_runtime_is_meshed();
+    test_contour_coverage_validator_rejects_middle_gap();
     test_equal_rung_neighbors_share_vertices_on_every_axis();
     test_validators_reject_invalid_geometry_and_headers();
     test_cache_hits_material_reuse_and_region_reuse();
