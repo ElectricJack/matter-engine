@@ -3,7 +3,23 @@ import { readFile } from 'node:fs/promises';
 
 globalThis.World = class {};
 globalThis.Part = class {};
-globalThis.MAT = { bark: 101 };
+globalThis.MAT = { bark: 101, plaster: 202 };
+
+const collisionCalls = [];
+globalThis.terrainCollision = settings => {
+  const call = { settings, regions: [], builds: 0, operations: [] };
+  collisionCalls.push(call);
+  return {
+    region: (id, bounds) => {
+      call.operations.push('region');
+      call.regions.push({ id, bounds });
+    },
+    build: () => {
+      call.operations.push('build');
+      call.builds += 1;
+    },
+  };
+};
 
 async function requiredText(url, label) {
   try {
@@ -50,10 +66,32 @@ const shared = await import(sharedUrl);
 const sceneSource = (await requiredText(new URL(
   '../scenes/RiverFloatLab/RiverFloatLab.js', import.meta.url),
   'RiverFloatLab scene')).replace(
-  "'shared-lib/river_hydrology_definition'", JSON.stringify(sharedUrl));
+  "'shared-lib/river_hydrology_definition'", JSON.stringify(sharedUrl)) +
+  '\nexport { RiverFloatLab };';
 const sceneUrl = `data:text/javascript;base64,${
   Buffer.from(sceneSource).toString('base64')}`;
 const riverFloatLab = await import(sceneUrl);
+
+const scene = new riverFloatLab.RiverFloatLab();
+scene.collision();
+assert.equal(collisionCalls.length, 1,
+  'RiverFloatLab authors exactly one terrain-collision builder');
+assert.deepEqual(collisionCalls[0].settings, {
+  cellSize: 0.5,
+  friction: 0.72,
+  restitution: 0.02,
+}, 'RiverFloatLab uses the accepted terrain-collision resolution and material');
+assert.deepEqual(collisionCalls[0].regions, [{
+  id: 'river-gameplay',
+  bounds: {
+    min: [-64, -64, -64],
+    max: [384, 128, 64],
+  },
+}], 'RiverFloatLab bounds collision to the sector-aligned ravine union');
+assert.equal(collisionCalls[0].builds, 1,
+  'RiverFloatLab completes its terrain-collision builder exactly once');
+assert.deepEqual(collisionCalls[0].operations, ['region', 'build'],
+  'RiverFloatLab authors its region before completing the builder');
 
 assert.equal(riverFloatLab.buildRiverHydrologyDefinition,
   shared.buildRiverHydrologyDefinition,
@@ -96,14 +134,20 @@ const referenceCrate = dynamicBodies.find(body => body.id === 'reference-crate')
 const referenceRaft = dynamicBodies.find(body => body.id === 'reference-raft');
 assert.ok(referenceCrate, 'reference-crate exists');
 assert.ok(referenceRaft, 'reference-raft exists');
-assert.equal(referenceCrate.components.PartInstance.part, 'Crate');
-assert.deepEqual(referenceCrate.components.BoxCollider.halfExtents, [1.5, 1.5, 1.5]);
+assert.equal(referenceCrate.components.PartInstance.part, 'RiverCrate');
+assert.deepEqual(referenceCrate.components.BoxCollider.halfExtents, [0.75, 0.75, 0.75]);
 assert.equal(referenceCrate.components.RiverFloatBody.effectiveDensityKgM3, 620);
 assert.deepEqual([
   referenceCrate.components.RiverFloatBody.probesX,
   referenceCrate.components.RiverFloatBody.probesY,
   referenceCrate.components.RiverFloatBody.probesZ,
 ], [2, 2, 2]);
+assert.equal(referenceCrate.components.RiverFloatBody.probeInset, 0.075,
+  'the smaller crate halves the probe inset with its linear scale');
+assert.equal(referenceCrate.components.RiverFloatBody.maxForcePerProbeN, 5250,
+  'the smaller crate scales its per-probe force cap by displaced volume');
+assert.equal(referenceCrate.components.RiverFloatBody.maxTotalForceN, 35000,
+  'the smaller crate scales its total force cap by displaced volume');
 assert.equal(referenceRaft.components.PartInstance.part, 'RiverRaft');
 assert.deepEqual(referenceRaft.components.BoxCollider.halfExtents, [2.4, 0.35, 1.5]);
 assert.equal(referenceRaft.components.RiverFloatBody.effectiveDensityKgM3, 420);
@@ -112,6 +156,43 @@ assert.deepEqual([
   referenceRaft.components.RiverFloatBody.probesY,
   referenceRaft.components.RiverFloatBody.probesZ,
 ], [3, 2, 3]);
+assert.equal(referenceRaft.components.RiverFloatBody.probeInset, 0.15,
+  'raft probe inset remains unchanged');
+assert.equal(referenceRaft.components.RiverFloatBody.maxForcePerProbeN, 24000,
+  'raft per-probe force cap remains unchanged');
+assert.equal(referenceRaft.components.RiverFloatBody.maxTotalForceN, 150000,
+  'raft total force cap remains unchanged');
+for (const body of dynamicBodies) {
+  const placement = definition.bodyPlacements.find(row => row.id === body.id);
+  assert.ok(placement, `${body.id} retains its authored placement recipe`);
+  assert.equal(body.components.BoxCollider.density, placement.densityKgM3,
+    `${body.id} preserves its authored Box3D density`);
+  assert.equal(body.components.RiverFloatBody.effectiveDensityKgM3,
+    placement.densityKgM3, `${body.id} preserves its authored float density`);
+  const isRaft = placement.part === 'RiverRaft';
+  if (isRaft) {
+    assert.equal(body.components.PartInstance.part, 'RiverRaft',
+      `${body.id} resolves to the scene-local RiverRaft part`);
+    assert.deepEqual(body.components.BoxCollider.halfExtents, [2.4, 0.35, 1.5],
+      `${body.id} retains the accepted raft collider`);
+    continue;
+  }
+  assert.equal(body.components.PartInstance.part, 'RiverCrate',
+    `${body.id} resolves to the scene-local RiverCrate part`);
+  assert.deepEqual(body.components.BoxCollider.halfExtents, [0.75, 0.75, 0.75],
+    `${body.id} uses the 1.5 m scene-local crate collider`);
+  assert.deepEqual([
+    body.components.RiverFloatBody.probesX,
+    body.components.RiverFloatBody.probesY,
+    body.components.RiverFloatBody.probesZ,
+  ], [2, 2, 2], `${body.id} retains the minimum stable box probe topology`);
+  assert.equal(body.components.RiverFloatBody.probeInset, 0.075,
+    `${body.id} scales its probe inset with crate height`);
+  assert.equal(body.components.RiverFloatBody.maxForcePerProbeN, 5250,
+    `${body.id} scales its per-probe cap with crate volume`);
+  assert.equal(body.components.RiverFloatBody.maxTotalForceN, 35000,
+    `${body.id} scales its total cap with crate volume`);
+}
 for (const reference of [referenceCrate, referenceRaft]) {
   assert.equal(reference.components.RigidBody.continuous, true,
     `${reference.id} uses continuous collision`);
@@ -124,6 +205,16 @@ assert.equal(cratePlacement.lateralM, 0, 'reference crate starts in the centre l
 assert.equal(raftPlacement.lateralM, 0, 'reference raft starts in the centre lane');
 assert.equal(cratePlacement.riverDistanceM - raftPlacement.riverDistanceM, 10,
   'reference raft starts exactly 10 m behind the reference crate');
+const crateLane = shared.sampleRiverHydrologyLane(
+  accepted, cratePlacement.riverDistanceM, cratePlacement.lateralM);
+const crateSurfaceY = crateLane.position[1] + crateLane.channel.depth;
+const expectedCrateY = crateSurfaceY + 0.75 - (620 / 1000) * 1.5;
+const oldCrateY = crateSurfaceY + 1.5 - (620 / 1000) * 3;
+assert.ok(Math.abs(referenceCrate.components.LocalTransform.translation[1] -
+  expectedCrateY) <= 1e-12,
+  'reference crate equilibrium is recomputed from its 1.5 m height and density');
+assert.notEqual(referenceCrate.components.LocalTransform.translation[1], oldCrateY,
+  'reference crate does not retain the old 3 m equilibrium result');
 
 const authoredZones = new Set(definition.bodyPlacements.map(row => row.zone));
 for (const zone of ['upper-rapids', 'boulder-wakes', 'waterfall-approach', 'first-spillway']) {
@@ -147,6 +238,32 @@ for (const root of accepted.roots) {
 }
 assert.ok(accepted.roots.every(root => root.components === undefined),
   'the river generator itself still creates no boulder rigid body');
+
+const sharedCrateSource = await requiredText(new URL(
+  '../objects/Crate.js', import.meta.url), 'shared Crate part');
+assert.match(sharedCrateSource, /this\.box\(\[0, 0, 0\], \[1\.5, 1\.5, 1\.5\]\)/,
+  'the shared Crate remains a centred 3 m box for other worlds');
+
+const riverCrateSource = await requiredText(new URL(
+  '../scenes/RiverFloatLab/objects/RiverCrate.js', import.meta.url),
+  'RiverCrate part');
+assert.match(riverCrateSource, /^class RiverCrate extends Part/m,
+  'RiverCrate uses the runtime-discoverable class declaration convention');
+assert.doesNotMatch(riverCrateSource, /export\s+class\s+RiverCrate/,
+  'RiverCrate is a runtime part script, not an ESM export');
+const riverCrateModule = await import(`data:text/javascript;base64,${
+  Buffer.from(`${riverCrateSource}\nexport { RiverCrate };`).toString('base64')}`);
+const crateCalls = [];
+const riverCratePart = new riverCrateModule.RiverCrate();
+for (const method of ['fill', 'box']) {
+  riverCratePart[method] = (...args) => crateCalls.push([method, ...args]);
+}
+riverCratePart.build({});
+assert.deepEqual(crateCalls.find(call => call[0] === 'fill'),
+  ['fill', MAT.plaster], 'RiverCrate keeps the shared plaster-like convention');
+assert.deepEqual(crateCalls.find(call => call[0] === 'box'),
+  ['box', [0, 0, 0], [0.75, 0.75, 0.75]],
+  'RiverCrate visual is centred and exactly 1.5 x 1.5 x 1.5 m');
 
 const raftSource = await requiredText(new URL(
   '../scenes/RiverFloatLab/objects/RiverRaft.js', import.meta.url),

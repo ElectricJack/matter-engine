@@ -28,7 +28,7 @@ function rootLocalTransform(root) {
 
 function bodyEntity(authored, placement, index) {
   const raft = placement.part === "RiverRaft";
-  const halfExtents = raft ? [2.4, 0.35, 1.5] : [1.5, 1.5, 1.5];
+  const halfExtents = raft ? [2.4, 0.35, 1.5] : [0.75, 0.75, 0.75];
   const lane = sampleRiverHydrologyLane(
     authored, placement.riverDistanceM, placement.lateralM);
   const bodyHeight = halfExtents[1] * 2;
@@ -37,10 +37,11 @@ function bodyEntity(authored, placement, index) {
     (placement.densityKgM3 / 1000) * bodyHeight;
   const reference = placement.id === "reference-crate" ||
     placement.id === "reference-raft";
-  const probes = placement.probes || (raft ? [3, 2, 3] : [2, 2, 2]);
+  const probes = raft ? (placement.probes || [3, 2, 3]) : [2, 2, 2];
   const variation = index % 4;
-  const maxForcePerProbe = raft ? 24000 : 42000;
-  const maxTotalForce = raft ? 150000 : 280000;
+  const probeInset = raft ? 0.15 : 0.075;
+  const maxForcePerProbe = raft ? 24000 : 5250;
+  const maxTotalForce = raft ? 150000 : 35000;
   return {
     id: placement.id,
     name: placement.name,
@@ -50,7 +51,7 @@ function bodyEntity(authored, placement, index) {
         rotation: yawQuaternion(lane.tangent),
         scale: [1, 1, 1],
       },
-      PartInstance: { part: placement.part },
+      PartInstance: { part: raft ? placement.part : "RiverCrate" },
       RigidBody: {
         type: "dynamic",
         linearDamping: 0.015 + variation * 0.005,
@@ -70,7 +71,7 @@ function bodyEntity(authored, placement, index) {
         effectiveDensityKgM3: placement.densityKgM3,
         displacedVolumeScale: 1,
         probesX: probes[0], probesY: probes[1], probesZ: probes[2],
-        probeInset: 0.15,
+        probeInset,
         buoyancyResponse: 1,
         longitudinalDrag: 0.72 + variation * 0.04,
         lateralDrag: 1.30 + variation * 0.08,
@@ -191,6 +192,19 @@ class RiverFloatLab extends World {
     ],
   };
   static roots = buildRiverHydrologyDefinition(0).roots;
+
+  collision() {
+    const collision = terrainCollision({
+      cellSize: 0.5,
+      friction: 0.72,
+      restitution: 0.02,
+    });
+    collision.region("river-gameplay", {
+      min: [-64, -64, -64],
+      max: [384, 128, 64],
+    });
+    collision.build();
+  }
 
   hydrology() {
     authorRiverHydrologyNetwork(this.worldSeed);
