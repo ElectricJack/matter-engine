@@ -41,9 +41,10 @@ void test_converts_to_one_authored_water_part() {
     std::shared_ptr<const viewer::VkScenePart> part;
     uint64_t instance_id = 0;
     gpu_meshing::Error error{};
+    const viewer::WaterFieldBinding field_binding{3u, 17u};
     CHECK(gpu_meshing::build_water_scene_part(
               mesh, 0x123456789abcdef0ull, water_material,
-              part, instance_id, error),
+              part, instance_id, error, field_binding),
           error.message.c_str());
     CHECK(part && part->part_hash != 0u && instance_id != 0u &&
               instance_id != part->part_hash,
@@ -53,6 +54,9 @@ void test_converts_to_one_authored_water_part() {
               part->clusters[0].lods[0].first_index == 0u &&
               part->clusters[0].lods[0].index_count == mesh.indices.size(),
           "water conversion produces one cluster and one LOD");
+    CHECK(part->water_field_binding.slot == field_binding.slot &&
+              part->water_field_binding.generation == field_binding.generation,
+          "water conversion preserves its explicit immutable field binding");
     CHECK(part->vertices.size() == 3u && part->indices == mesh.indices,
           "water conversion retains exact indexed topology");
     for (size_t i = 0; i < part->vertices.size(); ++i) {

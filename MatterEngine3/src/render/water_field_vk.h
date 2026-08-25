@@ -18,6 +18,7 @@ enum class WaterFieldErrorCode : std::uint8_t {
     Capacity,
     StaleBinding,
     AllocationFailure,
+    UploadFailure,
 };
 
 struct WaterFieldError {
@@ -48,6 +49,7 @@ struct PackedWaterField {
 bool pack_water_field(const WaterFieldPackInput& input,
                       PackedWaterField& output,
                       WaterFieldError& error);
+bool packed_water_field_valid(const PackedWaterField& field) noexcept;
 
 float water_half_to_float(std::uint16_t value) noexcept;
 std::uint8_t encode_water_feature(hydrology::RiverFeature feature) noexcept;
@@ -61,6 +63,22 @@ struct WaterFieldBinding {
         return slot < kWaterFieldBindingSlots && generation != 0u;
     }
 };
+
+// Three std430 vec4 lanes shared by raster set 1 binding 23 and RT set 0
+// binding 24. Digests use explicit low/high words so shaders do not require
+// 64-bit integer support merely to validate immutable field identity.
+struct alignas(16) WaterFieldGpuRecord {
+    float origin_cell_size[4]{};          // origin X/Z, cell size, reserved
+    std::uint32_t extent_generation[4]{}; // width, depth, generation, valid
+    std::uint32_t runtime_digest[2]{};    // low, high
+    std::uint32_t presentation_digest[2]{}; // low, high
+};
+
+static_assert(sizeof(WaterFieldGpuRecord) == 48u,
+              "WaterFieldGpuRecord must remain three std430 vec4 lanes");
+
+WaterFieldGpuRecord make_water_field_gpu_record(
+    const PackedWaterField& field, WaterFieldBinding binding) noexcept;
 
 // CPU-side lifetime authority for the eight immutable Vulkan field slots.
 // Task 7's GPU image/view ownership is layered onto these transactional
@@ -79,6 +97,8 @@ public:
 
     const PackedWaterField* lookup(WaterFieldBinding binding) const noexcept;
     std::uint32_t occupied_count() const noexcept;
+    std::array<WaterFieldGpuRecord, kWaterFieldBindingSlots>
+    gpu_records() const noexcept;
 
 private:
     struct Slot {

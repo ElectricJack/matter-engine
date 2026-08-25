@@ -1222,11 +1222,83 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
 }  // namespace vk_scene_detail
 
 VkSceneRenderer::VkSceneRenderer(matter::VulkanDevice& vulkan)
-    : vulkan_(&vulkan), dlss_bridge_(&vulkan.streamline_bridge()) {
+    : vulkan_(&vulkan), water_field_resources_(vulkan),
+      dlss_bridge_(&vulkan.streamline_bridge()) {
     // A renderer that has not yet received RenderOptions remains neutral.
     // Production supplies the authored setting before its first recorded
     // frame; legacy test/tool seams opt in explicitly.
     cloud_shadow_settings_.enabled = false;
+}
+
+bool VkSceneRenderer::publish_water_field(
+    const PackedWaterField& candidate, const WaterFieldBinding* replacing,
+    std::uint64_t retire_after_serial, WaterFieldBinding& binding,
+    WaterFieldError& error) {
+    if (!initialized_) {
+        std::string init_error;
+        if (!init(init_error)) {
+            error.code = WaterFieldErrorCode::UploadFailure;
+            error.message = "water field renderer initialization failed: " +
+                            init_error;
+            return false;
+        }
+    }
+    WaterFieldVkResources::StagedImages staged;
+    if (!water_field_resources_.stage(candidate, staged, error)) return false;
+    if (!water_fields_.publish(candidate, replacing, retire_after_serial,
+                               binding, error))
+        return false;
+    water_field_resources_.commit(binding, std::move(staged));
+    return true;
+}
+
+bool VkSceneRenderer::release_water_field(
+    WaterFieldBinding binding, std::uint64_t retire_after_serial,
+    WaterFieldError& error) {
+    if (!water_fields_.release(binding, retire_after_serial, error))
+        return false;
+    water_field_resources_.release(binding, retire_after_serial);
+    return true;
+}
+
+void VkSceneRenderer::collect_water_fields(
+    std::uint64_t completed_serial) noexcept {
+    water_fields_.collect(completed_serial);
+    water_field_resources_.collect(completed_serial);
+}
+
+VkImageView VkSceneRenderer::test_water_field_image_view(
+    WaterFieldBinding binding, std::uint32_t channel) const noexcept {
+    return water_field_resources_.image_view(binding, channel);
+}
+
+VkSampler VkSceneRenderer::test_water_field_sampler(
+    std::uint32_t channel) const noexcept {
+    return water_field_resources_.sampler(channel);
+}
+
+WaterFieldGpuRecord VkSceneRenderer::test_water_field_gpu_record(
+    std::uint32_t slot) const noexcept {
+    const auto records = water_fields_.gpu_records();
+    return slot < records.size() ? records[slot] : WaterFieldGpuRecord{};
+}
+
+bool VkSceneRenderer::test_water_field_descriptors_match(
+    std::uint32_t frame_slot, WaterFieldBinding binding) const noexcept {
+    if (!binding.valid() || frame_slot >= frames_.size()) return false;
+    const FrameResources& frame = frames_[frame_slot];
+    if (!frame.water_field_raster_descriptors_valid ||
+        (vulkan_->ray_tracing_available() &&
+         !frame.water_field_rt_descriptors_valid) ||
+        frame.water_field_records.buffer == VK_NULL_HANDLE ||
+        frame.water_field_generations[binding.slot] != binding.generation)
+        return false;
+    for (std::uint32_t channel = 0u; channel != 3u; ++channel) {
+        if (frame.water_field_views[channel][binding.slot] !=
+            water_field_resources_.image_view(binding, channel))
+            return false;
+    }
+    return true;
 }
 
 bool VkSceneRenderer::register_animation_skin_asset(
@@ -1637,6 +1709,7 @@ void VkSceneRenderer::destroy_pipeline() {
         cloud_shadows_.reset();
     }
     const VkDevice device = vulkan_->device();
+    water_field_resources_.destroy();
     rt_sbt_.reset();
     // Identity-buffer visibility (M4): the per-slot pipelines name the identity
     // attachment and this slot's buffer, both of which are going away.
@@ -1919,7 +1992,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // it left was not free: a default-constructed VkDescriptorSetLayoutBinding
     // has binding 0, so the array carried a DUPLICATE of binding 0 and layout
     // creation failed -- taking every cull smoke mode with it.
-    std::array<VkDescriptorSetLayoutBinding, 20> scene_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 24> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1965,6 +2038,15 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     scene_bindings[19] = descriptor_binding(
         19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    for (uint32_t binding = 20u; binding <= 22u; ++binding) {
+        scene_bindings[binding] = descriptor_binding(
+            binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            VK_SHADER_STAGE_FRAGMENT_BIT);
+        scene_bindings[binding].descriptorCount = kWaterFieldBindingSlots;
+    }
+    scene_bindings[23] = descriptor_binding(
+        23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -2318,10 +2400,33 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         // RT PBR Phase 1: transmission denoiser aux lane, the storage-image
         // sibling of binding 13 (raw_specular_aux).
         descriptor_binding(20, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                           VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(21, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(22, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(23, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR)};
     bindings[15].descriptorCount =
         tileset::kMaxTilesetSlots * kTilesetChannelCount;
     bindings[17].descriptorCount = vt::kVtChannelCount;
+    bindings[21].descriptorCount = kWaterFieldBindingSlots;
+    bindings[22].descriptorCount = kWaterFieldBindingSlots;
+    bindings[23].descriptorCount = kWaterFieldBindingSlots;
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     set_info.bindingCount =
@@ -3457,11 +3562,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // draw-override table at binding 14, +3 for the M4 ID pass's
         // unfiltered command/transform lists and the visibility mask (17-19),
         // +1 for the per-part occlusion-class table at binding 19.
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 32},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 33},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
              (120 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
-              vt::kVtChannelCount)},
+              vt::kVtChannelCount + 3u * kWaterFieldBindingSlots)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -3619,7 +3724,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.part_occluder_class,
                                      sizeof(uint32_t),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(
+                frame.water_field_records,
+                sizeof(WaterFieldGpuRecord) * kWaterFieldBindingSlots,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
@@ -3632,6 +3741,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             return false;
         }
         update_frame_descriptors(frame);
+        if (!write_water_field_descriptors_for_frame(
+                frame, VK_NULL_HANDLE, error)) {
+            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            return false;
+        }
         if (!update_environment_descriptor(frame, error)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
@@ -3677,11 +3791,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
              frame_slot_count *
                  (5 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
-                  vt::kVtChannelCount)},
+                  vt::kVtChannelCount + 3u * kWaterFieldBindingSlots)},
             // 6 storage images: visibility, raw diffuse, raw specular +
             // aux, raw transmission + aux (RT PBR Phase 1).
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 6},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 6},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 7},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -3707,6 +3821,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         if (rt_result != VK_SUCCESS)
             return fail_vk("vkAllocateDescriptorSets(ray tracing)", rt_result,
                            error);
+        for (uint32_t index = 0u; index != frame_slot_count; ++index) {
+            if (!write_water_field_descriptors_for_frame(
+                    frames_[index], rt_descriptor_sets_[index], error))
+                return false;
+        }
     }
     frame_resource_slot_capacity_ = frame_slot_count;
     active_frame_index_ = 0;
@@ -3767,6 +3886,78 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       frame.part_occluder_class);
     write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
     write_vt_descriptors_for_frame(frame);
+}
+
+bool VkSceneRenderer::write_water_field_descriptors_for_frame(
+    FrameResources& frame, VkDescriptorSet rt_set, std::string& error) {
+    const auto records = water_fields_.gpu_records();
+    std::uint32_t generations[kWaterFieldBindingSlots]{};
+    bool records_changed = !frame.water_field_raster_descriptors_valid;
+    for (std::uint32_t slot = 0u; slot != kWaterFieldBindingSlots; ++slot) {
+        generations[slot] = records[slot].extent_generation[2];
+        records_changed = records_changed ||
+            frame.water_field_generations[slot] != generations[slot];
+    }
+    if (records_changed &&
+        !matter::upload_buffer(
+            *vulkan_, frame.water_field_records, records.data(),
+            sizeof(records), 0u, error))
+        return false;
+
+    std::array<std::array<VkDescriptorImageInfo,
+                          kWaterFieldBindingSlots>, 3>
+        image_infos{};
+    for (std::uint32_t channel = 0u; channel != image_infos.size();
+         ++channel) {
+        for (std::uint32_t slot = 0u; slot != kWaterFieldBindingSlots;
+             ++slot) {
+            VkDescriptorImageInfo& info = image_infos[channel][slot];
+            info.sampler = water_field_resources_.sampler(channel);
+            info.imageView =
+                water_field_resources_.descriptor_view(slot, channel);
+            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            frame.water_field_views[channel][slot] = info.imageView;
+        }
+    }
+    const VkDescriptorBufferInfo buffer_info{
+        frame.water_field_records.buffer, 0u,
+        sizeof(WaterFieldGpuRecord) * kWaterFieldBindingSlots};
+    std::array<VkWriteDescriptorSet, 4> writes{};
+    for (std::uint32_t channel = 0u; channel != 3u; ++channel) {
+        VkWriteDescriptorSet& write = writes[channel];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = frame.descriptor_sets[1];
+        write.dstBinding = 20u + channel;
+        write.descriptorCount = kWaterFieldBindingSlots;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = image_infos[channel].data();
+    }
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = frame.descriptor_sets[1];
+    writes[3].dstBinding = 23u;
+    writes[3].descriptorCount = 1u;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[3].pBufferInfo = &buffer_info;
+    vkUpdateDescriptorSets(vulkan_->device(),
+                           static_cast<std::uint32_t>(writes.size()),
+                           writes.data(), 0u, nullptr);
+    frame.water_field_raster_descriptors_valid = true;
+
+    if (rt_set != VK_NULL_HANDLE) {
+        for (std::uint32_t channel = 0u; channel != 3u; ++channel) {
+            writes[channel].dstSet = rt_set;
+            writes[channel].dstBinding = 21u + channel;
+        }
+        writes[3].dstSet = rt_set;
+        writes[3].dstBinding = 24u;
+        vkUpdateDescriptorSets(vulkan_->device(),
+                               static_cast<std::uint32_t>(writes.size()),
+                               writes.data(), 0u, nullptr);
+        frame.water_field_rt_descriptors_valid = true;
+    }
+    std::copy(std::begin(generations), std::end(generations),
+              std::begin(frame.water_field_generations));
+    return true;
 }
 
 void VkSceneRenderer::probe_skin_raster_draws(
@@ -7300,6 +7491,12 @@ bool VkSceneRenderer::init(std::string& error) {
         destroy_pipeline();
         return false;
     }
+    WaterFieldError water_error;
+    if (!water_field_resources_.initialize(water_error)) {
+        error = water_error.message;
+        destroy_pipeline();
+        return false;
+    }
     // Phase 1 tileset Vulkan port (Task 6): sampler + dummy images + params
     // UBO must exist before the first ensure_frame_resources() call below,
     // since update_frame_descriptors() always writes raster set 1 bindings
@@ -7598,6 +7795,8 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     const int slot = static_cast<int>(parts_.size());
     PartRecord record{};
     record.hash = part.part_hash;
+    record.water_binding_slot = part.water_field_binding.slot;
+    record.water_generation = part.water_field_binding.generation;
     record.cluster_start = cluster_base;
     record.cluster_count = static_cast<uint32_t>(part.clusters.size());
     record.vertex_start = vertex_base;   // kept for Task 4 vertexOffset
@@ -10215,6 +10414,8 @@ bool VkSceneRenderer::update_instances(
         instance.animation_instance_slot = source.animation_instance_slot;
         // Static scene records have no generational dynamic-slot identity.
         instance.animation_instance_generation = 0;
+        instance.water_binding_slot = part.water_binding_slot;
+        instance.water_generation = part.water_generation;
         const TemporalInstanceFrame* temporal =
             temporal_lookup(stable_id, source_index);
         if (!temporal_frame_.reset && temporal != nullptr &&
@@ -11148,6 +11349,8 @@ bool VkSceneRenderer::upload_scene_buffers(
             target.previous = source.previous_object_to_world;
             target.history_valid = source.history_valid;
             target.instance_token = source.instance_token;
+            target.water_binding_slot = source.water_binding_slot;
+            target.water_generation = source.water_generation;
         }
         const VkDeviceSize tail_bytes =
             static_cast<VkDeviceSize>(skin_transform_staging_.size()) *
@@ -11314,6 +11517,13 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+    const VkDescriptorSet water_rt_set =
+        frame.frame_slot < rt_descriptor_sets_.size()
+            ? rt_descriptor_sets_[frame.frame_slot]
+            : VK_NULL_HANDLE;
+    if (!write_water_field_descriptors_for_frame(
+            selected, water_rt_set, error))
+        return false;
     if (!resolve_atmosphere_transaction(selected, camera_eye.y, error))
         return false;
     // M1d: this slot's previous submission has retired (begin_frame waited its
@@ -12273,6 +12483,8 @@ bool VkSceneRenderer::emit_ray_instances(
         record.vt_slot =
             vt_slot_for_lod(part, part.cluster_start + lod.cluster_index,
                             lod.lod_index);
+        record.water_binding_slot = part.water_binding_slot;
+        record.water_generation = part.water_generation;
         part_records.push_back(record);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         const bool built_this_frame = std::any_of(
@@ -12283,7 +12495,8 @@ bool VkSceneRenderer::emit_ray_instances(
             {part.hash, lod.cluster_index, lod.lod_index,
              instance.instanceCustomIndex, lod.first_index, lod.index_count,
              record.vertex_address, traced_blas->address,
-             selected_lod.opaque, built_this_frame});
+             selected_lod.opaque, built_this_frame,
+             record.water_binding_slot, record.water_generation});
 #endif
     }
     if (instances.empty()) {
@@ -13034,6 +13247,7 @@ bool VkSceneRenderer::record_cull_and_render(
     }
     if (cloud_shadows_)
         cloud_shadows_->append_frame_lifetimes(frame.frame_slot, attachments);
+    water_field_resources_.append_frame_lifetimes(attachments);
     for (auto* histories : {&gi_history_, &gi_spec_history_,
                             &gi_trans_history_}) {
         for (auto& history : *histories) {
@@ -13448,6 +13662,35 @@ bool VkSceneRenderer::readback_draw_transforms(
     }
     for (size_t index = 0; index < transforms.size(); ++index)
         transforms[index] = packed[index].current;
+    return true;
+}
+
+bool VkSceneRenderer::readback_draw_water_bindings(
+    std::vector<WaterFieldBinding>& bindings, std::string& error) {
+    if (fail_if_poisoned(error)) {
+        bindings.clear();
+        return false;
+    }
+    bindings.resize(uploaded_transform_slots_);
+    if (bindings.empty()) return true;
+    VkDeviceSize bytes = 0;
+    if (!vk_scene_detail::checked_mul_to_device_size(
+            bindings.size(), sizeof(GpuDrawTransform), bytes,
+            "draw-transform water binding readback", error))
+        return false;
+    if (frames_.empty()) {
+        error = "Vulkan draw transforms are unavailable before frame preparation";
+        return false;
+    }
+    std::vector<GpuDrawTransform> packed(bindings.size());
+    if (!matter::readback_buffer(
+            *vulkan_, frames_[active_frame_index_].draw_transforms,
+            packed.data(), bytes, 0, error))
+        return false;
+    for (size_t index = 0; index < bindings.size(); ++index) {
+        bindings[index] = {packed[index].water_binding_slot,
+                           packed[index].water_generation};
+    }
     return true;
 }
 
@@ -14992,6 +15235,8 @@ bool VkSceneRenderer::update_dynamic_instances(
                     vulkan_history_token(change.entity_id.value);
                 instance.animation_instance_slot = change.slot_index;
                 instance.animation_instance_generation = change.slot_generation;
+                instance.water_binding_slot = part.water_binding_slot;
+                instance.water_generation = part.water_generation;
                 dynamic_instance_staging_[change.slot_index] = instance;
                 dynamic_instance_part_slots_[change.slot_index] = instance.part_slot;
                 dynamic_dirty_ = true;

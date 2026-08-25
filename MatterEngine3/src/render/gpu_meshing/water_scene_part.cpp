@@ -51,7 +51,8 @@ bool build_water_scene_part(
     const MeshResult& mesh, std::uint64_t artifact_digest,
     std::uint32_t material_id,
     std::shared_ptr<const viewer::VkScenePart>& part,
-    std::uint64_t& instance_id, Error& error) {
+    std::uint64_t& instance_id, Error& error,
+    viewer::WaterFieldBinding water_field_binding) {
     error = {};
     if (artifact_digest == 0u)
         return fail(error, "water visual artifact digest must be nonzero");
@@ -72,6 +73,7 @@ bool build_water_scene_part(
     auto candidate = std::make_shared<viewer::VkScenePart>();
     candidate->part_hash = stable_identity(
         artifact_digest, 0x5741544552504152ull, material_id);
+    candidate->water_field_binding = water_field_binding;
     candidate->vertices.reserve(mesh.positions.size() / 3u);
     candidate->indices = mesh.indices;
     matter::Float3 minimum{

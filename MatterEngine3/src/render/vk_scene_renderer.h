@@ -36,6 +36,8 @@
 #include "vk_animation_bounds.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
+#include "water_field_vk.h"
+#include "water_field_vk_resources.h"
 // For VkComputePipelineResource (the HZB pyramid's per-level build pipelines).
 #include "vk_pipeline.h"
 #include "vk_temporal.h"
@@ -433,10 +435,15 @@ struct VkScenePart {
     uint32_t vt_deferred_rung_mask = 0;
     // M2.5 terminal impostors, one per cluster that earned one. Empty for
     // every part whose ladder bottoms out above the impostor tier. LAST in the
-    // struct on purpose: the Vulkan smoke fixtures build VkScenePart with
-    // positional aggregate initialisers, so a field inserted anywhere earlier
-    // silently re-binds their arguments.
+    // legacy aggregate tail on purpose: the Vulkan smoke fixtures build
+    // VkScenePart with positional aggregate initialisers, so a field inserted
+    // anywhere earlier silently re-binds their arguments.
     std::vector<VkScenePartImpostor> impostors;
+    // Explicit immutable flow-field identity. Ordinary geometry and debug
+    // water use the fail-closed default; authored river parts never infer a
+    // field from their material id. Appended after the legacy aggregate tail
+    // so existing positional fixtures continue to omit it safely.
+    WaterFieldBinding water_field_binding{};
 };
 
 // Demand-driven VT: one wanted-but-unregistered (part, rung), surfaced by the
@@ -620,6 +627,8 @@ struct VkRasterPixel {
         VkDeviceAddress blas_address = 0;
         bool opaque = false;
         bool built_this_frame = false;
+        uint32_t water_binding_slot = UINT32_MAX;
+        uint32_t water_generation = 0;
     };
 struct RtTraceCounters {
     uint32_t invalid_part_records = 0;
@@ -815,6 +824,22 @@ public:
     VkSceneRenderer& operator=(const VkSceneRenderer&) = delete;
 
     bool init(std::string& error);
+    bool publish_water_field(const PackedWaterField& candidate,
+                             const WaterFieldBinding* replacing,
+                             std::uint64_t retire_after_serial,
+                             WaterFieldBinding& binding,
+                             WaterFieldError& error);
+    bool release_water_field(WaterFieldBinding binding,
+                             std::uint64_t retire_after_serial,
+                             WaterFieldError& error);
+    void collect_water_fields(std::uint64_t completed_serial) noexcept;
+    VkImageView test_water_field_image_view(
+        WaterFieldBinding binding, std::uint32_t channel) const noexcept;
+    VkSampler test_water_field_sampler(std::uint32_t channel) const noexcept;
+    WaterFieldGpuRecord test_water_field_gpu_record(
+        std::uint32_t slot) const noexcept;
+    bool test_water_field_descriptors_match(
+        std::uint32_t frame_slot, WaterFieldBinding binding) const noexcept;
     bool build_particle_visual(
         const gpu_meshing::ParticleJob& job,
         gpu_meshing::MeshResult& result,
@@ -1064,6 +1089,8 @@ public:
                            std::string& error);
     bool readback_draw_transforms(std::vector<GpuMat4>& transforms,
                                   std::string& error);
+    bool readback_draw_water_bindings(
+        std::vector<WaterFieldBinding>& bindings, std::string& error);
     bool render_gbuffer_and_composite(uint32_t width, uint32_t height,
                                       std::string& error);
 #endif
@@ -1539,6 +1566,10 @@ private:
         uint32_t instance_token;
         uint32_t animation_instance_slot;
         uint32_t animation_instance_generation;
+        uint32_t water_binding_slot = UINT32_MAX;
+        uint32_t water_generation = 0;
+        uint32_t water_pad0 = 0;
+        uint32_t water_pad1 = 0;
     };
     struct GpuDrawTransform {
         GpuMat4 current;
@@ -1552,15 +1583,21 @@ private:
         // fail-closed legacy path.
         uint32_t vt_slot;
         // LOD debug view: the rung cull.comp selected for this draw. This is
-        // the old trailing pad word renamed, NOT a new field -- the 144-byte
-        // assert below is the guard. Direct writers of this struct (the skin
+        // the old trailing pad word renamed. Direct writers of this struct (the skin
         // tail, tests) leave it zero and supply their rung by push constant.
         uint32_t selected_lod;
+        // Task 7 appends one aligned uvec4 for explicit immutable water-field
+        // identity. The final two words are intentional std430 padding.
+        uint32_t water_binding_slot = UINT32_MAX;
+        uint32_t water_generation = 0;
+        uint32_t water_pad0 = 0;
+        uint32_t water_pad1 = 0;
     };
     static_assert(sizeof(GpuCluster) == 128);
-    static_assert(sizeof(GpuInstance) == 160);
-    static_assert(sizeof(GpuDrawTransform) == 144);
+    static_assert(sizeof(GpuInstance) == 176);
+    static_assert(sizeof(GpuDrawTransform) == 160);
     static_assert(offsetof(GpuDrawTransform, selected_lod) == 140);
+    static_assert(offsetof(GpuDrawTransform, water_binding_slot) == 144);
 
     struct RtLodRecord {
         uint32_t cluster_index = 0;
@@ -1582,6 +1619,8 @@ private:
 
     struct PartRecord {
         uint64_t hash = 0;
+        uint32_t water_binding_slot = UINT32_MAX;
+        uint32_t water_generation = 0;
         // RT instance-level early-out, precomputed once at registration so
         // build_ray_geometry can reject a whole instance before the part
         // lookup's scattered cluster_staging_ fetch and the per-cluster LOD
@@ -1871,6 +1910,10 @@ private:
         // them as occluders (and the mask may cull them); 0 = excluded from
         // occlusion on both sides.
         matter::VkBufferResource part_occluder_class;
+        // Immutable river-field records. Descriptor arrays live in this
+        // frame slot's scene/RT sets; the buffer is per-slot so a generation
+        // replacement never rewrites storage an in-flight frame reads.
+        matter::VkBufferResource water_field_records;
         std::vector<VkSkinRasterDraw> ready_skin_raster_draws;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
@@ -1880,6 +1923,10 @@ private:
         VkImageView environment_cloud_views[4]{};
         VkExtent3D environment_cloud_extents[4]{};
         float environment_cloud_state[4]{};
+        VkImageView water_field_views[3][kWaterFieldBindingSlots]{};
+        std::uint32_t water_field_generations[kWaterFieldBindingSlots]{};
+        bool water_field_raster_descriptors_valid = false;
+        bool water_field_rt_descriptors_valid = false;
         VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
         // Three denoised signals (diffuse, specular, transmission), one
         // temporal set each and three a-trous ping-pong sets each.
@@ -2035,6 +2082,9 @@ private:
     bool ensure_frame_resources(uint32_t frame_slot_count,
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
+    bool write_water_field_descriptors_for_frame(
+        FrameResources& frame, VkDescriptorSet rt_set,
+        std::string& error);
     bool record_animation_skinning(const matter::VulkanFrame& frame,
                                    FrameResources& resources,
                                    std::string& error);
@@ -2226,6 +2276,8 @@ private:
     void evict_vt_rung(PartRecord& record, uint32_t rung);
 
     matter::VulkanDevice* vulkan_ = nullptr;
+    WaterFieldVk water_fields_;
+    WaterFieldVkResources water_field_resources_;
     std::unique_ptr<gpu_meshing::GpuVisualMesher> gpu_visual_mesher_;
     VkAnimationSkinning animation_skinning_;
     std::vector<VkSkinFallback> consumed_animation_skin_fallbacks_;

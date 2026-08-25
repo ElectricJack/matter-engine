@@ -67,6 +67,10 @@ struct DrawTransform {
     uint instance_token;
     uint vt_slot;
     uint selected_lod;
+    uint water_binding_slot;
+    uint water_generation;
+    uint water_pad0;
+    uint water_pad1;
 };
 layout(set = 1, binding = 17, std430) readonly buffer VisDrawTransforms {
     DrawTransform transforms[];

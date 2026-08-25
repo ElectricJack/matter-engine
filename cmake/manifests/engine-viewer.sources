@@ -1,6 +1,7 @@
 # MatterEngine3 sources enabled only in the Vulkan viewer archive.
 MatterEngine3/src/render/vk_context.cpp|all
 MatterEngine3/src/render/vk_resources.cpp|all
+MatterEngine3/src/render/water_field_vk_resources.cpp|all
 MatterEngine3/src/render/vk_pipeline.cpp|all
 MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp|all
 MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp|all

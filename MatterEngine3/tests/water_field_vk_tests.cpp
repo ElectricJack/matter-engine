@@ -3,6 +3,7 @@
 #include "render/water_field_vk.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -175,11 +176,90 @@ void test_eight_slots_replace_and_retire_transactionally() {
           "the slot is reusable with a new generation after completion");
 }
 
+void test_gpu_record_preserves_field_identity_and_mapping() {
+    const auto packed = packed_one_cell(
+        UINT64_C(0x1122334455667788), UINT64_C(0x8877665544332211));
+    const viewer::WaterFieldBinding binding{5u, 19u};
+    const viewer::WaterFieldGpuRecord record =
+        viewer::make_water_field_gpu_record(packed, binding);
+
+    CHECK(sizeof(viewer::WaterFieldGpuRecord) == 48u &&
+              alignof(viewer::WaterFieldGpuRecord) == 16u,
+          "the std430 water-field record is exactly three vec4 lanes");
+    CHECK(offsetof(viewer::WaterFieldGpuRecord, origin_cell_size) == 0u &&
+              offsetof(viewer::WaterFieldGpuRecord, extent_generation) == 16u &&
+              offsetof(viewer::WaterFieldGpuRecord, runtime_digest) == 32u &&
+              offsetof(viewer::WaterFieldGpuRecord, presentation_digest) == 40u,
+          "the CPU water-field record matches its GLSL std430 layout");
+    CHECK(record.origin_cell_size[0] == 10.0f &&
+              record.origin_cell_size[1] == -4.0f &&
+              record.origin_cell_size[2] == 0.5f &&
+              record.origin_cell_size[3] == 0.0f,
+          "the GPU record maps world XZ into the packed field grid");
+    CHECK(record.extent_generation[0] == 1u &&
+              record.extent_generation[1] == 1u &&
+              record.extent_generation[2] == 19u &&
+              record.extent_generation[3] == 1u,
+          "the GPU record carries extent, generation, and a valid flag");
+    CHECK(record.runtime_digest[0] == UINT32_C(0x55667788) &&
+              record.runtime_digest[1] == UINT32_C(0x11223344) &&
+              record.presentation_digest[0] == UINT32_C(0x44332211) &&
+              record.presentation_digest[1] == UINT32_C(0x88776655),
+          "both 64-bit field identities are transported without truncation");
+
+    const viewer::WaterFieldGpuRecord invalid =
+        viewer::make_water_field_gpu_record(packed, {});
+    CHECK(invalid.extent_generation[3] == 0u &&
+              invalid.runtime_digest[0] == 0u &&
+              invalid.runtime_digest[1] == 0u &&
+              invalid.presentation_digest[0] == 0u &&
+              invalid.presentation_digest[1] == 0u,
+          "a missing binding produces a fail-closed zero-valid record");
+}
+
+void test_slot_table_exposes_only_live_gpu_records() {
+    viewer::WaterFieldVk table;
+    viewer::WaterFieldError error;
+    viewer::WaterFieldBinding first;
+    const auto original = packed_one_cell(101u, 201u);
+    CHECK(table.publish(original, nullptr, 0u, first, error),
+          error.message.c_str());
+    auto records = table.gpu_records();
+    CHECK(records[first.slot].extent_generation[2] == first.generation &&
+              records[first.slot].extent_generation[3] == 1u &&
+              records[first.slot].runtime_digest[0] == 101u &&
+              records[first.slot].presentation_digest[0] == 201u,
+          "a published slot exposes one matching valid GPU record");
+
+    viewer::WaterFieldBinding second;
+    const auto replacement = packed_one_cell(102u, 202u);
+    CHECK(table.publish(replacement, &first, 8u, second, error),
+          error.message.c_str());
+    records = table.gpu_records();
+    CHECK(records[first.slot].extent_generation[2] == second.generation &&
+              records[first.slot].runtime_digest[0] == 102u &&
+              records[first.slot].presentation_digest[0] == 202u,
+          "a replacement atomically exposes only the new field generation");
+
+    CHECK(table.release(second, 12u, error), error.message.c_str());
+    records = table.gpu_records();
+    CHECK(records[second.slot].extent_generation[3] == 1u,
+          "a pending-release slot stays valid until its completion serial");
+    table.collect(12u);
+    records = table.gpu_records();
+    CHECK(records[second.slot].extent_generation[3] == 0u &&
+              records[second.slot].runtime_digest[0] == 0u &&
+              records[second.slot].presentation_digest[0] == 0u,
+          "a collected slot becomes a zero-valid safe descriptor record");
+}
+
 }  // namespace
 
 int main() {
     test_packs_exact_three_image_contract();
     test_rejects_malformed_fields_before_allocation();
     test_eight_slots_replace_and_retire_transactionally();
+    test_gpu_record_preserves_field_identity_and_mapping();
+    test_slot_table_exposes_only_live_gpu_records();
     return check_summary();
 }

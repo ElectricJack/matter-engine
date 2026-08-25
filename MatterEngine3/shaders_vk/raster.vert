@@ -58,6 +58,8 @@ layout(location = 11) flat out uint out_selected_lod;
 // only when the impostor branch runs.
 layout(location = 12) flat out vec3 out_model_basis_x;
 layout(location = 13) flat out vec3 out_model_basis_y;
+layout(location = 15) flat out uint out_water_binding_slot;
+layout(location = 16) flat out uint out_water_generation;
 
 layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 world_to_clip;
@@ -76,6 +78,10 @@ struct DrawTransform {
     uint instance_token;
     uint vt_slot;
     uint selected_lod;
+    uint water_binding_slot;
+    uint water_generation;
+    uint water_pad0;
+    uint water_pad1;
 };
 
 // Shared with gbuffer.frag. Direct (non-indirect) draws have no cull-written
@@ -346,6 +352,8 @@ void main() {
     out_selected_lod = debug_push.direct_lod_valid != 0u
                            ? debug_push.direct_lod
                            : draw.selected_lod;
+    out_water_binding_slot = draw.water_binding_slot;
+    out_water_generation = draw.water_generation;
 #ifdef MATTER_SKINNED_VERTEX_INPUT
     // Animated props carry no warp field; su == 0 selects the world-XZ
     // fallback in gbuffer.frag.

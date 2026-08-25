@@ -80,7 +80,9 @@ typedef struct GpuRtPartRecord {
     // record is still exactly three vec4s and the shader-side stride guard
     // (vertex_stride != 72) is untouched.
     uint32_t vt_slot;
-    uint32_t pad1, pad2, pad3;
+    uint32_t water_binding_slot; // UINT32_MAX = no immutable water field
+    uint32_t water_generation;   // zero = fail closed to static presentation
+    uint32_t pad3;
 } GpuRtPartRecord;              // 48 bytes: "three vec4 records"
 
 #ifdef __cplusplus

@@ -206,6 +206,9 @@ static void test_gpu_rt_part_record_layout() {
           "primitive_count at byte 24");
     CHECK(offsetof(GpuRtPartRecord, valid) == 28,
           "valid at byte 28");
+    CHECK(offsetof(GpuRtPartRecord, water_binding_slot) == 36 &&
+              offsetof(GpuRtPartRecord, water_generation) == 40,
+          "water slot and generation reuse the two RT padding words");
 
     // Verify that zero-init gives sensible defaults.
     GpuRtPartRecord r{};
@@ -219,12 +222,16 @@ static void test_gpu_rt_part_record_layout() {
     r.vertex_count   = 100u;
     r.primitive_count = 33u;
     r.valid = 1u;
+    r.water_binding_slot = 3u;
+    r.water_generation = 17u;
     CHECK(r.vertex_address == 0xDEADBEEF00000001ull, "vertex_address round-trips");
     CHECK(r.index_address  == 0xCAFEBABE00000002ull, "index_address round-trips");
     CHECK(r.vertex_stride  == 72u,  "vertex_stride holds 72");
     CHECK(r.vertex_count   == 100u, "vertex_count round-trips");
     CHECK(r.primitive_count == 33u, "primitive_count round-trips");
     CHECK(r.valid == 1u, "valid round-trips");
+    CHECK(r.water_binding_slot == 3u && r.water_generation == 17u,
+          "RT water field identity round-trips without growing the record");
 }
 
 // ---------------------------------------------------------------------------
@@ -464,11 +471,11 @@ static void test_selected_lod_draw_transform_contract() {
     CHECK(!header_text.empty(),
           "read draw-transform selected-LOD layout contract");
     CHECK(header_text.find("uint32_t selected_lod;") != std::string::npos &&
-              header_text.find("static_assert(sizeof(GpuDrawTransform) == 144)") !=
+              header_text.find("static_assert(sizeof(GpuDrawTransform) == 160)") !=
                   std::string::npos &&
               header_text.find("offsetof(GpuDrawTransform, selected_lod) == 140") !=
                   std::string::npos,
-          "draw transform remains 144 bytes with selected LOD in its final word");
+          "draw transform grows to 160 bytes while preserving selected LOD offset");
 
     std::ifstream cull("../shaders_vk/cull.comp");
     const std::string cull_text((std::istreambuf_iterator<char>(cull)),
@@ -500,6 +507,43 @@ static void test_selected_lod_draw_transform_contract() {
               vert_text.find("layout(location = 10) out vec3 out_warp_tangent;") !=
                   std::string::npos,
           "the warp field still owns locations 9 and 10");
+}
+
+static void test_water_field_transport_contract() {
+    printf("\n[test_water_field_transport_contract]\n");
+    std::ifstream header("../src/render/vk_scene_renderer.h");
+    const std::string header_text((std::istreambuf_iterator<char>(header)),
+                                  std::istreambuf_iterator<char>());
+    std::ifstream cull("../shaders_vk/cull.comp");
+    const std::string cull_text((std::istreambuf_iterator<char>(cull)),
+                                std::istreambuf_iterator<char>());
+    std::ifstream vert("../shaders_vk/raster.vert");
+    const std::string vert_text((std::istreambuf_iterator<char>(vert)),
+                                std::istreambuf_iterator<char>());
+    std::ifstream rt("../shaders_vk/rt_surface_common.glsl");
+    const std::string rt_text((std::istreambuf_iterator<char>(rt)),
+                              std::istreambuf_iterator<char>());
+    CHECK(header_text.find("static_assert(sizeof(GpuInstance) == 176)") !=
+                  std::string::npos &&
+              header_text.find(
+                  "offsetof(GpuDrawTransform, water_binding_slot) == 144") !=
+                  std::string::npos,
+          "CPU instance and draw records reserve explicit water identity words");
+    CHECK(cull_text.find("instance.water_binding_slot") != std::string::npos &&
+              cull_text.find("instance.water_generation") != std::string::npos,
+          "cull and visibility-tail writers copy both immutable field words");
+    CHECK(vert_text.find(
+              "layout(location = 15) flat out uint out_water_binding_slot;") !=
+                  std::string::npos &&
+              vert_text.find(
+              "layout(location = 16) flat out uint out_water_generation;") !=
+                  std::string::npos,
+          "raster forwards slot and generation on dedicated flat locations");
+    CHECK(rt_text.find("surface.water_binding_slot = part.water_binding_slot;") !=
+                  std::string::npos &&
+              rt_text.find("surface.water_generation = part.water_generation;") !=
+                  std::string::npos,
+          "RT carries the same two words without changing TLAS custom indices");
 }
 
 // The host legend and gbuffer.frag compute the SAME colour for a rung; a
@@ -1030,6 +1074,7 @@ int main() {
     test_wireframe_view_index_composes_with_the_lod_tint();
     test_wireframe_gbuffer_shader_contract();
     test_selected_lod_draw_transform_contract();
+    test_water_field_transport_contract();
     test_lod_debug_palette_is_distinct_and_bounded();
     test_skin_raster_validation_controls_cull_exclusion();
     test_skin_raster_exclusion_survives_lod_disagreement();

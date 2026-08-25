@@ -32,6 +32,7 @@
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/water_field_vk.h"
 #include "render/vt_residency.h"
 #include "render/vk_volumetrics.h"
 #include "render/vk_atmosphere.h"
@@ -46,6 +47,175 @@
 #include "impostor_bake.h"   // M2.5 kQuadMarker, the billboard sentinel
 
 namespace {
+
+viewer::VkScenePart known_raster_triangle(uint64_t hash,
+                                          uint32_t material_index = 7u);
+
+viewer::PackedWaterField make_water_upload_fixture(std::uint64_t digest) {
+    hydrology::GameplayFieldLayout layout{};
+    layout.origin_m = {-3.0f, 0.0f, 7.0f};
+    layout.cell_size_m = 0.25f;
+    layout.width = 2u;
+    layout.depth = 1u;
+    const std::vector<hydrology::GameplaySample> gameplay{
+        {5.0f, 1.5f, 2.0f, -0.5f, 0.25f, true},
+        {5.1f, 1.6f, 2.5f, -0.6f, 0.5f, true}};
+    const std::vector<hydrology::PresentationSample> presentation{
+        {0.1f, 0.2f, 0.3f, 0.4f, 0.5f,
+         hydrology::RiverFeature::Rapid, true},
+        {0.2f, 0.1f, 0.6f, 0.7f, 0.8f,
+         hydrology::RiverFeature::Impact, true}};
+    viewer::PackedWaterField packed;
+    viewer::WaterFieldError error;
+    CHECK(viewer::pack_water_field(
+              {layout, &gameplay, &presentation, digest, digest + 1u},
+              packed, error),
+          error.message.c_str());
+    return packed;
+}
+
+void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::string error;
+    CHECK(renderer.init(error),
+          error.empty() ? "water field: initialize renderer" : error.c_str());
+    if (!error.empty()) return;
+
+    viewer::WaterFieldError field_error;
+    viewer::WaterFieldBinding first;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x101u), nullptr, 0u, first,
+              field_error),
+          field_error.message.c_str());
+    CHECK(first.valid(), "water field: publish returns a stable slot generation");
+    CHECK(renderer.test_water_field_image_view(first, 0u) != VK_NULL_HANDLE &&
+              renderer.test_water_field_image_view(first, 1u) != VK_NULL_HANDLE &&
+              renderer.test_water_field_image_view(first, 2u) != VK_NULL_HANDLE,
+          "water field: one occupied slot owns all three sampled images");
+    CHECK(renderer.test_water_field_sampler(0u) != VK_NULL_HANDLE &&
+              renderer.test_water_field_sampler(0u) ==
+                  renderer.test_water_field_sampler(1u) &&
+              renderer.test_water_field_sampler(2u) !=
+                  renderer.test_water_field_sampler(0u),
+          "water field: continuous channels are linear and classification is nearest");
+    const auto first_record = renderer.test_water_field_gpu_record(first.slot);
+    CHECK(first_record.extent_generation[2] == first.generation &&
+              first_record.extent_generation[3] == 1u &&
+              first_record.runtime_digest[0] == 0x101u,
+          "water field: descriptor record matches the uploaded generation");
+
+    const VkImageView old_view =
+        renderer.test_water_field_image_view(first, 0u);
+    viewer::WaterFieldBinding replacement;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x202u), &first, 4u, replacement,
+              field_error),
+          field_error.message.c_str());
+    CHECK(replacement.slot == first.slot &&
+              replacement.generation > first.generation &&
+              renderer.test_water_field_image_view(first, 0u) == VK_NULL_HANDLE &&
+              renderer.test_water_field_image_view(replacement, 0u) !=
+                  old_view,
+          "water field: replacement swaps complete resources and rejects stale handles");
+    const auto replacement_record =
+        renderer.test_water_field_gpu_record(replacement.slot);
+    CHECK(replacement_record.extent_generation[2] == replacement.generation &&
+              replacement_record.runtime_digest[0] == 0x202u,
+          "water field: replacement publishes image and record as one generation");
+
+    viewer::WaterFieldBinding second;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x303u), nullptr, 0u, second,
+              field_error),
+          field_error.message.c_str());
+    CHECK(second.slot != replacement.slot && second.generation != 0u,
+          "water field: a second same-material river receives a distinct slot");
+    viewer::VkScenePart first_part = known_raster_triangle(0x701u, 7u);
+    viewer::VkScenePart second_part = known_raster_triangle(0x702u, 7u);
+    first_part.water_field_binding = replacement;
+    second_part.water_field_binding = second;
+    CHECK(renderer.ensure_part(first_part, error) >= 0 &&
+              renderer.ensure_part(second_part, error) >= 0,
+          error.empty() ? "water field: register two bound river parts"
+                        : error.c_str());
+    const matter::Mat4f identity = viewer::mat4_identity();
+    CHECK(renderer.update_instances(
+              {{first_part.part_hash, identity, 0x711u},
+               {second_part.part_hash, identity, 0x712u}}, error),
+          error.empty() ? "water field: bind two river instances"
+                        : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 2.0f, 5.0f};
+    camera.target = {0.0f, 0.0f, 0.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 50.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 320u, 200u, matrices, error),
+          error.empty() ? "water field: build frame matrices" : error.c_str());
+    CHECK(renderer.dispatch_culling(matrices, camera.position, 1.0f, error),
+          error.empty() ? "water field: dispatch explicit binding transport"
+                        : error.c_str());
+    std::vector<viewer::WaterFieldBinding> raster_bindings;
+    CHECK(renderer.readback_draw_water_bindings(raster_bindings, error),
+          error.empty() ? "water field: read raster binding transport"
+                        : error.c_str());
+    const auto transported = [&raster_bindings](viewer::WaterFieldBinding wanted) {
+        return std::any_of(
+            raster_bindings.begin(), raster_bindings.end(),
+            [wanted](viewer::WaterFieldBinding actual) {
+                return actual.slot == wanted.slot &&
+                       actual.generation == wanted.generation;
+            });
+    };
+    CHECK(transported(replacement) && transported(second),
+          "water field: same-material raster draws preserve distinct field identities");
+    matter::VulkanRayTracingSettings rt_settings{};
+    rt_settings.enabled = true;
+    rt_settings.max_distance = 100.0f;
+    renderer.set_ray_tracing_settings(rt_settings);
+    matter::VulkanGiSettings gi_settings{};
+    gi_settings.enabled = 1u;
+    gi_settings.samples_per_pixel = 1u;
+    gi_settings.max_bounces = 1u;
+    renderer.set_gi_settings(gi_settings);
+    matter::VulkanFrame frame{};
+    const bool prepared = vulkan.begin_frame(frame, error) &&
+        renderer.prepare_frame(frame, matrices, camera.position, 1.0f, error);
+    const bool recorded = prepared &&
+        renderer.record_cull_and_render(frame, matrices, camera.position, 1.0f,
+                                        error) &&
+        renderer.record_composite_to_swapchain(frame, error);
+    const bool ended = recorded && vulkan.end_frame(frame, error);
+    renderer.finish_ray_tracing_frame(frame.serial, ended);
+    vulkan.wait_idle();
+    CHECK(ended,
+          error.empty() ? "water field: prepare descriptor frame"
+                        : error.c_str());
+    CHECK(renderer.test_water_field_descriptors_match(
+              frame.frame_slot, replacement),
+          "water field: raster and RT descriptor arrays name one complete generation");
+    if (vulkan.ray_tracing_available()) {
+        const auto& rt_records = renderer.test_last_rt_geometry_records();
+        const auto traced = [&rt_records](std::uint64_t hash,
+                                          viewer::WaterFieldBinding wanted) {
+            return std::any_of(
+                rt_records.begin(), rt_records.end(),
+                [hash, wanted](const viewer::RtGeometryDebugRecord& record) {
+                    return record.part_hash == hash &&
+                           record.water_binding_slot == wanted.slot &&
+                           record.water_generation == wanted.generation;
+                });
+        };
+        CHECK(traced(first_part.part_hash, replacement) &&
+                  traced(second_part.part_hash, second),
+              "water field: RT records preserve the same two distinct identities");
+    }
+    CHECK(vulkan.validation_error_count() == 0u,
+          "water field: immutable uploads produce no Vulkan validation errors");
+}
 
 void test_atmosphere_timing_contract() {
     using Renderer = viewer::VkSceneRenderer;
@@ -1992,7 +2162,7 @@ viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                uint32_t first_index);
 
 viewer::VkScenePart known_raster_triangle(uint64_t hash,
-                                          uint32_t material_index = 7u) {
+                                          uint32_t material_index) {
     viewer::VkScenePart part = fixed_part(
         hash, {-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}, 0);
     const matter::Float3 normal{0.0f, 1.0f, 0.0f};
@@ -12246,6 +12416,16 @@ int main() {
             g_failures += run_gpu_visual_mesher_pure_vk_tests();
             g_failures += run_gpu_visual_mesher_vk_tests(*vulkan);
             g_failures += run_gpu_visual_mesher_acceptance(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "water-field") {
+            run_water_field_upload_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

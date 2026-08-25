@@ -131,6 +131,31 @@ hydrology::RiverFeature decode_water_feature(std::uint8_t value) noexcept {
     return static_cast<hydrology::RiverFeature>(raw);
 }
 
+WaterFieldGpuRecord make_water_field_gpu_record(
+    const PackedWaterField& field, WaterFieldBinding binding) noexcept {
+    WaterFieldGpuRecord record{};
+    if (!binding.valid() || !packed_water_field_valid(field)) return record;
+    record.origin_cell_size[0] = field.layout.origin_m.x;
+    record.origin_cell_size[1] = field.layout.origin_m.z;
+    record.origin_cell_size[2] = field.layout.cell_size_m;
+    record.extent_generation[0] = field.layout.width;
+    record.extent_generation[1] = field.layout.depth;
+    record.extent_generation[2] = binding.generation;
+    record.extent_generation[3] = 1u;
+    record.runtime_digest[0] = static_cast<std::uint32_t>(field.runtime_digest);
+    record.runtime_digest[1] =
+        static_cast<std::uint32_t>(field.runtime_digest >> 32u);
+    record.presentation_digest[0] =
+        static_cast<std::uint32_t>(field.presentation_digest);
+    record.presentation_digest[1] =
+        static_cast<std::uint32_t>(field.presentation_digest >> 32u);
+    return record;
+}
+
+bool packed_water_field_valid(const PackedWaterField& field) noexcept {
+    return packed_shape_valid(field);
+}
+
 bool pack_water_field(const WaterFieldPackInput& input,
                       PackedWaterField& output,
                       WaterFieldError& error) {
@@ -240,7 +265,7 @@ bool WaterFieldVk::publish(const PackedWaterField& candidate,
                            WaterFieldBinding& binding,
                            WaterFieldError& error) {
     error = {};
-    if (!packed_shape_valid(candidate))
+    if (!packed_water_field_valid(candidate))
         return fail(error, WaterFieldErrorCode::InvalidInput,
                     "packed water field has invalid image sizes or metadata");
     std::uint32_t target_index = UINT32_MAX;
@@ -274,7 +299,6 @@ bool WaterFieldVk::publish(const PackedWaterField& candidate,
         return fail(error, WaterFieldErrorCode::AllocationFailure,
                     "water field publication allocation failed");
     }
-
     if (replacing) {
         Slot& slot = slots_[target_index];
         try {
@@ -346,6 +370,18 @@ std::uint32_t WaterFieldVk::occupied_count() const noexcept {
     return static_cast<std::uint32_t>(std::count_if(
         slots_.begin(), slots_.end(),
         [](const Slot& slot) { return slot.occupied; }));
+}
+
+std::array<WaterFieldGpuRecord, kWaterFieldBindingSlots>
+WaterFieldVk::gpu_records() const noexcept {
+    std::array<WaterFieldGpuRecord, kWaterFieldBindingSlots> records{};
+    for (std::uint32_t index = 0u; index != slots_.size(); ++index) {
+        const Slot& slot = slots_[index];
+        if (!slot.occupied) continue;
+        records[index] = make_water_field_gpu_record(
+            slot.field, {index, slot.generation});
+    }
+    return records;
 }
 
 }  // namespace viewer
