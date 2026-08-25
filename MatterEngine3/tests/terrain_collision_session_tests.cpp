@@ -1,0 +1,584 @@
+#include "check.h"
+
+#include "matter/engine_context.h"
+#include "matter/ecs.h"
+#include "matter/world_session.h"
+#include "ecs/physics_context.h"
+#include "bake_mode.h"
+#include "terrain_collision/terrain_collision_artifact.h"
+#include "terrain_mesher.h"
+#include "terrain_river_overlay.h"
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iomanip>
+#include <memory>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace {
+
+namespace fs = std::filesystem;
+using Clock = std::chrono::steady_clock;
+using matter::terrain_collision::CanonicalDefinition;
+using matter::terrain_collision::TerrainCollisionCandidate;
+using matter::terrain_collision::TileCandidate;
+
+bool write_file(const fs::path& path, const std::string& body) {
+    std::error_code error;
+    fs::create_directories(path.parent_path(), error);
+    if (error) return false;
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) return false;
+    stream << body;
+    return stream.good();
+}
+
+void remove_tree(const fs::path& path) {
+    std::error_code ignored;
+    fs::remove_all(path, ignored);
+}
+
+std::string hex_key(std::uint64_t value) {
+    std::ostringstream stream;
+    stream << std::hex << std::nouppercase << std::setfill('0')
+           << std::setw(16) << value;
+    return stream.str();
+}
+
+fs::path manifest_path(const fs::path& cache_root,
+                       std::uint64_t installation_key) {
+    return cache_root / "terrain_collision" / "v1" / "generations" /
+           (hex_key(installation_key) + ".mtcm");
+}
+
+bool write_world_object(const fs::path& root,
+                        bool collision,
+                        float friction = 0.55f,
+                        const char* region_max_x = "32") {
+    std::ostringstream source;
+    source << "class TerrainSession extends World {\n"
+           << "  static roots=[{module:'TerrainRoot',transform:[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}];\n"
+           << "  static params = { worldSeed: 9 };\n"
+           << "  static world = { sectorSize: 16, yMin: -16, yMax: 32 };\n"
+           << "  field(p) {\n"
+           << "    const h = noise2(p.worldSeed, 1/64, 2).mul(2).add(2);\n"
+           << "    return { density: heightToDensity(h), moisture: h, relief: h, seaLevel: -8 };\n"
+           << "  }\n"
+           << "  biomes() { return { meadow: { grass: 1 } }; }\n";
+    if (collision) {
+        source << "  collision() {\n"
+               << "    const c = terrainCollision({cellSize:0.5,friction:"
+               << friction << ",restitution:0.03});\n"
+               << "    c.region('gameplay',{min:[0,0,0],max:["
+               << region_max_x << ",16,16]});\n"
+               << "    c.build();\n"
+               << "  }\n";
+    }
+    source << "}\n";
+    return write_file(root / "worlds" / "TerrainSession.js", source.str());
+}
+
+bool build_project(const fs::path& root,
+                   bool collision = true,
+                   float friction = 0.55f,
+                   const char* region_max_x = "32") {
+    remove_tree(root);
+    std::error_code error;
+    fs::create_directories(root / ".cache" / "TerrainSession" / "parts", error);
+    if (error) return false;
+    if (!write_world_object(root, collision, friction, region_max_x)) return false;
+    if (!write_file(root / "objects" / "TerrainRoot.js",
+        "class TerrainRoot extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone); this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,0,1);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) return false;
+    return write_file(root / "objects" / "WorldSector.js",
+        "class WorldSector extends Part {\n"
+        "  static params={tx:0,ty:0,tz:0,rung:0,volumetric:0,worldSeed:0,fieldHash:'',biomes:''};\n"
+        "  static requires=[];\n"
+        "  build(p) { this.terrainVolumeTiled(p.tx,p.ty|0,p.tz,p.rung,[MAT.grass,MAT.dirt,MAT.rock,MAT.snow]); }\n"
+        "}\n");
+}
+
+struct SessionFixture {
+    fs::path root;
+    std::string cache_root;
+    std::string project_root;
+    std::unique_ptr<matter::EngineContext> engine;
+    std::unique_ptr<matter::WorldSession> session;
+
+    explicit SessionFixture(const char* label,
+                            bool collision = true,
+                            float friction = 0.55f,
+                            const char* region_max_x = "32") {
+        static std::atomic<std::uint64_t> serial{0};
+        root = fs::temp_directory_path() /
+            (std::string("me3_terrain_session_") + label + "_" +
+             std::to_string(serial.fetch_add(1, std::memory_order_relaxed)));
+        CHECK(build_project(root, collision, friction, region_max_x),
+              "terrain collision session fixture is created");
+        cache_root = (root / ".cache").string();
+        project_root = root.string();
+        matter::EngineDesc engine_desc{};
+        engine_desc.cache_root = cache_root.c_str();
+        engine_desc.allow_gl_lt_46 = true;
+        std::string error;
+        engine = matter::EngineContext::create(engine_desc, error);
+        CHECK(engine != nullptr, error.c_str());
+        if (!engine) return;
+        matter::WorldDesc world_desc{};
+        world_desc.project_dir = project_root.c_str();
+        world_desc.world_name = "TerrainSession";
+        world_desc.engine_shared_lib_dir = "../shared-lib";
+        session = engine->open_world(world_desc, error);
+        CHECK(session != nullptr, error.c_str());
+    }
+
+    ~SessionFixture() {
+        session.reset();
+        engine.reset();
+        remove_tree(root);
+    }
+};
+
+TerrainCollisionCandidate candidate_for(const CanonicalDefinition& definition) {
+    TerrainCollisionCandidate candidate{};
+    candidate.geometry_key = definition.geometry_key;
+    candidate.installation_key = definition.installation_key;
+    candidate.friction = definition.friction;
+    candidate.restitution = definition.restitution;
+    std::uint64_t tile_key = 100;
+    for (const auto& coordinate : definition.sectors) {
+        TileCandidate tile{};
+        tile.coordinate = coordinate;
+        tile.origin_m = {
+            static_cast<float>(coordinate.x) * definition.sector_size_m,
+            static_cast<float>(coordinate.y) * definition.sector_size_m,
+            static_cast<float>(coordinate.z) * definition.sector_size_m,
+        };
+        tile.tile_key = tile_key++;
+        tile.digest = tile.tile_key ^ 0x71c0111510ULL;
+        tile.vertices = {
+            {1.0f, 0.0f, 1.0f},
+            {definition.sector_size_m - 1.0f, 0.0f, 1.0f},
+            {definition.sector_size_m - 1.0f, 0.0f,
+             definition.sector_size_m - 1.0f},
+            {1.0f, 0.0f, definition.sector_size_m - 1.0f},
+        };
+        tile.indices = {0u, 2u, 1u, 0u, 3u, 2u};
+        candidate.tiles.push_back(std::move(tile));
+    }
+    candidate.stats.built_tiles =
+        static_cast<std::uint32_t>(candidate.tiles.size());
+    candidate.stats.triangle_count = candidate.tiles.size() * 2u;
+    candidate.stats.unique_vertex_count = candidate.tiles.size() * 4u;
+    candidate.stats.artifact_bytes = candidate.tiles.size() * 192u;
+    candidate.stats.cold_build_ms = 1.25;
+    candidate.stats.validation_ms = 0.25;
+    return candidate;
+}
+
+terrain_mesher::SectorMesh one_triangle_mesh() {
+    terrain_mesher::SectorMesh mesh{};
+    terrain_mesher::MaterialBucket bucket{};
+    bucket.positions = {0.0f, 0.0f, 0.0f,
+                        0.0f, 0.0f, 1.0f,
+                        1.0f, 0.0f, 0.0f};
+    bucket.normals = {0.0f, 1.0f, 0.0f,
+                      0.0f, 1.0f, 0.0f,
+                      0.0f, 1.0f, 0.0f};
+    mesh.buckets.push_back(std::move(bucket));
+    return mesh;
+}
+
+struct TerminalEvents {
+    int finished = 0;
+    int errors = 0;
+    int cancelled = 0;
+    matter::BakeErrorCode error_code = matter::BakeErrorCode::Internal;
+    std::string phase;
+    std::string message;
+};
+
+bool pump_until(matter::WorldSession& session,
+                const std::function<bool()>& done,
+                TerminalEvents& events,
+                int timeout_seconds = 60) {
+    const auto deadline = Clock::now() + std::chrono::seconds(timeout_seconds);
+    while (Clock::now() < deadline) {
+        session.pump_gpu_jobs(4.0f);
+        session.tick({0.0f, 1.0f / 60.0f, 4});
+        matter::Event event{};
+        while (session.poll_event(event)) {
+            if (event.type == matter::EventType::BakeFinished) {
+                ++events.finished;
+            } else if (event.type == matter::EventType::BakeError) {
+                if (event.code == matter::BakeErrorCode::Cancelled) {
+                    ++events.cancelled;
+                } else {
+                    ++events.errors;
+                    events.error_code = event.code;
+                    events.phase = event.phase;
+                    events.message = event.message;
+                }
+            }
+        }
+        if (done()) {
+            session.tick({0.0f, 1.0f / 60.0f, 4});
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
+bool status_snapshot_is_consistent(const matter::TerrainCollisionStatus& status) {
+    switch (status.state) {
+        case matter::TerrainCollisionState::Disabled:
+            return status.failure_code.empty() && status.failure_message.empty();
+        case matter::TerrainCollisionState::Building:
+            return status.failure_code.empty() && status.failure_message.empty();
+        case matter::TerrainCollisionState::CandidateReady:
+        case matter::TerrainCollisionState::Installed:
+            return status.generation_key != 0 && status.geometry_key != 0 &&
+                   status.cell_size_m > 0.0f && status.region_count != 0 &&
+                   status.sector_count != 0 && status.failure_code.empty() &&
+                   status.failure_message.empty();
+        case matter::TerrainCollisionState::Failed:
+            return !status.failure_code.empty() && !status.failure_message.empty();
+    }
+    return false;
+}
+
+void test_worker_build_app_install_ready_gate_and_identity() {
+    std::printf("-- worker_build_app_install_ready_gate_and_identity\n");
+    SessionFixture fixture("gate");
+    if (!fixture.session) return;
+    const std::thread::id app_thread = std::this_thread::get_id();
+    std::thread::id build_thread{};
+    std::thread::id install_thread{};
+    std::atomic<bool> identity_ok{false};
+    std::atomic<bool> candidate_visible_at_install{false};
+    std::atomic<bool> stop_reader{false};
+    std::atomic<bool> bad_snapshot{false};
+    fixture.session->set_test_terrain_collision_build_callback(
+        [&](const terrain_field::FieldRuntime& field,
+            const CanonicalDefinition& definition,
+            const std::string& cache_root,
+            const std::function<bool()>&,
+            TerrainCollisionCandidate& candidate,
+            std::string&) {
+            build_thread = std::this_thread::get_id();
+            identity_ok.store(
+                definition.source.field_hash == field.hash() &&
+                definition.source.overlay_hash ==
+                    (field.height_overlay() ? field.height_overlay()->hash() : 0u) &&
+                definition.source.bake_mode_salt == bake_mode::salt() &&
+                definition.source.mesher_semantic_version ==
+                    terrain_mesher::kSemanticVersion &&
+                definition.source.geometry_format_version == 1u &&
+                definition.sector_size_m == 16.0f &&
+                definition.cell_size_m == 0.5f && definition.rung == 2 &&
+                definition.regions.size() == 1u &&
+                definition.sectors.size() == 2u &&
+                cache_root ==
+                    (fixture.root / ".cache" / "TerrainSession").string(),
+                std::memory_order_release);
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->set_test_terrain_collision_publication_hook([&] {
+        install_thread = std::this_thread::get_id();
+        candidate_visible_at_install.store(
+            fixture.session->terrain_collision_status().state ==
+                matter::TerrainCollisionState::CandidateReady,
+            std::memory_order_release);
+    });
+    std::thread status_reader([&] {
+        while (!stop_reader.load(std::memory_order_acquire)) {
+            if (!status_snapshot_is_consistent(
+                    fixture.session->terrain_collision_status())) {
+                bad_snapshot.store(true, std::memory_order_release);
+                break;
+            }
+        }
+    });
+    fixture.session->request_bake();
+    TerminalEvents events{};
+    const bool finished = pump_until(
+        *fixture.session,
+        [&] { return events.finished == 1 || events.errors != 0; }, events);
+    stop_reader.store(true, std::memory_order_release);
+    status_reader.join();
+    const auto status = fixture.session->terrain_collision_status();
+    const auto physics = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    const auto runtime = fixture.session->ecs().get<matter::ecs::WorldRuntimeState>();
+    CHECK(finished && events.finished == 1 && events.errors == 0,
+          "collision-authored session reaches one successful terminal event");
+    CHECK(build_thread != app_thread && install_thread == app_thread,
+          "candidate build runs on the worker and Box3D install on the app thread");
+    CHECK(identity_ok.load(std::memory_order_acquire),
+          "session canonicalizes the exact field, overlay, bake, mesher, sector, rung, and cache identity");
+    CHECK(candidate_visible_at_install.load(std::memory_order_acquire),
+          "app publication observes CandidateReady before replacing physics");
+    CHECK(status.state == matter::TerrainCollisionState::Installed &&
+              status.generation_key == physics.installation_key &&
+              status.box3d_retained_bytes == physics.retained_bytes &&
+              physics.shape_count == 2u && runtime.status == matter::ecs::WorldStatus::Ready,
+          "terrain is Installed before the same generation becomes Ready");
+    CHECK(!bad_snapshot.load(std::memory_order_acquire),
+          "racing status readers see only self-consistent snapshots");
+}
+
+void test_omitted_collision_clears_before_ready() {
+    std::printf("-- omitted_collision_clears_before_ready\n");
+    SessionFixture fixture("clear", true, 0.51f);
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents first{};
+    CHECK(pump_until(*fixture.session, [&] { return first.finished == 1; }, first),
+          "collision generation A finishes");
+    CHECK(matter::physics::detail::context(fixture.session->ecs())
+              .terrain_collision_stats().shape_count != 0u,
+          "generation A has live terrain physics");
+    CHECK(write_world_object(fixture.root, false),
+          "generation B removes collision authoring");
+    fixture.session->reload();
+    TerminalEvents second{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return second.finished == 1 || second.errors != 0;
+          }, second), "collision-free generation B finishes");
+    const auto status = fixture.session->terrain_collision_status();
+    const auto physics = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(second.finished == 1 && second.errors == 0 &&
+              status.state == matter::TerrainCollisionState::Disabled &&
+              physics.installation_key == 0 && physics.shape_count == 0,
+          "omitted collision clears old terrain before B reports Ready");
+}
+
+void test_builder_failure_reports_once_and_never_ready() {
+    std::printf("-- builder_failure_reports_once_and_never_ready\n");
+    SessionFixture fixture("build_failure");
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition&,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate&, std::string& error) {
+            error = "injected cache validation failure";
+            return false;
+        });
+    fixture.session->request_bake();
+    TerminalEvents events{};
+    CHECK(pump_until(*fixture.session, [&] { return events.errors == 1; }, events),
+          "builder failure reaches its terminal event");
+    for (int i = 0; i != 30; ++i) {
+        fixture.session->pump_gpu_jobs(2.0f);
+        fixture.session->tick({0.0f, 1.0f / 60.0f, 4});
+        matter::Event event{};
+        while (fixture.session->poll_event(event)) {
+            if (event.type == matter::EventType::BakeFinished) ++events.finished;
+            if (event.type == matter::EventType::BakeError &&
+                event.code != matter::BakeErrorCode::Cancelled) ++events.errors;
+        }
+    }
+    const auto status = fixture.session->terrain_collision_status();
+    const auto runtime = fixture.session->ecs().get<matter::ecs::WorldRuntimeState>();
+    CHECK(events.errors == 1 && events.finished == 0 &&
+              events.error_code == matter::BakeErrorCode::Internal &&
+              events.phase == "terrain-collision",
+          "build/cache/validation failure emits one Internal terrain-collision error and no Ready event");
+    CHECK(status.state == matter::TerrainCollisionState::Failed &&
+              status.failure_code == "build-failed" &&
+              status.failure_message.find("injected cache validation failure") !=
+                  std::string::npos &&
+              runtime.status == matter::ecs::WorldStatus::Failed,
+          "builder failure publishes stable failed status and Failed world state");
+}
+
+void test_transactional_replacement_failure_retains_prior() {
+    std::printf("-- transactional_replacement_failure_retains_prior\n");
+    SessionFixture fixture("replace", true, 0.41f);
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents first{};
+    CHECK(pump_until(*fixture.session, [&] { return first.finished == 1; }, first),
+          "replacement generation A finishes");
+    CHECK(write_world_object(fixture.root, true, 0.62f),
+          "replacement generation B changes material identity");
+    fixture.session->reload();
+    TerminalEvents second{};
+    CHECK(pump_until(*fixture.session, [&] { return second.finished == 1; }, second),
+          "replacement generation B finishes");
+    auto& context = matter::physics::detail::context(fixture.session->ecs());
+    const auto retained_b = context.terrain_collision_stats();
+    CHECK(retained_b.replacements == 1u && retained_b.installation_key != 0,
+          "A to B performs exactly one successful transactional replacement");
+    matter::physics::detail::fail_terrain_collision_mesh_create_on_tile_for_test(
+        context, 1u);
+    CHECK(write_world_object(fixture.root, true, 0.77f),
+          "replacement generation C changes material identity");
+    fixture.session->reload();
+    TerminalEvents third{};
+    CHECK(pump_until(*fixture.session, [&] { return third.errors == 1; }, third),
+          "injected generation C install failure reaches terminal error");
+    const auto after_failure = context.terrain_collision_stats();
+    const auto status = fixture.session->terrain_collision_status();
+    const auto runtime = fixture.session->ecs().get<matter::ecs::WorldRuntimeState>();
+    CHECK(third.errors == 1 && third.finished == 0 &&
+              third.error_code == matter::BakeErrorCode::Internal &&
+              third.phase == "terrain-collision",
+          "install failure emits one Internal terrain-collision error and no Ready");
+    CHECK(after_failure.installation_key == retained_b.installation_key &&
+              after_failure.shape_count == retained_b.shape_count &&
+              after_failure.replacements == retained_b.replacements,
+          "failed C preserves all accepted B physics state");
+    CHECK(status.state == matter::TerrainCollisionState::Failed &&
+              status.failure_code == "install-failed" &&
+              runtime.status == matter::ecs::WorldStatus::Failed,
+          "failed C leaves collision and world status Failed");
+}
+
+void test_cancelled_build_publishes_no_manifest_or_physics() {
+    std::printf("-- cancelled_build_publishes_no_manifest_or_physics\n");
+    SessionFixture fixture("cancel");
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents baseline_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return baseline_events.finished == 1 ||
+                     baseline_events.errors != 0;
+          }, baseline_events), "accepted baseline collision generation finishes");
+    const auto baseline = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(baseline.installation_key != 0 && baseline.shape_count != 0,
+          "cancellation fixture starts with an active physics generation");
+    CHECK(write_world_object(fixture.root, true, 0.68f),
+          "candidate generation changes collision installation identity");
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool reached_second_tile = false;
+    bool release_second_tile = false;
+    std::atomic<std::uint64_t> cancelled_installation_key{0};
+    fixture.session->set_test_terrain_collision_build_callback(
+        [&](const terrain_field::FieldRuntime& field,
+            const CanonicalDefinition& definition,
+            const std::string& cache_root,
+            const std::function<bool()>& cancelled,
+            TerrainCollisionCandidate& candidate,
+            std::string& error) {
+            cancelled_installation_key.store(
+                definition.installation_key, std::memory_order_release);
+            matter::terrain_collision::detail::BuildTestHooks hooks{};
+            std::atomic<int> tile_number{0};
+            hooks.mesh_tile = [&](const terrain_field::FieldRuntime&,
+                                  const matter::terrain_collision::SectorCoordinate&,
+                                  std::int8_t, float,
+                                  terrain_mesher::SectorMesh& mesh,
+                                  std::string&) {
+                const int number = ++tile_number;
+                if (number == 2) {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    reached_second_tile = true;
+                    cv.notify_all();
+                    cv.wait(lock, [&] { return release_second_tile; });
+                }
+                mesh = one_triangle_mesh();
+                return true;
+            };
+            return matter::terrain_collision::detail::
+                load_or_build_candidate_with_test_hooks(
+                    field, definition, cache_root, cancelled, hooks,
+                    candidate, error);
+        });
+    fixture.session->reload();
+    const auto deadline = Clock::now() + std::chrono::seconds(60);
+    while (Clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (reached_second_tile) break;
+        }
+        fixture.session->pump_gpu_jobs(2.0f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        CHECK(reached_second_tile, "generation A parks during deterministic tile N");
+    }
+    const std::uint64_t generation_a =
+        cancelled_installation_key.load(std::memory_order_acquire);
+    CHECK(generation_a != 0, "cancelled generation exposes its canonical key");
+    const auto while_candidate = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(while_candidate.installation_key == baseline.installation_key &&
+              while_candidate.shape_count == baseline.shape_count,
+          "tile-N candidate leaves the accepted physics generation active");
+    CHECK(write_world_object(fixture.root, false),
+          "generation B removes collision while A is building");
+    fixture.session->reload();
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release_second_tile = true;
+    }
+    cv.notify_all();
+    TerminalEvents events{};
+    CHECK(pump_until(*fixture.session, [&] { return events.finished == 1; }, events),
+          "superseding collision-free generation B finishes");
+    const auto physics = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(!fs::exists(manifest_path(
+              fixture.root / ".cache" / "TerrainSession", generation_a)),
+          "cancelled tile-N build publishes no generation manifest");
+    CHECK(physics.installation_key == 0 && physics.shape_count == 0 &&
+              fixture.session->terrain_collision_status().state ==
+                  matter::TerrainCollisionState::Disabled,
+          "cancelled A changes no physics and B explicitly publishes Disabled");
+}
+
+}  // namespace
+
+int main() {
+    std::printf("== terrain_collision_session_tests ==\n");
+    test_worker_build_app_install_ready_gate_and_identity();
+    test_omitted_collision_clears_before_ready();
+    test_builder_failure_reports_once_and_never_ready();
+    test_transactional_replacement_failure_retains_prior();
+    test_cancelled_build_publishes_no_manifest_or_physics();
+    return check_summary();
+}

@@ -12,6 +12,7 @@
 #include "matter/ecs.h"
 #include "matter/world_definition.h"
 #include "matter/hydrology.h"
+#include "matter/terrain_collision.h"
 #include "matter/river_runtime.h"
 #include "matter/streaming.h"
 #include "matter/sun_angles.h"  // kSunAngularDiameterDefaultDeg + the convention
@@ -34,10 +35,15 @@ struct ParticleJob;
 struct Stats;
 }
 namespace hydrology { class IFluidBakeBackend; }
+namespace terrain_field { class FieldRuntime; }
 namespace matter::detail { struct RiverRuntimeBuildInput; }
 namespace matter::evt { class Hub; }
 namespace matter::scene { class SceneService; class SceneChangeTracker; }
 namespace matter::props { class DynamicGroup; }
+namespace matter::terrain_collision {
+struct CanonicalDefinition;
+struct TerrainCollisionCandidate;
+}
 
 namespace matter {
 
@@ -57,6 +63,13 @@ using FluidVisualBakeTestCallback = std::function<bool(
     const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
     gpu_meshing::Stats&, gpu_meshing::Error&,
     const gpu_meshing::BuildControl&)>;
+using TerrainCollisionBuildTestCallback = std::function<bool(
+    const terrain_field::FieldRuntime&,
+    const terrain_collision::CanonicalDefinition&,
+    const std::string&,
+    const std::function<bool()>&,
+    terrain_collision::TerrainCollisionCandidate&,
+    std::string&)>;
 
 struct WorldDesc {
     // Preferred project layout. open_world derives objects/, worlds/,
@@ -888,10 +901,20 @@ public:
     // a queued replacement generation. Test-only.
     void set_test_fluid_after_publication_hook(std::function<void()> hook);
 
+    // Narrow deterministic seam for the terrain-collision session behavior
+    // suite. Production uses the immutable artifact loader directly.
+    void set_test_terrain_collision_build_callback(
+        TerrainCollisionBuildTestCallback callback);
+    // Runs inside the app-thread publication job immediately before the
+    // owner-thread Box3D replacement/clear. Test-only.
+    void set_test_terrain_collision_publication_hook(
+        std::function<void()> hook);
+
     // Observes the all-or-nothing accepted-product boundary after BakeFinished.
     bool has_accepted_fluid_artifact_for_test() const;
 
     HydrologyStatus hydrology_status() const;
+    TerrainCollisionStatus terrain_collision_status() const;
     std::shared_ptr<const RiverRuntimeBinding> river_runtime_binding()
         const noexcept;
 
