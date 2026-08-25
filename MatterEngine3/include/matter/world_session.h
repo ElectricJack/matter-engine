@@ -908,7 +908,8 @@ public:
     void set_test_terrain_collision_build_callback(
         TerrainCollisionBuildTestCallback callback);
     // Runs inside the app-thread publication job immediately before the
-    // owner-thread Box3D replacement/clear. Test-only.
+    // owner-thread Box3D replacement/clear, outside the generation mutex.
+    // Test-only.
     void set_test_terrain_collision_publication_hook(
         std::function<void()> hook);
     // Throws from this hook exercise collision-specific exception routing
@@ -920,6 +921,14 @@ public:
     // callbacks must not throw.
     void set_test_terrain_collision_candidate_observer(
         TerrainCollisionCandidateObserver observer);
+    // One-shot allocation failure inside precise Failed-status preparation.
+    // Exercises the coherent short-diagnostic fallback. Test-only.
+    void set_test_terrain_collision_failure_record_bad_alloc(
+        bool enabled) noexcept;
+    // Narrow scheduling/state observations for deterministic cancellation and
+    // disconnect tests. Test-only.
+    bool connected_for_test() const noexcept;
+    bool has_pending_gpu_jobs_for_test() const;
 
     // Observes the all-or-nothing accepted-product boundary after BakeFinished.
     bool has_accepted_fluid_artifact_for_test() const;

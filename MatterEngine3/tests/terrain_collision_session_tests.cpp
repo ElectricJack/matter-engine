@@ -193,6 +193,41 @@ TerrainCollisionCandidate candidate_for(const CanonicalDefinition& definition) {
     return candidate;
 }
 
+struct ThrowingCopyBuilderState {
+    std::atomic<bool> armed{false};
+    std::atomic<int> copies{0};
+    std::atomic<int> invocations{0};
+};
+
+struct ThrowingCopyBuilder {
+    std::shared_ptr<ThrowingCopyBuilderState> state;
+
+    explicit ThrowingCopyBuilder(
+        std::shared_ptr<ThrowingCopyBuilderState> shared_state)
+        : state(std::move(shared_state)) {}
+
+    ThrowingCopyBuilder(const ThrowingCopyBuilder& other)
+        : state(other.state) {
+        state->copies.fetch_add(1, std::memory_order_acq_rel);
+        if (state->armed.load(std::memory_order_acquire)) {
+            throw std::runtime_error(
+                "injected terrain builder callback copy failure");
+        }
+    }
+
+    ThrowingCopyBuilder(ThrowingCopyBuilder&&) noexcept = default;
+
+    bool operator()(const terrain_field::FieldRuntime&,
+                    const CanonicalDefinition&,
+                    const std::string&,
+                    const std::function<bool()>&,
+                    TerrainCollisionCandidate&,
+                    std::string&) const {
+        state->invocations.fetch_add(1, std::memory_order_acq_rel);
+        return false;
+    }
+};
+
 terrain_mesher::SectorMesh one_triangle_mesh() {
     terrain_mesher::SectorMesh mesh{};
     terrain_mesher::MaterialBucket bucket{};
@@ -215,6 +250,25 @@ struct TerminalEvents {
     std::string message;
 };
 
+void poll_terminal_events(matter::WorldSession& session,
+                          TerminalEvents& events) {
+    matter::Event event{};
+    while (session.poll_event(event)) {
+        if (event.type == matter::EventType::BakeFinished) {
+            ++events.finished;
+        } else if (event.type == matter::EventType::BakeError) {
+            if (event.code == matter::BakeErrorCode::Cancelled) {
+                ++events.cancelled;
+            } else {
+                ++events.errors;
+                events.error_code = event.code;
+                events.phase = event.phase;
+                events.message = event.message;
+            }
+        }
+    }
+}
+
 bool pump_until(matter::WorldSession& session,
                 const std::function<bool()>& done,
                 TerminalEvents& events,
@@ -223,21 +277,7 @@ bool pump_until(matter::WorldSession& session,
     while (Clock::now() < deadline) {
         session.pump_gpu_jobs(4.0f);
         session.tick({0.0f, 1.0f / 60.0f, 4});
-        matter::Event event{};
-        while (session.poll_event(event)) {
-            if (event.type == matter::EventType::BakeFinished) {
-                ++events.finished;
-            } else if (event.type == matter::EventType::BakeError) {
-                if (event.code == matter::BakeErrorCode::Cancelled) {
-                    ++events.cancelled;
-                } else {
-                    ++events.errors;
-                    events.error_code = event.code;
-                    events.phase = event.phase;
-                    events.message = event.message;
-                }
-            }
-        }
+        poll_terminal_events(session, events);
         if (done()) {
             session.tick({0.0f, 1.0f / 60.0f, 4});
             return true;
@@ -505,6 +545,63 @@ void test_prebuild_exception_uses_collision_failure_path() {
           "prebuild exception records precise collision failure status and Failed world state");
 }
 
+void test_throwing_builder_copy_failure_is_atomic_and_disconnects() {
+    std::printf("-- throwing_builder_copy_failure_is_atomic_and_disconnects\n");
+    SessionFixture fixture("throwing_builder_copy", true, 0.41f);
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents baseline_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return baseline_events.finished == 1 ||
+                     baseline_events.errors != 0;
+          }, baseline_events), "throwing-copy baseline reaches Ready");
+    CHECK(fixture.session->connected_for_test() &&
+              fixture.session->ecs().get<matter::ecs::WorldRuntimeState>().status ==
+                  matter::ecs::WorldStatus::Ready,
+          "throwing-copy fixture begins connected and Ready");
+
+    auto copy_state = std::make_shared<ThrowingCopyBuilderState>();
+    matter::TerrainCollisionBuildTestCallback throwing_builder{
+        ThrowingCopyBuilder{copy_state}};
+    fixture.session->set_test_terrain_collision_build_callback(
+        std::move(throwing_builder));
+    copy_state->armed.store(true, std::memory_order_release);
+    fixture.session->set_test_terrain_collision_failure_record_bad_alloc(true);
+    CHECK(write_world_object(fixture.root, true, 0.68f),
+          "throwing-copy reload changes collision identity");
+    fixture.session->reload();
+    TerminalEvents events{};
+    CHECK(pump_until(*fixture.session, [&] { return events.errors == 1; }, events),
+          "throwing callback copy reaches collision-specific terminal failure");
+    for (int i = 0; i != 20; ++i) {
+        fixture.session->pump_gpu_jobs(2.0f);
+        fixture.session->tick({0.0f, 1.0f / 60.0f, 4});
+        poll_terminal_events(*fixture.session, events);
+    }
+    const auto status = fixture.session->terrain_collision_status();
+    const auto runtime = fixture.session->ecs().get<matter::ecs::WorldRuntimeState>();
+    CHECK(copy_state->copies.load(std::memory_order_acquire) >= 1 &&
+              copy_state->invocations.load(std::memory_order_acquire) == 0,
+          "failure is raised by copying the callback target before invocation");
+    CHECK(events.errors == 1 && events.finished == 0 &&
+              events.error_code == matter::BakeErrorCode::Internal &&
+              events.phase == "terrain-collision",
+          "throwing copy emits exactly one phased Internal error and no Ready");
+    CHECK(status.state == matter::TerrainCollisionState::Failed &&
+              !status.failure_code.empty() &&
+              !status.failure_message.empty() &&
+              runtime.status == matter::ecs::WorldStatus::Failed &&
+              !fixture.session->connected_for_test(),
+          "bad-allocation fallback publishes one coherent Failed snapshot and disconnects prior Ready");
+}
+
 void test_transactional_replacement_failure_retains_prior() {
     std::printf("-- transactional_replacement_failure_retains_prior\n");
     SessionFixture fixture("replace", true, 0.41f);
@@ -656,6 +753,116 @@ void test_cancelled_after_collision_job_skips_visual_publication() {
           "post-job cancellation skips visual Ready and the successor clears physics");
 }
 
+void test_cancelled_queued_collision_job_releases_before_worker_continues() {
+    std::printf("-- cancelled_queued_collision_job_releases_before_worker_continues\n");
+    SessionFixture fixture("cancel_queued_collision", true, 0.41f);
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents baseline_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return baseline_events.finished == 1 ||
+                     baseline_events.errors != 0;
+          }, baseline_events), "queued-skip baseline reaches Ready");
+    const auto baseline = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(baseline.installation_key != 0 && baseline.shape_count != 0 &&
+              fixture.session->connected_for_test(),
+          "queued-skip baseline physics is installed and connected");
+
+    std::atomic<int> observations{0};
+    std::atomic<bool> alive_on_worker{false};
+    std::atomic<bool> expired_before_worker_continues{false};
+    std::atomic<int> publication_hook_calls{0};
+    fixture.session->set_test_terrain_collision_candidate_observer(
+        [&](std::weak_ptr<
+                const matter::terrain_collision::TerrainCollisionCandidate>
+                candidate) {
+            const int observation = observations.fetch_add(
+                1, std::memory_order_acq_rel);
+            if (observation == 0) {
+                alive_on_worker.store(!candidate.expired(),
+                                      std::memory_order_release);
+            } else if (observation == 1) {
+                expired_before_worker_continues.store(
+                    candidate.expired(), std::memory_order_release);
+            }
+        });
+    fixture.session->set_test_terrain_collision_publication_hook([&] {
+        publication_hook_calls.fetch_add(1, std::memory_order_acq_rel);
+    });
+    CHECK(write_world_object(fixture.root, true, 0.68f),
+          "queued generation changes collision identity");
+    fixture.session->reload();
+
+    // Reload may need earlier install-world GPU work before collision
+    // publication. Drain one job at a time only until CandidateReady, then
+    // stop pumping and wait for the collision job itself to appear.
+    const auto candidate_deadline = Clock::now() + std::chrono::seconds(60);
+    while (Clock::now() < candidate_deadline &&
+           fixture.session->terrain_collision_status().state !=
+               matter::TerrainCollisionState::CandidateReady) {
+        if (fixture.session->has_pending_gpu_jobs_for_test() &&
+            fixture.session->terrain_collision_status().state !=
+                matter::TerrainCollisionState::CandidateReady) {
+            fixture.session->pump_gpu_jobs(0.0f);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const auto queued_deadline = Clock::now() + std::chrono::seconds(60);
+    while (Clock::now() < queued_deadline &&
+           !fixture.session->has_pending_gpu_jobs_for_test()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(fixture.session->terrain_collision_status().state ==
+              matter::TerrainCollisionState::CandidateReady &&
+              fixture.session->has_pending_gpu_jobs_for_test() &&
+              observations.load(std::memory_order_acquire) == 1 &&
+              alive_on_worker.load(std::memory_order_acquire),
+          "candidate is alive while its blocking collision job is queued without pumping");
+
+    fixture.session->set_test_terrain_collision_publication_hook({});
+    CHECK(write_world_object(fixture.root, false),
+          "successor removes collision before cancelling queued generation");
+    fixture.session->reload();
+    fixture.session->pump_gpu_jobs(0.0f);
+    const auto release_deadline = Clock::now() + std::chrono::seconds(60);
+    while (Clock::now() < release_deadline &&
+           observations.load(std::memory_order_acquire) < 2) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    TerminalEvents events{};
+    poll_terminal_events(*fixture.session, events);
+    const auto after_skip = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(observations.load(std::memory_order_acquire) == 2 &&
+              expired_before_worker_continues.load(std::memory_order_acquire) &&
+              publication_hook_calls.load(std::memory_order_acquire) == 0,
+          "token-skipped queue entry releases its candidate without invoking the job");
+    CHECK(after_skip.installation_key == baseline.installation_key &&
+              after_skip.shape_count == baseline.shape_count &&
+              fixture.session->connected_for_test() && events.finished == 0,
+          "cancelled queued generation performs no physics or visual publication before successor action");
+
+    CHECK(pump_until(*fixture.session, [&] {
+              return events.finished == 1 || events.errors != 0;
+          }, events), "collision-free successor finishes after queued skip");
+    const auto final_physics = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(events.cancelled >= 1 && events.errors == 0 && events.finished == 1 &&
+              final_physics.installation_key == 0 &&
+              final_physics.shape_count == 0 &&
+              fixture.session->terrain_collision_status().state ==
+                  matter::TerrainCollisionState::Disabled,
+          "only the successor clears prior physics and reaches Ready");
+}
+
 void test_cancelled_build_publishes_no_manifest_or_physics() {
     std::printf("-- cancelled_build_publishes_no_manifest_or_physics\n");
     SessionFixture fixture("cancel");
@@ -767,9 +974,11 @@ int main() {
     test_omitted_collision_clears_before_ready();
     test_builder_failure_reports_once_and_never_ready();
     test_prebuild_exception_uses_collision_failure_path();
+    test_throwing_builder_copy_failure_is_atomic_and_disconnects();
     test_transactional_replacement_failure_retains_prior();
     test_cancelled_at_publication_barrier_skips_replacement();
     test_cancelled_after_collision_job_skips_visual_publication();
+    test_cancelled_queued_collision_job_releases_before_worker_continues();
     test_cancelled_build_publishes_no_manifest_or_physics();
     return check_summary();
 }

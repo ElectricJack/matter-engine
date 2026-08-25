@@ -824,6 +824,8 @@ struct WorldSession::Impl {
     std::function<void()> test_terrain_collision_before_build_hook;
     TerrainCollisionCandidateObserver
         test_terrain_collision_candidate_observer;
+    std::atomic<bool>
+        test_terrain_collision_failure_record_bad_alloc{false};
 
     // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
     // progress is emitted here as typed events (matter/events/*.h). Declared
@@ -1152,12 +1154,20 @@ struct WorldSession::Impl {
     // install sector child assets. Called from execute_bake after install_graph
     // succeeds when provider->world_module() is non-empty.
     enum class TerrainCollisionPublicationAction { Keep, Clear, Replace };
+    using TerrainCollisionCandidateOwner =
+        std::shared_ptr<const terrain_collision::TerrainCollisionCandidate>;
+    using TerrainCollisionCandidateSlot =
+        std::shared_ptr<TerrainCollisionCandidateOwner>;
     struct TerrainCollisionPublication {
         TerrainCollisionPublicationAction action =
             TerrainCollisionPublicationAction::Clear;
-        std::shared_ptr<const terrain_collision::TerrainCollisionCandidate>
-            candidate;
+        TerrainCollisionCandidateSlot candidate_slot;
+        std::function<void()> test_publication_hook;
+        TerrainCollisionCandidateObserver test_candidate_observer;
     };
+    void record_terrain_collision_failure_noexcept(
+        const char* code, const char* message,
+        std::string* error_out = nullptr) noexcept;
     bool install_world(const std::shared_ptr<matter_async::CancelToken>& token,
                        TerrainCollisionPublication& terrain_collision,
                        bool& terrain_collision_failed,
@@ -1272,7 +1282,7 @@ struct WorldSession::Impl {
         // Cone/refine publication keeps the accepted terrain. Every full bake
         // explicitly overrides this with Clear or a generation-local Replace.
         TerrainCollisionPublication terrain_collision{
-            TerrainCollisionPublicationAction::Keep, {}};
+            TerrainCollisionPublicationAction::Keep, {}, {}, {}};
     };
 
     // Shared publish flow: steps 4-8 (reset job → reconcile → per-part publish
@@ -3644,6 +3654,73 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
     if (after_publication_hook) after_publication_hook();
 }
 
+void WorldSession::Impl::record_terrain_collision_failure_noexcept(
+    const char* code, const char* message, std::string* error_out) noexcept {
+    const auto prepare_fallback = [](matter::TerrainCollisionStatus& status) {
+        status = {};
+        status.state = matter::TerrainCollisionState::Failed;
+        // Both fit the std::string small buffer on supported toolchains, so a
+        // diagnostic-allocation failure can still publish a coherent snapshot.
+        status.failure_code = "collision-fail";
+        status.failure_message = "build failure";
+    };
+
+    try {
+        matter::TerrainCollisionStatus failed{};
+        prepare_fallback(failed);
+        try {
+            matter::TerrainCollisionStatus precise{};
+            precise.state = matter::TerrainCollisionState::Failed;
+            if (test_terrain_collision_failure_record_bad_alloc.exchange(
+                    false, std::memory_order_acq_rel)) {
+                throw std::bad_alloc{};
+            }
+            precise.failure_code = code ? code : "collision-fail";
+            precise.failure_message = message ? message : "build failure";
+            failed = std::move(precise);
+        } catch (...) {
+            // Keep the already-complete fallback snapshot.
+        }
+
+        if (error_out) {
+            try {
+                *error_out = failed.failure_message;
+            } catch (...) {
+                try {
+                    *error_out = "build failure";
+                } catch (...) {
+                }
+            }
+        }
+        MATTER_LOGE("terrain-collision", "%s: %s\n",
+                    failed.failure_code.c_str(),
+                    failed.failure_message.c_str());
+        std::lock_guard<std::mutex> status_lock(
+            terrain_collision_status_mutex);
+        using std::swap;
+        swap(terrain_collision_status_copy, failed);
+    } catch (...) {
+        // The supported fallback path above is allocation-free. This last
+        // containment guard prevents an exotic library/mutex exception from
+        // escaping into the generic worker catch.
+        if (error_out) {
+            try {
+                *error_out = "build failure";
+            } catch (...) {
+            }
+        }
+        try {
+            matter::TerrainCollisionStatus failed{};
+            prepare_fallback(failed);
+            std::lock_guard<std::mutex> status_lock(
+                terrain_collision_status_mutex);
+            using std::swap;
+            swap(terrain_collision_status_copy, failed);
+        } catch (...) {
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WorldSession::Impl::publish_pipeline
 // Steps 4-8 of the bake/cone publish flow, shared by execute_bake and
@@ -3681,156 +3758,244 @@ void WorldSession::Impl::publish_pipeline(
     const std::string& pfx = p.job_prefix;
     TerrainCollisionPublication collision_publication =
         std::move(p.terrain_collision);
-    const bool observed_candidate =
-        static_cast<bool>(collision_publication.candidate);
+    TerrainCollisionCandidateSlot candidate_slot =
+        std::move(collision_publication.candidate_slot);
+    const bool observed_candidate = candidate_slot && *candidate_slot;
     const std::weak_ptr<
         const terrain_collision::TerrainCollisionCandidate> candidate_weak =
-            collision_publication.candidate;
-    TerrainCollisionCandidateObserver candidate_observer;
-    if (observed_candidate) {
-        std::lock_guard<std::recursive_mutex> generation_lock(
-            terrain_collision_generation_mutex);
-        candidate_observer = test_terrain_collision_candidate_observer;
-    }
+            observed_candidate ? *candidate_slot
+                               : TerrainCollisionCandidateOwner{};
+    TerrainCollisionCandidateObserver candidate_observer =
+        std::move(collision_publication.test_candidate_observer);
+    std::function<void()> publication_hook =
+        std::move(collision_publication.test_publication_hook);
+    const TerrainCollisionPublicationAction collision_action =
+        collision_publication.action;
+    const auto release_and_observe_candidate = [&]() noexcept {
+        if (candidate_slot) candidate_slot->reset();
+        if (observed_candidate && candidate_observer) {
+            try {
+                candidate_observer(candidate_weak);
+            } catch (...) {
+                MATTER_LOGE(
+                    "terrain-collision",
+                    "test candidate observer threw before visual reset\n");
+            }
+        }
+    };
+    const auto disconnect_collision_failure = [&]() noexcept {
+        try {
+            matter_async::GpuJob disconnect_job;
+            disconnect_job.fn = [this](std::string&) {
+                matter_async::assert_gl_thread(
+                    "terrain-collision.failure-disconnect");
+                connected.store(false, std::memory_order_release);
+                return true;
+            };
+            std::string ignored;
+            gpu_jobs.run_blocking(std::move(disconnect_job), ignored);
+        } catch (...) {
+        }
+    };
+    const auto emit_collision_error_noexcept =
+        [&](const std::string& message) noexcept {
+            try {
+                emit_error(BakeErrorCode::Internal, "terrain-collision",
+                           message);
+            } catch (...) {
+            }
+        };
 
     // Terrain collision is the first app-thread publication for a full bake.
     // It must succeed before any visual reset can expose the generation, and
     // cone/refine publication deliberately arrives as Keep.
-    if (collision_publication.action !=
+    if (collision_action !=
         TerrainCollisionPublicationAction::Keep) {
         if (is_cancelled()) {
+            release_and_observe_candidate();
             emit_error(BakeErrorCode::Cancelled, "terrain-collision",
                        "cancelled");
             return;
         }
-        matter_async::GpuJob collision_job;
-        collision_job.name = pfx + ".terrain-collision";
-        collision_job.token = token;
-        collision_job.fn = [this,
-                            publication = std::move(collision_publication),
-                            token, pfx](std::string& error) mutable {
-            using CollisionCandidate =
-                terrain_collision::TerrainCollisionCandidate;
-            struct CandidateOwnerReset {
-                std::shared_ptr<const CollisionCandidate>* owner = nullptr;
-                ~CandidateOwnerReset() {
-                    if (owner) owner->reset();
+        std::string collision_error;
+        bool collision_ok = false;
+        try {
+            matter_async::GpuJob collision_job;
+            collision_job.name = pfx + ".terrain-collision";
+            collision_job.token = token;
+            collision_job.fn = [this, candidate_slot,
+                                publication_hook =
+                                    std::move(publication_hook),
+                                collision_action, token,
+                                pfx](std::string& error) mutable {
+                struct CandidateSlotReset {
+                    TerrainCollisionCandidateSlot* slot = nullptr;
+                    ~CandidateSlotReset() {
+                        if (slot && *slot) (*slot)->reset();
+                    }
+                } candidate_slot_reset{&candidate_slot};
+                matter_async::assert_gl_thread(
+                    (pfx + ".terrain-collision").c_str());
+                if (token && token->is_cancelled()) {
+                    error = "cancelled";
+                    return false;
                 }
-            } candidate_owner_reset{&publication.candidate};
-            matter_async::assert_gl_thread(
-                (pfx + ".terrain-collision").c_str());
-            std::lock_guard<std::recursive_mutex> generation_lock(
-                terrain_collision_generation_mutex);
-            if (token && token->is_cancelled()) {
-                publication.candidate.reset();
-                error = "cancelled";
-                return false;
-            }
-            if (test_terrain_collision_publication_hook)
-                test_terrain_collision_publication_hook();
-            if (token && token->is_cancelled()) {
-                publication.candidate.reset();
-                error = "cancelled";
-                return false;
-            }
+                try {
+                    if (publication_hook) publication_hook();
+                } catch (const std::bad_alloc&) {
+                    connected.store(false, std::memory_order_release);
+                    record_terrain_collision_failure_noexcept(
+                        "allocation-failed",
+                        "terrain collision publication hook allocation failed",
+                        &error);
+                    return false;
+                } catch (const std::exception& exception) {
+                    connected.store(false, std::memory_order_release);
+                    record_terrain_collision_failure_noexcept(
+                        "build-exception", exception.what(), &error);
+                    return false;
+                } catch (...) {
+                    connected.store(false, std::memory_order_release);
+                    record_terrain_collision_failure_noexcept(
+                        "build-exception",
+                        "unknown terrain collision publication hook failure",
+                        &error);
+                    return false;
+                }
 
-            auto& physics_context =
-                physics::detail::context(ecs_runtime.world());
-            if (publication.action ==
-                TerrainCollisionPublicationAction::Clear) {
-                physics_context.clear_terrain_collision();
-                const auto physics_status =
-                    physics_context.terrain_collision_stats();
-                if (physics_status.installation_key != 0 ||
-                    physics_status.shape_count != 0) {
-                    error = "terrain collision clear was rejected by physics";
-                } else {
-                    std::lock_guard<std::mutex> status_lock(
-                        terrain_collision_status_mutex);
-                    terrain_collision_status_copy = {};
-                    terrain_collision_status_copy.state =
-                        matter::TerrainCollisionState::Disabled;
-                    return true;
+                std::lock_guard<std::recursive_mutex> generation_lock(
+                    terrain_collision_generation_mutex);
+                if (token && token->is_cancelled()) {
+                    error = "cancelled";
+                    return false;
                 }
-            } else if (!publication.candidate) {
-                error = "terrain collision replacement has no candidate";
-            } else {
-                const auto install_start = std::chrono::steady_clock::now();
-                const bool installed =
-                    physics_context.replace_terrain_collision(
-                        *publication.candidate, error);
-                // Box3D has retained its private mesh bytes (or rejected the
-                // replacement transaction). Release worker geometry inside
-                // this blocking job so no queued/reset/finalize/tail copy can
-                // extend candidate lifetime.
-                publication.candidate.reset();
-                if (installed) {
-                    const double install_ms =
-                        std::chrono::duration<double, std::milli>(
-                            std::chrono::steady_clock::now() - install_start)
-                            .count();
+
+                auto& physics_context =
+                    physics::detail::context(ecs_runtime.world());
+                if (collision_action ==
+                    TerrainCollisionPublicationAction::Clear) {
+                    physics_context.clear_terrain_collision();
                     const auto physics_status =
                         physics_context.terrain_collision_stats();
-                    matter::TerrainCollisionStatus status{};
-                    {
+                    if (physics_status.installation_key != 0 ||
+                        physics_status.shape_count != 0) {
+                        error =
+                            "terrain collision clear was rejected by physics";
+                    } else {
                         std::lock_guard<std::mutex> status_lock(
                             terrain_collision_status_mutex);
+                        terrain_collision_status_copy = {};
                         terrain_collision_status_copy.state =
-                            matter::TerrainCollisionState::Installed;
-                        terrain_collision_status_copy.box3d_retained_bytes =
-                            physics_status.retained_bytes;
-                        terrain_collision_status_copy.install_ms = install_ms;
-                        terrain_collision_status_copy.failure_code.clear();
-                        terrain_collision_status_copy.failure_message.clear();
-                        status = terrain_collision_status_copy;
+                            matter::TerrainCollisionState::Disabled;
+                        return true;
                     }
-                    MATTER_LOGI(
-                        "terrain-collision",
-                        "installed generation=%016llx geometry=%016llx "
-                        "cell=%.3f rung=%d regions=%u sectors=%u "
-                        "nonempty=%u empty=%u triangles=%llu vertices=%llu "
-                        "artifact=%llu box3d=%llu build=%.2fms cache=%.2fms "
-                        "validation=%.2fms install=%.2fms\n",
-                        static_cast<unsigned long long>(status.generation_key),
-                        static_cast<unsigned long long>(status.geometry_key),
-                        status.cell_size_m, static_cast<int>(status.rung),
-                        status.region_count, status.sector_count,
-                        status.non_empty_tile_count, status.empty_tile_count,
-                        static_cast<unsigned long long>(status.triangle_count),
-                        static_cast<unsigned long long>(
-                            status.unique_vertex_count),
-                        static_cast<unsigned long long>(status.artifact_bytes),
-                        static_cast<unsigned long long>(
-                            status.box3d_retained_bytes),
-                        status.cold_build_ms, status.cache_load_ms,
-                        status.validation_ms, status.install_ms);
-                    return true;
+                } else if (!candidate_slot || !*candidate_slot) {
+                    error =
+                        "terrain collision replacement has no candidate";
+                } else {
+                    const auto install_start =
+                        std::chrono::steady_clock::now();
+                    const bool installed =
+                        physics_context.replace_terrain_collision(
+                            **candidate_slot, error);
+                    // Box3D retained private mesh bytes (or rejected the
+                    // transaction); release generation geometry immediately.
+                    candidate_slot->reset();
+                    if (installed) {
+                        const double install_ms =
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() -
+                                install_start)
+                                .count();
+                        const auto physics_status =
+                            physics_context.terrain_collision_stats();
+                        matter::TerrainCollisionStatus status{};
+                        {
+                            std::lock_guard<std::mutex> status_lock(
+                                terrain_collision_status_mutex);
+                            terrain_collision_status_copy.state =
+                                matter::TerrainCollisionState::Installed;
+                            terrain_collision_status_copy
+                                .box3d_retained_bytes =
+                                physics_status.retained_bytes;
+                            terrain_collision_status_copy.install_ms =
+                                install_ms;
+                            terrain_collision_status_copy.failure_code.clear();
+                            terrain_collision_status_copy.failure_message
+                                .clear();
+                            status = terrain_collision_status_copy;
+                        }
+                        MATTER_LOGI(
+                            "terrain-collision",
+                            "installed generation=%016llx geometry=%016llx "
+                            "cell=%.3f rung=%d regions=%u sectors=%u "
+                            "nonempty=%u empty=%u triangles=%llu vertices=%llu "
+                            "artifact=%llu box3d=%llu build=%.2fms cache=%.2fms "
+                            "validation=%.2fms install=%.2fms\n",
+                            static_cast<unsigned long long>(
+                                status.generation_key),
+                            static_cast<unsigned long long>(
+                                status.geometry_key),
+                            status.cell_size_m, static_cast<int>(status.rung),
+                            status.region_count, status.sector_count,
+                            status.non_empty_tile_count,
+                            status.empty_tile_count,
+                            static_cast<unsigned long long>(
+                                status.triangle_count),
+                            static_cast<unsigned long long>(
+                                status.unique_vertex_count),
+                            static_cast<unsigned long long>(
+                                status.artifact_bytes),
+                            static_cast<unsigned long long>(
+                                status.box3d_retained_bytes),
+                            status.cold_build_ms, status.cache_load_ms,
+                            status.validation_ms, status.install_ms);
+                        return true;
+                    }
                 }
-            }
 
-            connected.store(false, std::memory_order_release);
-            publication.candidate.reset();
-            {
-                std::lock_guard<std::mutex> status_lock(
-                    terrain_collision_status_mutex);
-                if (terrain_collision_status_copy.state !=
-                    matter::TerrainCollisionState::Failed) {
-                    terrain_collision_status_copy.state =
-                        matter::TerrainCollisionState::Failed;
-                    terrain_collision_status_copy.failure_code =
-                        "install-failed";
-                    terrain_collision_status_copy.failure_message =
-                        error.empty() ? "terrain collision install failed"
-                                      : error;
-                    MATTER_LOGE("terrain-collision", "install-failed: %s\n",
-                                terrain_collision_status_copy.failure_message
-                                    .c_str());
-                }
-            }
-            return false;
-        };
-        std::string collision_error;
-        if (!gpu_jobs.run_blocking(std::move(collision_job), collision_error)) {
+                connected.store(false, std::memory_order_release);
+                record_terrain_collision_failure_noexcept(
+                    "install-failed",
+                    error.empty() ? "terrain collision install failed"
+                                  : error.c_str(),
+                    &error);
+                return false;
+            };
+            collision_ok = gpu_jobs.run_blocking(
+                std::move(collision_job), collision_error);
+        } catch (const std::bad_alloc&) {
+            release_and_observe_candidate();
+            record_terrain_collision_failure_noexcept(
+                "allocation-failed",
+                "terrain collision publication setup allocation failed",
+                &collision_error);
+            disconnect_collision_failure();
+            emit_collision_error_noexcept(collision_error);
+            return;
+        } catch (const std::exception& exception) {
+            release_and_observe_candidate();
+            record_terrain_collision_failure_noexcept(
+                "build-exception", exception.what(), &collision_error);
+            disconnect_collision_failure();
+            emit_collision_error_noexcept(collision_error);
+            return;
+        } catch (...) {
+            release_and_observe_candidate();
+            record_terrain_collision_failure_noexcept(
+                "build-exception",
+                "unknown terrain collision publication setup failure",
+                &collision_error);
+            disconnect_collision_failure();
+            emit_collision_error_noexcept(collision_error);
+            return;
+        }
+
+        // The queue may signal run_blocking before destroying its local Entry.
+        // Empty the shared slot first; any retained lambda owns only that empty
+        // indirection when the worker resumes.
+        release_and_observe_candidate();
+        if (!collision_ok) {
             emit_error(
                 is_cancelled() ? BakeErrorCode::Cancelled
                                : BakeErrorCode::Internal,
@@ -3839,15 +4004,6 @@ void WorldSession::Impl::publish_pipeline(
                     ? pfx + " terrain collision publication failed"
                     : collision_error);
             return;
-        }
-        if (candidate_observer) {
-            try {
-                candidate_observer(candidate_weak);
-            } catch (...) {
-                MATTER_LOGE(
-                    "terrain-collision",
-                    "test candidate observer threw before visual reset\n");
-            }
         }
         if (is_cancelled()) {
             emit_error(BakeErrorCode::Cancelled, "terrain-collision",
@@ -4853,188 +5009,202 @@ bool WorldSession::Impl::install_world(
     // authored definition, while this worker phase owns only canonicalization
     // and cache/build work.
     terrain_publication = {};
-    if (provider->terrain_collision()) {
-        const auto fail_terrain_collision =
-            [this, token, &terrain_collision_failed](
-                const char* code, const std::string& message) {
-                std::lock_guard<std::recursive_mutex> generation_lock(
-                    terrain_collision_generation_mutex);
-                if (token && token->is_cancelled()) return;
-                // Establish routing before status strings allocate so the
-                // caller cannot fall back to the generic worker error path.
-                terrain_collision_failed = true;
-                std::lock_guard<std::mutex> status_lock(
-                    terrain_collision_status_mutex);
-                if (terrain_collision_status_copy.state ==
-                    matter::TerrainCollisionState::Failed) return;
-                terrain_collision_status_copy.state =
-                    matter::TerrainCollisionState::Failed;
-                terrain_collision_status_copy.failure_code = code;
-                terrain_collision_status_copy.failure_message = message;
-                MATTER_LOGE("terrain-collision", "%s: %s\n", code,
-                            message.c_str());
-            };
-
+    const auto set_cancelled_error = [&err]() noexcept {
         try {
-        {
-            std::lock_guard<std::recursive_mutex> generation_lock(
-                terrain_collision_generation_mutex);
-            if (token && token->is_cancelled()) {
-                err = "cancelled";
-                return false;
-            }
-            std::lock_guard<std::mutex> status_lock(
-                terrain_collision_status_mutex);
-            terrain_collision_status_copy = {};
-            terrain_collision_status_copy.state =
-                matter::TerrainCollisionState::Building;
+            err = "cancelled";
+        } catch (...) {
         }
+    };
+    const auto fail_terrain_collision =
+        [this, token, &terrain_collision_failed, &err](
+            const char* code, const char* message) noexcept {
+            if (token && token->is_cancelled()) return;
+            // Routing is independent of diagnostic preparation/publication.
+            terrain_collision_failed = true;
+            record_terrain_collision_failure_noexcept(
+                code, message, &err);
+        };
+
+    try {
         TerrainCollisionBuildTestCallback test_builder;
         std::function<void()> before_build_hook;
+        std::function<void()> publication_hook;
         TerrainCollisionCandidateObserver candidate_observer;
+        const auto& collision_definition = provider->terrain_collision();
         {
             std::lock_guard<std::recursive_mutex> generation_lock(
                 terrain_collision_generation_mutex);
-            test_builder = test_terrain_collision_build_callback;
-            before_build_hook = test_terrain_collision_before_build_hook;
+            if (token && token->is_cancelled()) {
+                set_cancelled_error();
+                return false;
+            }
+            publication_hook = test_terrain_collision_publication_hook;
             candidate_observer =
                 test_terrain_collision_candidate_observer;
-        }
-        if (before_build_hook) before_build_hook();
-
-        terrain_collision::SourceIdentity source{};
-        source.field_hash = world_field->hash();
-        source.overlay_hash = world_field->height_overlay()
-            ? world_field->height_overlay()->hash() : 0u;
-        source.bake_mode_salt = bake_mode::salt();
-        source.mesher_semantic_version = terrain_mesher::kSemanticVersion;
-        source.geometry_format_version = 1u;
-
-        terrain_collision::CanonicalDefinition canonical{};
-        std::string collision_error;
-        if (!terrain_collision::canonicalize(
-                *provider->terrain_collision(), world_sector_size, source,
-                canonical, collision_error)) {
-            err = collision_error.empty()
-                ? "terrain collision canonicalization failed"
-                : collision_error;
-            fail_terrain_collision("canonicalization-failed", err);
-            return false;
-        }
-        {
-            std::lock_guard<std::recursive_mutex> generation_lock(
-                terrain_collision_generation_mutex);
-            if (token && token->is_cancelled()) {
-                err = "cancelled";
-                return false;
+            if (collision_definition) {
+                test_builder = test_terrain_collision_build_callback;
+                before_build_hook = test_terrain_collision_before_build_hook;
             }
-            std::lock_guard<std::mutex> status_lock(
-                terrain_collision_status_mutex);
-            terrain_collision_status_copy = {};
-            terrain_collision_status_copy.state =
-                matter::TerrainCollisionState::Building;
-            terrain_collision_status_copy.generation_key =
-                canonical.installation_key;
-            terrain_collision_status_copy.geometry_key = canonical.geometry_key;
-            terrain_collision_status_copy.cell_size_m = canonical.cell_size_m;
-            terrain_collision_status_copy.rung = canonical.rung;
-            terrain_collision_status_copy.region_count =
-                static_cast<std::uint32_t>(canonical.regions.size());
-            terrain_collision_status_copy.sector_count =
-                static_cast<std::uint32_t>(canonical.sectors.size());
         }
 
-        terrain_collision::TerrainCollisionCandidate candidate{};
-        const std::function<bool()> cancelled = [token] {
-            return token && token->is_cancelled();
-        };
-        const bool built = test_builder
-            ? test_builder(*world_field, canonical, cfg.cache_root,
-                           cancelled, candidate, collision_error)
-            : terrain_collision::load_or_build_candidate(
-                  *world_field, canonical, cfg.cache_root, cancelled,
-                  candidate, collision_error);
-        if (cancelled()) {
-            err = "cancelled";
-            return false;
-        }
-        if (!built) {
-            err = collision_error.empty()
-                ? "terrain collision candidate build failed"
-                : collision_error;
-            fail_terrain_collision("build-failed", err);
-            return false;
-        }
+        if (collision_definition) {
+            {
+                std::lock_guard<std::recursive_mutex> generation_lock(
+                    terrain_collision_generation_mutex);
+                if (token && token->is_cancelled()) {
+                    set_cancelled_error();
+                    return false;
+                }
+                std::lock_guard<std::mutex> status_lock(
+                    terrain_collision_status_mutex);
+                terrain_collision_status_copy = {};
+                terrain_collision_status_copy.state =
+                    matter::TerrainCollisionState::Building;
+            }
+            if (before_build_hook) before_build_hook();
 
-        std::shared_ptr<const terrain_collision::TerrainCollisionCandidate>
-            accepted_candidate = std::make_shared<
-                const terrain_collision::TerrainCollisionCandidate>(
-                    std::move(candidate));
-        if (candidate_observer) candidate_observer(accepted_candidate);
-        {
-            std::lock_guard<std::recursive_mutex> generation_lock(
-                terrain_collision_generation_mutex);
-            if (token && token->is_cancelled()) {
-                err = "cancelled";
+            terrain_collision::SourceIdentity source{};
+            source.field_hash = world_field->hash();
+            source.overlay_hash = world_field->height_overlay()
+                ? world_field->height_overlay()->hash() : 0u;
+            source.bake_mode_salt = bake_mode::salt();
+            source.mesher_semantic_version = terrain_mesher::kSemanticVersion;
+            source.geometry_format_version = 1u;
+
+            terrain_collision::CanonicalDefinition canonical{};
+            std::string collision_error;
+            if (!terrain_collision::canonicalize(
+                    *collision_definition, world_sector_size, source,
+                    canonical, collision_error)) {
+                fail_terrain_collision(
+                    "canonicalization-failed",
+                    collision_error.empty()
+                        ? "terrain collision canonicalization failed"
+                        : collision_error.c_str());
                 return false;
             }
-            std::lock_guard<std::mutex> status_lock(
-                terrain_collision_status_mutex);
-            auto& status = terrain_collision_status_copy;
-            status.state = matter::TerrainCollisionState::CandidateReady;
-            status.generation_key = accepted_candidate->installation_key;
-            status.geometry_key = accepted_candidate->geometry_key;
-            status.non_empty_tile_count = 0;
-            for (const auto& tile : accepted_candidate->tiles) {
-                if (!tile.vertices.empty() || !tile.indices.empty())
-                    ++status.non_empty_tile_count;
+            {
+                std::lock_guard<std::recursive_mutex> generation_lock(
+                    terrain_collision_generation_mutex);
+                if (token && token->is_cancelled()) {
+                    set_cancelled_error();
+                    return false;
+                }
+                std::lock_guard<std::mutex> status_lock(
+                    terrain_collision_status_mutex);
+                terrain_collision_status_copy = {};
+                terrain_collision_status_copy.state =
+                    matter::TerrainCollisionState::Building;
+                terrain_collision_status_copy.generation_key =
+                    canonical.installation_key;
+                terrain_collision_status_copy.geometry_key =
+                    canonical.geometry_key;
+                terrain_collision_status_copy.cell_size_m =
+                    canonical.cell_size_m;
+                terrain_collision_status_copy.rung = canonical.rung;
+                terrain_collision_status_copy.region_count =
+                    static_cast<std::uint32_t>(canonical.regions.size());
+                terrain_collision_status_copy.sector_count =
+                    static_cast<std::uint32_t>(canonical.sectors.size());
             }
-            status.empty_tile_count =
-                static_cast<std::uint32_t>(accepted_candidate->tiles.size()) -
-                status.non_empty_tile_count;
-            status.triangle_count =
-                accepted_candidate->stats.triangle_count;
-            status.unique_vertex_count =
-                accepted_candidate->stats.unique_vertex_count;
-            status.artifact_bytes = accepted_candidate->stats.artifact_bytes;
-            status.cold_build_ms = accepted_candidate->stats.cold_build_ms;
-            status.cache_load_ms = accepted_candidate->stats.cache_load_ms;
-            status.validation_ms = accepted_candidate->stats.validation_ms;
-            status.failure_code.clear();
-            status.failure_message.clear();
+
+            terrain_collision::TerrainCollisionCandidate candidate{};
+            const std::function<bool()> cancelled = [token] {
+                return token && token->is_cancelled();
+            };
+            const bool built = test_builder
+                ? test_builder(*world_field, canonical, cfg.cache_root,
+                               cancelled, candidate, collision_error)
+                : terrain_collision::load_or_build_candidate(
+                      *world_field, canonical, cfg.cache_root, cancelled,
+                      candidate, collision_error);
+            if (cancelled()) {
+                set_cancelled_error();
+                return false;
+            }
+            if (!built) {
+                fail_terrain_collision(
+                    "build-failed",
+                    collision_error.empty()
+                        ? "terrain collision candidate build failed"
+                        : collision_error.c_str());
+                return false;
+            }
+
+            TerrainCollisionCandidateOwner accepted_candidate =
+                std::make_shared<
+                    const terrain_collision::TerrainCollisionCandidate>(
+                        std::move(candidate));
+            if (candidate_observer) candidate_observer(accepted_candidate);
+            {
+                std::lock_guard<std::recursive_mutex> generation_lock(
+                    terrain_collision_generation_mutex);
+                if (token && token->is_cancelled()) {
+                    set_cancelled_error();
+                    return false;
+                }
+                std::lock_guard<std::mutex> status_lock(
+                    terrain_collision_status_mutex);
+                auto& status = terrain_collision_status_copy;
+                status.state = matter::TerrainCollisionState::CandidateReady;
+                status.generation_key = accepted_candidate->installation_key;
+                status.geometry_key = accepted_candidate->geometry_key;
+                status.non_empty_tile_count = 0;
+                for (const auto& tile : accepted_candidate->tiles) {
+                    if (!tile.vertices.empty() || !tile.indices.empty())
+                        ++status.non_empty_tile_count;
+                }
+                status.empty_tile_count = static_cast<std::uint32_t>(
+                    accepted_candidate->tiles.size()) -
+                    status.non_empty_tile_count;
+                status.triangle_count =
+                    accepted_candidate->stats.triangle_count;
+                status.unique_vertex_count =
+                    accepted_candidate->stats.unique_vertex_count;
+                status.artifact_bytes =
+                    accepted_candidate->stats.artifact_bytes;
+                status.cold_build_ms = accepted_candidate->stats.cold_build_ms;
+                status.cache_load_ms = accepted_candidate->stats.cache_load_ms;
+                status.validation_ms =
+                    accepted_candidate->stats.validation_ms;
+                status.failure_code.clear();
+                status.failure_message.clear();
+            }
+            terrain_publication.action =
+                TerrainCollisionPublicationAction::Replace;
+            terrain_publication.candidate_slot =
+                std::make_shared<TerrainCollisionCandidateOwner>(
+                    std::move(accepted_candidate));
         }
-        terrain_publication.action =
-            TerrainCollisionPublicationAction::Replace;
-        terrain_publication.candidate = std::move(accepted_candidate);
-        } catch (const std::bad_alloc&) {
-            if (token && token->is_cancelled()) {
-                err = "cancelled";
-                return false;
-            }
-            terrain_collision_failed = true;
-            err = "terrain collision setup/build allocation failed";
-            fail_terrain_collision("allocation-failed", err);
-            return false;
-        } catch (const std::exception& exception) {
-            if (token && token->is_cancelled()) {
-                err = "cancelled";
-                return false;
-            }
-            terrain_collision_failed = true;
-            err = "terrain collision setup/build exception: ";
-            err += exception.what();
-            fail_terrain_collision("build-exception", err);
-            return false;
-        } catch (...) {
-            if (token && token->is_cancelled()) {
-                err = "cancelled";
-                return false;
-            }
-            terrain_collision_failed = true;
-            err = "unknown terrain collision setup/build exception";
-            fail_terrain_collision("build-exception", err);
+        terrain_publication.test_publication_hook =
+            std::move(publication_hook);
+        terrain_publication.test_candidate_observer =
+            std::move(candidate_observer);
+    } catch (const std::bad_alloc&) {
+        if (token && token->is_cancelled()) {
+            set_cancelled_error();
             return false;
         }
+        fail_terrain_collision(
+            "allocation-failed",
+            "terrain collision setup/build allocation failed");
+        return false;
+    } catch (const std::exception& exception) {
+        if (token && token->is_cancelled()) {
+            set_cancelled_error();
+            return false;
+        }
+        fail_terrain_collision("build-exception", exception.what());
+        return false;
+    } catch (...) {
+        if (token && token->is_cancelled()) {
+            set_cancelled_error();
+            return false;
+        }
+        fail_terrain_collision(
+            "build-exception",
+            "unknown terrain collision setup/build exception");
+        return false;
     }
     {
         char hbuf[32];
@@ -10118,6 +10288,20 @@ void WorldSession::set_test_terrain_collision_candidate_observer(
     std::lock_guard<std::recursive_mutex> generation_lock(
         impl_->terrain_collision_generation_mutex);
     impl_->test_terrain_collision_candidate_observer = std::move(observer);
+}
+
+void WorldSession::set_test_terrain_collision_failure_record_bad_alloc(
+    bool enabled) noexcept {
+    impl_->test_terrain_collision_failure_record_bad_alloc.store(
+        enabled, std::memory_order_release);
+}
+
+bool WorldSession::connected_for_test() const noexcept {
+    return impl_->connected.load(std::memory_order_acquire);
+}
+
+bool WorldSession::has_pending_gpu_jobs_for_test() const {
+    return !impl_->gpu_jobs.idle();
 }
 
 void WorldSession::set_test_terrain_collision_publication_hook(
