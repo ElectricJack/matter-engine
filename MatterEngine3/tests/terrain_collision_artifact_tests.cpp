@@ -979,6 +979,10 @@ void test_corrupt_artifacts_are_rebuilt_once_and_fail_closed() {
 
 using PublicationCommitPoint =
     matter::terrain_collision::detail::PublicationCommitPoint;
+using PublicationMoveOperation =
+    matter::terrain_collision::detail::PublicationMoveOperation;
+using PublicationWinnerArtifact =
+    matter::terrain_collision::detail::PublicationWinnerArtifact;
 
 class TwoPublisherBarrier {
 public:
@@ -1032,6 +1036,19 @@ std::size_t count_files_with_extension(const std::filesystem::path& directory,
         if (entry.is_regular_file() && entry.path().extension() == extension)
             ++count;
     return count;
+}
+
+std::size_t count_publication_temps(const std::filesystem::path& root) {
+    std::error_code error;
+    if (!std::filesystem::exists(root, error) || error) return 0u;
+    std::size_t count = 0u;
+    for (std::filesystem::recursive_directory_iterator it(root, error), end;
+         it != end && !error; it.increment(error)) {
+        if (it->is_regular_file(error) && !error &&
+            it->path().filename().string().find(".tmp-") != std::string::npos)
+            ++count;
+    }
+    return error ? std::numeric_limits<std::size_t>::max() : count;
 }
 
 void test_cancellation_is_polled_at_atomic_publication_boundaries() {
@@ -1150,7 +1167,33 @@ void test_concurrent_publishers_validate_winners_and_converge() {
     std::atomic<unsigned> mesher_calls{0u};
     std::atomic<unsigned> tile_winners{0u};
     std::atomic<unsigned> manifest_winners{0u};
+#ifdef _WIN32
+    std::atomic<unsigned> transient_denials{0u};
+    std::atomic<unsigned> no_replace_moves{0u};
+    std::atomic<unsigned> replace_moves{0u};
+    std::atomic<unsigned> winner_open_denials{0u};
+#endif
     auto hooks = counting_mesher_hooks(mesher_calls);
+#ifdef _WIN32
+    hooks.publication_move_error =
+        [&transient_denials, &no_replace_moves, &replace_moves](
+                             PublicationMoveOperation operation,
+                             std::uint32_t attempt) -> std::uint32_t {
+            if (attempt != 0u) return 0u;
+            transient_denials.fetch_add(1u, std::memory_order_relaxed);
+            (operation == PublicationMoveOperation::NoReplace
+                 ? no_replace_moves : replace_moves)
+                .fetch_add(1u, std::memory_order_relaxed);
+            return 5u;  // ERROR_ACCESS_DENIED
+        };
+    hooks.publication_winner_open_error =
+        [&winner_open_denials](PublicationWinnerArtifact,
+                               std::uint32_t attempt) -> std::uint32_t {
+            if (attempt != 0u) return 0u;
+            winner_open_denials.fetch_add(1u, std::memory_order_relaxed);
+            return 32u;  // ERROR_SHARING_VIOLATION
+        };
+#endif
     hooks.before_publication_commit = [&](PublicationCommitPoint point) {
         barrier.arrive(point);
         if (point == PublicationCommitPoint::TileExistingWinner)
@@ -1177,10 +1220,21 @@ void test_concurrent_publishers_validate_winners_and_converge() {
           "both writers deterministically reach tile and manifest commit races");
     CHECK(results[0].ok && results[1].ok,
           "both concurrent publishers accept a validated immutable winner");
-    CHECK(mesher_calls.load(std::memory_order_relaxed) == 2u &&
-              tile_winners.load(std::memory_order_relaxed) == 1u &&
-              manifest_winners.load(std::memory_order_relaxed) == 1u,
-          "one loser validates each concurrently published tile and manifest winner");
+    const bool common_winner_counts_ok =
+        mesher_calls.load(std::memory_order_relaxed) == 2u &&
+        tile_winners.load(std::memory_order_relaxed) == 1u &&
+        manifest_winners.load(std::memory_order_relaxed) == 1u;
+#ifdef _WIN32
+    const bool windows_recovery_counts_ok =
+        transient_denials.load(std::memory_order_relaxed) == 4u &&
+        no_replace_moves.load(std::memory_order_relaxed) == 4u &&
+        replace_moves.load(std::memory_order_relaxed) == 0u &&
+        winner_open_denials.load(std::memory_order_relaxed) == 2u;
+#else
+    const bool windows_recovery_counts_ok = true;
+#endif
+    CHECK(common_winner_counts_ok && windows_recovery_counts_ok,
+          "transient denial recovery still validates one tile and manifest winner");
     if (!results[0].ok || !results[1].ok) return;
     CHECK(same_tiles(results[0].candidate, results[1].candidate),
           "concurrent publishers converge to byte-identical candidate geometry");
@@ -1198,6 +1252,159 @@ void test_concurrent_publishers_validate_winners_and_converge() {
           validation_error.c_str());
 }
 
+#ifdef _WIN32
+void assert_windows_persistent_winner_open_denial_fails_closed(
+    PublicationWinnerArtifact denied_artifact,
+    const char* label) {
+    TestField field = make_field(kPlaneField);
+    const CanonicalDefinition definition = definition_for(field);
+    TempRoot root(label);
+    TwoPublisherBarrier barrier(
+        true, denied_artifact == PublicationWinnerArtifact::Manifest);
+    std::atomic<unsigned> open_attempts{0u};
+    matter::terrain_collision::detail::BuildTestHooks hooks{};
+    hooks.before_publication_commit =
+        [&barrier](PublicationCommitPoint point) { barrier.arrive(point); };
+    hooks.publication_winner_open_error =
+        [&open_attempts, denied_artifact](PublicationWinnerArtifact artifact,
+                                          std::uint32_t) -> std::uint32_t {
+            if (artifact != denied_artifact) return 0u;
+            open_attempts.fetch_add(1u, std::memory_order_relaxed);
+            return 32u;  // ERROR_SHARING_VIOLATION remains persistent.
+        };
+
+    ConcurrentBuildResult results[2];
+    std::thread first([&] {
+        results[0].ok = load_with_hooks(
+            field, definition, root.path, {}, hooks, results[0].candidate,
+            results[0].error);
+    });
+    std::thread second([&] {
+        results[1].ok = load_with_hooks(
+            field, definition, root.path, {}, hooks, results[1].candidate,
+            results[1].error);
+    });
+    first.join();
+    second.join();
+
+    const unsigned success_count =
+        (results[0].ok ? 1u : 0u) + (results[1].ok ? 1u : 0u);
+    const ConcurrentBuildResult& failed =
+        results[0].ok ? results[1] : results[0];
+    const ConcurrentBuildResult& winner =
+        results[0].ok ? results[0] : results[1];
+    const unsigned attempts = open_attempts.load(std::memory_order_relaxed);
+    CHECK(!barrier.timed_out() && success_count == 1u && attempts >= 2u &&
+              attempts <= 8u,
+          "persistent winner sharing denial is retried boundedly and fails closed");
+    CHECK(!failed.ok && failed.candidate.tiles.empty() &&
+              failed.error.find("validate") != std::string::npos &&
+              count_publication_temps(root.path) == 0u,
+          "persistent winner sharing denial accepts no winner and leaves no temporary");
+    if (!winner.ok) return;
+    std::string validation_error;
+    CHECK(count_files_with_extension(
+              root.path / "terrain_collision" / "v1" / "tiles", ".mtct") ==
+              1u &&
+              count_files_with_extension(
+                  root.path / "terrain_collision" / "v1" / "generations",
+                  ".mtcm") == 1u &&
+              matter::terrain_collision::detail::validate_generation_manifest(
+                  manifest_path(root.path, winner.candidate.installation_key),
+                  definition, winner.candidate, validation_error),
+          "persistent loser denial preserves one immutable validated winner");
+}
+
+void test_windows_persistent_winner_open_denial_fails_closed() {
+    assert_windows_persistent_winner_open_denial_fails_closed(
+        PublicationWinnerArtifact::Tile,
+        "windows-persistent-tile-winner-open-denial");
+    assert_windows_persistent_winner_open_denial_fails_closed(
+        PublicationWinnerArtifact::Manifest,
+        "windows-persistent-manifest-winner-open-denial");
+}
+#endif
+
+#ifdef _WIN32
+void test_windows_transient_publication_denial_is_bounded_and_safe() {
+    TestField field = make_field(kPlaneField);
+    const CanonicalDefinition definition = definition_for(field);
+    TempRoot root("windows-transient-publication");
+    std::atomic<unsigned> no_replace_attempts{0u};
+    std::atomic<unsigned> replace_attempts{0u};
+    matter::terrain_collision::detail::BuildTestHooks hooks{};
+    hooks.publication_move_error =
+        [&](PublicationMoveOperation operation,
+            std::uint32_t attempt) -> std::uint32_t {
+            std::atomic<unsigned>& calls =
+                operation == PublicationMoveOperation::NoReplace
+                    ? no_replace_attempts : replace_attempts;
+            calls.fetch_add(1u, std::memory_order_relaxed);
+            return attempt == 0u ? 5u : 0u;  // ERROR_ACCESS_DENIED, then real move.
+        };
+
+    TerrainCollisionCandidate cold{};
+    std::string error;
+    CHECK(load_with_hooks(field, definition, root.path, {}, hooks, cold, error),
+          error.c_str());
+    CHECK(no_replace_attempts.load(std::memory_order_relaxed) >= 4u &&
+              no_replace_attempts.load(std::memory_order_relaxed) <= 16u &&
+              replace_attempts.load(std::memory_order_relaxed) == 0u,
+          "tile and manifest no-replace publication retry transient denials boundedly");
+    CHECK(count_publication_temps(root.path) == 0u,
+          "successful no-replace recovery removes every publication temporary");
+
+    const std::filesystem::path tile =
+        tile_path(root.path, cold.tiles[0].tile_key);
+    const std::filesystem::path manifest =
+        manifest_path(root.path, cold.installation_key);
+    flip_byte(tile, 0u);
+    flip_byte(manifest, 80u);
+    no_replace_attempts.store(0u, std::memory_order_relaxed);
+    replace_attempts.store(0u, std::memory_order_relaxed);
+    TerrainCollisionCandidate repaired{};
+    error.clear();
+    CHECK(load_with_hooks(field, definition, root.path, {}, hooks, repaired, error),
+          error.c_str());
+    CHECK(replace_attempts.load(std::memory_order_relaxed) >= 4u &&
+              replace_attempts.load(std::memory_order_relaxed) <= 16u &&
+              no_replace_attempts.load(std::memory_order_relaxed) == 0u,
+          "tile and manifest corrupt-winner replacement retry transient denials boundedly");
+    CHECK(count_publication_temps(root.path) == 0u &&
+              matter::terrain_collision::detail::validate_generation_manifest(
+                  manifest, definition, repaired, error),
+          "replacement recovery leaves no temporary and one validated generation");
+
+    TempRoot denied_root("windows-persistent-publication-denial");
+    std::atomic<unsigned> persistent_attempts{0u};
+    matter::terrain_collision::detail::BuildTestHooks denied_hooks{};
+    denied_hooks.publication_move_error =
+        [&persistent_attempts](PublicationMoveOperation operation,
+                               std::uint32_t) -> std::uint32_t {
+            if (operation == PublicationMoveOperation::NoReplace)
+                persistent_attempts.fetch_add(1u, std::memory_order_relaxed);
+            return 5u;  // ERROR_ACCESS_DENIED never means DestinationExists.
+        };
+    TerrainCollisionCandidate denied{};
+    error.clear();
+    CHECK(!load_with_hooks(field, definition, denied_root.path, {}, denied_hooks,
+                           denied, error) &&
+              error.find("publish") != std::string::npos,
+          "persistent access denial fails instead of becoming a destination winner");
+    const unsigned attempts =
+        persistent_attempts.load(std::memory_order_relaxed);
+    CHECK(attempts >= 2u && attempts <= 8u && denied.tiles.empty() &&
+              count_publication_temps(denied_root.path) == 0u &&
+              count_files_with_extension(
+                  denied_root.path / "terrain_collision" / "v1" / "tiles",
+                  ".mtct") == 0u &&
+              count_files_with_extension(
+                  denied_root.path / "terrain_collision" / "v1" /
+                      "generations", ".mtcm") == 0u,
+          "persistent denial recovery is bounded and publishes no partial generation");
+}
+#endif
+
 void assert_cancelled_existing_winner(PublicationCommitPoint race_point,
                                       PublicationCommitPoint cancel_point,
                                       const char* label) {
@@ -1209,6 +1416,9 @@ void assert_cancelled_existing_winner(PublicationCommitPoint race_point,
         race_point == PublicationCommitPoint::ManifestNoReplace);
     ConcurrentBuildResult results[2];
     std::atomic<unsigned> cancelled_winners{0u};
+#ifdef _WIN32
+    std::atomic<unsigned> transient_open_denials{0u};
+#endif
 
     const auto run = [&](ConcurrentBuildResult& result) {
         std::atomic<bool> cancelled{false};
@@ -1220,6 +1430,22 @@ void assert_cancelled_existing_winner(PublicationCommitPoint race_point,
                 cancelled.store(true, std::memory_order_release);
             }
         };
+#ifdef _WIN32
+        hooks.publication_winner_open_error =
+            [&](PublicationWinnerArtifact artifact,
+                std::uint32_t attempt) -> std::uint32_t {
+                const bool target_artifact =
+                    (cancel_point == PublicationCommitPoint::TileExistingWinner &&
+                     artifact == PublicationWinnerArtifact::Tile) ||
+                    (cancel_point ==
+                         PublicationCommitPoint::ManifestExistingWinner &&
+                     artifact == PublicationWinnerArtifact::Manifest);
+                if (!target_artifact || attempt != 0u) return 0u;
+                transient_open_denials.fetch_add(1u,
+                                                 std::memory_order_relaxed);
+                return 32u;
+            };
+#endif
         result.ok = load_with_hooks(
             field, definition, root.path,
             [&cancelled] {
@@ -1236,8 +1462,15 @@ void assert_cancelled_existing_winner(PublicationCommitPoint race_point,
         (results[0].ok ? 1u : 0u) + (results[1].ok ? 1u : 0u);
     const ConcurrentBuildResult& failed = results[0].ok ? results[1] : results[0];
     const ConcurrentBuildResult& winner = results[0].ok ? results[0] : results[1];
+#ifdef _WIN32
+    const bool transient_open_recovered =
+        transient_open_denials.load(std::memory_order_relaxed) == 1u;
+#else
+    const bool transient_open_recovered = true;
+#endif
     CHECK(!barrier.timed_out() && success_count == 1u &&
-              cancelled_winners.load(std::memory_order_relaxed) == 1u,
+              cancelled_winners.load(std::memory_order_relaxed) == 1u &&
+              transient_open_recovered,
           "one concurrent loser is cancelled at its validated-winner boundary");
     CHECK(!failed.ok && failed.candidate.tiles.empty() &&
               failed.error.find("cancel") != std::string::npos,
@@ -1302,6 +1535,10 @@ int main() {
     test_corrupt_artifacts_are_rebuilt_once_and_fail_closed();
     test_cancellation_is_polled_at_atomic_publication_boundaries();
     test_concurrent_publishers_validate_winners_and_converge();
+#ifdef _WIN32
+    test_windows_transient_publication_denial_is_bounded_and_safe();
+    test_windows_persistent_winner_open_denial_fails_closed();
+#endif
     test_cancellation_precedes_validated_winner_acceptance();
     test_interrupted_temporary_file_never_becomes_addressable();
     return check_summary();

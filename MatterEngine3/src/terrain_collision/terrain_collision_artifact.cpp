@@ -520,7 +520,8 @@ bool serialize_tile(const TileCandidate& tile,
 bool read_exact_file(const std::filesystem::path& path,
                      std::uint64_t expected_bytes,
                      std::vector<std::uint8_t>& bytes,
-                     std::string& error) {
+                     std::string& error,
+                     std::uint32_t* open_error = nullptr) {
     std::size_t allocation_size = 0u;
     if (!to_size(expected_bytes, allocation_size))
         return fail(error, "terrain collision cache file is too large for this platform");
@@ -528,7 +529,12 @@ bool read_exact_file(const std::filesystem::path& path,
     if (!to_streamsize(allocation_size, read_size))
         return fail(error, "terrain collision cache file exceeds stream limits");
     std::ifstream stream(path, std::ios::binary);
-    if (!stream) return fail(error, "could not open terrain collision cache file");
+    if (!stream) {
+#ifdef _WIN32
+        if (open_error) *open_error = static_cast<std::uint32_t>(GetLastError());
+#endif
+        return fail(error, "could not open terrain collision cache file");
+    }
     bytes.resize(allocation_size);
     if (read_size != 0)
         stream.read(reinterpret_cast<char*>(bytes.data()), read_size);
@@ -541,15 +547,25 @@ bool load_tile_file(const std::filesystem::path& path,
                     const CanonicalDefinition& definition,
                     const SectorCoordinate& coordinate,
                     TileCandidate& tile, std::uint64_t& artifact_bytes,
-                    double* validation_ms, std::string& error) {
+                    double* validation_ms, std::string& error,
+                    std::uint32_t* open_error = nullptr) {
+    if (open_error) *open_error = 0u;
     std::error_code filesystem_error;
     const std::uintmax_t file_size =
         std::filesystem::file_size(path, filesystem_error);
     if (filesystem_error || file_size < kTileHeaderBytes ||
-        file_size > std::numeric_limits<std::uint64_t>::max())
+        file_size > std::numeric_limits<std::uint64_t>::max()) {
+        if (open_error && filesystem_error)
+            *open_error = static_cast<std::uint32_t>(filesystem_error.value());
         return fail(error, "MTCT file size is invalid");
+    }
     std::ifstream header_stream(path, std::ios::binary);
-    if (!header_stream) return fail(error, "could not open MTCT header");
+    if (!header_stream) {
+#ifdef _WIN32
+        if (open_error) *open_error = static_cast<std::uint32_t>(GetLastError());
+#endif
+        return fail(error, "could not open MTCT header");
+    }
     std::array<std::uint8_t, static_cast<std::size_t>(kTileHeaderBytes)> header_bytes{};
     header_stream.read(reinterpret_cast<char*>(header_bytes.data()),
                        static_cast<std::streamsize>(header_bytes.size()));
@@ -567,7 +583,8 @@ bool load_tile_file(const std::filesystem::path& path,
     if (expected_bytes != static_cast<std::uint64_t>(file_size))
         return fail(error, "MTCT exact file length does not match its counts");
     std::vector<std::uint8_t> bytes;
-    if (!read_exact_file(path, expected_bytes, bytes, error)) return false;
+    if (!read_exact_file(path, expected_bytes, bytes, error, open_error))
+        return false;
     const Clock::time_point validation_start = Clock::now();
     const bool valid = detail::validate_tile_artifact_bytes(
         bytes, definition, coordinate, tile, artifact_bytes, error);
@@ -789,16 +806,26 @@ bool read_manifest_file(const std::filesystem::path& path,
                         const TerrainCollisionCandidate& candidate,
                         const std::vector<std::uint64_t>& artifact_sizes,
                         std::vector<std::uint8_t>& bytes,
-                        std::string& error) {
+                        std::string& error,
+                        std::uint32_t* open_error = nullptr) {
+    if (open_error) *open_error = 0u;
     std::error_code filesystem_error;
     const std::uintmax_t file_size =
         std::filesystem::file_size(path, filesystem_error);
     if (filesystem_error || file_size <
             kManifestHeaderBytes + kManifestTrailerBytes ||
-        file_size > std::numeric_limits<std::uint64_t>::max())
+        file_size > std::numeric_limits<std::uint64_t>::max()) {
+        if (open_error && filesystem_error)
+            *open_error = static_cast<std::uint32_t>(filesystem_error.value());
         return fail(error, "MTCM file size is invalid");
+    }
     std::ifstream header_stream(path, std::ios::binary);
-    if (!header_stream) return fail(error, "could not open MTCM header");
+    if (!header_stream) {
+#ifdef _WIN32
+        if (open_error) *open_error = static_cast<std::uint32_t>(GetLastError());
+#endif
+        return fail(error, "could not open MTCM header");
+    }
     std::array<std::uint8_t, static_cast<std::size_t>(kManifestHeaderBytes)>
         header_bytes{};
     header_stream.read(reinterpret_cast<char*>(header_bytes.data()),
@@ -812,7 +839,8 @@ bool read_manifest_file(const std::filesystem::path& path,
         return false;
     if (expected_bytes != static_cast<std::uint64_t>(file_size))
         return fail(error, "MTCM exact file length does not match its tile count");
-    if (!read_exact_file(path, expected_bytes, bytes, error)) return false;
+    if (!read_exact_file(path, expected_bytes, bytes, error, open_error))
+        return false;
     return validate_manifest_bytes(bytes, definition, candidate, artifact_sizes,
                                    error);
 }
@@ -874,14 +902,47 @@ bool write_temp_file(const std::filesystem::path& destination,
     return true;
 }
 
+#ifdef _WIN32
+constexpr std::uint32_t kWindowsPublicationMaxAttempts = 4u;
+
+DWORD move_file_windows(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination,
+    DWORD flags,
+    detail::PublicationMoveOperation operation,
+    const detail::BuildTestHooks* hooks) {
+    DWORD move_error = ERROR_SUCCESS;
+    for (std::uint32_t attempt = 0u;
+         attempt != kWindowsPublicationMaxAttempts;
+         ++attempt) {
+        const std::uint32_t injected_error =
+            hooks && hooks->publication_move_error
+                ? hooks->publication_move_error(operation, attempt) : 0u;
+        if (injected_error != 0u) {
+            move_error = static_cast<DWORD>(injected_error);
+        } else if (MoveFileExW(source.c_str(), destination.c_str(), flags) != 0) {
+            return ERROR_SUCCESS;
+        } else {
+            move_error = GetLastError();
+        }
+        if (move_error != ERROR_ACCESS_DENIED) break;
+    }
+    return move_error;
+}
+#endif
+
 bool replace_file(const std::filesystem::path& source,
                   const std::filesystem::path& destination,
+                  const detail::BuildTestHooks* hooks,
                   std::string& error) {
 #ifdef _WIN32
-    if (MoveFileExW(source.c_str(), destination.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0)
+    if (move_file_windows(
+            source, destination,
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            detail::PublicationMoveOperation::Replace, hooks) != ERROR_SUCCESS)
         return fail(error, "could not publish terrain collision cache file");
 #else
+    (void)hooks;
     if (std::rename(source.c_str(), destination.c_str()) != 0)
         return fail(error, "could not publish terrain collision cache file");
 #endif
@@ -897,15 +958,18 @@ enum class PublishNoReplaceResult {
 PublishNoReplaceResult publish_file_no_replace(
     const std::filesystem::path& source,
     const std::filesystem::path& destination,
+    const detail::BuildTestHooks* hooks,
     std::string& error) {
 #ifdef _WIN32
-    if (MoveFileExW(source.c_str(), destination.c_str(),
-                    MOVEFILE_WRITE_THROUGH) != 0)
+    const DWORD move_error = move_file_windows(
+        source, destination, MOVEFILE_WRITE_THROUGH,
+        detail::PublicationMoveOperation::NoReplace, hooks);
+    if (move_error == ERROR_SUCCESS)
         return PublishNoReplaceResult::Published;
-    const DWORD move_error = GetLastError();
     if (move_error == ERROR_ALREADY_EXISTS || move_error == ERROR_FILE_EXISTS)
         return PublishNoReplaceResult::DestinationExists;
 #else
+    (void)hooks;
     if (::link(source.c_str(), destination.c_str()) == 0) {
         if (::unlink(source.c_str()) == 0)
             return PublishNoReplaceResult::Published;
@@ -933,6 +997,89 @@ bool continue_publication(
     if (!cancelled_now(cancelled)) return true;
     remove_temp(temp_path);
     return fail(error, "terrain collision candidate build cancelled");
+}
+
+enum class WinnerValidationResult {
+    Valid,
+    Invalid,
+    RetryableFailure,
+};
+
+WinnerValidationResult validate_tile_winner(
+    const std::filesystem::path& destination,
+    const CanonicalDefinition& definition,
+    const SectorCoordinate& coordinate,
+    TileCandidate& existing,
+    std::uint64_t& existing_bytes,
+    double& validation_ms,
+    const detail::BuildTestHooks* hooks,
+    std::string& existing_error) {
+#ifdef _WIN32
+    for (std::uint32_t attempt = 0u;
+         attempt != kWindowsPublicationMaxAttempts;
+         ++attempt) {
+        std::uint32_t open_error =
+            hooks && hooks->publication_winner_open_error
+                ? hooks->publication_winner_open_error(
+                      detail::PublicationWinnerArtifact::Tile, attempt) : 0u;
+        if (open_error == 0u &&
+            load_tile_file(destination, definition, coordinate, existing,
+                           existing_bytes, &validation_ms, existing_error,
+                           &open_error))
+            return WinnerValidationResult::Valid;
+        if (open_error != ERROR_SHARING_VIOLATION)
+            return WinnerValidationResult::Invalid;
+        existing_error = "could not open MTCT header";
+    }
+    return WinnerValidationResult::RetryableFailure;
+#else
+    (void)hooks;
+    return load_tile_file(destination, definition, coordinate, existing,
+                          existing_bytes, &validation_ms, existing_error)
+        ? WinnerValidationResult::Valid : WinnerValidationResult::Invalid;
+#endif
+}
+
+WinnerValidationResult validate_manifest_winner(
+    const std::filesystem::path& destination,
+    const CanonicalDefinition& definition,
+    const TerrainCollisionCandidate& candidate,
+    const std::vector<std::uint64_t>& artifact_sizes,
+    std::vector<std::uint8_t>& existing_bytes,
+    double& validation_ms,
+    const detail::BuildTestHooks* hooks,
+    std::string& existing_error) {
+#ifdef _WIN32
+    for (std::uint32_t attempt = 0u;
+         attempt != kWindowsPublicationMaxAttempts;
+         ++attempt) {
+        std::uint32_t open_error =
+            hooks && hooks->publication_winner_open_error
+                ? hooks->publication_winner_open_error(
+                      detail::PublicationWinnerArtifact::Manifest, attempt) : 0u;
+        if (open_error == 0u) {
+            const Clock::time_point start = Clock::now();
+            const bool valid = read_manifest_file(
+                destination, definition, candidate, artifact_sizes,
+                existing_bytes, existing_error, &open_error);
+            validation_ms += elapsed_ms(start);
+            if (valid) return WinnerValidationResult::Valid;
+        }
+        if (open_error != ERROR_SHARING_VIOLATION)
+            return WinnerValidationResult::Invalid;
+        existing_error = "could not open MTCM header";
+    }
+    return WinnerValidationResult::RetryableFailure;
+#else
+    (void)hooks;
+    const Clock::time_point start = Clock::now();
+    const bool valid = read_manifest_file(
+        destination, definition, candidate, artifact_sizes, existing_bytes,
+        existing_error);
+    validation_ms += elapsed_ms(start);
+    return valid ? WinnerValidationResult::Valid
+                 : WinnerValidationResult::Invalid;
+#endif
 }
 
 bool publish_tile_file(const std::filesystem::path& destination,
@@ -973,8 +1120,10 @@ bool publish_tile_file(const std::filesystem::path& destination,
         TileCandidate existing{};
         std::uint64_t existing_bytes = 0u;
         std::string existing_error;
-        if (load_tile_file(destination, definition, coordinate, existing,
-                           existing_bytes, &validation_ms, existing_error)) {
+        const WinnerValidationResult existing_result = validate_tile_winner(
+            destination, definition, coordinate, existing, existing_bytes,
+            validation_ms, hooks, existing_error);
+        if (existing_result == WinnerValidationResult::Valid) {
             if (!continue_publication(
                     cancelled, hooks,
                     detail::PublicationCommitPoint::TileExistingWinner,
@@ -986,6 +1135,11 @@ bool publish_tile_file(const std::filesystem::path& destination,
             error.clear();
             return true;
         }
+        if (existing_result == WinnerValidationResult::RetryableFailure) {
+            remove_temp(temp_path);
+            return fail(error,
+                        "could not validate terrain collision tile winner");
+        }
     } else {
         if (!continue_publication(
                 cancelled, hooks,
@@ -993,7 +1147,7 @@ bool publish_tile_file(const std::filesystem::path& destination,
                 temp_path, error))
             return false;
         const PublishNoReplaceResult publish_result =
-            publish_file_no_replace(temp_path, destination, error);
+            publish_file_no_replace(temp_path, destination, hooks, error);
         if (publish_result == PublishNoReplaceResult::Published)
             return load_tile_file(destination, definition, coordinate, tile,
                                   artifact_bytes, &validation_ms, error);
@@ -1004,8 +1158,10 @@ bool publish_tile_file(const std::filesystem::path& destination,
         TileCandidate existing{};
         std::uint64_t existing_bytes = 0u;
         std::string existing_error;
-        if (load_tile_file(destination, definition, coordinate, existing,
-                           existing_bytes, &validation_ms, existing_error)) {
+        const WinnerValidationResult existing_result = validate_tile_winner(
+            destination, definition, coordinate, existing, existing_bytes,
+            validation_ms, hooks, existing_error);
+        if (existing_result == WinnerValidationResult::Valid) {
             if (!continue_publication(
                     cancelled, hooks,
                     detail::PublicationCommitPoint::TileExistingWinner,
@@ -1017,12 +1173,17 @@ bool publish_tile_file(const std::filesystem::path& destination,
             error.clear();
             return true;
         }
+        if (existing_result == WinnerValidationResult::RetryableFailure) {
+            remove_temp(temp_path);
+            return fail(error,
+                        "could not validate terrain collision tile winner");
+        }
     }
     if (!continue_publication(
             cancelled, hooks, detail::PublicationCommitPoint::TileReplace,
             temp_path, error))
         return false;
-    if (!replace_file(temp_path, destination, error)) {
+    if (!replace_file(temp_path, destination, hooks, error)) {
         remove_temp(temp_path);
         return false;
     }
@@ -1069,12 +1230,10 @@ bool publish_manifest_file(const std::filesystem::path& destination,
     if (destination_exists) {
         std::vector<std::uint8_t> existing_bytes;
         std::string existing_error;
-        start = Clock::now();
-        const bool existing_valid = read_manifest_file(
+        const WinnerValidationResult existing_result = validate_manifest_winner(
             destination, definition, candidate, artifact_sizes, existing_bytes,
-            existing_error);
-        validation_ms += elapsed_ms(start);
-        if (existing_valid) {
+            validation_ms, hooks, existing_error);
+        if (existing_result == WinnerValidationResult::Valid) {
             if (!continue_publication(
                     cancelled, hooks,
                     detail::PublicationCommitPoint::ManifestExistingWinner,
@@ -1084,6 +1243,11 @@ bool publish_manifest_file(const std::filesystem::path& destination,
             error.clear();
             return true;
         }
+        if (existing_result == WinnerValidationResult::RetryableFailure) {
+            remove_temp(temp_path);
+            return fail(error,
+                        "could not validate terrain collision manifest winner");
+        }
     } else {
         if (!continue_publication(
                 cancelled, hooks,
@@ -1091,7 +1255,7 @@ bool publish_manifest_file(const std::filesystem::path& destination,
                 temp_path, error))
             return false;
         const PublishNoReplaceResult publish_result =
-            publish_file_no_replace(temp_path, destination, error);
+            publish_file_no_replace(temp_path, destination, hooks, error);
         if (publish_result == PublishNoReplaceResult::Published) {
             std::vector<std::uint8_t> published_bytes;
             start = Clock::now();
@@ -1107,12 +1271,10 @@ bool publish_manifest_file(const std::filesystem::path& destination,
         }
         std::vector<std::uint8_t> existing_bytes;
         std::string existing_error;
-        start = Clock::now();
-        const bool existing_valid = read_manifest_file(
+        const WinnerValidationResult existing_result = validate_manifest_winner(
             destination, definition, candidate, artifact_sizes, existing_bytes,
-            existing_error);
-        validation_ms += elapsed_ms(start);
-        if (existing_valid) {
+            validation_ms, hooks, existing_error);
+        if (existing_result == WinnerValidationResult::Valid) {
             if (!continue_publication(
                     cancelled, hooks,
                     detail::PublicationCommitPoint::ManifestExistingWinner,
@@ -1122,12 +1284,17 @@ bool publish_manifest_file(const std::filesystem::path& destination,
             error.clear();
             return true;
         }
+        if (existing_result == WinnerValidationResult::RetryableFailure) {
+            remove_temp(temp_path);
+            return fail(error,
+                        "could not validate terrain collision manifest winner");
+        }
     }
     if (!continue_publication(
             cancelled, hooks, detail::PublicationCommitPoint::ManifestReplace,
             temp_path, error))
         return false;
-    if (!replace_file(temp_path, destination, error)) {
+    if (!replace_file(temp_path, destination, hooks, error)) {
         remove_temp(temp_path);
         return false;
     }

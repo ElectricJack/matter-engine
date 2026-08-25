@@ -75,6 +75,19 @@ enum class PublicationCommitPoint {
     ManifestExistingWinner,
 };
 
+// A nonzero return injects that Windows error for the requested move attempt;
+// zero performs the real platform operation. POSIX publication ignores this
+// deterministic test seam.
+enum class PublicationMoveOperation {
+    NoReplace,
+    Replace,
+};
+
+enum class PublicationWinnerArtifact {
+    Tile,
+    Manifest,
+};
+
 struct BuildTestHooks {
     std::function<bool(const terrain_field::FieldRuntime&,
                        const SectorCoordinate&,
@@ -83,6 +96,10 @@ struct BuildTestHooks {
                        terrain_mesher::SectorMesh&,
                        std::string&)> mesh_tile;
     std::function<void(PublicationCommitPoint)> before_publication_commit;
+    std::function<std::uint32_t(PublicationMoveOperation, std::uint32_t)>
+        publication_move_error;
+    std::function<std::uint32_t(PublicationWinnerArtifact, std::uint32_t)>
+        publication_winner_open_error;
 };
 
 bool load_or_build_candidate_with_test_hooks(
