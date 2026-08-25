@@ -19,6 +19,8 @@
 namespace matter::physics::detail {
 namespace {
 
+constexpr std::size_t kForceCommandCapacity = 4096;
+
 // E6: deliver one flecs entity event per endpoint of every captured pair, so
 // each participant independently hears "I touched `other`". Emitted for the
 // RigidBody id (every physics body carries it), on the tick thread, from the
@@ -271,6 +273,7 @@ struct PhysicsContext::Impl {
     std::unordered_map<flecs::entity_t, QueuedCommand> teleports;
     std::unordered_map<flecs::entity_t, QueuedCommand> velocities;
     std::vector<QueuedCommand> forces;
+    std::vector<QueuedCommand> force_drain_buffer;
     std::vector<QueuedCommand> impulses;
     std::unordered_set<
         QueuedCommand, QueuedCommandHash, QueuedCommandEqual> wakes;
@@ -509,6 +512,8 @@ PhysicsCommandTraceEntry trace_entry(const QueuedCommand& command) {
 
 PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
     : impl_(std::make_unique<Impl>()) {
+    impl_->forces.reserve(kForceCommandCapacity);
+    impl_->force_drain_buffer.reserve(kForceCommandCapacity);
     b3WorldDef world_def = b3DefaultWorldDef();
     world_def.workerCount = 1;
     world_def.gravity = {settings.gravity.x, settings.gravity.y,
@@ -669,9 +674,38 @@ bool PhysicsContext::enqueue_force(
     }
     try {
         std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        if (impl_->forces.size() >= kForceCommandCapacity) {
+            ++stats_.failed_commands;
+            return false;
+        }
         impl_->forces.push_back({
             originating_world, entity, PhysicsCommandKind::Force,
             force, {}, {}});
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool PhysicsContext::enqueue_force_at_world_point(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity,
+    Float3 force,
+    Float3 world_point) noexcept {
+    if (impl_ == nullptr || !finite(force) || !finite(world_point) ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        if (impl_->forces.size() >= kForceCommandCapacity) {
+            ++stats_.failed_commands;
+            return false;
+        }
+        impl_->forces.push_back({
+            originating_world, entity, PhysicsCommandKind::ForceAtPoint,
+            force, world_point, {}});
         return true;
     } catch (...) {
         return false;
@@ -891,7 +925,6 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
 
     std::unordered_map<flecs::entity_t, QueuedCommand> teleports;
     std::unordered_map<flecs::entity_t, QueuedCommand> velocities;
-    std::vector<QueuedCommand> forces;
     std::vector<QueuedCommand> impulses;
     std::unordered_set<
         QueuedCommand, QueuedCommandHash, QueuedCommandEqual> wakes;
@@ -899,13 +932,15 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
         std::lock_guard<std::mutex> lock(impl_->command_mutex);
         teleports.swap(impl_->teleports);
         velocities.swap(impl_->velocities);
-        forces.swap(impl_->forces);
+        impl_->force_drain_buffer.clear();
+        impl_->force_drain_buffer.swap(impl_->forces);
         impulses.swap(impl_->impulses);
         wakes.swap(impl_->wakes);
     }
     impl_->last_command_trace.clear();
     impl_->last_command_trace.reserve(
-        teleports.size() + velocities.size() + forces.size() +
+        teleports.size() + velocities.size() +
+        impl_->force_drain_buffer.size() +
         impulses.size() + wakes.size());
 
     const PhysicsSettings settings = world.get<PhysicsSettings>();
@@ -951,50 +986,68 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     }
 
     const flecs::world_t* runtime_world = ecs_get_world(world.c_ptr());
-    auto apply_command = [&](const QueuedCommand& command, auto apply) {
+    auto apply_command = [&](const QueuedCommand& command) {
         BridgeRecord* bridge = validate_queued_command(
             command, runtime_world, world, impl_->bridges);
         if (bridge == nullptr) {
             ++stats_.failed_commands;
             return;
         }
-        apply(*bridge);
+        switch (command.kind) {
+            case PhysicsCommandKind::Teleport:
+                b3Body_SetTransform(
+                    bridge->body, box_position(command.primary),
+                    box_quaternion(command.rotation));
+                b3Body_SetAwake(bridge->body, true);
+                update_query_proxy(impl_->query_tree, *bridge);
+                break;
+            case PhysicsCommandKind::Velocity:
+                b3Body_SetLinearVelocity(
+                    bridge->body, box_vector(command.primary));
+                b3Body_SetAngularVelocity(
+                    bridge->body, box_vector(command.secondary));
+                break;
+            case PhysicsCommandKind::Force:
+                b3Body_ApplyForceToCenter(
+                    bridge->body, box_vector(command.primary), true);
+                break;
+            case PhysicsCommandKind::ForceAtPoint:
+                b3Body_ApplyForce(
+                    bridge->body, box_vector(command.primary),
+                    box_position(command.secondary), true);
+                break;
+            case PhysicsCommandKind::Impulse:
+                b3Body_ApplyLinearImpulseToCenter(
+                    bridge->body, box_vector(command.primary), true);
+                break;
+            case PhysicsCommandKind::Wake:
+                b3Body_SetAwake(bridge->body, true);
+                break;
+        }
         impl_->last_command_trace.push_back(trace_entry(command));
     };
 
     for (const QueuedCommand& command : sorted_map_commands(teleports)) {
-        apply_command(command, [&](const BridgeRecord& bridge) {
-            b3Body_SetTransform(
-                bridge.body, box_position(command.primary),
-                box_quaternion(command.rotation));
-            b3Body_SetAwake(bridge.body, true);
-            update_query_proxy(impl_->query_tree, bridge);
-        });
+        apply_command(command);
     }
     for (const QueuedCommand& command : sorted_map_commands(velocities)) {
-        apply_command(command, [&](const BridgeRecord& bridge) {
-            b3Body_SetLinearVelocity(
-                bridge.body, box_vector(command.primary));
-            b3Body_SetAngularVelocity(
-                bridge.body, box_vector(command.secondary));
-        });
+        apply_command(command);
     }
-    for (const QueuedCommand& command : forces) {
-        apply_command(command, [&](const BridgeRecord& bridge) {
-            b3Body_ApplyForceToCenter(
-                bridge.body, box_vector(command.primary), true);
-        });
+    for (const QueuedCommand& command : impl_->force_drain_buffer) {
+        if (command.kind == PhysicsCommandKind::Force) {
+            apply_command(command);
+        }
+    }
+    for (const QueuedCommand& command : impl_->force_drain_buffer) {
+        if (command.kind == PhysicsCommandKind::ForceAtPoint) {
+            apply_command(command);
+        }
     }
     for (const QueuedCommand& command : impulses) {
-        apply_command(command, [&](const BridgeRecord& bridge) {
-            b3Body_ApplyLinearImpulseToCenter(
-                bridge.body, box_vector(command.primary), true);
-        });
+        apply_command(command);
     }
     for (const QueuedCommand& command : sorted_wake_commands(wakes)) {
-        apply_command(command, [](const BridgeRecord& bridge) {
-            b3Body_SetAwake(bridge.body, true);
-        });
+        apply_command(command);
     }
 }
 
@@ -1596,6 +1649,16 @@ bool physics_apply_force(flecs::entity entity, Float3 force) {
     return resolve_command_target(entity, target) &&
            target.context->enqueue_force(
                target.originating_world, target.entity, force);
+}
+
+bool physics_apply_force_at_world_point(
+    flecs::entity entity,
+    Float3 force,
+    Float3 world_point) {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_force_at_world_point(
+               target.originating_world, target.entity, force, world_point);
 }
 
 bool physics_apply_impulse(flecs::entity entity, Float3 impulse) {

@@ -18,6 +18,7 @@ enum class PhysicsCommandKind : uint8_t {
     Teleport,
     Velocity,
     Force,
+    ForceAtPoint,
     Impulse,
     Wake
 };
@@ -78,6 +79,11 @@ public:
         const flecs::world_t* originating_world,
         flecs::entity_t entity,
         Float3 force) noexcept;
+    bool enqueue_force_at_world_point(
+        const flecs::world_t* originating_world,
+        flecs::entity_t entity,
+        Float3 force,
+        Float3 world_point) noexcept;
     bool enqueue_impulse(
         const flecs::world_t* originating_world,
         flecs::entity_t entity,

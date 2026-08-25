@@ -178,6 +178,8 @@ PhysicsStats physics_stats(const flecs::world&);
 bool physics_teleport(flecs::entity, Float3, Quaternion);
 bool physics_set_velocity(flecs::entity, Float3, Float3);
 bool physics_apply_force(flecs::entity, Float3);
+bool physics_apply_force_at_world_point(
+    flecs::entity entity, Float3 force, Float3 world_point);
 bool physics_apply_impulse(flecs::entity, Float3);
 bool physics_wake(flecs::entity);
 bool physics_ray_cast(flecs::world&, Float3, Float3, uint64_t, PhysicsRayHit&);

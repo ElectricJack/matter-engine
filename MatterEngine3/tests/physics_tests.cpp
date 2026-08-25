@@ -931,6 +931,8 @@ bool rejects_all_commands(flecs::entity entity) {
            !physics::physics_set_velocity(
                entity, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}) &&
            !physics::physics_apply_force(entity, {1.0f, 2.0f, 3.0f}) &&
+           !physics::physics_apply_force_at_world_point(
+               entity, {1.0f, 2.0f, 3.0f}, {3.0f, 2.0f, 1.0f}) &&
            !physics::physics_apply_impulse(entity, {3.0f, 2.0f, 1.0f}) &&
            !physics::physics_wake(entity);
 }
@@ -1673,6 +1675,233 @@ void test_commands_are_lww_ordered_copied_and_applied_before_step() {
           "all queued forces, impulses, and wake affect the following step");
 }
 
+void test_force_at_world_point_is_deferred_ordered_and_traced() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{}, 1});
+
+    physics::RigidBody body{};
+    body.type = physics::RigidBodyType::Dynamic;
+    physics::BoxCollider collider{};
+    collider.half_extents = {1.0f, 1.0f, 1.0f};
+    flecs::entity entity = world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>(body)
+        .set<physics::BoxCollider>(collider);
+    runtime.tick({0.01f, 0.01f, 1});
+
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    physics::detail::PhysicsBodyState reset{};
+    reset.awake = true;
+    CHECK(context.set_body_state(entity.id(), reset),
+          "force-at-point fixture resets its dynamic body");
+
+    const Float3 force_at_point{0.0f, 12.0f, 0.0f};
+    const Float3 world_point{1.0f, 0.0f, 0.0f};
+    CHECK(physics::physics_teleport(entity, {}, {}) &&
+              physics::physics_set_velocity(entity, {}, {}) &&
+              physics::physics_apply_force(entity, {1.0f, 0.0f, 0.0f}) &&
+              physics::physics_apply_force_at_world_point(
+                  entity, force_at_point, world_point) &&
+              physics::physics_apply_impulse(entity, {0.0f, 0.0f, 1.0f}) &&
+              physics::physics_wake(entity),
+          "all six deterministic command kinds enqueue");
+
+    physics::detail::PhysicsBodyState queued{};
+    CHECK(context.get_body_state(entity.id(), queued) &&
+              near(queued.linear_velocity, {}) &&
+              near(queued.angular_velocity, {}),
+          "force-at-world-point stays deferred until PhysicsPush");
+
+    runtime.tick({0.1f, 0.1f, 1});
+    const auto& trace = context.last_command_trace();
+    CHECK(trace.size() == 6 &&
+              trace[0].kind == physics::detail::PhysicsCommandKind::Teleport &&
+              trace[1].kind == physics::detail::PhysicsCommandKind::Velocity &&
+              trace[2].kind == physics::detail::PhysicsCommandKind::Force &&
+              trace[3].kind == physics::detail::PhysicsCommandKind::ForceAtPoint &&
+              trace[4].kind == physics::detail::PhysicsCommandKind::Impulse &&
+              trace[5].kind == physics::detail::PhysicsCommandKind::Wake,
+          "complete command trace retains Teleport, Velocity, Force, "
+          "ForceAtPoint, Impulse, Wake order");
+    CHECK(trace.size() > 3 && same(trace[3].primary, force_at_point) &&
+              same(trace[3].secondary, world_point),
+          "force-at-point trace stores exact force and world point vectors");
+}
+
+void test_force_at_world_point_produces_only_off_centre_torque_after_step() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{}, 1});
+
+    physics::RigidBody body{};
+    body.type = physics::RigidBodyType::Dynamic;
+    body.linear_damping = 0.0f;
+    body.angular_damping = 0.0f;
+    physics::BoxCollider collider{};
+    collider.half_extents = {1.0f, 1.0f, 1.0f};
+    flecs::entity off_centre = world.entity()
+        .set<ecs::LocalTransform>({{-3.0f, 0.0f, 0.0f}})
+        .set<physics::RigidBody>(body)
+        .set<physics::BoxCollider>(collider);
+    flecs::entity centred = world.entity()
+        .set<ecs::LocalTransform>({{3.0f, 0.0f, 0.0f}})
+        .set<physics::RigidBody>(body)
+        .set<physics::BoxCollider>(collider);
+    runtime.tick({0.01f, 0.01f, 1});
+
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    physics::detail::PhysicsBodyState off_reset{};
+    off_reset.position = {-3.0f, 0.0f, 0.0f};
+    off_reset.awake = true;
+    physics::detail::PhysicsBodyState centre_reset{};
+    centre_reset.position = {3.0f, 0.0f, 0.0f};
+    centre_reset.awake = true;
+    CHECK(context.set_body_state(off_centre.id(), off_reset) &&
+              context.set_body_state(centred.id(), centre_reset),
+          "torque fixture resets both dynamic boxes");
+
+    const Float3 upward_force{0.0f, 100.0f, 0.0f};
+    CHECK(physics::physics_apply_force_at_world_point(
+              off_centre, upward_force, {-2.0f, 0.0f, 0.0f}) &&
+              physics::physics_apply_force_at_world_point(
+                  centred, upward_force, {3.0f, 0.0f, 0.0f}),
+          "off-centre and centred force-at-point commands enqueue");
+
+    physics::detail::PhysicsBodyState before_off{};
+    physics::detail::PhysicsBodyState before_centre{};
+    CHECK(context.get_body_state(off_centre.id(), before_off) &&
+              context.get_body_state(centred.id(), before_centre) &&
+              near(before_off.linear_velocity, {}) &&
+              near(before_off.angular_velocity, {}) &&
+              near(before_centre.linear_velocity, {}) &&
+              near(before_centre.angular_velocity, {}),
+          "neither force-at-point mutates Box3D before the fixed pipeline");
+
+    runtime.tick({0.1f, 0.1f, 1});
+    physics::detail::PhysicsBodyState after_off{};
+    physics::detail::PhysicsBodyState after_centre{};
+    CHECK(context.get_body_state(off_centre.id(), after_off) &&
+              context.get_body_state(centred.id(), after_centre) &&
+              after_off.angular_velocity.z > 1.0e-3f &&
+              near(after_off.angular_velocity.x, 0.0f, 1.0e-3f) &&
+              near(after_off.angular_velocity.y, 0.0f, 1.0e-3f) &&
+              near(after_centre.angular_velocity, {}, 1.0e-3f),
+          "PhysicsPush-Step-Pull yields positive-Z off-centre torque and no "
+          "centred torque");
+}
+
+void test_force_at_world_point_rejects_invalid_inputs_without_mutation() {
+    ecs_runtime::Runtime first_runtime;
+    ecs_runtime::Runtime second_runtime;
+    flecs::world& first_world = first_runtime.world();
+    flecs::world& second_world = second_runtime.world();
+    first_world.set<physics::PhysicsSettings>({{}, 1});
+    second_world.set<physics::PhysicsSettings>({{}, 1});
+
+    flecs::entity valid = make_sphere_body(
+        first_world, physics::RigidBodyType::Dynamic, {-20.0f, 0.0f, 0.0f});
+    flecs::entity stale = make_sphere_body(
+        first_world, physics::RigidBodyType::Dynamic, {-10.0f, 0.0f, 0.0f});
+    flecs::entity static_body = make_sphere_body(
+        first_world, physics::RigidBodyType::Static, {10.0f, 0.0f, 0.0f});
+    flecs::entity without_body = first_world.entity()
+        .set<ecs::LocalTransform>({{20.0f, 0.0f, 0.0f}})
+        .set<physics::SphereCollider>({});
+    flecs::entity foreign = make_sphere_body(
+        second_world, physics::RigidBodyType::Dynamic, {});
+    first_runtime.tick({0.01f, 0.01f, 1});
+    second_runtime.tick({0.01f, 0.01f, 1});
+
+    physics::detail::PhysicsContext& first_context =
+        physics::detail::context(first_world);
+    physics::detail::PhysicsBodyState reset{};
+    reset.position = {-20.0f, 0.0f, 0.0f};
+    reset.awake = true;
+    CHECK(first_context.set_body_state(valid.id(), reset),
+          "invalid-admission fixture resets its retained valid body");
+    stale.destruct();
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+    const flecs::world_t* second_real_world =
+        ecs_get_world(second_world.c_ptr());
+    CHECK(!first_context.enqueue_force_at_world_point(
+              second_real_world, foreign.id(), {0.0f, 1.0f, 0.0f}, {}) &&
+              !physics::physics_apply_force_at_world_point(
+                  stale, {0.0f, 1.0f, 0.0f}, {}) &&
+              !physics::physics_apply_force_at_world_point(
+                  without_body, {0.0f, 1.0f, 0.0f}, {}) &&
+              !physics::physics_apply_force_at_world_point(
+                  static_body, {0.0f, 1.0f, 0.0f}, {}) &&
+              !physics::physics_apply_force_at_world_point(
+                  valid, {nan, 0.0f, 0.0f}, {}) &&
+              !physics::physics_apply_force_at_world_point(
+                  valid, {0.0f, infinity, 0.0f}, {}) &&
+              !physics::physics_apply_force_at_world_point(
+                  valid, {0.0f, 1.0f, 0.0f}, {nan, 0.0f, 0.0f}) &&
+              !physics::physics_apply_force_at_world_point(
+                  valid, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, infinity}),
+          "foreign, stale, bodyless, static, NaN, and Inf commands fail closed");
+
+    const physics::PhysicsStats before = physics::physics_stats(first_world);
+    first_runtime.tick({0.1f, 0.1f, 1});
+    physics::detail::PhysicsBodyState after{};
+    CHECK(first_context.last_command_trace().empty(),
+          "rejected force-at-point work leaves the trace empty");
+    CHECK(first_context.get_body_state(valid.id(), after),
+          "retained valid body remains readable after rejected work");
+    CHECK(near(after.position, {-20.0f, 0.0f, 0.0f}),
+          "rejected force-at-point work leaves valid-body position unchanged");
+    CHECK(near(after.linear_velocity, {}),
+          "rejected force-at-point work leaves valid-body linear velocity unchanged");
+    CHECK(near(after.angular_velocity, {}),
+          "rejected force-at-point work leaves valid-body angular velocity unchanged");
+    CHECK(physics::physics_stats(first_world).failed_commands ==
+              before.failed_commands,
+          "rejected force-at-point work leaves failed-command diagnostics unchanged");
+}
+
+void test_force_at_world_point_queue_is_bounded_and_ordered() {
+    constexpr std::size_t kOverflowProbeLimit = 8192;
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{}, 1});
+    flecs::entity entity = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.01f, 0.01f, 1});
+
+    CHECK(physics::physics_apply_force(entity, {}),
+          "ordinary force occupies the shared bounded force lane");
+    const uint64_t failed_before = physics::physics_stats(world).failed_commands;
+    std::size_t accepted_points = 0;
+    for (; accepted_points < kOverflowProbeLimit; ++accepted_points) {
+        if (!physics::physics_apply_force_at_world_point(
+                entity, {},
+                {static_cast<float>(accepted_points), 0.0f, 0.0f})) {
+            break;
+        }
+    }
+    CHECK(accepted_points > 0 && accepted_points < kOverflowProbeLimit &&
+              physics::physics_stats(world).failed_commands == failed_before + 1,
+          "first force-at-point overflow is rejected and counted exactly once");
+
+    runtime.tick({0.01f, 0.01f, 1});
+    const auto& trace = physics::detail::context(world).last_command_trace();
+    bool ordered = trace.size() == accepted_points + 1 &&
+                   trace[0].kind == physics::detail::PhysicsCommandKind::Force;
+    for (std::size_t index = 1; ordered && index < trace.size(); ++index) {
+        ordered = trace[index].kind ==
+                      physics::detail::PhysicsCommandKind::ForceAtPoint &&
+                  same(trace[index].primary, {}) &&
+                  same(trace[index].secondary,
+                       {static_cast<float>(index - 1), 0.0f, 0.0f});
+    }
+    CHECK(ordered &&
+              physics::physics_stats(world).failed_commands == failed_before + 1,
+          "bounded force-at-point queue drains every admitted row in exact order");
+}
+
 void test_command_admission_rejects_invalid_entities_and_numbers() {
     flecs::world bare_world;
     CHECK(rejects_all_commands(bare_world.entity()),
@@ -2255,6 +2484,10 @@ int main() {
     test_pull_writes_are_visible_through_fixed_post_update();
     test_static_and_kinematic_push_normalize_ecs_rotations();
     test_commands_are_lww_ordered_copied_and_applied_before_step();
+    test_force_at_world_point_is_deferred_ordered_and_traced();
+    test_force_at_world_point_produces_only_off_centre_torque_after_step();
+    test_force_at_world_point_rejects_invalid_inputs_without_mutation();
+    test_force_at_world_point_queue_is_bounded_and_ordered();
     test_command_admission_rejects_invalid_entities_and_numbers();
     test_staged_and_cross_runtime_commands_keep_real_world_identity();
     test_sleeping_teleport_only_pulls_into_ecs_after_next_step();
