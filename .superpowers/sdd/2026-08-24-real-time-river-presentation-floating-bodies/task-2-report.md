@@ -755,5 +755,114 @@ and the staged diff check passed; unrelated untracked files were preserved.
 Windows sharing, collision, and pre/post-commit interference behavior was
 executed on the mandated MSVC host. The POSIX branch was source-audited but
 could not be compiled or executed without violating the MSVC-only instruction;
-its deliberate platform limitation is fail-closed publication where Linux does
-not expose both `O_TMPFILE` and `AT_EMPTY_PATH`. No known Task 2 blocker remains.
+at that review point its deliberate platform limitation was fail-closed
+publication where Linux did not expose both `O_TMPFILE` and `AT_EMPTY_PATH`.
+Round 6 below supersedes that capability-dependent route. No known Task 2
+blocker remains.
+
+## POSIX Manifest Portability Repair Round 6 (2026-08-24)
+
+### Outcome
+
+The remaining POSIX portability finding was repaired in code/test commit
+`44b5fd96` (`fix: publish POSIX hydrology files without capabilities`). Both
+immutable field and manifest publication now call one retained-descriptor
+create-new helper using the documented unprivileged Linux procfs route. No
+`AT_EMPTY_PATH` use remains in production source.
+
+This round supersedes the preceding report's statement that publication needs
+`AT_EMPTY_PATH`. Linux still needs `O_TMPFILE`, a mounted/usable
+`/proc/self/fd`, and `AT_SYMLINK_FOLLOW`; missing runtime support fails closed.
+
+### TDD RED Evidence
+
+Tests were added before production for exact fixed-buffer proc-fd formatting,
+exact-capacity success, truncation clearing/failure, negative-descriptor
+rejection, and the explicitly requested source contract that field and manifest
+publication call one shared helper with no `AT_EMPTY_PATH` remaining.
+
+The captured RED command was:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_network_artifact_tests
+```
+
+MSVC compiled the tests, then failed the link with `LNK2019`/`LNK1120` for the
+intentionally missing `format_hydrology_proc_fd_path` implementation.
+
+### Shared Unprivileged Publication Protocol
+
+- `format_hydrology_proc_fd_path` is allocation-free and `noexcept`. It writes
+  `/proc/self/fd/<decimal-fd>` using a fixed prefix plus `std::to_chars`, reserves
+  the terminator explicitly, rejects negative descriptors, and clears the first
+  byte on truncation. Production uses a 64-byte stack buffer, which exceeds the
+  maximum representation required for an `int` descriptor.
+- `publish_posix_retained_fd_create_new` is the sole POSIX linking helper and is
+  called by both field and manifest save. The source descriptor remains owned
+  by its surrounding RAII object from validation through helper return, so it
+  cannot close or be reused between formatting, link, and identity checks.
+- The helper calls
+  `linkat(AT_FDCWD, proc_fd_path, held_destination_fd, canonical_name,
+  AT_SYMLINK_FOLLOW)`. Symlink following applies only to the fixed, internally
+  generated `/proc/self/fd/<fd>` source; the destination remains a canonical
+  leaf relative to the already-confined held directory handle.
+- A successful link is accepted only after `fstat(source_fd)` and
+  `fstatat(destination_fd, canonical_name, AT_SYMLINK_NOFOLLOW)` prove that the
+  validated source, retained source, and new directory entry are the same
+  regular device/inode. The held destination directory is then `fsync`ed.
+- The low-level helper performs no allocation and never throws. It captures and
+  restores the exact `linkat`, `fstat`, `fstatat`, or `fsync` error in `errno`;
+  locally detected invalid identity uses `ESTALE`, path-format failure uses
+  `EBADF` or `ENAMETOOLONG`, and `EEXIST` is returned as a typed result before
+  higher-level work can overwrite it.
+- On `EEXIST`, both callers retain the anonymous source descriptor and use the
+  existing same-handle canonical-leaf validation: `openat` with `O_NOFOLLOW`,
+  stable directory-entry identity before and after the full byte/EOF read, and
+  exact expected-byte comparison. A different existing blob is never replaced.
+- If procfs is absent, inaccessible, or does not resolve to the retained
+  descriptor, `linkat` or the following identity check fails closed. There is no
+  privileged `AT_EMPTY_PATH` fallback.
+
+The source-contract test reads the production translation unit because the
+task's MSVC-only rule prevents compiling the POSIX branch. It verifies exactly
+one helper definition plus the field and manifest call sites, requires
+`AT_SYMLINK_FOLLOW`, and rejects any remaining `AT_EMPTY_PATH` occurrence. The
+platform-neutral formatter and identity-decision tests execute under MSVC.
+
+### Final GREEN Evidence
+
+The final focused persistence target built successfully and its verbose CTest
+run ended `ALL PASS` in 0.38 seconds. All required targets were then rebuilt
+using only:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target <target>
+```
+
+The seven focused targets and `matter_engine_viewer_objects` all succeeded. The
+single final test command was:
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo -C RelWithDebInfo -R '^(hydrology_artifact_tests|hydrology_network_artifact_tests|hydrology_handoff_products_tests|river_runtime_tests|async_bake_tests|physx_dependency_contract_tests|physx_adapter_contract_tests)$' --output-on-failure
+```
+
+Result: **7/7 passed**, 0 failed, 7.88 seconds. No broad CPU suite was
+rerun; the earlier single **37/37** CPU-suite result remains retained.
+
+### Round 6 Files, Process, and Runtime Limitation
+
+- `MatterEngine3/src/hydrology/hydrology_field_artifact.h`
+- `MatterEngine3/src/hydrology/hydrology_network_artifact.cpp`
+- `MatterEngine3/tests/hydrology_network_artifact_tests.cpp`
+
+No subagents or reviewers were spawned. No Make, GCC, g++, MinGW, MSYS2,
+collect2, WSL, or other POSIX command was invoked. Builds and tests used only
+the mandated Windows MSVC paths. `git diff --check` and the staged diff check
+passed; unrelated untracked files were preserved.
+
+The remaining limitation is verification, not a known production defect: the
+Linux/WSL `O_TMPFILE` plus procfs `linkat` route was source-audited but not
+compiled or executed because the task explicitly forbids non-MSVC validation.
+Runtime success therefore depends on ordinary Linux procfs being mounted and
+accessible. Failure in that environment is explicit and closed. No known Task
+2 blocker remains.
