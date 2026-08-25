@@ -34,6 +34,7 @@ struct SourceIdentity {
 };
 
 struct CanonicalDefinition {
+    SourceIdentity source{};
     float sector_size_m = 0.0f;
     float cell_size_m = 0.0f;
     std::int8_t rung = 0;

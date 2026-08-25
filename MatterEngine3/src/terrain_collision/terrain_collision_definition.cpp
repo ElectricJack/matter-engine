@@ -198,6 +198,7 @@ bool canonicalize(const TerrainCollisionDefinition& definition,
     std::sort(sectors.begin(), sectors.end(), sector_coordinate_less);
     sectors.erase(std::unique(sectors.begin(), sectors.end()), sectors.end());
 
+    out.source = source;
     out.sector_size_m = sector_size_m;
     out.cell_size_m = definition.cell_size_m;
     out.rung = definition.rung;

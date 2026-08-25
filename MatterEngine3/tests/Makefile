@@ -1164,6 +1164,18 @@ TERRAIN_COLLISION_DEFINITION_CPP = terrain_collision_definition_tests.cpp \
 TERRAIN_COLLISION_DEFINITION_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_DEFINITION_CPP))
 $(eval $(call objrule_cpp,def,terrain_collision_definition_tests.cpp))
 
+# Terrain collision immutable CPU tile/cache tests. Rollback-only closure;
+# the MSVC CMake target is authoritative and this recipe is not an acceptance
+# path on Windows.
+TERRAIN_COLLISION_ARTIFACT_TARGET = build/terrain_collision_artifact_tests
+TERRAIN_COLLISION_ARTIFACT_CPP = terrain_collision_artifact_tests.cpp \
+    ../src/terrain_collision/terrain_collision_artifact.cpp \
+    ../src/terrain_collision/terrain_collision_definition.cpp \
+    ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+    ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
+TERRAIN_COLLISION_ARTIFACT_OBJS = \
+    $(call obj_list,def,$(TERRAIN_COLLISION_ARTIFACT_CPP))
+
 RIVER_NETWORK_TARGET = build/river_network_tests
 RIVER_NETWORK_CPP = river_network_tests.cpp \
                     ../src/hydrology/river_network_builder.cpp
@@ -1608,6 +1620,7 @@ def_CPP_SRCS := $(sort \
     $(MODAPPLY_CPP) \
     $(TERRAINFIELD_CPP) \
     $(TERRAINMESH_CPP) \
+    $(TERRAIN_COLLISION_ARTIFACT_CPP) \
     $(SEAMWELD_CPP) \
     $(CONTOURSEAM_CPP) \
     $(CONTOURMESH_CPP) \
@@ -2189,6 +2202,17 @@ $(WORLD_DEFINITION_TARGET): $(WORLD_DEFINITION_OBJS)
 
 $(TERRAIN_COLLISION_DEFINITION_TARGET): $(TERRAIN_COLLISION_DEFINITION_OBJS)
 	$(CC) $(TERRAIN_COLLISION_DEFINITION_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+$(TERRAIN_COLLISION_ARTIFACT_TARGET): $(TERRAIN_COLLISION_ARTIFACT_OBJS)
+	$(CC) $(TERRAIN_COLLISION_ARTIFACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-terrain-collision-artifact: $(TERRAIN_COLLISION_ARTIFACT_TARGET)
+	./$(TERRAIN_COLLISION_ARTIFACT_TARGET)
+
+.PHONY: run-terrain-collision-artifact clean-terrain-collision-artifact
+clean: clean-terrain-collision-artifact
+clean-terrain-collision-artifact:
+	rm -f $(TERRAIN_COLLISION_ARTIFACT_TARGET)
 
 $(HYDROLOGY_SETTINGS_TARGET): $(HYDROLOGY_SETTINGS_OBJS)
 	$(CC) $(HYDROLOGY_SETTINGS_OBJS) -o $@ $(CFLAGS) -lm
