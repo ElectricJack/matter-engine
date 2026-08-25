@@ -2,6 +2,7 @@
 
 #include "matter/engine_context.h"
 #include "matter/ecs.h"
+#include "matter/log.h"
 #include "matter/world_session.h"
 #include "ecs/physics_context.h"
 #include "bake_mode.h"
@@ -13,6 +14,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -225,6 +227,34 @@ struct ThrowingCopyBuilder {
                     std::string&) const {
         state->invocations.fetch_add(1, std::memory_order_acq_rel);
         return false;
+    }
+};
+
+struct EmptyWhatException final : std::exception {
+    const char* what() const noexcept override { return ""; }
+};
+
+std::atomic<bool> throw_terrain_install_log{false};
+
+void throwing_terrain_install_log_sink(matter::log::Level level,
+                                       const char* tag,
+                                       const char*,
+                                       void*) {
+    if (level == matter::log::Level::Info && tag != nullptr &&
+        std::strcmp(tag, "terrain-collision") == 0 &&
+        throw_terrain_install_log.exchange(false,
+                                           std::memory_order_acq_rel)) {
+        throw EmptyWhatException{};
+    }
+}
+
+struct ThrowingTerrainInstallLogGuard {
+    ThrowingTerrainInstallLogGuard() {
+        matter::log::add_sink(throwing_terrain_install_log_sink);
+    }
+    ~ThrowingTerrainInstallLogGuard() {
+        throw_terrain_install_log.store(false, std::memory_order_release);
+        matter::log::remove_sink(throwing_terrain_install_log_sink);
     }
 };
 
@@ -602,6 +632,178 @@ void test_throwing_builder_copy_failure_is_atomic_and_disconnects() {
           "bad-allocation fallback publishes one coherent Failed snapshot and disconnects prior Ready");
 }
 
+void test_app_job_exception_before_install_preserves_prior_and_fails_coherently() {
+    std::printf("-- app_job_exception_before_install_preserves_prior_and_fails_coherently\n");
+    SessionFixture fixture("app_job_preinstall_exception", true, 0.41f);
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents baseline_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return baseline_events.finished == 1 ||
+                     baseline_events.errors != 0;
+          }, baseline_events), "pre-install exception baseline reaches Ready");
+    auto* retained_context = &matter::physics::detail::context(
+        fixture.session->ecs());
+    const auto baseline = retained_context->terrain_collision_stats();
+    CHECK(baseline.installation_key != 0 && baseline.shape_count != 0 &&
+              fixture.session->connected_for_test(),
+          "pre-install exception baseline collision is installed and connected");
+
+    std::atomic<bool> context_hidden{false};
+    fixture.session->set_test_terrain_collision_publication_hook([&] {
+        fixture.session->ecs().set<matter::physics::detail::PhysicsContextRef>(
+            {nullptr});
+        context_hidden.store(true, std::memory_order_release);
+    });
+    CHECK(write_world_object(fixture.root, true, 0.68f),
+          "pre-install exception reload changes collision identity");
+    fixture.session->reload();
+
+    const auto candidate_deadline = Clock::now() + std::chrono::seconds(60);
+    while (Clock::now() < candidate_deadline &&
+           fixture.session->terrain_collision_status().state !=
+               matter::TerrainCollisionState::CandidateReady) {
+        if (fixture.session->has_pending_gpu_jobs_for_test()) {
+            fixture.session->pump_gpu_jobs(0.0f);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const auto queued_deadline = Clock::now() + std::chrono::seconds(60);
+    while (Clock::now() < queued_deadline &&
+           !fixture.session->has_pending_gpu_jobs_for_test()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(fixture.session->terrain_collision_status().state ==
+              matter::TerrainCollisionState::CandidateReady &&
+              fixture.session->has_pending_gpu_jobs_for_test(),
+          "replacement candidate waits in the queued app-thread collision job");
+
+    fixture.session->pump_gpu_jobs(0.0f);
+    fixture.session->ecs().set<matter::physics::detail::PhysicsContextRef>(
+        {retained_context});
+    CHECK(context_hidden.load(std::memory_order_acquire),
+          "publication hook removes the physics lookup before the later context access");
+
+    TerminalEvents events{};
+    CHECK(pump_until(*fixture.session, [&] { return events.errors == 1; }, events),
+          "exception outside the publication-hook catches reaches a terminal error");
+    for (int i = 0; i != 20; ++i) {
+        fixture.session->pump_gpu_jobs(2.0f);
+        fixture.session->tick({0.0f, 1.0f / 60.0f, 4});
+        poll_terminal_events(*fixture.session, events);
+    }
+    const auto after_failure = retained_context->terrain_collision_stats();
+    const auto status = fixture.session->terrain_collision_status();
+    const auto runtime = fixture.session->ecs().get<matter::ecs::WorldRuntimeState>();
+    CHECK(after_failure.installation_key == baseline.installation_key &&
+              after_failure.shape_count == baseline.shape_count &&
+              after_failure.replacements == baseline.replacements,
+          "pre-install app-job exception preserves the prior Box3D generation");
+    CHECK(events.errors == 1 && events.finished == 0 &&
+              events.error_code == matter::BakeErrorCode::Internal &&
+              events.phase == "terrain-collision" && !events.message.empty(),
+          "pre-install app-job exception emits one nonempty phased error and no Ready");
+    CHECK(status.state == matter::TerrainCollisionState::Failed &&
+              !status.failure_code.empty() &&
+              !status.failure_message.empty() &&
+              runtime.status == matter::ecs::WorldStatus::Failed &&
+              !fixture.session->connected_for_test(),
+          "pre-install app-job exception atomically publishes Failed and disconnects");
+}
+
+void test_empty_publication_exception_uses_nonempty_diagnostic() {
+    std::printf("-- empty_publication_exception_uses_nonempty_diagnostic\n");
+    SessionFixture fixture("empty_publication_exception");
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->set_test_terrain_collision_publication_hook([] {
+        throw EmptyWhatException{};
+    });
+    fixture.session->request_bake();
+    TerminalEvents events{};
+    CHECK(pump_until(*fixture.session, [&] { return events.errors == 1; }, events),
+          "empty-what publication exception reaches collision failure routing");
+    for (int i = 0; i != 20; ++i) {
+        fixture.session->pump_gpu_jobs(2.0f);
+        fixture.session->tick({0.0f, 1.0f / 60.0f, 4});
+        poll_terminal_events(*fixture.session, events);
+    }
+    const auto status = fixture.session->terrain_collision_status();
+    const auto runtime = fixture.session->ecs().get<matter::ecs::WorldRuntimeState>();
+    CHECK(events.errors == 1 && events.finished == 0 &&
+              events.phase == "terrain-collision" && !events.message.empty(),
+          "empty-what exception emits one nonempty terrain-collision error");
+    CHECK(status.state == matter::TerrainCollisionState::Failed &&
+              !status.failure_code.empty() &&
+              !status.failure_message.empty() &&
+              runtime.status == matter::ecs::WorldStatus::Failed,
+          "empty-what exception leaves a coherent nonempty Failed snapshot");
+}
+
+void test_post_commit_log_exception_cannot_reject_installed_generation() {
+    std::printf("-- post_commit_log_exception_cannot_reject_installed_generation\n");
+    SessionFixture fixture("post_commit_log_exception", true, 0.41f);
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents baseline_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return baseline_events.finished == 1 ||
+                     baseline_events.errors != 0;
+          }, baseline_events), "post-commit exception baseline reaches Ready");
+    auto& context = matter::physics::detail::context(fixture.session->ecs());
+    const auto baseline = context.terrain_collision_stats();
+
+    ThrowingTerrainInstallLogGuard log_guard;
+    throw_terrain_install_log.store(true, std::memory_order_release);
+    CHECK(write_world_object(fixture.root, true, 0.68f),
+          "post-commit exception reload changes collision identity");
+    fixture.session->reload();
+    TerminalEvents events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return events.finished == 1 || events.errors != 0;
+          }, events), "post-commit logging exception reaches a terminal outcome");
+    for (int i = 0; i != 20; ++i) {
+        fixture.session->pump_gpu_jobs(2.0f);
+        fixture.session->tick({0.0f, 1.0f / 60.0f, 4});
+        poll_terminal_events(*fixture.session, events);
+    }
+    const auto installed = context.terrain_collision_stats();
+    const auto status = fixture.session->terrain_collision_status();
+    const auto runtime = fixture.session->ecs().get<matter::ecs::WorldRuntimeState>();
+    CHECK(installed.installation_key != 0 &&
+              installed.installation_key != baseline.installation_key &&
+              installed.replacements == baseline.replacements + 1u,
+          "Box3D replacement commits before the injected install-summary exception");
+    CHECK(!throw_terrain_install_log.load(std::memory_order_acquire),
+          "throwing install-summary sink is invoked after Box3D commit");
+    CHECK(events.errors == 0 && events.finished == 1 &&
+              status.state == matter::TerrainCollisionState::Installed &&
+              status.generation_key == installed.installation_key &&
+              runtime.status == matter::ecs::WorldStatus::Ready &&
+              fixture.session->connected_for_test(),
+          "post-commit diagnostic failure cannot report the committed generation as failed");
+}
+
 void test_transactional_replacement_failure_retains_prior() {
     std::printf("-- transactional_replacement_failure_retains_prior\n");
     SessionFixture fixture("replace", true, 0.41f);
@@ -975,6 +1177,9 @@ int main() {
     test_builder_failure_reports_once_and_never_ready();
     test_prebuild_exception_uses_collision_failure_path();
     test_throwing_builder_copy_failure_is_atomic_and_disconnects();
+    test_app_job_exception_before_install_preserves_prior_and_fails_coherently();
+    test_empty_publication_exception_uses_nonempty_diagnostic();
+    test_post_commit_log_exception_cannot_reject_installed_generation();
     test_transactional_replacement_failure_retains_prior();
     test_cancelled_at_publication_barrier_skips_replacement();
     test_cancelled_after_collision_job_skips_visual_publication();

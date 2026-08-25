@@ -123,6 +123,7 @@ namespace viewer { struct VkScenePart; }
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -3675,8 +3676,10 @@ void WorldSession::Impl::record_terrain_collision_failure_noexcept(
                     false, std::memory_order_acq_rel)) {
                 throw std::bad_alloc{};
             }
-            precise.failure_code = code ? code : "collision-fail";
-            precise.failure_message = message ? message : "build failure";
+            precise.failure_code = code && code[0] != '\0'
+                ? code : "collision-fail";
+            precise.failure_message = message && message[0] != '\0'
+                ? message : "build failure";
             failed = std::move(precise);
         } catch (...) {
             // Keep the already-complete fallback snapshot.
@@ -3741,6 +3744,9 @@ void WorldSession::Impl::publish_pipeline(
     viewer::WorldManifest new_manifest,
     PublishPipelineParams p)
 {
+    static_assert(
+        std::is_nothrow_swappable_v<matter::TerrainCollisionStatus>,
+        "collision status commit must remain non-throwing");
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
 
     auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
@@ -3800,8 +3806,14 @@ void WorldSession::Impl::publish_pipeline(
     const auto emit_collision_error_noexcept =
         [&](const std::string& message) noexcept {
             try {
-                emit_error(BakeErrorCode::Internal, "terrain-collision",
-                           message);
+                if (message.empty()) {
+                    emit_error(
+                        BakeErrorCode::Internal, "terrain-collision",
+                        "terrain collision publication failed");
+                } else {
+                    emit_error(BakeErrorCode::Internal, "terrain-collision",
+                               message);
+                }
             } catch (...) {
             }
         };
@@ -3819,7 +3831,10 @@ void WorldSession::Impl::publish_pipeline(
         }
         std::string collision_error;
         bool collision_ok = false;
+        std::shared_ptr<std::atomic<bool>> collision_failure_routed;
         try {
+            collision_failure_routed =
+                std::make_shared<std::atomic<bool>>(false);
             matter_async::GpuJob collision_job;
             collision_job.name = pfx + ".terrain-collision";
             collision_job.token = token;
@@ -3827,116 +3842,50 @@ void WorldSession::Impl::publish_pipeline(
                                 publication_hook =
                                     std::move(publication_hook),
                                 collision_action, token,
-                                pfx](std::string& error) mutable {
+                                collision_failure_routed](
+                                    std::string& error) mutable {
                 struct CandidateSlotReset {
                     TerrainCollisionCandidateSlot* slot = nullptr;
                     ~CandidateSlotReset() {
                         if (slot && *slot) (*slot)->reset();
                     }
                 } candidate_slot_reset{&candidate_slot};
-                matter_async::assert_gl_thread(
-                    (pfx + ".terrain-collision").c_str());
-                if (token && token->is_cancelled()) {
-                    error = "cancelled";
-                    return false;
-                }
-                try {
-                    if (publication_hook) publication_hook();
-                } catch (const std::bad_alloc&) {
-                    connected.store(false, std::memory_order_release);
-                    record_terrain_collision_failure_noexcept(
-                        "allocation-failed",
-                        "terrain collision publication hook allocation failed",
-                        &error);
-                    return false;
-                } catch (const std::exception& exception) {
-                    connected.store(false, std::memory_order_release);
-                    record_terrain_collision_failure_noexcept(
-                        "build-exception", exception.what(), &error);
-                    return false;
-                } catch (...) {
-                    connected.store(false, std::memory_order_release);
-                    record_terrain_collision_failure_noexcept(
-                        "build-exception",
-                        "unknown terrain collision publication hook failure",
-                        &error);
-                    return false;
-                }
 
-                std::lock_guard<std::recursive_mutex> generation_lock(
-                    terrain_collision_generation_mutex);
-                if (token && token->is_cancelled()) {
-                    error = "cancelled";
-                    return false;
-                }
-
-                auto& physics_context =
-                    physics::detail::context(ecs_runtime.world());
-                if (collision_action ==
-                    TerrainCollisionPublicationAction::Clear) {
-                    physics_context.clear_terrain_collision();
-                    const auto physics_status =
-                        physics_context.terrain_collision_stats();
-                    if (physics_status.installation_key != 0 ||
-                        physics_status.shape_count != 0) {
-                        error =
-                            "terrain collision clear was rejected by physics";
-                    } else {
-                        std::lock_guard<std::mutex> status_lock(
-                            terrain_collision_status_mutex);
-                        terrain_collision_status_copy = {};
-                        terrain_collision_status_copy.state =
-                            matter::TerrainCollisionState::Disabled;
-                        return true;
-                    }
-                } else if (!candidate_slot || !*candidate_slot) {
-                    error =
-                        "terrain collision replacement has no candidate";
-                } else {
-                    const auto install_start =
-                        std::chrono::steady_clock::now();
-                    const bool installed =
-                        physics_context.replace_terrain_collision(
-                            **candidate_slot, error);
-                    // Box3D retained private mesh bytes (or rejected the
-                    // transaction); release generation geometry immediately.
-                    candidate_slot->reset();
-                    if (installed) {
-                        const double install_ms =
-                            std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() -
-                                install_start)
-                                .count();
-                        const auto physics_status =
-                            physics_context.terrain_collision_stats();
-                        matter::TerrainCollisionStatus status{};
-                        {
-                            std::lock_guard<std::mutex> status_lock(
-                                terrain_collision_status_mutex);
-                            terrain_collision_status_copy.state =
-                                matter::TerrainCollisionState::Installed;
-                            terrain_collision_status_copy
-                                .box3d_retained_bytes =
-                                physics_status.retained_bytes;
-                            terrain_collision_status_copy.install_ms =
-                                install_ms;
-                            terrain_collision_status_copy.failure_code.clear();
-                            terrain_collision_status_copy.failure_message
-                                .clear();
-                            status = terrain_collision_status_copy;
-                        }
+                struct InstalledLogSnapshot {
+                    std::uint64_t generation_key = 0;
+                    std::uint64_t geometry_key = 0;
+                    float cell_size_m = 0.0f;
+                    std::int8_t rung = 0;
+                    std::uint32_t region_count = 0;
+                    std::uint32_t sector_count = 0;
+                    std::uint32_t non_empty_tile_count = 0;
+                    std::uint32_t empty_tile_count = 0;
+                    std::uint64_t triangle_count = 0;
+                    std::uint64_t unique_vertex_count = 0;
+                    std::uint64_t artifact_bytes = 0;
+                    std::uint64_t box3d_retained_bytes = 0;
+                    double cold_build_ms = 0.0;
+                    double cache_load_ms = 0.0;
+                    double validation_ms = 0.0;
+                    double install_ms = 0.0;
+                };
+                const auto log_installed_noexcept = [](
+                    const InstalledLogSnapshot& status) noexcept {
+                    try {
                         MATTER_LOGI(
                             "terrain-collision",
                             "installed generation=%016llx geometry=%016llx "
                             "cell=%.3f rung=%d regions=%u sectors=%u "
-                            "nonempty=%u empty=%u triangles=%llu vertices=%llu "
-                            "artifact=%llu box3d=%llu build=%.2fms cache=%.2fms "
-                            "validation=%.2fms install=%.2fms\n",
+                            "nonempty=%u empty=%u triangles=%llu "
+                            "vertices=%llu artifact=%llu box3d=%llu "
+                            "build=%.2fms cache=%.2fms validation=%.2fms "
+                            "install=%.2fms\n",
                             static_cast<unsigned long long>(
                                 status.generation_key),
                             static_cast<unsigned long long>(
                                 status.geometry_key),
-                            status.cell_size_m, static_cast<int>(status.rung),
+                            status.cell_size_m,
+                            static_cast<int>(status.rung),
                             status.region_count, status.sector_count,
                             status.non_empty_tile_count,
                             status.empty_tile_count,
@@ -3950,17 +3899,188 @@ void WorldSession::Impl::publish_pipeline(
                                 status.box3d_retained_bytes),
                             status.cold_build_ms, status.cache_load_ms,
                             status.validation_ms, status.install_ms);
-                        return true;
+                    } catch (...) {
+                        // Box3D and Installed status are already committed.
+                        // Diagnostic sinks cannot roll that transaction back.
                     }
-                }
+                };
+                const auto set_cancelled_error_noexcept = [&error]() noexcept {
+                    try {
+                        error = "cancelled";
+                    } catch (...) {
+                    }
+                };
+                const auto route_failure_noexcept =
+                    [this, &error, &collision_failure_routed](
+                        const char* code, const char* message) noexcept {
+                    connected.store(false, std::memory_order_release);
+                    record_terrain_collision_failure_noexcept(
+                        code, message, &error);
+                    collision_failure_routed->store(
+                        true, std::memory_order_release);
+                    return false;
+                };
 
-                connected.store(false, std::memory_order_release);
-                record_terrain_collision_failure_noexcept(
-                    "install-failed",
-                    error.empty() ? "terrain collision install failed"
-                                  : error.c_str(),
-                    &error);
-                return false;
+                try {
+                    // This is an app/GL/physics-owner job even though it does
+                    // no rendering. The label is a literal so affinity checking
+                    // itself cannot allocate inside the queued transaction.
+                    matter_async::assert_gl_thread(
+                        "terrain-collision.publication");
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+                    if (publication_hook) publication_hook();
+
+                    std::lock_guard<std::recursive_mutex> generation_lock(
+                        terrain_collision_generation_mutex);
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+
+                    auto& physics_context =
+                        physics::detail::context(ecs_runtime.world());
+                    if (collision_action ==
+                        TerrainCollisionPublicationAction::Clear) {
+                        matter::TerrainCollisionStatus disabled_status{};
+                        bool cleared = false;
+                        {
+                            // Acquire every fallible synchronization/resource
+                            // before the owner-thread clear commit.
+                            std::lock_guard<std::mutex> status_lock(
+                                terrain_collision_status_mutex);
+                            physics_context.clear_terrain_collision();
+                            const auto physics_status =
+                                physics_context.terrain_collision_stats();
+                            if (physics_status.installation_key == 0 &&
+                                physics_status.shape_count == 0) {
+                                using std::swap;
+                                swap(terrain_collision_status_copy,
+                                     disabled_status);
+                                cleared = true;
+                            }
+                        }
+                        if (cleared) return true;
+                        return route_failure_noexcept(
+                            "install-failed",
+                            "terrain collision clear was rejected by physics");
+                    }
+                    if (!candidate_slot || !*candidate_slot) {
+                        return route_failure_noexcept(
+                            "install-failed",
+                            "terrain collision replacement has no candidate");
+                    }
+
+                    matter::TerrainCollisionStatus installed_status{};
+                    InstalledLogSnapshot log_status{};
+                    bool installed = false;
+                    {
+                        // Preparing/copying status and acquiring its mutex are
+                        // pre-commit. Once Box3D returns success, only numeric
+                        // assignments, noexcept swaps/destruction, and the
+                        // contained diagnostic call remain.
+                        std::lock_guard<std::mutex> status_lock(
+                            terrain_collision_status_mutex);
+                        installed_status = terrain_collision_status_copy;
+                        installed_status.state =
+                            matter::TerrainCollisionState::Installed;
+                        installed_status.failure_code.clear();
+                        installed_status.failure_message.clear();
+                        const auto install_start =
+                            std::chrono::steady_clock::now();
+                        installed =
+                            physics_context.replace_terrain_collision(
+                                **candidate_slot, error);
+                        // Box3D retained private mesh bytes (or rejected the
+                        // transaction); release generation geometry now.
+                        candidate_slot->reset();
+                        if (installed) {
+                            installed_status.install_ms =
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() -
+                                    install_start)
+                                    .count();
+                            const auto physics_status =
+                                physics_context.terrain_collision_stats();
+                            installed_status.box3d_retained_bytes =
+                                physics_status.retained_bytes;
+
+                            log_status.generation_key =
+                                installed_status.generation_key;
+                            log_status.geometry_key =
+                                installed_status.geometry_key;
+                            log_status.cell_size_m =
+                                installed_status.cell_size_m;
+                            log_status.rung = installed_status.rung;
+                            log_status.region_count =
+                                installed_status.region_count;
+                            log_status.sector_count =
+                                installed_status.sector_count;
+                            log_status.non_empty_tile_count =
+                                installed_status.non_empty_tile_count;
+                            log_status.empty_tile_count =
+                                installed_status.empty_tile_count;
+                            log_status.triangle_count =
+                                installed_status.triangle_count;
+                            log_status.unique_vertex_count =
+                                installed_status.unique_vertex_count;
+                            log_status.artifact_bytes =
+                                installed_status.artifact_bytes;
+                            log_status.box3d_retained_bytes =
+                                installed_status.box3d_retained_bytes;
+                            log_status.cold_build_ms =
+                                installed_status.cold_build_ms;
+                            log_status.cache_load_ms =
+                                installed_status.cache_load_ms;
+                            log_status.validation_ms =
+                                installed_status.validation_ms;
+                            log_status.install_ms =
+                                installed_status.install_ms;
+
+                            using std::swap;
+                            swap(terrain_collision_status_copy,
+                                 installed_status);
+                        }
+                    }
+                    if (!installed) {
+                        return route_failure_noexcept(
+                            "install-failed",
+                            error.empty()
+                                ? "terrain collision install failed"
+                                : error.c_str());
+                    }
+
+                    // This path is deliberately non-escaping: committed Box3D
+                    // state and Installed status cannot be converted into a
+                    // publication failure by a diagnostic sink.
+                    log_installed_noexcept(log_status);
+                    return true;
+                } catch (const std::bad_alloc&) {
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+                    return route_failure_noexcept(
+                        "allocation-failed",
+                        "terrain collision publication allocation failed");
+                } catch (const std::exception& exception) {
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+                    return route_failure_noexcept(
+                        "build-exception", exception.what());
+                } catch (...) {
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+                    return route_failure_noexcept(
+                        "build-exception",
+                        "unknown terrain collision publication failure");
+                }
             };
             collision_ok = gpu_jobs.run_blocking(
                 std::move(collision_job), collision_error);
@@ -3996,13 +4116,24 @@ void WorldSession::Impl::publish_pipeline(
         // indirection when the worker resumes.
         release_and_observe_candidate();
         if (!collision_ok) {
-            emit_error(
-                is_cancelled() ? BakeErrorCode::Cancelled
-                               : BakeErrorCode::Internal,
-                "terrain-collision",
-                collision_error.empty()
-                    ? pfx + " terrain collision publication failed"
-                    : collision_error);
+            const bool failure_already_routed =
+                collision_failure_routed &&
+                collision_failure_routed->load(std::memory_order_acquire);
+            if (!failure_already_routed && is_cancelled()) {
+                emit_error(BakeErrorCode::Cancelled, "terrain-collision",
+                           "cancelled");
+                return;
+            }
+            if (!failure_already_routed) {
+                record_terrain_collision_failure_noexcept(
+                    "publication-failed",
+                    collision_error.empty()
+                        ? "terrain collision publication failed"
+                        : collision_error.c_str(),
+                    &collision_error);
+                disconnect_collision_failure();
+            }
+            emit_collision_error_noexcept(collision_error);
             return;
         }
         if (is_cancelled()) {
