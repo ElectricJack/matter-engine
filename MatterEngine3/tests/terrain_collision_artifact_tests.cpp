@@ -1,5 +1,6 @@
 #include "check.h"
 #include "../src/hydrology/river_geometry.h"
+#include "../src/bake_mode.h"
 #include "../src/terrain_collision/terrain_collision_artifact.h"
 #include "../src/terrain_mesher.h"
 #include "../src/terrain_river_overlay.h"
@@ -7,18 +8,23 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -36,6 +42,17 @@ using matter::terrain_collision::TileCandidate;
 constexpr float kSectorSize = 8.0f;
 constexpr float kCellSize = 2.0f;
 constexpr std::int8_t kRung = 0;
+
+class BakeModeGuard {
+public:
+    BakeModeGuard() : previous_(bake_mode::forced_contour_seams()) {}
+    ~BakeModeGuard() { bake_mode::forced_contour_seams() = previous_; }
+    void contour_seams(bool enabled) {
+        bake_mode::forced_contour_seams() = enabled ? 1 : 0;
+    }
+private:
+    int previous_ = -1;
+};
 
 struct TestField {
     std::uint64_t base_hash = 0;
@@ -59,6 +76,7 @@ SourceIdentity source_for(const TestField& field) {
     source.field_hash = field.base_hash;
     source.overlay_hash = field.runtime.height_overlay()
         ? field.runtime.height_overlay()->hash() : 0u;
+    source.bake_mode_salt = bake_mode::salt();
     source.mesher_semantic_version = terrain_mesher::kSemanticVersion;
     source.geometry_format_version = 1u;
     return source;
@@ -80,6 +98,47 @@ CanonicalDefinition definition_for(
               input, kSectorSize, source_for(field), result, error),
           error.c_str());
     return result;
+}
+
+bool mesh_tile_with_real_mesher(
+    const terrain_field::FieldRuntime& field,
+    const SectorCoordinate& coordinate,
+    std::int8_t rung,
+    float sector_size_m,
+    terrain_mesher::SectorMesh& mesh,
+    std::string& error) {
+    return terrain_mesher::mesh_sector_tiled(
+        field, coordinate.x, coordinate.y, coordinate.z, rung, sector_size_m,
+        mesh, nullptr, error);
+}
+
+matter::terrain_collision::detail::BuildTestHooks counting_mesher_hooks(
+    std::atomic<unsigned>& calls) {
+    matter::terrain_collision::detail::BuildTestHooks hooks{};
+    hooks.mesh_tile = [&calls](
+        const terrain_field::FieldRuntime& field,
+        const SectorCoordinate& coordinate,
+        std::int8_t rung,
+        float sector_size_m,
+        terrain_mesher::SectorMesh& mesh,
+        std::string& error) {
+        calls.fetch_add(1u, std::memory_order_relaxed);
+        return mesh_tile_with_real_mesher(
+            field, coordinate, rung, sector_size_m, mesh, error);
+    };
+    return hooks;
+}
+
+bool load_with_hooks(
+    const TestField& field,
+    const CanonicalDefinition& definition,
+    const std::filesystem::path& cache_root,
+    const matter::terrain_collision::CancelCheck& cancelled,
+    const matter::terrain_collision::detail::BuildTestHooks& hooks,
+    TerrainCollisionCandidate& candidate,
+    std::string& error) {
+    return matter::terrain_collision::detail::load_or_build_candidate_with_test_hooks(
+        field.runtime, definition, cache_root, cancelled, hooks, candidate, error);
 }
 
 class TempRoot {
@@ -394,6 +453,7 @@ void test_final_overlaid_runtime_is_meshed() {
 }
 
 using VertexBits = std::array<std::uint32_t, 3>;
+using EdgeBits = std::pair<VertexBits, VertexBits>;
 
 std::uint32_t float_bits(float value) {
     std::uint32_t bits = 0u;
@@ -401,13 +461,30 @@ std::uint32_t float_bits(float value) {
     return bits;
 }
 
-std::set<VertexBits> world_vertices(const TileCandidate& tile) {
-    std::set<VertexBits> result;
-    for (const Float3& local : tile.vertices) {
-        const Float3 world{tile.origin_m.x + local.x,
-                           tile.origin_m.y + local.y,
-                           tile.origin_m.z + local.z};
-        result.insert({float_bits(world.x), float_bits(world.y), float_bits(world.z)});
+VertexBits world_vertex_bits(const TileCandidate& tile, std::uint32_t index) {
+    const Float3& local = tile.vertices[index];
+    return {float_bits(tile.origin_m.x + local.x),
+            float_bits(tile.origin_m.y + local.y),
+            float_bits(tile.origin_m.z + local.z)};
+}
+
+std::set<EdgeBits> interface_edges(const TileCandidate& tile,
+                                   std::size_t axis,
+                                   float plane) {
+    std::set<EdgeBits> result;
+    const std::uint32_t plane_bits = float_bits(plane);
+    for (std::size_t offset = 0u; offset != tile.indices.size(); offset += 3u) {
+        const std::uint32_t triangle[] = {
+            tile.indices[offset], tile.indices[offset + 1u],
+            tile.indices[offset + 2u]};
+        for (std::size_t edge = 0u; edge != 3u; ++edge) {
+            VertexBits a = world_vertex_bits(tile, triangle[edge]);
+            VertexBits b = world_vertex_bits(tile, triangle[(edge + 1u) % 3u]);
+            if (a[axis] != plane_bits || b[axis] != plane_bits || a == b)
+                continue;
+            if (b < a) std::swap(a, b);
+            result.emplace(a, b);
+        }
     }
     return result;
 }
@@ -426,33 +503,14 @@ void assert_equal_rung_pair(const char* label, const char* field_text,
     CHECK(candidate.tiles.size() == 2u,
           "the neighbor fixture canonicalizes to exactly two tiles");
     if (candidate.tiles.size() != 2u) return;
-    const std::set<VertexBits> first = world_vertices(candidate.tiles[0]);
-    const std::set<VertexBits> second = world_vertices(candidate.tiles[1]);
-    std::vector<VertexBits> shared;
-    std::set_intersection(first.begin(), first.end(), second.begin(), second.end(),
-                          std::back_inserter(shared));
-    CHECK(!shared.empty(),
-          "equal-rung neighbors retain bit-identical shared world vertices");
-    float first_max = -std::numeric_limits<float>::infinity();
-    float second_min = std::numeric_limits<float>::infinity();
-    for (const Float3& local : candidate.tiles[0].vertices) {
-        const float values[] = {
-            candidate.tiles[0].origin_m.x + local.x,
-            candidate.tiles[0].origin_m.y + local.y,
-            candidate.tiles[0].origin_m.z + local.z,
-        };
-        first_max = std::max(first_max, values[axis]);
-    }
-    for (const Float3& local : candidate.tiles[1].vertices) {
-        const float values[] = {
-            candidate.tiles[1].origin_m.x + local.x,
-            candidate.tiles[1].origin_m.y + local.y,
-            candidate.tiles[1].origin_m.z + local.z,
-        };
-        second_min = std::min(second_min, values[axis]);
-    }
-    CHECK(second_min <= first_max,
-          "equal-rung ownership bridge leaves no open gap at the shared plane");
+    const std::set<EdgeBits> first =
+        interface_edges(candidate.tiles[0], axis, kSectorSize);
+    const std::set<EdgeBits> second =
+        interface_edges(candidate.tiles[1], axis, kSectorSize);
+    CHECK(!first.empty(),
+          "the fixture surface has explicit triangle edges on the interface plane");
+    CHECK(first == second,
+          "both tiles own the same complete interface-plane edge set with no gap");
 }
 
 void test_equal_rung_neighbors_share_vertices_on_every_axis() {
@@ -608,6 +666,65 @@ void test_cache_hits_material_reuse_and_region_reuse() {
           "shrinking a region reuses the original tile key");
 }
 
+void test_bake_modes_have_distinct_tile_and_generation_identities() {
+    BakeModeGuard mode;
+    TestField field = make_field(kPlaneField);
+    TempRoot root("bake-mode");
+    std::string error;
+
+    mode.contour_seams(true);
+    const CanonicalDefinition default_definition = definition_for(field);
+    TerrainCollisionCandidate default_candidate{};
+    CHECK(matter::terrain_collision::load_or_build_candidate(
+              field.runtime, default_definition, root.path, {},
+              default_candidate, error),
+          error.c_str());
+
+    mode.contour_seams(false);
+    TerrainCollisionCandidate stale_candidate{};
+    CHECK(!matter::terrain_collision::load_or_build_candidate(
+              field.runtime, default_definition, root.path, {},
+              stale_candidate, error),
+          "a canonical definition from another bake mode is rejected");
+    CHECK(error.find("bake mode") != std::string::npos,
+          "stale bake-mode validation reports the identity mismatch");
+
+    const CanonicalDefinition rollback_definition = definition_for(field);
+    TerrainCollisionCandidate rollback_candidate{};
+    CHECK(matter::terrain_collision::load_or_build_candidate(
+              field.runtime, rollback_definition, root.path, {},
+              rollback_candidate, error),
+          error.c_str());
+    CHECK(default_definition.geometry_key != rollback_definition.geometry_key &&
+              default_definition.installation_key !=
+                  rollback_definition.installation_key,
+          "default and rollback modes have distinct geometry and installation identities");
+    CHECK(default_candidate.tiles[0].tile_key !=
+              rollback_candidate.tiles[0].tile_key,
+          "default and rollback modes have distinct immutable MTCT paths");
+    const std::filesystem::path default_tile =
+        tile_path(root.path, default_candidate.tiles[0].tile_key);
+    const std::filesystem::path rollback_tile =
+        tile_path(root.path, rollback_candidate.tiles[0].tile_key);
+    CHECK(std::filesystem::exists(default_tile) &&
+              std::filesystem::exists(rollback_tile) &&
+              std::filesystem::exists(manifest_path(
+                  root.path, default_candidate.installation_key)) &&
+              std::filesystem::exists(manifest_path(
+                  root.path, rollback_candidate.installation_key)),
+          "both bake modes remain independently addressable in one cache root");
+    CHECK(read_bytes(default_tile) != read_bytes(rollback_tile),
+          "the supported bake modes retain their distinct mesher bytes");
+
+    TileCandidate wrong_mode_tile{};
+    std::uint64_t artifact_bytes = 0u;
+    CHECK(!matter::terrain_collision::detail::validate_tile_artifact_bytes(
+              read_bytes(rollback_tile), default_definition,
+              default_definition.sectors[0], wrong_mode_tile, artifact_bytes,
+              error),
+          "MTCT validation rejects bytes named by another bake-mode identity");
+}
+
 void flip_byte(const std::filesystem::path& path, std::size_t offset) {
     std::vector<std::uint8_t> bytes = read_bytes(path);
     CHECK(offset < bytes.size(), "corruption offset lies within fixture file");
@@ -629,39 +746,48 @@ void test_corrupt_artifacts_are_rebuilt_once_and_fail_closed() {
     const std::filesystem::path manifest =
         manifest_path(root.path, baseline.installation_key);
     const std::vector<std::uint8_t> pristine_tile = read_bytes(tile);
+    std::atomic<unsigned> mesher_calls{0u};
+    const auto counting_hooks = counting_mesher_hooks(mesher_calls);
 
     flip_byte(tile, 0u);
     TerrainCollisionCandidate repaired{};
-    CHECK(matter::terrain_collision::load_or_build_candidate(
-              field.runtime, definition, root.path, {}, repaired, error),
+    mesher_calls.store(0u, std::memory_order_relaxed);
+    CHECK(load_with_hooks(field, definition, root.path, {}, counting_hooks,
+                          repaired, error),
           error.c_str());
-    CHECK(repaired.stats.built_tiles == 1u && read_bytes(tile) == pristine_tile,
+    CHECK(mesher_calls.load(std::memory_order_relaxed) == 1u &&
+              read_bytes(tile) == pristine_tile,
           "a corrupt MTCT header gets exactly one clean deterministic rebuild");
 
     std::vector<std::uint8_t> truncated = pristine_tile;
     truncated.pop_back();
     write_bytes(tile, truncated);
-    CHECK(matter::terrain_collision::load_or_build_candidate(
-              field.runtime, definition, root.path, {}, repaired, error),
+    mesher_calls.store(0u, std::memory_order_relaxed);
+    CHECK(load_with_hooks(field, definition, root.path, {}, counting_hooks,
+                          repaired, error),
           error.c_str());
-    CHECK(repaired.stats.built_tiles == 1u && read_bytes(tile) == pristine_tile,
+    CHECK(mesher_calls.load(std::memory_order_relaxed) == 1u &&
+              read_bytes(tile) == pristine_tile,
           "a truncated MTCT payload gets exactly one clean rebuild");
 
     const std::uint64_t vertex_count = repaired.tiles[0].vertices.size();
     const std::size_t first_index_offset =
         144u + static_cast<std::size_t>(vertex_count) * sizeof(Float3);
     flip_byte(tile, first_index_offset);
-    CHECK(matter::terrain_collision::load_or_build_candidate(
-              field.runtime, definition, root.path, {}, repaired, error),
+    mesher_calls.store(0u, std::memory_order_relaxed);
+    CHECK(load_with_hooks(field, definition, root.path, {}, counting_hooks,
+                          repaired, error),
           error.c_str());
-    CHECK(repaired.stats.built_tiles == 1u && read_bytes(tile) == pristine_tile,
+    CHECK(mesher_calls.load(std::memory_order_relaxed) == 1u &&
+              read_bytes(tile) == pristine_tile,
           "an altered MTCT index is detected and rebuilt");
 
     flip_byte(manifest, 80u);
-    CHECK(matter::terrain_collision::load_or_build_candidate(
-              field.runtime, definition, root.path, {}, repaired, error),
+    mesher_calls.store(0u, std::memory_order_relaxed);
+    CHECK(load_with_hooks(field, definition, root.path, {}, counting_hooks,
+                          repaired, error),
           error.c_str());
-    CHECK(repaired.stats.cache_hit_tiles == 1u && repaired.stats.built_tiles == 0u &&
+    CHECK(mesher_calls.load(std::memory_order_relaxed) == 0u &&
               matter::terrain_collision::detail::validate_generation_manifest(
                   manifest, definition, repaired, error),
           "a corrupt manifest is republished from validated tile artifacts");
@@ -669,10 +795,12 @@ void test_corrupt_artifacts_are_rebuilt_once_and_fail_closed() {
     std::error_code filesystem_error;
     CHECK(std::filesystem::remove(tile, filesystem_error) && !filesystem_error,
           "the referenced tile is removed for the missing-artifact fixture");
-    CHECK(matter::terrain_collision::load_or_build_candidate(
-              field.runtime, definition, root.path, {}, repaired, error),
+    mesher_calls.store(0u, std::memory_order_relaxed);
+    CHECK(load_with_hooks(field, definition, root.path, {}, counting_hooks,
+                          repaired, error),
           error.c_str());
-    CHECK(repaired.stats.built_tiles == 1u && read_bytes(tile) == pristine_tile,
+    CHECK(mesher_calls.load(std::memory_order_relaxed) == 1u &&
+              read_bytes(tile) == pristine_tile,
           "a missing referenced tile is rebuilt from the canonical field");
 
     TempRoot failed_root("rebuild-failure");
@@ -683,20 +811,311 @@ void test_corrupt_artifacts_are_rebuilt_once_and_fail_closed() {
     corrupt[0] ^= 0xffu;
     write_bytes(failed_tile, corrupt);
     TerrainCollisionCandidate not_published{};
-    unsigned cancel_checks = 0u;
-    CHECK(!matter::terrain_collision::load_or_build_candidate(
-              field.runtime, definition, failed_root.path,
-              [&cancel_checks] { return ++cancel_checks >= 2u; },
-              not_published, error),
-          "an injected rebuild cancellation fails closed");
-    CHECK(cancel_checks == 2u,
-          "the injected failure occurs after the corrupt tile triggers remeshing");
-    CHECK(error.find("cancel") != std::string::npos,
-          "rebuild cancellation returns a precise cancellation error");
+    std::atomic<unsigned> failed_mesher_calls{0u};
+    matter::terrain_collision::detail::BuildTestHooks failing_hooks{};
+    failing_hooks.mesh_tile = [&failed_mesher_calls](
+        const terrain_field::FieldRuntime&, const SectorCoordinate&,
+        std::int8_t, float, terrain_mesher::SectorMesh&, std::string& mesh_error) {
+        failed_mesher_calls.fetch_add(1u, std::memory_order_relaxed);
+        mesh_error = "injected canonical mesher failure";
+        return false;
+    };
+    CHECK(!load_with_hooks(field, definition, failed_root.path, {}, failing_hooks,
+                           not_published, error),
+          "an injected mesher failure during corrupt-tile rebuild fails closed");
+    CHECK(failed_mesher_calls.load(std::memory_order_relaxed) == 1u,
+          "a failed corrupt-tile rebuild invokes the mesher exactly once");
+    CHECK(error.find("mesher failed") != std::string::npos,
+          "the rebuild failure propagates as an actual mesher failure");
     CHECK(not_published.tiles.empty() &&
+              read_bytes(failed_tile) == corrupt &&
               !std::filesystem::exists(manifest_path(
                   failed_root.path, definition.installation_key)),
           "a failed rebuild exposes no candidate and publishes no generation manifest");
+}
+
+using PublicationCommitPoint =
+    matter::terrain_collision::detail::PublicationCommitPoint;
+
+class TwoPublisherBarrier {
+public:
+    TwoPublisherBarrier(bool wait_for_tile, bool wait_for_manifest)
+        : wait_for_tile_(wait_for_tile), wait_for_manifest_(wait_for_manifest) {}
+
+    void arrive(PublicationCommitPoint point) {
+        if (point == PublicationCommitPoint::TileNoReplace && wait_for_tile_) {
+            wait(tile_arrivals_);
+        } else if (point == PublicationCommitPoint::ManifestNoReplace &&
+                   wait_for_manifest_) {
+            wait(manifest_arrivals_);
+        }
+    }
+
+    bool timed_out() const noexcept {
+        return timed_out_.load(std::memory_order_relaxed);
+    }
+
+private:
+    void wait(unsigned& arrivals) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ++arrivals;
+        if (arrivals == 2u) {
+            condition_.notify_all();
+            return;
+        }
+        if (!condition_.wait_for(lock, std::chrono::seconds(10),
+                                 [&arrivals] { return arrivals >= 2u; })) {
+            timed_out_.store(true, std::memory_order_relaxed);
+            arrivals = 2u;
+            condition_.notify_all();
+        }
+    }
+
+    bool wait_for_tile_ = false;
+    bool wait_for_manifest_ = false;
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    unsigned tile_arrivals_ = 0u;
+    unsigned manifest_arrivals_ = 0u;
+    std::atomic<bool> timed_out_{false};
+};
+
+std::size_t count_files_with_extension(const std::filesystem::path& directory,
+                                       const char* extension) {
+    std::error_code error;
+    if (!std::filesystem::exists(directory, error) || error) return 0u;
+    std::size_t count = 0u;
+    for (const auto& entry : std::filesystem::directory_iterator(directory))
+        if (entry.is_regular_file() && entry.path().extension() == extension)
+            ++count;
+    return count;
+}
+
+void test_cancellation_is_polled_at_atomic_publication_boundaries() {
+    TestField field = make_field(kPlaneField);
+    const CanonicalDefinition definition = definition_for(field);
+    TempRoot reference_root("publication-reference");
+    TerrainCollisionCandidate reference{};
+    std::string error;
+    CHECK(matter::terrain_collision::load_or_build_candidate(
+              field.runtime, definition, reference_root.path, {}, reference,
+              error),
+          error.c_str());
+    const std::filesystem::path reference_tile =
+        tile_path(reference_root.path, reference.tiles[0].tile_key);
+    const std::vector<std::uint8_t> pristine_tile = read_bytes(reference_tile);
+
+    const auto cancel_at = [&](const char* label, PublicationCommitPoint target,
+                               const std::function<void(const TempRoot&)>& seed,
+                               const std::function<void(const TempRoot&)>& verify) {
+        TempRoot root(label);
+        seed(root);
+        std::atomic<bool> cancelled{false};
+        matter::terrain_collision::detail::BuildTestHooks hooks{};
+        hooks.before_publication_commit =
+            [&cancelled, target](PublicationCommitPoint point) {
+                if (point == target)
+                    cancelled.store(true, std::memory_order_release);
+            };
+        TerrainCollisionCandidate candidate{};
+        error.clear();
+        CHECK(!load_with_hooks(
+                  field, definition, root.path,
+                  [&cancelled] {
+                      return cancelled.load(std::memory_order_acquire);
+                  },
+                  hooks, candidate, error),
+              "cancellation at an atomic publication boundary fails the build");
+        CHECK(error.find("cancel") != std::string::npos &&
+                  candidate.tiles.empty(),
+              "publication-boundary cancellation is precise and exposes no candidate");
+        verify(root);
+    };
+
+    const auto no_seed = [](const TempRoot&) {};
+    cancel_at(
+        "cancel-tile-no-replace", PublicationCommitPoint::TileNoReplace,
+        no_seed, [&](const TempRoot& root) {
+            CHECK(count_files_with_extension(
+                      root.path / "terrain_collision" / "v1" / "tiles",
+                      ".mtct") == 0u &&
+                      count_files_with_extension(
+                          root.path / "terrain_collision" / "v1" /
+                              "generations",
+                          ".mtcm") == 0u,
+                  "tile no-replace cancellation publishes neither tile nor manifest");
+        });
+    cancel_at(
+        "cancel-manifest-no-replace", PublicationCommitPoint::ManifestNoReplace,
+        no_seed, [&](const TempRoot& root) {
+            CHECK(std::filesystem::exists(tile_path(
+                      root.path, reference.tiles[0].tile_key)) &&
+                      !std::filesystem::exists(manifest_path(
+                          root.path, definition.installation_key)),
+                  "manifest no-replace cancellation leaves only the committed tile");
+        });
+
+    std::vector<std::uint8_t> corrupt_tile = pristine_tile;
+    corrupt_tile[0] ^= 0x5au;
+    cancel_at(
+        "cancel-tile-replace", PublicationCommitPoint::TileReplace,
+        [&](const TempRoot& root) {
+            const std::filesystem::path destination =
+                tile_path(root.path, reference.tiles[0].tile_key);
+            std::filesystem::create_directories(destination.parent_path());
+            write_bytes(destination, corrupt_tile);
+        },
+        [&](const TempRoot& root) {
+            CHECK(read_bytes(tile_path(root.path, reference.tiles[0].tile_key)) ==
+                          corrupt_tile &&
+                      !std::filesystem::exists(manifest_path(
+                          root.path, definition.installation_key)),
+                  "tile replacement cancellation preserves the prior corrupt file");
+        });
+
+    cancel_at(
+        "cancel-manifest-replace", PublicationCommitPoint::ManifestReplace,
+        [&](const TempRoot& root) {
+            TerrainCollisionCandidate seeded{};
+            std::string seed_error;
+            CHECK(matter::terrain_collision::load_or_build_candidate(
+                      field.runtime, definition, root.path, {}, seeded,
+                      seed_error),
+                  seed_error.c_str());
+            flip_byte(manifest_path(root.path, definition.installation_key), 80u);
+        },
+        [&](const TempRoot& root) {
+            std::string validation_error;
+            CHECK(!matter::terrain_collision::detail::validate_generation_manifest(
+                      manifest_path(root.path, definition.installation_key),
+                      definition, reference, validation_error),
+                  "manifest replacement cancellation preserves the corrupt manifest");
+        });
+}
+
+struct ConcurrentBuildResult {
+    bool ok = false;
+    TerrainCollisionCandidate candidate{};
+    std::string error;
+};
+
+void test_concurrent_publishers_validate_winners_and_converge() {
+    TestField field = make_field(kPlaneField);
+    const CanonicalDefinition definition = definition_for(field);
+    TempRoot root("concurrent-publishers");
+    TwoPublisherBarrier barrier(true, true);
+    std::atomic<unsigned> mesher_calls{0u};
+    std::atomic<unsigned> tile_winners{0u};
+    std::atomic<unsigned> manifest_winners{0u};
+    auto hooks = counting_mesher_hooks(mesher_calls);
+    hooks.before_publication_commit = [&](PublicationCommitPoint point) {
+        barrier.arrive(point);
+        if (point == PublicationCommitPoint::TileExistingWinner)
+            tile_winners.fetch_add(1u, std::memory_order_relaxed);
+        if (point == PublicationCommitPoint::ManifestExistingWinner)
+            manifest_winners.fetch_add(1u, std::memory_order_relaxed);
+    };
+
+    ConcurrentBuildResult results[2];
+    std::thread first([&] {
+        results[0].ok = load_with_hooks(
+            field, definition, root.path, {}, hooks, results[0].candidate,
+            results[0].error);
+    });
+    std::thread second([&] {
+        results[1].ok = load_with_hooks(
+            field, definition, root.path, {}, hooks, results[1].candidate,
+            results[1].error);
+    });
+    first.join();
+    second.join();
+
+    CHECK(!barrier.timed_out(),
+          "both writers deterministically reach tile and manifest commit races");
+    CHECK(results[0].ok && results[1].ok,
+          "both concurrent publishers accept a validated immutable winner");
+    CHECK(mesher_calls.load(std::memory_order_relaxed) == 2u &&
+              tile_winners.load(std::memory_order_relaxed) == 1u &&
+              manifest_winners.load(std::memory_order_relaxed) == 1u,
+          "one loser validates each concurrently published tile and manifest winner");
+    if (!results[0].ok || !results[1].ok) return;
+    CHECK(same_tiles(results[0].candidate, results[1].candidate),
+          "concurrent publishers converge to byte-identical candidate geometry");
+    CHECK(count_files_with_extension(
+              root.path / "terrain_collision" / "v1" / "tiles", ".mtct") ==
+              1u &&
+              count_files_with_extension(
+                  root.path / "terrain_collision" / "v1" / "generations",
+                  ".mtcm") == 1u,
+          "concurrent publication leaves one canonical tile and generation file");
+    std::string validation_error;
+    CHECK(matter::terrain_collision::detail::validate_generation_manifest(
+              manifest_path(root.path, results[0].candidate.installation_key),
+              definition, results[0].candidate, validation_error),
+          validation_error.c_str());
+}
+
+void assert_cancelled_existing_winner(PublicationCommitPoint race_point,
+                                      PublicationCommitPoint cancel_point,
+                                      const char* label) {
+    TestField field = make_field(kPlaneField);
+    const CanonicalDefinition definition = definition_for(field);
+    TempRoot root(label);
+    TwoPublisherBarrier barrier(
+        race_point == PublicationCommitPoint::TileNoReplace,
+        race_point == PublicationCommitPoint::ManifestNoReplace);
+    ConcurrentBuildResult results[2];
+    std::atomic<unsigned> cancelled_winners{0u};
+
+    const auto run = [&](ConcurrentBuildResult& result) {
+        std::atomic<bool> cancelled{false};
+        matter::terrain_collision::detail::BuildTestHooks hooks{};
+        hooks.before_publication_commit = [&](PublicationCommitPoint point) {
+            barrier.arrive(point);
+            if (point == cancel_point) {
+                cancelled_winners.fetch_add(1u, std::memory_order_relaxed);
+                cancelled.store(true, std::memory_order_release);
+            }
+        };
+        result.ok = load_with_hooks(
+            field, definition, root.path,
+            [&cancelled] {
+                return cancelled.load(std::memory_order_acquire);
+            },
+            hooks, result.candidate, result.error);
+    };
+    std::thread first([&] { run(results[0]); });
+    std::thread second([&] { run(results[1]); });
+    first.join();
+    second.join();
+
+    const unsigned success_count =
+        (results[0].ok ? 1u : 0u) + (results[1].ok ? 1u : 0u);
+    const ConcurrentBuildResult& failed = results[0].ok ? results[1] : results[0];
+    const ConcurrentBuildResult& winner = results[0].ok ? results[0] : results[1];
+    CHECK(!barrier.timed_out() && success_count == 1u &&
+              cancelled_winners.load(std::memory_order_relaxed) == 1u,
+          "one concurrent loser is cancelled at its validated-winner boundary");
+    CHECK(!failed.ok && failed.candidate.tiles.empty() &&
+              failed.error.find("cancel") != std::string::npos,
+          "a cancelled validated-winner path cannot return a candidate");
+    if (!winner.ok) return;
+    std::string validation_error;
+    CHECK(matter::terrain_collision::detail::validate_generation_manifest(
+              manifest_path(root.path, winner.candidate.installation_key),
+              definition, winner.candidate, validation_error),
+          "the non-cancelled publisher leaves one valid generation");
+}
+
+void test_cancellation_precedes_validated_winner_acceptance() {
+    assert_cancelled_existing_winner(
+        PublicationCommitPoint::TileNoReplace,
+        PublicationCommitPoint::TileExistingWinner,
+        "cancel-tile-existing-winner");
+    assert_cancelled_existing_winner(
+        PublicationCommitPoint::ManifestNoReplace,
+        PublicationCommitPoint::ManifestExistingWinner,
+        "cancel-manifest-existing-winner");
 }
 
 void test_interrupted_temporary_file_never_becomes_addressable() {
@@ -725,6 +1144,8 @@ void test_interrupted_temporary_file_never_becomes_addressable() {
 }  // namespace
 
 int main() {
+    BakeModeGuard mode;
+    mode.contour_seams(true);
     test_fixture_conversion_is_valid_and_repeatable();
     test_all_material_buckets_are_flattened();
     test_uniform_density_tiles_succeed_empty();
@@ -732,7 +1153,11 @@ int main() {
     test_equal_rung_neighbors_share_vertices_on_every_axis();
     test_validators_reject_invalid_geometry_and_headers();
     test_cache_hits_material_reuse_and_region_reuse();
+    test_bake_modes_have_distinct_tile_and_generation_identities();
     test_corrupt_artifacts_are_rebuilt_once_and_fail_closed();
+    test_cancellation_is_polled_at_atomic_publication_boundaries();
+    test_concurrent_publishers_validate_winners_and_converge();
+    test_cancellation_precedes_validated_winner_acceptance();
     test_interrupted_temporary_file_never_becomes_addressable();
     return check_summary();
 }

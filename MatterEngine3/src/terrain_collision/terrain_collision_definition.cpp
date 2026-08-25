@@ -62,6 +62,9 @@ void hash_geometry(HashWriter& writer, const SourceIdentity& source,
     writer.u32(0x54434731U);  // TCG1: terrain collision geometry, format 1.
     writer.u64(source.field_hash);
     writer.u64(source.overlay_hash);
+    // Match bake_mode's key contract: the default salt is zero and must not
+    // disturb existing default-mode identities.
+    if (source.bake_mode_salt != 0u) writer.u64(source.bake_mode_salt);
     writer.u32(source.mesher_semantic_version);
     writer.u32(source.geometry_format_version);
     writer.f32(definition.sector_size_m);

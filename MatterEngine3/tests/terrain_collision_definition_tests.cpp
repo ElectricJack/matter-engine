@@ -1,4 +1,5 @@
 #include "check.h"
+#include "../src/bake_mode.h"
 #include "../src/terrain_collision/terrain_collision_definition.h"
 
 #include <cmath>
@@ -38,6 +39,7 @@ SourceIdentity source() {
     SourceIdentity result;
     result.field_hash = 0x1111222233334444ULL;
     result.overlay_hash = 0x5555666677778888ULL;
+    result.bake_mode_salt = bake_mode::salt();
     result.mesher_semantic_version = 1;
     result.geometry_format_version = 1;
     return result;
@@ -232,6 +234,9 @@ void test_identity_tracks_semantic_inputs_only() {
     changed_source = source();
     ++changed_source.mesher_semantic_version;
     assert_geometry_change(base, 64.0f, changed_source);
+    changed_source = source();
+    changed_source.bake_mode_salt = 0xC0470552EA3D0001ULL;
+    assert_geometry_change(base, 64.0f, changed_source);
     auto changed_cell = base;
     changed_cell.cell_size_m = 1.0f;
     changed_cell.rung = 1;
@@ -248,11 +253,14 @@ void test_identity_tracks_semantic_inputs_only() {
 }  // namespace
 
 int main() {
+    const int previous_mode = bake_mode::forced_contour_seams();
+    bake_mode::forced_contour_seams() = 1;
     test_cell_size_ladder_is_exact();
     test_canonicalizes_overlap_order_and_half_open_grid();
     test_rejects_invalid_definition_fields();
     test_rejects_sector_union_larger_than_documented_limit();
     test_rejects_out_of_range_sector_quotients_without_narrowing();
     test_identity_tracks_semantic_inputs_only();
+    bake_mode::forced_contour_seams() = previous_mode;
     return check_summary();
 }

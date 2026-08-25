@@ -1,5 +1,6 @@
 #include "terrain_collision_artifact.h"
 
+#include "bake_mode.h"
 #include "terrain_mesher.h"
 #include "terrain_river_overlay.h"
 
@@ -271,6 +272,8 @@ std::uint64_t tile_key_for(const CanonicalDefinition& definition,
     hash.u32(0x314b544dU);  // MTK1
     hash.u64(definition.source.field_hash);
     hash.u64(definition.source.overlay_hash);
+    if (definition.source.bake_mode_salt != 0u)
+        hash.u64(definition.source.bake_mode_salt);
     hash.u32(definition.source.mesher_semantic_version);
     hash.u32(definition.source.geometry_format_version);
     hash.f32(definition.sector_size_m);
@@ -336,6 +339,8 @@ bool validate_definition_and_field(const terrain_field::FieldRuntime& field,
             terrain_mesher::kSemanticVersion ||
         definition.source.geometry_format_version != kTileFormatVersion)
         return fail(error, "terrain collision source semantic version is stale");
+    if (definition.source.bake_mode_salt != bake_mode::salt())
+        return fail(error, "terrain collision source bake mode does not match the runtime");
     const bool has_overlay = static_cast<bool>(field.height_overlay());
     const std::uint64_t actual_overlay_hash = has_overlay
         ? field.height_overlay()->hash() : 0u;
@@ -921,12 +926,31 @@ PublishNoReplaceResult publish_file_no_replace(
     return PublishNoReplaceResult::Failure;
 }
 
+bool cancelled_now(const CancelCheck& cancelled) {
+    return cancelled && cancelled();
+}
+
+bool continue_publication(
+    const CancelCheck& cancelled,
+    const detail::BuildTestHooks* hooks,
+    detail::PublicationCommitPoint point,
+    const std::filesystem::path& temp_path,
+    std::string& error) {
+    if (hooks && hooks->before_publication_commit)
+        hooks->before_publication_commit(point);
+    if (!cancelled_now(cancelled)) return true;
+    remove_temp(temp_path);
+    return fail(error, "terrain collision candidate build cancelled");
+}
+
 bool publish_tile_file(const std::filesystem::path& destination,
                        const std::vector<std::uint8_t>& bytes,
                        const CanonicalDefinition& definition,
                        const SectorCoordinate& coordinate,
                        TileCandidate& tile, std::uint64_t& artifact_bytes,
-                       double& validation_ms, std::string& error) {
+                       double& validation_ms, const CancelCheck& cancelled,
+                       const detail::BuildTestHooks* hooks,
+                       std::string& error) {
     TileCandidate generated{};
     std::uint64_t generated_bytes = 0u;
     Clock::time_point start = Clock::now();
@@ -959,6 +983,11 @@ bool publish_tile_file(const std::filesystem::path& destination,
         std::string existing_error;
         if (load_tile_file(destination, definition, coordinate, existing,
                            existing_bytes, &validation_ms, existing_error)) {
+            if (!continue_publication(
+                    cancelled, hooks,
+                    detail::PublicationCommitPoint::TileExistingWinner,
+                    temp_path, error))
+                return false;
             remove_temp(temp_path);
             tile = std::move(existing);
             artifact_bytes = existing_bytes;
@@ -966,6 +995,11 @@ bool publish_tile_file(const std::filesystem::path& destination,
             return true;
         }
     } else {
+        if (!continue_publication(
+                cancelled, hooks,
+                detail::PublicationCommitPoint::TileNoReplace,
+                temp_path, error))
+            return false;
         const PublishNoReplaceResult publish_result =
             publish_file_no_replace(temp_path, destination, error);
         if (publish_result == PublishNoReplaceResult::Published)
@@ -980,6 +1014,11 @@ bool publish_tile_file(const std::filesystem::path& destination,
         std::string existing_error;
         if (load_tile_file(destination, definition, coordinate, existing,
                            existing_bytes, &validation_ms, existing_error)) {
+            if (!continue_publication(
+                    cancelled, hooks,
+                    detail::PublicationCommitPoint::TileExistingWinner,
+                    temp_path, error))
+                return false;
             remove_temp(temp_path);
             tile = std::move(existing);
             artifact_bytes = existing_bytes;
@@ -987,6 +1026,10 @@ bool publish_tile_file(const std::filesystem::path& destination,
             return true;
         }
     }
+    if (!continue_publication(
+            cancelled, hooks, detail::PublicationCommitPoint::TileReplace,
+            temp_path, error))
+        return false;
     if (!replace_file(temp_path, destination, error)) {
         remove_temp(temp_path);
         return false;
@@ -1002,7 +1045,9 @@ bool publish_manifest_file(const std::filesystem::path& destination,
                            const CanonicalDefinition& definition,
                            const TerrainCollisionCandidate& candidate,
                            const std::vector<std::uint64_t>& artifact_sizes,
-                           double& validation_ms, std::string& error) {
+                           double& validation_ms, const CancelCheck& cancelled,
+                           const detail::BuildTestHooks* hooks,
+                           std::string& error) {
     Clock::time_point start = Clock::now();
     if (!validate_manifest_bytes(bytes, definition, candidate, artifact_sizes,
                                  error)) {
@@ -1038,11 +1083,21 @@ bool publish_manifest_file(const std::filesystem::path& destination,
             existing_error);
         validation_ms += elapsed_ms(start);
         if (existing_valid) {
+            if (!continue_publication(
+                    cancelled, hooks,
+                    detail::PublicationCommitPoint::ManifestExistingWinner,
+                    temp_path, error))
+                return false;
             remove_temp(temp_path);
             error.clear();
             return true;
         }
     } else {
+        if (!continue_publication(
+                cancelled, hooks,
+                detail::PublicationCommitPoint::ManifestNoReplace,
+                temp_path, error))
+            return false;
         const PublishNoReplaceResult publish_result =
             publish_file_no_replace(temp_path, destination, error);
         if (publish_result == PublishNoReplaceResult::Published) {
@@ -1066,11 +1121,20 @@ bool publish_manifest_file(const std::filesystem::path& destination,
             existing_error);
         validation_ms += elapsed_ms(start);
         if (existing_valid) {
+            if (!continue_publication(
+                    cancelled, hooks,
+                    detail::PublicationCommitPoint::ManifestExistingWinner,
+                    temp_path, error))
+                return false;
             remove_temp(temp_path);
             error.clear();
             return true;
         }
     }
+    if (!continue_publication(
+            cancelled, hooks, detail::PublicationCommitPoint::ManifestReplace,
+            temp_path, error))
+        return false;
     if (!replace_file(temp_path, destination, error)) {
         remove_temp(temp_path);
         return false;
@@ -1081,10 +1145,6 @@ bool publish_manifest_file(const std::filesystem::path& destination,
         destination, definition, candidate, artifact_sizes, published_bytes, error);
     validation_ms += elapsed_ms(start);
     return published;
-}
-
-bool cancelled_now(const CancelCheck& cancelled) {
-    return cancelled && cancelled();
 }
 
 bool add_stat(std::uint64_t value, std::uint64_t& total,
@@ -1101,6 +1161,7 @@ bool load_or_build_candidate_impl(
     const CanonicalDefinition& definition,
     const std::filesystem::path& cache_root,
     const CancelCheck& cancelled,
+    const detail::BuildTestHooks* hooks,
     TerrainCollisionCandidate& out,
     std::string& error) {
     out = {};
@@ -1139,10 +1200,14 @@ bool load_or_build_candidate_impl(
             const Clock::time_point build_start = Clock::now();
             terrain_mesher::SectorMesh mesh{};
             std::string mesh_error;
-            if (!terrain_mesher::mesh_sector_tiled(
-                    field, coordinate.x, coordinate.y, coordinate.z,
-                    definition.rung, definition.sector_size_m, mesh, nullptr,
-                    mesh_error))
+            const bool mesh_ok = hooks && hooks->mesh_tile
+                ? hooks->mesh_tile(field, coordinate, definition.rung,
+                                   definition.sector_size_m, mesh, mesh_error)
+                : terrain_mesher::mesh_sector_tiled(
+                      field, coordinate.x, coordinate.y, coordinate.z,
+                      definition.rung, definition.sector_size_m, mesh, nullptr,
+                      mesh_error);
+            if (!mesh_ok)
                 return fail(error, "terrain collision mesher failed: " + mesh_error);
             if (cancelled_now(cancelled))
                 return fail(error, "terrain collision candidate build cancelled");
@@ -1160,7 +1225,7 @@ bool load_or_build_candidate_impl(
                 return fail(error, "terrain collision candidate build cancelled");
             if (!publish_tile_file(path, bytes, definition, coordinate, tile,
                                    tile_file_bytes, result.stats.validation_ms,
-                                   error))
+                                   cancelled, hooks, error))
                 return false;
             ++result.stats.built_tiles;
         }
@@ -1191,6 +1256,8 @@ bool load_or_build_candidate_impl(
             manifest, definition, result, artifact_sizes, existing_bytes,
             manifest_error);
         result.stats.validation_ms += elapsed_ms(validation_start);
+        if (manifest_valid && cancelled_now(cancelled))
+            return fail(error, "terrain collision candidate build cancelled");
     }
     if (!manifest_valid) {
         std::vector<std::uint8_t> bytes;
@@ -1198,7 +1265,7 @@ bool load_or_build_candidate_impl(
             return false;
         if (!publish_manifest_file(manifest, bytes, definition, result,
                                    artifact_sizes, result.stats.validation_ms,
-                                   error))
+                                   cancelled, hooks, error))
             return false;
     }
     out = std::move(result);
@@ -1206,9 +1273,42 @@ bool load_or_build_candidate_impl(
     return true;
 }
 
+bool load_or_build_candidate_catching(
+    const terrain_field::FieldRuntime& field,
+    const CanonicalDefinition& definition,
+    const std::filesystem::path& cache_root,
+    const CancelCheck& cancelled,
+    const detail::BuildTestHooks* hooks,
+    TerrainCollisionCandidate& out,
+    std::string& error) {
+    try {
+        return load_or_build_candidate_impl(field, definition, cache_root,
+                                            cancelled, hooks, out, error);
+    } catch (const std::bad_alloc&) {
+        out = {};
+        return fail(error, "terrain collision candidate allocation failed");
+    } catch (const std::filesystem::filesystem_error& exception) {
+        out = {};
+        return fail(error, std::string("terrain collision cache filesystem failure: ") +
+                               exception.what());
+    }
+}
+
 }  // namespace
 
 namespace detail {
+
+bool load_or_build_candidate_with_test_hooks(
+    const terrain_field::FieldRuntime& field,
+    const CanonicalDefinition& definition,
+    const std::filesystem::path& cache_root,
+    const CancelCheck& cancelled,
+    const BuildTestHooks& hooks,
+    TerrainCollisionCandidate& out,
+    std::string& error) {
+    return load_or_build_candidate_catching(
+        field, definition, cache_root, cancelled, &hooks, out, error);
+}
 
 bool validate_tile_candidate(const TileCandidate& tile,
                              const CanonicalDefinition& definition,
@@ -1447,17 +1547,8 @@ bool load_or_build_candidate(
     const CancelCheck& cancelled,
     TerrainCollisionCandidate& out,
     std::string& error) {
-    try {
-        return load_or_build_candidate_impl(field, definition, cache_root,
-                                            cancelled, out, error);
-    } catch (const std::bad_alloc&) {
-        out = {};
-        return fail(error, "terrain collision candidate allocation failed");
-    } catch (const std::filesystem::filesystem_error& exception) {
-        out = {};
-        return fail(error, std::string("terrain collision cache filesystem failure: ") +
-                               exception.what());
-    }
+    return load_or_build_candidate_catching(
+        field, definition, cache_root, cancelled, nullptr, out, error);
 }
 
 }  // namespace matter::terrain_collision

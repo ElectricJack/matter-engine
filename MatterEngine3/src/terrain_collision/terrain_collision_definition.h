@@ -29,6 +29,11 @@ inline bool sector_coordinate_less(const SectorCoordinate& a,
 struct SourceIdentity {
     std::uint64_t field_hash = 0;
     std::uint64_t overlay_hash = 0;
+    // Runtime bake modes can change mesh_sector_tiled bytes without changing
+    // the field. Every caller that constructs the final collision definition
+    // (including the Task 4 session builder) must snapshot bake_mode::salt()
+    // here before canonicalization; artifact loading rejects a later mismatch.
+    std::uint64_t bake_mode_salt = 0;
     std::uint32_t mesher_semantic_version = 0;
     std::uint32_t geometry_format_version = 1;
 };

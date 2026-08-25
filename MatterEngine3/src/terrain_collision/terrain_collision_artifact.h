@@ -63,6 +63,37 @@ bool load_or_build_candidate(
 // API and may evolve with the MTCT/MTCM format.
 namespace detail {
 
+// Narrow, src-only deterministic seam for behavior tests. Production passes no
+// hooks, so these callbacks have no storage or branch-visible side effects in
+// the public load_or_build_candidate path.
+enum class PublicationCommitPoint {
+    TileNoReplace,
+    TileReplace,
+    TileExistingWinner,
+    ManifestNoReplace,
+    ManifestReplace,
+    ManifestExistingWinner,
+};
+
+struct BuildTestHooks {
+    std::function<bool(const terrain_field::FieldRuntime&,
+                       const SectorCoordinate&,
+                       std::int8_t,
+                       float,
+                       terrain_mesher::SectorMesh&,
+                       std::string&)> mesh_tile;
+    std::function<void(PublicationCommitPoint)> before_publication_commit;
+};
+
+bool load_or_build_candidate_with_test_hooks(
+    const terrain_field::FieldRuntime& field,
+    const CanonicalDefinition& definition,
+    const std::filesystem::path& cache_root,
+    const CancelCheck& cancelled,
+    const BuildTestHooks& hooks,
+    TerrainCollisionCandidate& out,
+    std::string& error);
+
 bool convert_mesh_to_tile(const terrain_mesher::SectorMesh& mesh,
                           const CanonicalDefinition& definition,
                           const SectorCoordinate& coordinate,

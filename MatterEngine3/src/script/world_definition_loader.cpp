@@ -3,6 +3,7 @@
 
 #include "../hydrology/hydrology_settings.h"
 #include "../hydrology/river_network_builder.h"
+#include "../bake_mode.h"
 #include "../terrain_collision/terrain_collision_definition.h"
 #include "module_resolver.h"
 
@@ -487,10 +488,12 @@ JSValue terrain_collision_build(JSContext* context, JSValueConst,
                                          "terrainCollision.build() requires at least one region");
     collector->terrain_collision_settings.regions = collector->terrain_collision_regions;
     terrain_collision::CanonicalDefinition canonical;
+    terrain_collision::SourceIdentity source{};
+    source.bake_mode_salt = bake_mode::salt();
     std::string validation_error;
     if (!terrain_collision::canonicalize(collector->terrain_collision_settings,
                                          collector->terrain_collision_sector_size_m,
-                                         {}, canonical, validation_error)) {
+                                         source, canonical, validation_error)) {
         const std::size_t separator = validation_error.find(' ');
         const std::string path = separator == std::string::npos
             ? "terrainCollision.build" : validation_error.substr(0, separator);
