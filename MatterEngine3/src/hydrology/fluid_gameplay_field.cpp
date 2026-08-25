@@ -18,6 +18,24 @@ bool to_float(double value, float& result) {
     return finite(result);
 }
 
+bool terrain_cell_centre(float origin, float cell_size, std::uint32_t index,
+                         float& result) {
+    const double offset = (static_cast<double>(index) + 0.5) * cell_size;
+    const double margin = static_cast<double>(std::numeric_limits<float>::max()) -
+                          static_cast<double>(origin);
+    if (!finite(offset) || offset <= 0.0 || !finite(margin) || offset > margin ||
+        !to_float(static_cast<double>(origin) + offset, result) ||
+        !(result > origin))
+        return false;
+    if (index == 0u) return true;
+    const double previous_offset = (static_cast<double>(index) - 0.5) * cell_size;
+    float previous = 0.0f;
+    return finite(previous_offset) && previous_offset > 0.0 &&
+           previous_offset <= margin &&
+           to_float(static_cast<double>(origin) + previous_offset, previous) &&
+           result > previous;
+}
+
 bool valid_layout(const GameplayFieldLayout& layout) {
     return finite(layout.origin_m.x) && finite(layout.origin_m.y) &&
            finite(layout.origin_m.z) && finite(layout.cell_size_m) &&
@@ -85,12 +103,10 @@ bool build_fluid_gameplay_field(
         for (std::uint32_t x = 0; x != layout.width; ++x) {
             const std::size_t index = static_cast<std::size_t>(z) * layout.width + x;
             float world_x = 0.0f, world_z = 0.0f;
-            if (!to_float(static_cast<double>(layout.origin_m.x) +
-                              (static_cast<double>(x) + 0.5) * layout.cell_size_m,
-                          world_x) ||
-                !to_float(static_cast<double>(layout.origin_m.z) +
-                              (static_cast<double>(z) + 0.5) * layout.cell_size_m,
-                          world_z))
+            if (!terrain_cell_centre(layout.origin_m.x, layout.cell_size_m, x,
+                                     world_x) ||
+                !terrain_cell_centre(layout.origin_m.z, layout.cell_size_m, z,
+                                     world_z))
                 return fail("fluid gameplay field terrain coordinate is not representable");
             if (!terrain(world_x, world_z, terrain_height[index]) ||
                 !finite(terrain_height[index])) {

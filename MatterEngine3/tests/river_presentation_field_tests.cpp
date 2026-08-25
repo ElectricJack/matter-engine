@@ -179,10 +179,27 @@ void test_gameplay_uses_checked_grid_coordinates() {
               field, error) && field.empty() && !error.empty(),
           "unrepresentable X/Z terrain centres fail closed at the float sampler boundary");
 
-    const hydrology::GameplayFieldLayout extreme_origin{{maximum, 0.0f, maximum},
-                                                         1.0f, 1u, 1u};
+    const hydrology::GameplayFieldLayout absorbed{{maximum, 0.0f, maximum},
+                                                   1.0f, 1u, 1u};
+    CHECK(!hydrology::build_fluid_gameplay_field(
+              {}, 0.5f, absorbed,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              field, error) && field.empty() && !error.empty(),
+          "FLT_MAX origins reject absorbed positive X/Z centre offsets before terrain");
+
+    const hydrology::GameplayFieldLayout collapsing{{1.0f, 0.0f, 1.0f},
+                                                     std::numeric_limits<float>::epsilon(), 2u, 2u};
+    CHECK(!hydrology::build_fluid_gameplay_field(
+              {}, 0.5f, collapsing,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              field, error) && field.empty() && !error.empty(),
+          "adjacent extreme X/Z centres cannot collapse at the terrain callback boundary");
+
+    const hydrology::GameplayFieldLayout extreme_origin{{-maximum * 0.5f, 0.0f,
+                                                          -maximum * 0.5f},
+                                                         maximum * 0.5f, 1u, 1u};
     const std::vector<hydrology::FluidParticle> outside = {
-        {{-maximum, 2.0f, -maximum}, {0.0f, 0.0f, 0.0f}, 1u}};
+        {{maximum, 2.0f, maximum}, {0.0f, 0.0f, 0.0f}, 1u}};
     CHECK(hydrology::build_fluid_gameplay_field(
               outside, 0.5f, extreme_origin,
               [](float, float, float& height) { height = 0.0f; return true; },
