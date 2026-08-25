@@ -74,9 +74,23 @@ bool packed_shape_valid(const PackedWaterField& field) noexcept {
     const std::size_t cells = width * depth;
     if (cells > std::numeric_limits<std::size_t>::max() / 4u) return false;
     const std::size_t channels = cells * 4u;
-    return field.image_a_rgba16f.size() == channels &&
-           field.image_b_rgba16f.size() == channels &&
-           field.image_c_rgba8.size() == channels;
+    if (field.image_a_rgba16f.size() != channels ||
+        field.image_b_rgba16f.size() != channels ||
+        field.image_c_rgba8.size() != channels)
+        return false;
+    if (!field.appearance_valid) return true;
+    if (field.material_id == UINT32_MAX || field.appearance_hash == 0u)
+        return false;
+    for (const auto& wave : field.wave_bands) {
+        if (!finite(wave.wavelength_m) || wave.wavelength_m <= 0.0f ||
+            !finite(wave.normal_amplitude) || wave.normal_amplitude < 0.0f ||
+            wave.normal_amplitude > 1.0f ||
+            !finite(wave.speed_multiplier) || wave.speed_multiplier <= 0.0f ||
+            !finite(wave.response) || wave.response < 0.0f ||
+            wave.response > 1.0f)
+            return false;
+    }
+    return true;
 }
 
 std::uint32_t next_generation(std::uint32_t current) noexcept {
@@ -149,6 +163,22 @@ WaterFieldGpuRecord make_water_field_gpu_record(
         static_cast<std::uint32_t>(field.presentation_digest);
     record.presentation_digest[1] =
         static_cast<std::uint32_t>(field.presentation_digest >> 32u);
+    if (field.appearance_valid) {
+        for (std::uint32_t index = 0u; index != field.wave_bands.size();
+             ++index) {
+            const auto& wave = field.wave_bands[index];
+            record.wave_bands[index][0] = wave.wavelength_m;
+            record.wave_bands[index][1] = wave.normal_amplitude;
+            record.wave_bands[index][2] = wave.speed_multiplier;
+            record.wave_bands[index][3] = wave.response;
+        }
+        record.appearance[0] = field.material_id;
+        record.appearance[1] =
+            static_cast<std::uint32_t>(field.appearance_hash);
+        record.appearance[2] =
+            static_cast<std::uint32_t>(field.appearance_hash >> 32u);
+        record.appearance[3] = 1u;
+    }
     return record;
 }
 
@@ -190,6 +220,21 @@ bool pack_water_field(const WaterFieldPackInput& input,
     candidate.layout = layout;
     candidate.runtime_digest = input.runtime_digest;
     candidate.presentation_digest = input.presentation_digest;
+    if (input.water_surface) {
+        if (input.water_surface->wave_bands.size() !=
+                candidate.wave_bands.size() ||
+            input.water_surface->material_id == UINT32_MAX ||
+            input.water_surface->appearance_hash == 0u) {
+            return fail(error, WaterFieldErrorCode::InvalidInput,
+                        "water appearance requires one material and exactly three wave bands");
+        }
+        std::copy(input.water_surface->wave_bands.begin(),
+                  input.water_surface->wave_bands.end(),
+                  candidate.wave_bands.begin());
+        candidate.material_id = input.water_surface->material_id;
+        candidate.appearance_hash = input.water_surface->appearance_hash;
+        candidate.appearance_valid = true;
+    }
     try {
         const std::size_t channels = cells * 4u;
         candidate.image_a_rgba16f.assign(channels, 0u);
@@ -255,6 +300,9 @@ bool pack_water_field(const WaterFieldPackInput& input,
         candidate.image_c_rgba8[offset + 3u] =
             encode_water_feature(presentation.feature);
     }
+    if (!packed_shape_valid(candidate))
+        return fail(error, WaterFieldErrorCode::InvalidInput,
+                    "water appearance contains invalid wave controls");
     output = std::move(candidate);
     return true;
 }

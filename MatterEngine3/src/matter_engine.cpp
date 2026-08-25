@@ -714,9 +714,17 @@ struct WorldSession::Impl {
     struct AuthoredFluidRenderBinding {
         std::shared_ptr<const viewer::VkScenePart> part;
         viewer::VkSceneInstance instance{};
+        viewer::PackedWaterField water_field{};
     };
     std::shared_ptr<const AuthoredFluidRenderBinding>
         failed_fluid_debug_binding;
+    // Render-thread projection of the latest immutable authored publication.
+    // The pointer identity gates GPU uploads; the binding is restored on the
+    // part every frame so a force-LOD release/re-registration cannot lose it.
+    std::shared_ptr<const AuthoredFluidRenderBinding>
+        vk_authored_fluid_render_binding;
+    viewer::WaterFieldBinding vk_authored_water_field_binding{};
+    std::atomic<float> water_animation_time_seconds{0.0f};
     viewer::VulkanInstanceCache vk_instance_cache;
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
@@ -3510,14 +3518,35 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
     }
 #ifdef MATTER_VULKAN_VIEWER
     std::uint32_t water_material_id = 7u;
+    const matter::WaterSurfaceDefinition* water_surface = nullptr;
     if (provider->river_network() &&
         provider->river_network()->water_surface) {
-        water_material_id =
-            provider->river_network()->water_surface->material_id;
+        water_surface = &*provider->river_network()->water_surface;
+        water_material_id = water_surface->material_id;
+    }
+    viewer::PackedWaterField packed_water_field;
+    if (publication_accepted) {
+        viewer::WaterFieldError field_error{};
+        if (!viewer::pack_water_field(
+                {network_result.products.gameplay_layout,
+                 &network_result.products.gameplay_field,
+                 &network_result.products.presentation_field,
+                 network_result.manifest.runtime_field_digest,
+                 network_result.manifest.presentation_field_digest,
+                 water_surface},
+                packed_water_field, field_error)) {
+            publication_accepted = false;
+            error = {hydrology::FluidBakeCode::ProductFailure,
+                     field_error.message.empty()
+                         ? "accepted authored water produced no GPU flow field"
+                         : field_error.message};
+            result.state = matter::HydrologyState::Invalid;
+            result.failure_reason = error.message;
+        }
     }
     std::shared_ptr<const viewer::VkScenePart> authored_part;
     viewer::VkSceneInstance authored_instance{};
-    if (accepted) {
+    if (publication_accepted) {
         std::uint64_t instance_id = 0u;
         gpu_meshing::Error render_error{};
         if (!gpu_meshing::build_water_scene_part(
@@ -3569,6 +3598,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             auto render = std::make_shared<AuthoredFluidRenderBinding>();
             render->part = std::move(authored_part);
             render->instance = authored_instance;
+            render->water_field = std::move(packed_water_field);
             publication_candidate->render = std::move(render);
 #endif
         }
@@ -10944,6 +10974,21 @@ void WorldSession::tick(const TickDesc& desc) {
         impl_->scene_tracker_.flush();
         return;
     }
+#ifdef MATTER_VULKAN_VIEWER
+    // Cosmetic water follows unscaled presentation time, so pausing or slowing
+    // gameplay does not freeze the river shader. Keep the clock bounded to
+    // preserve float phase precision during long editor sessions.
+    const float water_delta = desc.presentation_delta_seconds != 0.0f
+        ? desc.presentation_delta_seconds
+        : desc.frame_delta_seconds;
+    if (std::isfinite(water_delta) && water_delta >= 0.0f) {
+        const float current = impl_->water_animation_time_seconds.load(
+            std::memory_order_relaxed);
+        impl_->water_animation_time_seconds.store(
+            std::fmod(current + water_delta, 4096.0f),
+            std::memory_order_relaxed);
+    }
+#endif
     impl_->stats.ecs_fixed_steps += result.fixed_steps;
     impl_->stats.ecs_dropped_steps += result.dropped_steps;
     impl_->reconcile_runtime_animation();
@@ -11592,6 +11637,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         err = "WorldSession received an invalid VulkanFrame";
         return false;
     }
+    impl_->vk_scene->collect_water_fields(impl_->vk_skin_completed_serial);
+    impl_->vk_scene->set_water_animation_time(
+        impl_->water_animation_time_seconds.load(std::memory_order_relaxed));
     impl_->vk_scene->set_geometry_debug_view(opts.geometry_debug_view);
     impl_->vk_scene->set_wireframe(opts.wireframe);
     impl_->vk_scene->set_impostor_parallax(opts.impostor_parallax);
@@ -12004,10 +12052,52 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     if (authored_fluid_binding && authored_fluid_binding->part) {
         if (impl_->vk_scene->ensure_part(*authored_fluid_binding->part, err) < 0)
             return false;
+        if (authored_fluid_binding !=
+            impl_->vk_authored_fluid_render_binding) {
+            const std::uint64_t retire_after_serial =
+                frame.serial + std::max<std::uint64_t>(
+                                   frame.frame_slot_count, 1u);
+            const viewer::WaterFieldBinding* replacing =
+                impl_->vk_authored_water_field_binding.valid()
+                    ? &impl_->vk_authored_water_field_binding
+                    : nullptr;
+            viewer::WaterFieldBinding published{};
+            viewer::WaterFieldError field_error{};
+            if (!impl_->vk_scene->publish_water_field(
+                    authored_fluid_binding->water_field, replacing,
+                    retire_after_serial, published, field_error)) {
+                err = field_error.message.empty()
+                    ? "failed to publish authored water field"
+                    : field_error.message;
+                return false;
+            }
+            impl_->vk_authored_water_field_binding = published;
+            impl_->vk_authored_fluid_render_binding =
+                authored_fluid_binding;
+        }
+        if (!impl_->vk_scene->set_part_water_field_binding(
+                authored_fluid_binding->part->part_hash,
+                impl_->vk_authored_water_field_binding, err))
+            return false;
         if (instance_view != &acceptance_instances)
             acceptance_instances = cached_instances;
         acceptance_instances.push_back(authored_fluid_binding->instance);
         instance_view = &acceptance_instances;
+    } else if (impl_->vk_authored_water_field_binding.valid()) {
+        viewer::WaterFieldError field_error{};
+        const std::uint64_t retire_after_serial =
+            frame.serial +
+            std::max<std::uint64_t>(frame.frame_slot_count, 1u);
+        if (!impl_->vk_scene->release_water_field(
+                impl_->vk_authored_water_field_binding,
+                retire_after_serial, field_error)) {
+            err = field_error.message.empty()
+                ? "failed to release authored water field"
+                : field_error.message;
+            return false;
+        }
+        impl_->vk_authored_water_field_binding = {};
+        impl_->vk_authored_fluid_render_binding.reset();
     }
     const auto failed_fluid_debug_binding = std::atomic_load_explicit(
         &impl_->failed_fluid_debug_binding, std::memory_order_acquire);

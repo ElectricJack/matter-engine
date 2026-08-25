@@ -103,6 +103,7 @@ struct alignas(16) FrameConstants {
     uint32_t counts[4];
     uint32_t capacities[4];
     uint32_t temporal[4];
+    float water_animation[4];
     // Occlusion ID pass (M4). Appended, and appending is what makes this safe
     // for the shaders that do not read it: every existing member keeps its
     // std140 offset, so raster.vert and gbuffer.frag go on declaring the prefix
@@ -123,7 +124,7 @@ struct alignas(16) FrameConstants {
     GpuMat4 cull_world_to_clip;
 };
 
-static_assert(sizeof(FrameConstants) == 288 + 16 + 64,
+static_assert(sizeof(FrameConstants) == 288 + 16 + 16 + 64,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 24,
               "VkCullStats must match the std430 stats block");
@@ -7991,6 +7992,51 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     return slot;
 }
 
+bool VkSceneRenderer::set_part_water_field_binding(
+    std::uint64_t part_hash, WaterFieldBinding binding, std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (binding.valid() && water_fields_.lookup(binding) == nullptr) {
+        error = "water-field part binding is stale or unpublished";
+        return false;
+    }
+    const auto found = slot_of_.find(part_hash);
+    if (found == slot_of_.end()) {
+        error = "water-field part binding references an unregistered part";
+        return false;
+    }
+    const std::uint32_t part_slot = static_cast<std::uint32_t>(found->second);
+    PartRecord& part = parts_[part_slot];
+    if (part.water_binding_slot == binding.slot &&
+        part.water_generation == binding.generation)
+        return true;
+
+    part.water_binding_slot = binding.slot;
+    part.water_generation = binding.generation;
+    for (std::size_t index = 0u; index != instance_staging_.size(); ++index) {
+        if (index < instance_part_slots_.size() &&
+            instance_part_slots_[index] == part_slot) {
+            instance_staging_[index].water_binding_slot = binding.slot;
+            instance_staging_[index].water_generation = binding.generation;
+        }
+    }
+    bool dynamic_changed = false;
+    for (std::size_t index = 0u; index != dynamic_instance_staging_.size();
+         ++index) {
+        if (index < dynamic_instance_part_slots_.size() &&
+            dynamic_instance_part_slots_[index] == part_slot) {
+            dynamic_instance_staging_[index].water_binding_slot = binding.slot;
+            dynamic_instance_staging_[index].water_generation =
+                binding.generation;
+            dynamic_changed = true;
+        }
+    }
+    dynamic_dirty_ = dynamic_dirty_ || dynamic_changed;
+    ++instance_generation_;
+    instance_snapshot_valid_ = false;
+    return true;
+}
+
 void VkSceneRenderer::refresh_part_slot_index() const {
     // Power-of-two, at least 2x occupancy, so linear probing stays short.
     size_t capacity = 16;
@@ -11481,6 +11527,7 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.temporal[1] = temporal_frame_.reset ? 1u : 0u;
     constants.temporal[2] = temporal_frame_.internal_extent.width;
     constants.temporal[3] = temporal_frame_.internal_extent.height;
+    constants.water_animation[0] = water_animation_time_seconds_;
     // Occlusion ID pass (M4). The list is emitted whenever the reduce is
     // running, because that is what feeds it; the draw cull is a separate,
     // stricter switch. Its guard includes `visibility_reduce_` on purpose --
@@ -12959,7 +13006,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             float sun_disc_cos_edge;
             float sun_disc_cos_core;
             float sun_size_scale;
-            float pad0;
+            float water_animation_time_seconds;
             float pad1;
         } gi{};
         static_assert(sizeof(GiConstants) == 128);
@@ -12984,6 +13031,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             atmosphere_replay_constants_.rt_gi_sun_disc_cos_core;
         gi.sun_size_scale =
             atmosphere_replay_constants_.rt_gi_sun_size_scale;
+        gi.water_animation_time_seconds = water_animation_time_seconds_;
         vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
         const VkStridedDeviceAddressRegionKHR gi_raygen{

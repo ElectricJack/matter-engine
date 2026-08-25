@@ -172,6 +172,27 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
     };
     CHECK(transported(replacement) && transported(second),
           "water field: same-material raster draws preserve distinct field identities");
+
+    viewer::WaterFieldBinding rebound;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x404u), &replacement, 5u, rebound,
+              field_error),
+          field_error.message.c_str());
+    CHECK(renderer.set_part_water_field_binding(first_part.part_hash, rebound,
+                                                error),
+          error.empty() ? "water field: rebind an already registered river part"
+                        : error.c_str());
+    CHECK(renderer.update_instances(
+              {{first_part.part_hash, identity, 0x711u},
+               {second_part.part_hash, identity, 0x712u}}, error) &&
+              renderer.dispatch_culling(matrices, camera.position, 1.0f,
+                                        error) &&
+              renderer.readback_draw_water_bindings(raster_bindings, error),
+          error.empty() ? "water field: transport a replacement field binding"
+                        : error.c_str());
+    CHECK(transported(rebound) && transported(second) &&
+              !transported(replacement),
+          "water field: registered parts atomically adopt replacement generations");
     matter::VulkanRayTracingSettings rt_settings{};
     rt_settings.enabled = true;
     rt_settings.max_distance = 100.0f;
@@ -195,7 +216,7 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "water field: prepare descriptor frame"
                         : error.c_str());
     CHECK(renderer.test_water_field_descriptors_match(
-              frame.frame_slot, replacement),
+              frame.frame_slot, rebound),
           "water field: raster and RT descriptor arrays name one complete generation");
     if (vulkan.ray_tracing_available()) {
         const auto& rt_records = renderer.test_last_rt_geometry_records();
@@ -209,7 +230,7 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
                            record.water_generation == wanted.generation;
                 });
         };
-        CHECK(traced(first_part.part_hash, replacement) &&
+        CHECK(traced(first_part.part_hash, rebound) &&
                   traced(second_part.part_hash, second),
               "water field: RT records preserve the same two distinct identities");
     }
@@ -1954,11 +1975,11 @@ void run_vulkan_temporal_tests() {
           "instance returning after a presented clear frame starts fresh "
           "without a global reset");
 
-    // 288 is the historical block; + 16 (vis_params) + 64 (cull_world_to_clip)
-    // is the M4 occlusion ID pass's appendix. Appended, never inserted, so the
-    // shaders that declare only the prefix keep every std140 offset they had.
+    // 288 is the historical block; + 16 (water animation), + 16 (vis_params),
+    // and + 64 (cull_world_to_clip) form the appended presentation/occlusion
+    // tail. The shared cull and visibility declarations keep this exact order.
     CHECK(viewer::vk_scene_detail::frame_constants_size_for_test() ==
-              288 + 16 + 64,
+              288 + 16 + 16 + 64,
           "C++ FrameConstants matches final std140 uvec4 padding and size");
 }
 

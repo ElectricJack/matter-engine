@@ -847,6 +847,12 @@ public:
         gpu_meshing::Error& error,
         const gpu_meshing::BuildControl& control = {});
     int ensure_part(const VkScenePart& part, std::string& error);
+    // Rebinds an immutable registered mesh to a newly published field
+    // generation without rebuilding its geometry. This is the render-thread
+    // half of an authored hydrology publication replacement.
+    bool set_part_water_field_binding(std::uint64_t part_hash,
+                                      WaterFieldBinding binding,
+                                      std::string& error);
 
     // M2.5: how many terminal impostors currently hold an atlas slot. On the
     // editor stats overlay so "are any drawing?" is answerable at a glance --
@@ -975,6 +981,10 @@ public:
     // Also folds the incoming history into the unchanged-input fast path of
     // update_instances(): see temporal_history_changed_.
     void set_temporal_frame(const TemporalFrame& frame);
+    void set_water_animation_time(float seconds) noexcept {
+        water_animation_time_seconds_ =
+            std::isfinite(seconds) && seconds >= 0.0f ? seconds : 0.0f;
+    }
     void set_dlss_mode(matter::DlssMode mode);
     VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
     matter::DlssMode selected_dlss_mode() const { return selected_dlss_mode_; }
@@ -2706,6 +2716,7 @@ private:
     uint32_t last_rt_trace_dispatches_ = 0;
     std::string last_rt_fallback_reason_;
     TemporalFrame temporal_frame_{};
+    float water_animation_time_seconds_ = 0.0f;
 
     // ---- update_instances() unchanged-input fast path --------------------
     // The candidate instance set update_instances() builds is a pure function

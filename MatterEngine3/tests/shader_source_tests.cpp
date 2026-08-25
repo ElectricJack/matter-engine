@@ -49,6 +49,36 @@ int main() {
     assert(t3.find("OVERRIDE MARKER") != std::string::npos);
     matter::set_shader_override_dir(nullptr);
 
+    // River presentation Task 8: raster and RT must share one bounded water
+    // evaluator. Private copies inevitably drift at reset boundaries and make
+    // the static mesh appear different in reflections than in the G-buffer.
+    const std::string water_common =
+        read_shader("../shaders_vk/water_surface.glsl");
+    const std::string water_raster =
+        read_shader("../shaders_vk/gbuffer.frag");
+    const std::string water_rt =
+        read_shader("../shaders_vk/rt_lighting.rgen");
+    assert(!water_common.empty());
+    assert(water_raster.find("#include \"water_surface.glsl\"") !=
+           std::string::npos);
+    assert(water_rt.find("#include \"water_surface.glsl\"") !=
+           std::string::npos);
+    assert(count_occurrences(water_common, "vec2 water_backtrace_rk2(") == 1u);
+    assert(count_occurrences(water_raster, "water_backtrace_rk2(") == 0u);
+    assert(count_occurrences(water_rt, "water_backtrace_rk2(") == 0u);
+    assert(water_common.find("const int WATER_BACKTRACE_STEPS = 3;") !=
+           std::string::npos);
+    assert(water_common.find("const int WATER_WAVE_BAND_COUNT = 3;") !=
+           std::string::npos);
+    assert(water_common.find("const int WATER_PHASE_COUNT = 2;") !=
+           std::string::npos);
+    assert(water_common.find(
+               "for (int step = 0; step < WATER_BACKTRACE_STEPS; ++step)") !=
+           std::string::npos);
+    assert(water_common.find(
+               "for (int band = 0; band < WATER_WAVE_BAND_COUNT; ++band)") !=
+           std::string::npos);
+
     // Task 7: every production lighting consumer must use the shared physical
     // environment path; a procedural fallback would make raster/RT/fog diverge.
     const char* entries[] = {"../shaders_vk/composite.frag",
@@ -201,7 +231,7 @@ int main() {
     const std::string renderer = read_shader("../src/render/vk_scene_renderer.cpp");
     assert(renderer.find("VK_FORMAT_R16_SFLOAT") != std::string::npos &&
            renderer.find("record_neutral_cloud_clear") != std::string::npos &&
-           renderer.find("update_environment_descriptor(selected)") !=
+           renderer.find("update_environment_descriptor(selected, error)") !=
                std::string::npos &&
            renderer.find("volumetrics_->invalidate_history()") !=
                std::string::npos);
@@ -216,10 +246,7 @@ int main() {
         "record_image_transition(command_buffer, sky_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL");
     assert(sky_transition != std::string::npos);
     const std::string sky_tail = atmosphere_host.substr(sky_transition, 520);
-    assert(sky_tail.find("VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |") !=
-           std::string::npos &&
-           sky_tail.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") !=
-               std::string::npos);
+    assert(sky_tail.find("sampled_shader_stages_") != std::string::npos);
     assert(renderer.find("matter::map_buffer(frame.environment_constants, error)") !=
            std::string::npos &&
            renderer.find("environment_constants.mapped == nullptr") ==

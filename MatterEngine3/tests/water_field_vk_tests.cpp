@@ -183,13 +183,15 @@ void test_gpu_record_preserves_field_identity_and_mapping() {
     const viewer::WaterFieldGpuRecord record =
         viewer::make_water_field_gpu_record(packed, binding);
 
-    CHECK(sizeof(viewer::WaterFieldGpuRecord) == 48u &&
+    CHECK(sizeof(viewer::WaterFieldGpuRecord) == 112u &&
               alignof(viewer::WaterFieldGpuRecord) == 16u,
-          "the std430 water-field record is exactly three vec4 lanes");
+          "the std430 water-field record is exactly seven vec4 lanes");
     CHECK(offsetof(viewer::WaterFieldGpuRecord, origin_cell_size) == 0u &&
               offsetof(viewer::WaterFieldGpuRecord, extent_generation) == 16u &&
               offsetof(viewer::WaterFieldGpuRecord, runtime_digest) == 32u &&
-              offsetof(viewer::WaterFieldGpuRecord, presentation_digest) == 40u,
+              offsetof(viewer::WaterFieldGpuRecord, presentation_digest) == 40u &&
+              offsetof(viewer::WaterFieldGpuRecord, wave_bands) == 48u &&
+              offsetof(viewer::WaterFieldGpuRecord, appearance) == 96u,
           "the CPU water-field record matches its GLSL std430 layout");
     CHECK(record.origin_cell_size[0] == 10.0f &&
               record.origin_cell_size[1] == -4.0f &&

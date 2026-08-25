@@ -708,13 +708,13 @@ git commit -m "feat: add dedicated authored water surface domain"
 - Consumes: one validated immutable assembled field, its generation/digests, and `WaterSurfaceDefinition`.
 - Produces: `WaterFieldVk::publish/release`, eight stable slots, two `VK_FORMAT_R16G16B16A16_SFLOAT` images, one `VK_FORMAT_R8G8B8A8_UNORM` image per slot, raster descriptor arrays at set 1 bindings 20-22 with parameters at 23, RT mirrors at set 0 bindings 21-23 with parameters at 24, and explicit raster/RT slot+generation metadata.
 
-- [ ] **Step 1: Add failing format packing, slot lifetime, and transport tests**
+- [x] **Step 1: Add failing format packing, slot lifetime, and transport tests**
 
 Unit-test CPU packing for all channels, half-float saturation, normal-Y reconstruction inputs, feature UNORM encoding/nearest decoding, dimension overflow, and dry borders. Test eight successful allocations, ninth-allocation failure, last-valid retention, generation replacement, deferred GPU lifetime release, and slot reuse only after completion.
 
 Extend Vulkan smoke tests to draw two water parts using the same material but different slots and prove raster and RT observe distinct field generations. Assert a field/material generation mismatch fails closed to static water and increments a bounded diagnostic.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target water_field_vk_tests
@@ -724,7 +724,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests
 
 Expected: upload service, descriptors, slot metadata, and shader records do not exist.
 
-- [ ] **Step 3: Implement immutable slot resources and descriptors**
+- [x] **Step 3: Implement immutable slot resources and descriptors**
 
 Each occupied slot owns three sampled images/views, staging lifetime, layout, appearance record, runtime/presentation digests, and generation. Pack exactly:
 
@@ -738,7 +738,7 @@ Use linear samplers for A/B continuous channels and a nearest sampler for C. Bin
 
 Construct a replacement fully before swapping the slot record. Upload or capacity failure returns an explicit category and preserves the last valid record. Release uses frame-completion lifetimes, never immediate destruction of in-flight resources.
 
-- [ ] **Step 4: Transport explicit slot and generation through raster and RT**
+- [x] **Step 4: Transport explicit slot and generation through raster and RT**
 
 Append `water_binding_slot` and `water_generation` to the CPU part record. Grow `GpuInstance` to 176 bytes and `GpuDrawTransform` to 160 bytes with explicit padding and updated static assertions. `cull.comp`, the visibility tail, direct draws, and skin-tail writers must initialize both values; `raster.vert` forwards them flat at locations 15 and 16.
 
@@ -746,7 +746,7 @@ Reuse `GpuRtPartRecord`'s current `pad1` and `pad2` words for slot and generatio
 
 Use `UINT32_MAX`/zero as the fail-closed no-water values. Do not look up a field from material identity.
 
-- [ ] **Step 5: Pass CPU and Vulkan binding gates**
+- [x] **Step 5: Pass CPU and Vulkan binding gates**
 
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target water_field_vk_tests
@@ -757,7 +757,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests
 
 Expected: all tests pass with zero Vulkan validation errors; two same-material rivers sample different slots; a ninth network does not evict a valid binding.
 
-- [ ] **Step 6: Commit the Vulkan field-binding slice**
+- [x] **Step 6: Commit the Vulkan field-binding slice**
 
 ```powershell
 git add MatterEngine3/src/render/water_field_vk.h MatterEngine3/src/render/water_field_vk.cpp MatterEngine3/tests/water_field_vk_tests.cpp MatterEngine3/src/render/vk_scene_renderer.h MatterEngine3/src/render/vk_scene_renderer.cpp MatterEngine3/src/render/gpu_meshing/water_scene_part.h MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp MatterEngine3/shaders_vk/cull.comp MatterEngine3/shaders_vk/raster.vert MatterEngine3/shaders_vk/visibility_id.vert MatterEngine3/shaders_vk/rt_surface_common.glsl MatterEngine3/tests/gpu_water_render_tests.cpp MatterEngine3/tests/vulkan_smoke_tests.cpp cmake/manifests/engine-core.sources cmake/MatterEngine.cmake MatterEngine3/tests/Makefile
@@ -787,7 +787,7 @@ git commit -m "feat: bind immutable river fields in Vulkan"
 - Consumes: world position, geometric/base normal, explicit field slot and generation, `WaterSurfaceDefinition`, and one renderer animation time.
 - Produces: `water_sample_field`, `water_backtrace_rk2`, `water_wrapped_phase`, `water_evaluate_surface`, three-band animated shading normals, and identical CPU reference vectors.
 
-- [ ] **Step 1: Add failing CPU vectors and shader-sharing tests**
+- [x] **Step 1: Add failing CPU vectors and shader-sharing tests**
 
 Create fixed reference vectors for:
 
@@ -800,7 +800,7 @@ Create fixed reference vectors for:
 
 `shader_source_tests` must assert both `gbuffer.frag` and `rt_lighting.rgen` include `water_surface.glsl`, neither defines a private second `water_backtrace_rk2`, and all loops use named compile-time bounds.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target water_surface_reference_tests
@@ -810,7 +810,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target gpu_water_render_tests
 
 Expected: the reference and shared GLSL functions are absent.
 
-- [ ] **Step 3: Implement field sampling and bounded curved-flow backtrace**
+- [x] **Step 3: Implement field sampling and bounded curved-flow backtrace**
 
 `water_surface.glsl` declares descriptor bindings through macros so raster maps them to set 1 bindings 20-23 and RT maps them to set 0 bindings 21-24 if binding 20 is already the RT transmission auxiliary image. The include validates slot, generation, dimensions, bounds, and nearest wet classification before any continuous fetch.
 
@@ -834,7 +834,7 @@ vec2 water_backtrace_rk2(uint slot, vec2 xz, float age_s) {
 
 Invalid steps retain the last valid coordinate and increment one per-frame diagnostic only after a persistent invalid count; they never sample across a dry bank.
 
-- [ ] **Step 4: Implement reset-free dual phases and three wave bands**
+- [x] **Step 4: Implement reset-free dual phases and three wave bands**
 
 For loop period `P`, compute:
 
@@ -847,13 +847,13 @@ The weights sum to one and each phase has zero weight exactly where its own age 
 
 Evaluate exactly three authored bands: broad, chop, and capillary. Align their tangent frame to local horizontal velocity; fall back to a deterministic world axis in calm water. Scale broad waves with depth/current, chop with speed/slope/turbulence, and capillary detail down under foam/calm response. Sum gradients with authored amplitudes, cap total slope, construct the shading normal around the base normal, and project it back into the geometric positive hemisphere with a `dot >= 0.05` safety floor.
 
-- [ ] **Step 5: Integrate the same evaluator into raster and traced water hits**
+- [x] **Step 5: Integrate the same evaluator into raster and traced water hits**
 
 In `gbuffer.frag`, detect the generic water-surface flag, validate explicit slot/generation, and replace only the shading normal/roughness inputs with `water_evaluate_surface`. Keep positions, depth, and motion vectors unchanged.
 
 Extend `RtSurface` with slot/generation and call the same evaluator when a traced hit material has the water flag. Use its animated normal for optical lobes but retain `RtSurface.normal` as the geometric normal for face orientation and offsets. Pass one frame animation time through both pipelines; never read wall-clock time independently in a shader.
 
-- [ ] **Step 6: Pass reference, compilation, and Vulkan agreement gates**
+- [x] **Step 6: Pass reference, compilation, and Vulkan agreement gates**
 
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target water_surface_reference_tests
@@ -865,7 +865,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests
 
 Expected: all tests pass; boundary vectors are continuous; raster and RT read the same generation/time; Vulkan reports zero validation errors and zero runtime water BLAS rebuilds.
 
-- [ ] **Step 7: Commit the shared flow-animation slice**
+- [x] **Step 7: Commit the shared flow-animation slice**
 
 ```powershell
 git add MatterEngine3/shaders_vk/water_surface.glsl MatterEngine3/src/render/water_surface_reference.h MatterEngine3/src/render/water_surface_reference.cpp MatterEngine3/tests/water_surface_reference_tests.cpp MatterEngine3/shaders_vk/gbuffer.frag MatterEngine3/shaders_vk/rt_surface_common.glsl MatterEngine3/shaders_vk/rt_lighting.rgen MatterEngine3/src/render/vk_scene_renderer.h MatterEngine3/src/render/vk_scene_renderer.cpp MatterEngine3/tests/shader_source_tests.cpp MatterEngine3/tests/gpu_water_render_tests.cpp MatterEngine3/tests/vulkan_smoke_tests.cpp cmake/manifests/engine-core.sources cmake/MatterEngine.cmake MatterEngine3/tests/Makefile

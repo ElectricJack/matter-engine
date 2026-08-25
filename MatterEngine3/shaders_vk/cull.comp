@@ -108,6 +108,7 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 counts;
     uvec4 capacities;
     uvec4 temporal;
+    vec4 water_animation;
     // ---- occlusion ID pass (M4) -------------------------------------------
     // x = cull DRAWS against the visibility mask (0 = the mask is written and
     //     read by nobody, which is the default and the pre-M4 behaviour).

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hydrology/water_visual_products.h"
+#include "matter/river_network.h"
 
 #include <array>
 #include <cstddef>
@@ -32,6 +33,7 @@ struct WaterFieldPackInput {
     const std::vector<hydrology::PresentationSample>* presentation = nullptr;
     std::uint64_t runtime_digest = 0;
     std::uint64_t presentation_digest = 0;
+    const matter::WaterSurfaceDefinition* water_surface = nullptr;
 };
 
 struct PackedWaterField {
@@ -44,6 +46,10 @@ struct PackedWaterField {
     std::vector<std::uint8_t> image_c_rgba8;
     std::uint64_t runtime_digest = 0;
     std::uint64_t presentation_digest = 0;
+    std::uint32_t material_id = UINT32_MAX;
+    std::array<matter::WaterWaveBandDefinition, 3> wave_bands{};
+    std::uint64_t appearance_hash = 0;
+    bool appearance_valid = false;
 };
 
 bool pack_water_field(const WaterFieldPackInput& input,
@@ -64,18 +70,20 @@ struct WaterFieldBinding {
     }
 };
 
-// Three std430 vec4 lanes shared by raster set 1 binding 23 and RT set 0
-// binding 24. Digests use explicit low/high words so shaders do not require
-// 64-bit integer support merely to validate immutable field identity.
+// Seven std430 vec4 lanes shared by raster set 1 binding 23 and RT set 0
+// binding 24. Task 8 appends three authored wave bands and appearance
+// identity after Task 7's immutable mapping/digest prefix.
 struct alignas(16) WaterFieldGpuRecord {
     float origin_cell_size[4]{};          // origin X/Z, cell size, reserved
     std::uint32_t extent_generation[4]{}; // width, depth, generation, valid
     std::uint32_t runtime_digest[2]{};    // low, high
     std::uint32_t presentation_digest[2]{}; // low, high
+    float wave_bands[3][4]{}; // wavelength, amplitude, speed, response
+    std::uint32_t appearance[4]{}; // material id, hash low/high, valid
 };
 
-static_assert(sizeof(WaterFieldGpuRecord) == 48u,
-              "WaterFieldGpuRecord must remain three std430 vec4 lanes");
+static_assert(sizeof(WaterFieldGpuRecord) == 112u,
+              "WaterFieldGpuRecord must remain seven std430 vec4 lanes");
 
 WaterFieldGpuRecord make_water_field_gpu_record(
     const PackedWaterField& field, WaterFieldBinding binding) noexcept;

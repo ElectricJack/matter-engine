@@ -3,6 +3,12 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "rt_surface_common.glsl"
+#define WATER_SET 0
+#define WATER_A_BINDING 21
+#define WATER_B_BINDING 22
+#define WATER_C_BINDING 23
+#define WATER_RECORD_BINDING 24
+#include "water_surface.glsl"
 #include "environment_common.glsl"
 // IMPOSTOR_IDENTITY_BIT + impostor_identity_material(). gbuffer.frag sets bit
 // 31 of the identity attachment's .x on billboard fragments, so every use of
@@ -64,7 +70,7 @@ layout(push_constant) uniform GiConstants {
     float sun_disc_cos_edge;
     float sun_disc_cos_core;
     float sun_size_scale;
-    float pad0;
+    float water_animation_time_seconds;
     float pad1;
 } constants;
 
@@ -299,6 +305,15 @@ vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
         shading_normal = tileset_hit.normal;
         horizon_mean_occlusion = tileset_hit.mean_occlusion;
     }
+    if ((material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
+        WaterSurfaceState water_state;
+        if (water_evaluate_surface(
+                surface.water_binding_slot, surface.water_generation,
+                surface.material_index, surface.position.xz, shading_normal,
+                constants.water_animation_time_seconds,
+                material.base_roughness.w, water_state))
+            shading_normal = water_state.shading_normal;
+    }
     return emission_color * max(material.emission_strength.w, 0.0) *
            constants.emission_multiplier;
 }
@@ -329,7 +344,20 @@ vec3 hit_radiance(RtSurface surface, out vec3 base) {
 vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun) {
     vec3 base;
     vec3 radiance = hit_radiance(surface, base);
-    float ndotl = max(dot(surface.normal, to_sun), 0.0);
+    vec3 sun_normal = surface.normal;
+    if (surface.material_index < rt_materials.length()) {
+        RtMaterialGpu sun_material = rt_materials[surface.material_index];
+        if ((sun_material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
+            WaterSurfaceState water_state;
+            if (water_evaluate_surface(
+                    surface.water_binding_slot, surface.water_generation,
+                    surface.material_index, surface.position.xz, surface.normal,
+                    constants.water_animation_time_seconds,
+                    sun_material.base_roughness.w, water_state))
+                sun_normal = water_state.shading_normal;
+        }
+    }
+    float ndotl = max(dot(sun_normal, to_sun), 0.0);
     if (ndotl > 0.0 && any(greaterThan(base, vec3(0.0)))) {
         visibility_payload.visibility = vec3(1.0);
         visibility_payload.layers = 0u;
@@ -541,7 +569,7 @@ void main() {
             break;
         }
         vec3 hit_base;
-        vec3 hit_shading_normal_unused;
+        vec3 hit_shading_normal;
         float hit_mean_occlusion_unused;
         bool final_vertex = vertex == 1;
         // sky_irradiance approximates everything beyond the final vertex;
@@ -551,9 +579,25 @@ void main() {
                   (final_vertex
                        ? hit_radiance(hit.surface, hit_base)
                        : hit_emission(hit.surface, hit_base,
-                                      hit_shading_normal_unused,
+                                      hit_shading_normal,
                                       hit_mean_occlusion_unused));
-        float ndotl = max(dot(hit.surface.normal, to_sun), 0.0);
+        hit_shading_normal = hit.surface.normal;
+        if (hit.surface.material_index < rt_materials.length()) {
+            RtMaterialGpu hit_material =
+                rt_materials[hit.surface.material_index];
+            if ((hit_material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
+                WaterSurfaceState water_state;
+                if (water_evaluate_surface(
+                        hit.surface.water_binding_slot,
+                        hit.surface.water_generation,
+                        hit.surface.material_index, hit.surface.position.xz,
+                        hit.surface.normal,
+                        constants.water_animation_time_seconds,
+                        hit_material.base_roughness.w, water_state))
+                    hit_shading_normal = water_state.shading_normal;
+            }
+        }
+        float ndotl = max(dot(hit_shading_normal, to_sun), 0.0);
         if (ndotl > 0.0 && any(greaterThan(hit_base, vec3(0.0)))) {
             visibility_payload.visibility = vec3(1.0);
             visibility_payload.layers = 0u;
@@ -590,7 +634,7 @@ void main() {
             break;
         vertex_origin = hit.surface.position +
                         hit.surface.normal * constants.bias;
-        vertex_normal = hit.surface.normal;
+        vertex_normal = hit_shading_normal;
         // Continue the cone from this vertex: its width at the hit becomes the
         // next segment's origin width, and the diffuse lobe widens it again.
         vertex_cone_width = hit.surface.cone_width;

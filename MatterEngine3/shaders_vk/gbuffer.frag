@@ -20,6 +20,13 @@
 #define VT_FEEDBACK_BINDING 13
 #include "vt_common.glsl"
 
+#define WATER_SET 1
+#define WATER_A_BINDING 20
+#define WATER_B_BINDING 21
+#define WATER_C_BINDING 22
+#define WATER_RECORD_BINDING 23
+#include "water_surface.glsl"
+
 // Phase 2 (Task 10): same FrameConstants block as raster.vert (set 0,
 // binding 0) -- world_to_clip projects the marched world position for the
 // conservative depth write, camera_eye_pixel_budget.xyz is the view-ray
@@ -33,6 +40,7 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 counts;
     uvec4 capacities;
     uvec4 temporal;
+    vec4 water_animation;
 } frame;
 
 layout(location = 0) in vec3 in_normal;
@@ -61,6 +69,8 @@ layout(location = 11) flat in uint in_selected_lod;
 // The atlas stores OBJECT-space normals so one atlas serves every placement.
 layout(location = 12) flat in vec3 in_model_basis_x;
 layout(location = 13) flat in vec3 in_model_basis_y;
+layout(location = 15) flat in uint in_water_binding_slot;
+layout(location = 16) flat in uint in_water_generation;
 
 // M2.5 impostor atlas, scene set binding 15. Layer pairs: 2*slot is the SHADE
 // layer (rg = octahedral object-space normal, b = baked AO, a = fractional
@@ -1054,6 +1064,19 @@ void main() {
                            mix(1.0, occ_effective, near_band) *
                            mix(1.0, horizon_visibility, near_band),
                        0.0, 1.0);
+        }
+    }
+
+    // The baked mesh remains static. Only the shading normal and roughness
+    // move, evaluated from this draw's explicit immutable field identity.
+    if ((material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
+        WaterSurfaceState water_state;
+        if (water_evaluate_surface(
+                in_water_binding_slot, in_water_generation,
+                in_material_index, in_world_pos.xz, shading_normal,
+                frame.water_animation.x, roughness, water_state)) {
+            shading_normal = water_state.shading_normal;
+            roughness = water_state.roughness;
         }
     }
 
