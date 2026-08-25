@@ -462,6 +462,40 @@ static void install_material_handle(JSContext* ctx) {
     JS_FreeValue(ctx, global);
 }
 
+// terrainCollision belongs to authored collision() loading, never the field
+// evaluator. Keep a rejecting binding here so a field()/biomes() misuse gets a
+// phase diagnostic instead of an incidental missing-global error.
+static JSValue sh_terrain_collision_phase_reject(JSContext* ctx, JSValueConst,
+                                                  int, JSValueConst*) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue phase_value = JS_GetPropertyStr(ctx, global, "__matter_terrain_collision_phase");
+    JS_FreeValue(ctx, global);
+    const char* phase_text = JS_ToCString(ctx, phase_value);
+    const std::string phase = phase_text ? phase_text : "unknown";
+    if (phase_text) JS_FreeCString(ctx, phase_text);
+    JS_FreeValue(ctx, phase_value);
+    return JS_ThrowTypeError(ctx,
+        "terrainCollision() is only available inside collision(); active phase is %s",
+        phase.c_str());
+}
+
+static void install_terrain_collision_phase_reject(JSContext* ctx) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "terrainCollision",
+                      JS_NewCFunction(ctx, sh_terrain_collision_phase_reject,
+                                      "terrainCollision", 1));
+    JS_SetPropertyStr(ctx, global, "__matter_terrain_collision_phase",
+                      JS_NewString(ctx, "module scope"));
+    JS_FreeValue(ctx, global);
+}
+
+static void set_terrain_collision_phase(JSContext* ctx, const char* phase) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "__matter_terrain_collision_phase",
+                      JS_NewString(ctx, phase));
+    JS_FreeValue(ctx, global);
+}
+
 // Derive a deterministic 64-bit seed from the merged canonical params JSON. If the
 // params contain a numeric "seed" field, honor it (so authors can pick a seed);
 // otherwise fold the whole canonical JSON via FNV-1a so distinct params still draw
@@ -2541,6 +2575,7 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     //    install_material_handle first: kWorldBaseJS's defineMaterial shim calls
     //    it, and a world may declare materials at module scope in step 5.
     install_material_handle(ctx);
+    install_terrain_collision_phase_reject(ctx);
     {
         JSValue v = JS_Eval(ctx, kWorldBaseJS, strlen(kWorldBaseJS),
                             "<world-base>", JS_EVAL_TYPE_GLOBAL);
@@ -2609,6 +2644,7 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
         JS_FreeValue(ctx, paramsObj); JS_FreeValue(ctx, fieldFn);
         JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
     }
+    set_terrain_collision_phase(ctx, "field()");
     fieldResult = JS_Call(ctx, fieldFn, inst, 1, &paramsObj);
     JS_FreeValue(ctx, fieldFn);
     JS_FreeValue(ctx, paramsObj);
@@ -2775,8 +2811,15 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     {
         JSValue biomesFn = JS_GetPropertyStr(ctx, inst, "biomes");
         if (JS_IsFunction(ctx, biomesFn)) {
+            set_terrain_collision_phase(ctx, "biomes()");
             JSValue biomesResult = JS_Call(ctx, biomesFn, inst, 0, nullptr);
-            if (!JS_IsException(biomesResult)) {
+            if (JS_IsException(biomesResult)) {
+                BakeError e = harvest_exception(ctx);
+                r.message = e.message;
+                JS_FreeValue(ctx, biomesResult);
+                JS_FreeValue(ctx, biomesFn);
+                JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+            } else {
                 JSValue global2 = JS_GetGlobalObject(ctx);
                 JSValue jsonObj  = JS_GetPropertyStr(ctx, global2, "JSON");
                 JSValue stringifyFn = JS_GetPropertyStr(ctx, jsonObj, "stringify");

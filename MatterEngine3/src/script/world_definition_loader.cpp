@@ -408,9 +408,29 @@ JSValue terrain_collision_phase_failure(JSContext* context, LoadCollector* colle
         "terrainCollision() is only available inside collision(); active phase is " + phase);
 }
 
+bool terrain_collision_number(JSContext* context, JSValueConst value, float& output) {
+    if (!JS_IsNumber(value)) return false;
+    double number = 0.0;
+    if (JS_ToFloat64(context, &number, value) < 0 || !std::isfinite(number) ||
+        number < -std::numeric_limits<float>::max() ||
+        number > std::numeric_limits<float>::max()) {
+        return false;
+    }
+    output = static_cast<float>(number);
+    return true;
+}
+
 bool terrain_collision_float3(JSContext* context, JSValueConst value, Float3& output) {
-    if (!float3_value(context, value, output)) return false;
-    return std::isfinite(output.x) && std::isfinite(output.y) && std::isfinite(output.z);
+    std::uint32_t length = 0;
+    if (!array_length(context, value, length) || length != 3) return false;
+    float* coordinates[] = {&output.x, &output.y, &output.z};
+    for (std::uint32_t index = 0; index != 3; ++index) {
+        JSValue element = JS_GetPropertyUint32(context, value, index);
+        const bool ok = terrain_collision_number(context, element, *coordinates[index]);
+        JS_FreeValue(context, element);
+        if (!ok) return false;
+    }
+    return true;
 }
 
 JSValue terrain_collision_region(JSContext* context, JSValueConst,
@@ -494,8 +514,7 @@ JSValue terrain_collision_builder(JSContext* context, JSValueConst,
     }
     float cell_size_m = 0.0f;
     JSValue cell_size = JS_GetPropertyStr(context, arguments[0], "cellSize");
-    const bool cell_ok = number_value(context, cell_size, cell_size_m) &&
-                         std::isfinite(cell_size_m);
+    const bool cell_ok = terrain_collision_number(context, cell_size, cell_size_m);
     JS_FreeValue(context, cell_size);
     std::int8_t rung = 0;
     if (!cell_ok || !terrain_collision::cell_size_to_rung(cell_size_m, rung)) {
@@ -506,11 +525,11 @@ JSValue terrain_collision_builder(JSContext* context, JSValueConst,
     float restitution = 0.0f;
     JSValue friction_value = JS_GetPropertyStr(context, arguments[0], "friction");
     const bool friction_ok = JS_IsUndefined(friction_value) ||
-                             (number_value(context, friction_value, friction) && std::isfinite(friction));
+                             terrain_collision_number(context, friction_value, friction);
     JS_FreeValue(context, friction_value);
     JSValue restitution_value = JS_GetPropertyStr(context, arguments[0], "restitution");
     const bool restitution_ok = JS_IsUndefined(restitution_value) ||
-                                (number_value(context, restitution_value, restitution) && std::isfinite(restitution));
+                                terrain_collision_number(context, restitution_value, restitution);
     JS_FreeValue(context, restitution_value);
     if (!friction_ok || friction < 0.0f || friction > 1.0f) {
         return terrain_collision_failure(context, collector, "terrainCollision.friction",

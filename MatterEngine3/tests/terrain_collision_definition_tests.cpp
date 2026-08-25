@@ -168,6 +168,24 @@ void test_rejects_sector_union_larger_than_documented_limit() {
           "the sector limit error names the implementation limit");
 }
 
+void test_rejects_out_of_range_sector_quotients_without_narrowing() {
+    const float two_to_63 = std::ldexp(1.0f, 63);
+    const float greatest_in_range = std::nextafter(two_to_63, 0.0f);
+    const auto run = [](const TerrainCollisionRegion& input, const char* path) {
+        CanonicalDefinition output;
+        std::string error;
+        CHECK(!canonicalize_definition(definition({input}), 1.0f, source(), output, error),
+              "out-of-range or impractically large sector quotient is rejected");
+        CHECK(contains(error, path), "sector quotient rejection identifies its boundary");
+    };
+    run(region("upper", {0.0f, 0.0f, 0.0f}, {two_to_63, 1.0f, 1.0f}),
+        "aligned");
+    run(region("in-range", {0.0f, 0.0f, 0.0f}, {greatest_in_range, 1.0f, 1.0f}),
+        "kMaxSectorCount");
+    run(region("lower", {-two_to_63, 0.0f, 0.0f}, {0.0f, 1.0f, 1.0f}),
+        "kMaxSectorCount");
+}
+
 void test_identity_tracks_semantic_inputs_only() {
     const auto base = definition({
         region("one", {0.0f, 0.0f, 0.0f}, {64.0f, 64.0f, 64.0f}),
@@ -234,6 +252,7 @@ int main() {
     test_canonicalizes_overlap_order_and_half_open_grid();
     test_rejects_invalid_definition_fields();
     test_rejects_sector_union_larger_than_documented_limit();
+    test_rejects_out_of_range_sector_quotients_without_narrowing();
     test_identity_tracks_semantic_inputs_only();
     return check_summary();
 }

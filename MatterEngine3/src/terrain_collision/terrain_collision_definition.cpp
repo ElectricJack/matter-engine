@@ -42,9 +42,9 @@ bool finite(Float3 value) noexcept {
 bool aligned_coordinate(float coordinate, float sector_size_m, std::int64_t& output) {
     const double quotient = static_cast<double>(coordinate) /
                             static_cast<double>(sector_size_m);
+    constexpr double kInt64Magnitude = 9223372036854775808.0;  // exactly 2^63
     if (!std::isfinite(quotient) || std::trunc(quotient) != quotient ||
-        quotient < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
-        quotient > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+        quotient < -kInt64Magnitude || quotient >= kInt64Magnitude) {
         return false;
     }
     output = static_cast<std::int64_t>(quotient);

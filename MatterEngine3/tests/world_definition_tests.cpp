@@ -2781,8 +2781,13 @@ void test_world_loader_rejects_invalid_terrain_collision_builder_lifecycle() {
     rejects("LateRegion.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[0,0,0],max:[64,64,64]}); c.build(); c.region('b',{min:[64,0,0],max:[128,64,64]});", "terrainCollision.region");
     rejects("NoBuild.js", "terrainCollision({cellSize:0.5});", "collision");
     rejects("BadCell.js", "terrainCollision({cellSize:0.75});", "terrainCollision.cellSize");
+    rejects("StringCell.js", "terrainCollision({cellSize:'0.5'});", "terrainCollision.cellSize");
     rejects("BadMaterial.js", "terrainCollision({cellSize:0.5,friction:2});", "terrainCollision.friction");
+    rejects("BooleanFriction.js", "terrainCollision({cellSize:0.5,friction:true});", "terrainCollision.friction");
+    rejects("NullRestitution.js", "terrainCollision({cellSize:0.5,restitution:null});", "terrainCollision.restitution");
     rejects("BadVector.js", "terrainCollision({cellSize:0.5}).region('a',{min:[0,0],max:[64,64,64]});", "terrainCollision.region[a].min");
+    rejects("StringVector.js", "terrainCollision({cellSize:0.5}).region('a',{min:['0',0,0],max:[64,64,64]});", "terrainCollision.region[a].min");
+    rejects("BooleanVector.js", "terrainCollision({cellSize:0.5}).region('a',{min:[0,0,0],max:[64,false,64]});", "terrainCollision.region[a].max");
     rejects("Misaligned.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[1,0,0],max:[64,64,64]}); c.build();", "terrainCollision.region[a].min");
 }
 
