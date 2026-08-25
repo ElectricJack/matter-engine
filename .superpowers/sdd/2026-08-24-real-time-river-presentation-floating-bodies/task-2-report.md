@@ -515,3 +515,126 @@ No subagents or reviewers were spawned. No Make, GCC, g++, MinGW, MSYS2, or
 collect2 command was invoked. `git diff --check` and the staged diff check
 passed. Only the three scoped code/test files were committed; unrelated
 pre-existing untracked files were preserved. No known Task 2 blocker remains.
+
+## Independent IO Re-review Repair Round 4 (2026-08-24)
+
+### Outcome
+
+The three remaining IO findings were repaired in code/test commit `4c90e133`
+(`fix: harden hydrology artifact publication`). POSIX immutable field
+publication now retains an anonymous validated descriptor through atomic
+create-new linking, Windows Ready loading opens field leaves relative to the
+held trusted directory, and manifest replacement uses the same confined,
+same-handle validation and cleanup discipline.
+
+### TDD RED and Debugging Evidence
+
+The identity-decision, held-directory namespace-swap, manifest allocation,
+manifest parent/leaf/temporary-reparse, and manifest parent-swap tests were
+added before the production seams and implementation. The captured RED command
+was:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_network_artifact_tests
+```
+
+MSVC compiled the new tests, then failed the link with `LNK2019`/`LNK1120` for
+the intentionally absent `set_hydrology_namespace_validation_test_hook` and
+`hydrology_file_identity_stable` symbols.
+
+The first implemented persistence run then terminated with an access violation.
+Focused CDB isolation identified the exact failing test expression as an index
+into an empty rejected-manifest byte vector. A temporary unbuffered diagnostic
+run established that the preceding baseline manifest save had failed with
+`could not publish hydrology network manifest`. The root cause was the held
+Windows parent-directory handle's restrictive sharing mode: native
+handle-relative replacement requires delete/write-compatible sharing. The
+manifest parent guard now opts into share-read/write/delete, and reopens the
+named parent before and after publication to require the same native identity.
+The diagnostic buffering change was removed before the final build.
+
+### Implementation and Native-resource Audit
+
+- Linux/POSIX immutable field save uses `openat(..., O_TMPFILE)` and retains the
+  RAII-owned descriptor through write, `fsync`, rewind, exact byte/EOF
+  validation, and `linkat(temp_fd, "", fields_fd, canonical,
+  AT_EMPTY_PATH)`. If either secure primitive is unavailable at compile or run
+  time, publication fails closed. A newly linked entry is checked against the
+  retained descriptor's device/inode and the containing directory is flushed.
+- An existing POSIX canonical blob is opened with `openat`/`O_NOFOLLOW`; the
+  descriptor, directory entry before IO, and directory entry after IO must all
+  have one device/inode identity, and bytes must match exactly. The shared
+  platform-neutral identity helper rejects either before- or after-identity
+  substitution.
+- Windows Ready validation and the direct public field loader share one
+  trusted-parent implementation. The leaf is opened only with handle-relative
+  `NtCreateFile`, reparse following is disabled, sharing prevents mutation, and
+  size/content/EOF/type/digest checks all use that one RAII handle. A
+  deterministic namespace hook proves the acquired directory remains the
+  authority even if its path namespace is attacked after acquisition.
+- Manifest save treats the already-existing caller parent as its explicit
+  trust boundary. It does not create directories or use a path-based
+  temporary, reopen, delete, or rename after verification. Windows creates the
+  temporary relative to the held parent, writes, flushes, rewinds, rereads,
+  deserializes, and replaces the final name through that same handle; its
+  deletion guard remains armed until the final parent-identity check. POSIX
+  uses `openat(O_CREAT|O_EXCL|O_NOFOLLOW)`, retains the validated descriptor,
+  proves the named temporary identity, uses relative `renameat`, proves the
+  published identity, and `fsync`s the parent directory.
+- `UniqueNativeHandle`, `UniqueNativeFd`, `WindowsTemporaryFile`, and
+  `PosixNamedTemporaryFile` own every native resource immediately. Container
+  capacity is reserved before root acquisition. The POSIX named-temp cleanup
+  guard unlinks only when the current directory entry is still the regular file
+  with its captured device/inode; it cannot remove an attacker's replacement or
+  double-unlink a disarmed publication. Windows cleanup is deletion-by-handle.
+- Allocation failures injected after manifest-parent acquisition, after
+  manifest-file acquisition, and immediately before rename are caught by the
+  public bool API, preserve the old manifest byte-for-byte, and leave no
+  temporary. Existing transactional artifact/network destination preservation
+  and the single CPU/render publication identity were not changed.
+
+On the exercised Windows host, directory namespace replacement, manifest
+parent junction, manifest leaf symlink, and manifest temporary symlink fixtures
+all ran; the verbose focused test emitted no `SKIP`. External targets remained
+unchanged. The POSIX implementation was source-audited but could not be
+compiled or executed under the task's mandatory MSVC-only policy. POSIX
+manifest replacement necessarily uses a trusted-parent-relative named
+`renameat`; the retained descriptor plus before/final identity checks make
+replacement fail closed, while field publication uses the stronger anonymous
+`O_TMPFILE`/`AT_EMPTY_PATH` primitive required by the finding.
+
+### Final GREEN Evidence
+
+All final targets were rebuilt using only:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target <target>
+```
+
+The seven required focused targets and `matter_engine_viewer_objects` all
+succeeded on the final source. The dependency contract reported PASS and the
+viewer-conditioned objects, including the network artifact implementation,
+compiled. The single final focused test command was:
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo -C RelWithDebInfo -R '^(hydrology_artifact_tests|hydrology_network_artifact_tests|hydrology_handoff_products_tests|river_runtime_tests|async_bake_tests|physx_dependency_contract_tests|physx_adapter_contract_tests)$' --output-on-failure
+```
+
+Result: **7/7 passed**, 0 failed, 8.27 seconds. Per instruction, no broad CPU
+suite was rerun; the retained Task 2 full-suite evidence remains the earlier
+single **37/37** CPU run.
+
+### Round 4 Files and Process Audit
+
+- `MatterEngine3/src/hydrology/hydrology_field_artifact.h`
+- `MatterEngine3/src/hydrology/hydrology_network_artifact.cpp`
+- `MatterEngine3/tests/hydrology_network_artifact_tests.cpp`
+
+No subagents or reviewers were spawned. No Make, GCC, g++, MinGW, MSYS2, or
+collect2 command was invoked. One sandboxed final-gate wrapper invocation could
+not execute the installed native Python launcher; the identical required
+wrapper was rerun with host-tool access. `git diff --check`, the staged diff
+check, all focused builds, viewer-object compilation, and the seven-test CTest
+gate passed. Only the three scoped code/test files were included in the repair
+commit; unrelated untracked files were preserved. No known Task 2 blocker
+remains.
