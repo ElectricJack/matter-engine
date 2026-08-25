@@ -2,8 +2,10 @@
 
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/river_runtime.h"
 #include "matter/scene.h"
 #include "animation/animation_evaluator.h"
+#include "ecs/river_float_system.h"
 
 #include "flecs.h"
 
@@ -34,6 +36,10 @@ struct EntitySnapshot {
     bool has_sphere_collider = false;
     physics::CapsuleCollider capsule_collider{};
     bool has_capsule_collider = false;
+    RiverFloatBody river_float_body{};
+    bool has_river_float_body = false;
+    river_float::RiverFloatState river_float_state{};
+    bool has_river_float_state = false;
 };
 
 // Complete scene snapshot taken at Play transition.

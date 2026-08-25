@@ -2,8 +2,11 @@
 #include "matter/ecs.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
+#include "matter/river_runtime.h"
+#include "river_float_system.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -73,6 +76,15 @@ constexpr FieldDescriptor fd_uint(const char* name, uint32_t offset, uint8_t sto
     FieldDescriptor d = fd(name, FieldType::UInt, offset);
     d.storage_size = storage;
     d.flags = flags;
+    return d;
+}
+
+constexpr FieldDescriptor fd_uint_range(const char* name, uint32_t offset,
+                                        uint8_t storage, float lo, float hi) {
+    FieldDescriptor d = fd_uint(name, offset, storage, FieldFlagNone);
+    d.range_min = lo;
+    d.range_max = hi;
+    d.has_range = true;
     return d;
 }
 
@@ -155,6 +167,23 @@ static const FieldDescriptor s_part_instance_fields[] = {
 
 static const FieldDescriptor* const s_sector_streaming_fields = nullptr;
 
+static const FieldDescriptor s_river_float_fields[] = {
+    fd_float("effective_density_kg_m3", ME_FIELD_OFF(RiverFloatBody, effective_density_kg_m3), 0.0f, 2000.0f),
+    fd_float("displaced_volume_scale", ME_FIELD_OFF(RiverFloatBody, displaced_volume_scale), 0.0f, 4.0f),
+    fd_uint_range("probes_x", ME_FIELD_OFF(RiverFloatBody, probes_x), sizeof(std::uint8_t), 1.0f, 4.0f),
+    fd_uint_range("probes_y", ME_FIELD_OFF(RiverFloatBody, probes_y), sizeof(std::uint8_t), 1.0f, 4.0f),
+    fd_uint_range("probes_z", ME_FIELD_OFF(RiverFloatBody, probes_z), sizeof(std::uint8_t), 1.0f, 4.0f),
+    fd_float("probe_inset", ME_FIELD_OFF(RiverFloatBody, probe_inset), 0.0f, 0.49f),
+    fd_float("buoyancy_response", ME_FIELD_OFF(RiverFloatBody, buoyancy_response), 0.0f, 100.0f),
+    fd_float("longitudinal_drag", ME_FIELD_OFF(RiverFloatBody, longitudinal_drag), 0.0f, 100.0f),
+    fd_float("lateral_drag", ME_FIELD_OFF(RiverFloatBody, lateral_drag), 0.0f, 100.0f),
+    fd_float("vertical_drag", ME_FIELD_OFF(RiverFloatBody, vertical_drag), 0.0f, 100.0f),
+    fd_float("angular_damping", ME_FIELD_OFF(RiverFloatBody, angular_damping), 0.0f, 100.0f),
+    fd_float("max_force_per_probe_n", ME_FIELD_OFF(RiverFloatBody, max_force_per_probe_n), 0.001f, 1000000000.0f),
+    fd_float("max_total_force_n", ME_FIELD_OFF(RiverFloatBody, max_total_force_n), 0.001f, 1000000000.0f),
+    fd("diagnostic_color", FieldType::Float3, ME_FIELD_OFF(RiverFloatBody, diagnostic_color)),
+};
+
 // ---------------------------------------------------------------------------
 // Component descriptor table.
 // ---------------------------------------------------------------------------
@@ -178,6 +207,8 @@ static const ComponentDescriptor s_descriptors[] = {
      sizeof(PartInstance), alignof(PartInstance)},
     {ComponentKind::SectorStreaming, "SectorStreaming", s_sector_streaming_fields, 0, false,
      sizeof(streaming::SectorStreaming), alignof(streaming::SectorStreaming)},
+    {ComponentKind::RiverFloatBody, "RiverFloatBody", s_river_float_fields, 14, false,
+     sizeof(RiverFloatBody), alignof(RiverFloatBody)},
 };
 
 static constexpr uint32_t s_descriptor_count = sizeof(s_descriptors) / sizeof(s_descriptors[0]);
@@ -192,6 +223,10 @@ static_assert(alignof(physics::ConvexHullCollider) <= kMaxComponentStructAlign,
               "kMaxComponentStructAlign too small");
 static_assert(alignof(ecs::LocalTransform) <= kMaxComponentStructAlign,
               "kMaxComponentStructAlign too small");
+static_assert(sizeof(RiverFloatBody) <= kMaxComponentStructSize,
+              "kMaxComponentStructSize too small for RiverFloatBody");
+static_assert(alignof(RiverFloatBody) <= kMaxComponentStructAlign,
+              "kMaxComponentStructAlign too small for RiverFloatBody");
 
 const ComponentDescriptor* find_component(const char* name) {
     for (uint32_t i = 0; i < s_descriptor_count; ++i) {
@@ -497,6 +532,64 @@ static bool extract_bool_field(const std::string& json,
     return false;
 }
 
+static bool contains_field(const std::string& json, const char* field) {
+    return json.find(std::string("\"") + field + "\"") != std::string::npos;
+}
+
+static bool parse_river_float_body(const std::string& json,
+                                   RiverFloatBody& body,
+                                   std::string& invalid_field) {
+    auto read_float = [&](const char* authored, float& destination) {
+        if (!contains_field(json, authored)) return true;
+        float value = 0.0f;
+        if (!extract_float_field(json, authored, value) || !std::isfinite(value)) {
+            invalid_field = authored;
+            return false;
+        }
+        destination = value;
+        return true;
+    };
+    auto read_probe = [&](const char* authored, std::uint8_t& destination) {
+        if (!contains_field(json, authored)) return true;
+        float value = 0.0f;
+        if (!extract_float_field(json, authored, value) || !std::isfinite(value) ||
+            std::floor(value) != value || value < 0.0f || value > 255.0f) {
+            invalid_field = authored;
+            return false;
+        }
+        destination = static_cast<std::uint8_t>(value);
+        return true;
+    };
+    if (!read_float("effectiveDensityKgM3", body.effective_density_kg_m3) ||
+        !read_float("displacedVolumeScale", body.displaced_volume_scale) ||
+        !read_probe("probesX", body.probes_x) ||
+        !read_probe("probesY", body.probes_y) ||
+        !read_probe("probesZ", body.probes_z) ||
+        !read_float("probeInset", body.probe_inset) ||
+        !read_float("buoyancyResponse", body.buoyancy_response) ||
+        !read_float("longitudinalDrag", body.longitudinal_drag) ||
+        !read_float("lateralDrag", body.lateral_drag) ||
+        !read_float("verticalDrag", body.vertical_drag) ||
+        !read_float("angularDamping", body.angular_damping) ||
+        !read_float("maxForcePerProbeN", body.max_force_per_probe_n) ||
+        !read_float("maxTotalForceN", body.max_total_force_n)) return false;
+    if (contains_field(json, "diagnosticColor")) {
+        float color[3]{};
+        if (!extract_float_array(json, "diagnosticColor", color, 3) ||
+            !std::isfinite(color[0]) || !std::isfinite(color[1]) ||
+            !std::isfinite(color[2])) {
+            invalid_field = "diagnosticColor";
+            return false;
+        }
+        body.diagnostic_color = {color[0], color[1], color[2]};
+    }
+    if (!river_float::valid_river_float_body(body)) {
+        if (invalid_field.empty()) invalid_field = "settings";
+        return false;
+    }
+    return true;
+}
+
 static bool is_collider_kind(ComponentKind k) {
     return k == ComponentKind::SphereCollider ||
            k == ComponentKind::CapsuleCollider ||
@@ -623,6 +716,18 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
                 resolved_part_hash = hash;
             }
         }
+        if (desc->kind == ComponentKind::RiverFloatBody) {
+            RiverFloatBody body{};
+            std::string field;
+            if (!parse_river_float_body(
+                    extract_component_value_json(raw.components_json, key),
+                    body, field)) {
+                err.message = "invalid RiverFloatBody field: " + field;
+                err.authored_id = raw.authored_id;
+                err.field_path = "RiverFloatBody." + field;
+                return false;
+            }
+        }
     }
 
     out.authored_id = raw.authored_id;
@@ -706,6 +811,20 @@ bool instantiate(flecs::world& world,
 
     for (uint32_t i = 0; i < count; ++i) {
         const auto& recipe = recipes[i];
+        RiverFloatBody parsed_river_float{};
+        bool has_river_float = false;
+        const std::string river_json = extract_component_value_json(
+            recipe.components_json, "RiverFloatBody");
+        if (!river_json.empty()) {
+            std::string field;
+            if (!parse_river_float_body(river_json, parsed_river_float, field)) {
+                err.message = "invalid RiverFloatBody field: " + field;
+                err.authored_id = recipe.authored_id;
+                err.field_path = "RiverFloatBody." + field;
+                return false;
+            }
+            has_river_float = true;
+        }
         uint64_t hash = hash_authored_id(recipe.authored_id);
 
         if (used_hashes.count(hash)) {
@@ -834,6 +953,9 @@ bool instantiate(flecs::world& world,
             }
             case ComponentKind::SectorStreaming:
                 e.add<streaming::SectorStreaming>();
+                break;
+            case ComponentKind::RiverFloatBody:
+                if (has_river_float) e.set<RiverFloatBody>(parsed_river_float);
                 break;
             }
         }

@@ -1,4 +1,5 @@
 #include "physics_context.h"
+#include "river_float_system.h"
 
 #include "matter/ecs.h"
 #include "matter/physics.h"
@@ -123,6 +124,8 @@ void register_physics_systems(flecs::world& world) {
                 }
             });
     pull.add<ecs::FixedPipelineSystem>();
+
+    river_float::register_river_float_systems(world);
 }
 
 } // namespace matter::physics

@@ -124,6 +124,14 @@ bool SimulationControl::capture_snapshot(flecs::world& world) {
             snap.capsule_collider = *cc;
             snap.has_capsule_collider = true;
         }
+        if (const auto* body = e.try_get<RiverFloatBody>()) {
+            snap.river_float_body = *body;
+            snap.has_river_float_body = true;
+        }
+        if (const auto* state = e.try_get<river_float::RiverFloatState>()) {
+            snap.river_float_state = *state;
+            snap.has_river_float_state = true;
+        }
         snapshot_.entities.push_back(std::move(snap));
     });
 
@@ -159,6 +167,9 @@ bool SimulationControl::restore_snapshot(flecs::world& world) {
         if (snap.has_box_collider) e.set<physics::BoxCollider>(snap.box_collider);
         if (snap.has_sphere_collider) e.set<physics::SphereCollider>(snap.sphere_collider);
         if (snap.has_capsule_collider) e.set<physics::CapsuleCollider>(snap.capsule_collider);
+        if (snap.has_river_float_body) e.set<RiverFloatBody>(snap.river_float_body);
+        if (snap.has_river_float_state)
+            e.set<river_float::RiverFloatState>(snap.river_float_state);
         if (!snap.name.empty()) e.set_name(snap.name.c_str());
         id_to_entity[snap.id.value] = e;
     }

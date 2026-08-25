@@ -87,6 +87,7 @@ MatterEngine3/src/ecs/simulation_control.cpp|all
 MatterEngine3/src/ecs/physics_context.cpp|all
 MatterEngine3/src/ecs/physics_shapes.cpp|all
 MatterEngine3/src/ecs/physics_systems.cpp|all
+MatterEngine3/src/ecs/river_float_system.cpp|all
 MatterEngine3/src/ecs/streaming_systems.cpp|all
 MatterEngine3/src/ecs/transform_system.cpp|all
 MatterEngine3/src/scene/scene_service.cpp|all

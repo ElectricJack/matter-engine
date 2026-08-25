@@ -276,6 +276,19 @@ PHYSICS_TARGET = build/physics-tests
 PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
 
+# River floating is registered here only for rollback source-census parity.
+# Acceptance executes the MSVC/CMake target, never this legacy Make target.
+RIVER_FLOAT_ECS_REQUIRED = ../src/ecs/river_float_system.cpp
+RIVER_FLOAT_SYSTEM_TARGET = build/river_float_system_tests
+RIVER_FLOAT_SYSTEM_CPP = river_float_system_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) \
+                         $(RIVER_FLOAT_ECS_REQUIRED) ../src/ecs/simulation_control.cpp \
+                         ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp \
+                         ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp \
+                         ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp \
+                         ../src/ecs/transform_system.cpp \
+                         ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+RIVER_FLOAT_SYSTEM_C = $(FLECS_C)
+
 # ---------------------------------------------------------------------------
 # Object-path mangling. Two DIFFERENT source paths must never map to the SAME
 # object path. Strategy: replace every '/' with '__' and every '..' with 'up'
@@ -1530,6 +1543,7 @@ def_CPP_SRCS := $(sort \
     $(ANIMATION_STORE_CPP) \
     $(ANIMATION_BUDGET_CPP) \
     $(PHYSICS_CPP) \
+    $(RIVER_FLOAT_SYSTEM_CPP) \
     $(ANIMATION_SYSTEMS_CPP) \
     $(ANIMATION_SIMULATION_CPP) \
     $(SCENE_REGISTRY_CPP) \
@@ -1712,6 +1726,7 @@ EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
 
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
+RIVER_FLOAT_SYSTEM_OBJS = $(call obj_list,def,$(RIVER_FLOAT_SYSTEM_CPP)) $(call obj_list,physicsc,$(RIVER_FLOAT_SYSTEM_C)) $(EVENT_IMPL_DEF_OBJS)
 # The animation suites below reach physics_context.cpp through the same ECS
 # runtime closure (ANIMATION_ECS_RUNTIME_REQUIRED / ANIMATION_STORE_CPP), so
 # they need the E6 event trio for exactly the reason described above.
@@ -2009,6 +2024,9 @@ $(PHYSICS_TARGET): check-physics-animation-sources $(PHYSICS_OBJS) $(BOX3D_LIB) 
 
 run-physics: $(PHYSICS_TARGET)
 	./$(PHYSICS_TARGET)
+
+$(RIVER_FLOAT_SYSTEM_TARGET): $(RIVER_FLOAT_SYSTEM_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(RIVER_FLOAT_SYSTEM_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
 # Phase 4 Task 4 — Scene registry (reflected components, validation, instantiation).
 # Pure CPU test: no GL, no raylib — only box3d + flecs system deps.

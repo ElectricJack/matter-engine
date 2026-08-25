@@ -1,5 +1,6 @@
 #include "ecs_runtime.h"
 #include "physics_context.h"
+#include "river_float_system.h"
 #include "streaming_systems.h"
 #include "scene_registry.h"
 #include "animation/animation_systems.h"
@@ -199,11 +200,29 @@ PhysicsModule::PhysicsModule(flecs::world& world) {
         .member("position", &PhysicsRayHit::position)
         .member("normal", &PhysicsRayHit::normal)
         .member("fraction", &PhysicsRayHit::fraction);
+    world.component<RiverFloatBody>()
+        .member("effective_density_kg_m3", &RiverFloatBody::effective_density_kg_m3)
+        .member("displaced_volume_scale", &RiverFloatBody::displaced_volume_scale)
+        .member("probes_x", &RiverFloatBody::probes_x)
+        .member("probes_y", &RiverFloatBody::probes_y)
+        .member("probes_z", &RiverFloatBody::probes_z)
+        .member("probe_inset", &RiverFloatBody::probe_inset)
+        .member("buoyancy_response", &RiverFloatBody::buoyancy_response)
+        .member("longitudinal_drag", &RiverFloatBody::longitudinal_drag)
+        .member("lateral_drag", &RiverFloatBody::lateral_drag)
+        .member("vertical_drag", &RiverFloatBody::vertical_drag)
+        .member("angular_damping", &RiverFloatBody::angular_damping)
+        .member("max_force_per_probe_n", &RiverFloatBody::max_force_per_probe_n)
+        .member("max_total_force_n", &RiverFloatBody::max_total_force_n)
+        .member("diagnostic_color", &RiverFloatBody::diagnostic_color);
 
     world.component<PhysicsReconcile>()
         .add(flecs::Phase)
         .depends_on<ecs::PrePhysics>();
     world.component<PhysicsPush>()
+        .add(flecs::Phase)
+        .depends_on<RiverFloatForces>();
+    world.component<RiverFloatForces>()
         .add(flecs::Phase)
         .depends_on<PhysicsReconcile>();
     world.component<ecs::Physics>()

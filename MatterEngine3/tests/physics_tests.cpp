@@ -3,6 +3,7 @@
 #include "ecs/physics_context.h"
 #include "ecs/physics_shapes.h"
 #include "matter/physics.h"
+#include "matter/river_runtime.h"
 
 #include <algorithm>
 #include <array>
@@ -288,10 +289,13 @@ void test_physics_contract_and_reflection() {
               is_fieldless(world, pull),
           "physics phase tags remain fieldless metadata");
     const flecs::entity pre_physics = world.component<ecs::PrePhysics>();
+    const flecs::entity river_float = world.component<RiverFloatForces>();
     const flecs::entity physics_phase = world.component<ecs::Physics>();
     const flecs::entity post_physics = world.component<ecs::PostPhysics>();
     CHECK(reconcile.has(flecs::DependsOn, pre_physics) &&
-              push.has(flecs::DependsOn, reconcile) &&
+              river_float.has(flecs::Phase) &&
+              river_float.has(flecs::DependsOn, reconcile) &&
+              push.has(flecs::DependsOn, river_float) &&
               physics_phase.has(flecs::DependsOn, push) &&
               pull.has(flecs::DependsOn, physics_phase) &&
               post_physics.has(flecs::DependsOn, pull),

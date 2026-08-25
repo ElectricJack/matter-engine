@@ -22,7 +22,8 @@ enum class ComponentKind : uint8_t {
     BoxCollider,
     ConvexHullCollider,
     PartInstance,
-    SectorStreaming
+    SectorStreaming,
+    RiverFloatBody
 };
 
 enum class FieldType : uint8_t {

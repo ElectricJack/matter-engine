@@ -3,6 +3,7 @@
 #include "check.h"
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/river_runtime.h"
 #include "matter/scene.h"
 #include "matter/streaming.h"
 #include "matter/world_definition.h"
@@ -11,6 +12,7 @@
 #include "flecs.h"
 
 #include <string>
+#include <limits>
 #include <vector>
 
 using namespace matter;
@@ -112,6 +114,14 @@ static void test_physics_module_reflects_convex_hull_collider() {
     CHECK(comp.id() != 0, "ConvexHullCollider not registered");
 }
 
+static void test_physics_module_reflects_river_float_body() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    auto comp = world.component<RiverFloatBody>();
+    CHECK(comp.id() != 0, "RiverFloatBody not registered");
+}
+
 static void test_streaming_module_reflects_sector_streaming() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -135,6 +145,7 @@ static void test_find_component_known() {
     CHECK(find_component("ConvexHullCollider") != nullptr, "ConvexHullCollider not found");
     CHECK(find_component("PartInstance") != nullptr, "PartInstance not found");
     CHECK(find_component("SectorStreaming") != nullptr, "SectorStreaming not found");
+    CHECK(find_component("RiverFloatBody") != nullptr, "RiverFloatBody not found");
 }
 
 static void test_find_component_unknown() {
@@ -143,7 +154,7 @@ static void test_find_component_unknown() {
 }
 
 static void test_component_count() {
-    CHECK(component_count() == 9, "expected 9 registered components");
+    CHECK(component_count() == 10, "expected 10 registered components");
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +194,7 @@ static void test_component_struct_sizes_match() {
         {"ConvexHullCollider", sizeof(physics::ConvexHullCollider), alignof(physics::ConvexHullCollider)},
         {"PartInstance", sizeof(PartInstance), alignof(PartInstance)},
         {"SectorStreaming", sizeof(streaming::SectorStreaming), alignof(streaming::SectorStreaming)},
+        {"RiverFloatBody", sizeof(RiverFloatBody), alignof(RiverFloatBody)},
     };
     for (const auto& e : expected) {
         const ComponentDescriptor* cd = find_component(e.name);
@@ -195,6 +207,52 @@ static void test_component_struct_sizes_match() {
         CHECK(cd->struct_align <= kMaxComponentStructAlign,
               "component alignment above kMaxComponentStructAlign");
     }
+}
+
+static void test_river_float_body_descriptor_round_trip() {
+    const ComponentDescriptor* component = find_component("RiverFloatBody");
+    CHECK(component != nullptr && component->field_count == 14,
+          "RiverFloatBody exposes exactly every authored field");
+    RiverFloatBody value{};
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "effective_density_kg_m3"), 731.25f),
+          "density descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "displaced_volume_scale"), 1.75f),
+          "volume descriptor writes exact storage");
+    CHECK(field_set_uint(&value, *field_of("RiverFloatBody", "probes_x"), 4),
+          "probe-x descriptor writes one-byte storage");
+    CHECK(field_set_uint(&value, *field_of("RiverFloatBody", "probes_y"), 3),
+          "probe-y descriptor writes one-byte storage");
+    CHECK(field_set_uint(&value, *field_of("RiverFloatBody", "probes_z"), 2),
+          "probe-z descriptor writes one-byte storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "probe_inset"), 0.23f),
+          "inset descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "buoyancy_response"), 1.2f),
+          "buoyancy descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "longitudinal_drag"), 0.6f),
+          "longitudinal descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "lateral_drag"), 1.7f),
+          "lateral descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "vertical_drag"), 2.1f),
+          "vertical descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "angular_damping"), 0.9f),
+          "angular descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "max_force_per_probe_n"), 4567.0f),
+          "per-probe cap descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "max_total_force_n"), 9876.0f),
+          "total cap descriptor writes exact storage");
+    CHECK(field_set_float3(&value, *field_of("RiverFloatBody", "diagnostic_color"), {0.3f, 0.4f, 0.5f}),
+          "diagnostic-color descriptor writes exact storage");
+    CHECK(value.effective_density_kg_m3 == 731.25f &&
+              value.displaced_volume_scale == 1.75f && value.probes_x == 4 &&
+              value.probes_y == 3 && value.probes_z == 2 &&
+              value.probe_inset == 0.23f && value.buoyancy_response == 1.2f &&
+              value.longitudinal_drag == 0.6f && value.lateral_drag == 1.7f &&
+              value.vertical_drag == 2.1f && value.angular_damping == 0.9f &&
+              value.max_force_per_probe_n == 4567.0f &&
+              value.max_total_force_n == 9876.0f &&
+              value.diagnostic_color.x == 0.3f && value.diagnostic_color.y == 0.4f &&
+              value.diagnostic_color.z == 0.5f,
+          "descriptor round trip preserves every exact authored value independently");
 }
 
 static void test_every_field_offset_is_in_bounds() {
@@ -477,6 +535,67 @@ static void test_validate_empty_components() {
     CHECK(validate(raw, out, err), "empty components should pass");
 }
 
+static void test_validate_river_float_defaults_and_boundaries() {
+    RawEntityRecipe defaults{"float-default", "", "", R"({"RiverFloatBody": {}})"};
+    EntityRecipe out;
+    RecipeError err;
+    CHECK(validate(defaults, out, err), "default RiverFloatBody recipe validates");
+
+    const char* invalid[] = {
+        R"({"RiverFloatBody":{"effectiveDensityKgM3":0}})",
+        R"({"RiverFloatBody":{"effectiveDensityKgM3":2001}})",
+        R"({"RiverFloatBody":{"displacedVolumeScale":0}})",
+        R"({"RiverFloatBody":{"displacedVolumeScale":4.01}})",
+        R"({"RiverFloatBody":{"probesX":0}})",
+        R"({"RiverFloatBody":{"probesY":5}})",
+        R"({"RiverFloatBody":{"probesZ":1.5}})",
+        R"({"RiverFloatBody":{"probeInset":0.5}})",
+        R"({"RiverFloatBody":{"buoyancyResponse":-0.01}})",
+        R"({"RiverFloatBody":{"longitudinalDrag":nan}})",
+        R"({"RiverFloatBody":{"lateralDrag":-1}})",
+        R"({"RiverFloatBody":{"verticalDrag":inf}})",
+        R"({"RiverFloatBody":{"angularDamping":-1}})",
+        R"({"RiverFloatBody":{"maxForcePerProbeN":0}})",
+        R"({"RiverFloatBody":{"maxTotalForceN":inf}})",
+        R"({"RiverFloatBody":{"diagnosticColor":[0,nan,1]}})"
+    };
+    for (const char* components : invalid) {
+        RawEntityRecipe raw{"float-invalid", "", "", components};
+        err = {};
+        CHECK(!validate(raw, out, err) &&
+                  err.field_path.find("RiverFloatBody") == 0,
+              "invalid/non-finite RiverFloatBody boundary fails scene validation");
+    }
+}
+
+static void test_instantiate_river_float_exact_and_independent() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    world.import<streaming::StreamingModule>();
+    world.import<SceneModule>();
+    std::vector<EntityRecipe> recipes = {{
+        "float-exact", "Float", "",
+        R"({"RiverFloatBody":{"effectiveDensityKgM3":731.25,"displacedVolumeScale":1.75,"probesX":4,"probesY":3,"probesZ":2,"probeInset":0.23,"buoyancyResponse":1.2,"longitudinalDrag":0.6,"lateralDrag":1.7,"verticalDrag":2.1,"angularDamping":0.9,"maxForcePerProbeN":4567,"maxTotalForceN":9876,"diagnosticColor":[0.3,0.4,0.5]},"PhysicsVelocity":{"linear":[8,7,6]}})"
+    }};
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(instantiate(world, recipes.data(), 1, generation, error),
+          "exact RiverFloatBody recipe instantiates");
+    flecs::entity entity;
+    world.each([&](flecs::entity candidate, const SceneEntityId&) { entity = candidate; });
+    CHECK(entity.has<RiverFloatBody>() && entity.has<physics::PhysicsVelocity>(),
+          "RiverFloatBody remains independent of sibling components");
+    const RiverFloatBody value = entity.get<RiverFloatBody>();
+    const physics::PhysicsVelocity velocity = entity.get<physics::PhysicsVelocity>();
+    CHECK(value.effective_density_kg_m3 == 731.25f && value.probes_x == 4 &&
+              value.probes_y == 3 && value.probes_z == 2 &&
+              value.max_total_force_n == 9876.0f &&
+              value.diagnostic_color.z == 0.5f &&
+              velocity.linear.x == 8.0f && velocity.linear.z == 6.0f,
+          "instantiation preserves exact float values without cross-component aliasing");
+}
+
 // ---------------------------------------------------------------------------
 // Batch validation tests.
 // ---------------------------------------------------------------------------
@@ -673,6 +792,7 @@ int main() {
     test_physics_module_reflects_capsule_collider();
     test_physics_module_reflects_box_collider();
     test_physics_module_reflects_convex_hull_collider();
+    test_physics_module_reflects_river_float_body();
     test_streaming_module_reflects_sector_streaming();
 
     test_find_component_known();
@@ -682,6 +802,7 @@ int main() {
     test_find_field();
     test_component_struct_sizes_match();
     test_every_field_offset_is_in_bounds();
+    test_river_float_body_descriptor_round_trip();
     test_transform_offsets();
     test_rigid_body_offsets();
     test_rigid_body_type_labels();
@@ -697,6 +818,7 @@ int main() {
     test_validate_multiple_colliders_rejected();
     test_validate_valid_recipe();
     test_validate_empty_components();
+    test_validate_river_float_defaults_and_boundaries();
 
     test_batch_duplicate_ids_rejected();
     test_batch_missing_parent_rejected();
@@ -707,6 +829,7 @@ int main() {
     test_instantiate_wires_parent();
     test_instantiate_adds_components();
     test_instantiate_empty_is_noop();
+    test_instantiate_river_float_exact_and_independent();
 
     test_authored_ids_produce_stable_hashes();
 

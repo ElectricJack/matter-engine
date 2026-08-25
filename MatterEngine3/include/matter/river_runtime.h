@@ -34,6 +34,25 @@ struct RiverFieldSample {
     bool wet_valid = false;
 };
 
+struct RiverFloatBody {
+    float effective_density_kg_m3 = 650.0f;
+    float displaced_volume_scale = 1.0f;
+    std::uint8_t probes_x = 2;
+    std::uint8_t probes_y = 2;
+    std::uint8_t probes_z = 2;
+    float probe_inset = 0.15f;
+    float buoyancy_response = 1.0f;
+    float longitudinal_drag = 0.8f;
+    float lateral_drag = 1.4f;
+    float vertical_drag = 1.8f;
+    float angular_damping = 0.4f;
+    float max_force_per_probe_n = 30000.0f;
+    float max_total_force_n = 120000.0f;
+    Float3 diagnostic_color{0.2f, 0.8f, 1.0f};
+};
+
+struct RiverFloatForces {};
+
 class WorldSession;
 
 class RiverRuntimeBinding {

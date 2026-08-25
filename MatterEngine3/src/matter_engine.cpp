@@ -27,6 +27,7 @@
 #include "bake_trace.h"        // Bake Lab: per-session stage-span collector
 #include "bake_trace_names.h"
 #include "ecs/ecs_runtime.h"
+#include "ecs/river_float_system.h"
 #include "ecs/dynamic_scene_bridge.h"
 #include "ecs/bridge_error_hub.h"  // I.11: hub-backed BridgeErrorSink adapter
 #include "ecs/streaming_systems.h"
@@ -9483,7 +9484,14 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     }
 #endif
 
-
+    river_float::install_runtime_binding(
+        simpl->ecs_runtime.world(), simpl.get(),
+        [](const void* opaque) noexcept
+            -> std::shared_ptr<const RiverRuntimeBinding> {
+            const auto* session = static_cast<const WorldSession::Impl*>(opaque);
+            const auto publication = session->load_authored_fluid_publication();
+            return publication ? publication->runtime : nullptr;
+        });
     return std::unique_ptr<WorldSession>(new WorldSession(std::move(simpl)));
 }
 
@@ -9531,6 +9539,7 @@ WorldSession::~WorldSession() {
     {
         std::lock_guard<std::recursive_mutex> generation_lock(
             impl_->hydrology_generation_mutex);
+        river_float::clear_runtime_binding(impl_->ecs_runtime.world());
         matter::detail::RiverRuntimeBindingAccess::publish(
             impl_->authored_fluid_publication_slot, {});
         {
