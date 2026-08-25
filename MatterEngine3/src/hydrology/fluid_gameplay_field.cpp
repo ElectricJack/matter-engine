@@ -84,10 +84,14 @@ bool build_fluid_gameplay_field(
     for (std::uint32_t z = 0; z != layout.depth; ++z) {
         for (std::uint32_t x = 0; x != layout.width; ++x) {
             const std::size_t index = static_cast<std::size_t>(z) * layout.width + x;
-            const float world_x = layout.origin_m.x +
-                (static_cast<float>(x) + 0.5f) * layout.cell_size_m;
-            const float world_z = layout.origin_m.z +
-                (static_cast<float>(z) + 0.5f) * layout.cell_size_m;
+            float world_x = 0.0f, world_z = 0.0f;
+            if (!to_float(static_cast<double>(layout.origin_m.x) +
+                              (static_cast<double>(x) + 0.5) * layout.cell_size_m,
+                          world_x) ||
+                !to_float(static_cast<double>(layout.origin_m.z) +
+                              (static_cast<double>(z) + 0.5) * layout.cell_size_m,
+                          world_z))
+                return fail("fluid gameplay field terrain coordinate is not representable");
             if (!terrain(world_x, world_z, terrain_height[index]) ||
                 !finite(terrain_height[index])) {
                 return fail("terrain height sampling failed for fluid gameplay field");
@@ -100,15 +104,19 @@ bool build_fluid_gameplay_field(
             !finite(particle.velocity_mps.y) || !finite(particle.velocity_mps.z)) {
             return fail("fluid gameplay field particle is non-finite");
         }
-        const int x = static_cast<int>(std::floor(
-            (particle.position_m.x - layout.origin_m.x) / layout.cell_size_m));
-        const int z = static_cast<int>(std::floor(
-            (particle.position_m.z - layout.origin_m.z) / layout.cell_size_m));
-        if (x < 0 || z < 0 || x >= static_cast<int>(layout.width) ||
-            z >= static_cast<int>(layout.depth))
+        const double cell_x = (static_cast<double>(particle.position_m.x) -
+                               layout.origin_m.x) / layout.cell_size_m;
+        const double cell_z = (static_cast<double>(particle.position_m.z) -
+                               layout.origin_m.z) / layout.cell_size_m;
+        if (!finite(cell_x) || !finite(cell_z))
+            return fail("fluid gameplay field particle coordinate is non-finite");
+        if (cell_x < 0.0 || cell_z < 0.0 ||
+            cell_x >= static_cast<double>(layout.width) ||
+            cell_z >= static_cast<double>(layout.depth))
             continue;
-        const std::size_t index = static_cast<std::size_t>(z) * layout.width +
-                                  static_cast<std::size_t>(x);
+        const std::uint32_t x = static_cast<std::uint32_t>(std::floor(cell_x));
+        const std::uint32_t z = static_cast<std::uint32_t>(std::floor(cell_z));
+        const std::size_t index = static_cast<std::size_t>(z) * layout.width + x;
         GameplaySample& sample = samples[index];
         float surface = 0.0f;
         if (!to_float(static_cast<double>(particle.position_m.y) +
@@ -177,42 +185,44 @@ bool sample_fluid_gameplay_field(const GameplayFieldLayout& layout,
     if (!valid_layout(layout) || !finite(x_m) || !finite(z_m) ||
         samples.size() != static_cast<std::size_t>(layout.width) * layout.depth)
         return false;
-    const float cell_x = (x_m - layout.origin_m.x) / layout.cell_size_m -
-                         0.5f;
-    const float cell_z = (z_m - layout.origin_m.z) / layout.cell_size_m -
-                         0.5f;
-    if (cell_x < 0.0f || cell_z < 0.0f ||
-        cell_x > static_cast<float>(layout.width - 1u) ||
-        cell_z > static_cast<float>(layout.depth - 1u))
+    const double cell_x = (static_cast<double>(x_m) - layout.origin_m.x) /
+                              layout.cell_size_m - 0.5;
+    const double cell_z = (static_cast<double>(z_m) - layout.origin_m.z) /
+                              layout.cell_size_m - 0.5;
+    if (!finite(cell_x) || !finite(cell_z) || cell_x < 0.0 || cell_z < 0.0 ||
+        cell_x > static_cast<double>(layout.width - 1u) ||
+        cell_z > static_cast<double>(layout.depth - 1u))
         return false;
     const std::uint32_t x0 = static_cast<std::uint32_t>(std::floor(cell_x));
     const std::uint32_t z0 = static_cast<std::uint32_t>(std::floor(cell_z));
     const std::uint32_t x1 = std::min(x0 + 1u, layout.width - 1u);
     const std::uint32_t z1 = std::min(z0 + 1u, layout.depth - 1u);
-    const float tx = cell_x - static_cast<float>(x0);
-    const float tz = cell_z - static_cast<float>(z0);
+    const double tx = cell_x - static_cast<double>(x0);
+    const double tz = cell_z - static_cast<double>(z0);
     const GameplaySample* contributors[] = {
         &samples[static_cast<std::size_t>(z0) * layout.width + x0],
         &samples[static_cast<std::size_t>(z0) * layout.width + x1],
         &samples[static_cast<std::size_t>(z1) * layout.width + x0],
         &samples[static_cast<std::size_t>(z1) * layout.width + x1]};
-    const float weights[] = {(1.0f - tx) * (1.0f - tz), tx * (1.0f - tz),
-                             (1.0f - tx) * tz, tx * tz};
+    const double weights[] = {(1.0 - tx) * (1.0 - tz), tx * (1.0 - tz),
+                              (1.0 - tx) * tz, tx * tz};
     for (std::size_t i = 0; i != 4u; ++i)
         if (weights[i] > 0.0f && !valid_wet_sample(*contributors[i]))
             return false;
+    double height = 0.0, depth = 0.0, velocity_x = 0.0, velocity_y = 0.0,
+           velocity_z = 0.0;
     for (std::size_t i = 0; i != 4u; ++i) {
-        if (weights[i] == 0.0f) continue;
-        sample.height_m += contributors[i]->height_m * weights[i];
-        sample.depth_m += contributors[i]->depth_m * weights[i];
-        sample.velocity_x_mps += contributors[i]->velocity_x_mps * weights[i];
-        sample.velocity_y_mps += contributors[i]->velocity_y_mps * weights[i];
-        sample.velocity_z_mps += contributors[i]->velocity_z_mps * weights[i];
+        if (weights[i] == 0.0) continue;
+        height += static_cast<double>(contributors[i]->height_m) * weights[i];
+        depth += static_cast<double>(contributors[i]->depth_m) * weights[i];
+        velocity_x += static_cast<double>(contributors[i]->velocity_x_mps) * weights[i];
+        velocity_y += static_cast<double>(contributors[i]->velocity_y_mps) * weights[i];
+        velocity_z += static_cast<double>(contributors[i]->velocity_z_mps) * weights[i];
     }
-    sample.wet_valid = finite(sample.height_m) && finite(sample.depth_m) &&
-                       finite(sample.velocity_x_mps) &&
-                       finite(sample.velocity_y_mps) &&
-                       finite(sample.velocity_z_mps);
+    sample.wet_valid = to_float(height, sample.height_m) && to_float(depth, sample.depth_m) &&
+                       to_float(velocity_x, sample.velocity_x_mps) &&
+                       to_float(velocity_y, sample.velocity_y_mps) &&
+                       to_float(velocity_z, sample.velocity_z_mps);
     if (!sample.wet_valid) sample = {};
     return sample.wet_valid;
 }

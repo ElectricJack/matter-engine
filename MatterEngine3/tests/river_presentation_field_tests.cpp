@@ -167,6 +167,29 @@ void test_gameplay_uses_checked_stable_means_and_depths() {
           "an unrepresentable required gameplay depth fails closed");
 }
 
+void test_gameplay_uses_checked_grid_coordinates() {
+    const float maximum = std::numeric_limits<float>::max();
+    const hydrology::GameplayFieldLayout unrepresentable{{maximum, 0.0f, maximum},
+                                                           maximum, 1u, 1u};
+    std::vector<hydrology::GameplaySample> field;
+    std::string error;
+    CHECK(!hydrology::build_fluid_gameplay_field(
+              {}, 0.5f, unrepresentable,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              field, error) && field.empty() && !error.empty(),
+          "unrepresentable X/Z terrain centres fail closed at the float sampler boundary");
+
+    const hydrology::GameplayFieldLayout extreme_origin{{maximum, 0.0f, maximum},
+                                                         1.0f, 1u, 1u};
+    const std::vector<hydrology::FluidParticle> outside = {
+        {{-maximum, 2.0f, -maximum}, {0.0f, 0.0f, 0.0f}, 1u}};
+    CHECK(hydrology::build_fluid_gameplay_field(
+              outside, 0.5f, extreme_origin,
+              [](float, float, float& height) { height = 0.0f; return true; },
+              field, error) && field.size() == 1u && !field[0].wet_valid,
+          "opposite near-FLT_MAX X/Z particles are deterministically skipped before casting");
+}
+
 void test_presentation_rejects_overflowing_intermediates() {
     const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f,
                                                 2u, 1u};
@@ -290,6 +313,42 @@ void test_presentation_sampling_is_strict_and_bilinear() {
           "zero-weight invalid presentation contributors are skipped");
 }
 
+void test_presentation_normal_contract_is_buildable_and_sampleable() {
+    const hydrology::GameplayFieldLayout layout{{0.0f, 0.0f, 0.0f}, 1.0f, 3u, 3u};
+    std::vector<hydrology::GameplaySample> gameplay(9u,
+        {0.0f, 1.0f, 0.0f, 0.0f, 0.0f, true});
+    gameplay[3u].height_m = -1.0e38f;
+    gameplay[5u].height_m = 1.0e38f;
+    gameplay[1u].height_m = -2.0e38f;
+    gameplay[7u].height_m = 2.0e38f;
+    hydrology::GameplayFieldStatistics statistics{};
+    statistics.velocity_variance_mps2.assign(9u, 0.0f);
+    std::vector<float> terrain(9u, 0.0f), wake(9u, 1.0f);
+    std::vector<hydrology::PresentationMarkers> markers(9u);
+    std::vector<hydrology::PresentationLocalOverride> overrides(9u);
+    hydrology::PresentationDerivationInput input{
+        layout, &gameplay, &statistics, &terrain, &wake, &markers, &overrides};
+    hydrology::PresentationDerivationSettings settings{};
+    std::vector<hydrology::PresentationSample> field;
+    std::string error;
+    CHECK(hydrology::build_river_presentation_field(input, settings, field, error),
+          error.c_str());
+    hydrology::PresentationSample sample{};
+    CHECK(hydrology::sample_river_presentation_field(layout, field, 1.5f, 1.5f,
+                                                       sample) && sample.wet_valid,
+          "a float-rounded near-horizontal built normal remains sampleable");
+
+    std::vector<hydrology::PresentationSample> invalid(1u,
+        {1.0f, std::numeric_limits<float>::epsilon(), 0.2f, 0.2f, 0.2f,
+         hydrology::RiverFeature::Calm, true});
+    const hydrology::GameplayFieldLayout one{{0.0f, 0.0f, 0.0f}, 1.0f, 1u, 1u};
+    sample = {0.3f, 0.4f, 0.5f, 0.6f, 0.7f, hydrology::RiverFeature::Rapid, true};
+    CHECK(!hydrology::sample_river_presentation_field(one, invalid, 0.5f, 0.5f,
+                                                        sample) &&
+              sample == hydrology::PresentationSample{},
+          "normal-length sampling failure clears accumulated output");
+}
+
 void test_feature_markers_have_explicit_precedence() {
     hydrology::PresentationDerivationSettings settings{};
     settings.current_speed_mps = 1.0f;
@@ -325,10 +384,12 @@ int main() {
     test_gameplay_retains_known_velocity_variance();
     test_gameplay_retains_stable_large_velocity_variance();
     test_gameplay_uses_checked_stable_means_and_depths();
+    test_gameplay_uses_checked_grid_coordinates();
     test_presentation_rejects_overflowing_intermediates();
     test_presentation_keeps_huge_finite_metrics_bounded();
     test_pool_weight_is_calm_evidence();
     test_presentation_sampling_is_strict_and_bilinear();
+    test_presentation_normal_contract_is_buildable_and_sampleable();
     test_feature_markers_have_explicit_precedence();
     return check_summary();
 }

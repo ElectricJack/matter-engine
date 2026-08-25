@@ -18,6 +18,31 @@ bool finite_float(double value, float& result) {
     return finite(result);
 }
 
+// Stored presentation normals are exactly constrained to the closed X/Z unit
+// disk.  Project after float conversion because rounding can otherwise move a
+// mathematically valid positive-hemisphere normal just outside the disk.
+bool project_normal(double x, double z, float& result_x, float& result_z) {
+    if (!finite(x) || !finite(z)) return false;
+    const double length = std::hypot(x, z);
+    if (!finite(length)) return false;
+    if (length > 1.0) {
+        x /= length;
+        z /= length;
+    }
+    if (!finite_float(x, result_x) || !finite_float(z, result_z)) return false;
+    for (std::uint32_t attempt = 0u; attempt != 8u; ++attempt) {
+        const double squared = static_cast<double>(result_x) * result_x +
+                               static_cast<double>(result_z) * result_z;
+        if (finite(squared) && squared <= 1.0) return true;
+        if (!finite(squared)) return false;
+        if (std::fabs(result_x) >= std::fabs(result_z))
+            result_x = std::nextafter(result_x, 0.0f);
+        else
+            result_z = std::nextafter(result_z, 0.0f);
+    }
+    return false;
+}
+
 bool clamp01(double value, double& result) {
     if (!finite(value)) return false;
     result = std::max(0.0, std::min(1.0, value));
@@ -121,9 +146,7 @@ bool valid_presentation(const PresentationSample& sample) {
     const double normal_y_squared = 1.0 -
         static_cast<double>(sample.normal_x) * sample.normal_x -
         static_cast<double>(sample.normal_z) * sample.normal_z;
-    // Float rounding of a normalized double vector can cross the unit circle
-    // by one ulp; it still represents the positive hemisphere contract.
-    return finite(normal_y_squared) && normal_y_squared >= -1.0e-6;
+    return finite(normal_y_squared) && normal_y_squared >= 0.0;
 }
 
 }  // namespace
@@ -212,8 +235,9 @@ bool build_river_presentation_field(
                 return fail("river presentation field normal overflow");
             }
             PresentationSample result{};
-            if (!finite_float(-gradient_x / normal_length, result.normal_x) ||
-                !finite_float(-gradient_z / normal_length, result.normal_z))
+            if (!project_normal(-gradient_x / normal_length,
+                                -gradient_z / normal_length,
+                                result.normal_x, result.normal_z))
                 return fail("river presentation field normal is not representable");
 
             double dvx_dx = 0.0;
@@ -321,7 +345,7 @@ bool build_river_presentation_field(
                                result.foam_potential >= 0.0f && result.foam_potential <= 1.0f;
             const double result_normal_sq = static_cast<double>(result.normal_x) * result.normal_x +
                                             static_cast<double>(result.normal_z) * result.normal_z;
-            if (!result.wet_valid || !finite(result_normal_sq) || result_normal_sq > 1.000001)
+            if (!result.wet_valid || !finite(result_normal_sq) || result_normal_sq > 1.0)
                 return fail("river presentation field output is invalid");
             samples[index] = result;
         }
@@ -345,45 +369,56 @@ bool sample_river_presentation_field(
     if (!valid_layout(layout) || !finite(x_m) || !finite(z_m) ||
         samples.size() != static_cast<std::size_t>(layout.width) * layout.depth)
         return false;
-    const float cell_x = (x_m - layout.origin_m.x) / layout.cell_size_m - 0.5f;
-    const float cell_z = (z_m - layout.origin_m.z) / layout.cell_size_m - 0.5f;
-    if (cell_x < 0.0f || cell_z < 0.0f ||
-        cell_x > static_cast<float>(layout.width - 1u) ||
-        cell_z > static_cast<float>(layout.depth - 1u))
+    const double cell_x = (static_cast<double>(x_m) - layout.origin_m.x) /
+                              layout.cell_size_m - 0.5;
+    const double cell_z = (static_cast<double>(z_m) - layout.origin_m.z) /
+                              layout.cell_size_m - 0.5;
+    if (!finite(cell_x) || !finite(cell_z) || cell_x < 0.0 || cell_z < 0.0 ||
+        cell_x > static_cast<double>(layout.width - 1u) ||
+        cell_z > static_cast<double>(layout.depth - 1u))
         return false;
     const std::uint32_t x0 = static_cast<std::uint32_t>(std::floor(cell_x));
     const std::uint32_t z0 = static_cast<std::uint32_t>(std::floor(cell_z));
     const std::uint32_t x1 = std::min(x0 + 1u, layout.width - 1u);
     const std::uint32_t z1 = std::min(z0 + 1u, layout.depth - 1u);
-    const float tx = cell_x - static_cast<float>(x0);
-    const float tz = cell_z - static_cast<float>(z0);
+    const double tx = cell_x - static_cast<double>(x0);
+    const double tz = cell_z - static_cast<double>(z0);
     const PresentationSample* contributors[] = {
         &samples[index_of(layout, x0, z0)], &samples[index_of(layout, x1, z0)],
         &samples[index_of(layout, x0, z1)], &samples[index_of(layout, x1, z1)]};
-    const float weights[] = {(1.0f - tx) * (1.0f - tz), tx * (1.0f - tz),
-                             (1.0f - tx) * tz, tx * tz};
+    const double weights[] = {(1.0 - tx) * (1.0 - tz), tx * (1.0 - tz),
+                              (1.0 - tx) * tz, tx * tz};
     for (std::size_t i = 0; i != 4u; ++i)
         if (weights[i] > 0.0f && !valid_presentation(*contributors[i]))
             return false;
+    double normal_x = 0.0, normal_z = 0.0, turbulence = 0.0;
+    double aeration = 0.0, foam_potential = 0.0;
     for (std::size_t i = 0; i != 4u; ++i) {
-        if (weights[i] == 0.0f) continue;
-        sample.normal_x += contributors[i]->normal_x * weights[i];
-        sample.normal_z += contributors[i]->normal_z * weights[i];
-        sample.turbulence += contributors[i]->turbulence * weights[i];
-        sample.aeration += contributors[i]->aeration * weights[i];
-        sample.foam_potential += contributors[i]->foam_potential * weights[i];
+        if (weights[i] == 0.0) continue;
+        normal_x += static_cast<double>(contributors[i]->normal_x) * weights[i];
+        normal_z += static_cast<double>(contributors[i]->normal_z) * weights[i];
+        turbulence += static_cast<double>(contributors[i]->turbulence) * weights[i];
+        aeration += static_cast<double>(contributors[i]->aeration) * weights[i];
+        foam_potential += static_cast<double>(contributors[i]->foam_potential) * weights[i];
     }
-    const float length_sq = sample.normal_x * sample.normal_x +
-                            sample.normal_z * sample.normal_z;
-    if (!finite(length_sq) || length_sq > 1.0f) return false;
+    if (!project_normal(normal_x, normal_z, sample.normal_x, sample.normal_z) ||
+        !finite_float(turbulence, sample.turbulence) ||
+        !finite_float(aeration, sample.aeration) ||
+        !finite_float(foam_potential, sample.foam_potential)) {
+        sample = {};
+        return false;
+    }
     const std::uint32_t nearest_x =
-        static_cast<std::uint32_t>(std::floor(cell_x + 0.5f));
+        static_cast<std::uint32_t>(std::floor(cell_x + 0.5));
     const std::uint32_t nearest_z =
-        static_cast<std::uint32_t>(std::floor(cell_z + 0.5f));
+        static_cast<std::uint32_t>(std::floor(cell_z + 0.5));
     const PresentationSample& nearest = samples[index_of(
         layout, std::min(nearest_x, layout.width - 1u),
         std::min(nearest_z, layout.depth - 1u))];
-    if (!valid_presentation(nearest)) return false;
+    if (!valid_presentation(nearest)) {
+        sample = {};
+        return false;
+    }
     sample.turbulence = std::max(0.0f, std::min(1.0f, sample.turbulence));
     sample.aeration = std::max(0.0f, std::min(1.0f, sample.aeration));
     sample.foam_potential = std::max(0.0f, std::min(1.0f, sample.foam_potential));
