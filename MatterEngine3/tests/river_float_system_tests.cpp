@@ -22,6 +22,7 @@
 #include <new>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -196,6 +197,35 @@ void publish_after_float_enqueue(void* opaque) noexcept {
     detail::RiverRuntimeBindingAccess::publish(
         publication.slot, publication.identity);
     publication.acquired->current = publication.binding;
+}
+
+struct MidBatchPublication {
+    std::shared_ptr<detail::RiverRuntimePublicationSlot> slot;
+    std::shared_ptr<const detail::RiverRuntimePublicationIdentity> identity_a;
+    std::shared_ptr<const detail::RiverRuntimePublicationIdentity> identity_b;
+    std::atomic<bool> first_row{false};
+    std::atomic<bool> attempt_started{false};
+    std::atomic<bool> published{false};
+    std::uint32_t hook_calls = 0;
+    bool b_visible_during_batch = false;
+    bool publish_completed_during_batch = false;
+};
+
+void signal_publication_write_attempt(void* opaque) noexcept {
+    static_cast<MidBatchPublication*>(opaque)->attempt_started.store(
+        true, std::memory_order_release);
+}
+
+void attempt_publication_after_first_row(void* opaque) noexcept {
+    auto& state = *static_cast<MidBatchPublication*>(opaque);
+    ++state.hook_calls;
+    state.first_row.store(true, std::memory_order_release);
+    while (!state.attempt_started.load(std::memory_order_acquire))
+        std::this_thread::yield();
+    state.b_visible_during_batch =
+        detail::RiverRuntimeBindingAccess::load(state.slot) == state.identity_b;
+    state.publish_completed_during_batch =
+        state.published.load(std::memory_order_acquire);
 }
 
 physics::BoxCollider box(float x, float y, float z, float density = 650.0f) {
@@ -786,18 +816,75 @@ void test_post_kernel_publication_swap_guards_queued_forces() {
             &acquired, slot, identity_b, binding_b, commit_replacement};
         install_post_enqueue_hook_for_test(
             runtime.world(), {&publication, &publish_after_float_enqueue});
+        const std::uint64_t failed_before =
+            physics::physics_stats(runtime.world()).failed_commands;
         fixed_tick(runtime);
         install_post_enqueue_hook_for_test(runtime.world(), {});
-        return std::pair<std::size_t, std::uint32_t>{
-            force_at_point_trace_count(runtime.world()), publication.calls};
+        return std::array<std::uint64_t, 3>{
+            force_at_point_trace_count(runtime.world()), publication.calls,
+            physics::physics_stats(runtime.world()).failed_commands -
+                failed_before};
     };
 
     const auto stale = run(true);
-    CHECK(stale.second == 1 && stale.first == 0,
-          "B publishing after A sampling but before Push drops every stale A force row");
+    CHECK(stale[1] == 1 && stale[0] == 0 && stale[2] == 1,
+          "B winning before guarded-batch begin drops every A row and fails once");
     const auto retained = run(false);
-    CHECK(retained.second == 1 && retained.first > 0,
+    CHECK(retained[1] == 1 && retained[0] > 0 && retained[2] == 0,
           "failed or cancelled B publication leaves every guarded A force row valid");
+}
+
+void test_publication_waits_for_entire_guarded_force_batch() {
+    auto products_a = accepted_products(0.0f, 3.0f);
+    auto products_b = accepted_products(1.0f, -4.0f);
+    auto slot = std::make_shared<detail::RiverRuntimePublicationSlot>();
+    auto identity_a =
+        std::make_shared<detail::RiverRuntimePublicationIdentity>();
+    auto identity_b =
+        std::make_shared<detail::RiverRuntimePublicationIdentity>();
+    const auto binding_a = accepted_binding(products_a, 601, slot, identity_a);
+    const auto binding_b = accepted_binding(products_b, 602, slot, identity_b);
+    CHECK(binding_a && binding_b,
+          "mid-batch publication fixture builds distinct accepted bindings");
+    if (!binding_a || !binding_b) return;
+
+    ecs_runtime::Runtime runtime;
+    AcquiredBinding acquired{binding_a};
+    detail::RiverRuntimeBindingAccess::publish(slot, identity_a);
+    install_runtime_binding(runtime.world(), &acquired, &acquire_binding);
+    Float3 position = equilibrium_transform(3.0f, 650.0f).translation;
+    position.x = 100.0f;
+    position.z = 100.0f;
+    add_float_body(runtime, 401, position);
+
+    MidBatchPublication publication{slot, identity_a, identity_b};
+    detail::RiverRuntimeBindingAccess::set_publish_test_hook(
+        slot, &signal_publication_write_attempt, &publication);
+    auto& context = physics::detail::context(runtime.world());
+    context.set_guarded_batch_post_first_row_hook_for_test(
+        &publication, &attempt_publication_after_first_row);
+    std::thread publisher([&] {
+        while (!publication.first_row.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        detail::RiverRuntimeBindingAccess::publish(slot, identity_b);
+        publication.published.store(true, std::memory_order_release);
+    });
+    fixed_tick(runtime);
+    publisher.join();
+    detail::RiverRuntimeBindingAccess::set_publish_test_hook(
+        slot, nullptr, nullptr);
+    context.set_guarded_batch_post_first_row_hook_for_test(nullptr, nullptr);
+
+    CHECK(publication.hook_calls == 1 &&
+              publication.attempt_started.load(std::memory_order_acquire) &&
+              !publication.b_visible_during_batch &&
+              !publication.publish_completed_during_batch &&
+              publication.published.load(std::memory_order_acquire) &&
+              detail::RiverRuntimeBindingAccess::load(slot) == identity_b,
+          "B cannot publish between guarded A rows and becomes visible after the batch");
+    const std::size_t applied_rows = force_at_point_trace_count(runtime.world());
+    CHECK(applied_rows == 4,
+          "the entire four-row A force batch applies and traces before B publishes");
 }
 
 enum class RecordedPhase { Reconcile, Float, Push, Physics, Pull };
@@ -1092,6 +1179,7 @@ int main() {
     test_legacy_makefile_river_float_source_closures();
     test_invalid_disable_generation_and_dry_ruling();
     test_post_kernel_publication_swap_guards_queued_forces();
+    test_publication_waits_for_entire_guarded_force_batch();
     test_exact_fixed_phase_order();
     test_snapshot_replay_restores_all_float_state();
     test_steady_state_has_zero_observed_allocations();

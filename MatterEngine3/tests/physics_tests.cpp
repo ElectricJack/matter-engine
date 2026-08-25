@@ -1906,9 +1906,24 @@ void test_force_at_world_point_queue_is_bounded_and_ordered() {
           "bounded force-at-point queue drains every admitted row in exact order");
 }
 
-bool accept_guard_owner(
+struct GuardProbe {
+    mutable std::uint32_t begin_calls = 0;
+    mutable std::uint32_t end_calls = 0;
+    bool accept = true;
+};
+
+bool begin_guard_owner(
     const std::shared_ptr<const void>& owner) noexcept {
-    return owner != nullptr;
+    const auto* probe = static_cast<const GuardProbe*>(owner.get());
+    if (probe == nullptr) return false;
+    ++probe->begin_calls;
+    return probe->accept;
+}
+
+void end_guard_owner(
+    const std::shared_ptr<const void>& owner) noexcept {
+    const auto* probe = static_cast<const GuardProbe*>(owner.get());
+    if (probe != nullptr) ++probe->end_calls;
 }
 
 void test_guarded_force_batch_rejects_capacity_atomically() {
@@ -1945,14 +1960,16 @@ void test_guarded_force_batch_rejects_capacity_atomically() {
     const std::array<physics::detail::GuardedForceAtWorldPoint, 2> guarded{{
         {{10.0f, 0.0f, 0.0f}, {9001.0f, 0.0f, 0.0f}},
         {{20.0f, 0.0f, 0.0f}, {9002.0f, 0.0f, 0.0f}}}};
-    const std::shared_ptr<const void> owner = std::make_shared<const int>(7);
+    const auto probe = std::make_shared<GuardProbe>();
+    const std::shared_ptr<const void> owner = probe;
     const std::uint64_t failed_before =
         physics::physics_stats(world).failed_commands;
     CHECK(!physics::detail::physics_apply_guarded_force_at_world_points(
-              entity, guarded.data(), guarded.size(), owner,
-              &accept_guard_owner) &&
-              physics::physics_stats(world).failed_commands ==
-                  failed_before + 1,
+               entity, guarded.data(), guarded.size(), owner,
+               &begin_guard_owner, &end_guard_owner) &&
+               physics::physics_stats(world).failed_commands ==
+                   failed_before + 1 && probe->begin_calls == 0 &&
+               probe->end_calls == 0,
           "two-row guarded batch is rejected once when only one queue slot remains");
 
     runtime.tick({0.01f, 0.01f, 1});
@@ -1964,6 +1981,50 @@ void test_guarded_force_batch_rejects_capacity_atomically() {
     }
     CHECK(no_partial_guarded_row,
           "capacity failure admits none of a guarded body's force rows");
+}
+
+void test_guarded_force_batch_rejects_once_and_preserves_ordinary_order() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{}, 1});
+    flecs::entity entity = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.01f, 0.01f, 1});
+
+    const auto probe = std::make_shared<GuardProbe>();
+    probe->accept = false;
+    const std::shared_ptr<const void> owner = probe;
+    const std::array<physics::detail::GuardedForceAtWorldPoint, 2> guarded{{
+        {{10.0f, 0.0f, 0.0f}, {9001.0f, 0.0f, 0.0f}},
+        {{20.0f, 0.0f, 0.0f}, {9002.0f, 0.0f, 0.0f}}}};
+    const std::uint64_t failed_before =
+        physics::physics_stats(world).failed_commands;
+    CHECK(physics::physics_apply_force_at_world_point(
+              entity, {1.0f, 0.0f, 0.0f}, {101.0f, 0.0f, 0.0f}) &&
+              physics::detail::physics_apply_guarded_force_at_world_points(
+                  entity, guarded.data(), guarded.size(), owner,
+                  &begin_guard_owner, &end_guard_owner) &&
+              physics::physics_apply_force_at_world_point(
+                  entity, {2.0f, 0.0f, 0.0f}, {102.0f, 0.0f, 0.0f}) &&
+              physics::physics_apply_force(
+                  entity, {3.0f, 0.0f, 0.0f}),
+          "ordinary and guarded force rows enqueue together");
+
+    runtime.tick({0.01f, 0.01f, 1});
+    const auto& trace = physics::detail::context(world).last_command_trace();
+    CHECK(probe->begin_calls == 1 && probe->end_calls == 0 &&
+              physics::physics_stats(world).failed_commands ==
+                  failed_before + 1,
+          "one rejected guarded batch validates and fails exactly once");
+    CHECK(trace.size() == 3 &&
+              trace[0].kind == physics::detail::PhysicsCommandKind::Force &&
+              trace[1].kind ==
+                  physics::detail::PhysicsCommandKind::ForceAtPoint &&
+              trace[1].secondary.x == 101.0f &&
+              trace[2].kind ==
+                  physics::detail::PhysicsCommandKind::ForceAtPoint &&
+              trace[2].secondary.x == 102.0f,
+          "rejected guarded batch leaves ordinary force ordering unchanged");
 }
 
 void test_command_admission_rejects_invalid_entities_and_numbers() {
@@ -2553,6 +2614,7 @@ int main() {
     test_force_at_world_point_rejects_invalid_inputs_without_mutation();
     test_force_at_world_point_queue_is_bounded_and_ordered();
     test_guarded_force_batch_rejects_capacity_atomically();
+    test_guarded_force_batch_rejects_once_and_preserves_ordinary_order();
     test_command_admission_rejects_invalid_entities_and_numbers();
     test_staged_and_cross_runtime_commands_keep_real_world_identity();
     test_sleeping_teleport_only_pulls_into_ecs_after_next_step();

@@ -45,8 +45,11 @@ struct GuardedForceAtWorldPoint {
     Float3 world_point{};
 };
 
-using PhysicsCommandValidator = bool (*)(
+using PhysicsCommandGuardBegin = bool (*)(
     const std::shared_ptr<const void>&) noexcept;
+using PhysicsCommandGuardEnd = void (*)(
+    const std::shared_ptr<const void>&) noexcept;
+using GuardedBatchPostFirstRowHook = void (*)(void*) noexcept;
 
 class PhysicsContext {
 public:
@@ -98,8 +101,9 @@ public:
         flecs::entity_t entity,
         const GuardedForceAtWorldPoint* rows,
         std::size_t count,
-        const std::shared_ptr<const void>& validation_owner,
-        PhysicsCommandValidator validator) noexcept;
+        const std::shared_ptr<const void>& guard_owner,
+        PhysicsCommandGuardBegin guard_begin,
+        PhysicsCommandGuardEnd guard_end) noexcept;
     bool enqueue_impulse(
         const flecs::world_t* originating_world,
         flecs::entity_t entity,
@@ -148,6 +152,8 @@ public:
     uint64_t ray_query_candidate_attempts_for_test() const noexcept;
     uint64_t overlap_query_candidate_attempts_for_test() const noexcept;
     void set_stepping_for_test(bool stepping) noexcept;
+    void set_guarded_batch_post_first_row_hook_for_test(
+        void* context, GuardedBatchPostFirstRowHook hook) noexcept;
 
 private:
     void capture_events(flecs::world& world);
@@ -171,7 +177,8 @@ bool physics_apply_guarded_force_at_world_points(
     flecs::entity entity,
     const GuardedForceAtWorldPoint* rows,
     std::size_t count,
-    const std::shared_ptr<const void>& validation_owner,
-    PhysicsCommandValidator validator) noexcept;
+    const std::shared_ptr<const void>& guard_owner,
+    PhysicsCommandGuardBegin guard_begin,
+    PhysicsCommandGuardEnd guard_end) noexcept;
 
 } // namespace matter::physics::detail

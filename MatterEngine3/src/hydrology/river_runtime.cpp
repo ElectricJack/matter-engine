@@ -4,6 +4,7 @@
 #include "hydrology/river_presentation_field.h"
 
 #include <cmath>
+#include <mutex>
 #include <utility>
 
 namespace matter {
@@ -217,9 +218,17 @@ void detail::RiverRuntimeBindingAccess::publish(
     const std::shared_ptr<detail::RiverRuntimePublicationSlot>& slot,
     std::shared_ptr<const detail::RiverRuntimePublicationIdentity> identity)
     noexcept {
-    if (slot)
+    if (!slot) return;
+    const auto hook = slot->publish_test_hook.load(std::memory_order_acquire);
+    void* const hook_context =
+        slot->publish_test_context.load(std::memory_order_acquire);
+    if (hook != nullptr) hook(hook_context);
+    try {
+        std::unique_lock<std::shared_mutex> lock(slot->publication_mutex);
         std::atomic_store_explicit(&slot->current, std::move(identity),
                                    std::memory_order_release);
+    } catch (...) {
+    }
 }
 
 std::shared_ptr<const detail::RiverRuntimePublicationIdentity>
@@ -247,6 +256,27 @@ bool detail::RiverRuntimeBindingAccess::is_current(
     return identity && load(binding.storage_->slot) == identity;
 }
 
+bool detail::RiverRuntimeBindingAccess::begin_current_use(
+    const RiverRuntimeBinding& binding) noexcept {
+    if (!binding.storage_ || !binding.storage_->slot) return false;
+    const auto& slot = binding.storage_->slot;
+    try {
+        std::shared_lock<std::shared_mutex> lock(slot->publication_mutex);
+        const auto identity = binding.storage_->identity.lock();
+        if (!identity || load(slot) != identity) return false;
+        (void)lock.release();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void detail::RiverRuntimeBindingAccess::end_current_use(
+    const RiverRuntimeBinding& binding) noexcept {
+    if (binding.storage_ && binding.storage_->slot)
+        binding.storage_->slot->publication_mutex.unlock_shared();
+}
+
 void detail::RiverRuntimeBindingAccess::set_batch_test_hook(
     const std::shared_ptr<detail::RiverRuntimePublicationSlot>& slot,
     detail::RiverRuntimePublicationSlot::BatchTestHook hook,
@@ -254,6 +284,15 @@ void detail::RiverRuntimeBindingAccess::set_batch_test_hook(
     if (!slot) return;
     slot->batch_test_context.store(context, std::memory_order_release);
     slot->batch_test_hook.store(hook, std::memory_order_release);
+}
+
+void detail::RiverRuntimeBindingAccess::set_publish_test_hook(
+    const std::shared_ptr<detail::RiverRuntimePublicationSlot>& slot,
+    detail::RiverRuntimePublicationSlot::PublishTestHook hook,
+    void* context) noexcept {
+    if (!slot) return;
+    slot->publish_test_context.store(context, std::memory_order_release);
+    slot->publish_test_hook.store(hook, std::memory_order_release);
 }
 
 }  // namespace matter

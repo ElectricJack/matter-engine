@@ -71,8 +71,12 @@ struct QueuedCommand {
     Float3 primary{};
     Float3 secondary{};
     Quaternion rotation{};
-    std::shared_ptr<const void> validation_owner;
-    PhysicsCommandValidator validator = nullptr;
+    std::shared_ptr<const void> guard_owner;
+    PhysicsCommandGuardBegin guard_begin = nullptr;
+    PhysicsCommandGuardEnd guard_end = nullptr;
+    std::uint64_t guarded_batch_id = 0;
+    std::size_t guarded_batch_count = 0;
+    std::size_t guarded_batch_index = 0;
 };
 
 struct QueuedCommandHash {
@@ -287,6 +291,9 @@ struct PhysicsContext::Impl {
     flecs::entity_t tombstoned_query_participant_for_test = 0;
     flecs::entity_t duplicate_overlap_participant_for_test = 0;
     bool fail_next_reconcile_mark_for_test = false;
+    std::uint64_t next_guarded_batch_id = 1;
+    void* guarded_batch_hook_context = nullptr;
+    GuardedBatchPostFirstRowHook guarded_batch_post_first_row_hook = nullptr;
     bool full_reconcile_required = false;
     uint64_t physics_transform_marker_allocations_for_test = 0;
     uint64_t ray_query_candidate_attempts_for_test = 0;
@@ -719,10 +726,11 @@ bool PhysicsContext::enqueue_guarded_force_at_world_points(
     flecs::entity_t entity,
     const GuardedForceAtWorldPoint* rows,
     std::size_t count,
-    const std::shared_ptr<const void>& validation_owner,
-    PhysicsCommandValidator validator) noexcept {
+    const std::shared_ptr<const void>& guard_owner,
+    PhysicsCommandGuardBegin guard_begin,
+    PhysicsCommandGuardEnd guard_end) noexcept {
     if (impl_ == nullptr || rows == nullptr || count == 0 ||
-        !validation_owner || validator == nullptr ||
+        !guard_owner || guard_begin == nullptr || guard_end == nullptr ||
         !can_enqueue_command(
             impl_->bridges, this, originating_world, entity)) {
         return false;
@@ -738,13 +746,23 @@ bool PhysicsContext::enqueue_guarded_force_at_world_points(
             return false;
         }
         const std::size_t initial_size = impl_->forces.size();
+        std::uint64_t batch_id = impl_->next_guarded_batch_id++;
+        if (batch_id == 0) batch_id = impl_->next_guarded_batch_id++;
         try {
             for (std::size_t index = 0; index < count; ++index) {
-                impl_->forces.push_back({
+                QueuedCommand command{
                     originating_world, entity,
                     PhysicsCommandKind::ForceAtPoint,
-                    rows[index].force, rows[index].world_point, {},
-                    validation_owner, validator});
+                    rows[index].force, rows[index].world_point, {}};
+                command.guarded_batch_id = batch_id;
+                command.guarded_batch_count = count;
+                command.guarded_batch_index = index;
+                if (index == 0) {
+                    command.guard_owner = guard_owner;
+                    command.guard_begin = guard_begin;
+                    command.guard_end = guard_end;
+                }
+                impl_->forces.push_back(std::move(command));
             }
         } catch (...) {
             impl_->forces.resize(initial_size);
@@ -1033,10 +1051,7 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     auto apply_command = [&](const QueuedCommand& command) {
         BridgeRecord* bridge = validate_queued_command(
             command, runtime_world, world, impl_->bridges);
-        if (bridge == nullptr ||
-            (command.validator != nullptr &&
-             (!command.validation_owner ||
-              !command.validator(command.validation_owner)))) {
+        if (bridge == nullptr) {
             ++stats_.failed_commands;
             return;
         }
@@ -1085,10 +1100,66 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
             apply_command(command);
         }
     }
-    for (const QueuedCommand& command : impl_->force_drain_buffer) {
-        if (command.kind == PhysicsCommandKind::ForceAtPoint) {
-            apply_command(command);
+    for (std::size_t index = 0;
+         index < impl_->force_drain_buffer.size();) {
+        const QueuedCommand& command = impl_->force_drain_buffer[index];
+        if (command.kind != PhysicsCommandKind::ForceAtPoint) {
+            ++index;
+            continue;
         }
+        if (command.guarded_batch_id == 0) {
+            apply_command(command);
+            ++index;
+            continue;
+        }
+
+        const std::size_t count = command.guarded_batch_count;
+        bool structurally_valid = command.guarded_batch_index == 0 &&
+            count != 0 && count <= impl_->force_drain_buffer.size() - index &&
+            command.guard_owner && command.guard_begin != nullptr &&
+            command.guard_end != nullptr;
+        for (std::size_t offset = 0; structurally_valid && offset < count;
+             ++offset) {
+            const QueuedCommand& row =
+                impl_->force_drain_buffer[index + offset];
+            structurally_valid =
+                row.kind == PhysicsCommandKind::ForceAtPoint &&
+                row.originating_world == command.originating_world &&
+                row.entity == command.entity &&
+                row.guarded_batch_id == command.guarded_batch_id &&
+                row.guarded_batch_count == count &&
+                row.guarded_batch_index == offset;
+        }
+        BridgeRecord* bridge = structurally_valid
+            ? validate_queued_command(
+                  command, runtime_world, world, impl_->bridges)
+            : nullptr;
+        if (bridge == nullptr ||
+            !command.guard_begin(command.guard_owner)) {
+            ++stats_.failed_commands;
+            index += structurally_valid ? count : 1;
+            continue;
+        }
+        struct GuardScope {
+            const QueuedCommand& command;
+            ~GuardScope() noexcept {
+                command.guard_end(command.guard_owner);
+            }
+        } guard{command};
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            const QueuedCommand& row =
+                impl_->force_drain_buffer[index + offset];
+            b3Body_ApplyForce(
+                bridge->body, box_vector(row.primary),
+                box_position(row.secondary), true);
+            impl_->last_command_trace.push_back(trace_entry(row));
+            if (offset == 0 &&
+                impl_->guarded_batch_post_first_row_hook != nullptr) {
+                impl_->guarded_batch_post_first_row_hook(
+                    impl_->guarded_batch_hook_context);
+            }
+        }
+        index += count;
     }
     for (const QueuedCommand& command : impulses) {
         apply_command(command);
@@ -1589,6 +1660,13 @@ void PhysicsContext::set_stepping_for_test(bool stepping) noexcept {
     }
 }
 
+void PhysicsContext::set_guarded_batch_post_first_row_hook_for_test(
+    void* context, GuardedBatchPostFirstRowHook hook) noexcept {
+    if (impl_ == nullptr) return;
+    impl_->guarded_batch_hook_context = context;
+    impl_->guarded_batch_post_first_row_hook = hook;
+}
+
 PhysicsContext& context(flecs::world& world) {
     const PhysicsContext* value = try_context(world);
     if (value == nullptr) {
@@ -1714,13 +1792,14 @@ bool physics_apply_guarded_force_at_world_points(
     flecs::entity entity,
     const GuardedForceAtWorldPoint* rows,
     std::size_t count,
-    const std::shared_ptr<const void>& validation_owner,
-    PhysicsCommandValidator validator) noexcept {
+    const std::shared_ptr<const void>& guard_owner,
+    PhysicsCommandGuardBegin guard_begin,
+    PhysicsCommandGuardEnd guard_end) noexcept {
     CommandTarget target;
     return resolve_command_target(entity, target) &&
            target.context->enqueue_guarded_force_at_world_points(
                target.originating_world, target.entity, rows, count,
-               validation_owner, validator);
+               guard_owner, guard_begin, guard_end);
 }
 
 } // namespace detail

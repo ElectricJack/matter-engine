@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <memory>
+#include <shared_mutex>
 
 namespace matter::detail {
 
@@ -12,10 +13,14 @@ struct RiverRuntimePublicationIdentity {};
 
 struct RiverRuntimePublicationSlot {
     using BatchTestHook = void (*)(void*) noexcept;
+    using PublishTestHook = void (*)(void*) noexcept;
 
     std::shared_ptr<const RiverRuntimePublicationIdentity> current;
+    std::shared_mutex publication_mutex;
     std::atomic<BatchTestHook> batch_test_hook{nullptr};
     std::atomic<void*> batch_test_context{nullptr};
+    std::atomic<PublishTestHook> publish_test_hook{nullptr};
+    std::atomic<void*> publish_test_context{nullptr};
 };
 
 struct RiverRuntimeBuildInput {
@@ -42,9 +47,15 @@ public:
         const std::shared_ptr<const RiverRuntimePublicationIdentity>& identity)
         noexcept;
     static bool is_current(const RiverRuntimeBinding& binding) noexcept;
+    static bool begin_current_use(const RiverRuntimeBinding& binding) noexcept;
+    static void end_current_use(const RiverRuntimeBinding& binding) noexcept;
     static void set_batch_test_hook(
         const std::shared_ptr<RiverRuntimePublicationSlot>& slot,
         RiverRuntimePublicationSlot::BatchTestHook hook,
+        void* context) noexcept;
+    static void set_publish_test_hook(
+        const std::shared_ptr<RiverRuntimePublicationSlot>& slot,
+        RiverRuntimePublicationSlot::PublishTestHook hook,
         void* context) noexcept;
 };
 

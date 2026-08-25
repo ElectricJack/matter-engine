@@ -237,12 +237,20 @@ RiverSampleStatus production_sample(const void* opaque, Float3 position,
     return RiverSampleStatus::Dry;
 }
 
-bool current_runtime_binding_owner(
+bool begin_current_runtime_binding_owner(
     const std::shared_ptr<const void>& owner) noexcept {
     const auto* binding =
         static_cast<const RiverRuntimeBinding*>(owner.get());
     return binding != nullptr &&
-           detail::RiverRuntimeBindingAccess::is_current(*binding);
+           detail::RiverRuntimeBindingAccess::begin_current_use(*binding);
+}
+
+void end_current_runtime_binding_owner(
+    const std::shared_ptr<const void>& owner) noexcept {
+    const auto* binding =
+        static_cast<const RiverRuntimeBinding*>(owner.get());
+    if (binding != nullptr)
+        detail::RiverRuntimeBindingAccess::end_current_use(*binding);
 }
 
 int compare_entity_ids(flecs::entity_t first, const void*,
@@ -811,7 +819,9 @@ void register_river_float_systems(flecs::world& world) {
                             valid = physics::detail::
                                 physics_apply_guarded_force_at_world_points(
                                     entity, guarded.data(), forces.count,
-                                    owner, &current_runtime_binding_owner);
+                                    owner,
+                                    &begin_current_runtime_binding_owner,
+                                    &end_current_runtime_binding_owner);
                         } else {
                             valid = false;
                         }
