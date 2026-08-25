@@ -256,6 +256,8 @@ if(BUILD_TESTING)
 
     matter_add_engine_cpu_test(world_definition_tests
         MatterEngine3/tests/world_definition_tests.cpp)
+    matter_add_engine_cpu_test(terrain_collision_definition_tests
+        MatterEngine3/tests/terrain_collision_definition_tests.cpp)
     matter_add_engine_cpu_test(shared_lib_tests
         MatterEngine3/tests/shared_lib_tests.cpp)
     matter_add_engine_cpu_test(river_network_tests

@@ -1154,6 +1154,15 @@ WORLD_DEFINITION_CPP = world_definition_tests.cpp \
 # registry, so the registry TU joins this otherwise QuickJS-only link.
 WORLD_DEFINITION_C   = $(MSL)/material_registry.c
 
+# Terrain collision definition canonicalization is provider-neutral and has no
+# renderer, physics, or QuickJS dependency. This rollback-only target is kept
+# registered for source-closure parity; the MSVC CMake target is authoritative.
+TERRAIN_COLLISION_DEFINITION_TARGET = build/terrain_collision_definition_tests
+TERRAIN_COLLISION_DEFINITION_CPP = terrain_collision_definition_tests.cpp \
+                                   ../src/terrain_collision/terrain_collision_definition.cpp
+TERRAIN_COLLISION_DEFINITION_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_DEFINITION_CPP))
+$(eval $(call objrule_cpp,def,terrain_collision_definition_tests.cpp))
+
 RIVER_NETWORK_TARGET = build/river_network_tests
 RIVER_NETWORK_CPP = river_network_tests.cpp \
                     ../src/hydrology/river_network_builder.cpp
@@ -2176,6 +2185,9 @@ $(CAVERNPROBE_TARGET): $(CAVERNPROBE_OBJS)
 
 $(WORLD_DEFINITION_TARGET): $(WORLD_DEFINITION_OBJS)
 	$(CC) $(WORLD_DEFINITION_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
+
+$(TERRAIN_COLLISION_DEFINITION_TARGET): $(TERRAIN_COLLISION_DEFINITION_OBJS)
+	$(CC) $(TERRAIN_COLLISION_DEFINITION_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
 
 $(HYDROLOGY_SETTINGS_TARGET): $(HYDROLOGY_SETTINGS_OBJS)
 	$(CC) $(HYDROLOGY_SETTINGS_OBJS) -o $@ $(CFLAGS) -lm

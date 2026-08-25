@@ -294,6 +294,7 @@ struct ProviderWorldDefinition {
     matter::WorldSettings settings;
     std::optional<matter::HydrologyWorldSettings> hydrology;
     std::optional<matter::RiverNetworkDefinition> river_network;
+    std::optional<matter::TerrainCollisionDefinition> terrain_collision;
 };
 
 inline std::optional<matter::HydrologyWorldSettings>
@@ -304,6 +305,11 @@ adapt_hydrology_definition(const matter::WorldDefinition& definition) {
 inline std::optional<matter::RiverNetworkDefinition>
 adapt_river_network_definition(const matter::WorldDefinition& definition) {
     return definition.river_network;
+}
+
+inline std::optional<matter::TerrainCollisionDefinition>
+adapt_terrain_collision_definition(const matter::WorldDefinition& definition) {
+    return definition.terrain_collision;
 }
 
 struct ProceduralWorldProfile {
@@ -369,6 +375,7 @@ inline ProviderWorldDefinition adapt_world_definition(
     out.settings = definition.settings;
     out.hydrology = adapt_hydrology_definition(definition);
     out.river_network = adapt_river_network_definition(definition);
+    out.terrain_collision = adapt_terrain_collision_definition(definition);
     out.lights.sun_dir[0] = definition.settings.sun_direction.x;
     out.lights.sun_dir[1] = definition.settings.sun_direction.y;
     out.lights.sun_dir[2] = definition.settings.sun_direction.z;
@@ -581,6 +588,9 @@ public:
     const std::optional<matter::RiverNetworkDefinition>& river_network() const {
         return river_network_;
     }
+    const std::optional<matter::TerrainCollisionDefinition>& terrain_collision() const {
+        return terrain_collision_;
+    }
     // Build the canonical first-section geometry and its immutable terrain
     // overlay together. The provider owns the authored network; callers own
     // the resulting shared overlay and must pass that exact instance to the
@@ -653,6 +663,7 @@ private:
     std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
     std::optional<matter::HydrologyWorldSettings> hydrology_settings_;
     std::optional<matter::RiverNetworkDefinition> river_network_;
+    std::optional<matter::TerrainCollisionDefinition> terrain_collision_;
     std::vector<hydrology::AuthoredFluidCollider> authored_fluid_colliders_;
     std::optional<hydrology::HydrologyNetworkBakeResult>
         accepted_fluid_network_;

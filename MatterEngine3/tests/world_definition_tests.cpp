@@ -2682,6 +2682,128 @@ class LateRiverHandle extends World {
           "late handle misuse clears the partial world definition");
 }
 
+void test_world_loader_builds_terrain_collision_definition() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Collision.js", R"JS(
+class Collision extends World {
+  static settings = { sectorSize: 64 };
+  collision() {
+    if (this.worldSeed !== 77 || this.params.difficulty !== 3)
+      throw new Error('collision did not receive normal world state');
+    const collision = terrainCollision({ cellSize: 0.5, friction: 0.72, restitution: 0.02 });
+    collision.region('river-gameplay', { min: [-64, -64, -64], max: [128, 64, 64] });
+    collision.region('bank', { min: [128, -64, -64], max: [192, 64, 64] });
+    collision.build();
+    return { ignored: true };
+  }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.terrain_collision.has_value(),
+          "collision() publishes a completed terrain collision definition");
+    if (!definition.terrain_collision) return;
+    const auto& collision = *definition.terrain_collision;
+    CHECK(collision.cell_size_m == 0.5f && collision.rung == 2,
+          "collision cell size retains its exact terrain rung");
+    CHECK(collision.friction == 0.72f && collision.restitution == 0.02f,
+          "collision material values are retained");
+    CHECK(collision.regions.size() == 2 &&
+              collision.regions[0].id == "river-gameplay" &&
+              collision.regions[0].min_m.x == -64.0f &&
+              collision.regions[1].max_m.x == 192.0f,
+          "collision region labels and bounds are retained in authoring order");
+}
+
+void test_world_loader_omits_terrain_collision_without_changing_other_data() {
+    Fixture fixture;
+    const fs::path path = fixture.write("NoCollision.js", R"JS(
+class NoCollision extends World {
+  static settings = { sectorSize: 32, yMin: -12, yMax: 88 };
+  static roots = [{ module: 'Ground' }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(!definition.terrain_collision.has_value(),
+          "worlds without collision() retain an empty optional definition");
+    CHECK(definition.settings.sector_size == 32.0f && definition.roots.size() == 1,
+          "collision omission leaves ordinary world definition data unchanged");
+}
+
+void test_world_loader_rejects_terrain_collision_outside_collision_phase() {
+    const auto rejects = [](const char* filename, const std::string& source,
+                            const char* phase) {
+        Fixture fixture;
+        const fs::path path = fixture.write(filename, source);
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "terrainCollision outside collision() is rejected");
+        CHECK(error.message.find("only available inside collision()") != std::string::npos &&
+                  error.message.find(phase) != std::string::npos,
+              "terrainCollision phase diagnostics identify the active hook");
+    };
+    rejects("CollisionModule.js", R"JS(
+const bad = terrainCollision({ cellSize: 0.5 });
+class CollisionModule extends World {}
+)JS", "module");
+    rejects("CollisionHydrology.js", R"JS(
+class CollisionHydrology extends World { hydrology() { terrainCollision({ cellSize: 0.5 }); } }
+)JS", "hydrology");
+    rejects("CollisionEntities.js", R"JS(
+class CollisionEntities extends World { buildEntities() { terrainCollision({ cellSize: 0.5 }); } }
+)JS", "buildEntities");
+}
+
+void test_world_loader_rejects_invalid_terrain_collision_builder_lifecycle() {
+    const auto rejects = [](const char* filename, const std::string& body,
+                            const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            filename, "class Bad extends World { static settings = { sectorSize: 64 }; collision() { " +
+                body + " } }");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid terrain collision authoring is rejected");
+        CHECK(error.property_path.find(expected_path) != std::string::npos,
+              "terrain collision rejection identifies the failing builder field");
+    };
+    rejects("TwoBuilders.js", "terrainCollision({cellSize:0.5}); terrainCollision({cellSize:0.5});", "terrainCollision");
+    rejects("TwoBuilds.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[0,0,0],max:[64,64,64]}); c.build(); c.build();", "terrainCollision.build");
+    rejects("NoRegion.js", "terrainCollision({cellSize:0.5}).build();", "terrainCollision.build");
+    rejects("DuplicateRegion.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[0,0,0],max:[64,64,64]}); c.region('a',{min:[64,0,0],max:[128,64,64]}); c.build();", "terrainCollision.region");
+    rejects("LateRegion.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[0,0,0],max:[64,64,64]}); c.build(); c.region('b',{min:[64,0,0],max:[128,64,64]});", "terrainCollision.region");
+    rejects("NoBuild.js", "terrainCollision({cellSize:0.5});", "collision");
+    rejects("BadCell.js", "terrainCollision({cellSize:0.75});", "terrainCollision.cellSize");
+    rejects("BadMaterial.js", "terrainCollision({cellSize:0.5,friction:2});", "terrainCollision.friction");
+    rejects("BadVector.js", "terrainCollision({cellSize:0.5}).region('a',{min:[0,0],max:[64,64,64]});", "terrainCollision.region[a].min");
+    rejects("Misaligned.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[1,0,0],max:[64,64,64]}); c.build();", "terrainCollision.region[a].min");
+}
+
+void test_terrain_collision_adapter_preserves_optional_definition() {
+    matter::WorldDefinition source;
+    source.terrain_collision = matter::TerrainCollisionDefinition{};
+    source.terrain_collision->cell_size_m = 0.5f;
+    source.terrain_collision->rung = 2;
+    source.terrain_collision->regions.push_back(
+        {"adapter", {-64.0f, 0.0f, 0.0f}, {0.0f, 64.0f, 64.0f}});
+    const viewer::ProviderWorldDefinition adapted = viewer::adapt_world_definition(source);
+    CHECK(adapted.terrain_collision.has_value(),
+          "provider adapter preserves an authored terrain collision definition");
+    CHECK(adapted.terrain_collision && adapted.terrain_collision->rung == 2 &&
+              adapted.terrain_collision->regions[0].id == "adapter",
+          "provider adapter preserves terrain collision payload values exactly");
+    source.terrain_collision.reset();
+    CHECK(!viewer::adapt_world_definition(source).terrain_collision.has_value(),
+          "provider adapter retains collision omission as empty");
+}
+
 } // namespace
 
 int main() {
@@ -2746,5 +2868,10 @@ int main() {
     test_world_loader_rejects_module_scope_river_build();
     test_world_loader_rejects_build_entities_river_build();
     test_world_loader_closes_river_handles_after_hydrology();
+    test_world_loader_builds_terrain_collision_definition();
+    test_world_loader_omits_terrain_collision_without_changing_other_data();
+    test_world_loader_rejects_terrain_collision_outside_collision_phase();
+    test_world_loader_rejects_invalid_terrain_collision_builder_lifecycle();
+    test_terrain_collision_adapter_preserves_optional_definition();
     return check_summary();
 }

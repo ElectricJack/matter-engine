@@ -3,6 +3,7 @@
 
 #include "../hydrology/hydrology_settings.h"
 #include "../hydrology/river_network_builder.h"
+#include "../terrain_collision/terrain_collision_definition.h"
 #include "module_resolver.h"
 
 extern "C" {
@@ -313,6 +314,15 @@ struct LoadCollector {
     bool river_network_created = false;
     bool river_network_built = false;
     bool river_hydrology_active = false;
+    TerrainCollisionDefinition terrain_collision_settings{};
+    std::vector<TerrainCollisionRegion> terrain_collision_regions;
+    std::set<std::string> terrain_collision_ids;
+    std::string terrain_collision_error_path;
+    std::string terrain_collision_phase = "module scope";
+    float terrain_collision_sector_size_m = 0.0f;
+    bool terrain_collision_active = false;
+    bool terrain_collision_created = false;
+    bool terrain_collision_built = false;
 };
 
 struct RiverNetworkHandle {
@@ -382,6 +392,146 @@ JSValue river_phase_failure(JSContext* context, LoadCollector* collector) {
     return river_failure(
         context, collector,
         "hydrology.phase: river builders are only available inside hydrology()");
+}
+
+JSValue terrain_collision_failure(JSContext* context, LoadCollector* collector,
+                                  const std::string& path,
+                                  const std::string& message) {
+    if (collector) collector->terrain_collision_error_path = path;
+    return JS_ThrowTypeError(context, "%s", message.c_str());
+}
+
+JSValue terrain_collision_phase_failure(JSContext* context, LoadCollector* collector) {
+    const std::string phase = collector ? collector->terrain_collision_phase : "unknown";
+    return terrain_collision_failure(
+        context, collector, phase,
+        "terrainCollision() is only available inside collision(); active phase is " + phase);
+}
+
+bool terrain_collision_float3(JSContext* context, JSValueConst value, Float3& output) {
+    if (!float3_value(context, value, output)) return false;
+    return std::isfinite(output.x) && std::isfinite(output.y) && std::isfinite(output.z);
+}
+
+JSValue terrain_collision_region(JSContext* context, JSValueConst,
+                                 int argument_count, JSValueConst* arguments) {
+    LoadCollector* collector = static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector || !collector->terrain_collision_active)
+        return terrain_collision_phase_failure(context, collector);
+    if (collector->terrain_collision_built)
+        return terrain_collision_failure(context, collector, "terrainCollision.region",
+                                         "terrainCollision.region() cannot follow build()");
+    std::string id;
+    if (argument_count < 2 || !string_value(context, arguments[0], id) || id.empty()) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region.id",
+                                         "terrainCollision.region(id, bounds) requires a non-empty id");
+    }
+    if (!collector->terrain_collision_ids.insert(id).second) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region[" + id + "].id",
+                                         "terrainCollision.region ids must be unique");
+    }
+    if (!JS_IsObject(arguments[1]) || JS_IsArray(arguments[1])) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region[" + id + "]",
+                                         "terrainCollision.region(id, bounds) requires a bounds object");
+    }
+    Float3 min_m{};
+    Float3 max_m{};
+    JSValue min_value = JS_GetPropertyStr(context, arguments[1], "min");
+    const bool min_ok = terrain_collision_float3(context, min_value, min_m);
+    JS_FreeValue(context, min_value);
+    if (!min_ok) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region[" + id + "].min",
+                                         "terrainCollision.region[" + id + "].min must be three finite numbers");
+    }
+    JSValue max_value = JS_GetPropertyStr(context, arguments[1], "max");
+    const bool max_ok = terrain_collision_float3(context, max_value, max_m);
+    JS_FreeValue(context, max_value);
+    if (!max_ok) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region[" + id + "].max",
+                                         "terrainCollision.region[" + id + "].max must be three finite numbers");
+    }
+    collector->terrain_collision_regions.push_back({std::move(id), min_m, max_m});
+    return JS_UNDEFINED;
+}
+
+JSValue terrain_collision_build(JSContext* context, JSValueConst,
+                                int, JSValueConst*) {
+    LoadCollector* collector = static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector || !collector->terrain_collision_active)
+        return terrain_collision_phase_failure(context, collector);
+    if (collector->terrain_collision_built)
+        return terrain_collision_failure(context, collector, "terrainCollision.build",
+                                         "terrainCollision.build() may only be called once");
+    if (collector->terrain_collision_regions.empty())
+        return terrain_collision_failure(context, collector, "terrainCollision.build",
+                                         "terrainCollision.build() requires at least one region");
+    collector->terrain_collision_settings.regions = collector->terrain_collision_regions;
+    terrain_collision::CanonicalDefinition canonical;
+    std::string validation_error;
+    if (!terrain_collision::canonicalize(collector->terrain_collision_settings,
+                                         collector->terrain_collision_sector_size_m,
+                                         {}, canonical, validation_error)) {
+        const std::size_t separator = validation_error.find(' ');
+        const std::string path = separator == std::string::npos
+            ? "terrainCollision.build" : validation_error.substr(0, separator);
+        return terrain_collision_failure(context, collector, path, validation_error);
+    }
+    collector->terrain_collision_built = true;
+    return JS_UNDEFINED;
+}
+
+JSValue terrain_collision_builder(JSContext* context, JSValueConst,
+                                  int argument_count, JSValueConst* arguments) {
+    LoadCollector* collector = static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector || !collector->terrain_collision_active)
+        return terrain_collision_phase_failure(context, collector);
+    if (collector->terrain_collision_created)
+        return terrain_collision_failure(context, collector, "terrainCollision",
+                                         "terrainCollision() may create only one builder");
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) || JS_IsArray(arguments[0])) {
+        return terrain_collision_failure(context, collector, "terrainCollision",
+                                         "terrainCollision(options) requires an options object");
+    }
+    float cell_size_m = 0.0f;
+    JSValue cell_size = JS_GetPropertyStr(context, arguments[0], "cellSize");
+    const bool cell_ok = number_value(context, cell_size, cell_size_m) &&
+                         std::isfinite(cell_size_m);
+    JS_FreeValue(context, cell_size);
+    std::int8_t rung = 0;
+    if (!cell_ok || !terrain_collision::cell_size_to_rung(cell_size_m, rung)) {
+        return terrain_collision_failure(context, collector, "terrainCollision.cellSize",
+                                         "terrainCollision.cellSize must be one of the supported terrain rungs");
+    }
+    float friction = 0.7f;
+    float restitution = 0.0f;
+    JSValue friction_value = JS_GetPropertyStr(context, arguments[0], "friction");
+    const bool friction_ok = JS_IsUndefined(friction_value) ||
+                             (number_value(context, friction_value, friction) && std::isfinite(friction));
+    JS_FreeValue(context, friction_value);
+    JSValue restitution_value = JS_GetPropertyStr(context, arguments[0], "restitution");
+    const bool restitution_ok = JS_IsUndefined(restitution_value) ||
+                                (number_value(context, restitution_value, restitution) && std::isfinite(restitution));
+    JS_FreeValue(context, restitution_value);
+    if (!friction_ok || friction < 0.0f || friction > 1.0f) {
+        return terrain_collision_failure(context, collector, "terrainCollision.friction",
+                                         "terrainCollision.friction must be finite and in [0, 1]");
+    }
+    if (!restitution_ok || restitution < 0.0f || restitution > 1.0f) {
+        return terrain_collision_failure(context, collector, "terrainCollision.restitution",
+                                         "terrainCollision.restitution must be finite and in [0, 1]");
+    }
+    collector->terrain_collision_settings = {};
+    collector->terrain_collision_settings.cell_size_m = cell_size_m;
+    collector->terrain_collision_settings.rung = rung;
+    collector->terrain_collision_settings.friction = friction;
+    collector->terrain_collision_settings.restitution = restitution;
+    collector->terrain_collision_created = true;
+    JSValue object = JS_NewObject(context);
+    JS_SetPropertyStr(context, object, "region",
+                      JS_NewCFunction(context, terrain_collision_region, "region", 2));
+    JS_SetPropertyStr(context, object, "build",
+                      JS_NewCFunction(context, terrain_collision_build, "build", 0));
+    return object;
 }
 
 bool required_float(JSContext* context, JSValueConst object, const char* key,
@@ -3255,6 +3405,8 @@ class World {}
                       JS_NewCFunction(context, get_prop_too_early, "getProp", 1));
     JS_SetPropertyStr(context, global, "riverNetwork",
                       JS_NewCFunction(context, river_network, "riverNetwork", 1));
+    JS_SetPropertyStr(context, global, "terrainCollision",
+                      JS_NewCFunction(context, terrain_collision_builder, "terrainCollision", 1));
     JS_FreeValue(context, global);
 
     const std::string wrapped = source +
@@ -3274,7 +3426,9 @@ class World {}
         const std::string message = exception_message(context);
         JS_FreeValue(context, evaluated);
         cleanup();
-        return fail(desc, error, "source", message);
+        const std::string path = load_collector.terrain_collision_error_path.empty()
+            ? "source" : load_collector.terrain_collision_error_path;
+        return fail(desc, error, path, message);
     }
     JS_FreeValue(context, evaluated);
 
@@ -3412,6 +3566,7 @@ class World {}
                         "static World.hydrology and instance hydrology() are mutually exclusive");
         }
         load_collector.river_error_path.clear();
+        load_collector.terrain_collision_phase = "hydrology()";
         load_collector.river_hydrology_active = true;
         JSValue result = JS_Call(context, hydrology_method, instance, 0, nullptr);
         load_collector.river_hydrology_active = false;
@@ -3455,6 +3610,63 @@ class World {}
     }
     JS_FreeValue(context, hydrology_method);
 
+    JSValue collision_method = JS_GetPropertyStr(context, instance, "collision");
+    if (JS_IsException(collision_method)) {
+        const std::string message = exception_message(context);
+        definition = WorldDefinition{};
+        JS_FreeValue(context, collision_method);
+        JS_FreeValue(context, instance);
+        JS_FreeValue(context, canonicalizer);
+        JS_FreeValue(context, world_class);
+        cleanup();
+        return fail(desc, error, "collision", message);
+    }
+    if (!JS_IsUndefined(collision_method)) {
+        if (!JS_IsFunction(context, collision_method)) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, collision_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "collision",
+                        "World.collision must be a function when declared on an instance");
+        }
+        load_collector.terrain_collision_error_path.clear();
+        load_collector.terrain_collision_phase = "collision()";
+        load_collector.terrain_collision_sector_size_m = definition.settings.sector_size;
+        load_collector.terrain_collision_active = true;
+        JSValue result = JS_Call(context, collision_method, instance, 0, nullptr);
+        load_collector.terrain_collision_active = false;
+        if (JS_IsException(result)) {
+            const std::string message = exception_message(context);
+            const std::string path = load_collector.terrain_collision_error_path.empty()
+                ? "collision" : load_collector.terrain_collision_error_path;
+            definition = WorldDefinition{};
+            JS_FreeValue(context, result);
+            JS_FreeValue(context, collision_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, path, message);
+        }
+        JS_FreeValue(context, result);  // collision() return values are intentionally ignored.
+        if (!load_collector.terrain_collision_created ||
+            !load_collector.terrain_collision_built) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, collision_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "collision.build",
+                        "collision() must call exactly one terrainCollision(...).build()");
+        }
+        definition.terrain_collision = load_collector.terrain_collision_settings;
+    }
+    JS_FreeValue(context, collision_method);
+
     JSValue build = JS_GetPropertyStr(context, instance, "buildEntities");
     if (JS_IsException(build)) {
         const std::string message = exception_message(context);
@@ -3477,6 +3689,7 @@ class World {}
             return fail(desc, error, "buildEntities",
                         "World.buildEntities must be a function");
         }
+        load_collector.terrain_collision_phase = "buildEntities()";
         JSValue result = JS_Call(context, build, instance, 0, nullptr);
         if (JS_IsException(result)) {
             const std::string message = exception_message(context);

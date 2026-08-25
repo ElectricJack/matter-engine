@@ -7,6 +7,7 @@
 #include "math_types.h"
 #include "river_network.h"
 #include "sun_angles.h"
+#include "terrain_collision.h"
 #include "volumetric_quality.h"
 
 #include <cmath>
@@ -484,6 +485,7 @@ struct WorldDefinition {
     // the hydrology runtime owns its artifact lifecycle.
     std::optional<HydrologyWorldSettings> hydrology;
     std::optional<RiverNetworkDefinition> river_network;
+    std::optional<TerrainCollisionDefinition> terrain_collision;
 };
 
 struct WorldLoadDesc {
