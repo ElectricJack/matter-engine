@@ -1906,6 +1906,66 @@ void test_force_at_world_point_queue_is_bounded_and_ordered() {
           "bounded force-at-point queue drains every admitted row in exact order");
 }
 
+bool accept_guard_owner(
+    const std::shared_ptr<const void>& owner) noexcept {
+    return owner != nullptr;
+}
+
+void test_guarded_force_batch_rejects_capacity_atomically() {
+    constexpr std::size_t kOverflowProbeLimit = 8192;
+    std::size_t capacity = 0;
+    {
+        ecs_runtime::Runtime runtime;
+        flecs::world& world = runtime.world();
+        world.set<physics::PhysicsSettings>({{}, 1});
+        flecs::entity entity = make_sphere_body(
+            world, physics::RigidBodyType::Dynamic, {});
+        runtime.tick({0.01f, 0.01f, 1});
+        for (; capacity < kOverflowProbeLimit; ++capacity) {
+            if (!physics::physics_apply_force_at_world_point(
+                    entity, {}, {static_cast<float>(capacity), 0.0f, 0.0f}))
+                break;
+        }
+    }
+    CHECK(capacity > 1 && capacity < kOverflowProbeLimit,
+          "bounded force lane capacity can be characterized without assuming its size");
+    if (capacity <= 1 || capacity >= kOverflowProbeLimit) return;
+
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{}, 1});
+    flecs::entity entity = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.01f, 0.01f, 1});
+    for (std::size_t index = 0; index + 1 < capacity; ++index) {
+        CHECK(physics::physics_apply_force_at_world_point(
+                  entity, {}, {static_cast<float>(index), 0.0f, 0.0f}),
+              "near-capacity guarded-batch fixture fills ordinary rows");
+    }
+    const std::array<physics::detail::GuardedForceAtWorldPoint, 2> guarded{{
+        {{10.0f, 0.0f, 0.0f}, {9001.0f, 0.0f, 0.0f}},
+        {{20.0f, 0.0f, 0.0f}, {9002.0f, 0.0f, 0.0f}}}};
+    const std::shared_ptr<const void> owner = std::make_shared<const int>(7);
+    const std::uint64_t failed_before =
+        physics::physics_stats(world).failed_commands;
+    CHECK(!physics::detail::physics_apply_guarded_force_at_world_points(
+              entity, guarded.data(), guarded.size(), owner,
+              &accept_guard_owner) &&
+              physics::physics_stats(world).failed_commands ==
+                  failed_before + 1,
+          "two-row guarded batch is rejected once when only one queue slot remains");
+
+    runtime.tick({0.01f, 0.01f, 1});
+    const auto& trace = physics::detail::context(world).last_command_trace();
+    bool no_partial_guarded_row = trace.size() == capacity - 1;
+    for (const auto& row : trace) {
+        no_partial_guarded_row = no_partial_guarded_row &&
+            row.secondary.x != 9001.0f && row.secondary.x != 9002.0f;
+    }
+    CHECK(no_partial_guarded_row,
+          "capacity failure admits none of a guarded body's force rows");
+}
+
 void test_command_admission_rejects_invalid_entities_and_numbers() {
     flecs::world bare_world;
     CHECK(rejects_all_commands(bare_world.entity()),
@@ -2492,6 +2552,7 @@ int main() {
     test_force_at_world_point_produces_only_off_centre_torque_after_step();
     test_force_at_world_point_rejects_invalid_inputs_without_mutation();
     test_force_at_world_point_queue_is_bounded_and_ordered();
+    test_guarded_force_batch_rejects_capacity_atomically();
     test_command_admission_rejects_invalid_entities_and_numbers();
     test_staged_and_cross_runtime_commands_keep_real_world_identity();
     test_sleeping_teleport_only_pulls_into_ecs_after_next_step();

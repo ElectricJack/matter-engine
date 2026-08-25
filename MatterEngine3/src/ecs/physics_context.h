@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -38,6 +39,14 @@ struct PhysicsBodyState {
     Float3 angular_velocity{};
     bool awake = false;
 };
+
+struct GuardedForceAtWorldPoint {
+    Float3 force{};
+    Float3 world_point{};
+};
+
+using PhysicsCommandValidator = bool (*)(
+    const std::shared_ptr<const void>&) noexcept;
 
 class PhysicsContext {
 public:
@@ -84,6 +93,13 @@ public:
         flecs::entity_t entity,
         Float3 force,
         Float3 world_point) noexcept;
+    bool enqueue_guarded_force_at_world_points(
+        const flecs::world_t* originating_world,
+        flecs::entity_t entity,
+        const GuardedForceAtWorldPoint* rows,
+        std::size_t count,
+        const std::shared_ptr<const void>& validation_owner,
+        PhysicsCommandValidator validator) noexcept;
     bool enqueue_impulse(
         const flecs::world_t* originating_world,
         flecs::entity_t entity,
@@ -151,5 +167,11 @@ struct PhysicsContextRef {
 PhysicsContext& context(flecs::world& world);
 const PhysicsContext& context(const flecs::world& world);
 bool context_world_is_valid(const flecs::world& world);
+bool physics_apply_guarded_force_at_world_points(
+    flecs::entity entity,
+    const GuardedForceAtWorldPoint* rows,
+    std::size_t count,
+    const std::shared_ptr<const void>& validation_owner,
+    PhysicsCommandValidator validator) noexcept;
 
 } // namespace matter::physics::detail

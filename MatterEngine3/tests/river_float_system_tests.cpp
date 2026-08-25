@@ -1,7 +1,10 @@
 #include "check.h"
 #include "ecs/ecs_runtime.h"
+#include "ecs/physics_context.h"
 #include "ecs/river_float_system.h"
 #include "ecs/simulation_control.h"
+#include "hydrology/hydrology_handoff_products.h"
+#include "hydrology/river_runtime_internal.h"
 #include "matter/river_runtime.h"
 #include "matter/scene.h"
 
@@ -13,8 +16,14 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <new>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #include <malloc.h>
@@ -59,6 +68,11 @@ void box_test_free(void* value) { raw_aligned_free(value); }
 
 bool near(float actual, float expected, float tolerance = 1.0e-3f) {
     return std::fabs(actual - expected) <= tolerance;
+}
+
+bool near_relative(float actual, float expected, float relative = 2.0e-3f) {
+    return near(actual, expected,
+                std::max(1.0f, std::fabs(expected)) * relative);
 }
 
 float magnitude(Float3 value) {
@@ -121,6 +135,69 @@ RiverSampleFunction sampler(AnalyticField& field) {
     return {&field, &analytic_sample};
 }
 
+hydrology::HydrologyNetworkProducts accepted_products(float surface_y,
+                                                       float velocity_x) {
+    hydrology::HydrologyNetworkProducts products{};
+    products.gameplay_layout = {{-100.0f, 0.0f, -100.0f}, 200.0f, 2u, 2u};
+    for (auto& cell : products.gameplay_field =
+             std::vector<hydrology::GameplaySample>(4)) {
+        cell.height_m = surface_y;
+        cell.depth_m = 5.0f;
+        cell.velocity_x_mps = velocity_x;
+        cell.velocity_y_mps = 0.0f;
+        cell.velocity_z_mps = 0.0f;
+        cell.wet_valid = true;
+    }
+    for (auto& cell : products.presentation_field =
+             std::vector<hydrology::PresentationSample>(4)) {
+        cell.feature = hydrology::RiverFeature::Pool;
+        cell.wet_valid = true;
+    }
+    return products;
+}
+
+std::shared_ptr<const RiverRuntimeBinding> accepted_binding(
+    hydrology::HydrologyNetworkProducts& products, std::uint64_t generation,
+    const std::shared_ptr<detail::RiverRuntimePublicationSlot>& slot,
+    const std::shared_ptr<const detail::RiverRuntimePublicationIdentity>&
+        identity) {
+    const detail::RiverRuntimeBuildInput input{
+        generation,
+        hydrology::hydrology_runtime_field_digest(
+            products.gameplay_layout, products.gameplay_field),
+        hydrology::hydrology_presentation_field_digest(
+            products.gameplay_layout, products.presentation_field),
+        &products, slot, identity};
+    return detail::RiverRuntimeBindingAccess::build(input);
+}
+
+struct AcquiredBinding {
+    std::shared_ptr<const RiverRuntimeBinding> current;
+};
+
+std::shared_ptr<const RiverRuntimeBinding> acquire_binding(
+    const void* opaque) noexcept {
+    return static_cast<const AcquiredBinding*>(opaque)->current;
+}
+
+struct PostEnqueuePublication {
+    AcquiredBinding* acquired = nullptr;
+    std::shared_ptr<detail::RiverRuntimePublicationSlot> slot;
+    std::shared_ptr<const detail::RiverRuntimePublicationIdentity> identity;
+    std::shared_ptr<const RiverRuntimeBinding> binding;
+    bool commit = false;
+    std::uint32_t calls = 0;
+};
+
+void publish_after_float_enqueue(void* opaque) noexcept {
+    auto& publication = *static_cast<PostEnqueuePublication*>(opaque);
+    ++publication.calls;
+    if (!publication.commit) return;
+    detail::RiverRuntimeBindingAccess::publish(
+        publication.slot, publication.identity);
+    publication.acquired->current = publication.binding;
+}
+
 physics::BoxCollider box(float x, float y, float z, float density = 650.0f) {
     physics::BoxCollider value{};
     value.half_extents = {x * 0.5f, y * 0.5f, z * 0.5f};
@@ -138,6 +215,18 @@ RiverFloatBody settings(float density, std::uint8_t px,
     value.probe_inset = 0.0f;
     value.max_force_per_probe_n = 1.0e7f;
     value.max_total_force_n = 1.0e8f;
+    return value;
+}
+
+RiverFloatBody default_inset_settings(float density, std::uint8_t px,
+                                      std::uint8_t py, std::uint8_t pz) {
+    RiverFloatBody value{};
+    value.effective_density_kg_m3 = density;
+    value.probes_x = px;
+    value.probes_y = py;
+    value.probes_z = pz;
+    value.max_force_per_probe_n = 1.0e9f;
+    value.max_total_force_n = 1.0e10f;
     return value;
 }
 
@@ -201,9 +290,81 @@ void check_equilibrium(const physics::BoxCollider& collider,
 
 void test_cube_and_raft_equilibrium() {
     check_equilibrium(box(3.0f, 3.0f, 3.0f, 650.0f),
-                      settings(650.0f, 2, 1, 2), "3m crate kernel succeeds");
+                      default_inset_settings(650.0f, 2, 2, 2),
+                      "default-inset 3m crate kernel succeeds");
     check_equilibrium(box(4.8f, 0.7f, 3.0f, 420.0f),
-                      settings(420.0f, 3, 1, 3), "raft kernel succeeds");
+                      default_inset_settings(420.0f, 3, 2, 3),
+                      "default-inset raft kernel succeeds");
+}
+
+Float3 drag_at_resolution(std::uint8_t px, std::uint8_t py, std::uint8_t pz,
+                          Float3 current, Float3 body_velocity) {
+    AnalyticField field{};
+    field.surface_y = 100.0f;
+    field.velocity = current;
+    RiverFloatBody body = default_inset_settings(650.0f, px, py, pz);
+    body.buoyancy_response = 0.0f;
+    body.longitudinal_drag = 0.8f;
+    body.lateral_drag = 1.4f;
+    body.vertical_drag = 1.8f;
+    body.angular_damping = 0.0f;
+    physics::PhysicsVelocity velocity{};
+    velocity.linear = body_velocity;
+    RiverFloatForceBuffer output{};
+    RiverFloatDiagnostics diagnostics{};
+    CHECK(compute_river_float_forces(body, box(4.0f, 2.0f, 3.0f), {},
+                                     velocity, sampler(field), 9.81f,
+                                     output, diagnostics),
+          "resolution-invariance drag fixture succeeds");
+    return total_force(output);
+}
+
+float angular_torque_at_resolution(std::uint8_t px) {
+    AnalyticField field{};
+    field.surface_y = 100.0f;
+    RiverFloatBody body = default_inset_settings(650.0f, px, 2, 4);
+    body.buoyancy_response = 0.0f;
+    body.longitudinal_drag = body.lateral_drag = body.vertical_drag = 0.0f;
+    body.angular_damping = 0.8f;
+    physics::PhysicsVelocity velocity{};
+    velocity.angular = {0.0f, 2.0f, 0.0f};
+    RiverFloatForceBuffer output{};
+    RiverFloatDiagnostics diagnostics{};
+    CHECK(compute_river_float_forces(
+              body, box(1.0e-4f, 2.0f, 4.0f), {}, velocity,
+              sampler(field), 9.81f, output, diagnostics),
+          "resolution-invariance angular fixture succeeds");
+    return total_torque(output, {}).y;
+}
+
+void test_drag_and_angular_damping_are_lattice_resolution_invariant() {
+    const Float3 longitudinal_1 = drag_at_resolution(1, 2, 2, {5, 0, 0}, {});
+    const Float3 longitudinal_2 = drag_at_resolution(2, 2, 2, {5, 0, 0}, {});
+    const Float3 longitudinal_4 = drag_at_resolution(4, 2, 2, {5, 0, 0}, {});
+    CHECK(near_relative(longitudinal_2.x, longitudinal_1.x) &&
+              near_relative(longitudinal_4.x, longitudinal_1.x),
+          "longitudinal whole-collider drag is invariant at 1x/2x/4x resolution");
+
+    const Float3 lateral_1 = drag_at_resolution(2, 2, 1, {5, 0, 0}, {5, 0, -3});
+    const Float3 lateral_2 = drag_at_resolution(2, 2, 2, {5, 0, 0}, {5, 0, -3});
+    const Float3 lateral_4 = drag_at_resolution(2, 2, 4, {5, 0, 0}, {5, 0, -3});
+    CHECK(near_relative(lateral_2.z, lateral_1.z) &&
+              near_relative(lateral_4.z, lateral_1.z),
+          "lateral whole-collider drag is invariant at 1x/2x/4x resolution");
+
+    const Float3 vertical_1 = drag_at_resolution(2, 1, 2, {5, 0, 0}, {5, -3, 0});
+    const Float3 vertical_2 = drag_at_resolution(2, 2, 2, {5, 0, 0}, {5, -3, 0});
+    const Float3 vertical_4 = drag_at_resolution(2, 4, 2, {5, 0, 0}, {5, -3, 0});
+    CHECK(near_relative(vertical_2.y, vertical_1.y) &&
+              near_relative(vertical_4.y, vertical_1.y),
+          "vertical whole-collider drag is invariant at 1x/2x/4x resolution");
+
+    const float torque_1 = angular_torque_at_resolution(1);
+    const float torque_2 = angular_torque_at_resolution(2);
+    const float torque_4 = angular_torque_at_resolution(4);
+    CHECK(near_relative(torque_2, torque_1, 5.0e-3f) &&
+              near_relative(torque_4, torque_1, 5.0e-3f),
+          "angular damping torque is invariant at 1x/2x/4x relevant resolution");
 }
 
 void test_uniform_current_convergence() {
@@ -384,6 +545,135 @@ void test_nonfinite_inputs_fail_closed() {
     field.velocity = {std::numeric_limits<float>::max(), 0, 0};
     expect_invalid(body, collider, {}, {}, sampler(field), 9.81f,
                    "non-finite derived force fails closed");
+
+    field.velocity = {};
+    field.surface_y = std::numeric_limits<float>::max();
+    ecs::LocalTransform extreme_low{};
+    extreme_low.translation.y = -std::numeric_limits<float>::max();
+    expect_invalid(body, collider, extreme_low, {}, sampler(field), 9.81f,
+                   "FLT_MAX surface minus -FLT_MAX represented bottom fails closed");
+    field.surface_y = -std::numeric_limits<float>::max();
+    ecs::LocalTransform extreme_high{};
+    extreme_high.translation.y = std::numeric_limits<float>::max();
+    expect_invalid(body, collider, extreme_high, {}, sampler(field), 9.81f,
+                   "-FLT_MAX surface minus FLT_MAX represented bottom fails closed");
+}
+
+void test_quaternion_normalization_matches_physics_context() {
+    AnalyticField field{};
+    field.surface_y = 100.0f;
+    RiverFloatBody body = settings(650.0f, 1, 1, 1);
+    body.buoyancy_response = 1.0f;
+    physics::BoxCollider collider = box(1, 1, 1);
+    collider.center = {0.0f, 1.0f, 0.0f};
+    RiverFloatForceBuffer output{};
+    RiverFloatDiagnostics diagnostics{};
+
+    ecs::LocalTransform tiny{};
+    tiny.rotation = {1.0e-20f, 0.0f, 0.0f, 0.0f};
+    CHECK(compute_river_float_forces(body, collider, tiny, {}, sampler(field),
+                                     9.81f, output, diagnostics) &&
+              output.count == 1 && output.rows[0].world_point_m.y < -0.5f,
+          "tiny finite positive quaternion norm is normalized, not replaced by identity");
+
+    ecs::LocalTransform zero{};
+    zero.rotation = {0.0f, 0.0f, 0.0f, 0.0f};
+    CHECK(!compute_river_float_forces(body, collider, zero, {}, sampler(field),
+                                      9.81f, output, diagnostics) &&
+              diagnostics.hard_invalid && output.count == 0,
+          "exact zero quaternion is rejected like PhysicsContext");
+
+    ecs::LocalTransform huge{};
+    huge.rotation = {std::numeric_limits<float>::max(),
+                     std::numeric_limits<float>::max(), 0.0f, 0.0f};
+    CHECK(compute_river_float_forces(body, collider, huge, {}, sampler(field),
+                                     9.81f, output, diagnostics),
+          "finite FLT_MAX quaternion components normalize through checked double arithmetic");
+
+    ecs::LocalTransform inverse_overflow{};
+    inverse_overflow.rotation = {
+        std::numeric_limits<float>::denorm_min(), 0.0f, 0.0f, 0.0f};
+    CHECK(!compute_river_float_forces(
+              body, collider, inverse_overflow, {}, sampler(field), 9.81f,
+              output, diagnostics) && diagnostics.hard_invalid &&
+              output.count == 0,
+          "finite positive quaternion norm rejects when PhysicsContext's float inverse overflows");
+}
+
+std::string trim(std::string value) {
+    const std::size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    const std::size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+std::vector<std::pair<std::string, std::string>> makefile_assignments() {
+    const std::filesystem::path makefile =
+        std::filesystem::path(__FILE__).parent_path() / "Makefile";
+    std::ifstream input(makefile);
+    CHECK(input.good(), "legacy Makefile source-closure fixture opens");
+    std::vector<std::pair<std::string, std::string>> assignments;
+    std::string logical;
+    std::string line;
+    while (std::getline(input, line)) {
+        const bool continued = !line.empty() && line.back() == '\\';
+        if (continued) line.pop_back();
+        logical += line;
+        logical.push_back(' ');
+        if (continued) continue;
+        const std::size_t equals = logical.find('=');
+        if (equals != std::string::npos) {
+            std::string name = trim(logical.substr(0, equals));
+            if (!name.empty() && name.back() == '+') name.pop_back();
+            assignments.emplace_back(trim(name), trim(logical.substr(equals + 1)));
+        }
+        logical.clear();
+    }
+    return assignments;
+}
+
+void test_legacy_makefile_river_float_source_closures() {
+    const auto assignments = makefile_assignments();
+    const auto value_of = [&](std::string_view name) -> std::string {
+        for (const auto& assignment : assignments)
+            if (assignment.first == name) return assignment.second;
+        return {};
+    };
+    CHECK(value_of("RIVER_FLOAT_SYSTEM_CPP") ==
+              "../src/ecs/river_float_system.cpp",
+          "shared legacy river-float source dependency names exactly one implementation");
+
+    const std::array<std::string_view, 14> affected{
+        "ANIMATION_STORE_CPP", "ANIMATION_SYSTEMS_CPP",
+        "ANIMATION_SIMULATION_CPP", "ECS_CPP", "PHYSICS_CPP",
+        "RIVER_FLOAT_SYSTEM_TEST_CPP", "SCENE_REGISTRY_CPP",
+        "DYNAMIC_BRIDGE_CPP", "PROPERTIES_REGISTRY_CPP",
+        "SIMULATION_CONTROL_CPP", "SPECIALIZED_EDITORS_CPP",
+        "ECS_ENTITY_BRIDGE_CPP", "GPU_ALL_CPP", "PHYSICSEVENTS_CPP"};
+    for (std::string_view name : affected) {
+        const std::string value = value_of(name);
+        CHECK(!value.empty() &&
+                  value.find("$(RIVER_FLOAT_SYSTEM_CPP)") != std::string::npos,
+              "every enumerated legacy scene/physics target carries the shared river-float closure");
+    }
+
+    std::size_t direct_closure_count = 0;
+    for (const auto& assignment : assignments) {
+        if (assignment.first.size() < 4 ||
+            assignment.first.substr(assignment.first.size() - 4) != "_CPP")
+            continue;
+        if (assignment.second.find("../src/ecs/scene_registry.cpp") ==
+                std::string::npos &&
+            assignment.second.find("../src/ecs/physics_systems.cpp") ==
+                std::string::npos)
+            continue;
+        ++direct_closure_count;
+        CHECK(assignment.second.find("$(RIVER_FLOAT_SYSTEM_CPP)") !=
+                  std::string::npos,
+              "no direct legacy scene/physics source list omits river-float registration");
+    }
+    CHECK(direct_closure_count == affected.size(),
+          "legacy source-closure census enumerates every affected direct list");
 }
 
 flecs::entity add_float_body(ecs_runtime::Runtime& runtime, std::uint64_t id,
@@ -424,8 +714,9 @@ void test_invalid_disable_generation_and_dry_ruling() {
     fixed_tick(runtime);
     const RiverFloatState disabled = entity.get<RiverFloatState>();
     CHECK(disabled.disabled && disabled.diagnostic_emitted &&
-              disabled.consecutive_invalid == 8,
-          "eight consecutive hard-invalid ticks disable and diagnose once");
+              disabled.consecutive_invalid == 8 &&
+              disabled.diagnostic_identity == 101,
+          "eight consecutive hard-invalid ticks disable once using authored stable identity");
     fixed_tick(runtime);
     CHECK(entity.get<RiverFloatState>().diagnostic_emitted &&
               entity.get<RiverFloatState>().consecutive_invalid == 8,
@@ -447,6 +738,66 @@ void test_invalid_disable_generation_and_dry_ruling() {
               replaced.consecutive_invalid == 0 &&
               !replaced.diagnostic_emitted,
           "valid generation replacement clears private invalid history");
+
+    ecs_runtime::Runtime fallback_runtime;
+    install_test_binding(fallback_runtime.world(), 20, sampler(field));
+    field.mode = AnalyticField::Mode::Invalid;
+    flecs::entity fallback = fallback_runtime.world().entity();
+    fallback.set<ecs::LocalTransform>({});
+    fallback.set<physics::RigidBody>({physics::RigidBodyType::Dynamic});
+    fallback.set<physics::PhysicsVelocity>({});
+    fallback.set<physics::BoxCollider>(box(3, 3, 3, 650.0f));
+    fallback.set<RiverFloatBody>(settings(650.0f, 1, 1, 1));
+    for (int i = 0; i < 8; ++i) fixed_tick(fallback_runtime);
+    CHECK(fallback.get<RiverFloatState>().diagnostic_identity == fallback.id(),
+          "entities without authored identity use their live ECS id as documented fallback");
+}
+
+std::size_t force_at_point_trace_count(flecs::world& world) {
+    std::size_t count = 0;
+    for (const auto& row : physics::detail::context(world).last_command_trace())
+        if (row.kind == physics::detail::PhysicsCommandKind::ForceAtPoint)
+            ++count;
+    return count;
+}
+
+void test_post_kernel_publication_swap_guards_queued_forces() {
+    auto products_a = accepted_products(0.0f, 3.0f);
+    auto products_b = accepted_products(1.0f, -4.0f);
+    auto slot = std::make_shared<detail::RiverRuntimePublicationSlot>();
+    auto identity_a =
+        std::make_shared<detail::RiverRuntimePublicationIdentity>();
+    auto identity_b =
+        std::make_shared<detail::RiverRuntimePublicationIdentity>();
+    const auto binding_a = accepted_binding(products_a, 501, slot, identity_a);
+    const auto binding_b = accepted_binding(products_b, 502, slot, identity_b);
+    CHECK(binding_a && binding_b,
+          "publication-guard fixture builds two distinct accepted bindings");
+    if (!binding_a || !binding_b) return;
+
+    const auto run = [&](bool commit_replacement) {
+        ecs_runtime::Runtime runtime;
+        AcquiredBinding acquired{binding_a};
+        detail::RiverRuntimeBindingAccess::publish(slot, identity_a);
+        install_runtime_binding(runtime.world(), &acquired, &acquire_binding);
+        add_float_body(runtime, commit_replacement ? 301 : 302,
+                       equilibrium_transform(3.0f, 650.0f).translation);
+        PostEnqueuePublication publication{
+            &acquired, slot, identity_b, binding_b, commit_replacement};
+        install_post_enqueue_hook_for_test(
+            runtime.world(), {&publication, &publish_after_float_enqueue});
+        fixed_tick(runtime);
+        install_post_enqueue_hook_for_test(runtime.world(), {});
+        return std::pair<std::size_t, std::uint32_t>{
+            force_at_point_trace_count(runtime.world()), publication.calls};
+    };
+
+    const auto stale = run(true);
+    CHECK(stale.second == 1 && stale.first == 0,
+          "B publishing after A sampling but before Push drops every stale A force row");
+    const auto retained = run(false);
+    CHECK(retained.second == 1 && retained.first > 0,
+          "failed or cancelled B publication leaves every guarded A force row valid");
 }
 
 enum class RecordedPhase { Reconcile, Float, Push, Physics, Pull };
@@ -574,8 +925,20 @@ void test_steady_state_has_zero_observed_allocations() {
     b3SetAllocator(&box_test_allocate, &box_test_free);
     {
         ecs_runtime::Runtime runtime;
-        AnalyticField field{};
-        install_test_binding(runtime.world(), 77, sampler(field));
+        auto products = accepted_products(0.0f, 0.0f);
+        auto slot = std::make_shared<detail::RiverRuntimePublicationSlot>();
+        auto identity =
+            std::make_shared<detail::RiverRuntimePublicationIdentity>();
+        const auto binding = accepted_binding(products, 77, slot, identity);
+        CHECK(binding != nullptr,
+              "allocation gate builds a real accepted runtime binding");
+        if (!binding) {
+            b3SetAllocator(nullptr, nullptr);
+            return;
+        }
+        detail::RiverRuntimeBindingAccess::publish(slot, identity);
+        AcquiredBinding acquired{binding};
+        install_runtime_binding(runtime.world(), &acquired, &acquire_binding);
         for (std::uint64_t i = 0; i < 24; ++i) {
             const float x = static_cast<float>(i % 6) * 10.0f;
             const float z = static_cast<float>(i / 6) * 10.0f;
@@ -651,6 +1014,15 @@ void test_steady_state_has_zero_observed_allocations() {
                                  ecs_os_api_realloc_count - value.flecs_before;
         };
         install_measurement_hook(runtime.world(), {&measurement, begin, end});
+        const flecs::entity old_begin = runtime.world().lookup(
+            "matter::physics::MatterRiverFloatMeasurementBegin");
+        const flecs::entity old_end = runtime.world().lookup(
+            "matter::physics::MatterRiverFloatMeasurementEnd");
+        const flecs::entity real_system = runtime.world().lookup(
+            "matter::physics::MatterRiverFloatForces");
+        CHECK(!old_begin.is_alive() && !old_end.is_alive() &&
+                  real_system.is_alive(),
+              "allocation hook brackets inside the single real float-system callback");
         for (int i = 0; i < 1000; ++i) {
             const auto result = runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
             CHECK(result.fixed_steps == 1 && !result.invalid,
@@ -710,12 +1082,16 @@ void operator delete[](void* value, std::size_t, std::align_val_t alignment) noe
 int main() {
     test_authored_contract_validation();
     test_cube_and_raft_equilibrium();
+    test_drag_and_angular_damping_are_lattice_resolution_invariant();
     test_uniform_current_convergence();
     test_velocity_gradient_produces_signed_torque();
     test_anisotropic_drag_and_angular_damping();
     test_dry_waterfall_reentry_and_caps();
     test_nonfinite_inputs_fail_closed();
+    test_quaternion_normalization_matches_physics_context();
+    test_legacy_makefile_river_float_source_closures();
     test_invalid_disable_generation_and_dry_ruling();
+    test_post_kernel_publication_swap_guards_queued_forces();
     test_exact_fixed_phase_order();
     test_snapshot_replay_restores_all_float_state();
     test_steady_state_has_zero_observed_allocations();

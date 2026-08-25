@@ -1,6 +1,9 @@
 #include "river_float_system.h"
+#include "physics_context.h"
 
+#include "hydrology/river_runtime_internal.h"
 #include "matter/log.h"
+#include "matter/scene.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,6 +28,7 @@ struct RiverBindingState {
     std::uint64_t cached_generation = 0;
     bool test_mode = false;
     RiverFloatMeasurementHook measurement{};
+    RiverFloatPostEnqueueHook post_enqueue{};
 };
 
 struct ProductionSampleContext {
@@ -41,43 +45,115 @@ bool finite(Quaternion value) {
     return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w);
 }
 
-Float3 add(Float3 a, Float3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
-Float3 sub(Float3 a, Float3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-Float3 mul(Float3 value, float scalar) {
-    return {value.x * scalar, value.y * scalar, value.z * scalar};
-}
-float dot(Float3 a, Float3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
-Float3 cross(Float3 a, Float3 b) {
-    return {a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z,
-            a.x*b.y - a.y*b.x};
-}
-float length(Float3 value) { return std::sqrt(dot(value, value)); }
-
-bool normalize_quaternion(Quaternion value, Quaternion& output) {
-    const float squared = value.x*value.x + value.y*value.y +
-                          value.z*value.z + value.w*value.w;
-    if (!finite(squared)) return false;
-    if (squared <= kEpsilon*kEpsilon) {
-        output = {0, 0, 0, 1};
-        return true;
-    }
-    const float inverse = 1.0f / std::sqrt(squared);
-    output = {value.x*inverse, value.y*inverse, value.z*inverse, value.w*inverse};
+bool checked_float(double value, float& output) {
+    if (!std::isfinite(value) ||
+        value > static_cast<double>(std::numeric_limits<float>::max()) ||
+        value < -static_cast<double>(std::numeric_limits<float>::max()))
+        return false;
+    output = static_cast<float>(value);
     return finite(output);
 }
 
-Quaternion multiply(Quaternion a, Quaternion b) {
-    return {
-        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
-        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
+bool checked_add(Float3 first, Float3 second, Float3& output) {
+    return checked_float(static_cast<double>(first.x) + second.x, output.x) &&
+           checked_float(static_cast<double>(first.y) + second.y, output.y) &&
+           checked_float(static_cast<double>(first.z) + second.z, output.z);
 }
 
-Float3 rotate(Quaternion rotation, Float3 value) {
-    const Float3 q{rotation.x, rotation.y, rotation.z};
-    const Float3 t = mul(cross(q, value), 2.0f);
-    return add(value, add(mul(t, rotation.w), cross(q, t)));
+bool checked_sub(Float3 first, Float3 second, Float3& output) {
+    return checked_float(static_cast<double>(first.x) - second.x, output.x) &&
+           checked_float(static_cast<double>(first.y) - second.y, output.y) &&
+           checked_float(static_cast<double>(first.z) - second.z, output.z);
+}
+
+bool checked_mul(Float3 value, float scalar, Float3& output) {
+    return checked_float(static_cast<double>(value.x) * scalar, output.x) &&
+           checked_float(static_cast<double>(value.y) * scalar, output.y) &&
+           checked_float(static_cast<double>(value.z) * scalar, output.z);
+}
+
+bool checked_dot(Float3 first, Float3 second, float& output) {
+    return checked_float(
+        static_cast<double>(first.x) * second.x +
+        static_cast<double>(first.y) * second.y +
+        static_cast<double>(first.z) * second.z, output);
+}
+
+bool checked_cross(Float3 first, Float3 second, Float3& output) {
+    return checked_float(static_cast<double>(first.y) * second.z -
+                             static_cast<double>(first.z) * second.y,
+                         output.x) &&
+           checked_float(static_cast<double>(first.z) * second.x -
+                             static_cast<double>(first.x) * second.z,
+                         output.y) &&
+           checked_float(static_cast<double>(first.x) * second.y -
+                             static_cast<double>(first.y) * second.x,
+                         output.z);
+}
+
+bool checked_length(Float3 value, float& output) {
+    const double squared = static_cast<double>(value.x) * value.x +
+                           static_cast<double>(value.y) * value.y +
+                           static_cast<double>(value.z) * value.z;
+    return std::isfinite(squared) && squared >= 0.0 &&
+           checked_float(std::sqrt(squared), output);
+}
+
+bool normalize_quaternion(Quaternion value, Quaternion& output) {
+    const double squared = static_cast<double>(value.x) * value.x +
+                           static_cast<double>(value.y) * value.y +
+                           static_cast<double>(value.z) * value.z +
+                           static_cast<double>(value.w) * value.w;
+    if (!std::isfinite(squared) || squared <= 0.0) return false;
+    const float inverse =
+        static_cast<float>(1.0 / std::sqrt(squared));
+    if (!finite(inverse)) return false;
+    output = {value.x * inverse, value.y * inverse,
+              value.z * inverse, value.w * inverse};
+    return finite(output);
+}
+
+bool checked_multiply(Quaternion first, Quaternion second,
+                      Quaternion& output) {
+    return checked_float(
+               static_cast<double>(first.w) * second.x +
+                   static_cast<double>(first.x) * second.w +
+                   static_cast<double>(first.y) * second.z -
+                   static_cast<double>(first.z) * second.y,
+               output.x) &&
+           checked_float(
+               static_cast<double>(first.w) * second.y -
+                   static_cast<double>(first.x) * second.z +
+                   static_cast<double>(first.y) * second.w +
+                   static_cast<double>(first.z) * second.x,
+               output.y) &&
+           checked_float(
+               static_cast<double>(first.w) * second.z +
+                   static_cast<double>(first.x) * second.y -
+                   static_cast<double>(first.y) * second.x +
+                   static_cast<double>(first.z) * second.w,
+               output.z) &&
+           checked_float(
+               static_cast<double>(first.w) * second.w -
+                   static_cast<double>(first.x) * second.x -
+                   static_cast<double>(first.y) * second.y -
+                   static_cast<double>(first.z) * second.z,
+               output.w);
+}
+
+bool checked_rotate(Quaternion rotation, Float3 value, Float3& output) {
+    const Float3 vector{rotation.x, rotation.y, rotation.z};
+    Float3 crossed{};
+    Float3 twice{};
+    Float3 weighted{};
+    Float3 nested{};
+    Float3 correction{};
+    return checked_cross(vector, value, crossed) &&
+           checked_mul(crossed, 2.0f, twice) &&
+           checked_mul(twice, rotation.w, weighted) &&
+           checked_cross(vector, twice, nested) &&
+           checked_add(weighted, nested, correction) &&
+           checked_add(value, correction, output);
 }
 
 void hash_byte(std::uint64_t& hash, std::uint8_t value) {
@@ -102,23 +178,46 @@ void hash_float3(std::uint64_t& hash, Float3 value) {
     hash_float(hash, value.x); hash_float(hash, value.y); hash_float(hash, value.z);
 }
 
-float projected_area(Float3 direction, Quaternion orientation, Float3 dimensions) {
-    const Float3 x = rotate(orientation, {1, 0, 0});
-    const Float3 y = rotate(orientation, {0, 1, 0});
-    const Float3 z = rotate(orientation, {0, 0, 1});
-    return std::fabs(dot(direction, x)) * dimensions.y * dimensions.z +
-           std::fabs(dot(direction, y)) * dimensions.x * dimensions.z +
-           std::fabs(dot(direction, z)) * dimensions.x * dimensions.y;
+bool projected_area_per_probe(Float3 direction, Quaternion orientation,
+                              Float3 full_dimensions,
+                              std::uint32_t probe_count, float& output) {
+    Float3 x{}, y{}, z{};
+    float along_x = 0.0f, along_y = 0.0f, along_z = 0.0f;
+    if (probe_count == 0 ||
+        !checked_rotate(orientation, {1, 0, 0}, x) ||
+        !checked_rotate(orientation, {0, 1, 0}, y) ||
+        !checked_rotate(orientation, {0, 0, 1}, z) ||
+        !checked_dot(direction, x, along_x) ||
+        !checked_dot(direction, y, along_y) ||
+        !checked_dot(direction, z, along_z))
+        return false;
+    const double area =
+        (static_cast<double>(std::fabs(along_x)) * full_dimensions.y *
+             full_dimensions.z +
+         static_cast<double>(std::fabs(along_y)) * full_dimensions.x *
+             full_dimensions.z +
+         static_cast<double>(std::fabs(along_z)) * full_dimensions.x *
+             full_dimensions.y) /
+        static_cast<double>(probe_count);
+    return checked_float(area, output);
 }
 
-float projected_extent(Float3 direction, Quaternion orientation,
-                       Float3 dimensions) {
-    const Float3 x = rotate(orientation, {1, 0, 0});
-    const Float3 y = rotate(orientation, {0, 1, 0});
-    const Float3 z = rotate(orientation, {0, 0, 1});
-    return std::fabs(dot(direction, x)) * dimensions.x +
-           std::fabs(dot(direction, y)) * dimensions.y +
-           std::fabs(dot(direction, z)) * dimensions.z;
+bool projected_extent(Float3 direction, Quaternion orientation,
+                      Float3 dimensions, float& output) {
+    Float3 x{}, y{}, z{};
+    float along_x = 0.0f, along_y = 0.0f, along_z = 0.0f;
+    if (!checked_rotate(orientation, {1, 0, 0}, x) ||
+        !checked_rotate(orientation, {0, 1, 0}, y) ||
+        !checked_rotate(orientation, {0, 0, 1}, z) ||
+        !checked_dot(direction, x, along_x) ||
+        !checked_dot(direction, y, along_y) ||
+        !checked_dot(direction, z, along_z))
+        return false;
+    return checked_float(
+        static_cast<double>(std::fabs(along_x)) * dimensions.x +
+            static_cast<double>(std::fabs(along_y)) * dimensions.y +
+            static_cast<double>(std::fabs(along_z)) * dimensions.z,
+        output);
 }
 
 RiverSampleStatus production_sample(const void* opaque, Float3 position,
@@ -138,6 +237,14 @@ RiverSampleStatus production_sample(const void* opaque, Float3 position,
     return RiverSampleStatus::Dry;
 }
 
+bool current_runtime_binding_owner(
+    const std::shared_ptr<const void>& owner) noexcept {
+    const auto* binding =
+        static_cast<const RiverRuntimeBinding*>(owner.get());
+    return binding != nullptr &&
+           detail::RiverRuntimeBindingAccess::is_current(*binding);
+}
+
 int compare_entity_ids(flecs::entity_t first, const void*,
                        flecs::entity_t second, const void*) {
     return (first > second) - (first < second);
@@ -149,8 +256,16 @@ void mark_invalid(flecs::entity entity, RiverFloatState& state) {
     if (state.consecutive_invalid == 8) {
         state.disabled = true;
         if (!state.diagnostic_emitted) {
-            MATTER_LOGE("river-float", "disabled entity=%llu after 8 invalid ticks\n",
-                        static_cast<unsigned long long>(entity.id()));
+            const scene::SceneEntityId* authored =
+                entity.try_get<scene::SceneEntityId>();
+            // Runtime-only test/debug entities have no authored identity; the
+            // live ECS id is their only stable identity within this world.
+            state.diagnostic_identity = authored != nullptr && authored->value != 0
+                ? authored->value : entity.id();
+            MATTER_LOGE(
+                "river-float",
+                "disabled scene_entity=%llu after 8 invalid ticks\n",
+                static_cast<unsigned long long>(state.diagnostic_identity));
             state.diagnostic_emitted = true;
         }
     }
@@ -214,48 +329,86 @@ bool compute_river_float_forces(
         return false;
     }
 
-    const Float3 scaled_half{
-        box.half_extents.x * std::fabs(transform.scale.x),
-        box.half_extents.y * std::fabs(transform.scale.y),
-        box.half_extents.z * std::fabs(transform.scale.z)};
-    if (!finite(scaled_half)) {
+    Float3 scaled_half{};
+    if (!checked_float(static_cast<double>(box.half_extents.x) *
+                           std::fabs(transform.scale.x),
+                       scaled_half.x) ||
+        !checked_float(static_cast<double>(box.half_extents.y) *
+                           std::fabs(transform.scale.y),
+                       scaled_half.y) ||
+        !checked_float(static_cast<double>(box.half_extents.z) *
+                           std::fabs(transform.scale.z),
+                       scaled_half.z)) {
         diagnostics.hard_invalid = true;
         return false;
     }
     Quaternion body_orientation{};
     Quaternion collider_orientation{};
     Quaternion orientation{};
+    Quaternion combined_orientation{};
     if (!normalize_quaternion(transform.rotation, body_orientation) ||
         !normalize_quaternion(box.rotation, collider_orientation) ||
-        !normalize_quaternion(multiply(body_orientation, collider_orientation),
-                              orientation)) {
+        !checked_multiply(body_orientation, collider_orientation,
+                          combined_orientation) ||
+        !normalize_quaternion(combined_orientation, orientation)) {
         diagnostics.hard_invalid = true;
         return false;
     }
-    const Float3 scaled_center{box.center.x * transform.scale.x,
-                               box.center.y * transform.scale.y,
-                               box.center.z * transform.scale.z};
-    const Float3 centre = add(transform.translation,
-                              rotate(body_orientation, scaled_center));
-    const Float3 dimensions{2.0f * scaled_half.x / settings.probes_x,
-                            2.0f * scaled_half.y / settings.probes_y,
-                            2.0f * scaled_half.z / settings.probes_z};
-    const float represented_volume = dimensions.x * dimensions.y * dimensions.z *
-                                     settings.displaced_volume_scale;
-    const float total_volume = 8.0f * scaled_half.x * scaled_half.y * scaled_half.z;
-    diagnostics.reference_mass_kg = settings.effective_density_kg_m3 * total_volume *
-                                    settings.displaced_volume_scale;
+    Float3 scaled_center{};
+    Float3 rotated_center{};
+    Float3 centre{};
+    if (!checked_float(static_cast<double>(box.center.x) * transform.scale.x,
+                       scaled_center.x) ||
+        !checked_float(static_cast<double>(box.center.y) * transform.scale.y,
+                       scaled_center.y) ||
+        !checked_float(static_cast<double>(box.center.z) * transform.scale.z,
+                       scaled_center.z) ||
+        !checked_rotate(body_orientation, scaled_center, rotated_center) ||
+        !checked_add(transform.translation, rotated_center, centre)) {
+        diagnostics.hard_invalid = true;
+        return false;
+    }
+    Float3 box_dimensions{};
+    Float3 dimensions{};
+    if (!checked_float(2.0 * scaled_half.x, box_dimensions.x) ||
+        !checked_float(2.0 * scaled_half.y, box_dimensions.y) ||
+        !checked_float(2.0 * scaled_half.z, box_dimensions.z) ||
+        !checked_float(static_cast<double>(box_dimensions.x) /
+                           settings.probes_x,
+                       dimensions.x) ||
+        !checked_float(static_cast<double>(box_dimensions.y) /
+                           settings.probes_y,
+                       dimensions.y) ||
+        !checked_float(static_cast<double>(box_dimensions.z) /
+                           settings.probes_z,
+                       dimensions.z)) {
+        diagnostics.hard_invalid = true;
+        return false;
+    }
+    float represented_volume = 0.0f;
+    float total_volume = 0.0f;
+    if (!checked_float(static_cast<double>(dimensions.x) * dimensions.y *
+                           dimensions.z * settings.displaced_volume_scale,
+                       represented_volume) ||
+        !checked_float(static_cast<double>(box_dimensions.x) *
+                           box_dimensions.y * box_dimensions.z,
+                       total_volume) ||
+        !checked_float(static_cast<double>(settings.effective_density_kg_m3) *
+                           total_volume * settings.displaced_volume_scale,
+                       diagnostics.reference_mass_kg)) {
+        diagnostics.hard_invalid = true;
+        return false;
+    }
     diagnostics.equilibrium_submerged_fraction =
         settings.effective_density_kg_m3 / kWaterDensity;
-    if (!finite(dimensions) || !finite(represented_volume) ||
-        !finite(diagnostics.reference_mass_kg)) {
+    float inset_scale = 0.0f;
+    if (!checked_float(1.0 - 2.0 * settings.probe_inset, inset_scale)) {
         diagnostics.hard_invalid = true;
         return false;
     }
-
-    const Float3 box_dimensions{2.0f * scaled_half.x, 2.0f * scaled_half.y,
-                                2.0f * scaled_half.z};
-    const float inset_scale = 1.0f - 2.0f * settings.probe_inset;
+    const std::uint32_t probe_count =
+        static_cast<std::uint32_t>(settings.probes_x) * settings.probes_y *
+        settings.probes_z;
     for (std::uint32_t ix = 0; ix < settings.probes_x; ++ix) {
         for (std::uint32_t iy = 0; iy < settings.probes_y; ++iy) {
             for (std::uint32_t iz = 0; iz < settings.probes_z; ++iz) {
@@ -263,11 +416,22 @@ bool compute_river_float_forces(
                     (static_cast<float>(ix) + 0.5f) / settings.probes_x - 0.5f,
                     (static_cast<float>(iy) + 0.5f) / settings.probes_y - 0.5f,
                     (static_cast<float>(iz) + 0.5f) / settings.probes_z - 0.5f};
-                const Float3 local{fraction.x * box_dimensions.x * inset_scale,
-                                   fraction.y * box_dimensions.y * inset_scale,
-                                   fraction.z * box_dimensions.z * inset_scale};
-                const Float3 point = add(centre, rotate(orientation, local));
-                if (!finite(point)) {
+                Float3 represented_local{};
+                Float3 sample_local{};
+                Float3 rotated_sample{};
+                Float3 point{};
+                if (!checked_float(static_cast<double>(fraction.x) *
+                                       box_dimensions.x,
+                                   represented_local.x) ||
+                    !checked_float(static_cast<double>(fraction.y) *
+                                       box_dimensions.y,
+                                   represented_local.y) ||
+                    !checked_float(static_cast<double>(fraction.z) *
+                                       box_dimensions.z,
+                                   represented_local.z) ||
+                    !checked_mul(represented_local, inset_scale, sample_local) ||
+                    !checked_rotate(orientation, sample_local, rotated_sample) ||
+                    !checked_add(centre, rotated_sample, point)) {
                     diagnostics.hard_invalid = true;
                     output.count = 0;
                     return false;
@@ -298,85 +462,186 @@ bool compute_river_float_forces(
                 hash_byte(diagnostics.sample_checksum,
                           static_cast<std::uint8_t>(river.feature));
 
-                const float probe_height = projected_extent(
-                    {0, 1, 0}, orientation, dimensions);
-                if (!finite(probe_height) || probe_height <= kEpsilon) {
+                Float3 rotated_represented{};
+                Float3 represented_centre{};
+                float probe_height = 0.0f;
+                if (!checked_rotate(orientation, represented_local,
+                                    rotated_represented) ||
+                    !checked_add(centre, rotated_represented,
+                                 represented_centre) ||
+                    !projected_extent({0, 1, 0}, orientation, dimensions,
+                                      probe_height) ||
+                    probe_height <= kEpsilon) {
                     diagnostics.hard_invalid = true;
                     output.count = 0;
                     return false;
                 }
-                const float submerged = std::max(0.0f, std::min(1.0f,
-                    (river.surface_position_m.y - (point.y - 0.5f * probe_height)) /
-                    probe_height));
-                const Float3 radial = sub(point, centre);
-                const Float3 angular_point_velocity = cross(velocity.angular, radial);
-                const Float3 point_velocity = add(velocity.linear, angular_point_velocity);
-                if (!finite(angular_point_velocity) || !finite(point_velocity)) {
+                float probe_bottom = 0.0f;
+                float probe_top = 0.0f;
+                float surface_delta = 0.0f;
+                float raw_submerged = 0.0f;
+                if (!checked_float(static_cast<double>(represented_centre.y) -
+                                       0.5 * probe_height,
+                                   probe_bottom) ||
+                    !checked_float(static_cast<double>(represented_centre.y) +
+                                       0.5 * probe_height,
+                                   probe_top) ||
+                    probe_top <= probe_bottom ||
+                    !checked_float(static_cast<double>(river.surface_position_m.y) -
+                                       probe_bottom,
+                                   surface_delta) ||
+                    !checked_float(static_cast<double>(surface_delta) /
+                                       probe_height,
+                                   raw_submerged)) {
+                    diagnostics.hard_invalid = true;
+                    output.count = 0;
+                    return false;
+                }
+                const float submerged =
+                    std::max(0.0f, std::min(1.0f, raw_submerged));
+                Float3 radial{};
+                Float3 angular_point_velocity{};
+                Float3 point_velocity{};
+                if (!checked_sub(point, centre, radial) ||
+                    !checked_cross(velocity.angular, radial,
+                                   angular_point_velocity) ||
+                    !checked_add(velocity.linear, angular_point_velocity,
+                                 point_velocity)) {
                     diagnostics.hard_invalid = true;
                     output.count = 0;
                     return false;
                 }
 
                 Float3 flow_axis{river.velocity_mps.x, 0.0f, river.velocity_mps.z};
-                const float horizontal_speed = length(flow_axis);
-                if (!finite(horizontal_speed)) {
+                float horizontal_speed = 0.0f;
+                if (!checked_length(flow_axis, horizontal_speed)) {
                     diagnostics.hard_invalid = true;
                     output.count = 0;
                     return false;
                 }
-                flow_axis = horizontal_speed > kEpsilon
-                    ? mul(flow_axis, 1.0f / horizontal_speed) : Float3{1, 0, 0};
+                if (horizontal_speed > kEpsilon) {
+                    float inverse_speed = 0.0f;
+                    Float3 normalized{};
+                    if (!checked_float(1.0 / horizontal_speed, inverse_speed) ||
+                        !checked_mul(flow_axis, inverse_speed, normalized)) {
+                        diagnostics.hard_invalid = true;
+                        output.count = 0;
+                        return false;
+                    }
+                    flow_axis = normalized;
+                } else {
+                    flow_axis = {1, 0, 0};
+                }
                 const Float3 lateral_axis{-flow_axis.z, 0.0f, flow_axis.x};
                 const Float3 up_axis{0, 1, 0};
-                const Float3 relative = sub(river.velocity_mps, point_velocity);
-                if (!finite(relative)) {
+                Float3 relative{};
+                float longitudinal_speed = 0.0f;
+                float lateral_speed = 0.0f;
+                float vertical_speed = 0.0f;
+                if (!checked_sub(river.velocity_mps, point_velocity, relative) ||
+                    !checked_dot(relative, flow_axis, longitudinal_speed) ||
+                    !checked_dot(relative, lateral_axis, lateral_speed) ||
+                    !checked_dot(relative, up_axis, vertical_speed)) {
                     diagnostics.hard_invalid = true;
                     output.count = 0;
                     return false;
                 }
-                const float longitudinal_speed = dot(relative, flow_axis);
-                const float lateral_speed = dot(relative, lateral_axis);
-                const float vertical_speed = dot(relative, up_axis);
                 const float wet_scale = submerged;
 
                 Float3 force{};
                 if (river.feature != RiverFeature::Waterfall) {
-                    force.y += kWaterDensity * represented_volume * gravity_mps2 *
-                               submerged * settings.buoyancy_response;
+                    if (!checked_float(
+                            static_cast<double>(kWaterDensity) *
+                                represented_volume * gravity_mps2 * submerged *
+                                settings.buoyancy_response,
+                            force.y)) {
+                        diagnostics.hard_invalid = true;
+                        output.count = 0;
+                        return false;
+                    }
                 }
-                const auto drag = [&](Float3 axis, float speed, float coefficient) {
-                    const float area = projected_area(axis, orientation, dimensions);
-                    return mul(axis, 0.5f * kWaterDensity * coefficient * area *
-                               speed * std::fabs(speed) * wet_scale);
+                const auto drag = [&](Float3 axis, float speed,
+                                      float coefficient, Float3& result) {
+                    float area = 0.0f;
+                    float scale = 0.0f;
+                    return projected_area_per_probe(
+                               axis, orientation, box_dimensions, probe_count,
+                               area) &&
+                           checked_float(
+                               0.5 * kWaterDensity * coefficient * area * speed *
+                                   std::fabs(speed) * wet_scale,
+                               scale) &&
+                           checked_mul(axis, scale, result);
                 };
-                force = add(force, drag(flow_axis, longitudinal_speed,
-                                        settings.longitudinal_drag));
-                force = add(force, drag(lateral_axis, lateral_speed,
-                                        settings.lateral_drag));
-                force = add(force, drag(up_axis, vertical_speed,
-                                        settings.vertical_drag));
-                const float angular_speed = length(angular_point_velocity);
-                if (angular_speed > kEpsilon && settings.angular_damping > 0.0f) {
-                    const float area = projected_area(
-                        mul(angular_point_velocity, 1.0f / angular_speed),
-                        orientation, dimensions);
-                    force = add(force, mul(angular_point_velocity,
-                        -0.5f * kWaterDensity * settings.angular_damping * area *
-                        angular_speed * wet_scale));
-                }
-                if (!finite(force)) {
+                Float3 longitudinal_force{};
+                Float3 lateral_force{};
+                Float3 vertical_force{};
+                Float3 combined{};
+                if (!drag(flow_axis, longitudinal_speed,
+                          settings.longitudinal_drag, longitudinal_force) ||
+                    !drag(lateral_axis, lateral_speed, settings.lateral_drag,
+                          lateral_force) ||
+                    !drag(up_axis, vertical_speed, settings.vertical_drag,
+                          vertical_force) ||
+                    !checked_add(force, longitudinal_force, combined) ||
+                    !checked_add(combined, lateral_force, force) ||
+                    !checked_add(force, vertical_force, combined)) {
                     diagnostics.hard_invalid = true;
                     output.count = 0;
                     return false;
                 }
-                float magnitude = length(force);
-                if (!finite(magnitude)) {
+                force = combined;
+                float angular_speed = 0.0f;
+                if (!checked_length(angular_point_velocity, angular_speed)) {
+                    diagnostics.hard_invalid = true;
+                    output.count = 0;
+                    return false;
+                }
+                if (angular_speed > kEpsilon && settings.angular_damping > 0.0f) {
+                    float inverse_angular_speed = 0.0f;
+                    Float3 angular_axis{};
+                    float area = 0.0f;
+                    float angular_scale = 0.0f;
+                    Float3 angular_force{};
+                    if (!checked_float(1.0 / angular_speed,
+                                       inverse_angular_speed) ||
+                        !checked_mul(angular_point_velocity,
+                                     inverse_angular_speed, angular_axis) ||
+                        !projected_area_per_probe(
+                            angular_axis, orientation, box_dimensions,
+                            probe_count, area) ||
+                        !checked_float(
+                            -0.5 * kWaterDensity * settings.angular_damping *
+                                area * angular_speed * wet_scale,
+                            angular_scale) ||
+                        !checked_mul(angular_point_velocity, angular_scale,
+                                     angular_force) ||
+                        !checked_add(force, angular_force, combined)) {
+                        diagnostics.hard_invalid = true;
+                        output.count = 0;
+                        return false;
+                    }
+                    force = combined;
+                }
+                float magnitude = 0.0f;
+                if (!checked_length(force, magnitude)) {
                     diagnostics.hard_invalid = true;
                     output.count = 0;
                     return false;
                 }
                 if (magnitude > settings.max_force_per_probe_n) {
-                    force = mul(force, settings.max_force_per_probe_n / magnitude);
+                    float force_scale = 0.0f;
+                    Float3 capped{};
+                    if (!checked_float(
+                            static_cast<double>(settings.max_force_per_probe_n) /
+                                magnitude,
+                            force_scale) ||
+                        !checked_mul(force, force_scale, capped)) {
+                        diagnostics.hard_invalid = true;
+                        output.count = 0;
+                        return false;
+                    }
+                    force = capped;
                     magnitude = settings.max_force_per_probe_n;
                 }
                 if (magnitude > kEpsilon) output.rows[output.count++] = {force, point};
@@ -384,18 +649,41 @@ bool compute_river_float_forces(
         }
     }
 
+    double sum_magnitudes_double = 0.0;
+    for (std::uint32_t i = 0; i < output.count; ++i) {
+        float row_magnitude = 0.0f;
+        if (!checked_length(output.rows[i].force_n, row_magnitude)) {
+            diagnostics.hard_invalid = true;
+            output.count = 0;
+            return false;
+        }
+        sum_magnitudes_double += row_magnitude;
+    }
     float sum_magnitudes = 0.0f;
-    for (std::uint32_t i = 0; i < output.count; ++i)
-        sum_magnitudes += length(output.rows[i].force_n);
-    if (!finite(sum_magnitudes)) {
+    if (!checked_float(sum_magnitudes_double, sum_magnitudes)) {
         diagnostics.hard_invalid = true;
         output.count = 0;
         return false;
     }
     if (sum_magnitudes > settings.max_total_force_n) {
-        const float scale = settings.max_total_force_n / sum_magnitudes;
-        for (std::uint32_t i = 0; i < output.count; ++i)
-            output.rows[i].force_n = mul(output.rows[i].force_n, scale);
+        float scale = 0.0f;
+        if (!checked_float(
+                static_cast<double>(settings.max_total_force_n) /
+                    sum_magnitudes,
+                scale)) {
+            diagnostics.hard_invalid = true;
+            output.count = 0;
+            return false;
+        }
+        for (std::uint32_t i = 0; i < output.count; ++i) {
+            Float3 scaled{};
+            if (!checked_mul(output.rows[i].force_n, scale, scaled)) {
+                diagnostics.hard_invalid = true;
+                output.count = 0;
+                return false;
+            }
+            output.rows[i].force_n = scaled;
+        }
     }
     hash_u32(diagnostics.force_checksum, output.count);
     for (std::uint32_t i = 0; i < output.count; ++i) {
@@ -416,16 +704,6 @@ void register_river_float_systems(flecs::world& world) {
             if (!entity.has<RiverFloatState>()) entity.set<RiverFloatState>({});
         });
 
-    auto measurement_begin = world.system<const RiverBindingState>(
-            "MatterRiverFloatMeasurementBegin")
-        .term_at(0).src<RiverBindingState>()
-        .kind<RiverFloatForces>()
-        .each([](const RiverBindingState& state) {
-            if (state.measurement.begin != nullptr)
-                state.measurement.begin(state.measurement.context);
-        });
-    measurement_begin.add<ecs::FixedPipelineSystem>();
-
     auto system = world.system<const RiverFloatBody,
                                const ecs::LocalTransform,
                                const physics::PhysicsVelocity,
@@ -434,81 +712,129 @@ void register_river_float_systems(flecs::world& world) {
                                RiverFloatState>("MatterRiverFloatForces")
         .kind<RiverFloatForces>()
         .order_by(static_cast<flecs::entity_t>(0), compare_entity_ids)
-        .each([](flecs::iter& iterator, std::size_t row,
-                 const RiverFloatBody& settings,
-                 const ecs::LocalTransform& transform,
-                 const physics::PhysicsVelocity& velocity,
-                 const physics::BoxCollider& box,
-                 const physics::RigidBody& body,
-                 RiverFloatState& state) {
-            if (body.type != physics::RigidBodyType::Dynamic) return;
+        .run([](flecs::iter& iterator) {
             flecs::world world = iterator.world();
             RiverBindingState* binding = world.try_get_mut<RiverBindingState>();
-            if (binding == nullptr) return;
-            const std::uint64_t tick = world.get<ecs::AnimationFixedState>().current_tick;
-            if (binding->cached_tick != tick) {
-                binding->cached_tick = tick;
-                if (binding->test_mode) {
-                    binding->cached_generation = binding->test_generation;
-                    binding->cached_binding.reset();
-                } else if (binding->acquire != nullptr) {
-                    binding->cached_binding = binding->acquire(binding->context);
-                    binding->cached_generation = binding->cached_binding
-                        ? binding->cached_binding->generation() : 0;
-                } else {
-                    binding->cached_binding.reset();
-                    binding->cached_generation = 0;
-                }
-            }
-            if (binding->cached_generation == 0) return;
-            if (state.binding_generation != binding->cached_generation) {
-                state = {};
-                state.binding_generation = binding->cached_generation;
-            }
-            if (state.disabled) return;
+            const RiverFloatMeasurementHook measurement =
+                binding != nullptr ? binding->measurement
+                                   : RiverFloatMeasurementHook{};
+            if (measurement.begin != nullptr)
+                measurement.begin(measurement.context);
 
-            ProductionSampleContext production{binding,
-                binding->cached_binding.get(), binding->cached_generation};
-            const RiverSampleFunction sample = binding->test_mode
-                ? binding->test_sample
-                : RiverSampleFunction{&production, &production_sample};
-            RiverFloatForceBuffer forces{};
-            RiverFloatDiagnostics diagnostics{};
-            diagnostics.binding_generation = binding->cached_generation;
-            bool valid = compute_river_float_forces(
-                settings, box, transform, velocity, sample,
-                std::fabs(world.get<physics::PhysicsSettings>().gravity.y),
-                forces, diagnostics);
-            flecs::entity entity = iterator.entity(row);
-            if (valid) {
-                for (std::uint32_t i = 0; i < forces.count; ++i) {
-                    if (!physics::physics_apply_force_at_world_point(
-                            entity, forces.rows[i].force_n,
-                            forces.rows[i].world_point_m)) {
-                        valid = false;
-                        break;
+            if (binding != nullptr) {
+                const std::uint64_t tick =
+                    world.get<ecs::AnimationFixedState>().current_tick;
+                if (binding->cached_tick != tick) {
+                    binding->cached_tick = tick;
+                    if (binding->test_mode) {
+                        binding->cached_generation = binding->test_generation;
+                        binding->cached_binding.reset();
+                    } else if (binding->acquire != nullptr) {
+                        binding->cached_binding =
+                            binding->acquire(binding->context);
+                        binding->cached_generation = binding->cached_binding
+                            ? binding->cached_binding->generation() : 0;
+                    } else {
+                        binding->cached_binding.reset();
+                        binding->cached_generation = 0;
                     }
                 }
             }
-            state.sample_checksum = diagnostics.sample_checksum;
-            state.force_checksum = diagnostics.force_checksum;
-            if (!valid || diagnostics.hard_invalid) {
-                mark_invalid(entity, state);
-            } else {
-                state.consecutive_invalid = 0;
+
+            while (iterator.next()) {
+                for (std::size_t row : iterator) {
+                    const RiverFloatBody& settings =
+                        iterator.field_at<const RiverFloatBody>(0, row);
+                    const ecs::LocalTransform& transform =
+                        iterator.field_at<const ecs::LocalTransform>(1, row);
+                    const physics::PhysicsVelocity& velocity =
+                        iterator.field_at<const physics::PhysicsVelocity>(2, row);
+                    const physics::BoxCollider& box =
+                        iterator.field_at<const physics::BoxCollider>(3, row);
+                    const physics::RigidBody& body =
+                        iterator.field_at<const physics::RigidBody>(4, row);
+                    RiverFloatState& state =
+                        iterator.field_at<RiverFloatState>(5, row);
+                    if (body.type != physics::RigidBodyType::Dynamic ||
+                        binding == nullptr ||
+                        binding->cached_generation == 0)
+                        continue;
+                    if (state.binding_generation !=
+                        binding->cached_generation) {
+                        state = {};
+                        state.binding_generation =
+                            binding->cached_generation;
+                    }
+                    if (state.disabled) continue;
+
+                    ProductionSampleContext production{
+                        binding, binding->cached_binding.get(),
+                        binding->cached_generation};
+                    const RiverSampleFunction sample = binding->test_mode
+                        ? binding->test_sample
+                        : RiverSampleFunction{&production,
+                                              &production_sample};
+                    RiverFloatForceBuffer forces{};
+                    RiverFloatDiagnostics diagnostics{};
+                    diagnostics.binding_generation =
+                        binding->cached_generation;
+                    bool valid = compute_river_float_forces(
+                        settings, box, transform, velocity, sample,
+                        std::fabs(
+                            world.get<physics::PhysicsSettings>().gravity.y),
+                        forces, diagnostics);
+                    flecs::entity entity = iterator.entity(row);
+                    if (valid && forces.count != 0) {
+                        if (binding->test_mode) {
+                            for (std::uint32_t index = 0;
+                                 index < forces.count; ++index) {
+                                if (!physics::physics_apply_force_at_world_point(
+                                        entity, forces.rows[index].force_n,
+                                        forces.rows[index].world_point_m)) {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+                        } else if (binding->cached_binding) {
+                            std::array<
+                                physics::detail::GuardedForceAtWorldPoint, 64>
+                                guarded{};
+                            for (std::uint32_t index = 0;
+                                 index < forces.count; ++index) {
+                                guarded[index] = {
+                                    forces.rows[index].force_n,
+                                    forces.rows[index].world_point_m};
+                            }
+                            const std::shared_ptr<const void> owner =
+                                std::static_pointer_cast<const void>(
+                                    binding->cached_binding);
+                            valid = physics::detail::
+                                physics_apply_guarded_force_at_world_points(
+                                    entity, guarded.data(), forces.count,
+                                    owner, &current_runtime_binding_owner);
+                        } else {
+                            valid = false;
+                        }
+                    }
+                    state.sample_checksum = diagnostics.sample_checksum;
+                    state.force_checksum = diagnostics.force_checksum;
+                    if (!valid || diagnostics.hard_invalid) {
+                        mark_invalid(entity, state);
+                    } else {
+                        state.consecutive_invalid = 0;
+                    }
+                }
             }
+
+            const RiverFloatPostEnqueueHook post_enqueue =
+                binding != nullptr ? binding->post_enqueue
+                                   : RiverFloatPostEnqueueHook{};
+            if (post_enqueue.invoke != nullptr)
+                post_enqueue.invoke(post_enqueue.context);
+            if (measurement.end != nullptr)
+                measurement.end(measurement.context);
         });
     system.add<ecs::FixedPipelineSystem>();
-
-    auto measurement_end = world.system<const RiverBindingState>(
-            "MatterRiverFloatMeasurementEnd")
-        .term_at(0).src<RiverBindingState>()
-        .kind<RiverFloatForces>()
-        .each([](const RiverBindingState& state) {
-            if (state.measurement.end != nullptr)
-                state.measurement.end(state.measurement.context);
-        });
-    measurement_end.add<ecs::FixedPipelineSystem>();
 }
 
 void install_test_binding(flecs::world& world, std::uint64_t generation,
@@ -547,6 +873,12 @@ void install_measurement_hook(flecs::world& world,
                               RiverFloatMeasurementHook hook) noexcept {
     RiverBindingState* state = world.try_get_mut<RiverBindingState>();
     if (state != nullptr) state->measurement = hook;
+}
+
+void install_post_enqueue_hook_for_test(
+    flecs::world& world, RiverFloatPostEnqueueHook hook) noexcept {
+    RiverBindingState* state = world.try_get_mut<RiverBindingState>();
+    if (state != nullptr) state->post_enqueue = hook;
 }
 
 std::uint64_t checksum_transform(const ecs::LocalTransform& transform) noexcept {

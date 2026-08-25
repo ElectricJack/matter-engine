@@ -48,6 +48,7 @@ struct RiverFloatState {
     std::uint32_t consecutive_invalid = 0;
     bool disabled = false;
     bool diagnostic_emitted = false;
+    std::uint64_t diagnostic_identity = 0;
     std::uint64_t sample_checksum = 0;
     std::uint64_t force_checksum = 0;
 };
@@ -59,6 +60,11 @@ struct RiverFloatMeasurementHook {
     void* context = nullptr;
     void (*begin)(void*) noexcept = nullptr;
     void (*end)(void*) noexcept = nullptr;
+};
+
+struct RiverFloatPostEnqueueHook {
+    void* context = nullptr;
+    void (*invoke)(void*) noexcept = nullptr;
 };
 
 bool valid_river_float_body(const RiverFloatBody& value) noexcept;
@@ -81,6 +87,8 @@ void install_runtime_binding(flecs::world& world, const void* context,
 void clear_runtime_binding(flecs::world& world) noexcept;
 void install_measurement_hook(flecs::world& world,
                               RiverFloatMeasurementHook hook) noexcept;
+void install_post_enqueue_hook_for_test(
+    flecs::world& world, RiverFloatPostEnqueueHook hook) noexcept;
 
 std::uint64_t checksum_transform(const ecs::LocalTransform& transform) noexcept;
 

@@ -240,6 +240,13 @@ bool detail::RiverRuntimeBindingAccess::matches(
            binding.storage_->identity.lock() == identity;
 }
 
+bool detail::RiverRuntimeBindingAccess::is_current(
+    const RiverRuntimeBinding& binding) noexcept {
+    if (!binding.storage_ || !binding.storage_->slot) return false;
+    const auto identity = binding.storage_->identity.lock();
+    return identity && load(binding.storage_->slot) == identity;
+}
+
 void detail::RiverRuntimeBindingAccess::set_batch_test_hook(
     const std::shared_ptr<detail::RiverRuntimePublicationSlot>& slot,
     detail::RiverRuntimePublicationSlot::BatchTestHook hook,

@@ -122,6 +122,11 @@ static void test_physics_module_reflects_river_float_body() {
     CHECK(comp.id() != 0, "RiverFloatBody not registered");
 }
 
+static void test_river_float_body_public_abi_is_pinned() {
+    CHECK(sizeof(RiverFloatBody) == 56 && alignof(RiverFloatBody) == 4,
+          "RiverFloatBody public ABI remains 56 bytes with 4-byte alignment");
+}
+
 static void test_streaming_module_reflects_sector_streaming() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -793,6 +798,7 @@ int main() {
     test_physics_module_reflects_box_collider();
     test_physics_module_reflects_convex_hull_collider();
     test_physics_module_reflects_river_float_body();
+    test_river_float_body_public_abi_is_pinned();
     test_streaming_module_reflects_sector_streaming();
 
     test_find_component_known();

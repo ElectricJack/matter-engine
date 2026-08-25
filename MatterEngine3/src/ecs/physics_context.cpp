@@ -71,6 +71,8 @@ struct QueuedCommand {
     Float3 primary{};
     Float3 secondary{};
     Quaternion rotation{};
+    std::shared_ptr<const void> validation_owner;
+    PhysicsCommandValidator validator = nullptr;
 };
 
 struct QueuedCommandHash {
@@ -712,6 +714,48 @@ bool PhysicsContext::enqueue_force_at_world_point(
     }
 }
 
+bool PhysicsContext::enqueue_guarded_force_at_world_points(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity,
+    const GuardedForceAtWorldPoint* rows,
+    std::size_t count,
+    const std::shared_ptr<const void>& validation_owner,
+    PhysicsCommandValidator validator) noexcept {
+    if (impl_ == nullptr || rows == nullptr || count == 0 ||
+        !validation_owner || validator == nullptr ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        if (!finite(rows[index].force) || !finite(rows[index].world_point))
+            return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        if (count > kForceCommandCapacity - impl_->forces.size()) {
+            ++stats_.failed_commands;
+            return false;
+        }
+        const std::size_t initial_size = impl_->forces.size();
+        try {
+            for (std::size_t index = 0; index < count; ++index) {
+                impl_->forces.push_back({
+                    originating_world, entity,
+                    PhysicsCommandKind::ForceAtPoint,
+                    rows[index].force, rows[index].world_point, {},
+                    validation_owner, validator});
+            }
+        } catch (...) {
+            impl_->forces.resize(initial_size);
+            return false;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 bool PhysicsContext::enqueue_impulse(
     const flecs::world_t* originating_world,
     flecs::entity_t entity,
@@ -989,7 +1033,10 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     auto apply_command = [&](const QueuedCommand& command) {
         BridgeRecord* bridge = validate_queued_command(
             command, runtime_world, world, impl_->bridges);
-        if (bridge == nullptr) {
+        if (bridge == nullptr ||
+            (command.validator != nullptr &&
+             (!command.validation_owner ||
+              !command.validator(command.validation_owner)))) {
             ++stats_.failed_commands;
             return;
         }
@@ -1660,6 +1707,23 @@ bool physics_apply_force_at_world_point(
            target.context->enqueue_force_at_world_point(
                target.originating_world, target.entity, force, world_point);
 }
+
+namespace detail {
+
+bool physics_apply_guarded_force_at_world_points(
+    flecs::entity entity,
+    const GuardedForceAtWorldPoint* rows,
+    std::size_t count,
+    const std::shared_ptr<const void>& validation_owner,
+    PhysicsCommandValidator validator) noexcept {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_guarded_force_at_world_points(
+               target.originating_world, target.entity, rows, count,
+               validation_owner, validator);
+}
+
+} // namespace detail
 
 bool physics_apply_impulse(flecs::entity entity, Float3 impulse) {
     CommandTarget target;

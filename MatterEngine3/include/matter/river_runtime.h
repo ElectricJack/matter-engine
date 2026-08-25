@@ -51,6 +51,11 @@ struct RiverFloatBody {
     Float3 diagnostic_color{0.2f, 0.8f, 1.0f};
 };
 
+static_assert(sizeof(RiverFloatBody) == 56,
+              "RiverFloatBody public ABI size changed");
+static_assert(alignof(RiverFloatBody) == 4,
+              "RiverFloatBody public ABI alignment changed");
+
 struct RiverFloatForces {};
 
 class WorldSession;

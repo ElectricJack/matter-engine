@@ -159,18 +159,22 @@ ANIMATION_DIAGNOSTICS_CPP = $(sort animation_diagnostics_tests.cpp \
                             $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)))
 ANIMATION_DIAGNOSTICS_C   = $(COMMON_MSL_C)
 
+# scene_registry.cpp and physics_systems.cpp register RiverFloatForces. Every
+# legacy target that compiles either TU must carry this implementation too.
+RIVER_FLOAT_SYSTEM_CPP = ../src/ecs/river_float_system.cpp
+
 ANIMATION_STORE_TARGET = build/animation_store_tests
-ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ANIMATION_EVALUATOR_TARGET = build/animation_evaluator_tests
 ANIMATION_EVALUATOR_CPP = animation_evaluator_tests.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_targets.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 ANIMATION_BUDGET_TARGET = build/animation_budget_tests
 ANIMATION_BUDGET_CPP = animation_budget_tests.cpp ../src/animation/animation_budget.cpp
 
 ANIMATION_SYSTEMS_TARGET = build/animation_systems_tests
-ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 ANIMATION_SIMULATION_TARGET = build/animation_simulation_tests
-ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/dynamic_scene_bridge.cpp ../src/render/animation_rigid_bridge.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_skinning.cpp ../src/render/vk_animation_bounds.cpp ../src/render/dynamic_instance_slots.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/dynamic_scene_bridge.cpp ../src/render/animation_rigid_bridge.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_skinning.cpp ../src/render/vk_animation_bounds.cpp ../src/render/dynamic_instance_slots.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 # C4 headless acceptance owns both ends of the actual production contract:
 # ScriptHost bakes/reloads AnimatedRigGallery, then Runtime and the rigid/skin
@@ -269,19 +273,18 @@ ANIMATION_BAKE_HOST_CPP = ../src/dsl_animation.cpp \
                           ../src/render/indexed_part_geometry.cpp
 
 ECS_TARGET = build/ecs_tests
-ECS_CPP = ecs_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ECS_CPP = ecs_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
 PHYSICS_TARGET = build/physics-tests
-PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
 
 # River floating is registered here only for rollback source-census parity.
 # Acceptance executes the MSVC/CMake target, never this legacy Make target.
-RIVER_FLOAT_ECS_REQUIRED = ../src/ecs/river_float_system.cpp
 RIVER_FLOAT_SYSTEM_TARGET = build/river_float_system_tests
-RIVER_FLOAT_SYSTEM_CPP = river_float_system_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) \
-                         $(RIVER_FLOAT_ECS_REQUIRED) ../src/ecs/simulation_control.cpp \
+RIVER_FLOAT_SYSTEM_TEST_CPP = river_float_system_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) \
+                         $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/simulation_control.cpp \
                          ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp \
                          ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp \
                          ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp \
@@ -717,6 +720,7 @@ SCENE_REGISTRY_TARGET = build/scene_registry_tests
 SCENE_REGISTRY_CPP    = scene_registry_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                        $(RIVER_FLOAT_SYSTEM_CPP) \
                         ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                         ../src/streaming/sector_streaming_coordinator.cpp \
                         ../src/sector_streamer.cpp
@@ -749,6 +753,7 @@ DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animatio
                         ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                        $(RIVER_FLOAT_SYSTEM_CPP) \
                         ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                         ../src/streaming/sector_streaming_coordinator.cpp \
                         ../src/sector_streamer.cpp
@@ -795,6 +800,7 @@ PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp $(ANIMATION_ECS_RUNTI
                              ../src/ecs/scene_registry.cpp \
                              ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                              ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                             $(RIVER_FLOAT_SYSTEM_CPP) \
                              ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                              ../src/streaming/sector_streaming_coordinator.cpp \
                              ../src/sector_streamer.cpp
@@ -806,6 +812,7 @@ SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp $(ANIMATION_ECS_RUNTIME
                             ../src/ecs/scene_registry.cpp \
                             ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                             ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                            $(RIVER_FLOAT_SYSTEM_CPP) \
                             ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                             ../src/streaming/sector_streaming_coordinator.cpp \
                             ../src/sector_streamer.cpp
@@ -816,7 +823,8 @@ SPECIALIZED_EDITORS_TARGET = build/specialized_editors_tests
 SPECIALIZED_EDITORS_CPP    = specialized_editors_tests.cpp \
                              ../../MatterEditor/src/specialized_editors.cpp \
                              ../../MatterEditor/src/properties_registry.cpp \
-                             ../src/ecs/scene_registry.cpp
+                             ../src/ecs/scene_registry.cpp \
+                             $(RIVER_FLOAT_SYSTEM_CPP)
 SPECIALIZED_EDITORS_C      = $(FLECS_C)
 
 # Phase 5 — entity -> ECS bridge (Ready world-state commands bootstrap Flecs
@@ -827,6 +835,7 @@ ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp $(ANIMATION_ECS_RUNTIME_R
                            ../src/ecs/scene_registry.cpp \
                            ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                            ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                           $(RIVER_FLOAT_SYSTEM_CPP) \
                            ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                            ../src/streaming/sector_streaming_coordinator.cpp \
                            ../src/sector_streamer.cpp
@@ -1499,6 +1508,7 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
               ../src/ecs/scene_registry.cpp \
               ../src/animation/animation_systems.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+              $(RIVER_FLOAT_SYSTEM_CPP) \
               ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
               ../src/streaming/sector_streaming_coordinator.cpp \
               ../src/props/props.cpp ../src/props/draw_overrides.cpp \
@@ -1543,7 +1553,7 @@ def_CPP_SRCS := $(sort \
     $(ANIMATION_STORE_CPP) \
     $(ANIMATION_BUDGET_CPP) \
     $(PHYSICS_CPP) \
-    $(RIVER_FLOAT_SYSTEM_CPP) \
+    $(RIVER_FLOAT_SYSTEM_TEST_CPP) \
     $(ANIMATION_SYSTEMS_CPP) \
     $(ANIMATION_SIMULATION_CPP) \
     $(SCENE_REGISTRY_CPP) \
@@ -1726,7 +1736,7 @@ EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
 
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
-RIVER_FLOAT_SYSTEM_OBJS = $(call obj_list,def,$(RIVER_FLOAT_SYSTEM_CPP)) $(call obj_list,physicsc,$(RIVER_FLOAT_SYSTEM_C)) $(EVENT_IMPL_DEF_OBJS)
+RIVER_FLOAT_SYSTEM_OBJS = $(call obj_list,def,$(RIVER_FLOAT_SYSTEM_TEST_CPP)) $(call obj_list,physicsc,$(RIVER_FLOAT_SYSTEM_C)) $(EVENT_IMPL_DEF_OBJS)
 # The animation suites below reach physics_context.cpp through the same ECS
 # runtime closure (ANIMATION_ECS_RUNTIME_REQUIRED / ANIMATION_STORE_CPP), so
 # they need the E6 event trio for exactly the reason described above.
@@ -3141,6 +3151,7 @@ PHYSICSEVENTS_TARGET = build/physicsevents_tests
 PHYSICSEVENTS_CPP    = physicsevents_tests.cpp ../src/ecs/scene_registry.cpp \
                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                       $(RIVER_FLOAT_SYSTEM_CPP) \
                        ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                        ../src/streaming/sector_streaming_coordinator.cpp \
                        ../src/sector_streamer.cpp \

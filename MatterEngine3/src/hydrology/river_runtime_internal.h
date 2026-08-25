@@ -41,6 +41,7 @@ public:
         const std::shared_ptr<RiverRuntimePublicationSlot>& slot,
         const std::shared_ptr<const RiverRuntimePublicationIdentity>& identity)
         noexcept;
+    static bool is_current(const RiverRuntimeBinding& binding) noexcept;
     static void set_batch_test_hook(
         const std::shared_ptr<RiverRuntimePublicationSlot>& slot,
         RiverRuntimePublicationSlot::BatchTestHook hook,
