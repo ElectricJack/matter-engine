@@ -368,6 +368,8 @@ if(BUILD_TESTING)
     matter_add_engine_cpu_test(gpu_water_render_tests
         MatterEngine3/tests/gpu_water_render_tests.cpp
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp)
+    matter_add_engine_cpu_test(water_field_vk_tests
+        MatterEngine3/tests/water_field_vk_tests.cpp)
 
     get_property(matter_engine_cpu_targets GLOBAL PROPERTY MATTER_ENGINE_CPU_TARGETS)
     add_custom_target(matter_engine_cpu_tests)
