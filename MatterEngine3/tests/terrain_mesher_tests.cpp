@@ -39,6 +39,48 @@ static size_t count_tris(const SectorMesh& m, P pred) {
     return n;
 }
 
+static bool every_nondegenerate_triangle_faces_its_normals(
+    const SectorMesh& mesh, size_t& scanned) {
+    bool outward = true;
+    scanned = 0;
+    for (const auto& bucket : mesh.buckets) {
+        CHECK(bucket.positions.size() == bucket.normals.size(),
+              "terrain positions and normals have matching triangle soup sizes");
+        CHECK(bucket.positions.size() % 9 == 0,
+              "terrain triangle soup contains complete triangles");
+        for (size_t offset = 0; offset + 8 < bucket.positions.size(); offset += 9) {
+            const double ax = bucket.positions[offset + 0];
+            const double ay = bucket.positions[offset + 1];
+            const double az = bucket.positions[offset + 2];
+            const double ux = double(bucket.positions[offset + 3]) - ax;
+            const double uy = double(bucket.positions[offset + 4]) - ay;
+            const double uz = double(bucket.positions[offset + 5]) - az;
+            const double vx = double(bucket.positions[offset + 6]) - ax;
+            const double vy = double(bucket.positions[offset + 7]) - ay;
+            const double vz = double(bucket.positions[offset + 8]) - az;
+            const double cx = uy * vz - uz * vy;
+            const double cy = uz * vx - ux * vz;
+            const double cz = ux * vy - uy * vx;
+            const double area2 = cx * cx + cy * cy + cz * cz;
+            if (area2 > 0.0) {
+                ++scanned;
+                const double nx = double(bucket.normals[offset + 0]) +
+                                  double(bucket.normals[offset + 3]) +
+                                  double(bucket.normals[offset + 6]);
+                const double ny = double(bucket.normals[offset + 1]) +
+                                  double(bucket.normals[offset + 4]) +
+                                  double(bucket.normals[offset + 7]);
+                const double nz = double(bucket.normals[offset + 2]) +
+                                  double(bucket.normals[offset + 5]) +
+                                  double(bucket.normals[offset + 8]);
+                const double dot = cx * nx + cy * ny + cz * nz;
+                if (dot < 0.0) outward = false;
+            }
+        }
+    }
+    return outward;
+}
+
 int main() {
     // THIS SUITE PINS THE WELDER PATH, so it names that path rather than
     // inheriting whichever is default.
@@ -92,6 +134,52 @@ int main() {
                 minimum_y = std::min(minimum_y, bucket.positions[i]);
         CHECK(minimum_y < 13.0f,
                "terrain meshing carves the shared river overlay below the base field");
+    }
+    // A steep rounded-V carve over the same broad grade/noise/ridge shape used
+    // by RiverFloatLab makes individual surface-nets quads strongly nonplanar.
+    // The ordinary (non-contour) path must orient each emitted triangle against
+    // the outward density-gradient normals rather than trusting one density-sign
+    // order for both halves of a quad.
+    {
+        matter::RiverNetworkDefinition network{};
+        network.cell_size_m = 0.5f;
+        network.seed = 0x52495645u;
+        matter::RiverDefinition river{};
+        river.name = "main";
+        river.inlet = {{0.0f, 72.0f, 0.0f}, 600.0f};
+        river.curve = {{0.0f, 72.0f, 0.0f}, {32.0f, 67.0f, 18.0f},
+                       {64.0f, 62.0f, 0.0f}};
+        river.channel_profile = {{0.0f, 14.0f, 8.0f, 0.18f},
+                                 {40.0f, 24.0f, 8.5f, -0.14f},
+                                 {80.0f, 18.0f, 7.5f, 0.10f}};
+        network.rivers.push_back(river);
+        hydrology::RiverGeometry geometry{};
+        std::string error;
+        CHECK(hydrology::build_river_geometry(network, "main", geometry, error),
+              error.c_str());
+        std::shared_ptr<const RiverHeightOverlay> overlay;
+        CHECK(RiverHeightOverlay::build(geometry, overlay, error), error.c_str());
+        FieldProgram program;
+        CHECK(FieldProgram::parse(
+                  "input wx\nconst -0.15\nmul r0 r1\nconst 78\nadd r2 r3\n"
+                  "noise2 49 0.0052631579 4 0.5 2\nconst 22\nmul r5 r6\n"
+                  "add r4 r7\nridge2 81 0.0125 3 0.52 2\nconst 1\n"
+                  "add r9 r10\nconst 0.5\nmul r11 r12\npow r13 1.75\n"
+                  "const 30\nmul r14 r15\nadd r8 r16\nconst 0.5\n"
+                  "height r17\nmoisture r18\nrelief r18\n"
+                  "seaLevel -100\nbiome 0.65 0.35\n",
+                  program, error), error.c_str());
+        FieldRuntime field(std::move(program), overlay);
+        SectorMesh mesh;
+        CHECK(mesh_sector_tiled(field, 0, 1, 0, 2, 64.0f,
+                                mesh, nullptr, error), error.c_str());
+        size_t scanned = 0;
+        const bool outward =
+            every_nondegenerate_triangle_faces_its_normals(mesh, scanned);
+        CHECK(scanned > 0,
+              "steep rounded-V overlay fixture emits nondegenerate terrain");
+        CHECK(outward,
+              "every steep rounded-V ordinary triangle faces its emitted normals");
     }
     // --- flat field, rung 0: counts, height, orientation -------------------
     {
@@ -1154,21 +1242,23 @@ int main() {
             float S, y0, y1;
             unsigned long long mesh, rec;
         };
-        // Recorded from the pre-band build. DO NOT re-record to make a failure
-        // go away -- see the note above.
+        // Recorded from the pre-band build at the current mesher semantic
+        // version. DO NOT re-record to make a band-related failure go away --
+        // see the note above. The version-2 values differ only because emitted
+        // triangles whose winding opposed their normals are now reoriented.
         static const Pin kPins[] = {
             {"flat rung0",       0,  0,  0,  0,  16.0f,  -64.0f, 192.0f,
              0xf365ecbc92387da2ULL, 0x30e41a9fde0d546aULL},
             {"flat rung2 (3,-2)",0,  3, -2,  2,  16.0f,  -64.0f, 192.0f,
              0x50d71bf78f1283aaULL, 0xf933a0523773e7aaULL},
             {"noise coarse L2",  1,  0,  0, -3, 512.0f, -300.0f, 300.0f,
-             0x94b8bb96f2e6bd14ULL, 0x43b395d3b009718cULL},
+             0xdb5762c30dfb1400ULL, 0x43b395d3b009718cULL},
             {"noise fine L2",    1,  2,  0, -2, 256.0f, -300.0f, 300.0f,
-             0xaee3860b7951bd1bULL, 0xc918717a908ded36ULL},
+             0x74997d3f0eab559fULL, 0xc918717a908ded36ULL},
             {"cave rung0 (1,1)", 2,  1,  1,  0,  64.0f, -128.0f, 192.0f,
-             0x75518d8f48d68a54ULL, 0x3a13b481acc73546ULL},
+             0x9d6b3d722bd18f48ULL, 0x3a13b481acc73546ULL},
             {"cave rung-1(-3,2)",2, -3,  2, -1, 128.0f, -128.0f, 192.0f,
-             0x654236bd591865a9ULL, 0x7a22b1626ce78d5fULL},
+             0x61d8431fc365504dULL, 0x7a22b1626ce78d5fULL},
         };
         FieldRuntime ff = make(kFlat5), fn = make(kNoise), fc = make(kCave);
         int pinned = 0;

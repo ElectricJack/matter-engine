@@ -11,7 +11,7 @@
 
 namespace terrain_mesher {
 
-inline constexpr std::uint32_t kSemanticVersion = 1;
+inline constexpr std::uint32_t kSemanticVersion = 2;
 
 // One material bucket: flat triangle list. x/z are sector-LOCAL
 // (world minus sector origin); y is world-absolute.

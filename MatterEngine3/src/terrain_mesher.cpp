@@ -36,6 +36,25 @@ void push_tri(MaterialBucket& b,
     }
 }
 
+void push_oriented_tri(MaterialBucket& b,
+                       const CellVert& a, const CellVert& c,
+                       const CellVert& d) {
+    const double ux = static_cast<double>(c.p.x) - a.p.x;
+    const double uy = static_cast<double>(c.p.y) - a.p.y;
+    const double uz = static_cast<double>(c.p.z) - a.p.z;
+    const double vx = static_cast<double>(d.p.x) - a.p.x;
+    const double vy = static_cast<double>(d.p.y) - a.p.y;
+    const double vz = static_cast<double>(d.p.z) - a.p.z;
+    const double cx = uy * vz - uz * vy;
+    const double cy = uz * vx - ux * vz;
+    const double cz = ux * vy - uy * vx;
+    const double nx = static_cast<double>(a.n.x) + c.n.x + d.n.x;
+    const double ny = static_cast<double>(a.n.y) + c.n.y + d.n.y;
+    const double nz = static_cast<double>(a.n.z) + c.n.z + d.n.z;
+    if (cx * nx + cy * ny + cz * nz >= 0.0f) push_tri(b, a, c, d);
+    else                                     push_tri(b, a, d, c);
+}
+
 // --- overlap band (M0-WP7) -------------------------------------------------
 // Same two helpers against seam::OverlapBand. Positions go out WORLD-absolute
 // and in double (CellVert stores x/z tile-local, y world), because the band is
@@ -839,8 +858,8 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
         MaterialBucket& b = bucket_for(out,
             uint32_t(field.material_at(wxc, wzc)));
         if (flip) std::swap(v10, v01);
-        push_tri(b, *v00, *v10, *v11);
-        push_tri(b, *v00, *v11, *v01);
+        push_oriented_tri(b, *v00, *v10, *v11);
+        push_oriented_tri(b, *v00, *v11, *v01);
     };
     // Ownership predicate: exactly [1..n], the lattice indices mapping to
     // sector-local [0, S). Integer comparison, no float precision gaps at
@@ -1226,11 +1245,7 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                 MaterialBucket& bkt = bucket_for(out, uint32_t(field.material_at(
                     float(ox + (double(c3[0]) - 0.5) * v),
                     float(oz + (double(c3[2]) - 0.5) * v))));
-                const float nx = A.n.x + B.n.x + C.n.x;
-                const float ny = A.n.y + B.n.y + C.n.y;
-                const float nz = A.n.z + B.n.z + C.n.z;
-                if (cx * nx + cy * ny + cz * nz >= 0.0f) push_tri(bkt, A, B, C);
-                else                                     push_tri(bkt, A, C, B);
+                push_oriented_tri(bkt, A, B, C);
             };
 
             // THE ANCHOR, and why it is not simply `dual_at(ca, cb)`.
