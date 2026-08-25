@@ -398,3 +398,120 @@ suite was rerun; the retained prior evidence remains the single 37/37 CPU run.
   supports it. POSIX durable/openat branches were source-reviewed but could not
   be executed under the mandated MSVC-only verification policy; that is the
   only platform-specific verification limitation.
+
+## Independent Re-review Repair Round 3 (2026-08-24)
+
+### Outcome
+
+The final two IO findings were repaired in code/test commit `70a4d1e3`
+(`fix: confine hydrology field publication`). Field publication now performs
+all descendant creation, temporary IO, validation, publication, and cleanup
+relative to a verified cache-root/directory handle, and every production native
+resource is immediately RAII-owned across allocation failure and early return.
+
+### TDD RED Evidence
+
+Tests were changed before production code to require:
+
+- a deterministic Windows junction from `cache/hydrology` to an external
+  directory whose `fields` child did not exist, with no external side effect;
+- a separate canonical-leaf symlink/reparse fixture whose external target bytes
+  remain unchanged;
+- corruption of the actual digest-named canonical immutable leaf followed by
+  save rejection without replacement;
+- deterministic allocation failures after cache-root, descendant-directory,
+  and temporary/file handle acquisition, with no canonical field, no temporary,
+  no Ready manifest, immediate tree deletion, and exact load-output
+  preservation.
+
+The focused RED command was:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_network_artifact_tests
+```
+
+After correcting the Windows-only test fixture to use its own SDK-compatible
+mount-point buffer declaration, MSVC reached the intended RED and failed at
+link with `LNK2019` for the deliberately missing
+`set_hydrology_field_io_failure_for_test` implementation. The initial sandboxed
+wrapper invocation could not launch the installed native Python; the same
+required build entry point was rerun with host-tool access. No alternate
+compiler or build path was used.
+
+### Implementation and Resource Audit
+
+- The caller-created cache root is the explicit trust boundary. Save opens that
+  existing root without following a reparse point and performs zero path-based
+  descendant mutation before it is verified.
+- Windows opens or creates `hydrology`, `fields`, and the unique temporary with
+  handle-relative `NtCreateFile`, always using reparse-point-open semantics and
+  validating directory/file attributes on the acquired handle. The same
+  temporary handle is written, OS-flushed, rewound, byte/EOF validated, and
+  create-new renamed relative to the trusted fields handle with
+  `NtSetInformationFile`. Failed publication cleanup is deletion-by-handle;
+  existing canonical bytes are read through a non-sharing relative handle and
+  are accepted only when exactly identical.
+- POSIX uses root `open(O_DIRECTORY|O_NOFOLLOW)`, `mkdirat`/`openat` for both
+  descendants, `openat(O_CREAT|O_EXCL|O_NOFOLLOW)` for the temporary, and the
+  same descriptor for write, `fsync`, rewind, byte/EOF validation, `linkat`,
+  `unlinkat`, and directory `fsync`. Its temporary guard unlinks relative to the
+  trusted directory on every exception or early return.
+- `UniqueNativeHandle` and `UniqueNativeFd` are move-only and close in
+  `noexcept` destructors. Directory-handle containers reserve before acquiring
+  the root. All artifact read handles, durable-write handles, directory-flush
+  descriptors, confined field handles, temporary handles, and existing-file
+  comparison handles are RAII-owned before any allocation or injected throw.
+- All public bool field/network serialize, deserialize, save, and load entry
+  points translate allocation, filesystem, standard, and unknown exceptions to
+  `gpu_meshing::Error`. Deserialize/load candidates remain transactional and
+  are assigned only after complete validation.
+- Ready validation still requires the two exact digest-derived typed paths and
+  reopens and verifies both payloads. A failed or partial field pair cannot make
+  a Ready manifest visible.
+
+The exercised Windows host created both the directory junction and leaf
+symlink/reparse fixtures; the verbose focused run printed no `SKIP` and ended
+`ALL PASS`. The POSIX branch was source-reviewed but not executed because this
+task explicitly required MSVC-only verification. Windows has no portable
+directory-`fsync` analogue; field data is flushed with `FlushFileBuffers`, the
+temporary is opened write-through, and publication is a handle-relative native
+rename before Ready validation/publication.
+
+### Final GREEN Evidence
+
+All final builds used only the required entry point:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_artifact_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_network_artifact_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target hydrology_handoff_products_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target river_runtime_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target async_bake_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target physx_dependency_contract_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target physx_adapter_contract_tests
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_engine_viewer_objects
+```
+
+All eight targets succeeded. The dependency contract again reported the
+provider-free river runtime API PASS, and the renderer-conditioned viewer graph
+compiled. The definitive focused test command against the final audited source
+was:
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo -C RelWithDebInfo -R '^(hydrology_artifact_tests|hydrology_network_artifact_tests|hydrology_handoff_products_tests|river_runtime_tests|async_bake_tests|physx_dependency_contract_tests|physx_adapter_contract_tests)$' --output-on-failure
+```
+
+Result: **7/7 passed**, 0 failed, 7.22 seconds. Per instruction, no broad CPU
+suite was rerun; the retained earlier Task 2 evidence remains the single 37/37
+CPU run.
+
+### Round 3 Files and Process Audit
+
+- `MatterEngine3/src/hydrology/hydrology_field_artifact.h`
+- `MatterEngine3/src/hydrology/hydrology_network_artifact.cpp`
+- `MatterEngine3/tests/hydrology_network_artifact_tests.cpp`
+
+No subagents or reviewers were spawned. No Make, GCC, g++, MinGW, MSYS2, or
+collect2 command was invoked. `git diff --check` and the staged diff check
+passed. Only the three scoped code/test files were committed; unrelated
+pre-existing untracked files were preserved. No known Task 2 blocker remains.
