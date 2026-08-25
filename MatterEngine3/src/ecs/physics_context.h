@@ -52,6 +52,32 @@ struct TerrainCollisionPhysicsWorldState {
     std::uint32_t shape_count = 0;
 };
 
+enum class TerrainCollisionMeshLayoutError : std::uint8_t {
+    None,
+    VertexCount,
+    IndexCount,
+    TriangleNodeCount,
+    RetainedLayout,
+};
+
+struct TerrainCollisionMeshLayout {
+    std::int32_t vertex_count = 0;
+    std::int32_t index_count = 0;
+    std::int32_t triangle_count = 0;
+    std::int32_t node_count = 0;
+    std::int32_t worst_case_retained_bytes = 0;
+};
+
+TerrainCollisionMeshLayoutError checked_terrain_collision_mesh_layout(
+    std::uint64_t vertex_count,
+    std::uint64_t index_count,
+    TerrainCollisionMeshLayout& layout) noexcept;
+
+class PhysicsContext;
+void fail_terrain_collision_mesh_create_on_tile_for_test(
+    PhysicsContext& context,
+    std::size_t one_based_non_empty_tile) noexcept;
+
 enum class PhysicsSystemStage : uint8_t { Reconcile, Push, Step, Pull };
 
 enum class PhysicsCommandKind : uint8_t {
@@ -112,6 +138,9 @@ public:
     bool replace_terrain_collision(
         const terrain_collision::TerrainCollisionCandidate& candidate,
         std::string& error);
+    // Owner-thread, pre-step operation. Calls from a foreign thread or while
+    // stepping are intentionally ignored so mesh data cannot outlive a shape
+    // that still references it.
     void clear_terrain_collision() noexcept;
     TerrainCollisionPhysicsStats terrain_collision_stats() const noexcept;
     void mark_for_reconcile(flecs::entity_t entity) noexcept;
@@ -208,6 +237,10 @@ public:
     terrain_collision_world_state_for_test() const noexcept;
 
 private:
+    friend void fail_terrain_collision_mesh_create_on_tile_for_test(
+        PhysicsContext& context,
+        std::size_t one_based_non_empty_tile) noexcept;
+
     void capture_events(flecs::world& world);
 
     struct Impl;

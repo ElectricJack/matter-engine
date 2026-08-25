@@ -85,6 +85,9 @@ using physics::detail::PhysicsContext;
 using physics::detail::TerrainCollisionPhysicsStats;
 using physics::detail::TerrainCollisionPhysicsTileState;
 
+using physics::detail::TerrainCollisionMeshLayout;
+using physics::detail::TerrainCollisionMeshLayoutError;
+
 struct PhysicsFixture {
     flecs::world world;
     std::unique_ptr<PhysicsContext> context;
@@ -331,74 +334,145 @@ void test_cave_ceiling_and_overhang_collide_from_below() {
           "bounded overhang blocks a body below it, proving non-height-field geometry");
 }
 
-void check_seam_motion(
-    PhysicsFixture& fixture,
+struct SeamProbeResult {
+    PhysicsBodyState at_crossing{};
+    PhysicsBodyState after_crossing{};
+    std::uint32_t terrain_shape_count = 0;
+};
+
+SeamProbeResult run_seam_probe(
+    const TerrainCollisionCandidate* terrain,
+    Float3 start,
+    Float3 velocity,
+    int crossing_ticks,
+    int after_ticks) {
+    PhysicsFixture fixture;
+    std::string error;
+    if (terrain != nullptr && !install(fixture, *terrain, error)) return {};
+    const flecs::entity probe =
+        dynamic_sphere(fixture, start, 0.25f, velocity, true);
+    fixture.tick_many(crossing_ticks, 1.0f / 120.0f);
+    SeamProbeResult result{};
+    result.at_crossing = body_state(fixture, probe);
+    fixture.tick_many(after_ticks, 1.0f / 120.0f);
+    result.after_crossing = body_state(fixture, probe);
+    result.terrain_shape_count =
+        fixture.context->terrain_collision_stats().shape_count;
+    return result;
+}
+
+float ballistic_y(Float3 start, Float3 velocity, int ticks) {
+    const float elapsed = static_cast<float>(ticks) / 120.0f;
+    return start.y + velocity.y * elapsed - 0.5f * 9.81f * elapsed * elapsed;
+}
+
+void check_supported_seam_motion(
     const TerrainCollisionCandidate& terrain,
     Float3 start,
     Float3 velocity,
-    int ticks,
-    const char* message,
-    bool cross_y = false) {
-    std::string error;
-    if (!install(fixture, terrain, error)) return;
-    const flecs::entity probe =
-        dynamic_sphere(fixture, start, 0.25f, velocity, true);
-    fixture.tick_many(ticks, 1.0f / 120.0f);
-    const PhysicsBodyState state = body_state(fixture, probe);
-    CHECK(fixture.context->terrain_collision_stats().shape_count == 2 &&
-              finite(state.position) && finite(state.linear_velocity) &&
-              magnitude(state.linear_velocity) < 20.0f &&
-              (velocity.x == 0.0f || state.position.x > 0.15f) &&
-              (velocity.z == 0.0f || state.position.z > 0.15f) &&
-              (!cross_y || state.position.y > 0.15f) &&
-              state.position.y > -2.5f,
+    int crossing_ticks,
+    int after_ticks,
+    bool along_x,
+    float surface_x_slope,
+    const char* message) {
+    const SeamProbeResult supported = run_seam_probe(
+        &terrain, start, velocity, crossing_ticks, after_ticks);
+    const SeamProbeResult free_flight = run_seam_probe(
+        nullptr, start, velocity, crossing_ticks, after_ticks);
+    const float crossing_axis = along_x
+        ? supported.at_crossing.position.x
+        : supported.at_crossing.position.z;
+    const float after_axis = along_x
+        ? supported.after_crossing.position.x
+        : supported.after_crossing.position.z;
+    const float crossing_surface =
+        surface_x_slope * supported.at_crossing.position.x;
+    const float after_surface =
+        surface_x_slope * supported.after_crossing.position.x;
+    const float crossing_clearance =
+        supported.at_crossing.position.y - crossing_surface;
+    const float after_clearance =
+        supported.after_crossing.position.y - after_surface;
+    const int total_ticks = crossing_ticks + after_ticks;
+    std::printf(
+        "TERRAIN_SEAM axis=%c slope=%.2f crossing=(%.3f,%.3f,%.3f) clearance=%.3f after=(%.3f,%.3f,%.3f) clearance=%.3f free_y=(%.3f,%.3f) speed=(%.3f,%.3f)\n",
+        surface_x_slope != 0.0f ? 'Y' : (along_x ? 'X' : 'Z'),
+        surface_x_slope,
+        supported.at_crossing.position.x,
+        supported.at_crossing.position.y,
+        supported.at_crossing.position.z, crossing_clearance,
+        supported.after_crossing.position.x,
+        supported.after_crossing.position.y,
+        supported.after_crossing.position.z, after_clearance,
+        free_flight.at_crossing.position.y,
+        free_flight.after_crossing.position.y,
+        magnitude(supported.at_crossing.linear_velocity),
+        magnitude(supported.after_crossing.linear_velocity));
+    CHECK(supported.terrain_shape_count == 2 &&
+              free_flight.terrain_shape_count == 0 &&
+              crossing_axis > 0.1f &&
+              after_axis > crossing_axis + 1.0f &&
+              crossing_clearance > 0.15f && crossing_clearance < 0.75f &&
+              after_clearance > 0.15f && after_clearance < 0.75f &&
+              finite(supported.at_crossing.position) &&
+              finite(supported.after_crossing.position) &&
+              finite(supported.at_crossing.linear_velocity) &&
+              finite(supported.after_crossing.linear_velocity) &&
+              magnitude(supported.at_crossing.linear_velocity) < 20.0f &&
+              magnitude(supported.after_crossing.linear_velocity) < 20.0f &&
+              near(free_flight.at_crossing.position.y,
+                   ballistic_y(start, velocity, crossing_ticks), 0.15f) &&
+              near(free_flight.after_crossing.position.y,
+                   ballistic_y(start, velocity, total_ticks), 0.15f) &&
+              free_flight.at_crossing.position.y < crossing_surface - 0.5f &&
+              free_flight.after_crossing.position.y < after_surface - 1.0f,
           message);
 }
 
 void test_adjacent_xyz_tiles_cross_shared_planes_without_snags() {
     {
-        PhysicsFixture fixture;
         const auto x_tiles = candidate(
             4,
             {
-                xz_quad({0, 0, 0}, {-4.0f, 0.0f, 0.0f}, 0.0f, 4.0f,
-                        -2.0f, 2.0f, 0.0f, 0.0f, true, 31),
-                xz_quad({1, 0, 0}, {}, 0.0f, 4.0f, -2.0f, 2.0f,
+                xz_quad({0, 0, 0}, {}, -12.0f, 0.0f,
+                        -4.0f, 4.0f, 0.0f, 0.0f, true, 31),
+                xz_quad({1, 0, 0}, {}, 0.0f, 12.0f, -4.0f, 4.0f,
                         0.0f, 0.0f, true, 32),
-            });
-        check_seam_motion(
-            fixture, x_tiles, {-1.5f, 0.32f, 0.0f}, {8.0f, 0.0f, 0.0f},
-            28, "continuous body crosses an X tile plane without fall-through, explosion, snag, or duplicate shape");
+            }, 0.02f);
+        check_supported_seam_motion(
+            x_tiles, {-4.0f, 0.3f, 0.0f}, {8.0f, 0.0f, 0.0f},
+            65, 55, true, 0.0f,
+            "continuous body remains analytically supported across and beyond an X tile plane while paired free flight falls");
     }
 
     {
-        PhysicsFixture fixture;
         const auto z_tiles = candidate(
             5,
             {
-                xz_quad({0, 0, 0}, {0.0f, 0.0f, -4.0f}, -2.0f, 2.0f,
-                        0.0f, 4.0f, 0.0f, 0.0f, true, 33),
-                xz_quad({0, 0, 1}, {}, -2.0f, 2.0f, 0.0f, 4.0f,
+                xz_quad({0, 0, 0}, {}, -4.0f, 4.0f,
+                        -12.0f, 0.0f, 0.0f, 0.0f, true, 33),
+                xz_quad({0, 0, 1}, {}, -4.0f, 4.0f, 0.0f, 12.0f,
                         0.0f, 0.0f, true, 34),
-            });
-        check_seam_motion(
-            fixture, z_tiles, {0.0f, 0.32f, -1.5f}, {0.0f, 0.0f, 8.0f},
-            28, "continuous body crosses a Z tile plane without fall-through, explosion, snag, or duplicate shape");
+            }, 0.02f);
+        check_supported_seam_motion(
+            z_tiles, {0.0f, 0.3f, -4.0f}, {0.0f, 0.0f, 8.0f},
+            65, 55, false, 0.0f,
+            "continuous body remains analytically supported across and beyond a Z tile plane while paired free flight falls");
     }
 
     {
-        PhysicsFixture fixture;
         const auto y_tiles = candidate(
             6,
             {
-                xz_quad({0, 0, 0}, {0.0f, -2.0f, 0.0f}, -2.0f, 0.0f,
-                        -2.0f, 2.0f, 0.0f, 2.0f, true, 35),
-                xz_quad({0, 1, 0}, {}, 0.0f, 2.0f, -2.0f, 2.0f,
-                        0.0f, 2.0f, true, 36),
-            }, 1.0f);
-        check_seam_motion(
-            fixture, y_tiles, {-1.5f, -1.15f, 0.0f}, {8.0f, 8.0f, 0.0f},
-            35, "continuous body crosses a Y tile plane on a rising surface without fall-through, explosion, snag, or duplicate shape", true);
+                xz_quad({0, 0, 0}, {0.0f, -3.0f, 0.0f}, -6.0f, 0.0f,
+                        -4.0f, 4.0f, 0.0f, 3.0f, true, 35),
+                xz_quad({0, 1, 0}, {}, 0.0f, 6.0f, -4.0f, 4.0f,
+                        0.0f, 3.0f, true, 36),
+            }, 0.02f);
+        check_supported_seam_motion(
+            y_tiles, {-3.0f, -1.2f, 0.0f}, {10.0f, 5.0f, 0.0f},
+            65, 45, true, 0.5f,
+            "continuous body remains near the analytic rising surface across and beyond a Y tile plane while paired free flight falls");
     }
 }
 
@@ -552,6 +626,37 @@ void test_transactional_failure_replacement_noop_material_and_rejections() {
               settled_a.position.y > 0.35f,
           "generation A collision behavior survives failed generation B");
 
+    const auto injected_failure = candidate(
+        1007,
+        {
+            xz_quad({0, 0, 0}, {20.0f, 0.0f, 0.0f}, -2.0f, 2.0f,
+                    -2.0f, 2.0f, 0.0f, 0.0f, true, 65),
+            xz_quad({1, 0, 0}, {30.0f, 0.0f, 0.0f}, -2.0f, 2.0f,
+                    -2.0f, 2.0f, 0.0f, 0.0f, true, 66),
+        });
+    physics::detail::fail_terrain_collision_mesh_create_on_tile_for_test(
+        *fixture.context, 2);
+    const std::uint64_t injected_allocations_before =
+        g_box_allocations.load();
+    const std::uint64_t injected_frees_before = g_box_frees.load();
+    const int32_t injected_bytes_before = b3GetByteCount();
+    error.clear();
+    CHECK(!fixture.context->replace_terrain_collision(
+              injected_failure, error) && !error.empty(),
+          "injected null mesh creation rejects a valid second tile after building the first");
+    const std::uint64_t injected_allocations =
+        g_box_allocations.load() - injected_allocations_before;
+    const std::uint64_t injected_frees =
+        g_box_frees.load() - injected_frees_before;
+    CHECK(injected_allocations > 0 &&
+              injected_allocations == injected_frees &&
+              b3GetByteCount() == injected_bytes_before &&
+              fixture.context->terrain_collision_stats().installation_key ==
+                  before_failure.installation_key &&
+              fixture.context->terrain_collision_handles_are_valid_for_test(
+                  a_tile.body_handle, a_tile.shape_handle),
+          "injected null mesh failure balances the partial candidate and preserves generation A identity");
+
     auto generation_c = candidate(
         1003, {xz_quad({0, 0, 0}, {}, -8.0f, 8.0f, -8.0f, 8.0f,
                        0.0f, 0.0f, true, 64)}, 0.45f, 0.05f, 903);
@@ -563,6 +668,17 @@ void test_transactional_failure_replacement_noop_material_and_rejections() {
     CHECK(!fixture.context->replace_terrain_collision(stepping_candidate, error) &&
               fixture.context->terrain_collision_stats().installation_key == 1001,
           "terrain replacement rejects while the Box3D world is stepping");
+    const auto world_before_unsafe_clear =
+        fixture.context->terrain_collision_world_state_for_test();
+    fixture.context->clear_terrain_collision();
+    CHECK(fixture.context->terrain_collision_stats().installation_key == 1001 &&
+              fixture.context->terrain_collision_handles_are_valid_for_test(
+                  a_tile.body_handle, a_tile.shape_handle) &&
+              fixture.context->terrain_collision_world_state_for_test().body_count ==
+                  world_before_unsafe_clear.body_count &&
+              fixture.context->terrain_collision_world_state_for_test().shape_count ==
+                  world_before_unsafe_clear.shape_count,
+          "clear while stepping is a no-op that preserves active terrain identity and handles");
     fixture.context->set_stepping_for_test(false);
 
     auto foreign_candidate = generation_c;
@@ -577,6 +693,19 @@ void test_transactional_failure_replacement_noop_material_and_rejections() {
     CHECK(!foreign_ok && !foreign_error.empty() &&
               fixture.context->terrain_collision_stats().installation_key == 1001,
           "terrain replacement rejects a non-owner thread without mutating the active runtime");
+
+    std::thread foreign_clear_thread([&] {
+        fixture.context->clear_terrain_collision();
+    });
+    foreign_clear_thread.join();
+    CHECK(fixture.context->terrain_collision_stats().installation_key == 1001 &&
+              fixture.context->terrain_collision_handles_are_valid_for_test(
+                  a_tile.body_handle, a_tile.shape_handle) &&
+              fixture.context->terrain_collision_world_state_for_test().body_count ==
+                  world_before_unsafe_clear.body_count &&
+              fixture.context->terrain_collision_world_state_for_test().shape_count ==
+                  world_before_unsafe_clear.shape_count,
+          "clear from a foreign thread is a no-op that preserves active terrain identity and handles");
 
     error.clear();
     CHECK(fixture.context->replace_terrain_collision(generation_c, error),
@@ -657,6 +786,93 @@ void test_transactional_failure_replacement_noop_material_and_rejections() {
         static_cast<unsigned long long>(noop_cpp),
         static_cast<unsigned long long>(noop_box),
         static_cast<unsigned long long>(before_noop.replacements));
+}
+
+void test_box3d_mesh_boundaries_and_degenerate_preflight() {
+    TerrainCollisionMeshLayout layout{};
+    CHECK(physics::detail::checked_terrain_collision_mesh_layout(
+              4, 6, layout) == TerrainCollisionMeshLayoutError::None &&
+              layout.vertex_count == 4 && layout.index_count == 6 &&
+              layout.triangle_count == 2 && layout.node_count == 3 &&
+              layout.worst_case_retained_bytes == 272,
+          "checked layout derives exact worst-case Box3D counts and retained offsets for a quad");
+
+    constexpr std::uint64_t int_max =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+    CHECK(physics::detail::checked_terrain_collision_mesh_layout(
+              int_max + 1, 3, layout) ==
+              TerrainCollisionMeshLayoutError::VertexCount,
+          "checked layout rejects a vertex count one past Box3D signed range");
+    CHECK(physics::detail::checked_terrain_collision_mesh_layout(
+              4, 4, layout) ==
+              TerrainCollisionMeshLayoutError::IndexCount,
+          "checked layout requires exact triangle index divisibility");
+    CHECK(physics::detail::checked_terrain_collision_mesh_layout(
+              4, int_max + 2, layout) ==
+              TerrainCollisionMeshLayoutError::IndexCount,
+          "checked layout rejects the first divisible index count above INT_MAX");
+    const std::uint64_t first_node_overflow_triangle =
+        (int_max + 1) / 2 + 1;
+    CHECK(physics::detail::checked_terrain_collision_mesh_layout(
+              4, 3 * first_node_overflow_triangle, layout) ==
+              TerrainCollisionMeshLayoutError::TriangleNodeCount,
+          "checked layout rejects the first 2*T-1 signed node-count overflow");
+    const std::uint64_t largest_divisible_signed_index = int_max - 1;
+    CHECK(physics::detail::checked_terrain_collision_mesh_layout(
+              4, largest_divisible_signed_index, layout) ==
+              TerrainCollisionMeshLayoutError::RetainedLayout,
+          "checked layout rejects signed counts whose worst-case retained offsets exceed INT_MAX");
+
+    PhysicsFixture fixture;
+    std::string error;
+    error.reserve(256);
+    const auto active = candidate(
+        1501, {xz_quad({0, 0, 0}, {}, -4.0f, 4.0f, -4.0f, 4.0f,
+                       0.0f, 0.0f, true, 68)});
+    if (!install(fixture, active, error)) return;
+    TerrainCollisionPhysicsTileState active_tile{};
+    fixture.context->terrain_collision_tile_state_for_test(0, active_tile);
+    const int32_t bytes_before = b3GetByteCount();
+
+    TileCandidate too_small{};
+    too_small.coordinate = {1, 0, 0};
+    too_small.tile_key = 69;
+    too_small.vertices = {
+        {0.0f, 0.0f, 0.0f},
+        {0.0004f, 0.0f, 0.0f},
+        {0.0f, 0.0004f, 0.0f},
+    };
+    too_small.indices = {0, 1, 2};
+    const auto all_below_box3d_area = candidate(1502, {too_small});
+    const std::uint64_t small_allocations_before = g_box_allocations.load();
+    error.clear();
+    CHECK(!fixture.context->replace_terrain_collision(
+              all_below_box3d_area, error) && !error.empty() &&
+              g_box_allocations.load() == small_allocations_before &&
+              b3GetByteCount() == bytes_before &&
+              fixture.context->terrain_collision_stats().installation_key ==
+                  1501 &&
+              fixture.context->terrain_collision_handles_are_valid_for_test(
+                  active_tile.body_handle, active_tile.shape_handle),
+          "all triangles below Box3D's float area threshold reject before native allocation and preserve active terrain");
+
+    TileCandidate repeated = xz_quad(
+        {2, 0, 0}, {}, -2.0f, 2.0f, -2.0f, 2.0f,
+        0.0f, 0.0f, true, 70);
+    repeated.indices[1] = repeated.indices[0];
+    const auto repeated_index = candidate(1503, {repeated});
+    const std::uint64_t repeated_allocations_before =
+        g_box_allocations.load();
+    error.clear();
+    CHECK(!fixture.context->replace_terrain_collision(
+              repeated_index, error) && !error.empty() &&
+              g_box_allocations.load() == repeated_allocations_before &&
+              b3GetByteCount() == bytes_before &&
+              fixture.context->terrain_collision_stats().installation_key ==
+                  1501 &&
+              fixture.context->terrain_collision_handles_are_valid_for_test(
+                  active_tile.body_handle, active_tile.shape_handle),
+          "repeated triangle indices reject before native allocation and preserve active terrain");
 }
 
 void test_boundary_validation_and_steady_ticks_allocate_no_terrain_work() {
@@ -763,6 +979,10 @@ void test_context_destruction_releases_terrain_meshes_bodies_and_shapes() {
         install(fixture, terrain, error);
         dynamic_box(fixture, {0.0f, 2.0f, 0.0f}, {0.5f, 0.5f, 0.5f});
         fixture.tick_many(30);
+        // Exercise the destructor's defensive unsafe-clear path: world
+        // destruction must invalidate attached bodies/shapes before the
+        // retained mesh data owner releases its bytes.
+        fixture.context->set_stepping_for_test(true);
     }
     const int32_t bytes_after = b3GetByteCount();
     const std::uint64_t allocations =
@@ -837,6 +1057,7 @@ int main() {
     test_continuous_body_does_not_tunnel_through_thin_mesh();
     test_native_static_material_filter_empty_and_retained_byte_semantics();
     test_transactional_failure_replacement_noop_material_and_rejections();
+    test_box3d_mesh_boundaries_and_degenerate_preflight();
     test_boundary_validation_and_steady_ticks_allocate_no_terrain_work();
     test_context_destruction_releases_terrain_meshes_bodies_and_shapes();
 

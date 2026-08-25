@@ -339,6 +339,87 @@ struct TerrainCollisionRuntime {
 
 } // namespace
 
+TerrainCollisionMeshLayoutError checked_terrain_collision_mesh_layout(
+    std::uint64_t vertex_count,
+    std::uint64_t index_count,
+    TerrainCollisionMeshLayout& layout) noexcept {
+    layout = {};
+    constexpr std::uint64_t signed_limit =
+        static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    if (vertex_count < 3 || vertex_count > signed_limit) {
+        return TerrainCollisionMeshLayoutError::VertexCount;
+    }
+    if (index_count == 0 || index_count % 3 != 0) {
+        return TerrainCollisionMeshLayoutError::IndexCount;
+    }
+
+    const std::uint64_t triangle_count = index_count / 3;
+    const std::uint64_t max_node_safe_triangles = (signed_limit + 1) / 2;
+    if (triangle_count == 0 ||
+        triangle_count > max_node_safe_triangles) {
+        return TerrainCollisionMeshLayoutError::TriangleNodeCount;
+    }
+    const std::uint64_t node_count = 2 * triangle_count - 1;
+    if (index_count > signed_limit) {
+        return TerrainCollisionMeshLayoutError::IndexCount;
+    }
+
+    auto checked_multiply = [](
+        std::uint64_t first,
+        std::uint64_t second,
+        std::uint64_t& product) noexcept {
+        if (first != 0 && second >
+                std::numeric_limits<std::uint64_t>::max() / first) {
+            return false;
+        }
+        product = first * second;
+        return true;
+    };
+    auto checked_align_eight = [](
+        std::uint64_t value,
+        std::uint64_t& aligned) noexcept {
+        if (value > std::numeric_limits<std::uint64_t>::max() - 7) {
+            return false;
+        }
+        aligned = (value + 7) & ~std::uint64_t{7};
+        return true;
+    };
+
+    std::uint64_t byte_count = 0;
+    if (!checked_align_eight(sizeof(b3MeshData), byte_count) ||
+        byte_count > signed_limit) {
+        return TerrainCollisionMeshLayoutError::RetainedLayout;
+    }
+    auto append_aligned = [&](
+        std::uint64_t count,
+        std::uint64_t element_size) noexcept {
+        std::uint64_t bytes = 0;
+        std::uint64_t aligned = 0;
+        if (!checked_multiply(count, element_size, bytes) ||
+            !checked_align_eight(bytes, aligned) ||
+            aligned > signed_limit || byte_count > signed_limit - aligned) {
+            return false;
+        }
+        byte_count += aligned;
+        return true;
+    };
+    if (!append_aligned(node_count, sizeof(b3MeshNode)) ||
+        !append_aligned(vertex_count, sizeof(b3Vec3)) ||
+        !append_aligned(triangle_count, sizeof(b3MeshTriangle)) ||
+        !append_aligned(triangle_count, sizeof(std::uint8_t)) ||
+        !append_aligned(triangle_count, sizeof(std::uint8_t))) {
+        return TerrainCollisionMeshLayoutError::RetainedLayout;
+    }
+
+    layout.vertex_count = static_cast<std::int32_t>(vertex_count);
+    layout.index_count = static_cast<std::int32_t>(index_count);
+    layout.triangle_count = static_cast<std::int32_t>(triangle_count);
+    layout.node_count = static_cast<std::int32_t>(node_count);
+    layout.worst_case_retained_bytes =
+        static_cast<std::int32_t>(byte_count);
+    return TerrainCollisionMeshLayoutError::None;
+}
+
 struct PhysicsContext::Impl {
     b3WorldId world_id = b3_nullWorldId;
     b3DynamicTree query_tree{};
@@ -370,8 +451,20 @@ struct PhysicsContext::Impl {
     uint64_t overlap_query_candidate_attempts_for_test = 0;
     bool stepping = false;
     std::thread::id owner_thread{};
+    std::size_t fail_terrain_mesh_create_tile_for_test = 0;
     std::unique_ptr<TerrainCollisionRuntime> terrain_collision;
 };
+
+void fail_terrain_collision_mesh_create_on_tile_for_test(
+    PhysicsContext& context,
+    std::size_t one_based_non_empty_tile) noexcept {
+    if (context.impl_ != nullptr &&
+        std::this_thread::get_id() == context.impl_->owner_thread &&
+        !context.impl_->stepping) {
+        context.impl_->fail_terrain_mesh_create_tile_for_test =
+            one_based_non_empty_tile;
+    }
+}
 
 namespace {
 
@@ -380,6 +473,7 @@ bool validate_and_build_terrain_tile(
     const terrain_collision::TileCandidate& candidate,
     float friction,
     float restitution,
+    bool inject_mesh_create_failure,
     TerrainCollisionTileRuntime& tile,
     std::string& error) {
     const std::size_t vertex_count = candidate.vertices.size();
@@ -388,21 +482,28 @@ bool validate_and_build_terrain_tile(
         error = "terrain collision tile has mismatched empty geometry";
         return false;
     }
-    if (vertex_count < 3 ||
-        vertex_count > static_cast<std::size_t>(
-            std::numeric_limits<int>::max())) {
-        error = "terrain collision tile vertex count exceeds Box3D limits";
-        return false;
-    }
-    if (index_count % 3 != 0) {
-        error = "terrain collision tile index count is not divisible by three";
-        return false;
-    }
-    const std::size_t triangle_count = index_count / 3;
-    if (triangle_count == 0 ||
-        triangle_count >= static_cast<std::size_t>(
-            std::numeric_limits<int>::max())) {
-        error = "terrain collision tile triangle count exceeds Box3D limits";
+    TerrainCollisionMeshLayout layout{};
+    const TerrainCollisionMeshLayoutError layout_error =
+        checked_terrain_collision_mesh_layout(
+            static_cast<std::uint64_t>(vertex_count),
+            static_cast<std::uint64_t>(index_count), layout);
+    if (layout_error != TerrainCollisionMeshLayoutError::None) {
+        switch (layout_error) {
+        case TerrainCollisionMeshLayoutError::VertexCount:
+            error = "terrain collision tile vertex count exceeds Box3D limits";
+            break;
+        case TerrainCollisionMeshLayoutError::IndexCount:
+            error = "terrain collision tile index count is invalid for Box3D";
+            break;
+        case TerrainCollisionMeshLayoutError::TriangleNodeCount:
+            error = "terrain collision tile triangle tree exceeds Box3D limits";
+            break;
+        case TerrainCollisionMeshLayoutError::RetainedLayout:
+            error = "terrain collision tile retained layout exceeds Box3D limits";
+            break;
+        case TerrainCollisionMeshLayoutError::None:
+            break;
+        }
         return false;
     }
     if (!finite(candidate.origin_m)) {
@@ -420,6 +521,40 @@ bool validate_and_build_terrain_tile(
             error = "terrain collision tile index is out of range";
             return false;
         }
+    }
+
+    bool has_non_degenerate_triangle = false;
+    const float minimum_area =
+        0.01f * B3_LINEAR_SLOP * B3_LINEAR_SLOP;
+    for (std::int32_t triangle = 0;
+         triangle < layout.triangle_count;
+         ++triangle) {
+        const std::size_t offset =
+            static_cast<std::size_t>(triangle) * 3;
+        const std::uint32_t index1 = candidate.indices[offset];
+        const std::uint32_t index2 = candidate.indices[offset + 1];
+        const std::uint32_t index3 = candidate.indices[offset + 2];
+        if (index1 == index2 || index1 == index3 || index2 == index3) {
+            error = "terrain collision triangle repeats a vertex index";
+            return false;
+        }
+        const b3Vec3 vertex1 = box_vector(candidate.vertices[index1]);
+        const b3Vec3 vertex2 = box_vector(candidate.vertices[index2]);
+        const b3Vec3 vertex3 = box_vector(candidate.vertices[index3]);
+        const b3Vec3 normal = b3Cross(
+            b3Sub(vertex2, vertex1), b3Sub(vertex3, vertex1));
+        const float area = 0.5f * b3Length(normal);
+        if (!std::isfinite(area)) {
+            error = "terrain collision triangle area is not finite";
+            return false;
+        }
+        if (area >= minimum_area) {
+            has_non_degenerate_triangle = true;
+        }
+    }
+    if (!has_non_degenerate_triangle) {
+        error = "terrain collision mesh has no triangle above Box3D's minimum area";
+        return false;
     }
 
     tile.coordinate = candidate.coordinate;
@@ -446,16 +581,19 @@ bool validate_and_build_terrain_tile(
     b3MeshDef mesh_definition{};
     mesh_definition.vertices = tile.vertices.data();
     mesh_definition.indices = tile.indices.data();
-    mesh_definition.vertexCount = static_cast<int>(vertex_count);
-    mesh_definition.triangleCount = static_cast<int>(triangle_count);
+    mesh_definition.vertexCount = layout.vertex_count;
+    mesh_definition.triangleCount = layout.triangle_count;
     mesh_definition.weldVertices = false;
     mesh_definition.identifyEdges = true;
     mesh_definition.useMedianSplit = true;
-    std::vector<int> degenerate_indices(triangle_count + 1, -1);
-    tile.mesh_data = b3CreateMesh(
-        &mesh_definition,
-        degenerate_indices.data(),
-        static_cast<int>(degenerate_indices.size()));
+    std::vector<int> degenerate_indices(
+        static_cast<std::size_t>(layout.triangle_count) + 1, -1);
+    tile.mesh_data = inject_mesh_create_failure
+        ? nullptr
+        : b3CreateMesh(
+              &mesh_definition,
+              degenerate_indices.data(),
+              layout.triangle_count + 1);
     if (tile.mesh_data == nullptr) {
         error = "Box3D rejected a terrain collision mesh";
         return false;
@@ -466,7 +604,8 @@ bool validate_and_build_terrain_tile(
         error = "Box3D reported a degenerate terrain collision triangle";
         return false;
     }
-    if (tile.mesh_data->byteCount <= 0) {
+    if (tile.mesh_data->byteCount <= 0 ||
+        tile.mesh_data->byteCount > layout.worst_case_retained_bytes) {
         error = "Box3D returned invalid terrain collision retained bytes";
         return false;
     }
@@ -745,6 +884,10 @@ PhysicsContext::~PhysicsContext() {
         b3DestroyWorld(impl_->world_id);
         impl_->world_id = b3_nullWorldId;
     }
+    // If clear was defensively rejected (foreign-thread destruction or an
+    // in-progress-step marker), the world has now invalidated every attached
+    // body and shape. Releasing mesh data here cannot leave a dangling shape.
+    impl_->terrain_collision.reset();
     impl_->bridges.clear();
     if (impl_->query_tree_valid) {
         b3DynamicTree_Destroy(&impl_->query_tree);
@@ -816,6 +959,7 @@ bool PhysicsContext::replace_terrain_collision(
                    : impl_->terrain_collision->stats.replacements + 1)
             : 0;
 
+        std::size_t one_based_non_empty_tile = 0;
         for (const terrain_collision::TileCandidate& source : candidate.tiles) {
             if (source.vertices.empty() && source.indices.empty()) {
                 if (!finite(source.origin_m)) {
@@ -824,10 +968,18 @@ bool PhysicsContext::replace_terrain_collision(
                 }
                 continue;
             }
+            ++one_based_non_empty_tile;
+            const bool inject_mesh_create_failure =
+                impl_->fail_terrain_mesh_create_tile_for_test ==
+                one_based_non_empty_tile;
+            if (inject_mesh_create_failure) {
+                impl_->fail_terrain_mesh_create_tile_for_test = 0;
+            }
             TerrainCollisionTileRuntime tile;
             if (!validate_and_build_terrain_tile(
                     impl_->world_id, source, candidate.friction,
-                    candidate.restitution, tile, error)) {
+                    candidate.restitution, inject_mesh_create_failure,
+                    tile, error)) {
                 return false;
             }
             const std::uint64_t tile_bytes =
@@ -860,9 +1012,12 @@ bool PhysicsContext::replace_terrain_collision(
 }
 
 void PhysicsContext::clear_terrain_collision() noexcept {
-    if (impl_ != nullptr) {
-        impl_->terrain_collision.reset();
+    if (impl_ == nullptr ||
+        std::this_thread::get_id() != impl_->owner_thread ||
+        impl_->stepping) {
+        return;
     }
+    impl_->terrain_collision.reset();
 }
 
 TerrainCollisionPhysicsStats
