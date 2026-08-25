@@ -580,7 +580,7 @@ git commit -m "feat: add RiverFloatLab physics proof"
 - Consumes: a dynamic PBR material flagged as a water surface and imperative `waterSurface(...).optics(...).waveBand(...).foam(...).localOverride(...)` calls.
 - Produces: `MATERIAL_WATER_SURFACE`, `WaterSurfaceDefinition`, deterministic canonical appearance text/hash, resolved water material identity, and water-only bounded parameter records separate from `MaterialDef`.
 
-- [ ] **Step 1: Add failing DSL, canonicalization, material-domain, and mesh tests**
+- [x] **Step 1: Add failing DSL, canonicalization, material-domain, and mesh tests**
 
 Add a world fixture using:
 
@@ -612,7 +612,7 @@ network.waterSurface(RIVER_WATER)
 
 Assert reordered object keys canonicalize identically; call order of the three wave bands remains significant; invalid IOR, distances, wavelengths, amplitudes, thresholds, anisotropy, shapes, or extents fail with the exact field path. Assert water mesh construction rejects an unflagged glass material and accepts a flagged dynamic material without requiring id 4 or 7.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target material_registry_tests
@@ -623,7 +623,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target gpu_water_render_tests
 
 Expected: `waterSurface` and the builder do not exist; water mesh tests still require material 4.
 
-- [ ] **Step 3: Add the generic water-domain flag and separate settings**
+- [x] **Step 3: Add the generic water-domain flag and separate settings**
 
 Add `MATERIAL_WATER_SURFACE = 1u << 4` to `MaterialSurfaceFlags`, expose strict `waterSurface` parsing in `defineMaterial`, and bump `MATERIAL_SCHEMA_VERSION` from 4 to 5. Do not add wave/foam fields to `MaterialDef` or `MaterialGpuRecord`.
 
@@ -659,13 +659,13 @@ struct WaterSurfaceDefinition {
 
 Require exactly three wave bands for Ready publication. Validate physical IOR in `[1,2.5]`, positive distances/wavelengths, amplitudes in `[0,1]`, anisotropy in `[-0.95,0.95]`, finite bounded foam controls, and positive override volumes.
 
-- [ ] **Step 4: Implement the imperative builder and resolved mesh identity**
+- [x] **Step 4: Implement the imperative builder and resolved mesh identity**
 
 `network.waterSurface(materialId)` returns a dedicated QuickJS builder object with chainable `.optics`, `.waveBand`, `.foam`, and `.localOverride` methods. Native canonical text uses fixed field order and float formatting, includes appearance controls in the appearance/presentation product key, and excludes them from PhysX semantic identity.
 
 Change `build_water_scene_part` to accept `material_id`, validate `MATERIAL_WATER_SURFACE`, and write that id to every `VkRasterVertex`. Remove every `mesh.material == 4` and `material_index = 4` check. Failed-debug water uses the same flagged water material when available and otherwise uses a clearly logged non-water static debug material without a field binding.
 
-- [ ] **Step 5: Pass material, DSL, and water-mesh gates**
+- [x] **Step 5: Pass material, DSL, and water-mesh gates**
 
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target material_registry_tests
@@ -677,7 +677,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target gpu_water_render_tests
 
 Expected: all tests pass; the RiverFloatLab material is dynamically resolved, id-independent, and a water appearance change does not invalidate PhysX section artifacts.
 
-- [ ] **Step 6: Commit the dedicated water-domain slice**
+- [x] **Step 6: Commit the dedicated water-domain slice**
 
 ```powershell
 git add libs/MatterSurfaceLib/include/material_registry.h libs/MatterSurfaceLib/src/material_registry.c libs/MatterSurfaceLib/tests/material_registry_tests.cpp MatterEngine3/include/matter/river_network.h MatterEngine3/src/hydrology/river_network_builder.h MatterEngine3/src/hydrology/river_network_builder.cpp MatterEngine3/src/script/world_definition_loader.cpp MatterEngine3/src/render/gpu_meshing/water_scene_part.h MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp MatterEngine3/src/matter_engine.cpp MatterEngine3/tests/world_definition_tests.cpp MatterEngine3/tests/river_network_tests.cpp MatterEngine3/tests/gpu_water_render_tests.cpp projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js cmake/manifests/engine-core.sources

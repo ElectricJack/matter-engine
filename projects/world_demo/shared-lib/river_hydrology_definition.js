@@ -177,7 +177,7 @@ export function sampleRiverHydrologyLane(authored, distance, lateral = 0) {
 
 // These delegates keep the two worlds on the same accepted simulation and
 // terrain inputs without moving gameplay entities into the river generator.
-export function authorRiverHydrologyNetwork(worldSeed) {
+export function authorRiverHydrologyNetwork(worldSeed, waterSurfaceMaterial = null) {
   const authored = buildRiverHydrologyDefinition(worldSeed);
   const fixedStep = 1 / 120;
   const maxSteps = 8192;
@@ -189,6 +189,30 @@ export function authorRiverHydrologyNetwork(worldSeed) {
     .inlet(authored.curve[0], { flow: 600.0 })
     .curve(authored.curve)
     .channelProfile(authored.channelProfile);
+
+  if (waterSurfaceMaterial !== null) {
+    network.waterSurface(waterSurfaceMaterial)
+      .optics({
+        shallowAbsorption: [0.03, 0.015, 0.008], shallowDistance: 8,
+        deepAbsorption: [0.18, 0.055, 0.025], deepDistance: 2.5,
+        scatteringColor: [0.08, 0.22, 0.24], scatteringDistance: 7,
+        anisotropy: 0.35, ior: 1.333,
+      })
+      .waveBand({ wavelength: 7.5, amplitude: 0.16, speed: 0.8, response: 0.35 })
+      .waveBand({ wavelength: 1.6, amplitude: 0.24, speed: 1.4, response: 0.75 })
+      .waveBand({ wavelength: 0.28, amplitude: 0.08, speed: 2.1, response: 0.20 })
+      .foam({
+        threshold: 0.42, gain: 1.8, persistence: 2.5,
+        breakupScale: 0.7, roughnessGain: 0.55,
+        scatteringGain: 1.4, transmissionLoss: 0.72,
+        normalSoftening: 0.6,
+      })
+      .localOverride({
+        shape: "sphere", center: [111, 46, 5], radius: 14,
+        foamMultiplier: 1.25, waveMultiplier: 1.1,
+        thresholdOffset: -0.08,
+      });
+  }
 
   network.backend("physx");
   network.pbd({

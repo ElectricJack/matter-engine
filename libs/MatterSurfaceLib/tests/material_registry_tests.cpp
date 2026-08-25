@@ -18,7 +18,7 @@ static bool nearf(float a, float b, float eps = 1e-6f) {
 
 static uint64_t fnv1a64(const void* data, size_t size) {
     const auto* bytes = static_cast<const unsigned char*>(data);
-    uint64_t hash = 1469598103934665603ull;
+    uint64_t hash = 14695981039346656037ull;
     for (size_t i = 0; i < size; ++i) {
         hash ^= bytes[i];
         hash *= 1099511628211ull;
@@ -74,9 +74,14 @@ int main() {
     CHECK(offsetof(MaterialGpuRecord, flags_misc) == 128,
           "RTX flags uvec4 begins at byte 128");
     CHECK(MaterialRegistryCount() == 30, "garden registry has stable count 30");
-    CHECK(MaterialRegistrySchemaVersion() == 3u, "material schema version is 3");
-    CHECK(fnv1a64(buf, 18u * MATERIAL_FLOATS_PER_DEF * sizeof(float)) ==
-              0x69c22a3502ba9490ull,
+    CHECK(MaterialRegistrySchemaVersion() == 5u,
+          "water-surface identity advances the material schema to version 5");
+    const uint64_t legacy_prefix_hash =
+        fnv1a64(buf, 18u * MATERIAL_FLOATS_PER_DEF * sizeof(float));
+    if (legacy_prefix_hash != 0x028ace098b99e124ull)
+        std::printf("legacy material prefix hash: 0x%016llx\n",
+                    static_cast<unsigned long long>(legacy_prefix_hash));
+    CHECK(legacy_prefix_hash == 0x028ace098b99e124ull,
           "legacy IDs 0-17 keep byte-identical 12-float packing");
 
     struct ExpectedBase { int id; float r,g,b,rough,metal; };
@@ -158,6 +163,25 @@ int main() {
           "glass is a closed volume");
     CHECK(records[7].transmission[1] > 1.32f &&
           records[7].transmission[1] < 1.34f, "water IOR is preserved");
+    CHECK(MATERIAL_WATER_SURFACE == (1u << 4),
+          "water uses a generic surface-domain flag, not a material id");
+    CHECK((records[7].flags_misc[0] & MATERIAL_WATER_SURFACE) != 0u,
+          "the builtin compatibility water is explicitly water-domain flagged");
+
+    MaterialDef authored_water{};
+    MaterialRegistryDefaultDynamicDef(&authored_water);
+    authored_water.surfaceFlags |= MATERIAL_WATER_SURFACE;
+    const int authored_water_id =
+        MaterialRegistryDefineDynamic(&authored_water, "RegistryTestWater");
+    CHECK(authored_water_id >= MaterialRegistryStaticCount(),
+          "dynamic authored water registers through the ordinary material table");
+    MaterialGpuRecord dynamic_records[MATERIAL_MAX_TOTAL]{};
+    MaterialRegistryPackRtForGPU(dynamic_records);
+    if (authored_water_id >= 0) {
+        CHECK((dynamic_records[authored_water_id].flags_misc[0] &
+               MATERIAL_WATER_SURFACE) != 0u,
+              "dynamic water-domain identity reaches the Vulkan material record");
+    }
     CHECK(records[15].scattering[3] > 0.0f &&
           (records[15].flags_misc[0] & MATERIAL_THIN_WALLED) != 0,
           "leaf opts into thin scattering");

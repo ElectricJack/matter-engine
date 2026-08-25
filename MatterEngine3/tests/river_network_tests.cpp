@@ -19,6 +19,10 @@ using matter::HydrologyFillSensor;
 using matter::HydrologyPbdSettings;
 using matter::HydrologyQualitySettings;
 using matter::HydrologyVirtualDam;
+using matter::WaterFoamDefinition;
+using matter::WaterLocalOverrideDefinition;
+using matter::WaterOpticalDefinition;
+using matter::WaterWaveBandDefinition;
 using hydrology::RiverNetworkBuilder;
 
 std::uint64_t expected_fnv1a64(const std::string& text) {
@@ -452,6 +456,127 @@ void test_authored_fluid_rejects_invalid_ranges() {
           "zero emitter directions are rejected before canonicalization");
 }
 
+bool finish_minimal_water_network(RiverNetworkBuilder& builder,
+                                  RiverNetworkDefinition& out,
+                                  std::string& error) {
+    std::size_t main = 0;
+    std::size_t upper = 0;
+    return builder.add_river("main", main, error) &&
+           builder.set_inlet(main, {{0.0f, 18.0f, 0.0f}, 1.0f}, error) &&
+           builder.set_curve(main, {{0.0f, 18.0f, 0.0f},
+                                    {128.0f, 3.0f, 5.0f}}, error) &&
+           builder.set_channel_profile(
+               main, {{0.0f, 7.0f, 2.5f, 0.35f},
+                      {128.0f, 9.45f, 2.8f, -0.20f}}, error) &&
+           builder.add_section(main, "upper", 0.0f, 100.0f, 4.0f,
+                               upper, error) &&
+           builder.set_section_pool(upper, {90.0f, 100.0f, 3.0f}, error) &&
+           builder.set_section_spillway(
+               upper, {"pool-one", 100.0f, 9.45f, 2.0f, 4.0f, 2.0f},
+               error) &&
+           builder.set_bake_sequential(error) && builder.finish(out, error);
+}
+
+bool author_valid_water(RiverNetworkBuilder& builder, bool reverse_waves,
+                        std::string& error) {
+    WaterOpticalDefinition optics{};
+    optics.shallow_absorption = {0.03f, 0.015f, 0.008f};
+    optics.shallow_distance_m = 8.0f;
+    optics.deep_absorption = {0.18f, 0.055f, 0.025f};
+    optics.deep_distance_m = 2.5f;
+    optics.scattering_color = {0.08f, 0.22f, 0.24f};
+    optics.scattering_distance_m = 7.0f;
+    optics.anisotropy = 0.35f;
+    optics.ior = 1.333f;
+    WaterFoamDefinition foam{0.42f, 1.8f, 2.5f, 0.7f,
+                             0.55f, 1.4f, 0.72f, 0.6f};
+    const WaterWaveBandDefinition waves[] = {
+        {7.5f, 0.16f, 0.8f, 0.35f},
+        {1.6f, 0.24f, 1.4f, 0.75f},
+        {0.28f, 0.08f, 2.1f, 0.20f},
+    };
+    WaterLocalOverrideDefinition local{};
+    local.shape = WaterLocalOverrideDefinition::Shape::Sphere;
+    local.center_m = {111.0f, 46.0f, 5.0f};
+    local.radius_m = 14.0f;
+    local.foam_multiplier = 1.25f;
+    local.wave_multiplier = 1.1f;
+    local.threshold_offset = -0.08f;
+    if (!builder.set_water_material(37u, error) ||
+        !builder.set_water_optics(optics, error)) return false;
+    for (int i = 0; i != 3; ++i) {
+        const int index = reverse_waves ? 2 - i : i;
+        if (!builder.add_water_wave_band(waves[index], error)) return false;
+    }
+    return builder.set_water_foam(foam, error) &&
+           builder.add_water_local_override(local, error);
+}
+
+void test_water_appearance_is_separate_and_ordered() {
+    RiverNetworkDefinition dry, water, reversed;
+    std::string error;
+    RiverNetworkBuilder dry_builder(0.5f, 0x52495645u);
+    CHECK(finish_minimal_water_network(dry_builder, dry, error), error.c_str());
+
+    RiverNetworkBuilder water_builder(0.5f, 0x52495645u);
+    CHECK(author_valid_water(water_builder, false, error), error.c_str());
+    CHECK(finish_minimal_water_network(water_builder, water, error), error.c_str());
+    CHECK(water.water_surface.has_value() &&
+              water.water_surface->material_id == 37u &&
+              water.water_surface->wave_bands.size() == 3u &&
+              water.water_surface->local_overrides.size() == 1u &&
+              !water.water_surface->canonical_text.empty() &&
+              water.water_surface->appearance_hash != 0u,
+          "authored water publishes a bounded appearance record and key");
+    CHECK(water.canonical_text == dry.canonical_text &&
+              water.canonical_hash == dry.canonical_hash,
+          "water appearance does not invalidate PhysX river identity");
+
+    RiverNetworkBuilder reversed_builder(0.5f, 0x52495645u);
+    CHECK(author_valid_water(reversed_builder, true, error), error.c_str());
+    CHECK(finish_minimal_water_network(reversed_builder, reversed, error),
+          error.c_str());
+    CHECK(reversed.canonical_hash == water.canonical_hash &&
+              reversed.water_surface->appearance_hash !=
+                  water.water_surface->appearance_hash,
+          "wave-band declaration order is significant only to appearance");
+}
+
+void test_water_appearance_rejects_invalid_ranges() {
+    std::string error;
+    RiverNetworkBuilder builder(0.5f, 1u);
+    CHECK(builder.set_water_material(37u, error), error.c_str());
+    WaterOpticalDefinition optics{};
+    optics.shallow_absorption = {0.03f, 0.015f, 0.008f};
+    optics.shallow_distance_m = 0.0f;
+    optics.deep_absorption = {0.18f, 0.055f, 0.025f};
+    optics.deep_distance_m = 2.5f;
+    optics.scattering_color = {0.08f, 0.22f, 0.24f};
+    optics.scattering_distance_m = 7.0f;
+    optics.anisotropy = 0.35f;
+    optics.ior = 1.333f;
+    CHECK(!builder.set_water_optics(optics, error) &&
+              error.find("hydrology.waterSurface.optics.shallowDistance") !=
+                  std::string::npos,
+          "nonpositive optical distances fail at their exact DSL path");
+
+    error.clear();
+    CHECK(!builder.add_water_wave_band({1.0f, 1.01f, 1.0f, 0.5f}, error) &&
+              error.find("hydrology.waterSurface.waveBand[0].amplitude") !=
+                  std::string::npos,
+          "wave amplitudes outside [0, 1] fail at the indexed path");
+
+    WaterLocalOverrideDefinition local{};
+    local.shape = WaterLocalOverrideDefinition::Shape::Box;
+    local.half_extents_m = {1.0f, 0.0f, 1.0f};
+    local.foam_multiplier = 1.0f;
+    local.wave_multiplier = 1.0f;
+    CHECK(!builder.add_water_local_override(local, error) &&
+              error.find("hydrology.waterSurface.localOverride[0].halfExtents") !=
+                  std::string::npos,
+          "box overrides require a positive volume at their exact path");
+}
+
 } // namespace
 
 int main() {
@@ -461,5 +586,7 @@ int main() {
     test_authored_fluid_defaults_are_dry_and_hermetic();
     test_authored_fluid_is_canonical_and_preserves_multiple_emitters();
     test_authored_fluid_rejects_invalid_ranges();
+    test_water_appearance_is_separate_and_ordered();
+    test_water_appearance_rejects_invalid_ranges();
     return check_summary();
 }

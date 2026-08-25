@@ -62,6 +62,16 @@ public:
                          std::string& error);
     bool set_quality(const matter::HydrologyQualitySettings& quality,
                      std::string& error);
+    bool set_water_material(std::uint32_t material_id, std::string& error);
+    bool set_water_optics(const matter::WaterOpticalDefinition& optics,
+                          std::string& error);
+    bool add_water_wave_band(const matter::WaterWaveBandDefinition& wave,
+                             std::string& error);
+    bool set_water_foam(const matter::WaterFoamDefinition& foam,
+                        std::string& error);
+    bool add_water_local_override(
+        const matter::WaterLocalOverrideDefinition& local,
+        std::string& error);
 
     bool finish(matter::RiverNetworkDefinition& out, std::string& error);
 
@@ -88,6 +98,7 @@ private:
     std::vector<RiverState> rivers_;
     std::vector<SectionState> sections_;
     matter::HydrologyFluidRequest fluid_{};
+    matter::WaterSurfaceDefinition water_surface_{};
     bool bake_sequential_ = false;
     bool has_backend_ = false;
     bool has_pbd_ = false;
@@ -96,6 +107,9 @@ private:
     bool has_virtual_dam_ = false;
     bool has_fill_sensor_ = false;
     bool has_quality_ = false;
+    bool has_water_material_ = false;
+    bool has_water_optics_ = false;
+    bool has_water_foam_ = false;
     bool finished_ = false;
 };
 

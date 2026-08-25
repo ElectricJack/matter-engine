@@ -23,6 +23,11 @@ using matter::RiverPoolDefinition;
 using matter::RiverSectionDefinition;
 using matter::RiverSpillwayDefinition;
 using matter::RiverWaterfallDefinition;
+using matter::WaterFoamDefinition;
+using matter::WaterLocalOverrideDefinition;
+using matter::WaterOpticalDefinition;
+using matter::WaterSurfaceDefinition;
+using matter::WaterWaveBandDefinition;
 namespace {
 
 bool fail(std::string& error, const std::string& path,
@@ -266,6 +271,73 @@ std::string canonical_text(const RiverNetworkDefinition& network) {
     append_uint(text, network.fluid.quality.max_mesh_vertices);
     text.push_back(',');
     append_uint(text, network.fluid.quality.max_mesh_indices);
+    text.push_back('\n');
+    return text;
+}
+
+std::string canonical_water_text(const WaterSurfaceDefinition& water) {
+    std::string text;
+    text.reserve(512);
+    text += "water-appearance-v1\nmaterial=";
+    append_uint(text, water.material_id);
+    text += "\noptics=";
+    append_float3(text, water.optics.shallow_absorption);
+    text.push_back(',');
+    append_float(text, water.optics.shallow_distance_m);
+    text.push_back(',');
+    append_float3(text, water.optics.deep_absorption);
+    text.push_back(',');
+    append_float(text, water.optics.deep_distance_m);
+    text.push_back(',');
+    append_float3(text, water.optics.scattering_color);
+    text.push_back(',');
+    append_float(text, water.optics.scattering_distance_m);
+    text.push_back(',');
+    append_float(text, water.optics.anisotropy);
+    text.push_back(',');
+    append_float(text, water.optics.ior);
+    for (const auto& wave : water.wave_bands) {
+        text += "\nwave-band=";
+        append_float(text, wave.wavelength_m);
+        text.push_back(',');
+        append_float(text, wave.normal_amplitude);
+        text.push_back(',');
+        append_float(text, wave.speed_multiplier);
+        text.push_back(',');
+        append_float(text, wave.response);
+    }
+    text += "\nfoam=";
+    append_float(text, water.foam.threshold);
+    text.push_back(',');
+    append_float(text, water.foam.gain);
+    text.push_back(',');
+    append_float(text, water.foam.persistence_s);
+    text.push_back(',');
+    append_float(text, water.foam.breakup_scale_m);
+    text.push_back(',');
+    append_float(text, water.foam.roughness_gain);
+    text.push_back(',');
+    append_float(text, water.foam.scattering_gain);
+    text.push_back(',');
+    append_float(text, water.foam.transmission_loss);
+    text.push_back(',');
+    append_float(text, water.foam.normal_softening);
+    for (const auto& local : water.local_overrides) {
+        text += "\nlocal-override=";
+        text += local.shape == WaterLocalOverrideDefinition::Shape::Sphere
+                    ? "sphere," : "box,";
+        append_float3(text, local.center_m);
+        text.push_back(',');
+        append_float3(text, local.half_extents_m);
+        text.push_back(',');
+        append_float(text, local.radius_m);
+        text.push_back(',');
+        append_float(text, local.foam_multiplier);
+        text.push_back(',');
+        append_float(text, local.wave_multiplier);
+        text.push_back(',');
+        append_float(text, local.threshold_offset);
+    }
     text.push_back('\n');
     return text;
 }
@@ -709,6 +781,148 @@ bool RiverNetworkBuilder::set_quality(const HydrologyQualitySettings& quality,
     return true;
 }
 
+bool RiverNetworkBuilder::set_water_material(std::uint32_t material_id,
+                                              std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.waterSurface.material";
+    if (has_water_material_)
+        return fail(error, path, "waterSurface may be declared only once");
+    water_surface_.material_id = material_id;
+    has_water_material_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_water_optics(const WaterOpticalDefinition& optics,
+                                            std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.waterSurface.optics";
+    if (!has_water_material_)
+        return fail(error, "hydrology.waterSurface", "waterSurface(material) is required first");
+    if (has_water_optics_)
+        return fail(error, path, "optics may be declared only once");
+    const auto bounded_color = [](Float3 value) {
+        return finite(value) && value.x >= 0.0f && value.y >= 0.0f &&
+               value.z >= 0.0f && value.x <= 100.0f && value.y <= 100.0f &&
+               value.z <= 100.0f;
+    };
+    if (!bounded_color(optics.shallow_absorption))
+        return fail(error, path + ".shallowAbsorption",
+                    "shallowAbsorption must contain finite values in [0, 100]");
+    if (!positive(optics.shallow_distance_m))
+        return fail(error, path + ".shallowDistance",
+                    "shallowDistance must be finite and positive");
+    if (!bounded_color(optics.deep_absorption))
+        return fail(error, path + ".deepAbsorption",
+                    "deepAbsorption must contain finite values in [0, 100]");
+    if (!positive(optics.deep_distance_m))
+        return fail(error, path + ".deepDistance",
+                    "deepDistance must be finite and positive");
+    if (!bounded_color(optics.scattering_color))
+        return fail(error, path + ".scatteringColor",
+                    "scatteringColor must contain finite values in [0, 100]");
+    if (!positive(optics.scattering_distance_m))
+        return fail(error, path + ".scatteringDistance",
+                    "scatteringDistance must be finite and positive");
+    if (!finite(optics.anisotropy) || optics.anisotropy < -0.95f ||
+        optics.anisotropy > 0.95f)
+        return fail(error, path + ".anisotropy",
+                    "anisotropy must lie in [-0.95, 0.95]");
+    if (!finite(optics.ior) || optics.ior < 1.0f || optics.ior > 2.5f)
+        return fail(error, path + ".ior", "ior must lie in [1, 2.5]");
+    water_surface_.optics = optics;
+    has_water_optics_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::add_water_wave_band(
+    const WaterWaveBandDefinition& wave, std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.waterSurface.waveBand[" +
+                             std::to_string(water_surface_.wave_bands.size()) + "]";
+    if (!has_water_material_)
+        return fail(error, "hydrology.waterSurface", "waterSurface(material) is required first");
+    if (water_surface_.wave_bands.size() >= 3u)
+        return fail(error, path, "exactly three wave bands are supported");
+    if (!positive(wave.wavelength_m))
+        return fail(error, path + ".wavelength",
+                    "wavelength must be finite and positive");
+    if (!finite(wave.normal_amplitude) || wave.normal_amplitude < 0.0f ||
+        wave.normal_amplitude > 1.0f)
+        return fail(error, path + ".amplitude", "amplitude must lie in [0, 1]");
+    if (!positive(wave.speed_multiplier) || wave.speed_multiplier > 16.0f)
+        return fail(error, path + ".speed", "speed must lie in (0, 16]");
+    if (!finite(wave.response) || wave.response < 0.0f || wave.response > 1.0f)
+        return fail(error, path + ".response", "response must lie in [0, 1]");
+    water_surface_.wave_bands.push_back(wave);
+    return true;
+}
+
+bool RiverNetworkBuilder::set_water_foam(const WaterFoamDefinition& foam,
+                                          std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.waterSurface.foam";
+    if (!has_water_material_)
+        return fail(error, "hydrology.waterSurface", "waterSurface(material) is required first");
+    if (has_water_foam_)
+        return fail(error, path, "foam may be declared only once");
+    const auto in_range = [](float value, float low, float high) {
+        return finite(value) && value >= low && value <= high;
+    };
+    if (!in_range(foam.threshold, 0.0f, 1.0f))
+        return fail(error, path + ".threshold", "threshold must lie in [0, 1]");
+    if (!in_range(foam.gain, 0.0f, 16.0f))
+        return fail(error, path + ".gain", "gain must lie in [0, 16]");
+    if (!in_range(foam.persistence_s, 0.0f, 60.0f))
+        return fail(error, path + ".persistence", "persistence must lie in [0, 60]");
+    if (!positive(foam.breakup_scale_m) || foam.breakup_scale_m > 100.0f)
+        return fail(error, path + ".breakupScale", "breakupScale must lie in (0, 100]");
+    if (!in_range(foam.roughness_gain, 0.0f, 1.0f))
+        return fail(error, path + ".roughnessGain", "roughnessGain must lie in [0, 1]");
+    if (!in_range(foam.scattering_gain, 0.0f, 16.0f))
+        return fail(error, path + ".scatteringGain", "scatteringGain must lie in [0, 16]");
+    if (!in_range(foam.transmission_loss, 0.0f, 1.0f))
+        return fail(error, path + ".transmissionLoss", "transmissionLoss must lie in [0, 1]");
+    if (!in_range(foam.normal_softening, 0.0f, 1.0f))
+        return fail(error, path + ".normalSoftening", "normalSoftening must lie in [0, 1]");
+    water_surface_.foam = foam;
+    has_water_foam_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::add_water_local_override(
+    const WaterLocalOverrideDefinition& local, std::string& error) {
+    if (finished_) return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.waterSurface.localOverride[" +
+                             std::to_string(water_surface_.local_overrides.size()) + "]";
+    if (!has_water_material_)
+        return fail(error, "hydrology.waterSurface", "waterSurface(material) is required first");
+    if (!finite(local.center_m))
+        return fail(error, path + ".center", "center must contain finite values");
+    if (local.shape == WaterLocalOverrideDefinition::Shape::Sphere) {
+        if (!positive(local.radius_m))
+            return fail(error, path + ".radius", "radius must be finite and positive");
+    } else if (!positive(local.half_extents_m.x) ||
+               !positive(local.half_extents_m.y) ||
+               !positive(local.half_extents_m.z)) {
+        return fail(error, path + ".halfExtents",
+                    "halfExtents must contain three finite positive values");
+    }
+    if (!finite(local.foam_multiplier) || local.foam_multiplier < 0.0f ||
+        local.foam_multiplier > 8.0f)
+        return fail(error, path + ".foamMultiplier",
+                    "foamMultiplier must lie in [0, 8]");
+    if (!finite(local.wave_multiplier) || local.wave_multiplier < 0.0f ||
+        local.wave_multiplier > 8.0f)
+        return fail(error, path + ".waveMultiplier",
+                    "waveMultiplier must lie in [0, 8]");
+    if (!finite(local.threshold_offset) || local.threshold_offset < -1.0f ||
+        local.threshold_offset > 1.0f)
+        return fail(error, path + ".thresholdOffset",
+                    "thresholdOffset must lie in [-1, 1]");
+    water_surface_.local_overrides.push_back(local);
+    return true;
+}
+
 bool RiverNetworkBuilder::finish(RiverNetworkDefinition& out,
                                  std::string& error) {
     if (finished_)
@@ -746,6 +960,15 @@ bool RiverNetworkBuilder::finish(RiverNetworkDefinition& out,
         if (!has_fill_sensor_)
             return fail(error, "hydrology.fillSensor", "fillSensor is required for the PhysX backend");
     }
+    if (has_water_material_) {
+        if (!has_water_optics_)
+            return fail(error, "hydrology.waterSurface.optics", "optics is required");
+        if (water_surface_.wave_bands.size() != 3u)
+            return fail(error, "hydrology.waterSurface.waveBand",
+                        "exactly three wave bands are required");
+        if (!has_water_foam_)
+            return fail(error, "hydrology.waterSurface.foam", "foam is required");
+    }
 
     RiverNetworkDefinition result;
     result.cell_size_m = cell_size_m_;
@@ -760,6 +983,11 @@ bool RiverNetworkBuilder::finish(RiverNetworkDefinition& out,
     result.fluid = fluid_;
     result.canonical_text = canonical_text(result);
     result.canonical_hash = fnv1a64(result.canonical_text);
+    if (has_water_material_) {
+        water_surface_.canonical_text = canonical_water_text(water_surface_);
+        water_surface_.appearance_hash = fnv1a64(water_surface_.canonical_text);
+        result.water_surface = water_surface_;
+    }
     out = std::move(result);
     return true;
 }

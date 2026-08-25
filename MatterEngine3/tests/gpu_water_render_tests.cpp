@@ -2,6 +2,10 @@
 
 #include "render/gpu_meshing/water_scene_part.h"
 
+extern "C" {
+#include "material_registry.h"
+}
+
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -20,13 +24,26 @@ gpu_meshing::MeshResult triangle_mesh() {
     return mesh;
 }
 
-void test_converts_to_one_ordinary_glass_part() {
+std::uint32_t dynamic_water_material() {
+    MaterialRegistryResetDynamic();
+    MaterialDef material{};
+    MaterialRegistryDefaultDynamicDef(&material);
+    material.surfaceFlags |= MATERIAL_WATER_SURFACE;
+    const int id = MaterialRegistryDefineDynamic(&material, "GpuWaterTest");
+    CHECK(id >= MaterialRegistryStaticCount(),
+          "test water receives a dynamic material id");
+    return static_cast<std::uint32_t>(id);
+}
+
+void test_converts_to_one_authored_water_part() {
     const auto mesh = triangle_mesh();
+    const std::uint32_t water_material = dynamic_water_material();
     std::shared_ptr<const viewer::VkScenePart> part;
     uint64_t instance_id = 0;
     gpu_meshing::Error error{};
     CHECK(gpu_meshing::build_water_scene_part(
-              mesh, 0x123456789abcdef0ull, part, instance_id, error),
+              mesh, 0x123456789abcdef0ull, water_material,
+              part, instance_id, error),
           error.message.c_str());
     CHECK(part && part->part_hash != 0u && instance_id != 0u &&
               instance_id != part->part_hash,
@@ -47,10 +64,10 @@ void test_converts_to_one_ordinary_glass_part() {
                   vertex.normal.y == mesh.normals[i * 3u + 1u] &&
                   vertex.normal.z == mesh.normals[i * 3u + 2u],
               "water conversion retains exact positions and normals");
-        CHECK(vertex.material_index == 4u && vertex.tint.x == 1.0f &&
+        CHECK(vertex.material_index == water_material && vertex.tint.x == 1.0f &&
                   vertex.tint.y == 1.0f && vertex.tint.z == 1.0f &&
                   vertex.surface.z == 1.0f && vertex.surface.w == 1.0f,
-              "water conversion selects canonical glass material 4");
+              "water conversion selects the resolved authored water material");
     }
     CHECK(part->clusters[0].aabb_min.x == -2.0f &&
               part->clusters[0].aabb_min.y == 3.0f &&
@@ -66,10 +83,26 @@ void test_converts_to_one_ordinary_glass_part() {
     std::shared_ptr<const viewer::VkScenePart> repeated;
     uint64_t repeated_instance = 0;
     CHECK(gpu_meshing::build_water_scene_part(
-              mesh, 0x123456789abcdef0ull, repeated, repeated_instance, error) &&
+              mesh, 0x123456789abcdef0ull, water_material,
+              repeated, repeated_instance, error) &&
               repeated->part_hash == part->part_hash &&
               repeated_instance == instance_id,
           "artifact digest yields stable part and instance identities");
+
+    std::shared_ptr<const viewer::VkScenePart> rejected = part;
+    std::uint64_t rejected_instance = instance_id;
+    CHECK(!gpu_meshing::build_water_scene_part(
+              mesh, 0x123456789abcdef0ull, 4u,
+              rejected, rejected_instance, error) &&
+              rejected == part && rejected_instance == instance_id,
+          "ordinary unflagged glass is rejected transactionally");
+
+    std::shared_ptr<const viewer::VkScenePart> builtin;
+    std::uint64_t builtin_instance = 0;
+    CHECK(gpu_meshing::build_water_scene_part(
+              mesh, 0x123456789abcdef0ull, 7u,
+              builtin, builtin_instance, error) && builtin,
+          "the explicitly flagged builtin compatibility water remains valid");
 }
 
 void test_dry_omission_and_malformed_transactionality() {
@@ -80,7 +113,7 @@ void test_dry_omission_and_malformed_transactionality() {
         std::make_shared<viewer::VkScenePart>();
     uint64_t instance_id = 99u;
     gpu_meshing::Error error{};
-    CHECK(gpu_meshing::build_water_scene_part(dry, 10u, part, instance_id,
+    CHECK(gpu_meshing::build_water_scene_part(dry, 10u, 7u, part, instance_id,
                                               error) &&
               !part && instance_id == 0u,
           "dry water mesh is omitted without an empty renderer part");
@@ -91,18 +124,18 @@ void test_dry_omission_and_malformed_transactionality() {
     instance_id = 88u;
     auto malformed = triangle_mesh();
     malformed.indices[2] = 99u;
-    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, part,
+    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, 7u, part,
                                                instance_id, error) &&
               part == old && instance_id == 88u,
           "invalid replacement leaves the previously accepted binding intact");
     malformed = triangle_mesh();
     malformed.normals.pop_back();
-    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, part,
+    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, 7u, part,
                                                instance_id, error),
           "mismatched position and normal streams are rejected");
     malformed = triangle_mesh();
     malformed.positions[0] = std::numeric_limits<float>::infinity();
-    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, part,
+    CHECK(!gpu_meshing::build_water_scene_part(malformed, 11u, 7u, part,
                                                instance_id, error),
           "non-finite renderer geometry is rejected");
 }
@@ -110,7 +143,7 @@ void test_dry_omission_and_malformed_transactionality() {
 }  // namespace
 
 int main() {
-    test_converts_to_one_ordinary_glass_part();
+    test_converts_to_one_authored_water_part();
     test_dry_omission_and_malformed_transactionality();
     return check_summary();
 }

@@ -1,5 +1,9 @@
 #include "water_scene_part.h"
 
+extern "C" {
+#include "material_registry.h"
+}
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -13,9 +17,11 @@ bool fail(Error& error, const char* message) {
     return false;
 }
 
-std::uint64_t stable_identity(std::uint64_t digest, std::uint64_t domain) {
+std::uint64_t stable_identity(std::uint64_t digest, std::uint64_t domain,
+                              std::uint32_t material_id) {
     std::uint64_t result = 1469598103934665603ull;
-    for (std::uint64_t value : {domain, digest}) {
+    for (std::uint64_t value : {domain, digest,
+                                static_cast<std::uint64_t>(material_id)}) {
         for (unsigned shift = 0; shift != 64; shift += 8) {
             result ^= static_cast<std::uint8_t>(value >> shift);
             result *= 1099511628211ull;
@@ -27,7 +33,6 @@ std::uint64_t stable_identity(std::uint64_t digest, std::uint64_t domain) {
 bool validate_mesh(const MeshResult& mesh) {
     if (mesh.positions.size() != mesh.normals.size() ||
         mesh.positions.size() % 3u != 0u || mesh.indices.size() % 3u != 0u ||
-        mesh.material != 4u ||
         mesh.content_digest != mesh_content_digest(mesh))
         return false;
     for (float value : mesh.positions)
@@ -44,13 +49,20 @@ bool validate_mesh(const MeshResult& mesh) {
 
 bool build_water_scene_part(
     const MeshResult& mesh, std::uint64_t artifact_digest,
+    std::uint32_t material_id,
     std::shared_ptr<const viewer::VkScenePart>& part,
     std::uint64_t& instance_id, Error& error) {
     error = {};
     if (artifact_digest == 0u)
         return fail(error, "water visual artifact digest must be nonzero");
+    const MaterialDef* material =
+        material_id < static_cast<std::uint32_t>(MaterialRegistryCount())
+            ? MaterialRegistryGet(static_cast<int>(material_id)) : nullptr;
+    if (!material ||
+        (material->surfaceFlags & MATERIAL_WATER_SURFACE) == 0u)
+        return fail(error, "water visual material must declare the water-surface domain");
     if (!validate_mesh(mesh))
-        return fail(error, "water visual mesh is invalid or is not glass material 4");
+        return fail(error, "water visual mesh geometry is invalid");
     if (mesh.positions.empty()) {
         part.reset();
         instance_id = 0u;
@@ -59,7 +71,7 @@ bool build_water_scene_part(
 
     auto candidate = std::make_shared<viewer::VkScenePart>();
     candidate->part_hash = stable_identity(
-        artifact_digest, 0x5741544552504152ull);
+        artifact_digest, 0x5741544552504152ull, material_id);
     candidate->vertices.reserve(mesh.positions.size() / 3u);
     candidate->indices = mesh.indices;
     matter::Float3 minimum{
@@ -81,7 +93,7 @@ bool build_water_scene_part(
                          mesh.normals[vertex * 3u + 2u]};
         output.tint = {1.0f, 1.0f, 1.0f, 0.0f};
         output.surface = {0.0f, 0.0f, 1.0f, 1.0f};
-        output.material_index = 4u;
+        output.material_index = material_id;
         candidate->vertices.push_back(output);
         minimum.x = std::min(minimum.x, output.position.x);
         minimum.y = std::min(minimum.y, output.position.y);
@@ -104,7 +116,7 @@ bool build_water_scene_part(
     candidate->clusters.push_back(std::move(cluster));
 
     const std::uint64_t candidate_instance = stable_identity(
-        artifact_digest, 0x5741544552494e53ull);
+        artifact_digest, 0x5741544552494e53ull, material_id);
     part = std::move(candidate);
     instance_id = candidate_instance;
     return true;

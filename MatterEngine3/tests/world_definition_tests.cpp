@@ -1950,6 +1950,38 @@ class LateWorld extends World {
           "the too-late diagnostic explains the ordering requirement");
 }
 
+void test_define_material_authors_water_surface_domain() {
+    Fixture fixture;
+    const fs::path path = fixture.write("WaterMaterials.js", R"JS(
+const RIVER = defineMaterial('RiverSurface', {
+  albedo: [0.05, 0.14, 0.18], roughness: 0.06,
+  transmission: 0.98, ior: 1.333, volumeBoundary: true,
+  waterSurface: true,
+});
+const GLASS = defineMaterial('OrdinaryGlass', {
+  transmission: 0.98, ior: 1.5, volumeBoundary: true,
+});
+class WaterMaterials extends World {
+  static roots = [{ module: 'WaterIds', params: { river: RIVER, glass: GLASS } }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.materials.size() == 2u,
+          "water and ordinary glass use the same dynamic material registry");
+    if (definition.materials.size() != 2u) return;
+    const MaterialDef* river =
+        MaterialRegistryGet(definition.materials[0].index);
+    const MaterialDef* glass =
+        MaterialRegistryGet(definition.materials[1].index);
+    CHECK((river->surfaceFlags & MATERIAL_WATER_SURFACE) != 0u,
+          "waterSurface authoring marks the generic water material domain");
+    CHECK((glass->surfaceFlags & MATERIAL_WATER_SURFACE) == 0u,
+          "volume-boundary glass is not inferred to be river water");
+}
+
 void test_detail_bake_plan_ordering_and_merging() {
     // The deprecated alias alone must produce exactly what the hardcoded path
     // produced: one request for the root module bound to material 16.
@@ -2365,6 +2397,11 @@ void test_world_loader_rejects_uint32_overflow_before_narrowing() {
 void test_world_loader_builds_imperative_river_network() {
     Fixture fixture;
     const fs::path path = fixture.write("River.js", R"JS(
+const RIVER_WATER = defineMaterial("RiverWater", {
+  albedo: [0.05, 0.14, 0.18], roughness: 0.06,
+  transmission: 0.98, ior: 1.333, volumeBoundary: true,
+  waterSurface: true,
+});
 class River extends World {
   hydrology() {
     const network = riverNetwork({
@@ -2380,6 +2417,23 @@ class River extends World {
         {at: 145, width: 10, depth: 3, asymmetry: -0.2},
         {at: 275, width: 8, depth: 2.25, asymmetry: 0.1},
       ]);
+    network.waterSurface(RIVER_WATER)
+      .optics({
+        shallowAbsorption: [0.03, 0.015, 0.008], shallowDistance: 8,
+        deepAbsorption: [0.18, 0.055, 0.025], deepDistance: 2.5,
+        scatteringColor: [0.08, 0.22, 0.24], scatteringDistance: 7,
+        anisotropy: 0.35, ior: 1.333,
+      })
+      .waveBand({wavelength: 7.5, amplitude: 0.16, speed: 0.8, response: 0.35})
+      .waveBand({wavelength: 1.6, amplitude: 0.24, speed: 1.4, response: 0.75})
+      .waveBand({wavelength: 0.28, amplitude: 0.08, speed: 2.1, response: 0.20})
+      .foam({threshold: 0.42, gain: 1.8, persistence: 2.5,
+             breakupScale: 0.7, roughnessGain: 0.55,
+             scatteringGain: 1.4, transmissionLoss: 0.72,
+             normalSoftening: 0.6})
+      .localOverride({shape: "sphere", center: [111, 46, 5], radius: 14,
+                      foamMultiplier: 1.25, waveMultiplier: 1.1,
+                      thresholdOffset: -0.08});
     network.backend("physx");
     network.pbd({particleSpacing: .2, restDensity: 1000, fixedStep: 1 / 120,
                  iterations: 4, maxNeighbors: 96});
@@ -2451,6 +2505,14 @@ class River extends World {
     CHECK(!definition.river_network->canonical_text.empty() &&
               definition.river_network->canonical_hash != 0u,
           "the loader publishes canonical bytes and their deterministic key");
+    CHECK(definition.river_network->water_surface.has_value() &&
+              definition.river_network->water_surface->material_id ==
+                  static_cast<std::uint32_t>(
+                      definition.materials.front().index) &&
+              definition.river_network->water_surface->wave_bands.size() == 3u &&
+              definition.river_network->water_surface->local_overrides.size() == 1u &&
+              definition.river_network->water_surface->appearance_hash != 0u,
+          "the dedicated water builder publishes material, optics, waves, foam, and overrides");
     const auto adapted = viewer::adapt_river_network_definition(definition);
     CHECK(adapted.has_value() &&
               adapted->canonical_text ==
@@ -2458,6 +2520,80 @@ class River extends World {
               adapted->canonical_hash ==
                   definition.river_network->canonical_hash,
           "the provider adapter preserves canonical river bytes and key unchanged");
+}
+
+void test_water_surface_object_key_order_is_canonical() {
+    const auto source = [](const std::string& optics,
+                           const std::string& foam) {
+        return std::string(R"JS(
+const WATER = defineMaterial("CanonicalWater", {
+  transmission: 0.98, ior: 1.333, volumeBoundary: true, waterSurface: true,
+});
+class CanonicalWaterWorld extends World {
+  hydrology() {
+    const n = riverNetwork({cellSize: 0.5, seed: 77});
+    const r = n.river("main").inlet([0, 8, 0], {flow: 1})
+      .curve([[0, 8, 0], [100, 0, 0]])
+      .channelProfile([{at: 0, width: 8, depth: 3, asymmetry: 0}]);
+    n.waterSurface(WATER).optics()JS") + optics + R"JS()
+      .waveBand({wavelength: 7.5, amplitude: 0.16, speed: 0.8, response: 0.35})
+      .waveBand({wavelength: 1.6, amplitude: 0.24, speed: 1.4, response: 0.75})
+      .waveBand({wavelength: 0.28, amplitude: 0.08, speed: 2.1, response: 0.20})
+      .foam()JS" + foam + R"JS();
+    r.section("upper", {from: 0, to: 100, dryMargin: 4})
+      .pool({from: 90, to: 100, fillLevel: 3})
+      .spillway({id: "pool-one", at: 100, width: 8,
+                 effectiveDepth: 2, overlap: 4, damOffset: 2});
+    n.bakeSequential();
+    n.build();
+  }
+}
+)JS";
+    };
+    const std::string optics_a = R"JS({
+      shallowAbsorption: [0.03, 0.015, 0.008], shallowDistance: 8,
+      deepAbsorption: [0.18, 0.055, 0.025], deepDistance: 2.5,
+      scatteringColor: [0.08, 0.22, 0.24], scatteringDistance: 7,
+      anisotropy: 0.35, ior: 1.333,
+    })JS";
+    const std::string optics_b = R"JS({
+      ior: 1.333, anisotropy: 0.35, scatteringDistance: 7,
+      scatteringColor: [0.08, 0.22, 0.24], deepDistance: 2.5,
+      deepAbsorption: [0.18, 0.055, 0.025], shallowDistance: 8,
+      shallowAbsorption: [0.03, 0.015, 0.008],
+    })JS";
+    const std::string foam_a = R"JS({
+      threshold: 0.42, gain: 1.8, persistence: 2.5, breakupScale: 0.7,
+      roughnessGain: 0.55, scatteringGain: 1.4,
+      transmissionLoss: 0.72, normalSoftening: 0.6,
+    })JS";
+    const std::string foam_b = R"JS({
+      normalSoftening: 0.6, transmissionLoss: 0.72,
+      scatteringGain: 1.4, roughnessGain: 0.55, breakupScale: 0.7,
+      persistence: 2.5, gain: 1.8, threshold: 0.42,
+    })JS";
+
+    Fixture first_fixture;
+    const fs::path first_path =
+        first_fixture.write("First.js", source(optics_a, foam_a));
+    matter::WorldDefinition first;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(first_fixture.desc(first_path), first, error),
+          error.message.c_str());
+    Fixture second_fixture;
+    const fs::path second_path =
+        second_fixture.write("Second.js", source(optics_b, foam_b));
+    matter::WorldDefinition second;
+    CHECK(matter::load_world_definition(second_fixture.desc(second_path), second, error),
+          error.message.c_str());
+    CHECK(first.river_network && second.river_network &&
+              first.river_network->water_surface &&
+              second.river_network->water_surface &&
+              first.river_network->water_surface->canonical_text ==
+                  second.river_network->water_surface->canonical_text &&
+              first.river_network->water_surface->appearance_hash ==
+                  second.river_network->water_surface->appearance_hash,
+          "JavaScript object-key order does not change canonical water appearance");
 }
 
 void test_world_loader_preserves_completed_dsl_curve_and_profile() {
@@ -2569,6 +2705,23 @@ void test_world_loader_rejects_imperative_river_failures() {
       const n=riverNetwork({cellSize:.5,seed:1});
       n.river("main"); n.river("main");
     )JS", "hydrology.main.name");
+    rejects("GlassIsNotWater.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.waterSurface(4);
+    )JS", "hydrology.waterSurface.material");
+    rejects("InvalidWaterIor.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.waterSurface(7).optics({
+        shallowAbsorption:[0,0,0],shallowDistance:8,
+        deepAbsorption:[0,0,0],deepDistance:2,
+        scatteringColor:[0,0,0],scatteringDistance:7,
+        anisotropy:0,ior:.9
+      });
+    )JS", "hydrology.waterSurface.optics.ior");
+    rejects("InvalidWaterOverrideShape.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.waterSurface(7).localOverride({shape:"capsule"});
+    )JS", "hydrology.waterSurface.localOverride.shape");
 }
 
 void test_world_loader_rejects_dual_hydrology_configuration() {
@@ -2857,6 +3010,7 @@ int main() {
     test_define_material_reset_between_worlds();
     test_define_material_name_collision_rules();
     test_define_material_rejects_bad_specs();
+    test_define_material_authors_water_surface_domain();
     test_detail_bake_plan_ordering_and_merging();
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();
@@ -2867,6 +3021,7 @@ int main() {
     test_world_loader_rejects_every_unknown_hydrology_property();
     test_world_loader_rejects_uint32_overflow_before_narrowing();
     test_world_loader_builds_imperative_river_network();
+    test_water_surface_object_key_order_is_canonical();
     test_world_loader_preserves_completed_dsl_curve_and_profile();
     test_world_loader_rejects_imperative_river_failures();
     test_world_loader_rejects_dual_hydrology_configuration();

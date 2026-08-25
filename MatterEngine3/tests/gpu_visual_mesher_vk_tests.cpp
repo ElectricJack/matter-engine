@@ -655,7 +655,7 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
     std::uint64_t instance_id = 0;
     error = {};
     GPU_CHECK(gpu_meshing::build_water_scene_part(
-                  loaded.visual_mesh, loaded.payload_digest, part,
+                  loaded.visual_mesh, loaded.payload_digest, 7u, part,
                   instance_id, error),
               error.message.empty() ? "convert cached water to glass part"
                                     : error.message.c_str());

@@ -340,9 +340,14 @@ struct RiverSectionHandle {
     std::size_t section = 0;
 };
 
+struct WaterSurfaceHandle {
+    LoadCollector* collector = nullptr;
+};
+
 JSClassID river_network_class_id = 0;
 JSClassID river_class_id = 0;
 JSClassID river_section_class_id = 0;
+JSClassID water_surface_class_id = 0;
 
 void river_network_finalizer(JSRuntime*, JSValueConst value) {
     delete static_cast<RiverNetworkHandle*>(
@@ -358,24 +363,36 @@ void river_section_finalizer(JSRuntime*, JSValueConst value) {
         JS_GetOpaque(value, river_section_class_id));
 }
 
+void water_surface_finalizer(JSRuntime*, JSValueConst value) {
+    delete static_cast<WaterSurfaceHandle*>(
+        JS_GetOpaque(value, water_surface_class_id));
+}
+
 bool install_river_classes(JSRuntime* runtime) {
     if (river_network_class_id == 0)
         JS_NewClassID(runtime, &river_network_class_id);
     if (river_class_id == 0) JS_NewClassID(runtime, &river_class_id);
     if (river_section_class_id == 0)
         JS_NewClassID(runtime, &river_section_class_id);
+    if (water_surface_class_id == 0)
+        JS_NewClassID(runtime, &water_surface_class_id);
     const JSClassDef network_class = {
         "MatterRiverNetwork", river_network_finalizer, nullptr, nullptr, nullptr};
     const JSClassDef river_class = {
         "MatterRiver", river_finalizer, nullptr, nullptr, nullptr};
     const JSClassDef section_class = {
         "MatterRiverSection", river_section_finalizer, nullptr, nullptr, nullptr};
+    const JSClassDef water_surface_class = {
+        "MatterWaterSurface", water_surface_finalizer, nullptr, nullptr, nullptr};
     return (JS_IsRegisteredClass(runtime, river_network_class_id) ||
             JS_NewClass(runtime, river_network_class_id, &network_class) == 0) &&
            (JS_IsRegisteredClass(runtime, river_class_id) ||
             JS_NewClass(runtime, river_class_id, &river_class) == 0) &&
            (JS_IsRegisteredClass(runtime, river_section_class_id) ||
-            JS_NewClass(runtime, river_section_class_id, &section_class) == 0);
+            JS_NewClass(runtime, river_section_class_id, &section_class) == 0) &&
+           (JS_IsRegisteredClass(runtime, water_surface_class_id) ||
+            JS_NewClass(runtime, water_surface_class_id,
+                        &water_surface_class) == 0);
 }
 
 std::string error_path(const std::string& error) {
@@ -930,6 +947,188 @@ bool required_float3(JSContext* context, JSValueConst object, const char* key,
     return ok;
 }
 
+WaterSurfaceHandle* active_water_surface_handle(JSContext* context,
+                                                 JSValueConst this_value) {
+    auto* handle = static_cast<WaterSurfaceHandle*>(
+        JS_GetOpaque2(context, this_value, water_surface_class_id));
+    if (!handle) return nullptr;
+    if (!handle->collector->river_hydrology_active) {
+        river_phase_failure(context, handle->collector);
+        return nullptr;
+    }
+    return handle;
+}
+
+JSValue water_surface_optics(JSContext* context, JSValueConst this_value,
+                             int argument_count, JSValueConst* arguments) {
+    WaterSurfaceHandle* handle =
+        active_water_surface_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    WaterOpticalDefinition optics{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        JS_IsArray(arguments[0]) ||
+        !required_float3(context, arguments[0], "shallowAbsorption",
+                         optics.shallow_absorption) ||
+        !required_float(context, arguments[0], "shallowDistance",
+                        optics.shallow_distance_m) ||
+        !required_float3(context, arguments[0], "deepAbsorption",
+                         optics.deep_absorption) ||
+        !required_float(context, arguments[0], "deepDistance",
+                        optics.deep_distance_m) ||
+        !required_float3(context, arguments[0], "scatteringColor",
+                         optics.scattering_color) ||
+        !required_float(context, arguments[0], "scatteringDistance",
+                        optics.scattering_distance_m) ||
+        !required_float(context, arguments[0], "anisotropy",
+                        optics.anisotropy) ||
+        !required_float(context, arguments[0], "ior", optics.ior)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.optics: optics requires shallowAbsorption/shallowDistance/deepAbsorption/deepDistance/scatteringColor/scatteringDistance/anisotropy/ior");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_water_optics(optics, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue water_surface_wave_band(JSContext* context, JSValueConst this_value,
+                                int argument_count, JSValueConst* arguments) {
+    WaterSurfaceHandle* handle =
+        active_water_surface_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    WaterWaveBandDefinition wave{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        JS_IsArray(arguments[0]) ||
+        !required_float(context, arguments[0], "wavelength", wave.wavelength_m) ||
+        !required_float(context, arguments[0], "amplitude", wave.normal_amplitude) ||
+        !required_float(context, arguments[0], "speed", wave.speed_multiplier) ||
+        !required_float(context, arguments[0], "response", wave.response)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.waveBand: waveBand requires wavelength/amplitude/speed/response");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->add_water_wave_band(wave, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue water_surface_foam(JSContext* context, JSValueConst this_value,
+                           int argument_count, JSValueConst* arguments) {
+    WaterSurfaceHandle* handle =
+        active_water_surface_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    WaterFoamDefinition foam{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        JS_IsArray(arguments[0]) ||
+        !required_float(context, arguments[0], "threshold", foam.threshold) ||
+        !required_float(context, arguments[0], "gain", foam.gain) ||
+        !required_float(context, arguments[0], "persistence", foam.persistence_s) ||
+        !required_float(context, arguments[0], "breakupScale", foam.breakup_scale_m) ||
+        !required_float(context, arguments[0], "roughnessGain", foam.roughness_gain) ||
+        !required_float(context, arguments[0], "scatteringGain", foam.scattering_gain) ||
+        !required_float(context, arguments[0], "transmissionLoss", foam.transmission_loss) ||
+        !required_float(context, arguments[0], "normalSoftening", foam.normal_softening)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.foam: foam requires threshold/gain/persistence/breakupScale/roughnessGain/scatteringGain/transmissionLoss/normalSoftening");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_water_foam(foam, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue water_surface_local_override(JSContext* context,
+                                     JSValueConst this_value,
+                                     int argument_count,
+                                     JSValueConst* arguments) {
+    WaterSurfaceHandle* handle =
+        active_water_surface_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    WaterLocalOverrideDefinition local{};
+    std::string shape;
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        JS_IsArray(arguments[0]) ||
+        !required_string(context, arguments[0], "shape", shape)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.waterSurface.localOverride.shape: shape must be 'sphere' or 'box'");
+    }
+    if (shape == "sphere") {
+        local.shape = WaterLocalOverrideDefinition::Shape::Sphere;
+        if (!required_float(context, arguments[0], "radius", local.radius_m))
+            return river_failure(context, handle->collector,
+                                 "hydrology.waterSurface.localOverride.radius: sphere radius is required");
+    } else if (shape == "box") {
+        local.shape = WaterLocalOverrideDefinition::Shape::Box;
+        if (!required_float3(context, arguments[0], "halfExtents",
+                             local.half_extents_m))
+            return river_failure(context, handle->collector,
+                                 "hydrology.waterSurface.localOverride.halfExtents: box halfExtents are required");
+    } else {
+        return river_failure(context, handle->collector,
+                             "hydrology.waterSurface.localOverride.shape: shape must be 'sphere' or 'box'");
+    }
+    if (!required_float3(context, arguments[0], "center", local.center_m) ||
+        !required_float(context, arguments[0], "foamMultiplier",
+                        local.foam_multiplier) ||
+        !required_float(context, arguments[0], "waveMultiplier",
+                        local.wave_multiplier) ||
+        !required_float(context, arguments[0], "thresholdOffset",
+                        local.threshold_offset)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.localOverride: localOverride requires center/foamMultiplier/waveMultiplier/thresholdOffset");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->add_water_local_override(local, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_water_surface(JSContext* context, JSValueConst this_value,
+                              int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    double material_number = 0.0;
+    if (argument_count < 1 || !JS_IsNumber(arguments[0]) ||
+        JS_ToFloat64(context, &material_number, arguments[0]) < 0 ||
+        !std::isfinite(material_number) || material_number < 0.0 ||
+        std::floor(material_number) != material_number ||
+        material_number > std::numeric_limits<std::uint32_t>::max()) {
+        return river_failure(context, handle->collector,
+                             "hydrology.waterSurface.material: material id must be a uint32");
+    }
+    const auto material_id = static_cast<std::uint32_t>(material_number);
+    const MaterialDef* material =
+        material_id < static_cast<std::uint32_t>(MaterialRegistryCount())
+            ? MaterialRegistryGet(static_cast<int>(material_id)) : nullptr;
+    if (!material ||
+        (material->surfaceFlags & MATERIAL_WATER_SURFACE) == 0u) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.material: material must declare waterSurface: true");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_water_material(material_id, error))
+        return river_failure(context, handle->collector, error);
+    JSValue object = JS_NewObjectClass(context, water_surface_class_id);
+    if (JS_IsException(object)) return object;
+    JS_SetOpaque(object, new WaterSurfaceHandle{handle->collector});
+    JS_SetPropertyStr(context, object, "optics",
+                      JS_NewCFunction(context, water_surface_optics, "optics", 1));
+    JS_SetPropertyStr(context, object, "waveBand",
+                      JS_NewCFunction(context, water_surface_wave_band,
+                                      "waveBand", 1));
+    JS_SetPropertyStr(context, object, "foam",
+                      JS_NewCFunction(context, water_surface_foam, "foam", 1));
+    JS_SetPropertyStr(context, object, "localOverride",
+                      JS_NewCFunction(context, water_surface_local_override,
+                                      "localOverride", 1));
+    return object;
+}
+
 JSValue network_backend(JSContext* context, JSValueConst this_value,
                         int argument_count, JSValueConst* arguments) {
     RiverNetworkHandle* handle = active_network_handle(context, this_value);
@@ -1193,6 +1392,9 @@ JSValue river_network(JSContext* context, JSValueConst,
     JS_SetOpaque(object, new RiverNetworkHandle{collector});
     JS_SetPropertyStr(context, object, "river",
                       JS_NewCFunction(context, network_river, "river", 1));
+    JS_SetPropertyStr(context, object, "waterSurface",
+                      JS_NewCFunction(context, network_water_surface,
+                                      "waterSurface", 1));
     JS_SetPropertyStr(context, object, "backend",
                       JS_NewCFunction(context, network_backend, "backend", 1));
     JS_SetPropertyStr(context, object, "pbd",
@@ -1274,6 +1476,7 @@ const char* const kMaterialSpecKeys[] = {
     "clearcoat", "clearcoatRoughness", "specularStrength", "specularTint",
     "alphaCutoff", "shadowOpacity",
     "thinWalled", "doubleSided", "alphaTested", "volumeBoundary",
+    "waterSurface",
     "detail", "detailDensity",
 };
 
@@ -1398,6 +1601,7 @@ JSValue define_material(JSContext* context,
     spec_flag(context, spec, "doubleSided", MATERIAL_DOUBLE_SIDED, flags);
     spec_flag(context, spec, "alphaTested", MATERIAL_ALPHA_TESTED, flags);
     spec_flag(context, spec, "volumeBoundary", MATERIAL_VOLUME_BOUNDARY, flags);
+    spec_flag(context, spec, "waterSurface", MATERIAL_WATER_SURFACE, flags);
     def.surfaceFlags = flags;
 
     WorldMaterial record;

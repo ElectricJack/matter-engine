@@ -3509,6 +3509,12 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         }
     }
 #ifdef MATTER_VULKAN_VIEWER
+    std::uint32_t water_material_id = 7u;
+    if (provider->river_network() &&
+        provider->river_network()->water_surface) {
+        water_material_id =
+            provider->river_network()->water_surface->material_id;
+    }
     std::shared_ptr<const viewer::VkScenePart> authored_part;
     viewer::VkSceneInstance authored_instance{};
     if (accepted) {
@@ -3516,7 +3522,8 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         gpu_meshing::Error render_error{};
         if (!gpu_meshing::build_water_scene_part(
                 network_result.products.visual_mesh,
-                network_result.manifest.payload_digest, authored_part,
+                network_result.manifest.payload_digest, water_material_id,
+                authored_part,
                 instance_id, render_error) || !authored_part) {
             publication_accepted = false;
             error = {hydrology::FluidBakeCode::ProductFailure,
@@ -3540,6 +3547,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         if (gpu_meshing::build_water_scene_part(
                 network_result.failed_debug_visual,
                 network_result.failed_debug_visual.content_digest,
+                water_material_id,
                 failed_debug_part, instance_id, render_error) &&
             failed_debug_part) {
             failed_debug_instance.part_hash = failed_debug_part->part_hash;
@@ -10178,6 +10186,7 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
                                 bytes, artifact, acceptance_error) ||
                             !gpu_meshing::build_water_scene_part(
                                 artifact.visual_mesh, artifact.payload_digest,
+                                7u,
                                 simpl->gpu_mesher_acceptance_part, instance_id,
                                 acceptance_error)) {
                             MATTER_LOGE(

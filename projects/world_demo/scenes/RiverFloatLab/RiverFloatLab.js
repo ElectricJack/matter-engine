@@ -12,6 +12,15 @@ export {
   buildRiverHydrologyField,
 };
 
+const RIVER_WATER = defineMaterial("RiverFloatLabWater", {
+  albedo: [0.05, 0.14, 0.18],
+  roughness: 0.06,
+  transmission: 0.98,
+  ior: 1.333,
+  volumeBoundary: true,
+  waterSurface: true,
+});
+
 function yawQuaternion(tangent) {
   const yaw = Math.atan2(tangent[2], tangent[0]);
   return [0, -Math.sin(yaw * 0.5), 0, Math.cos(yaw * 0.5)];
@@ -207,7 +216,7 @@ class RiverFloatLab extends World {
   }
 
   hydrology() {
-    authorRiverHydrologyNetwork(this.worldSeed);
+    authorRiverHydrologyNetwork(this.worldSeed, RIVER_WATER);
   }
 
   field(p) {

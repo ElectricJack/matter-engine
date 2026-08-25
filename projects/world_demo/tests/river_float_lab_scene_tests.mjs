@@ -4,6 +4,11 @@ import { readFile } from 'node:fs/promises';
 globalThis.World = class {};
 globalThis.Part = class {};
 globalThis.MAT = { bark: 101, plaster: 202 };
+const materialCalls = [];
+globalThis.defineMaterial = (name, spec) => {
+  materialCalls.push({ name, spec });
+  return 303;
+};
 
 const collisionCalls = [];
 globalThis.terrainCollision = settings => {
@@ -71,6 +76,15 @@ const sceneSource = (await requiredText(new URL(
 const sceneUrl = `data:text/javascript;base64,${
   Buffer.from(sceneSource).toString('base64')}`;
 const riverFloatLab = await import(sceneUrl);
+
+assert.deepEqual(materialCalls, [{
+  name: 'RiverFloatLabWater',
+  spec: {
+    albedo: [0.05, 0.14, 0.18], roughness: 0.06,
+    transmission: 0.98, ior: 1.333,
+    volumeBoundary: true, waterSurface: true,
+  },
+}], 'RiverFloatLab authors one dedicated water-domain material');
 
 const scene = new riverFloatLab.RiverFloatLab();
 scene.collision();
