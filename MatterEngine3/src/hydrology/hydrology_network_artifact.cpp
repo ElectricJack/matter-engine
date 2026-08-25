@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -513,7 +514,11 @@ public:
 
     bool open(const std::filesystem::path& cache_root,
               const std::filesystem::path& relative_directory,
-              gpu_meshing::Error& error) {
+              gpu_meshing::Error& error,
+              bool allow_handle_relative_mutation = false) {
+        share_mode_ = allow_handle_relative_mutation
+            ? FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            : FILE_SHARE_READ;
         std::filesystem::path current = cache_root;
         if (!open_one(current))
             return fail(error,
@@ -527,10 +532,14 @@ public:
         return true;
     }
 
+    HANDLE leaf() const noexcept {
+        return handles_.empty() ? INVALID_HANDLE_VALUE : handles_.back();
+    }
+
 private:
     bool open_one(const std::filesystem::path& directory) {
         const HANDLE handle = CreateFileW(
-            directory.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+            directory.c_str(), GENERIC_READ, share_mode_, nullptr,
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
             nullptr);
@@ -548,6 +557,7 @@ private:
     }
 
     std::vector<HANDLE> handles_;
+    DWORD share_mode_ = FILE_SHARE_READ;
 };
 #else
 class PosixDirectoryGuard {
@@ -708,6 +718,59 @@ bool replace_file_durable(const std::filesystem::path& source,
            flush_directory(target.parent_path());
 #endif
 }
+
+#ifdef _WIN32
+bool publish_file_create_new_relative(
+    const std::filesystem::path& source,
+    const std::filesystem::path& target_name,
+    HANDLE trusted_directory) {
+    const HANDLE source_handle = CreateFileW(
+        source.c_str(), DELETE | SYNCHRONIZE, 0u, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr);
+    if (source_handle == INVALID_HANDLE_VALUE) return false;
+    struct NativeIoStatusBlock {
+        union { long status; void* pointer; } value;
+        std::uintptr_t information;
+    };
+    struct NativeFileRenameInformation {
+        BOOLEAN replace_if_exists;
+        HANDLE root_directory;
+        ULONG file_name_length;
+        WCHAR file_name[1];
+    };
+    using NtSetInformationFile = long (NTAPI *)(
+        HANDLE, NativeIoStatusBlock*, void*, ULONG, int);
+    const auto set_information = reinterpret_cast<NtSetInformationFile>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"),
+                       "NtSetInformationFile"));
+    if (set_information == nullptr) {
+        CloseHandle(source_handle);
+        return false;
+    }
+    const std::wstring name = target_name.native();
+    const std::size_t bytes =
+        offsetof(NativeFileRenameInformation, file_name) +
+        name.size() * sizeof(wchar_t);
+    std::vector<std::uint8_t> storage(bytes, 0u);
+    auto* const rename = reinterpret_cast<NativeFileRenameInformation*>(
+        storage.data());
+    rename->replace_if_exists = FALSE;
+    rename->root_directory = trusted_directory;
+    rename->file_name_length =
+        static_cast<DWORD>(name.size() * sizeof(wchar_t));
+    std::memcpy(rename->file_name, name.data(), rename->file_name_length);
+    NativeIoStatusBlock status{};
+    constexpr int kFileRenameInformation = 10;
+    const long native_status = set_information(
+        source_handle, &status, rename, static_cast<ULONG>(storage.size()),
+        kFileRenameInformation);
+    const bool published = native_status >= 0;
+    CloseHandle(source_handle);
+    return published;
+}
+#endif
 
 } // namespace
 
@@ -929,7 +992,12 @@ bool save_hydrology_field_product_atomic(
     if (!confined_field_components(
             cache_root, canonical_path.parent_path().generic_string(), error))
         return false;
-#ifndef _WIN32
+#ifdef _WIN32
+    WindowsDirectoryGuard directory_guard;
+    if (!directory_guard.open(cache_root, canonical_path.parent_path(), error,
+                              true))
+        return false;
+#else
     PosixDirectoryGuard directory_guard;
     if (!directory_guard.open(cache_root, canonical_path.parent_path(), error))
         return false;
@@ -999,13 +1067,8 @@ bool save_hydrology_field_product_atomic(
         std::filesystem::remove(temporary, filesystem_error);
         return fail(error, "hydrology field temporary validation failed");
     }
-    if (!confined_field_components(
-            cache_root, canonical_path.parent_path().generic_string(), error)) {
-        std::filesystem::remove(temporary, filesystem_error);
-        return false;
-    }
-    const bool published = MoveFileExW(
-        temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
+    const bool published = publish_file_create_new_relative(
+        temporary, path.filename(), directory_guard.leaf());
     if (!published) {
         std::filesystem::remove(temporary, filesystem_error);
         std::vector<std::uint8_t> existing;
