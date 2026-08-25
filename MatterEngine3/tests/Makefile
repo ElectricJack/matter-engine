@@ -1487,6 +1487,8 @@ GPU_PIPELINE_CPP = \
     ../src/hydrology/water_visual_products.cpp \
     ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp \
     ../src/terrain_river_overlay.cpp \
+    ../src/terrain_collision/terrain_collision_definition.cpp \
+    ../src/terrain_collision/terrain_collision_artifact.cpp \
     ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
     ../src/script_rng_binding.cpp \
     ../src/polygon_triangulate.cpp \

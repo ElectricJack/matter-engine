@@ -70,6 +70,8 @@ using TerrainCollisionBuildTestCallback = std::function<bool(
     const std::function<bool()>&,
     terrain_collision::TerrainCollisionCandidate&,
     std::string&)>;
+using TerrainCollisionCandidateObserver = std::function<void(
+    std::weak_ptr<const terrain_collision::TerrainCollisionCandidate>)>;
 
 struct WorldDesc {
     // Preferred project layout. open_world derives objects/, worlds/,
@@ -909,6 +911,15 @@ public:
     // owner-thread Box3D replacement/clear. Test-only.
     void set_test_terrain_collision_publication_hook(
         std::function<void()> hook);
+    // Throws from this hook exercise collision-specific exception routing
+    // before canonicalization/builder invocation. Test-only.
+    void set_test_terrain_collision_before_build_hook(
+        std::function<void()> hook);
+    // Called once while the worker owns the immutable candidate and again
+    // after the blocking physics job, before visual reset. Test-only observer;
+    // callbacks must not throw.
+    void set_test_terrain_collision_candidate_observer(
+        TerrainCollisionCandidateObserver observer);
 
     // Observes the all-or-nothing accepted-product boundary after BakeFinished.
     bool has_accepted_fluid_artifact_for_test() const;

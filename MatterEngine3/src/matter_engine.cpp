@@ -821,6 +821,9 @@ struct WorldSession::Impl {
     matter::TerrainCollisionStatus terrain_collision_status_copy{};
     TerrainCollisionBuildTestCallback test_terrain_collision_build_callback;
     std::function<void()> test_terrain_collision_publication_hook;
+    std::function<void()> test_terrain_collision_before_build_hook;
+    TerrainCollisionCandidateObserver
+        test_terrain_collision_candidate_observer;
 
     // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
     // progress is emitted here as typed events (matter/events/*.h). Declared
@@ -1277,7 +1280,7 @@ struct WorldSession::Impl {
     // `new_manifest` is consumed (moved in) by the reset job.
     void publish_pipeline(const std::shared_ptr<matter_async::CancelToken>& token,
                           viewer::WorldManifest new_manifest,
-                          const PublishPipelineParams& p);
+                          PublishPipelineParams p);
 
     // --- Task 10: live-edit watcher state (app thread only) ------------------
     bool enable_live_edit = false;
@@ -3173,10 +3176,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                         pp_rc.fault_hook            = cfg.test_fault_hook;
                         pp_rc.load_msg_include_hash = true;
                         pp_rc.provider_ref          = provider;
-                        pp_rc.terrain_collision     = terrain_publication;
+                        pp_rc.terrain_collision     =
+                            std::move(terrain_publication);
                         {
                             BAKE_SPAN(bake_trace::kSpanPublish);
-                            publish_pipeline(token, std::move(cached_manifest), pp_rc);
+                            publish_pipeline(token, std::move(cached_manifest),
+                                             std::move(pp_rc));
                         }
                         double publish_ms_rc = std::chrono::duration<double, std::milli>(
                             clk_t::now() - t_publish_start_rc).count();
@@ -3299,10 +3304,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         pp.load_msg_include_hash = true;
         pp.provider_ref          = provider;
         pp.prewarm_child_catalog = true;   // streaming path only (install_world ran)
-        pp.terrain_collision     = terrain_publication;
+        pp.terrain_collision     = std::move(terrain_publication);
         {
             BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
-            publish_pipeline(token, std::move(empty_manifest), pp);
+            publish_pipeline(token, std::move(empty_manifest), std::move(pp));
             // publish_pipeline replaces PartStore — re-apply transient scratch dir
             // and the W3 bake observer (both are per-construction state on the
             // fresh PartStore instance).
@@ -3390,10 +3395,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     pp.fault_hook            = cfg.test_fault_hook;
     pp.load_msg_include_hash = true;
     pp.provider_ref          = provider;  // shared_ptr extends lifetime through publish
-    pp.terrain_collision     = terrain_publication;
+    pp.terrain_collision     = std::move(terrain_publication);
     {
         BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
-        publish_pipeline(token, std::move(new_manifest), pp);
+        publish_pipeline(token, std::move(new_manifest), std::move(pp));
     }
     double publish_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_publish_start).count();
@@ -3657,7 +3662,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
 void WorldSession::Impl::publish_pipeline(
     const std::shared_ptr<matter_async::CancelToken>& token,
     viewer::WorldManifest new_manifest,
-    const PublishPipelineParams& p)
+    PublishPipelineParams p)
 {
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
 
@@ -3674,11 +3679,24 @@ void WorldSession::Impl::publish_pipeline(
     };
 
     const std::string& pfx = p.job_prefix;
+    TerrainCollisionPublication collision_publication =
+        std::move(p.terrain_collision);
+    const bool observed_candidate =
+        static_cast<bool>(collision_publication.candidate);
+    const std::weak_ptr<
+        const terrain_collision::TerrainCollisionCandidate> candidate_weak =
+            collision_publication.candidate;
+    TerrainCollisionCandidateObserver candidate_observer;
+    if (observed_candidate) {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            terrain_collision_generation_mutex);
+        candidate_observer = test_terrain_collision_candidate_observer;
+    }
 
     // Terrain collision is the first app-thread publication for a full bake.
     // It must succeed before any visual reset can expose the generation, and
     // cone/refine publication deliberately arrives as Keep.
-    if (p.terrain_collision.action !=
+    if (collision_publication.action !=
         TerrainCollisionPublicationAction::Keep) {
         if (is_cancelled()) {
             emit_error(BakeErrorCode::Cancelled, "terrain-collision",
@@ -3688,19 +3706,30 @@ void WorldSession::Impl::publish_pipeline(
         matter_async::GpuJob collision_job;
         collision_job.name = pfx + ".terrain-collision";
         collision_job.token = token;
-        collision_job.fn = [this, publication = p.terrain_collision, token,
-                            pfx](std::string& error) {
+        collision_job.fn = [this,
+                            publication = std::move(collision_publication),
+                            token, pfx](std::string& error) mutable {
+            using CollisionCandidate =
+                terrain_collision::TerrainCollisionCandidate;
+            struct CandidateOwnerReset {
+                std::shared_ptr<const CollisionCandidate>* owner = nullptr;
+                ~CandidateOwnerReset() {
+                    if (owner) owner->reset();
+                }
+            } candidate_owner_reset{&publication.candidate};
             matter_async::assert_gl_thread(
                 (pfx + ".terrain-collision").c_str());
             std::lock_guard<std::recursive_mutex> generation_lock(
                 terrain_collision_generation_mutex);
             if (token && token->is_cancelled()) {
+                publication.candidate.reset();
                 error = "cancelled";
                 return false;
             }
             if (test_terrain_collision_publication_hook)
                 test_terrain_collision_publication_hook();
             if (token && token->is_cancelled()) {
+                publication.candidate.reset();
                 error = "cancelled";
                 return false;
             }
@@ -3727,8 +3756,15 @@ void WorldSession::Impl::publish_pipeline(
                 error = "terrain collision replacement has no candidate";
             } else {
                 const auto install_start = std::chrono::steady_clock::now();
-                if (physics_context.replace_terrain_collision(
-                        *publication.candidate, error)) {
+                const bool installed =
+                    physics_context.replace_terrain_collision(
+                        *publication.candidate, error);
+                // Box3D has retained its private mesh bytes (or rejected the
+                // replacement transaction). Release worker geometry inside
+                // this blocking job so no queued/reset/finalize/tail copy can
+                // extend candidate lifetime.
+                publication.candidate.reset();
+                if (installed) {
                     const double install_ms =
                         std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - install_start)
@@ -3773,6 +3809,7 @@ void WorldSession::Impl::publish_pipeline(
             }
 
             connected.store(false, std::memory_order_release);
+            publication.candidate.reset();
             {
                 std::lock_guard<std::mutex> status_lock(
                     terrain_collision_status_mutex);
@@ -3802,6 +3839,15 @@ void WorldSession::Impl::publish_pipeline(
                     ? pfx + " terrain collision publication failed"
                     : collision_error);
             return;
+        }
+        if (candidate_observer) {
+            try {
+                candidate_observer(candidate_weak);
+            } catch (...) {
+                MATTER_LOGE(
+                    "terrain-collision",
+                    "test candidate observer threw before visual reset\n");
+            }
         }
         if (is_cancelled()) {
             emit_error(BakeErrorCode::Cancelled, "terrain-collision",
@@ -4814,6 +4860,9 @@ bool WorldSession::Impl::install_world(
                 std::lock_guard<std::recursive_mutex> generation_lock(
                     terrain_collision_generation_mutex);
                 if (token && token->is_cancelled()) return;
+                // Establish routing before status strings allocate so the
+                // caller cannot fall back to the generic worker error path.
+                terrain_collision_failed = true;
                 std::lock_guard<std::mutex> status_lock(
                     terrain_collision_status_mutex);
                 if (terrain_collision_status_copy.state ==
@@ -4822,10 +4871,36 @@ bool WorldSession::Impl::install_world(
                     matter::TerrainCollisionState::Failed;
                 terrain_collision_status_copy.failure_code = code;
                 terrain_collision_status_copy.failure_message = message;
-                terrain_collision_failed = true;
                 MATTER_LOGE("terrain-collision", "%s: %s\n", code,
                             message.c_str());
             };
+
+        try {
+        {
+            std::lock_guard<std::recursive_mutex> generation_lock(
+                terrain_collision_generation_mutex);
+            if (token && token->is_cancelled()) {
+                err = "cancelled";
+                return false;
+            }
+            std::lock_guard<std::mutex> status_lock(
+                terrain_collision_status_mutex);
+            terrain_collision_status_copy = {};
+            terrain_collision_status_copy.state =
+                matter::TerrainCollisionState::Building;
+        }
+        TerrainCollisionBuildTestCallback test_builder;
+        std::function<void()> before_build_hook;
+        TerrainCollisionCandidateObserver candidate_observer;
+        {
+            std::lock_guard<std::recursive_mutex> generation_lock(
+                terrain_collision_generation_mutex);
+            test_builder = test_terrain_collision_build_callback;
+            before_build_hook = test_terrain_collision_before_build_hook;
+            candidate_observer =
+                test_terrain_collision_candidate_observer;
+        }
+        if (before_build_hook) before_build_hook();
 
         terrain_collision::SourceIdentity source{};
         source.field_hash = world_field->hash();
@@ -4870,30 +4945,15 @@ bool WorldSession::Impl::install_world(
         }
 
         terrain_collision::TerrainCollisionCandidate candidate{};
-        TerrainCollisionBuildTestCallback test_builder;
-        {
-            std::lock_guard<std::recursive_mutex> generation_lock(
-                terrain_collision_generation_mutex);
-            test_builder = test_terrain_collision_build_callback;
-        }
         const std::function<bool()> cancelled = [token] {
             return token && token->is_cancelled();
         };
-        bool built = false;
-        try {
-            built = test_builder
-                ? test_builder(*world_field, canonical, cfg.cache_root,
-                               cancelled, candidate, collision_error)
-                : terrain_collision::load_or_build_candidate(
-                      *world_field, canonical, cfg.cache_root, cancelled,
-                      candidate, collision_error);
-        } catch (const std::bad_alloc&) {
-            collision_error = "terrain collision candidate allocation failed";
-        } catch (const std::exception& exception) {
-            collision_error = exception.what();
-        } catch (...) {
-            collision_error = "unknown terrain collision build failure";
-        }
+        const bool built = test_builder
+            ? test_builder(*world_field, canonical, cfg.cache_root,
+                           cancelled, candidate, collision_error)
+            : terrain_collision::load_or_build_candidate(
+                  *world_field, canonical, cfg.cache_root, cancelled,
+                  candidate, collision_error);
         if (cancelled()) {
             err = "cancelled";
             return false;
@@ -4907,16 +4967,10 @@ bool WorldSession::Impl::install_world(
         }
 
         std::shared_ptr<const terrain_collision::TerrainCollisionCandidate>
-            accepted_candidate;
-        try {
             accepted_candidate = std::make_shared<
                 const terrain_collision::TerrainCollisionCandidate>(
                     std::move(candidate));
-        } catch (const std::bad_alloc&) {
-            err = "terrain collision candidate allocation failed";
-            fail_terrain_collision("build-failed", err);
-            return false;
-        }
+        if (candidate_observer) candidate_observer(accepted_candidate);
         {
             std::lock_guard<std::recursive_mutex> generation_lock(
                 terrain_collision_generation_mutex);
@@ -4952,6 +5006,35 @@ bool WorldSession::Impl::install_world(
         terrain_publication.action =
             TerrainCollisionPublicationAction::Replace;
         terrain_publication.candidate = std::move(accepted_candidate);
+        } catch (const std::bad_alloc&) {
+            if (token && token->is_cancelled()) {
+                err = "cancelled";
+                return false;
+            }
+            terrain_collision_failed = true;
+            err = "terrain collision setup/build allocation failed";
+            fail_terrain_collision("allocation-failed", err);
+            return false;
+        } catch (const std::exception& exception) {
+            if (token && token->is_cancelled()) {
+                err = "cancelled";
+                return false;
+            }
+            terrain_collision_failed = true;
+            err = "terrain collision setup/build exception: ";
+            err += exception.what();
+            fail_terrain_collision("build-exception", err);
+            return false;
+        } catch (...) {
+            if (token && token->is_cancelled()) {
+                err = "cancelled";
+                return false;
+            }
+            terrain_collision_failed = true;
+            err = "unknown terrain collision setup/build exception";
+            fail_terrain_collision("build-exception", err);
+            return false;
+        }
     }
     {
         char hbuf[32];
@@ -9485,7 +9568,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     pp.verbose_reset_log     = false;
     pp.fault_hook            = {};
     pp.load_msg_include_hash = false;
-    publish_pipeline(token, std::move(new_manifest), pp);
+    publish_pipeline(token, std::move(new_manifest), std::move(pp));
 }
 
 // ---------------------------------------------------------------------------
@@ -10021,6 +10104,20 @@ void WorldSession::set_test_terrain_collision_build_callback(
     std::lock_guard<std::recursive_mutex> generation_lock(
         impl_->terrain_collision_generation_mutex);
     impl_->test_terrain_collision_build_callback = std::move(callback);
+}
+
+void WorldSession::set_test_terrain_collision_before_build_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->terrain_collision_generation_mutex);
+    impl_->test_terrain_collision_before_build_hook = std::move(hook);
+}
+
+void WorldSession::set_test_terrain_collision_candidate_observer(
+    TerrainCollisionCandidateObserver observer) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->terrain_collision_generation_mutex);
+    impl_->test_terrain_collision_candidate_observer = std::move(observer);
 }
 
 void WorldSession::set_test_terrain_collision_publication_hook(
