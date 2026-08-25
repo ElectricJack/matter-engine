@@ -274,6 +274,8 @@ assert.doesNotMatch(raftSource, /export\s+class\s+RiverRaft/,
   'scene-local parts are scripts, not ESM exports');
 const raftModule = await import(`data:text/javascript;base64,${
   Buffer.from(`${raftSource}\nexport { RiverRaft };`).toString('base64')}`);
+assert.equal(raftModule.RiverRaft.noImpostor, true,
+  'dynamic river rafts keep a real mesh at every distance');
 const calls = [];
 const raftPart = new raftModule.RiverRaft();
 for (const method of ['beginVoxels', 'fill', 'smoothing', 'box', 'endVoxels']) {
