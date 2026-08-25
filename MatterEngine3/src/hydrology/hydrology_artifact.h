@@ -40,6 +40,7 @@ struct HydrologyArtifact {
     gpu_meshing::MeshResult coarse_cpu_mesh;
     GameplayFieldLayout gameplay_layout{};
     std::vector<GameplaySample> gameplay_field;
+    std::vector<PresentationSample> presentation_field;
     ArtifactProvenance provenance{};
 };
 

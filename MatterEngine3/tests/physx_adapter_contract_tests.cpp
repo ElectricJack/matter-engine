@@ -1257,6 +1257,7 @@ void test_accepted_snapshot_builds_all_products_or_publishes_nothing() {
     output.stats.escape_budget = hydrology::fluid_escape_budget(2u);
     output.sensor = {0.8f, 3u, 6u, true, 0.8f, 0.8f, 0.8f, 4u};
     hydrology::PhysxFluidBake::ProductBuildSettings settings{};
+    settings.section = {"upper", "main", 0.0f, 1.0f, 0.0f, 1.0f};
     settings.particle_radius_m = 0.65f;
     settings.coarse_voxel_m = 0.5f;
     settings.visual_job.bounds_m = {{-1.0f, -1.0f, -1.0f}, {2.0f, 3.0f, 2.0f}};
@@ -1291,8 +1292,21 @@ void test_accepted_snapshot_builds_all_products_or_publishes_nothing() {
               visual, artifact, error), error.message.c_str());
     CHECK(saw_water_job && artifact.accepted && artifact.visual_mesh.material == 4u &&
               !artifact.coarse_cpu_mesh.positions.empty() &&
-              artifact.gameplay_field[0].wet_valid,
-          "the accepted stable-id snapshot feeds existing visual and CPU meshers plus gameplay fields");
+              artifact.gameplay_field[0].wet_valid &&
+              artifact.product_keys.presentation != 0u &&
+              artifact.presentation_field.size() ==
+                  artifact.gameplay_field.size() &&
+              artifact.presentation_field[0].wet_valid,
+          "the accepted stable-id snapshot feeds all four v5 products");
+    std::vector<std::uint8_t> v5_bytes;
+    gpu_meshing::Error v5_error{};
+    hydrology::HydrologyArtifact reopened{};
+    CHECK(hydrology::serialize_artifact(artifact, v5_bytes, v5_error) &&
+              hydrology::deserialize_artifact(v5_bytes, reopened, v5_error) &&
+              reopened.product_keys.presentation ==
+                  artifact.product_keys.presentation &&
+              reopened.presentation_field == artifact.presentation_field,
+          "the production product path emits a valid persisted v5 artifact");
 
     int gpu_run_calls = 0;
     int vk_visual_calls = 0;

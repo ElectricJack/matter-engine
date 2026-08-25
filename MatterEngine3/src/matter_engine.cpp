@@ -81,6 +81,7 @@ namespace viewer { struct VkScenePart; }
 #include "terrain_field.h"
 #include "terrain_river_overlay.h"
 #include "hydrology/river_geometry.h"
+#include "hydrology/river_runtime_internal.h"
 #if defined(MATTER_ENABLE_PHYSX)
 #include "hydrology/physx_runtime.h"
 #endif
@@ -702,14 +703,12 @@ struct WorldSession::Impl {
     viewer::VkSceneInstance gpu_mesher_acceptance_instance{};
     // Normal authored-water publication.  The visual mesh is already in
     // world space, so its single renderer instance is always identity.  The
-    // atomic shared_ptr operations pair with accepted_fluid_artifact's
-    // release/acquire publication and keep replacement safe across render and
-    // bake threads.
+    // The immutable publication record below keeps replacement safe across
+    // render and bake threads.
     struct AuthoredFluidRenderBinding {
         std::shared_ptr<const viewer::VkScenePart> part;
         viewer::VkSceneInstance instance{};
     };
-    std::shared_ptr<const AuthoredFluidRenderBinding> authored_fluid_binding;
     std::shared_ptr<const AuthoredFluidRenderBinding>
         failed_fluid_debug_binding;
     viewer::VulkanInstanceCache vk_instance_cache;
@@ -742,6 +741,13 @@ struct WorldSession::Impl {
     // instances_dirty even when the resolved instance set itself is unchanged.
     bool vk_hide_children_applied_ = false;
 #endif
+    struct AuthoredFluidPublication {
+        std::shared_ptr<const matter::RiverRuntimeBinding> runtime;
+#ifdef MATTER_VULKAN_VIEWER
+        std::shared_ptr<const AuthoredFluidRenderBinding> render;
+#endif
+    };
+    std::shared_ptr<const AuthoredFluidPublication> authored_fluid_publication;
     lod_select::PartLodTable                lods;
 
     // Sky clear color: derived from tone-mapped sky_color in bake_once().
@@ -770,7 +776,6 @@ struct WorldSession::Impl {
         std::numeric_limits<float>::infinity()};
 
     std::atomic<bool> connected{false};
-    std::atomic<bool> accepted_fluid_artifact{false};
     // Serializes full-request token cancellation with the complete hydrology
     // commit (provider artifact, status, accepted flag, and terminal event).
     // Recursive keeps immediate event subscribers free to query/request again.
@@ -2527,7 +2532,6 @@ void WorldSession::Impl::ensure_worker_started() {
 void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind) {
     std::lock_guard<std::recursive_mutex> generation_lock(
         hydrology_generation_mutex);
-    accepted_fluid_artifact.store(false, std::memory_order_release);
 #ifdef MATTER_VULKAN_VIEWER
     std::atomic_store_explicit(
         &failed_fluid_debug_binding,
@@ -3379,6 +3383,23 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
     const bool accepted = provider->run_authored_fluid_bake(
         context, result, error, network_result);
     bool publication_accepted = accepted;
+    std::shared_ptr<const matter::RiverRuntimeBinding> runtime_binding;
+    if (accepted) {
+        const matter::detail::RiverRuntimeBuildInput runtime_input{
+            network_result.manifest.payload_digest,
+            network_result.manifest.runtime_field_digest,
+            network_result.manifest.presentation_field_digest,
+            &network_result.products};
+        runtime_binding = matter::WorldSession::make_river_runtime_binding(
+            runtime_input);
+        if (!runtime_binding) {
+            publication_accepted = false;
+            error = {hydrology::FluidBakeCode::ProductFailure,
+                     "accepted authored water produced no valid runtime field"};
+            result.state = matter::HydrologyState::Invalid;
+            result.failure_reason = error.message;
+        }
+    }
 #ifdef MATTER_VULKAN_VIEWER
     std::shared_ptr<const viewer::VkScenePart> authored_part;
     viewer::VkSceneInstance authored_instance{};
@@ -3421,6 +3442,42 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
         }
     }
 #endif
+    std::shared_ptr<const AuthoredFluidPublication> publication_candidate;
+#ifdef MATTER_VULKAN_VIEWER
+    std::shared_ptr<const AuthoredFluidRenderBinding>
+        failed_debug_binding_candidate;
+#endif
+    try {
+        if (publication_accepted) {
+            auto publication = std::make_shared<AuthoredFluidPublication>();
+            publication->runtime = std::move(runtime_binding);
+#ifdef MATTER_VULKAN_VIEWER
+            auto render = std::make_shared<AuthoredFluidRenderBinding>();
+            render->part = std::move(authored_part);
+            render->instance = authored_instance;
+            publication->render = std::move(render);
+#endif
+            publication_candidate = std::move(publication);
+        }
+#ifdef MATTER_VULKAN_VIEWER
+        if (!publication_accepted && failed_debug_part) {
+            auto failed = std::make_shared<AuthoredFluidRenderBinding>();
+            failed->part = std::move(failed_debug_part);
+            failed->instance = failed_debug_instance;
+            failed_debug_binding_candidate = std::move(failed);
+        }
+#endif
+    } catch (const std::bad_alloc&) {
+        publication_candidate.reset();
+#ifdef MATTER_VULKAN_VIEWER
+        failed_debug_binding_candidate.reset();
+#endif
+        publication_accepted = false;
+        error = {hydrology::FluidBakeCode::ProductFailure,
+                 "authored water publication allocation failed"};
+        result.state = matter::HydrologyState::Invalid;
+        result.failure_reason = error.message;
+    }
     std::function<void()> before_publication_hook;
     std::function<void()> after_publication_hook;
     {
@@ -3437,37 +3494,37 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             if (publication_accepted)
                 provider->commit_accepted_fluid_network(
                     std::move(network_result));
-#ifdef MATTER_VULKAN_VIEWER
             if (publication_accepted) {
-                auto binding = std::make_shared<AuthoredFluidRenderBinding>();
-                binding->part = std::move(authored_part);
-                binding->instance = authored_instance;
                 std::atomic_store_explicit(
-                    &authored_fluid_binding,
-                    std::shared_ptr<const AuthoredFluidRenderBinding>(
-                        std::move(binding)),
+                    &authored_fluid_publication,
+                    std::move(publication_candidate),
                     std::memory_order_release);
-            }
-            if (!publication_accepted && failed_debug_part) {
-                auto binding = std::make_shared<AuthoredFluidRenderBinding>();
-                binding->part = std::move(failed_debug_part);
-                binding->instance = failed_debug_instance;
+#ifdef MATTER_VULKAN_VIEWER
                 std::atomic_store_explicit(
                     &failed_fluid_debug_binding,
-                    std::shared_ptr<const AuthoredFluidRenderBinding>(
-                        std::move(binding)),
+                    std::shared_ptr<const AuthoredFluidRenderBinding>{},
                     std::memory_order_release);
-                MATTER_LOGI(
-                    "hydrology",
-                    "UNACCEPTED DEBUG WATER: finite terminal-failure snapshot rendered; no artifact, cache, CPU mesh, or gameplay product was published\n");
+#endif
+            }
+#ifdef MATTER_VULKAN_VIEWER
+            if (!publication_accepted && failed_debug_binding_candidate) {
+                const auto prior = std::atomic_load_explicit(
+                    &authored_fluid_publication, std::memory_order_acquire);
+                if (!prior) {
+                    std::atomic_store_explicit(
+                        &failed_fluid_debug_binding,
+                        std::move(failed_debug_binding_candidate),
+                        std::memory_order_release);
+                    MATTER_LOGI(
+                        "hydrology",
+                        "UNACCEPTED DEBUG WATER: finite terminal-failure snapshot rendered; no artifact, cache, CPU mesh, or gameplay product was published\n");
+                }
             }
 #endif
             {
                 std::lock_guard<std::mutex> lock(hydrology_status_mutex);
                 hydrology_status_copy = result;
             }
-            accepted_fluid_artifact.store(publication_accepted,
-                                           std::memory_order_release);
             if (publication_accepted) {
                 events::BakePartDone event;
                 event.done = static_cast<int>(result.completed_sections);
@@ -9444,8 +9501,10 @@ WorldSession::~WorldSession() {
     {
         std::lock_guard<std::recursive_mutex> generation_lock(
             impl_->hydrology_generation_mutex);
-        impl_->accepted_fluid_artifact.store(false,
-                                             std::memory_order_release);
+        std::atomic_store_explicit(
+            &impl_->authored_fluid_publication,
+            std::shared_ptr<const WorldSession::Impl::AuthoredFluidPublication>{},
+            std::memory_order_release);
         {
             std::lock_guard<std::mutex> status_lock(
                 impl_->hydrology_status_mutex);
@@ -9555,7 +9614,15 @@ void WorldSession::set_test_fluid_after_publication_hook(
 bool WorldSession::has_accepted_fluid_artifact_for_test() const {
     std::lock_guard<std::recursive_mutex> generation_lock(
         impl_->hydrology_generation_mutex);
-    return impl_->accepted_fluid_artifact.load(std::memory_order_acquire);
+    return static_cast<bool>(std::atomic_load_explicit(
+        &impl_->authored_fluid_publication, std::memory_order_acquire));
+}
+
+std::shared_ptr<const RiverRuntimeBinding>
+WorldSession::river_runtime_binding() const noexcept {
+    const auto publication = std::atomic_load_explicit(
+        &impl_->authored_fluid_publication, std::memory_order_acquire);
+    return publication ? publication->runtime : nullptr;
 }
 
 HydrologyStatus WorldSession::hydrology_status() const {
@@ -11086,12 +11153,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->gpu_mesher_acceptance_instance);
         instance_view = &acceptance_instances;
     }
-    const bool authored_fluid_accepted =
-        impl_->accepted_fluid_artifact.load(std::memory_order_acquire);
-    const auto authored_fluid_binding = authored_fluid_accepted
-        ? std::atomic_load_explicit(&impl_->authored_fluid_binding,
-                                    std::memory_order_acquire)
-        : nullptr;
+    const auto authored_fluid_publication = std::atomic_load_explicit(
+        &impl_->authored_fluid_publication, std::memory_order_acquire);
+    const auto authored_fluid_binding = authored_fluid_publication
+        ? authored_fluid_publication->render : nullptr;
     if (authored_fluid_binding && authored_fluid_binding->part) {
         if (impl_->vk_scene->ensure_part(*authored_fluid_binding->part, err) < 0)
             return false;

@@ -15,6 +15,14 @@ hydrology::HydrologyNetworkArtifact fixture_manifest(bool reversed = false) {
     manifest.state = hydrology::HydrologyNetworkState::Ready;
     manifest.network_key = 101u;
     manifest.terrain_revision = 202u;
+    manifest.runtime_field_digest = 303u;
+    manifest.presentation_field_digest = 404u;
+    manifest.field_products = {
+        {hydrology::HydrologyFieldProductKind::Runtime,
+         "fields/runtime-000000000000012f.mhydfield", 303u},
+        {hydrology::HydrologyFieldProductKind::Presentation,
+         "fields/presentation-0000000000000194.mhydfield", 404u},
+    };
     manifest.sections = {
         {"upper", "sections/upper.mhyd", {}, 11u, 111u},
         {"lower", "sections/lower.mhyd", {"upper"}, 22u, 222u},
@@ -55,8 +63,11 @@ void test_manifest_round_trip_is_canonical_and_fail_closed() {
               reopened.sections[1].id == "upper" &&
               reopened.topological_order ==
                   std::vector<std::string>({"upper", "lower"}) &&
+              reopened.runtime_field_digest == 303u &&
+              reopened.presentation_field_digest == 404u &&
+              reopened.field_products.size() == 2u &&
               reopened.payload_digest != 0u,
-          "ready manifest identity and canonical references round-trip");
+          "ready manifest identity, field digests, and package closure round-trip");
 
     auto invalid = manifest;
     invalid.sections.push_back(invalid.sections.front());
@@ -70,6 +81,24 @@ void test_manifest_round_trip_is_canonical_and_fail_closed() {
     invalid.sections[0].relative_path = "../outside.mhyd";
     CHECK(!hydrology::serialize_network_artifact(invalid, reversed_bytes, error),
           "artifact references must remain relative to the network cache");
+    invalid = manifest;
+    invalid.field_products.pop_back();
+    CHECK(!hydrology::serialize_network_artifact(invalid, reversed_bytes, error),
+          "a Ready package missing the presentation field payload is rejected");
+    invalid = manifest;
+    invalid.field_products[0].payload_digest++;
+    CHECK(!hydrology::serialize_network_artifact(invalid, reversed_bytes, error),
+          "a Ready package carrying a stale runtime field digest is rejected");
+    invalid = manifest;
+    invalid.field_products.push_back({
+        hydrology::HydrologyFieldProductKind::Runtime,
+        "fields/stale-runtime.mhydfield", manifest.runtime_field_digest});
+    CHECK(!hydrology::serialize_network_artifact(invalid, reversed_bytes, error),
+          "a Ready package carrying a manifest-unreferenced stale field is rejected");
+    invalid = manifest;
+    invalid.presentation_field_digest = 0u;
+    CHECK(!hydrology::serialize_network_artifact(invalid, reversed_bytes, error),
+          "a Ready manifest requires both nonzero field digests");
 
     auto corrupt = bytes;
     corrupt.back() ^= 0x80u;
@@ -101,6 +130,9 @@ void test_atomic_ready_load_rejects_incomplete_state() {
     incomplete.sections.clear();
     incomplete.handoffs.clear();
     incomplete.topological_order.clear();
+    incomplete.runtime_field_digest = 0u;
+    incomplete.presentation_field_digest = 0u;
+    incomplete.field_products.clear();
     CHECK(hydrology::save_network_artifact_atomic(path, incomplete, error),
           error.message.c_str());
     CHECK(!hydrology::load_network_artifact_validated(

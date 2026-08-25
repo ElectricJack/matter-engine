@@ -1,5 +1,6 @@
 #include "hydrology/hydrology_handoff_products.h"
 
+#include "hydrology/river_presentation_field.h"
 #include "hydrology/water_visual_products.h"
 
 #include <algorithm>
@@ -630,6 +631,30 @@ GameplaySample blend(GameplaySample upstream, GameplaySample downstream,
             true};
 }
 
+PresentationSample blend(PresentationSample upstream,
+                         PresentationSample downstream, float t) {
+    const auto linear = [t](float a, float b) { return a + (b - a) * t; };
+    const float upstream_y = std::sqrt(std::max(
+        0.0f, 1.0f - upstream.normal_x * upstream.normal_x -
+            upstream.normal_z * upstream.normal_z));
+    const float downstream_y = std::sqrt(std::max(
+        0.0f, 1.0f - downstream.normal_x * downstream.normal_x -
+            downstream.normal_z * downstream.normal_z));
+    matter::Float3 normal{
+        linear(upstream.normal_x, downstream.normal_x),
+        linear(upstream_y, downstream_y),
+        linear(upstream.normal_z, downstream.normal_z)};
+    const float inverse_length = 1.0f / std::sqrt(length_squared(normal));
+    normal = scale(normal, inverse_length);
+    return {normal.x,
+            normal.z,
+            linear(upstream.turbulence, downstream.turbulence),
+            linear(upstream.aeration, downstream.aeration),
+            linear(upstream.foam_potential, downstream.foam_potential),
+            t < 0.5f ? upstream.feature : downstream.feature,
+            true};
+}
+
 bool build_gameplay(const HydrologyArtifact& upstream,
                     const HydrologyArtifact& downstream,
                     const SpillwayHandoffRecord& handoff,
@@ -675,6 +700,56 @@ bool build_gameplay(const HydrologyArtifact& upstream,
     return true;
 }
 
+bool build_presentation(const HydrologyArtifact& upstream,
+                        const HydrologyArtifact& downstream,
+                        const SpillwayHandoffRecord& handoff,
+                        const GameplayFieldLayout& layout,
+                        const std::vector<GameplaySample>& gameplay,
+                        std::vector<PresentationSample>& field) {
+    if (!valid_layout(layout) || gameplay.size() !=
+            static_cast<std::size_t>(layout.width) * layout.depth)
+        return false;
+    field.assign(gameplay.size(), {});
+    for (std::uint32_t z = 0u; z != layout.depth; ++z) {
+        for (std::uint32_t x = 0u; x != layout.width; ++x) {
+            const matter::Float3 point{
+                layout.origin_m.x + (static_cast<float>(x) + 0.5f) *
+                    layout.cell_size_m,
+                handoff.lip_origin_m.y,
+                layout.origin_m.z + (static_cast<float>(z) + 0.5f) *
+                    layout.cell_size_m};
+            const float distance = signed_distance(handoff, point);
+            PresentationSample before{};
+            PresentationSample after{};
+            const bool has_before = sample_river_presentation_field(
+                upstream.gameplay_layout, upstream.presentation_field,
+                point.x, point.z, before);
+            const bool has_after = sample_river_presentation_field(
+                downstream.gameplay_layout, downstream.presentation_field,
+                point.x, point.z, after);
+            PresentationSample sample{};
+            if (distance < -handoff.overlap_m) {
+                if (has_before) sample = before;
+            } else if (distance > handoff.overlap_m) {
+                if (has_after) sample = after;
+            } else if (has_before && has_after) {
+                const float t = std::clamp(
+                    0.5f + distance / (2.0f * handoff.overlap_m),
+                    0.0f, 1.0f);
+                sample = blend(before, after, t);
+            } else if (has_before) {
+                sample = before;
+            } else if (has_after) {
+                sample = after;
+            }
+            const auto index = static_cast<std::size_t>(z) * layout.width + x;
+            if (sample.wet_valid != gameplay[index].wet_valid) return false;
+            field[index] = sample;
+        }
+    }
+    return true;
+}
+
 std::uint64_t handoff_semantic_key(
     const HydrologyArtifact& upstream,
     const HydrologyArtifact& downstream,
@@ -704,6 +779,20 @@ bool valid_sample(const GameplaySample& sample) {
            finite(sample.velocity_x_mps) &&
            finite(sample.velocity_y_mps) &&
            finite(sample.velocity_z_mps) && sample.depth_m >= 0.0f;
+}
+
+bool valid_sample(const PresentationSample& sample) {
+    if (!sample.wet_valid) return sample == PresentationSample{};
+    const float normal_y_squared = 1.0f - sample.normal_x * sample.normal_x -
+        sample.normal_z * sample.normal_z;
+    return finite(sample.normal_x) && finite(sample.normal_z) &&
+           finite(sample.turbulence) && finite(sample.aeration) &&
+           finite(sample.foam_potential) && normal_y_squared > 0.0f &&
+           sample.turbulence >= 0.0f && sample.turbulence <= 1.0f &&
+           sample.aeration >= 0.0f && sample.aeration <= 1.0f &&
+           sample.foam_potential >= 0.0f && sample.foam_potential <= 1.0f &&
+           static_cast<std::uint8_t>(sample.feature) <=
+               static_cast<std::uint8_t>(RiverFeature::Pool);
 }
 
 bool has_open_cut_edge(const gpu_meshing::MeshResult& mesh,
@@ -1011,6 +1100,65 @@ bool replace_file(const std::filesystem::path& source,
 
 }  // namespace
 
+std::uint64_t hydrology_runtime_field_digest(
+    const GameplayFieldLayout& layout,
+    const std::vector<GameplaySample>& field) noexcept {
+    try {
+        if (!valid_layout(layout) || field.size() !=
+                static_cast<std::size_t>(layout.width) * layout.depth)
+            return 0u;
+        Digest digest(UINT64_C(0x52554e54494d4531));
+        digest.floating(layout.origin_m.x);
+        digest.floating(layout.origin_m.y);
+        digest.floating(layout.origin_m.z);
+        digest.floating(layout.cell_size_m);
+        digest.u64(layout.width);
+        digest.u64(layout.depth);
+        for (const auto& sample : field) {
+            if (!valid_sample(sample)) return 0u;
+            digest.floating(sample.height_m);
+            digest.floating(sample.depth_m);
+            digest.floating(sample.velocity_x_mps);
+            digest.floating(sample.velocity_y_mps);
+            digest.floating(sample.velocity_z_mps);
+            digest.byte(sample.wet_valid ? 1u : 0u);
+        }
+        return digest.finish();
+    } catch (...) {
+        return 0u;
+    }
+}
+
+std::uint64_t hydrology_presentation_field_digest(
+    const GameplayFieldLayout& layout,
+    const std::vector<PresentationSample>& field) noexcept {
+    try {
+        if (!valid_layout(layout) || field.size() !=
+                static_cast<std::size_t>(layout.width) * layout.depth)
+            return 0u;
+        Digest digest(UINT64_C(0x50524553454e5431));
+        digest.floating(layout.origin_m.x);
+        digest.floating(layout.origin_m.y);
+        digest.floating(layout.origin_m.z);
+        digest.floating(layout.cell_size_m);
+        digest.u64(layout.width);
+        digest.u64(layout.depth);
+        for (const auto& sample : field) {
+            if (!valid_sample(sample)) return 0u;
+            digest.floating(sample.normal_x);
+            digest.floating(sample.normal_z);
+            digest.floating(sample.turbulence);
+            digest.floating(sample.aeration);
+            digest.floating(sample.foam_potential);
+            digest.byte(static_cast<std::uint8_t>(sample.feature));
+            digest.byte(sample.wet_valid ? 1u : 0u);
+        }
+        return digest.finish();
+    } catch (...) {
+        return 0u;
+    }
+}
+
 bool build_handoff_artifact(
     const HydrologyArtifact& upstream,
     const HydrologyArtifact& downstream,
@@ -1167,6 +1315,11 @@ bool build_handoff_artifact(
                             products.gameplay_layout,
                             products.gameplay_field))
             return fail("handoff gameplay aggregation failed", error);
+        if (!build_presentation(upstream, downstream, handoff,
+                                products.gameplay_layout,
+                                products.gameplay_field,
+                                products.presentation_field))
+            return fail("handoff presentation aggregation failed", error);
 
         artifact.id = handoff.id;
         artifact.handoff = handoff;
@@ -1211,12 +1364,21 @@ bool validate_handoff_products(
         !valid_layout(products.gameplay_layout) ||
         products.gameplay_field.size() !=
             static_cast<std::size_t>(products.gameplay_layout.width) *
-                products.gameplay_layout.depth)
+                products.gameplay_layout.depth ||
+        products.presentation_field.size() != products.gameplay_field.size())
         return fail("handoff products are structurally invalid", error);
-    for (const auto& sample : products.gameplay_field)
-        if (!valid_sample(sample))
+    for (std::size_t index = 0u; index != products.gameplay_field.size();
+         ++index) {
+        if (!valid_sample(products.gameplay_field[index]))
             return fail("handoff gameplay field contains an invalid sample",
                         error);
+        if (!valid_sample(products.presentation_field[index]) ||
+            products.presentation_field[index].wet_valid !=
+                products.gameplay_field[index].wet_valid)
+            return fail(
+                "handoff presentation field contains an invalid sample",
+                error);
+    }
     // Visual products are built exclusively from fluid particle isosurfaces;
     // collision meshes are never an input to this assembler. Do not reject
     // water merely because it occupies the former temporary-dam footprint:

@@ -20,6 +20,8 @@
 #include "matter/engine_context.h"
 #include "matter/scene.h"
 #include "matter/world_session.h"
+#include "matter/river_runtime.h"
+#include "hydrology/hydrology_network_artifact.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "render/animation_skin_bridge.h"
 
@@ -39,6 +41,7 @@
 #include <chrono>
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -2103,6 +2106,184 @@ static bool test_authored_fluid_uses_worker_and_gpu_job_seam(
     return finished;
 }
 
+static bool test_cancelled_fluid_generation_publishes_neither_half(
+    const std::string& sandbox) {
+    printf("-- cancelled_fluid_generation_publishes_neither_half\n");
+    const fs::path root = fs::path(sandbox).string() + "_fluid_publication";
+    if (!build_authored_fluid_sandbox(root)) {
+        CHECK(false, "fluid publication fixture created");
+        return false;
+    }
+    const std::string cache_root = (root / ".cache").string();
+    matter::EngineDesc engine_desc{};
+    engine_desc.cache_root = cache_root.c_str();
+    engine_desc.allow_gl_lt_46 = true;
+    std::string error;
+    auto engine = matter::EngineContext::create(engine_desc, error);
+    CHECK(engine != nullptr, "fluid publication engine created");
+    if (!engine) { remove_tree(root); return false; }
+    const std::string project_dir = root.string();
+    auto session = engine->open_world(
+        project_world_desc(project_dir, "FluidAsync"), error);
+    CHECK(session != nullptr, "fluid publication session opened");
+    if (!session) { remove_tree(root); return false; }
+
+    auto backend_state = std::make_shared<AsyncFluidBackendState>();
+    session->set_test_fluid_bake_dependencies(
+        [backend_state] {
+            ++backend_state->factory_calls;
+            return std::make_shared<AsyncFluidBackend>(backend_state);
+        },
+        [](const gpu_meshing::ParticleJob& job,
+           gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
+           gpu_meshing::Error&, const gpu_meshing::BuildControl&) {
+            mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                              0.0f, 1.0f, 0.0f};
+            mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                            0.0f, 0.0f, 1.0f};
+            mesh.indices = {0u, 1u, 2u};
+            mesh.material = job.material;
+            mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+            return true;
+        });
+    session->set_test_fluid_renderer_luid(
+        {1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u});
+
+    std::mutex barrier_mutex;
+    std::condition_variable barrier_cv;
+    int before_calls = 0;
+    int after_calls = 0;
+    bool release_before_a = false;
+    bool release_after_a = false;
+    session->set_test_fluid_before_publication_hook([&] {
+        std::unique_lock<std::mutex> lock(barrier_mutex);
+        ++before_calls;
+        barrier_cv.notify_all();
+        if (before_calls == 1)
+            barrier_cv.wait(lock, [&] { return release_before_a; });
+    });
+    session->set_test_fluid_after_publication_hook([&] {
+        std::unique_lock<std::mutex> lock(barrier_mutex);
+        ++after_calls;
+        barrier_cv.notify_all();
+        if (after_calls == 1)
+            barrier_cv.wait(lock, [&] { return release_after_a; });
+    });
+
+    session->request_bake();
+    const auto wait_for_barrier = [&](const auto& predicate) {
+        const auto deadline = clk::now() + std::chrono::seconds(60);
+        while (clk::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(barrier_mutex);
+                if (predicate()) return true;
+            }
+            session->pump_gpu_jobs(4.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return false;
+    };
+    CHECK(wait_for_barrier([&] { return before_calls == 1; }),
+          "generation A parks before the publication boundary");
+    std::string world_source;
+    const fs::path world_path = root / "worlds" / "FluidAsync.js";
+    CHECK(read_file(world_path, world_source),
+          "generation B source was readable");
+    const std::size_t seed = world_source.find("seed:7");
+    CHECK(seed != std::string::npos, "generation A seed was found");
+    if (seed != std::string::npos) world_source.replace(seed, 6u, "seed:8");
+    CHECK(write_file(world_path, world_source),
+          "generation B changes accepted network identity");
+    session->reload();
+    CHECK(!session->river_runtime_binding() &&
+              !session->has_accepted_fluid_artifact_for_test(),
+          "requesting B exposes neither A CPU binding nor A render gate");
+    {
+        std::lock_guard<std::mutex> lock(barrier_mutex);
+        release_before_a = true;
+    }
+    barrier_cv.notify_all();
+    CHECK(wait_for_barrier([&] { return after_calls == 1; }),
+          "cancelled A reaches the commit-or-skip observation point");
+    CHECK(!session->river_runtime_binding() &&
+              !session->has_accepted_fluid_artifact_for_test(),
+          "cancelled A publishes neither CPU nor render state");
+    {
+        std::lock_guard<std::mutex> lock(barrier_mutex);
+        release_after_a = true;
+    }
+    barrier_cv.notify_all();
+
+    FullBakeLog events;
+    const bool finished = drive_bake_tolerant(*session, events, 60);
+    const auto binding = session->river_runtime_binding();
+    CHECK(finished && binding &&
+              session->has_accepted_fluid_artifact_for_test(),
+          "generation B atomically publishes CPU and render visibility");
+
+    hydrology::HydrologyNetworkArtifact accepted_manifest{};
+    bool found_manifest = false;
+    std::error_code iterator_error;
+    for (fs::recursive_directory_iterator it(root / ".cache", iterator_error),
+         end; !iterator_error && it != end; it.increment(iterator_error)) {
+        if (!it->is_regular_file() || it->path().extension() != ".mhyn")
+            continue;
+        std::ifstream stream(it->path(), std::ios::binary);
+        std::vector<std::uint8_t> bytes(
+            (std::istreambuf_iterator<char>(stream)),
+            std::istreambuf_iterator<char>());
+        hydrology::HydrologyNetworkArtifact candidate{};
+        gpu_meshing::Error manifest_error{};
+        if (hydrology::deserialize_network_artifact(
+                bytes, candidate, manifest_error) && binding &&
+            candidate.payload_digest == binding->generation()) {
+            accepted_manifest = std::move(candidate);
+            found_manifest = true;
+            break;
+        }
+    }
+    CHECK(found_manifest && binding &&
+              binding->generation() == accepted_manifest.payload_digest &&
+              binding->runtime_digest() ==
+                  accepted_manifest.runtime_field_digest &&
+              binding->presentation_digest() ==
+                  accepted_manifest.presentation_field_digest,
+          "B binding generation and field digests match its accepted manifest");
+
+    bool sampled = false;
+    if (binding) {
+        for (float z = -10.0f; z <= 20.0f && !sampled; z += 0.5f) {
+            for (float x = -10.0f; x <= 20.0f && !sampled; x += 0.5f) {
+                matter::RiverFieldSample field{};
+                if (binding->sample({x, 0.0f, z}, field)) {
+                    sampled = field.wet_valid &&
+                              std::isfinite(field.surface_position_m.y) &&
+                              std::isfinite(field.surface_normal.y) &&
+                              field.surface_normal.y > 0.0f &&
+                              std::isfinite(field.velocity_mps.x) &&
+                              std::isfinite(field.velocity_mps.y) &&
+                              std::isfinite(field.velocity_mps.z) &&
+                              field.turbulence >= 0.0f &&
+                              field.turbulence <= 1.0f &&
+                              field.aeration >= 0.0f &&
+                              field.aeration <= 1.0f &&
+                              field.foam_potential >= 0.0f &&
+                              field.foam_potential <= 1.0f;
+                }
+            }
+        }
+    }
+    CHECK(sampled,
+          "published runtime binding combines finite gameplay and presentation channels");
+
+    session->set_test_fluid_before_publication_hook({});
+    session->set_test_fluid_after_publication_hook({});
+    session.reset();
+    engine.reset();
+    remove_tree(root);
+    return finished && found_manifest && sampled;
+}
+
 int main() {
     // Unique writable sandbox so parallel test runs do not collide.
     const auto stamp = std::chrono::high_resolution_clock::now()
@@ -2151,6 +2332,7 @@ int main() {
 
     // Task 7 PhysX fluid bake integration on the same worker/GPU-job lifecycle.
     test_authored_fluid_uses_worker_and_gpu_job_seam(sandbox);
+    test_cancelled_fluid_generation_publishes_neither_half(sandbox);
 
     // E3 milestone (event-system.md): typed bake events + legacy poll_event
     // shim over lane::legacy_poll. Runs LAST so it cannot perturb any prior

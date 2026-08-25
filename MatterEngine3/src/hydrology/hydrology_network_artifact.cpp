@@ -21,8 +21,8 @@
 namespace hydrology {
 namespace {
 
-constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'N', 'E', 'T', '1'};
-constexpr std::uint32_t kVersion = 1u;
+constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'N', 'E', 'T', '2'};
+constexpr std::uint32_t kVersion = 2u;
 constexpr std::uint64_t kMaxPayloadBytes = 16ull * 1024ull * 1024ull;
 constexpr std::uint32_t kMaxStringBytes = 4096u;
 constexpr std::uint32_t kMaxReferences = 4096u;
@@ -149,6 +149,15 @@ void canonicalize_references(
               });
 }
 
+void canonicalize_field_products(
+    std::vector<HydrologyFieldProductReference>& products) {
+    std::sort(products.begin(), products.end(),
+              [](const auto& lhs, const auto& rhs) {
+                  return static_cast<std::uint8_t>(lhs.kind) <
+                         static_cast<std::uint8_t>(rhs.kind);
+              });
+}
+
 bool validate_references(
     const std::vector<HydrologyArtifactReference>& references,
     std::unordered_set<std::string>& ids) {
@@ -184,8 +193,42 @@ bool validate_manifest(const HydrologyNetworkArtifact& artifact,
         return false;
     if (artifact.state != HydrologyNetworkState::Ready) {
         return artifact.sections.empty() && artifact.handoffs.empty() &&
-               artifact.topological_order.empty();
+               artifact.topological_order.empty() &&
+               artifact.runtime_field_digest == 0u &&
+               artifact.presentation_field_digest == 0u &&
+               artifact.field_products.empty();
     }
+
+    if (artifact.runtime_field_digest == 0u ||
+        artifact.presentation_field_digest == 0u ||
+        artifact.field_products.size() != 2u)
+        return false;
+    bool have_runtime = false;
+    bool have_presentation = false;
+    std::unordered_set<std::string> field_paths;
+    for (const auto& product : artifact.field_products) {
+        if (!cache_relative_path(product.relative_path) ||
+            !field_paths.insert(product.relative_path).second ||
+            product.payload_digest == 0u)
+            return false;
+        switch (product.kind) {
+            case HydrologyFieldProductKind::Runtime:
+                if (have_runtime ||
+                    product.payload_digest != artifact.runtime_field_digest)
+                    return false;
+                have_runtime = true;
+                break;
+            case HydrologyFieldProductKind::Presentation:
+                if (have_presentation || product.payload_digest !=
+                                             artifact.presentation_field_digest)
+                    return false;
+                have_presentation = true;
+                break;
+            default:
+                return false;
+        }
+    }
+    if (!have_runtime || !have_presentation) return false;
 
     std::unordered_set<std::string> section_ids;
     std::unordered_set<std::string> handoff_ids;
@@ -264,6 +307,7 @@ bool serialize_network_artifact(const HydrologyNetworkArtifact& artifact,
     HydrologyNetworkArtifact canonical = artifact;
     canonicalize_references(canonical.sections);
     canonicalize_references(canonical.handoffs);
+    canonicalize_field_products(canonical.field_products);
     if (!validate_manifest(canonical, false))
         return fail(error, "hydrology network manifest is invalid");
 
@@ -271,6 +315,15 @@ bool serialize_network_artifact(const HydrologyNetworkArtifact& artifact,
     payload.u8(static_cast<std::uint8_t>(canonical.state));
     payload.u64(canonical.network_key);
     payload.u64(canonical.terrain_revision);
+    payload.u64(canonical.runtime_field_digest);
+    payload.u64(canonical.presentation_field_digest);
+    payload.u32(static_cast<std::uint32_t>(
+        canonical.field_products.size()));
+    for (const auto& product : canonical.field_products) {
+        payload.u8(static_cast<std::uint8_t>(product.kind));
+        payload.string(product.relative_path);
+        payload.u64(product.payload_digest);
+    }
     for (const float value : {canonical.bounds_m.minimum.x,
                               canonical.bounds_m.minimum.y,
                               canonical.bounds_m.minimum.z,
@@ -331,7 +384,22 @@ bool deserialize_network_artifact(const std::vector<std::uint8_t>& bytes,
                                       HydrologyNetworkState::Ready) ||
         !reader.u64(candidate.network_key) ||
         !reader.u64(candidate.terrain_revision) ||
-        !reader.floating(candidate.bounds_m.minimum.x) ||
+        !reader.u64(candidate.runtime_field_digest) ||
+        !reader.u64(candidate.presentation_field_digest) ||
+        !reader.u32(count) || count > 2u)
+        return fail(error, "hydrology network field closure is invalid");
+    candidate.field_products.resize(count);
+    for (auto& product : candidate.field_products) {
+        std::uint8_t kind = 0u;
+        if (!reader.u8(kind) ||
+            kind > static_cast<std::uint8_t>(
+                       HydrologyFieldProductKind::Presentation) ||
+            !reader.string(product.relative_path) ||
+            !reader.u64(product.payload_digest))
+            return fail(error, "hydrology network field product is invalid");
+        product.kind = static_cast<HydrologyFieldProductKind>(kind);
+    }
+    if (!reader.floating(candidate.bounds_m.minimum.x) ||
         !reader.floating(candidate.bounds_m.minimum.y) ||
         !reader.floating(candidate.bounds_m.minimum.z) ||
         !reader.floating(candidate.bounds_m.maximum.x) ||
@@ -359,6 +427,7 @@ bool deserialize_network_artifact(const std::vector<std::uint8_t>& bytes,
     candidate.payload_digest = expected_digest;
     canonicalize_references(candidate.sections);
     canonicalize_references(candidate.handoffs);
+    canonicalize_field_products(candidate.field_products);
     if (reader.remaining != 0u || !validate_manifest(candidate, false))
         return fail(error, "hydrology network manifest has invalid data");
     artifact = std::move(candidate);

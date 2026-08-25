@@ -2,6 +2,7 @@
 
 #include "hydrology/hydrology_artifact.h"
 #include "hydrology/fluid_gameplay_field.h"
+#include "hydrology/river_presentation_field.h"
 #include "hydrology/water_visual_products.h"
 
 #include <chrono>
@@ -47,7 +48,7 @@ gpu_meshing::MeshResult visual_triangle() {
 hydrology::HydrologyArtifact fixture_artifact() {
     hydrology::HydrologyArtifact artifact{};
     artifact.section = {"upper", "main", 0.0f, 145.0f, -5.0f, 150.0f};
-    artifact.product_keys = {101u, 202u, 303u};
+    artifact.product_keys = {101u, 202u, 303u, 606u};
     artifact.semantic_key = 505u;
     artifact.particle_snapshot_digest = 404u;
     artifact.particle_radius_m = 0.65f;
@@ -71,6 +72,12 @@ hydrology::HydrologyArtifact fixture_artifact() {
     artifact.gameplay_field = {
         {10.0f, 1.5f, 2.0f, 0.0f, -0.5f, true},
         {9.5f, 0.7f, 1.0f, 0.2f, -0.25f, false},
+    };
+    artifact.presentation_field = {
+        {0.25f, -0.5f, 0.75f, 0.625f, 0.875f,
+         hydrology::RiverFeature::Rapid, true},
+        {0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+         hydrology::RiverFeature::Calm, false},
     };
     artifact.gameplay_layout = {{0.0f, 0.0f, 0.0f}, 1.0f, 2u, 1u};
     artifact.provenance = {0x10deu, 0x2684u, 610074u, 0x050601u, 7u};
@@ -277,16 +284,28 @@ void test_artifact_round_trip_and_corruption_closure() {
               loaded.visual_mesh.positions == artifact.visual_mesh.positions &&
               loaded.coarse_cpu_mesh.positions ==
                   artifact.coarse_cpu_mesh.positions &&
-              loaded.gameplay_field == artifact.gameplay_field,
-          "all three independent products round-trip");
+              loaded.gameplay_field == artifact.gameplay_field &&
+              loaded.presentation_field == artifact.presentation_field,
+          "all four independent products round-trip");
     CHECK(loaded.visual_mesh.positions.data() !=
               loaded.coarse_cpu_mesh.positions.data(),
           "visual and CPU mesh products never share vector storage");
 
+    constexpr std::size_t kGameplayRecordBytes = 21u;
+    constexpr std::size_t kPresentationRecordBytes = 22u;
+    const std::size_t presentation_section_bytes =
+        8u + artifact.presentation_field.size() * kPresentationRecordBytes;
+    const std::size_t gameplay_payload_offset =
+        bytes.size() - presentation_section_bytes -
+        artifact.gameplay_field.size() * kGameplayRecordBytes;
     auto corrupt = bytes;
-    corrupt.back() ^= 0x80u;
+    corrupt[gameplay_payload_offset] ^= 0x80u;
     CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "payload corruption is rejected");
+          "gameplay payload corruption is rejected by the stable digest");
+    corrupt = bytes;
+    corrupt[bytes.size() - kPresentationRecordBytes] ^= 0x80u;
+    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
+          "presentation payload corruption is rejected by the stable digest");
     corrupt = bytes;
     corrupt[0] = 'X';
     CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
@@ -298,7 +317,11 @@ void test_artifact_round_trip_and_corruption_closure() {
     corrupt = bytes;
     corrupt.resize(corrupt.size() - 1u);
     CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
-          "truncated payload is rejected");
+          "truncated presentation section is rejected");
+    corrupt = bytes;
+    corrupt.resize(bytes.size() - presentation_section_bytes - 1u);
+    CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
+          "truncated gameplay section is rejected");
     corrupt = bytes;
     for (size_t i = 12u; i != 20u; ++i) corrupt[i] = 0xffu;
     CHECK(!hydrology::deserialize_artifact(corrupt, loaded, error),
@@ -333,6 +356,28 @@ void test_artifact_round_trip_and_corruption_closure() {
     invalid.stats.retired_particles = 0u;
     CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
           "emitted particles must equal active plus retired particles");
+    invalid = artifact;
+    invalid.product_keys.presentation = 0u;
+    CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
+          "an accepted v5 artifact requires presentation product identity");
+    invalid = artifact;
+    invalid.presentation_field.pop_back();
+    CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
+          "presentation dimensions must exactly match the gameplay layout");
+    invalid = artifact;
+    invalid.presentation_field[0].feature =
+        static_cast<hydrology::RiverFeature>(255u);
+    CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
+          "presentation feature values outside the serialized enum are rejected");
+    invalid = artifact;
+    invalid.presentation_field[0].normal_x = 1.0f;
+    invalid.presentation_field[0].normal_z = 0.0f;
+    CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
+          "presentation normals must reconstruct a positive normal Y");
+    invalid = artifact;
+    invalid.presentation_field[0].foam_potential = 1.01f;
+    CHECK(!hydrology::serialize_artifact(invalid, corrupt, error),
+          "normalized presentation channels stay in the closed unit interval");
 }
 
 void test_atomic_save_validated_load_and_cache_hit() {

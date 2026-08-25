@@ -18,6 +18,7 @@ MatterEngine3/src/hydrology/hydrology_settings.cpp|all
 MatterEngine3/src/hydrology/water_visual_products.cpp|all
 MatterEngine3/src/hydrology/fluid_gameplay_field.cpp|all
 MatterEngine3/src/hydrology/river_presentation_field.cpp|all
+MatterEngine3/src/hydrology/river_runtime.cpp|all
 MatterEngine3/src/hydrology/hydrology_artifact.cpp|all
 MatterEngine3/src/hydrology/hydrology_network_artifact.cpp|all
 MatterEngine3/src/hydrology/hydrology_handoff_products.cpp|all

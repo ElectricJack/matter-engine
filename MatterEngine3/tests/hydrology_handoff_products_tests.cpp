@@ -1,5 +1,6 @@
 #include "check.h"
 #include "hydrology/hydrology_handoff_products.h"
+#include "hydrology/river_presentation_field.h"
 
 #include <cmath>
 #include <vector>
@@ -70,14 +71,29 @@ hydrology::HydrologyArtifact section_artifact(bool upstream) {
         : hydrology::GameplayFieldLayout{{-5,0,-1}, 1, 15, 2};
     artifact.gameplay_field.assign(
         artifact.gameplay_layout.width * artifact.gameplay_layout.depth,
-        hydrology::GameplaySample{2,1,upstream ? 1.0f : 6.0f,0,0,true});
+        hydrology::GameplaySample{upstream ? 2.0f : 5.0f,
+                                  upstream ? 1.0f : 2.0f,
+                                  upstream ? 1.0f : 6.0f,
+                                  upstream ? -0.25f : 0.75f,
+                                  upstream ? -0.5f : 1.5f,true});
+    artifact.presentation_field.assign(
+        artifact.gameplay_layout.width * artifact.gameplay_layout.depth,
+        hydrology::PresentationSample{
+            upstream ? 0.1f : 0.5f, upstream ? 0.2f : -0.2f,
+            upstream ? 0.2f : 0.8f, upstream ? 0.3f : 0.7f,
+            upstream ? 0.1f : 0.9f,
+            upstream ? hydrology::RiverFeature::Current
+                     : hydrology::RiverFeature::Spillway,
+            true});
     if (upstream) {
         for (std::uint32_t z = 0; z != 2; ++z)
             for (std::uint32_t x = 9; x != 15; ++x)
                 artifact.gameplay_field[z * 15u + x].velocity_x_mps = 3.0f;
     } else {
-        for (std::uint32_t z = 0; z != 2; ++z)
+        for (std::uint32_t z = 0; z != 2; ++z) {
             artifact.gameplay_field[z * 15u + 13u] = {};
+            artifact.presentation_field[z * 15u + 13u] = {};
+        }
     }
     return artifact;
 }
@@ -270,6 +286,44 @@ void test_builds_deterministic_seam_without_dam_curtain() {
               products.gameplay_layout, products.gameplay_field,
               8.5f, -0.5f, dry),
           "dry source samples remain invalid after aggregation");
+    CHECK(!hydrology::sample_fluid_gameplay_field(
+              products.gameplay_layout, products.gameplay_field,
+              8.0f, -0.5f, dry),
+          "a dry ownership edge rejects rather than partially blending water");
+
+    hydrology::PresentationSample slow_surface{}, lip_surface{},
+        downstream_surface{}, dry_surface{};
+    CHECK(hydrology::sample_river_presentation_field(
+              products.gameplay_layout, products.presentation_field,
+              -4.5f, -0.5f, slow_surface) &&
+              hydrology::sample_river_presentation_field(
+                  products.gameplay_layout, products.presentation_field,
+                  0.5f, -0.5f, lip_surface) &&
+              hydrology::sample_river_presentation_field(
+                  products.gameplay_layout, products.presentation_field,
+                  4.5f, -0.5f, downstream_surface),
+          "aggregate presentation samples span both section owners");
+    const auto normal_y = [](const hydrology::PresentationSample& sample) {
+        return std::sqrt(1.0f - sample.normal_x * sample.normal_x -
+                         sample.normal_z * sample.normal_z);
+    };
+    CHECK(slow.height_m < lip.height_m &&
+              lip.height_m < downstream_owned.height_m &&
+              slow_surface.turbulence < lip_surface.turbulence &&
+              lip_surface.turbulence < downstream_surface.turbulence &&
+              slow_surface.foam_potential < lip_surface.foam_potential &&
+              lip_surface.foam_potential < downstream_surface.foam_potential &&
+              std::isfinite(normal_y(slow_surface)) &&
+              std::isfinite(normal_y(lip_surface)) &&
+              std::isfinite(normal_y(downstream_surface)) &&
+              normal_y(lip_surface) > 0.0f,
+          "ownership weights bound height, normal, turbulence, and foam across the handoff");
+    CHECK(lip_surface.feature == hydrology::RiverFeature::Spillway,
+          "feature classification follows explicit nearest ownership");
+    CHECK(!hydrology::sample_river_presentation_field(
+              products.gameplay_layout, products.presentation_field,
+              8.0f, -0.5f, dry_surface),
+          "presentation never wets a dry ownership edge");
 
     std::vector<std::uint8_t> bytes;
     gpu_meshing::Error artifact_error{};
@@ -292,7 +346,9 @@ void test_builds_deterministic_seam_without_dam_curtain() {
               repeat_artifact.payload_digest == artifact.payload_digest &&
               repeat_products.visual_mesh.content_digest ==
                   products.visual_mesh.content_digest &&
-              repeat_products.gameplay_field == products.gameplay_field,
+              repeat_products.gameplay_field == products.gameplay_field &&
+              repeat_products.presentation_field ==
+                  products.presentation_field,
           "handoff aggregation is deterministic across repeated builds");
 }
 

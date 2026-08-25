@@ -342,16 +342,11 @@ void test_presentation_identity_is_independent_of_visual_identity() {
           "pool calm evidence changes only the presentation key");
 }
 
-void test_v4_cache_keys_ignore_unserialized_presentation_identity() {
+void test_v5_cache_keys_require_persisted_presentation_identity() {
     const hydrology::ProductKeys persisted{11u, 22u, 33u, 0u};
     const hydrology::ProductKeys expected{11u, 22u, 33u, 44u};
     CHECK(!(persisted == expected),
-          "strict product equality detects a missing presentation key");
-    CHECK(hydrology::v4_persisted_product_keys_match(persisted, expected),
-          "v4 cache matching compares only its three serialized keys");
-    CHECK(!hydrology::v4_persisted_product_keys_match(
-              persisted, {12u, 22u, 33u, 44u}),
-          "v4 cache matching still rejects a changed persisted key");
+          "v5 cache matching rejects a missing persisted presentation key");
 }
 
 }  // namespace
@@ -366,6 +361,6 @@ int main() {
     test_coarse_identity_includes_cpu_mesher_blend_width();
     test_gameplay_sampling_requires_all_bilinear_contributors();
     test_presentation_identity_is_independent_of_visual_identity();
-    test_v4_cache_keys_ignore_unserialized_presentation_identity();
+    test_v5_cache_keys_require_persisted_presentation_identity();
     return check_summary();
 }

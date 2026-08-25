@@ -16,6 +16,17 @@ enum class HydrologyNetworkState : std::uint8_t {
     Ready,
 };
 
+enum class HydrologyFieldProductKind : std::uint8_t {
+    Runtime = 0,
+    Presentation = 1,
+};
+
+struct HydrologyFieldProductReference {
+    HydrologyFieldProductKind kind = HydrologyFieldProductKind::Runtime;
+    std::string relative_path;
+    std::uint64_t payload_digest = 0;
+};
+
 struct HydrologyArtifactReference {
     std::string id;
     std::string relative_path;
@@ -28,6 +39,9 @@ struct HydrologyNetworkArtifact {
     HydrologyNetworkState state = HydrologyNetworkState::Incomplete;
     std::uint64_t network_key = 0;
     std::uint64_t terrain_revision = 0;
+    std::uint64_t runtime_field_digest = 0;
+    std::uint64_t presentation_field_digest = 0;
+    std::vector<HydrologyFieldProductReference> field_products;
     std::vector<HydrologyArtifactReference> sections;
     std::vector<HydrologyArtifactReference> handoffs;
     std::vector<std::string> topological_order;

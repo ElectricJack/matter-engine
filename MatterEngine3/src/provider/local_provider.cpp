@@ -1123,11 +1123,8 @@ bool cache_matches_request(
     const hydrology::ProductKeys expected = hydrology::derive_product_keys(
         visual_job, snapshot, identity, products.coarse_voxel_m,
         products.gameplay_layout);
-    // v4 artifacts do not persist presentation. Task 2 replaces this narrow
-    // compatibility path with strict v5 product-key comparison.
     return snapshot == artifact.particle_snapshot_digest &&
-           hydrology::v4_persisted_product_keys_match(artifact.product_keys,
-                                                       expected) &&
+           artifact.product_keys == expected &&
            artifact.particles.size() <= products.visual_job.limits.max_particles &&
            artifact.visual_mesh.positions.size() / 3u <=
                products.visual_job.limits.max_mesh_vertices &&
@@ -1609,6 +1606,30 @@ bool LocalProvider::run_authored_fluid_bake(
         manifest.network_key = river_network_->canonical_hash;
         manifest.terrain_revision = terrain_revision;
         manifest.bounds_m = combined_bounds;
+        manifest.runtime_field_digest =
+            hydrology::hydrology_runtime_field_digest(
+                out.products.gameplay_layout,
+                out.products.gameplay_field);
+        manifest.presentation_field_digest =
+            hydrology::hydrology_presentation_field_digest(
+                out.products.gameplay_layout,
+                out.products.presentation_field);
+        if (manifest.runtime_field_digest == 0u ||
+            manifest.presentation_field_digest == 0u) {
+            fluid_error = {hydrology::FluidBakeCode::ProductFailure,
+                           "ready network contains an invalid field product"};
+            return false;
+        }
+        manifest.field_products = {
+            {hydrology::HydrologyFieldProductKind::Runtime,
+             "hydrology/fields/runtime-" +
+                 hex64(manifest.runtime_field_digest) + ".mhydfield",
+             manifest.runtime_field_digest},
+            {hydrology::HydrologyFieldProductKind::Presentation,
+             "hydrology/fields/presentation-" +
+                 hex64(manifest.presentation_field_digest) + ".mhydfield",
+             manifest.presentation_field_digest},
+        };
         for (const auto index : graph.topological_order) {
             const auto& section = river_network_->sections[index];
             const auto found = std::find_if(
@@ -1686,6 +1707,8 @@ bool LocalProvider::run_authored_fluid_bake(
         network_result.products.coarse_cpu_mesh = section.coarse_cpu_mesh;
         network_result.products.gameplay_layout = section.gameplay_layout;
         network_result.products.gameplay_field = section.gameplay_field;
+        network_result.products.presentation_field =
+            section.presentation_field;
         if (!finalize_manifest(network_result)) {
             status.state = fluid_error.code == hydrology::FluidBakeCode::Cancelled
                 ? matter::HydrologyState::Stale

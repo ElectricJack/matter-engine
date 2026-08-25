@@ -20,10 +20,12 @@ namespace hydrology {
 namespace {
 
 constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'M', 'S', 'H', '3'};
-constexpr std::uint32_t kVersion = 4u;
+constexpr std::uint32_t kVersion = 5u;
 constexpr std::uint64_t kMaxPayloadBytes = 512ull * 1024ull * 1024ull;
 constexpr std::uint32_t kMaxIdentityBytes = 1024u;
 constexpr std::size_t kHeaderBytes = 28u;
+constexpr std::uint64_t kGameplayRecordBytes = 21u;
+constexpr std::uint64_t kPresentationRecordBytes = 22u;
 
 bool fail(gpu_meshing::Error& error, const char* message) {
     error.code = gpu_meshing::ErrorCode::ArtifactFailure;
@@ -208,6 +210,7 @@ bool validate_artifact(const HydrologyArtifact& artifact) {
         artifact.product_keys.visual == 0u ||
         artifact.product_keys.coarse_cpu == 0u ||
         artifact.product_keys.gameplay == 0u ||
+        artifact.product_keys.presentation == 0u ||
         artifact.semantic_key == 0u || !artifact.accepted ||
         artifact.particle_snapshot_digest == 0u ||
         artifact.provenance.gpu_vendor == 0u ||
@@ -255,7 +258,8 @@ bool validate_artifact(const HydrologyArtifact& artifact) {
         artifact.gameplay_layout.width == 0u || artifact.gameplay_layout.depth == 0u ||
         artifact.gameplay_field.size() !=
             static_cast<std::size_t>(artifact.gameplay_layout.width) *
-                artifact.gameplay_layout.depth)
+                artifact.gameplay_layout.depth ||
+        artifact.presentation_field.size() != artifact.gameplay_field.size())
         return false;
     std::uint64_t previous_id = 0;
     bool have_previous_id = false;
@@ -271,7 +275,10 @@ bool validate_artifact(const HydrologyArtifact& artifact) {
         previous_id = particle.id;
         have_previous_id = true;
     }
-    if (artifact.gameplay_field.size() > kMaxPayloadBytes / 21u)
+    if (artifact.gameplay_field.size() >
+            kMaxPayloadBytes / kGameplayRecordBytes ||
+        artifact.presentation_field.size() >
+            kMaxPayloadBytes / kPresentationRecordBytes)
         return false;
     if (artifact.particles.size() > kMaxPayloadBytes / 32u) return false;
     for (const GameplaySample& sample : artifact.gameplay_field) {
@@ -280,6 +287,28 @@ bool validate_artifact(const HydrologyArtifact& artifact) {
             !std::isfinite(sample.velocity_x_mps) ||
             !std::isfinite(sample.velocity_y_mps) ||
             !std::isfinite(sample.velocity_z_mps))
+            return false;
+    }
+    for (std::size_t index = 0u;
+         index != artifact.presentation_field.size(); ++index) {
+        const PresentationSample& sample = artifact.presentation_field[index];
+        const double normal_x = sample.normal_x;
+        const double normal_z = sample.normal_z;
+        const double normal_y_squared =
+            1.0 - normal_x * normal_x - normal_z * normal_z;
+        if (!std::isfinite(sample.normal_x) ||
+            !std::isfinite(sample.normal_z) ||
+            !std::isfinite(sample.turbulence) ||
+            !std::isfinite(sample.aeration) ||
+            !std::isfinite(sample.foam_potential) ||
+            !std::isfinite(normal_y_squared) || normal_y_squared <= 0.0 ||
+            sample.turbulence < 0.0f || sample.turbulence > 1.0f ||
+            sample.aeration < 0.0f || sample.aeration > 1.0f ||
+            sample.foam_potential < 0.0f ||
+            sample.foam_potential > 1.0f ||
+            static_cast<std::uint8_t>(sample.feature) >
+                static_cast<std::uint8_t>(RiverFeature::Pool) ||
+            sample.wet_valid != artifact.gameplay_field[index].wet_valid)
             return false;
     }
     return true;
@@ -332,6 +361,7 @@ bool serialize_artifact(const HydrologyArtifact& artifact,
     payload.u64(artifact.product_keys.visual);
     payload.u64(artifact.product_keys.coarse_cpu);
     payload.u64(artifact.product_keys.gameplay);
+    payload.u64(artifact.product_keys.presentation);
     payload.u64(artifact.semantic_key);
     payload.u64(artifact.particle_snapshot_digest);
     payload.floating(artifact.particle_radius_m);
@@ -376,13 +406,25 @@ bool serialize_artifact(const HydrologyArtifact& artifact,
     payload.u32(artifact.gameplay_layout.width);
     payload.u32(artifact.gameplay_layout.depth);
     payload.u64(static_cast<std::uint64_t>(artifact.gameplay_field.size()) *
-                21u);
+                kGameplayRecordBytes);
     for (const GameplaySample& sample : artifact.gameplay_field) {
         payload.floating(sample.height_m);
         payload.floating(sample.depth_m);
         payload.floating(sample.velocity_x_mps);
         payload.floating(sample.velocity_y_mps);
         payload.floating(sample.velocity_z_mps);
+        payload.u8(sample.wet_valid ? 1u : 0u);
+    }
+    payload.u64(static_cast<std::uint64_t>(
+                    artifact.presentation_field.size()) *
+                kPresentationRecordBytes);
+    for (const PresentationSample& sample : artifact.presentation_field) {
+        payload.floating(sample.normal_x);
+        payload.floating(sample.normal_z);
+        payload.floating(sample.turbulence);
+        payload.floating(sample.aeration);
+        payload.floating(sample.foam_potential);
+        payload.u8(static_cast<std::uint8_t>(sample.feature));
         payload.u8(sample.wet_valid ? 1u : 0u);
     }
     if (payload.bytes.size() > kMaxPayloadBytes)
@@ -434,6 +476,7 @@ bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
         !reader.u64(candidate.product_keys.visual) ||
         !reader.u64(candidate.product_keys.coarse_cpu) ||
         !reader.u64(candidate.product_keys.gameplay) ||
+        !reader.u64(candidate.product_keys.presentation) ||
         !reader.u64(candidate.semantic_key) ||
         !reader.u64(candidate.particle_snapshot_digest) ||
         !reader.floating(candidate.particle_radius_m) ||
@@ -487,11 +530,18 @@ bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
         !reader.u32(candidate.gameplay_layout.depth))
         return fail(error, "hydrology artifact product payload is invalid");
     std::uint64_t gameplay_bytes = 0;
+    const std::uint64_t field_cell_count =
+        static_cast<std::uint64_t>(candidate.gameplay_layout.width) *
+        candidate.gameplay_layout.depth;
+    if (field_cell_count > kMaxPayloadBytes / kGameplayRecordBytes ||
+        field_cell_count > kMaxPayloadBytes / kPresentationRecordBytes)
+        return fail(error, "hydrology artifact field dimensions are invalid");
     if (!reader.u64(gameplay_bytes) || gameplay_bytes > kMaxPayloadBytes ||
-        gameplay_bytes % 21u != 0u || gameplay_bytes > reader.remaining)
+        gameplay_bytes != field_cell_count * kGameplayRecordBytes ||
+        gameplay_bytes > reader.remaining)
         return fail(error, "hydrology artifact gameplay payload is invalid");
     candidate.gameplay_field.resize(
-        static_cast<std::size_t>(gameplay_bytes / 21u));
+        static_cast<std::size_t>(field_cell_count));
     for (GameplaySample& sample : candidate.gameplay_field) {
         std::uint8_t wet = 0;
         if (!reader.floating(sample.height_m) ||
@@ -501,6 +551,29 @@ bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
             !reader.floating(sample.velocity_z_mps) || !reader.u8(wet) ||
             wet > 1u)
             return fail(error, "hydrology gameplay sample is invalid");
+        sample.wet_valid = wet != 0u;
+    }
+    std::uint64_t presentation_bytes = 0;
+    if (!reader.u64(presentation_bytes) ||
+        presentation_bytes > kMaxPayloadBytes ||
+        presentation_bytes != field_cell_count * kPresentationRecordBytes ||
+        presentation_bytes != reader.remaining)
+        return fail(error, "hydrology artifact presentation payload is invalid");
+    candidate.presentation_field.resize(
+        static_cast<std::size_t>(field_cell_count));
+    for (PresentationSample& sample : candidate.presentation_field) {
+        std::uint8_t feature = 0u;
+        std::uint8_t wet = 0u;
+        if (!reader.floating(sample.normal_x) ||
+            !reader.floating(sample.normal_z) ||
+            !reader.floating(sample.turbulence) ||
+            !reader.floating(sample.aeration) ||
+            !reader.floating(sample.foam_potential) ||
+            !reader.u8(feature) ||
+            feature > static_cast<std::uint8_t>(RiverFeature::Pool) ||
+            !reader.u8(wet) || wet > 1u)
+            return fail(error, "hydrology presentation sample is invalid");
+        sample.feature = static_cast<RiverFeature>(feature);
         sample.wet_valid = wet != 0u;
     }
     candidate.payload_digest = expected_digest;

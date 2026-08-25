@@ -12,6 +12,7 @@
 #include "matter/ecs.h"
 #include "matter/world_definition.h"
 #include "matter/hydrology.h"
+#include "matter/river_runtime.h"
 #include "matter/streaming.h"
 #include "matter/sun_angles.h"  // kSunAngularDiameterDefaultDeg + the convention
 #include "matter/atmosphere_lighting.h"
@@ -33,6 +34,7 @@ struct ParticleJob;
 struct Stats;
 }
 namespace hydrology { class IFluidBakeBackend; }
+namespace matter::detail { struct RiverRuntimeBuildInput; }
 namespace matter::evt { class Hub; }
 namespace matter::scene { class SceneService; class SceneChangeTracker; }
 namespace matter::props { class DynamicGroup; }
@@ -887,6 +889,8 @@ public:
     bool has_accepted_fluid_artifact_for_test() const;
 
     HydrologyStatus hydrology_status() const;
+    std::shared_ptr<const RiverRuntimeBinding> river_runtime_binding()
+        const noexcept;
 
     struct Impl;
     explicit WorldSession(std::unique_ptr<Impl> impl);   // internal; use open_world
@@ -894,6 +898,9 @@ public:
     WorldSession& operator=(const WorldSession&) = delete;
 
 private:
+    static std::shared_ptr<const RiverRuntimeBinding>
+    make_river_runtime_binding(
+        const detail::RiverRuntimeBuildInput& input) noexcept;
     std::unique_ptr<Impl> impl_;
 };
 

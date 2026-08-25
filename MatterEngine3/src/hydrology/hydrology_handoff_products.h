@@ -25,7 +25,16 @@ struct HydrologyNetworkProducts {
     gpu_meshing::MeshResult coarse_cpu_mesh;
     GameplayFieldLayout gameplay_layout{};
     std::vector<GameplaySample> gameplay_field;
+    std::vector<PresentationSample> presentation_field;
 };
+
+std::uint64_t hydrology_runtime_field_digest(
+    const GameplayFieldLayout& layout,
+    const std::vector<GameplaySample>& field) noexcept;
+
+std::uint64_t hydrology_presentation_field_digest(
+    const GameplayFieldLayout& layout,
+    const std::vector<PresentationSample>& field) noexcept;
 
 struct HydrologySectionTimings {
     std::string id;

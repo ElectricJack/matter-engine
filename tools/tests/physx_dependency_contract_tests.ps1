@@ -145,7 +145,47 @@ try {
     Assert-True ($LASTEXITCODE -eq 0) "offline Validate runner failed:`n$($runnerOutput -join "`n")"
     Assert-True (($runnerOutput -join "`n") -match 'MATTER_PHYSX_VALIDATE=PASS') 'Validate runner omitted its PASS evidence'
 
-    Write-Output 'PhysX dependency contract: PASS (exact lock, external checkout, offline validation, safe generator path)'
+    $riverProbe = Join-Path $scratch 'river_runtime_dependency_probe.cpp'
+    Set-Content -LiteralPath $riverProbe -Encoding ascii -Value @'
+#include "matter/river_runtime.h"
+int main() { matter::RiverRuntimeBinding binding; return binding.generation() == 0 ? 0 : 1; }
+'@
+    $riverInclude = Join-Path $repositoryRoot 'MatterEngine3\include'
+    $riverCompiler = Get-Command cl.exe -ErrorAction SilentlyContinue
+    $riverCommand = $null
+    if (-not $riverCompiler) {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+            'Microsoft Visual Studio\Installer\vswhere.exe'
+        Assert-True (Test-Path -LiteralPath $vswhere) `
+            'Visual Studio discovery tool was not found'
+        $installation = (& $vswhere -latest -products '*' `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1)
+        $vsDevCmd = Join-Path $installation 'Common7\Tools\VsDevCmd.bat'
+        Assert-True (Test-Path -LiteralPath $vsDevCmd) `
+            'Visual Studio developer environment was not found'
+        $riverCommand = 'call "{0}" -no_logo -arch=x64 >nul && cl.exe /nologo /std:c++17 /Zs /showIncludes /I"{1}" "{2}"' -f `
+            $vsDevCmd, $riverInclude, $riverProbe
+    }
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if ($riverCompiler) {
+            $riverOutput = @(& $riverCompiler.Source /nologo /std:c++17 /Zs `
+                /showIncludes "/I$riverInclude" $riverProbe 2>&1)
+        } else {
+            $riverOutput = @(& cmd.exe /d /s /c $riverCommand 2>&1)
+        }
+        $riverExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    Assert-True ($riverExitCode -eq 0) "public river runtime probe failed to compile:`n$($riverOutput -join "`n")"
+    $riverDependencies = ($riverOutput -join "`n")
+    Assert-True ($riverDependencies -notmatch '(?i)(physx|vulkan|flecs|[\\/]provider[\\/]|[\\/]render[\\/]|[\\/]hydrology[\\/])') `
+        'public river runtime header leaked a provider, solver, renderer, or ECS dependency'
+
+    Write-Output 'PhysX dependency contract: PASS (exact lock, external checkout, offline validation, safe generator path, provider-free river runtime API)'
 } finally {
     if (Test-Path -LiteralPath $scratch) {
         Remove-Item -LiteralPath $scratch -Recurse -Force

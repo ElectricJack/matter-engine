@@ -1189,6 +1189,17 @@ RIVER_PRESENTATION_FIELD_OBJS = $(call obj_list,def,$(RIVER_PRESENTATION_FIELD_C
 
 $(foreach s,$(RIVER_PRESENTATION_FIELD_CPP),$(eval $(call objrule_cpp,def,$(s))))
 
+RIVER_RUNTIME_TARGET = build/river_runtime_tests
+RIVER_RUNTIME_CPP = river_runtime_tests.cpp \
+                    ../src/hydrology/river_runtime.cpp \
+                    ../src/hydrology/hydrology_handoff_products.cpp \
+                    ../src/hydrology/fluid_gameplay_field.cpp \
+                    ../src/hydrology/river_presentation_field.cpp \
+                    ../src/hydrology/water_visual_products.cpp
+RIVER_RUNTIME_OBJS = $(call obj_list,def,$(RIVER_RUNTIME_CPP))
+
+$(foreach s,$(RIVER_RUNTIME_CPP),$(eval $(call objrule_cpp,def,$(s))))
+
 HYDROLOGY_ARTIFACT_TARGET = build/hydrology_artifact_tests
 HYDROLOGY_ARTIFACT_CPP = hydrology_artifact_tests.cpp \
                          ../src/hydrology/hydrology_artifact.cpp \
@@ -1206,6 +1217,7 @@ HYDROLOGY_HANDOFF_PRODUCTS_TARGET = build/hydrology_handoff_products_tests
 HYDROLOGY_HANDOFF_PRODUCTS_CPP = hydrology_handoff_products_tests.cpp \
                                  ../src/hydrology/hydrology_handoff_products.cpp \
                                  ../src/hydrology/fluid_gameplay_field.cpp \
+                                 ../src/hydrology/river_presentation_field.cpp \
                                  ../src/hydrology/water_visual_products.cpp \
                                  ../src/hydrology/physx_fluid_bake.cpp \
                                  ../src/hydrology/spillway_handoff.cpp \
@@ -3180,6 +3192,18 @@ run-river-presentation-field: $(RIVER_PRESENTATION_FIELD_TARGET)
 clean: clean-river-presentation-field
 clean-river-presentation-field:
 	rm -f $(RIVER_PRESENTATION_FIELD_TARGET)
+
+$(RIVER_RUNTIME_TARGET): $(RIVER_RUNTIME_OBJS) \
+        ../include/matter/river_runtime.h check.h | build
+	$(CC) $(RIVER_RUNTIME_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-river-runtime: $(RIVER_RUNTIME_TARGET)
+	./$(RIVER_RUNTIME_TARGET)
+
+.PHONY: run-river-runtime clean-river-runtime
+clean: clean-river-runtime
+clean-river-runtime:
+	rm -f $(RIVER_RUNTIME_TARGET)
 
 $(HYDROLOGY_ARTIFACT_TARGET): $(HYDROLOGY_ARTIFACT_OBJS) \
         ../src/hydrology/hydrology_artifact.h \

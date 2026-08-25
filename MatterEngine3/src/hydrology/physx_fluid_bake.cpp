@@ -1,5 +1,7 @@
 #include "hydrology/physx_fluid_bake.h"
 
+#include "hydrology/river_presentation_field.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -1068,11 +1070,51 @@ bool PhysxFluidBake::build_accepted_artifact(
             return false;
         }
         std::vector<GameplaySample> gameplay;
+        GameplayFieldStatistics gameplay_statistics{};
         std::string gameplay_error;
         if (!build_fluid_gameplay_field(output.particles, settings.particle_radius_m,
                                         settings.gameplay_layout, terrain,
-                                        gameplay, gameplay_error)) {
+                                        gameplay, gameplay_error,
+                                        &gameplay_statistics)) {
             error = {FluidBakeCode::ProductFailure, gameplay_error};
+            return false;
+        }
+        const std::size_t field_count = gameplay.size();
+        std::vector<float> terrain_heights(field_count, 0.0f);
+        for (std::uint32_t z = 0u; z != settings.gameplay_layout.depth; ++z) {
+            for (std::uint32_t x = 0u; x != settings.gameplay_layout.width;
+                 ++x) {
+                const float world_x = settings.gameplay_layout.origin_m.x +
+                    (static_cast<float>(x) + 0.5f) *
+                        settings.gameplay_layout.cell_size_m;
+                const float world_z = settings.gameplay_layout.origin_m.z +
+                    (static_cast<float>(z) + 0.5f) *
+                        settings.gameplay_layout.cell_size_m;
+                float height = 0.0f;
+                if (!terrain(world_x, world_z, height) || !finite(height)) {
+                    error = {FluidBakeCode::ProductFailure,
+                             "river presentation terrain sample is invalid"};
+                    return false;
+                }
+                terrain_heights[static_cast<std::size_t>(z) *
+                                    settings.gameplay_layout.width + x] = height;
+            }
+        }
+        const float neutral_wake_distance = std::max(
+            1.0f, settings.identity.presentation.wake_distance_scale_m);
+        std::vector<float> wake_distances(field_count, neutral_wake_distance);
+        std::vector<PresentationMarkers> markers(field_count);
+        std::vector<PresentationLocalOverride> local_overrides(
+            field_count, PresentationLocalOverride{});
+        std::vector<PresentationSample> presentation;
+        PresentationDerivationInput presentation_input{
+            settings.gameplay_layout, &gameplay, &gameplay_statistics,
+            &terrain_heights, &wake_distances, &markers, &local_overrides};
+        std::string presentation_error;
+        if (!build_river_presentation_field(
+                presentation_input, settings.identity.presentation,
+                presentation, presentation_error)) {
+            error = {FluidBakeCode::ProductFailure, presentation_error};
             return false;
         }
         if (std::none_of(gameplay.begin(), gameplay.end(),
@@ -1101,6 +1143,7 @@ bool PhysxFluidBake::build_accepted_artifact(
         candidate.coarse_cpu_mesh = std::move(coarse);
         candidate.gameplay_layout = settings.gameplay_layout;
         candidate.gameplay_field = std::move(gameplay);
+        candidate.presentation_field = std::move(presentation);
         candidate.provenance = settings.provenance;
         artifact = std::move(candidate);
         return true;
