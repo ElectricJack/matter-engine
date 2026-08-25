@@ -3,6 +3,7 @@
 #include "hydrology/river_presentation_field.h"
 #include "matter/gpu_visual_meshing.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -71,6 +72,10 @@ bool hydrology_file_identity_stable(
     HydrologyFileIdentity opened,
     HydrologyFileIdentity named_before,
     HydrologyFileIdentity named_after) noexcept;
+bool format_hydrology_proc_fd_path(
+    int descriptor,
+    char* buffer,
+    std::size_t capacity) noexcept;
 
 std::uint64_t hydrology_runtime_field_digest(
     const GameplayFieldLayout& layout,

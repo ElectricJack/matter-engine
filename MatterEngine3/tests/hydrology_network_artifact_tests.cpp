@@ -756,6 +756,41 @@ void test_file_identity_requires_one_stable_native_object() {
               !hydrology::hydrology_file_identity_stable(
                   original, original, {12u, 22u}),
           "a namespace replacement before or after IO invalidates publication identity");
+
+    char path[32]{};
+    CHECK(hydrology::format_hydrology_proc_fd_path(
+              17, path, sizeof(path)) &&
+              std::string(path) == "/proc/self/fd/17",
+          "a retained descriptor formats the documented unprivileged procfs source path");
+    char exact[17]{};
+    CHECK(hydrology::format_hydrology_proc_fd_path(
+              17, exact, sizeof(exact)) &&
+              std::string(exact) == "/proc/self/fd/17",
+          "procfs descriptor formatting accepts the exact terminated buffer size");
+    char truncated[16] = {'x'};
+    CHECK(!hydrology::format_hydrology_proc_fd_path(
+              17, truncated, sizeof(truncated)) && truncated[0] == '\0' &&
+              !hydrology::format_hydrology_proc_fd_path(
+                  -1, path, sizeof(path)),
+          "procfs descriptor formatting rejects truncation and invalid descriptors");
+}
+
+void test_posix_publication_source_contract_uses_one_unprivileged_helper() {
+    const auto source_path = std::filesystem::path(__FILE__).parent_path()
+        .parent_path() / "src" / "hydrology" /
+        "hydrology_network_artifact.cpp";
+    const auto bytes = read_bytes(source_path);
+    const std::string source(bytes.begin(), bytes.end());
+    const std::string helper = "publish_posix_retained_fd_create_new(";
+    std::size_t count = 0u;
+    for (std::size_t position = source.find(helper);
+         position != std::string::npos;
+         position = source.find(helper, position + helper.size()))
+        ++count;
+    CHECK(!source.empty() && count == 3u &&
+              source.find("AT_SYMLINK_FOLLOW") != std::string::npos &&
+              source.find("AT_EMPTY_PATH") == std::string::npos,
+          "field and manifest POSIX publication share the unprivileged procfs retained-fd helper");
 }
 
 void test_confined_field_open_uses_the_held_directory_identity() {
@@ -995,6 +1030,7 @@ int main() {
     test_ready_package_rejects_reparse_escape_when_supported();
     test_allocation_failure_closes_native_resources_transactionally();
     test_file_identity_requires_one_stable_native_object();
+    test_posix_publication_source_contract_uses_one_unprivileged_helper();
     test_confined_field_open_uses_the_held_directory_identity();
     test_manifest_publication_is_confined_and_transactional();
     return check_summary();

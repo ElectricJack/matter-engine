@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -1151,6 +1152,79 @@ bool hydrology_file_identity_stable(
            opened.file == named_after.file;
 }
 
+bool format_hydrology_proc_fd_path(
+    int descriptor,
+    char* buffer,
+    std::size_t capacity) noexcept {
+    if (buffer == nullptr || capacity == 0u) return false;
+    buffer[0] = '\0';
+    if (descriptor < 0) return false;
+    constexpr char prefix[] = "/proc/self/fd/";
+    constexpr std::size_t prefix_size = sizeof(prefix) - 1u;
+    if (capacity <= prefix_size + 1u) return false;
+    std::memcpy(buffer, prefix, prefix_size);
+    const auto converted = std::to_chars(
+        buffer + prefix_size, buffer + capacity - 1u, descriptor);
+    if (converted.ec != std::errc{}) {
+        buffer[0] = '\0';
+        return false;
+    }
+    *converted.ptr = '\0';
+    return true;
+}
+
+#ifndef _WIN32
+enum class PosixRetainedFdPublicationResult : std::uint8_t {
+    Published,
+    Exists,
+    Failed,
+};
+
+static PosixRetainedFdPublicationResult
+publish_posix_retained_fd_create_new(
+    int source_descriptor,
+    HydrologyFileIdentity validated_source,
+    int destination_directory,
+    const char* canonical_name) noexcept {
+    char source_path[64]{};
+    if (canonical_name == nullptr || canonical_name[0] == '\0' ||
+        !format_hydrology_proc_fd_path(
+            source_descriptor, source_path, sizeof(source_path))) {
+        errno = source_descriptor < 0 ? EBADF : ENAMETOOLONG;
+        return PosixRetainedFdPublicationResult::Failed;
+    }
+    if (::linkat(AT_FDCWD, source_path, destination_directory,
+                 canonical_name, AT_SYMLINK_FOLLOW) != 0) {
+        const int link_error = errno;
+        errno = link_error;
+        return link_error == EEXIST
+            ? PosixRetainedFdPublicationResult::Exists
+            : PosixRetainedFdPublicationResult::Failed;
+    }
+    struct stat source_status{};
+    struct stat destination_status{};
+    int publication_error = 0;
+    if (::fstat(source_descriptor, &source_status) != 0)
+        publication_error = errno;
+    else if (::fstatat(destination_directory, canonical_name,
+                       &destination_status, AT_SYMLINK_NOFOLLOW) != 0)
+        publication_error = errno;
+    else if (!S_ISREG(source_status.st_mode) ||
+             !S_ISREG(destination_status.st_mode) ||
+             !hydrology_file_identity_stable(
+                 validated_source, native_file_identity(source_status),
+                 native_file_identity(destination_status)))
+        publication_error = ESTALE;
+    else if (::fsync(destination_directory) != 0)
+        publication_error = errno;
+    if (publication_error != 0) {
+        errno = publication_error;
+        return PosixRetainedFdPublicationResult::Failed;
+    }
+    return PosixRetainedFdPublicationResult::Published;
+}
+#endif
+
 static bool serialize_hydrology_field_product_impl(
     const HydrologyFieldProduct& product,
     std::vector<std::uint8_t>& bytes,
@@ -1366,7 +1440,7 @@ static bool save_hydrology_field_product_atomic_impl(
 #ifndef _WIN32
     const auto target_name = path.filename();
     const int directory = directory_guard.leaf();
-#if defined(O_TMPFILE) && defined(AT_EMPTY_PATH)
+#if defined(O_TMPFILE) && defined(AT_SYMLINK_FOLLOW)
     UniqueNativeFd temporary_file(::openat(
         directory, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600));
     if (!temporary_file)
@@ -1390,12 +1464,11 @@ static bool save_hydrology_field_product_atomic_impl(
             reopened_status, error) || reopened != bytes) {
         return fail(error, "hydrology field temporary validation failed");
     }
-    errno = 0;
-    const bool published = ::linkat(
-        temporary_file.get(), "", directory, target_name.c_str(),
-        AT_EMPTY_PATH) == 0;
-    if (!published) {
-        if (errno != EEXIST)
+    const auto published = publish_posix_retained_fd_create_new(
+        temporary_file.get(), native_file_identity(reopened_status), directory,
+        target_name.c_str());
+    if (published != PosixRetainedFdPublicationResult::Published) {
+        if (published != PosixRetainedFdPublicationResult::Exists)
             return fail(error, "could not publish hydrology field product");
         std::vector<std::uint8_t> existing;
         struct stat existing_status{};
@@ -1408,16 +1481,6 @@ static bool save_hydrology_field_product_atomic_impl(
                         "immutable hydrology field already has different bytes");
         return true;
     }
-    struct stat published_status{};
-    if (::fstatat(directory, target_name.c_str(), &published_status,
-                  AT_SYMLINK_NOFOLLOW) != 0 ||
-        !S_ISREG(published_status.st_mode) ||
-        !hydrology_file_identity_stable(
-            native_file_identity(reopened_status),
-            native_file_identity(published_status),
-            native_file_identity(published_status)) ||
-        ::fsync(directory) != 0)
-        return fail(error, "could not flush hydrology field directory");
     return true;
 #else
     (void)target_name;
@@ -1772,7 +1835,7 @@ static bool save_network_artifact_atomic_impl(
     if (!posix_named_directory_matches(parent, parent_guard.leaf()))
         return fail(error, "hydrology manifest parent identity changed");
     const int directory = parent_guard.leaf();
-#if defined(O_TMPFILE) && defined(AT_EMPTY_PATH)
+#if defined(O_TMPFILE) && defined(AT_SYMLINK_FOLLOW)
     UniqueNativeFd temporary(::openat(
         directory, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600));
     if (!temporary)
@@ -1804,10 +1867,11 @@ static bool save_network_artifact_atomic_impl(
     inject_field_io_failure(HydrologyFieldIoFailurePoint::BeforeManifestRename);
     if (!posix_named_directory_matches(parent, parent_guard.leaf()))
         return fail(error, "hydrology manifest parent identity changed");
-    errno = 0;
-    if (::linkat(temporary.get(), "", directory, target_name.c_str(),
-                 AT_EMPTY_PATH) != 0) {
-        if (errno != EEXIST)
+    const auto published = publish_posix_retained_fd_create_new(
+        temporary.get(), native_file_identity(reopened_status), directory,
+        target_name.c_str());
+    if (published != PosixRetainedFdPublicationResult::Published) {
+        if (published != PosixRetainedFdPublicationResult::Exists)
             return fail(error, "could not publish hydrology network manifest");
         std::vector<std::uint8_t> existing;
         struct stat existing_status{};
@@ -1822,15 +1886,6 @@ static bool save_network_artifact_atomic_impl(
             return fail(error, "hydrology manifest parent identity changed");
         return true;
     }
-    struct stat published{};
-    if (::fstatat(directory, target_name.c_str(), &published,
-                  AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(published.st_mode) ||
-        !hydrology_file_identity_stable(
-            native_file_identity(reopened_status),
-            native_file_identity(published), native_file_identity(published)))
-        return fail(error, "hydrology manifest publication identity changed");
-    if (::fsync(directory) != 0)
-        return fail(error, "could not flush hydrology manifest directory");
     invoke_manifest_publication_hook(
         HydrologyManifestPublicationTestStage::AfterCommit, path);
     return true;
