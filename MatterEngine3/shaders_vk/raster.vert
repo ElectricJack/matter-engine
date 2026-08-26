@@ -4,17 +4,28 @@
 #include "material_common.glsl"
 #include "impostor_common.glsl"
 
+#ifdef MATTER_WATER_ANIMATION_VERTEX_INPUT
+// GPU-decoded animated water is deliberately only 28 bytes. It shares the
+// normal/material G-buffer path, while neutral constants replace attributes
+// used only by static mesh charts and impostors.
+layout(location = 0) in vec3 in_position;
+layout(location = 1) in vec3 in_normal;
+layout(location = 4) in uint in_material_index;
+const vec4 in_tint = vec4(1.0);
+const vec4 in_surface = vec4(0.0, 0.0, 1.0, 1.0);
+#else
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_tint;
 layout(location = 3) in vec4 in_surface;
 layout(location = 4) in uint in_material_index;
+#endif
 // The C2 skin raster specialization supplies this attribute from
 // animation_skin.comp's previous output. The default static specialization
 // keeps the legacy five-attribute contract and uses in_position below.
 #ifdef MATTER_SKINNED_VERTEX_INPUT
 layout(location = 5) in vec3 in_previous_position;
-#else
+#elif !defined(MATTER_WATER_ANIMATION_VERTEX_INPUT)
 // Warp field (VT Phase 2): warped ground coordinate + frozen frame,
 // terrain-sector vertices only (zeros elsewhere; su == 0 means "no warp").
 // The skinned specialization's VkSkinVertex carries no warp data — animated
@@ -103,7 +114,8 @@ layout(set = 1, binding = 3, std430) readonly buffer DrawTransforms {
     DrawTransform transforms[];
 };
 
-#ifndef MATTER_SKINNED_VERTEX_INPUT
+#if !defined(MATTER_SKINNED_VERTEX_INPUT) && \
+    !defined(MATTER_WATER_ANIMATION_VERTEX_INPUT)
 // Octahedral decode, the exact inverse of warp_field.cpp's oct_encode.
 vec3 warp_oct_decode(vec2 e) {
     vec3 v = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
@@ -354,7 +366,8 @@ void main() {
                            : draw.selected_lod;
     out_water_binding_slot = draw.water_binding_slot;
     out_water_generation = draw.water_generation;
-#ifdef MATTER_SKINNED_VERTEX_INPUT
+#if defined(MATTER_SKINNED_VERTEX_INPUT) || \
+    defined(MATTER_WATER_ANIMATION_VERTEX_INPUT)
     // Animated props carry no warp field; su == 0 selects the world-XZ
     // fallback in gbuffer.frag.
     out_warp_uv_scales = vec4(0.0);

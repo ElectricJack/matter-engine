@@ -81,7 +81,9 @@ set(matter_discovered_spirv_inventory)
 foreach(shader_stage IN LISTS matter_vulkan_shader_stages)
     list(APPEND matter_discovered_spirv_inventory "${shader_stage}.spv")
 endforeach()
-list(APPEND matter_discovered_spirv_inventory "raster_skin.vert.spv")
+list(APPEND matter_discovered_spirv_inventory
+    "raster_skin.vert.spv"
+    "raster_water.vert.spv")
 list(SORT matter_make_spirv_inventory)
 list(SORT matter_discovered_spirv_inventory)
 if(NOT matter_make_spirv_inventory STREQUAL matter_discovered_spirv_inventory)
@@ -103,6 +105,7 @@ matter_add_vulkan_shader_pipeline(
     SHADERS ${matter_vulkan_shader_stages}
     SPECIALIZATIONS
         "raster_skin.vert|raster.vert|MATTER_SKINNED_VERTEX_INPUT"
+        "raster_water.vert|raster.vert|MATTER_WATER_ANIMATION_VERTEX_INPUT"
 )
 
 include(cmake/MatterPhysx.cmake)

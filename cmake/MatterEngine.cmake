@@ -376,6 +376,9 @@ if(BUILD_TESTING)
     matter_add_engine_cpu_test(gpu_water_render_tests
         MatterEngine3/tests/gpu_water_render_tests.cpp
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp)
+    matter_add_engine_cpu_test(gpu_water_animation_render_tests
+        MatterEngine3/tests/gpu_water_animation_render_tests.cpp
+        MatterEngine3/src/render/water_animation_gpu.cpp)
     matter_add_engine_cpu_test(water_field_vk_tests
         MatterEngine3/tests/water_field_vk_tests.cpp)
     matter_add_engine_cpu_test(water_surface_reference_tests

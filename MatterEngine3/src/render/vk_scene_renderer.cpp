@@ -458,6 +458,25 @@ struct RasterRecord {
     // the VT hooks turns the smoke suite into a null deref.
     VkSceneRenderer* vt_hooks = nullptr;
     uint32_t vt_zone = 0;
+    // Fence-owned baked-water lane. Decode/copy commands execute before
+    // dynamic rendering; direct indexed draws execute after static/skinned
+    // raster. None of these buffers is visible to the RT build path.
+    VkPipeline water_decode_pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout water_decode_layout = VK_NULL_HANDLE;
+    VkDescriptorSet water_decode_set = VK_NULL_HANDLE;
+    VkPipeline water_raster_pipeline = VK_NULL_HANDLE;
+    VkBuffer water_packed_vertices = VK_NULL_HANDLE;
+    VkBuffer water_index_upload = VK_NULL_HANDLE;
+    VkBuffer water_decoded_vertices = VK_NULL_HANDLE;
+    VkBuffer water_indices = VK_NULL_HANDLE;
+    const VkWaterAnimationDecodeDispatch* water_dispatches = nullptr;
+    uint32_t water_dispatch_count = 0u;
+    const VkWaterAnimationRasterDraw* water_draws = nullptr;
+    uint32_t water_draw_count = 0u;
+    VkDeviceSize water_index_bytes = 0u;
+    uint32_t water_vertex_count = 0u;
+    uint32_t water_transform_base = 0u;
+    bool water_upload_required = false;
 };
 
 struct NeutralVolumeClearRecord {
@@ -500,6 +519,94 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     // CPU takes to build the command buffer, never how long the GPU runs it.
     // GPU time for the same passes comes from the kGpuZone* timestamps.
     PROFILE_SCOPE_NAMED(z_gbuffer, "raster.gbuffer");
+    // The host-visible packed/index upload buffers belong to this frame slot,
+    // so their writes completed before this command buffer was submitted. A
+    // changed 30 Hz selection copies indices and decodes vertices exactly once
+    // for the slot; unchanged render frames skip this entire block.
+    if (record.water_upload_required &&
+        record.water_dispatch_count != 0u &&
+        record.water_decode_pipeline != VK_NULL_HANDLE &&
+        record.water_decode_layout != VK_NULL_HANDLE &&
+        record.water_decode_set != VK_NULL_HANDLE &&
+        record.water_packed_vertices != VK_NULL_HANDLE &&
+        record.water_index_upload != VK_NULL_HANDLE &&
+        record.water_decoded_vertices != VK_NULL_HANDLE &&
+        record.water_indices != VK_NULL_HANDLE &&
+        record.water_index_bytes != 0u) {
+        VkBufferMemoryBarrier2 host_barriers[2]{};
+        for (VkBufferMemoryBarrier2& barrier : host_barriers) {
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.offset = 0u;
+        }
+        host_barriers[0].dstStageMask =
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        host_barriers[0].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        host_barriers[0].buffer = record.water_packed_vertices;
+        host_barriers[0].size = VK_WHOLE_SIZE;
+        host_barriers[1].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        host_barriers[1].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        host_barriers[1].buffer = record.water_index_upload;
+        host_barriers[1].size = record.water_index_bytes;
+        VkDependencyInfo host_dependency{
+            VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        host_dependency.bufferMemoryBarrierCount = 2u;
+        host_dependency.pBufferMemoryBarriers = host_barriers;
+        vkCmdPipelineBarrier2(command_buffer, &host_dependency);
+
+        const VkBufferCopy index_copy{0u, 0u, record.water_index_bytes};
+        vkCmdCopyBuffer(command_buffer, record.water_index_upload,
+                        record.water_indices, 1u, &index_copy);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          record.water_decode_pipeline);
+        vkCmdBindDescriptorSets(
+            command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+            record.water_decode_layout, 0u, 1u, &record.water_decode_set, 0u,
+            nullptr);
+        for (uint32_t dispatch_index = 0u;
+             dispatch_index != record.water_dispatch_count;
+             ++dispatch_index) {
+            const VkWaterAnimationDecodeDispatch& dispatch =
+                record.water_dispatches[dispatch_index];
+            vkCmdPushConstants(command_buffer, record.water_decode_layout,
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0u,
+                               sizeof(dispatch.push), &dispatch.push);
+            vkCmdDispatch(command_buffer, dispatch.group_count_x, 1u, 1u);
+        }
+
+        VkBufferMemoryBarrier2 raster_barriers[2]{};
+        for (VkBufferMemoryBarrier2& barrier : raster_barriers) {
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.offset = 0u;
+        }
+        raster_barriers[0].srcStageMask =
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        raster_barriers[0].srcAccessMask =
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        raster_barriers[0].dstStageMask =
+            VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+        raster_barriers[0].dstAccessMask =
+            VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+        raster_barriers[0].buffer = record.water_decoded_vertices;
+        raster_barriers[0].size = VK_WHOLE_SIZE;
+        raster_barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        raster_barriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        raster_barriers[1].dstStageMask =
+            VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
+        raster_barriers[1].dstAccessMask = VK_ACCESS_2_INDEX_READ_BIT;
+        raster_barriers[1].buffer = record.water_indices;
+        raster_barriers[1].size = record.water_index_bytes;
+        VkDependencyInfo raster_dependency{
+            VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        raster_dependency.bufferMemoryBarrierCount = 2u;
+        raster_dependency.pBufferMemoryBarriers = raster_barriers;
+        vkCmdPipelineBarrier2(command_buffer, &raster_dependency);
+    }
     matter::VkImageResource* colors[] = {
         record.albedo, record.normal, record.orm, record.velocity,
         record.material_instance, record.reactivity};
@@ -753,6 +860,52 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             vkCmdDrawIndexed(command_buffer, draw.index_count, 1,
                              draw.first_index, static_cast<int32_t>(rebase),
                              record.skin_transform_base + draw.instance_slot);
+        }
+    }
+    if (record.water_raster_pipeline != VK_NULL_HANDLE &&
+        record.water_decoded_vertices != VK_NULL_HANDLE &&
+        record.water_indices != VK_NULL_HANDLE) {
+        PROFILE_SCOPE("raster.draw_water_animation");
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          record.water_raster_pipeline);
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                record.raster_layout, 0u, 2u,
+                                record.raster_sets, 0u, nullptr);
+        const VkDeviceSize water_vertex_offset = 0u;
+        vkCmdBindVertexBuffers(command_buffer, 0u, 1u,
+                               &record.water_decoded_vertices,
+                               &water_vertex_offset);
+        vkCmdBindIndexBuffer(command_buffer, record.water_indices, 0u,
+                             VK_INDEX_TYPE_UINT32);
+        const RasterDebugPushConstants water_debug_push =
+            make_raster_debug_push_constants(
+                0u, true,
+                record.raster_debug_push.lod_tint_enabled != 0u
+                    ? matter::GeometryDebugView::LodTint
+                    : matter::GeometryDebugView::None,
+                record.raster_debug_push.wireframe_enabled != 0u,
+                record.raster_debug_push.impostor_parallax_enabled != 0u);
+        vkCmdPushConstants(command_buffer, record.raster_layout,
+                           VK_SHADER_STAGE_VERTEX_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0u, sizeof(water_debug_push), &water_debug_push);
+        for (uint32_t draw_index = 0u;
+             draw_index != record.water_draw_count; ++draw_index) {
+            const VkWaterAnimationRasterDraw& draw =
+                record.water_draws[draw_index];
+            if (draw.index_count == 0u || draw.index_count % 3u != 0u ||
+                draw.vertex_count == 0u ||
+                draw_index > UINT32_MAX - record.water_transform_base ||
+                record.water_transform_base + draw_index >=
+                    record.draw_transform_slots ||
+                draw.vertex_offset > record.water_vertex_count ||
+                draw.vertex_count >
+                    record.water_vertex_count - draw.vertex_offset)
+                continue;
+            vkCmdDrawIndexed(command_buffer, draw.index_count, 1u,
+                             draw.first_index,
+                             static_cast<int32_t>(draw.vertex_offset),
+                             record.water_transform_base + draw_index);
         }
     }
     vkCmdEndRendering(command_buffer);
@@ -1303,6 +1456,236 @@ bool VkSceneRenderer::test_water_field_descriptors_match(
     return true;
 }
 
+bool VkSceneRenderer::publish_water_animation(
+    std::uint64_t generation, std::uint32_t frame_slots,
+    const WaterAnimationGpuCapacity& capacity,
+    std::uint64_t retire_after_serial, WaterAnimationGpuError& error) {
+    error = {};
+    if (!initialized_) {
+        std::string init_error;
+        if (!init(init_error)) {
+            error = {WaterAnimationGpuErrorCode::InvalidConfiguration,
+                     "water animation renderer initialization failed: " +
+                         init_error};
+            return false;
+        }
+    }
+    if (generation == 0u || frame_slots == 0u || !capacity.valid() ||
+        capacity.gpu_bytes_per_slot() == 0u ||
+        generation <= water_animation_schedule_.generation()) {
+        error = {generation <= water_animation_schedule_.generation()
+                     ? WaterAnimationGpuErrorCode::StaleGeneration
+                     : WaterAnimationGpuErrorCode::InvalidConfiguration,
+                 "water animation Vulkan publication is invalid or stale"};
+        return false;
+    }
+    const std::uint64_t decoded_bytes_u64 =
+        capacity.decoded_vertex_count * sizeof(VkWaterAnimationVertex);
+    if (capacity.packed_vertex_bytes > limits_.max_storage_buffer_range ||
+        decoded_bytes_u64 > limits_.max_storage_buffer_range ||
+        capacity.packed_vertex_bytes > limits_.max_buffer_size ||
+        decoded_bytes_u64 > limits_.max_buffer_size ||
+        capacity.index_bytes > limits_.max_buffer_size) {
+        error = {WaterAnimationGpuErrorCode::CapacityExceeded,
+                 "water animation buffers exceed Vulkan device limits"};
+        return false;
+    }
+
+    WaterAnimationVulkanGeneration candidate{};
+    candidate.generation = generation;
+    candidate.frames.resize(frame_slots);
+    const VkDescriptorPoolSize pool_size{
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slots * 2u};
+    VkDescriptorPoolCreateInfo pool_create{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_create.maxSets = frame_slots;
+    pool_create.poolSizeCount = 1u;
+    pool_create.pPoolSizes = &pool_size;
+    VkResult result = vkCreateDescriptorPool(
+        vulkan_->device(), &pool_create, nullptr,
+        &candidate.descriptor_pool);
+    if (result != VK_SUCCESS) {
+        error = {WaterAnimationGpuErrorCode::InvalidConfiguration,
+                 "vkCreateDescriptorPool(water animation) failed"};
+        return false;
+    }
+    const auto reject_candidate = [&](const std::string& message) {
+        if (candidate.descriptor_pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(vulkan_->device(),
+                                    candidate.descriptor_pool, nullptr);
+        candidate.descriptor_pool = VK_NULL_HANDLE;
+        candidate.frames.clear();
+        error = {WaterAnimationGpuErrorCode::InvalidConfiguration, message};
+        return false;
+    };
+
+    std::vector<VkDescriptorSetLayout> layouts(
+        frame_slots, water_animation_decode_set_layout_);
+    std::vector<VkDescriptorSet> sets(frame_slots, VK_NULL_HANDLE);
+    VkDescriptorSetAllocateInfo allocate{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = candidate.descriptor_pool;
+    allocate.descriptorSetCount = frame_slots;
+    allocate.pSetLayouts = layouts.data();
+    result = vkAllocateDescriptorSets(vulkan_->device(), &allocate,
+                                      sets.data());
+    if (result != VK_SUCCESS)
+        return reject_candidate(
+            "vkAllocateDescriptorSets(water animation) failed");
+
+    std::string vk_error;
+    for (std::uint32_t slot = 0u; slot != frame_slots; ++slot) {
+        WaterAnimationVulkanFrame& frame = candidate.frames[slot];
+        frame.decode_set = sets[slot];
+        if (!matter::create_buffer(
+                *vulkan_, capacity.packed_vertex_bytes,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                frame.packed_vertices, vk_error) ||
+            !matter::create_buffer(
+                *vulkan_, capacity.index_bytes,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                frame.index_upload, vk_error) ||
+            !matter::create_buffer(
+                *vulkan_, decoded_bytes_u64,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0u,
+                frame.decoded_vertices, vk_error) ||
+            !matter::create_buffer(
+                *vulkan_, capacity.index_bytes,
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0u, frame.indices,
+                vk_error))
+            return reject_candidate(
+                "water animation Vulkan allocation failed: " + vk_error);
+
+        const VkDescriptorBufferInfo infos[] = {
+            {frame.packed_vertices.buffer, 0u,
+             frame.packed_vertices.size},
+            {frame.decoded_vertices.buffer, 0u,
+             frame.decoded_vertices.size}};
+        VkWriteDescriptorSet writes[2]{};
+        for (std::uint32_t binding = 0u; binding != 2u; ++binding) {
+            writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[binding].dstSet = frame.decode_set;
+            writes[binding].dstBinding = binding;
+            writes[binding].descriptorCount = 1u;
+            writes[binding].descriptorType =
+                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[binding].pBufferInfo = &infos[binding];
+        }
+        vkUpdateDescriptorSets(vulkan_->device(), 2u, writes, 0u, nullptr);
+    }
+
+    WaterAnimationGpuError schedule_error{};
+    if (!water_animation_schedule_.publish(
+            generation, frame_slots, capacity, retire_after_serial,
+            schedule_error))
+        return reject_candidate(schedule_error.message);
+    if (water_animation_resources_.descriptor_pool != VK_NULL_HANDLE)
+        retired_water_animation_resources_.push_back(
+            {retire_after_serial, std::move(water_animation_resources_)});
+    water_animation_resources_ = std::move(candidate);
+    water_animation_proxy_instance_indices_.assign(capacity.draw_count,
+                                                    UINT32_MAX);
+    water_animation_direct_transform_slots_.resize(capacity.draw_count);
+    command_template_dirty_ = true;
+    dynamic_dirty_ = true;
+    return true;
+}
+
+bool VkSceneRenderer::prepare_water_animation_frame(
+    std::uint64_t generation, std::uint32_t frame_slot,
+    const WaterAnimationFrameSelection& selection,
+    const std::vector<std::uint32_t>& proxy_transform_slots,
+    WaterAnimationGpuError& error) {
+    if (proxy_transform_slots.size() !=
+        water_animation_proxy_instance_indices_.size()) {
+        error = {WaterAnimationGpuErrorCode::InvalidSelection,
+                 "water animation static proxy mapping changed size"};
+        return false;
+    }
+    water_animation_proxy_instance_indices_ = proxy_transform_slots;
+    for (std::size_t index = 0u;
+         index != water_animation_direct_transform_slots_.size();
+         ++index)
+        water_animation_direct_transform_slots_[index] =
+            water_animation_transform_base_ +
+            static_cast<std::uint32_t>(index);
+    if (!water_animation_schedule_.prepare(
+            generation, frame_slot, selection,
+            water_animation_direct_transform_slots_, error))
+        return false;
+    const WaterAnimationGpuFrame* prepared =
+        water_animation_schedule_.frame(frame_slot);
+    if (!prepared ||
+        water_animation_resources_.generation != generation ||
+        frame_slot >= water_animation_resources_.frames.size()) {
+        error = {WaterAnimationGpuErrorCode::StaleGeneration,
+                 "water animation Vulkan resources are stale"};
+        return false;
+    }
+    if (!prepared->upload_required) return true;
+    WaterAnimationVulkanFrame& resources =
+        water_animation_resources_.frames[frame_slot];
+    std::string upload_error;
+    if (!matter::upload_buffer(
+            *vulkan_, resources.packed_vertices,
+            prepared->packed_vertices.data(),
+            prepared->packed_vertices.size(), 0u, upload_error) ||
+        !matter::upload_buffer(
+            *vulkan_, resources.index_upload, prepared->indices.data(),
+            prepared->indices.size() * sizeof(std::uint32_t), 0u,
+            upload_error)) {
+        error = {WaterAnimationGpuErrorCode::InvalidConfiguration,
+                 "water animation Vulkan upload failed: " + upload_error};
+        return false;
+    }
+    return true;
+}
+
+void VkSceneRenderer::clear_water_animation(
+    std::uint64_t retire_after_serial) {
+    water_animation_schedule_.clear(retire_after_serial);
+    if (water_animation_resources_.descriptor_pool != VK_NULL_HANDLE)
+        retired_water_animation_resources_.push_back(
+            {retire_after_serial, std::move(water_animation_resources_)});
+    water_animation_proxy_instance_indices_.clear();
+    water_animation_direct_transform_slots_.clear();
+    command_template_dirty_ = true;
+    dynamic_dirty_ = true;
+}
+
+void VkSceneRenderer::collect_water_animation(
+    std::uint64_t completed_serial) noexcept {
+    water_animation_schedule_.collect(completed_serial);
+    const VkDevice device = vulkan_->device();
+    retired_water_animation_resources_.erase(
+        std::remove_if(
+            retired_water_animation_resources_.begin(),
+            retired_water_animation_resources_.end(),
+            [device, completed_serial](
+                RetiredWaterAnimationVulkanGeneration& retired) {
+                if (retired.retire_after_serial > completed_serial)
+                    return false;
+                if (retired.resources.descriptor_pool != VK_NULL_HANDLE)
+                    vkDestroyDescriptorPool(
+                        device, retired.resources.descriptor_pool, nullptr);
+                retired.resources.descriptor_pool = VK_NULL_HANDLE;
+                retired.resources.frames.clear();
+                return true;
+            }),
+        retired_water_animation_resources_.end());
+}
+
 bool VkSceneRenderer::register_animation_skin_asset(
     uint64_t asset_key, const std::vector<VkSkinInfluence>& influences) {
     return animation_skinning_.register_asset(asset_key, influences);
@@ -1712,6 +2095,20 @@ void VkSceneRenderer::destroy_pipeline() {
     }
     const VkDevice device = vulkan_->device();
     water_field_resources_.destroy();
+    const auto destroy_water_animation_generation =
+        [device](WaterAnimationVulkanGeneration& generation) {
+            if (generation.descriptor_pool != VK_NULL_HANDLE)
+                vkDestroyDescriptorPool(device, generation.descriptor_pool,
+                                        nullptr);
+            generation.descriptor_pool = VK_NULL_HANDLE;
+            generation.frames.clear();
+            generation.generation = 0u;
+        };
+    destroy_water_animation_generation(water_animation_resources_);
+    for (auto& retired : retired_water_animation_resources_)
+        destroy_water_animation_generation(retired.resources);
+    retired_water_animation_resources_.clear();
+    water_animation_schedule_ = WaterAnimationGpuSchedule{};
     rt_sbt_.reset();
     // Identity-buffer visibility (M4): the per-slot pipelines name the identity
     // attachment and this slot's buffer, both of which are going away.
@@ -1840,6 +2237,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
     if (skinned_raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, skinned_raster_pipeline_, nullptr);
+    if (water_animation_raster_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, water_animation_raster_pipeline_, nullptr);
     if (wireframe_raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, wireframe_raster_pipeline_, nullptr);
     if (wireframe_skinned_raster_pipeline_ != VK_NULL_HANDLE)
@@ -1850,6 +2249,16 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipelineLayout(device, skin_pipeline_layout_, nullptr);
     if (skin_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, skin_set_layout_, nullptr);
+    if (water_animation_decode_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, water_animation_decode_pipeline_, nullptr);
+    if (water_animation_decode_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device,
+                                water_animation_decode_pipeline_layout_,
+                                nullptr);
+    if (water_animation_decode_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device,
+                                     water_animation_decode_set_layout_,
+                                     nullptr);
     if (pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, pipeline_, nullptr);
     if (vis_pipeline_ != VK_NULL_HANDLE)
@@ -1867,11 +2276,15 @@ void VkSceneRenderer::destroy_pipeline() {
     vis_pipeline_ = VK_NULL_HANDLE;
     raster_pipeline_ = VK_NULL_HANDLE;
     skinned_raster_pipeline_ = VK_NULL_HANDLE;
+    water_animation_raster_pipeline_ = VK_NULL_HANDLE;
     wireframe_raster_pipeline_ = VK_NULL_HANDLE;
     wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
     skin_pipeline_ = VK_NULL_HANDLE;
     skin_pipeline_layout_ = VK_NULL_HANDLE;
     skin_set_layout_ = VK_NULL_HANDLE;
+    water_animation_decode_pipeline_ = VK_NULL_HANDLE;
+    water_animation_decode_pipeline_layout_ = VK_NULL_HANDLE;
+    water_animation_decode_set_layout_ = VK_NULL_HANDLE;
     composite_set_layout_ = VK_NULL_HANDLE;
     environment_set_layout_ = VK_NULL_HANDLE;
     composite_pipeline_layout_ = VK_NULL_HANDLE;
@@ -2188,7 +2601,8 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     }
     vkDestroyShaderModule(device, shader, nullptr);
 
-    if (!create_raster_pipelines(error) || !create_display_pipeline(error) ||
+    if (!create_water_animation_decode_pipeline(error) ||
+        !create_raster_pipelines(error) || !create_display_pipeline(error) ||
         !create_overlay_line_pipeline(error) ||
         !create_gi_temporal_pipeline(error) ||
         !create_gi_atrous_pipeline(error))
@@ -2201,6 +2615,64 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
 #endif
     return !vulkan_->ray_tracing_available() ||
            create_ray_tracing_pipeline(error);
+}
+
+bool VkSceneRenderer::create_water_animation_decode_pipeline(
+    std::string& error) {
+    const VkDevice device = vulkan_->device();
+    const VkDescriptorSetLayoutBinding bindings[] = {
+        descriptor_binding(0u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_COMPUTE_BIT),
+        descriptor_binding(1u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_COMPUTE_BIT)};
+    VkDescriptorSetLayoutCreateInfo set_create{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    set_create.bindingCount = 2u;
+    set_create.pBindings = bindings;
+    VkResult result = vkCreateDescriptorSetLayout(
+        device, &set_create, nullptr,
+        &water_animation_decode_set_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorSetLayout(water animation decode)",
+                       result, error);
+
+    VkPushConstantRange push{};
+    push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push.size = sizeof(VkWaterAnimationDecodePush);
+    VkPipelineLayoutCreateInfo layout_create{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_create.setLayoutCount = 1u;
+    layout_create.pSetLayouts = &water_animation_decode_set_layout_;
+    layout_create.pushConstantRangeCount = 1u;
+    layout_create.pPushConstantRanges = &push;
+    result = vkCreatePipelineLayout(
+        device, &layout_create, nullptr,
+        &water_animation_decode_pipeline_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(water animation decode)",
+                       result, error);
+
+    VkShaderModule shader = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "water_animation_decode.comp.spv",
+                              shader, error))
+        return false;
+    VkPipelineShaderStageCreateInfo stage{
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = shader;
+    stage.pName = "main";
+    VkComputePipelineCreateInfo create{
+        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    create.stage = stage;
+    create.layout = water_animation_decode_pipeline_layout_;
+    result = vkCreateComputePipelines(
+        device, VK_NULL_HANDLE, 1u, &create, nullptr,
+        &water_animation_decode_pipeline_);
+    vkDestroyShaderModule(device, shader, nullptr);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateComputePipelines(water animation decode)",
+                       result, error);
+    return true;
 }
 
 bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
@@ -2897,6 +3369,47 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         vkDestroyShaderModule(device, raster_vertex, nullptr);
         return fail_vk("vkCreateGraphicsPipelines(skinned raster)", result,
                        error);
+    }
+
+    // Animated water consumes only the compute-decoded 28-byte vertex. It
+    // deliberately shares the static raster layout/fragment stage so the
+    // existing water field, optics, foam, and material descriptors remain the
+    // single shading implementation.
+    VkShaderModule water_raster_vertex = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "raster_water.vert.spv",
+                              water_raster_vertex, error)) {
+        vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+        vkDestroyShaderModule(device, raster_fragment, nullptr);
+        vkDestroyShaderModule(device, raster_vertex, nullptr);
+        return false;
+    }
+    raster_stages[0].module = water_raster_vertex;
+    const VkVertexInputBindingDescription water_vertex_binding{
+        0u, sizeof(VkWaterAnimationVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    const VkVertexInputAttributeDescription water_attributes[] = {
+        {0u, 0u, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<std::uint32_t>(
+             offsetof(VkWaterAnimationVertex, position))},
+        {1u, 0u, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<std::uint32_t>(
+             offsetof(VkWaterAnimationVertex, normal))},
+        {4u, 0u, VK_FORMAT_R32_UINT,
+         static_cast<std::uint32_t>(
+             offsetof(VkWaterAnimationVertex, material_index))}};
+    vertex_input.vertexBindingDescriptionCount = 1u;
+    vertex_input.pVertexBindingDescriptions = &water_vertex_binding;
+    vertex_input.vertexAttributeDescriptionCount = 3u;
+    vertex_input.pVertexAttributeDescriptions = water_attributes;
+    result = vkCreateGraphicsPipelines(
+        device, VK_NULL_HANDLE, 1u, &raster_create, nullptr,
+        &water_animation_raster_pipeline_);
+    vkDestroyShaderModule(device, water_raster_vertex, nullptr);
+    if (result != VK_SUCCESS) {
+        vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+        vkDestroyShaderModule(device, raster_fragment, nullptr);
+        vkDestroyShaderModule(device, raster_vertex, nullptr);
+        return fail_vk("vkCreateGraphicsPipelines(water animation raster)",
+                       result, error);
     }
 
     // Wireframe debug view. Devices that did not enable fillModeNonSolid keep
@@ -10505,6 +11018,7 @@ bool VkSceneRenderer::update_instances(
         instance.animation_instance_generation = 0;
         instance.water_binding_slot = part.water_binding_slot;
         instance.water_generation = part.water_generation;
+        instance.water_pad0 = source.rt_proxy_only ? 1u : 0u;
         const TemporalInstanceFrame* temporal =
             temporal_lookup(stable_id, source_index);
         if (!temporal_frame_.reset && temporal != nullptr &&
@@ -10736,8 +11250,19 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     // (see upload_frame_constants) or cull.comp's last bucket would
     // reserve into the tail.
     skin_transform_base_ = first_instance;
-    draw_transform_slots_ = first_instance +
-        static_cast<uint32_t>(dynamic_instance_staging_.size());
+    uint32_t after_skin = 0u;
+    if (!checked_u32_add(
+            first_instance,
+            static_cast<uint32_t>(dynamic_instance_staging_.size()),
+            after_skin, "skin transform tail", error))
+        return false;
+    water_animation_transform_base_ = after_skin;
+    if (!checked_u32_add(
+            water_animation_transform_base_,
+            static_cast<uint32_t>(
+                water_animation_proxy_instance_indices_.size()),
+            draw_transform_slots_, "water animation transform tail", error))
+        return false;
     part_instance_counts_ = std::move(per_part);
     part_command_ranges_ = std::move(next_part_ranges);
     // Any successful rebuild covers every deferred registration.
@@ -10829,8 +11354,19 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
     // (see upload_frame_constants) or cull.comp's last bucket would
     // reserve into the tail.
     skin_transform_base_ = first_instance;
-    draw_transform_slots_ = first_instance +
-        static_cast<uint32_t>(dynamic_instance_staging_.size());
+    uint32_t after_skin = 0u;
+    if (!checked_u32_add(
+            first_instance,
+            static_cast<uint32_t>(dynamic_instance_staging_.size()),
+            after_skin, "skin transform tail", error))
+        return false;
+    water_animation_transform_base_ = after_skin;
+    if (!checked_u32_add(
+            water_animation_transform_base_,
+            static_cast<uint32_t>(
+                water_animation_proxy_instance_indices_.size()),
+            draw_transform_slots_, "water animation transform tail", error))
+        return false;
     std::vector<PartCommandRange> next_part_ranges;
     next_part_ranges.reserve(parts_.size());
     for (uint32_t slot = 0; slot < parts_.size(); ++slot) {
@@ -11428,7 +11964,7 @@ bool VkSceneRenderer::upload_scene_buffers(
     if (skin_transform_base_ < draw_transform_slots_ &&
         !dynamic_instance_staging_.empty()) {
         skin_transform_staging_.assign(
-            draw_transform_slots_ - skin_transform_base_, GpuDrawTransform{});
+            dynamic_instance_staging_.size(), GpuDrawTransform{});
         for (size_t slot = 0;
              slot < dynamic_instance_staging_.size() &&
              slot < skin_transform_staging_.size(); ++slot) {
@@ -11451,6 +11987,43 @@ bool VkSceneRenderer::upload_scene_buffers(
             !matter::upload_buffer(*vulkan_, frame.draw_transforms,
                                    skin_transform_staging_.data(), tail_bytes,
                                    tail_offset, error))
+            return false;
+    }
+    // The animated surface is baked in the same local space as its immutable
+    // static proxy. Copy that proxy instance into the direct-draw tail every
+    // frame so temporal history, field binding, and material identity remain
+    // exactly the same while cull.comp suppresses the coincident static draw.
+    if (!water_animation_proxy_instance_indices_.empty()) {
+        skin_transform_staging_.assign(
+            water_animation_proxy_instance_indices_.size(),
+            GpuDrawTransform{});
+        for (size_t draw_index = 0u;
+             draw_index != water_animation_proxy_instance_indices_.size();
+             ++draw_index) {
+            const uint32_t source_index =
+                water_animation_proxy_instance_indices_[draw_index];
+            if (source_index >= instance_staging_.size()) continue;
+            const GpuInstance& source = instance_staging_[source_index];
+            GpuDrawTransform& target =
+                skin_transform_staging_[draw_index];
+            target.current = source.object_to_world;
+            target.previous = source.previous_object_to_world;
+            target.history_valid = source.history_valid;
+            target.instance_token = source.instance_token;
+            target.water_binding_slot = source.water_binding_slot;
+            target.water_generation = source.water_generation;
+        }
+        const VkDeviceSize water_tail_bytes =
+            static_cast<VkDeviceSize>(skin_transform_staging_.size()) *
+            sizeof(GpuDrawTransform);
+        const VkDeviceSize water_tail_offset =
+            static_cast<VkDeviceSize>(water_animation_transform_base_) *
+            sizeof(GpuDrawTransform);
+        if (water_tail_bytes != 0u &&
+            !matter::upload_buffer(*vulkan_, frame.draw_transforms,
+                                   skin_transform_staging_.data(),
+                                   water_tail_bytes, water_tail_offset,
+                                   error))
             return false;
     }
     matter::profile::Scope commands_scope(engine_prof::id(engine_prof::kPfUploadCommands));
@@ -13587,6 +14160,38 @@ bool VkSceneRenderer::record_cull_and_render(
                         &selected.rt_tlas,
                         this,              // WP-E: vt_hooks
                         kGpuZoneVt};       // WP-E: vt_zone
+    const WaterAnimationGpuFrame* water_frame =
+        water_animation_schedule_.frame(frame.frame_slot);
+    if (water_frame &&
+        water_animation_resources_.generation ==
+            water_animation_schedule_.generation() &&
+        frame.frame_slot < water_animation_resources_.frames.size() &&
+        !water_frame->draws.empty()) {
+        const WaterAnimationVulkanFrame& water_resources =
+            water_animation_resources_.frames[frame.frame_slot];
+        record.water_decode_pipeline = water_animation_decode_pipeline_;
+        record.water_decode_layout =
+            water_animation_decode_pipeline_layout_;
+        record.water_decode_set = water_resources.decode_set;
+        record.water_raster_pipeline = water_animation_raster_pipeline_;
+        record.water_packed_vertices = water_resources.packed_vertices.buffer;
+        record.water_index_upload = water_resources.index_upload.buffer;
+        record.water_decoded_vertices =
+            water_resources.decoded_vertices.buffer;
+        record.water_indices = water_resources.indices.buffer;
+        record.water_dispatches = water_frame->decode_dispatches.data();
+        record.water_dispatch_count = static_cast<uint32_t>(
+            water_frame->decode_dispatches.size());
+        record.water_draws = water_frame->draws.data();
+        record.water_draw_count =
+            static_cast<uint32_t>(water_frame->draws.size());
+        record.water_index_bytes = static_cast<VkDeviceSize>(
+            water_frame->indices.size() * sizeof(std::uint32_t));
+        record.water_vertex_count = static_cast<uint32_t>(
+            water_animation_schedule_.capacity().decoded_vertex_count);
+        record.water_transform_base = water_animation_transform_base_;
+        record.water_upload_required = water_frame->upload_required;
+    }
     if (volumetrics_) {
         volumetrics_->set_lighting(frame_lighting);
         volumetrics_->set_environment_descriptor(

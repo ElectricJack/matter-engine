@@ -26,9 +26,9 @@ matter_read_manifest(
 list(FILTER matter_engine_viewer_sources
     INCLUDE REGEX "^MatterEngine3/src/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 19)
+if(NOT matter_engine_viewer_source_count EQUAL 20)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 19 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 20 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -51,9 +51,9 @@ list(REMOVE_DUPLICATES matter_engine_viewer_product_sources_unique)
 list(LENGTH matter_engine_viewer_product_sources matter_viewer_product_count)
 list(LENGTH matter_engine_viewer_product_sources_unique matter_viewer_unique_count)
 if(MATTER_ENABLE_AUTOREMESHER)
-    set(matter_expected_viewer_product_count 176)
+    set(matter_expected_viewer_product_count 177)
 else()
-    set(matter_expected_viewer_product_count 175)
+    set(matter_expected_viewer_product_count 176)
 endif()
 if(NOT matter_viewer_product_count EQUAL matter_expected_viewer_product_count OR
         NOT matter_viewer_unique_count EQUAL matter_expected_viewer_product_count)
@@ -167,6 +167,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp
         MatterEngine3/src/render/water_field_vk.cpp
         MatterEngine3/src/render/water_field_vk_resources.cpp
+        MatterEngine3/src/render/water_animation_gpu.cpp
         MatterEngine3/src/hydrology/hydrology_artifact.cpp
         MatterEngine3/src/hydrology/water_visual_products.cpp
         MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp

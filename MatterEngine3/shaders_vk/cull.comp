@@ -346,6 +346,10 @@ void main() {
     if (instance_index >= frame.counts.x ||
         instance_index >= frame.capacities.y) return;
     const GpuInstance instance = instances[instance_index];
+    // Animated water retains its immutable static instance in the CPU RT lane
+    // as a BLAS proxy, but healthy playback must not draw the coincident proxy
+    // in either visibility-ID or G-buffer raster passes.
+    if (instance.water_pad0 != 0u) return;
     if (local_cluster >= instance.cluster_count) return;
 
     if (instance.cluster_start >= frame.capacities.x ||

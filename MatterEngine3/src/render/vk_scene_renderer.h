@@ -38,6 +38,7 @@
 #include "vk_resources.h"
 #include "water_field_vk.h"
 #include "water_field_vk_resources.h"
+#include "water_animation_gpu.h"
 // For VkComputePipelineResource (the HZB pyramid's per-level build pipelines).
 #include "vk_pipeline.h"
 #include "vk_temporal.h"
@@ -549,6 +550,10 @@ struct VkSceneInstance {
     // and identical normals -- a black strip painted over terrain that was
     // already correct (docs/seam-suite-2026-08-13.md, finding 2).
     bool ray_traced = true;
+    // Suppresses only the static raster/cull lane. The immutable part and its
+    // ray_tracing instance remain live as the animated water's BLAS proxy and
+    // as an instantly restorable visual fallback.
+    bool rt_proxy_only = false;
 };
 
 struct VkCullStats {
@@ -987,6 +992,27 @@ public:
     void set_water_animation_time(float seconds) noexcept {
         water_animation_time_seconds_ =
             std::isfinite(seconds) && seconds >= 0.0f ? seconds : 0.0f;
+    }
+    // Publishes one immutable animation generation. GPU buffers are allocated
+    // per Vulkan frame slot; a failed candidate leaves the previous generation
+    // untouched. `retire_after_serial` is the last frame which can reference
+    // the replaced resources.
+    bool publish_water_animation(
+        std::uint64_t generation,
+        std::uint32_t frame_slots,
+        const WaterAnimationGpuCapacity& capacity,
+        std::uint64_t retire_after_serial,
+        WaterAnimationGpuError& error);
+    bool prepare_water_animation_frame(
+        std::uint64_t generation,
+        std::uint32_t frame_slot,
+        const WaterAnimationFrameSelection& selection,
+        const std::vector<std::uint32_t>& proxy_transform_slots,
+        WaterAnimationGpuError& error);
+    void clear_water_animation(std::uint64_t retire_after_serial);
+    void collect_water_animation(std::uint64_t completed_serial) noexcept;
+    std::uint64_t water_animation_generation() const noexcept {
+        return water_animation_schedule_.generation();
     }
     void set_dlss_mode(matter::DlssMode mode);
     VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
@@ -1581,6 +1607,7 @@ private:
         uint32_t animation_instance_generation;
         uint32_t water_binding_slot = UINT32_MAX;
         uint32_t water_generation = 0;
+        // Nonzero suppresses cull/raster only. CPU RT selection never reads it.
         uint32_t water_pad0 = 0;
         uint32_t water_pad1 = 0;
     };
@@ -2060,6 +2087,7 @@ private:
     bool create_environment_layout(std::string& error);
     bool create_environment_resources(std::string& error);
     bool create_raster_pipelines(std::string& error);
+    bool create_water_animation_decode_pipeline(std::string& error);
     bool create_display_pipeline(std::string& error);
     bool create_overlay_line_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
@@ -2323,12 +2351,18 @@ private:
     // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte
     // VkSkinVertex binding with an explicit previous-position attribute.
     VkPipeline skinned_raster_pipeline_ = VK_NULL_HANDLE;
+    // Raster-only dynamic water. Its vertices never receive device-address or
+    // acceleration-structure usage and therefore cannot enter a BLAS path.
+    VkPipeline water_animation_raster_pipeline_ = VK_NULL_HANDLE;
     // VK_POLYGON_MODE_LINE twins of the two above, created only when the
     // device enabled fillModeNonSolid. Everything else about them -- shaders,
     // layout, attachments, depth state -- is identical, so the wireframe view
     // is the same frame with the interiors removed.
     VkPipeline wireframe_raster_pipeline_ = VK_NULL_HANDLE;
     VkPipeline wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout water_animation_decode_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout water_animation_decode_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline water_animation_decode_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
@@ -2363,6 +2397,33 @@ private:
     std::vector<FrameResources> frames_;
     uint32_t active_frame_index_ = 0;
     uint32_t frame_resource_slot_capacity_ = 0;
+
+    struct WaterAnimationVulkanFrame {
+        matter::VkBufferResource packed_vertices;
+        matter::VkBufferResource index_upload;
+        matter::VkBufferResource decoded_vertices;
+        matter::VkBufferResource indices;
+        VkDescriptorSet decode_set = VK_NULL_HANDLE;
+    };
+    struct WaterAnimationVulkanGeneration {
+        std::uint64_t generation = 0u;
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+        std::vector<WaterAnimationVulkanFrame> frames;
+    };
+    struct RetiredWaterAnimationVulkanGeneration {
+        std::uint64_t retire_after_serial = 0u;
+        WaterAnimationVulkanGeneration resources;
+    };
+    WaterAnimationGpuSchedule water_animation_schedule_;
+    WaterAnimationVulkanGeneration water_animation_resources_;
+    std::vector<RetiredWaterAnimationVulkanGeneration>
+        retired_water_animation_resources_;
+    // Direct-water transforms follow the skinned tail. Each source index names
+    // the immutable static proxy instance whose object/history/water binding
+    // record is copied into the direct-draw tail for the current frame.
+    uint32_t water_animation_transform_base_ = 0u;
+    std::vector<std::uint32_t> water_animation_proxy_instance_indices_;
+    std::vector<std::uint32_t> water_animation_direct_transform_slots_;
 
     matter::VkImageResource albedo_;
     matter::VkImageResource normal_;

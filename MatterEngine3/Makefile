@@ -325,12 +325,14 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/atmosphere_irradiance.comp.spv \
          build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
+         build/shaders_vk/water_animation_decode.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/visible_ids.comp.spv \
          build/shaders_vk/visibility_id.vert.spv \
          build/shaders_vk/visibility_id.frag.spv \
          build/shaders_vk/raster.vert.spv \
          build/shaders_vk/raster_skin.vert.spv \
+         build/shaders_vk/raster_water.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv \
@@ -396,6 +398,10 @@ build/shaders_vk/environment_sampling_test.comp.spv: \
 build/shaders_vk/raster_skin.vert.spv: shaders_vk/raster.vert shaders_vk/material_common.glsl
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_SKINNED_VERTEX_INPUT $< -o $@
+
+build/shaders_vk/raster_water.vert.spv: shaders_vk/raster.vert shaders_vk/material_common.glsl
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_WATER_ANIMATION_VERTEX_INPUT $< -o $@
 
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
 
@@ -482,6 +488,7 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
 # above -- an unmasked reader just fails its bounds test and drops a material
 # feature, with nothing on screen that says "stale build".
 build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
+    build/shaders_vk/raster_water.vert.spv \
     build/shaders_vk/gbuffer.frag.spv \
     build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
