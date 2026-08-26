@@ -32,7 +32,7 @@ viewer::PackedWaterField packed_one_cell(std::uint64_t runtime_digest,
     return packed;
 }
 
-void test_packs_exact_three_image_contract() {
+void test_packs_exact_four_image_contract() {
     hydrology::GameplayFieldLayout layout{};
     layout.origin_m = {10.0f, 2.0f, -4.0f};
     layout.cell_size_m = 0.5f;
@@ -61,8 +61,9 @@ void test_packs_exact_three_image_contract() {
               packed, error), error.message.c_str());
     CHECK(packed.image_a_rgba16f.size() == 16u &&
               packed.image_b_rgba16f.size() == 16u &&
-              packed.image_c_rgba8.size() == 16u,
-          "four cells produce three exact RGBA images");
+              packed.image_c_rgba8.size() == 16u &&
+              packed.image_d_rgba16f.size() == 16u,
+          "four cells produce four exact RGBA images");
     CHECK(viewer::water_half_to_float(packed.image_a_rgba16f[0]) == 12.0f &&
               viewer::water_half_to_float(packed.image_a_rgba16f[1]) == 2.0f &&
               viewer::water_half_to_float(packed.image_a_rgba16f[2]) == 3.0f &&
@@ -90,13 +91,18 @@ void test_packs_exact_three_image_contract() {
               viewer::decode_water_feature(packed.image_c_rgba8[3]) ==
                   hydrology::RiverFeature::Rapid,
           "image C packs aeration, foam, wet validity, and nearest feature id");
+    CHECK(std::fabs(viewer::water_half_to_float(packed.image_d_rgba16f[0]) - 1.0f) < 0.001f &&
+              std::fabs(viewer::water_half_to_float(packed.image_d_rgba16f[1])) < 0.001f &&
+              std::fabs(viewer::water_half_to_float(packed.image_d_rgba16f[2]) - 1.0f) < 0.001f,
+          "image D defaults to neutral foam, threshold, and wave overrides");
     CHECK(viewer::water_half_to_float(packed.image_a_rgba16f[4]) == 65504.0f &&
               viewer::water_half_to_float(packed.image_a_rgba16f[6]) == -65504.0f,
           "finite over-range values saturate to representable half-float bounds");
     for (std::size_t channel = 8u; channel != 12u; ++channel) {
         CHECK(packed.image_a_rgba16f[channel] == 0u &&
                   packed.image_b_rgba16f[channel] == 0u &&
-                  packed.image_c_rgba8[channel] == 0u,
+                  packed.image_c_rgba8[channel] == 0u &&
+                  packed.image_d_rgba16f[channel] == 0u,
               "dry cells are zero-filled instead of leaking stale field values");
     }
 }
@@ -183,15 +189,21 @@ void test_gpu_record_preserves_field_identity_and_mapping() {
     const viewer::WaterFieldGpuRecord record =
         viewer::make_water_field_gpu_record(packed, binding);
 
-    CHECK(sizeof(viewer::WaterFieldGpuRecord) == 112u &&
+    CHECK(sizeof(viewer::WaterFieldGpuRecord) == 208u &&
               alignof(viewer::WaterFieldGpuRecord) == 16u,
-          "the std430 water-field record is exactly seven vec4 lanes");
+          "the std430 water-field record is exactly thirteen vec4 lanes");
     CHECK(offsetof(viewer::WaterFieldGpuRecord, origin_cell_size) == 0u &&
               offsetof(viewer::WaterFieldGpuRecord, extent_generation) == 16u &&
               offsetof(viewer::WaterFieldGpuRecord, runtime_digest) == 32u &&
               offsetof(viewer::WaterFieldGpuRecord, presentation_digest) == 40u &&
               offsetof(viewer::WaterFieldGpuRecord, wave_bands) == 48u &&
-              offsetof(viewer::WaterFieldGpuRecord, appearance) == 96u,
+              offsetof(viewer::WaterFieldGpuRecord, appearance) == 96u &&
+              offsetof(viewer::WaterFieldGpuRecord, optics_shallow) == 112u &&
+              offsetof(viewer::WaterFieldGpuRecord, optics_deep) == 128u &&
+              offsetof(viewer::WaterFieldGpuRecord, optics_scattering) == 144u &&
+              offsetof(viewer::WaterFieldGpuRecord, optics_misc) == 160u &&
+              offsetof(viewer::WaterFieldGpuRecord, foam_controls) == 176u &&
+              offsetof(viewer::WaterFieldGpuRecord, foam_response) == 192u,
           "the CPU water-field record matches its GLSL std430 layout");
     CHECK(record.origin_cell_size[0] == 10.0f &&
               record.origin_cell_size[1] == -4.0f &&
@@ -258,7 +270,7 @@ void test_slot_table_exposes_only_live_gpu_records() {
 }  // namespace
 
 int main() {
-    test_packs_exact_three_image_contract();
+    test_packs_exact_four_image_contract();
     test_rejects_malformed_fields_before_allocation();
     test_eight_slots_replace_and_retire_transactionally();
     test_gpu_record_preserves_field_identity_and_mapping();

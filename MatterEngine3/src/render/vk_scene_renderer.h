@@ -571,6 +571,8 @@ struct VkRasterAttachments {
     VkRasterAttachment orm{};
     VkRasterAttachment velocity{};
     VkRasterAttachment material_instance{};
+    // R8_UNORM water presentation reactivity. Zero for non-water/calm water.
+    VkRasterAttachment reactivity{};
     VkRasterAttachment depth{};
     // R16G16B16A16_SFLOAT is the explicit linear HDR composite format.
     VkRasterAttachment hdr{};
@@ -671,6 +673,7 @@ struct GiTemporalGpuFixture {
     matter::Float4 normal{0.0f, 0.0f, 1.0f, 0.0f};
     uint32_t material_index = 7;
     uint32_t instance_token = 41;
+    float reactivity = 0.0f;
     matter::Float4 previous_radiance{0.25f, 0.5f, 0.75f, 1.0f};
     matter::Float3 previous_moments{};
     uint32_t previous_history_length = 3;
@@ -1933,7 +1936,7 @@ private:
         VkImageView environment_cloud_views[4]{};
         VkExtent3D environment_cloud_extents[4]{};
         float environment_cloud_state[4]{};
-        VkImageView water_field_views[3][kWaterFieldBindingSlots]{};
+        VkImageView water_field_views[4][kWaterFieldBindingSlots]{};
         std::uint32_t water_field_generations[kWaterFieldBindingSlots]{};
         bool water_field_raster_descriptors_valid = false;
         bool water_field_rt_descriptors_valid = false;
@@ -2366,6 +2369,7 @@ private:
     matter::VkImageResource orm_;
     matter::VkImageResource velocity_;
     matter::VkImageResource material_instance_;
+    matter::VkImageResource reactivity_;
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;

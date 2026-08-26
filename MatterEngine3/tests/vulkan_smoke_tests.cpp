@@ -90,12 +90,15 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
     CHECK(first.valid(), "water field: publish returns a stable slot generation");
     CHECK(renderer.test_water_field_image_view(first, 0u) != VK_NULL_HANDLE &&
               renderer.test_water_field_image_view(first, 1u) != VK_NULL_HANDLE &&
-              renderer.test_water_field_image_view(first, 2u) != VK_NULL_HANDLE,
-          "water field: one occupied slot owns all three sampled images");
+              renderer.test_water_field_image_view(first, 2u) != VK_NULL_HANDLE &&
+              renderer.test_water_field_image_view(first, 3u) != VK_NULL_HANDLE,
+          "water field: one occupied slot owns all four sampled images");
     CHECK(renderer.test_water_field_sampler(0u) != VK_NULL_HANDLE &&
               renderer.test_water_field_sampler(0u) ==
                   renderer.test_water_field_sampler(1u) &&
               renderer.test_water_field_sampler(2u) !=
+                  renderer.test_water_field_sampler(0u) &&
+              renderer.test_water_field_sampler(3u) ==
                   renderer.test_water_field_sampler(0u),
           "water field: continuous channels are linear and classification is nearest");
     const auto first_record = renderer.test_water_field_gpu_record(first.slot);
@@ -6136,6 +6139,21 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
                       0.002f,
               error.empty()
                   ? "GPU temporal shader reprojects X and top-left Y and accumulates moments"
+                  : error.c_str());
+
+        auto reactive_temporal = temporal_fixture;
+        reactive_temporal.velocity = {};
+        reactive_temporal.history_patch_pixel =
+            reactive_temporal.output_pixel;
+        reactive_temporal.reactivity = 1.0f;
+        reactive_temporal.previous_radiance = {0.9f, 0.1f, 0.1f, 1.0f};
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                  reactive_temporal, temporal_result, error) &&
+                  temporal_result.history_length <= 2u &&
+                  close4(temporal_result.radiance,
+                         reactive_temporal.raw, 0.003f),
+              error.empty()
+                  ? "reactive whitewater replaces stale temporal radiance"
                   : error.c_str());
 
         const auto gpu_rejection = [&](viewer::GiTemporalGpuFixture changed,

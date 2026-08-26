@@ -24,7 +24,8 @@
 #define WATER_A_BINDING 20
 #define WATER_B_BINDING 21
 #define WATER_C_BINDING 22
-#define WATER_RECORD_BINDING 23
+#define WATER_D_BINDING 23
+#define WATER_RECORD_BINDING 24
 #include "water_surface.glsl"
 
 // Phase 2 (Task 10): same FrameConstants block as raster.vert (set 0,
@@ -97,6 +98,7 @@ layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_orm;
 layout(location = 3) out vec2 out_velocity;
 layout(location = 4) out uvec2 out_material_instance;
+layout(location = 5) out float out_reactivity;
 
 // Phase 2 (Task 10): conservative depth write. Parallax only ever pushes the
 // displayed surface AWAY from the camera; under this pipeline's reversed-Z
@@ -158,6 +160,7 @@ void main() {
     float encoded_emission = min(log2(1.0 + emission), 15.875);
     float ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0) : 1.0;
     vec3 shading_normal = normalize(in_normal);
+    float water_reactivity = 0.0;
 
     // ---- M2.5: the terminal impostor rep ----------------------------------
     //
@@ -1077,6 +1080,13 @@ void main() {
                 frame.water_animation.x, roughness, water_state)) {
             shading_normal = water_state.shading_normal;
             roughness = water_state.roughness;
+            water_reactivity = water_state.reactivity;
+            float water_scatter = clamp(
+                water_state.optics.diffuse_scattering_weight +
+                0.35 * water_state.foam.coverage, 0.0, 1.0);
+            base_color = mix(
+                base_color * water_state.optics.transmittance,
+                water_state.optics.scattering_color, water_scatter);
         }
     }
 
@@ -1124,6 +1134,7 @@ void main() {
     // declaration), so this is the identity for every other pixel.
     out_orm = vec4(roughness, metallic, ao,
                    clamp(horizon_sun_visibility, 0.0, 1.0));
+    out_reactivity = clamp(water_reactivity, 0.0, 1.0);
     out_velocity = in_velocity_valid.z > 0.5
                        ? in_velocity_valid.xy
                        : vec2(0.0);

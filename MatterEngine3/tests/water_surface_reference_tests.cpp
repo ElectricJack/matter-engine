@@ -13,7 +13,11 @@ bool close(float actual, float expected, float epsilon = kEpsilon) {
     return std::fabs(actual - expected) <= epsilon;
 }
 
-viewer::PackedWaterField make_field(bool curved = false) {
+viewer::PackedWaterField make_field(
+    bool curved = false, float depth_m = 2.0f, float turbulence = 0.5f,
+    float aeration = 0.25f, float foam_potential = 0.1f,
+    hydrology::RiverFeature feature = hydrology::RiverFeature::Current,
+    const matter::WaterSurfaceDefinition* surface = nullptr) {
     hydrology::GameplayFieldLayout layout{};
     layout.origin_m = {0.0f, 0.0f, 0.0f};
     layout.cell_size_m = 1.0f;
@@ -29,7 +33,7 @@ viewer::PackedWaterField make_field(bool curved = false) {
             const float world_z = static_cast<float>(z) + 0.5f;
             hydrology::GameplaySample sample{};
             sample.height_m = static_cast<float>(x + z * 10u);
-            sample.depth_m = 2.0f;
+            sample.depth_m = depth_m;
             sample.velocity_x_mps = curved ? 0.2f * world_z : 2.0f;
             sample.velocity_y_mps = 0.0f;
             sample.velocity_z_mps = curved ? -0.1f * world_x : -1.0f;
@@ -38,10 +42,10 @@ viewer::PackedWaterField make_field(bool curved = false) {
             hydrology::PresentationSample visual{};
             visual.normal_x = 0.1f;
             visual.normal_z = -0.2f;
-            visual.turbulence = 0.5f;
-            visual.aeration = 0.25f;
-            visual.foam_potential = 0.1f;
-            visual.feature = hydrology::RiverFeature::Current;
+            visual.turbulence = turbulence;
+            visual.aeration = aeration;
+            visual.foam_potential = foam_potential;
+            visual.feature = feature;
             visual.wet_valid = true;
             presentation.push_back(visual);
         }
@@ -51,8 +55,8 @@ viewer::PackedWaterField make_field(bool curved = false) {
     viewer::PackedWaterField packed;
     viewer::WaterFieldError error;
     CHECK(viewer::pack_water_field(
-              {layout, &gameplay, &presentation, 0x111u, 0x222u}, packed,
-              error),
+              {layout, &gameplay, &presentation, 0x111u, 0x222u, surface},
+              packed, error),
           error.message.c_str());
     return packed;
 }
@@ -60,11 +64,29 @@ viewer::PackedWaterField make_field(bool curved = false) {
 matter::WaterSurfaceDefinition make_surface() {
     matter::WaterSurfaceDefinition surface{};
     surface.material_id = 7u;
+    surface.optics.shallow_absorption = {0.03f, 0.015f, 0.008f};
+    surface.optics.deep_absorption = {0.18f, 0.055f, 0.025f};
+    surface.optics.scattering_color = {0.08f, 0.22f, 0.24f};
+    surface.optics.shallow_distance_m = 8.0f;
+    surface.optics.deep_distance_m = 2.5f;
+    surface.optics.scattering_distance_m = 7.0f;
+    surface.optics.anisotropy = 0.35f;
+    surface.optics.ior = 1.333f;
     surface.wave_bands = {
         {7.5f, 0.16f, 0.8f, 0.35f},
         {1.6f, 0.24f, 1.4f, 0.75f},
         {0.28f, 0.08f, 2.1f, 0.20f},
     };
+    surface.foam = {0.42f, 1.8f, 2.5f, 0.7f,
+                    0.55f, 1.4f, 0.72f, 0.6f};
+    matter::WaterLocalOverrideDefinition local{};
+    local.shape = matter::WaterLocalOverrideDefinition::Shape::Sphere;
+    local.center_m = {3.5f, 33.0f, 3.5f};
+    local.radius_m = 1.5f;
+    local.foam_multiplier = 1.25f;
+    local.wave_multiplier = 1.1f;
+    local.threshold_offset = -0.08f;
+    surface.local_overrides.push_back(local);
     surface.appearance_hash = UINT64_C(0x8899aabbccddeeff);
     return surface;
 }
@@ -98,6 +120,92 @@ void test_authored_waves_pack_into_the_slot_record() {
               close(record.wave_bands[1][2], 1.4f) &&
               close(record.wave_bands[2][3], 0.20f),
           "the slot record carries exactly the three authored wave bands");
+    CHECK(close(record.optics_shallow[0], 0.03f) &&
+              close(record.optics_shallow[3], 8.0f) &&
+              close(record.optics_deep[0], 0.18f) &&
+              close(record.optics_deep[3], 2.5f) &&
+              close(record.optics_scattering[1], 0.22f) &&
+              close(record.optics_misc[1], 1.333f),
+          "the slot record carries authored shallow/deep optical controls");
+    CHECK(close(record.foam_controls[0], 0.42f) &&
+              close(record.foam_controls[1], 1.8f) &&
+              close(record.foam_response[0], 0.55f) &&
+              close(record.foam_response[2], 0.72f),
+          "the slot record carries authored automatic-foam controls");
+}
+
+void test_shallow_clarity_and_depth_tint() {
+    const matter::WaterSurfaceDefinition surface = make_surface();
+    const viewer::WaterFieldBinding binding{3u, 11u};
+    viewer::WaterSurfaceEvaluation shallow{};
+    viewer::WaterSurfaceEvaluation deep{};
+    CHECK(viewer::water_evaluate_surface_reference(
+              make_field(false, 0.75f, 0.5f, 0.25f, 0.1f,
+                         hydrology::RiverFeature::Current, &surface),
+              binding, binding, surface,
+              {3.5f, 3.5f}, {0.0f, 1.0f, 0.0f}, 1.25f, 0.06f,
+              shallow),
+          "a shallow wet cell produces optical state");
+    CHECK(viewer::water_evaluate_surface_reference(
+              make_field(false, 5.0f, 0.5f, 0.25f, 0.1f,
+                         hydrology::RiverFeature::Current, &surface),
+              binding, binding, surface,
+              {3.5f, 3.5f}, {0.0f, 1.0f, 0.0f}, 1.25f, 0.06f, deep),
+          "a deep wet cell produces optical state");
+    CHECK(shallow.optics.bottom_visibility >= 0.98f &&
+              shallow.optics.transmittance.x >= 0.99f &&
+              shallow.optics.transmittance.z >=
+                  shallow.optics.transmittance.x,
+          "water shallower than 1.5 m leaves the bottom mostly visible");
+    CHECK(deep.optics.transmittance.x < shallow.optics.transmittance.x &&
+              deep.optics.transmittance.z > deep.optics.transmittance.x,
+          "deep water gains the authored blue-green absorption tint");
+    CHECK(shallow.optics.reflection_weight +
+                  shallow.optics.coherent_transmission_weight +
+                  shallow.optics.diffuse_scattering_weight <=
+              1.0f + 2.0e-6f &&
+              deep.optics.reflection_weight +
+                  deep.optics.coherent_transmission_weight +
+                  deep.optics.diffuse_scattering_weight <=
+              1.0f + 2.0e-6f,
+          "water optical lobes remain energy bounded at every depth");
+}
+
+void test_automatic_foam_and_local_override() {
+    const matter::WaterSurfaceDefinition surface = make_surface();
+    const viewer::WaterFieldBinding binding{5u, 14u};
+    const viewer::PackedWaterField rapid_field = make_field(
+        true, 0.9f, 0.85f, 0.65f, 0.72f,
+        hydrology::RiverFeature::Rapid, &surface);
+    viewer::WaterSurfaceEvaluation local_rapid{};
+    viewer::WaterSurfaceEvaluation outside_rapid{};
+    CHECK(viewer::water_evaluate_surface_reference(
+              rapid_field, binding, binding, surface, {3.5f, 3.5f},
+              {0.0f, 1.0f, 0.0f}, 2.75f, 0.06f, local_rapid) &&
+              viewer::water_evaluate_surface_reference(
+                  rapid_field, binding, binding, surface, {1.5f, 1.5f},
+                  {0.0f, 1.0f, 0.0f}, 2.75f, 0.06f, outside_rapid),
+          "rapid cells evaluate automatic foam inside and outside overrides");
+    CHECK(local_rapid.foam.macro_mask > 0.0f &&
+              local_rapid.foam.coverage > 0.0f &&
+              local_rapid.foam.local_multiplier > 1.0f &&
+              local_rapid.foam.coverage >= outside_rapid.foam.coverage,
+          "the authored local override strengthens foam without moving its cause");
+    CHECK(local_rapid.roughness > 0.06f &&
+              local_rapid.optics.coherent_transmission_weight <
+                  local_rapid.optics.bottom_visibility &&
+              local_rapid.reactivity > 0.5f,
+          "whitewater roughens, scatters, reduces transmission, and reacts");
+
+    viewer::WaterSurfaceEvaluation calm{};
+    CHECK(viewer::water_evaluate_surface_reference(
+              make_field(false, 0.9f, 0.0f, 0.0f, 0.0f,
+                         hydrology::RiverFeature::Calm, &surface),
+              binding, binding, surface, {3.5f, 3.5f},
+              {0.0f, 1.0f, 0.0f}, 2.75f, 0.06f, calm) &&
+              close(calm.foam.macro_mask, 0.0f) &&
+              close(calm.foam.coverage, 0.0f) && calm.reactivity < 0.1f,
+          "calm water stays clear and temporally stable regardless of breakup detail");
 }
 
 void test_world_mapping_borders_and_dry_rejection() {
@@ -230,6 +338,8 @@ void test_three_band_response_and_hemisphere_safety() {
 
 int main() {
     test_authored_waves_pack_into_the_slot_record();
+    test_shallow_clarity_and_depth_tint();
+    test_automatic_foam_and_local_override();
     test_world_mapping_borders_and_dry_rejection();
     test_three_step_rk2_backtrace();
     test_dual_phase_reset_boundaries();

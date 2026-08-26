@@ -15,6 +15,9 @@
 #ifndef WATER_C_BINDING
 #error WATER_C_BINDING must name the nearest classification binding
 #endif
+#ifndef WATER_D_BINDING
+#error WATER_D_BINDING must name the continuous local-override binding
+#endif
 #ifndef WATER_RECORD_BINDING
 #error WATER_RECORD_BINDING must name the immutable record binding
 #endif
@@ -37,6 +40,8 @@ layout(set = WATER_SET, binding = WATER_B_BINDING)
     uniform sampler2D water_field_b[WATER_FIELD_SLOT_COUNT];
 layout(set = WATER_SET, binding = WATER_C_BINDING)
     uniform sampler2D water_field_c[WATER_FIELD_SLOT_COUNT];
+layout(set = WATER_SET, binding = WATER_D_BINDING)
+    uniform sampler2D water_field_d[WATER_FIELD_SLOT_COUNT];
 
 struct WaterFieldGpuRecord {
     vec4 origin_cell_size;
@@ -45,6 +50,12 @@ struct WaterFieldGpuRecord {
     uvec2 presentation_digest;
     vec4 wave_bands[WATER_WAVE_BAND_COUNT];
     uvec4 appearance;
+    vec4 optics_shallow;
+    vec4 optics_deep;
+    vec4 optics_scattering;
+    vec4 optics_misc;
+    vec4 foam_controls;
+    vec4 foam_response;
 };
 
 layout(set = WATER_SET, binding = WATER_RECORD_BINDING, std430)
@@ -60,8 +71,29 @@ struct WaterFieldSample {
     float turbulence;
     float aeration;
     float foam_potential;
+    float local_foam_multiplier;
+    float local_threshold_offset;
+    float local_wave_multiplier;
     uint feature;
     bool valid;
+};
+
+struct WaterOpticalState {
+    vec3 transmittance;
+    vec3 scattering_color;
+    float bottom_visibility;
+    float reflection_weight;
+    float coherent_transmission_weight;
+    float diffuse_scattering_weight;
+};
+
+struct WaterFoamState {
+    float macro_mask;
+    float breakup_detail;
+    float coverage;
+    float local_multiplier;
+    float threshold_offset;
+    float wave_multiplier;
 };
 
 struct WaterDualPhase {
@@ -73,6 +105,9 @@ struct WaterSurfaceState {
     vec3 shading_normal;
     float roughness;
     WaterFieldSample field;
+    WaterOpticalState optics;
+    WaterFoamState foam;
+    float reactivity;
     bool animated;
 };
 
@@ -85,6 +120,9 @@ WaterFieldSample water_invalid_sample() {
     result.turbulence = 0.0;
     result.aeration = 0.0;
     result.foam_potential = 0.0;
+    result.local_foam_multiplier = 1.0;
+    result.local_threshold_offset = 0.0;
+    result.local_wave_multiplier = 1.0;
     result.feature = 0u;
     result.valid = false;
     return result;
@@ -122,6 +160,7 @@ bool water_sample_field(uint slot, uint generation, uint material_id,
     if (classification.b < 0.5) return false;
     vec4 field_a = textureLod(water_field_a[descriptor_slot], uv, 0.0);
     vec4 field_b = textureLod(water_field_b[descriptor_slot], uv, 0.0);
+    vec4 field_d = textureLod(water_field_d[descriptor_slot], uv, 0.0);
     float normal_y = sqrt(max(0.0, 1.0 - dot(field_b.yz, field_b.yz)));
     result.surface_height = field_a.x;
     result.depth = field_a.y;
@@ -130,6 +169,9 @@ bool water_sample_field(uint slot, uint generation, uint material_id,
     result.turbulence = field_b.w;
     result.aeration = classification.r;
     result.foam_potential = classification.g;
+    result.local_foam_multiplier = field_d.r;
+    result.local_threshold_offset = field_d.g;
+    result.local_wave_multiplier = field_d.b;
     result.feature = uint(floor(classification.a * 6.0 + 0.5));
     result.valid = true;
     return true;
@@ -197,7 +239,26 @@ vec3 water_band_responses(WaterFieldGpuRecord record,
     vec3 response = vec3(record.wave_bands[0].w,
                          record.wave_bands[1].w,
                          record.wave_bands[2].w);
-    return mix(vec3(1.0) - response, vec3(1.0), driver);
+    return mix(vec3(1.0) - response, vec3(1.0), driver) *
+           max(field.local_wave_multiplier, 0.0);
+}
+
+float water_feature_foam_bias(uint feature) {
+    if (feature == 2u) return 0.10;
+    if (feature == 3u) return 0.30;
+    if (feature == 4u) return 0.35;
+    if (feature == 5u) return 0.25;
+    return feature == 1u ? 0.02 : 0.0;
+}
+
+float water_breakup_noise(vec2 position, float scale_m) {
+    float scale = max(scale_m, 0.001);
+    float phase = position.x * (2.17 / scale) +
+                  position.y * (3.11 / scale);
+    float secondary = position.x * (5.03 / scale) -
+                      position.y * (1.73 / scale);
+    return clamp(0.5 + 0.32 * sin(phase) +
+                 0.18 * sin(secondary + sin(phase)), 0.0, 1.0);
 }
 
 bool water_evaluate_surface(uint slot, uint generation, uint material_id,
@@ -207,11 +268,82 @@ bool water_evaluate_surface(uint slot, uint generation, uint material_id,
     state.shading_normal = normalize(geometric_normal);
     state.roughness = clamp(base_roughness, 0.0, 1.0);
     state.field = water_invalid_sample();
+    state.optics.transmittance = vec3(1.0);
+    state.optics.scattering_color = vec3(0.0);
+    state.optics.bottom_visibility = 1.0;
+    state.optics.reflection_weight = 0.0;
+    state.optics.coherent_transmission_weight = 1.0;
+    state.optics.diffuse_scattering_weight = 0.0;
+    state.foam.macro_mask = 0.0;
+    state.foam.breakup_detail = 0.0;
+    state.foam.coverage = 0.0;
+    state.foam.local_multiplier = 1.0;
+    state.foam.threshold_offset = 0.0;
+    state.foam.wave_multiplier = 1.0;
+    state.reactivity = 0.0;
     state.animated = false;
     if (!water_sample_field(slot, generation, material_id, world_xz,
                             state.field))
         return false;
     WaterFieldGpuRecord record = water_field_records[slot];
+    state.foam.local_multiplier = max(state.field.local_foam_multiplier, 0.0);
+    state.foam.threshold_offset = state.field.local_threshold_offset;
+    state.foam.wave_multiplier = max(state.field.local_wave_multiplier, 0.0);
+    float foam_driver = state.field.foam_potential +
+                        0.35 * state.field.aeration +
+                        water_feature_foam_bias(state.field.feature);
+    state.foam.macro_mask = clamp(
+        (foam_driver - record.foam_controls.x -
+         state.foam.threshold_offset) * record.foam_controls.y,
+        0.0, 1.0);
+    vec2 foam_position = world_xz;
+    if (record.foam_controls.z > 0.0) {
+        float foam_age = mod(max(animation_time_seconds, 0.0),
+                             max(record.foam_controls.z, 0.001));
+        foam_position = water_backtrace_rk2(
+            slot, generation, material_id, world_xz, foam_age);
+    }
+    state.foam.breakup_detail =
+        water_breakup_noise(foam_position, record.foam_controls.w);
+    state.foam.coverage = clamp(
+        state.foam.macro_mask * state.foam.local_multiplier *
+        mix(0.85, 1.0, state.foam.breakup_detail), 0.0, 1.0);
+
+    float depth_blend = smoothstep(1.5, 4.0, max(state.field.depth, 0.0));
+    vec3 absorption = mix(record.optics_shallow.rgb,
+                          record.optics_deep.rgb, depth_blend);
+    float absorption_distance = max(
+        0.001, mix(record.optics_shallow.a, record.optics_deep.a,
+                   depth_blend));
+    float optical_depth = max(state.field.depth, 0.0) / absorption_distance;
+    state.optics.transmittance = exp(-absorption * optical_depth);
+    state.optics.bottom_visibility = clamp(
+        dot(state.optics.transmittance, vec3(0.2126, 0.7152, 0.0722)),
+        0.0, 1.0);
+    float ior = clamp(record.optics_misc.y, 1.0, 2.5);
+    float f0 = (ior - 1.0) / (ior + 1.0);
+    state.optics.reflection_weight = f0 * f0;
+    state.optics.coherent_transmission_weight = clamp(
+        (1.0 - state.optics.reflection_weight) *
+        state.optics.bottom_visibility *
+        (1.0 - state.foam.coverage * clamp(record.foam_response.z, 0.0, 1.0)),
+        0.0, 1.0);
+    float optical_remaining = max(
+        0.0, 1.0 - state.optics.reflection_weight -
+             state.optics.coherent_transmission_weight);
+    float depth_scattering = 1.0 - exp(
+        -max(state.field.depth, 0.0) /
+        max(record.optics_scattering.a, 0.001));
+    state.optics.diffuse_scattering_weight = min(
+        optical_remaining,
+        depth_scattering + state.foam.coverage * max(record.foam_response.y, 0.0));
+    state.optics.scattering_color = mix(
+        record.optics_scattering.rgb, vec3(0.92, 0.97, 1.0),
+        state.foam.coverage);
+    state.reactivity = clamp(max(
+        state.foam.coverage,
+        0.35 * clamp(state.field.turbulence, 0.0, 1.0) +
+        0.15 * clamp(state.field.aeration, 0.0, 1.0)), 0.0, 1.0);
     vec2 flow = state.field.velocity.xz;
     float flow_length = length(flow);
     flow = flow_length > 0.05 ? flow / flow_length : vec2(1.0, 0.0);
@@ -262,12 +394,43 @@ bool water_evaluate_surface(uint slot, uint generation, uint material_id,
                              tangent_length)
             : base;
     }
-    state.shading_normal = animated;
+    float normal_softening = state.foam.coverage *
+                             clamp(record.foam_response.w, 0.0, 1.0);
+    state.shading_normal = normalize(mix(animated, base, normal_softening));
     state.roughness = clamp(
         base_roughness + 0.05 * min(slope_length, 1.0) +
-        0.08 * clamp(state.field.turbulence, 0.0, 1.0), 0.0, 1.0);
+        0.08 * clamp(state.field.turbulence, 0.0, 1.0) +
+        state.foam.coverage * clamp(record.foam_response.x, 0.0, 1.0),
+        0.0, 1.0);
     state.animated = true;
     return true;
+}
+
+// Primary ray-generation pixels retain material identity but not the mesh
+// draw's water slot. Resolve the one immutable field whose authored material
+// and world bounds own this point. Eight bounded probes keep this identical
+// to explicit-slot evaluation without adding another G-buffer attachment.
+bool water_evaluate_surface_for_material(
+    uint material_id, vec2 world_xz, vec3 geometric_normal,
+    float animation_time_seconds, float base_roughness,
+    out WaterSurfaceState state) {
+    for (uint slot = 0u; slot < WATER_FIELD_SLOT_COUNT; ++slot) {
+        if (slot >= water_field_records.length()) break;
+        WaterFieldGpuRecord record = water_field_records[slot];
+        if (record.extent_generation.w == 0u ||
+            record.appearance.w == 0u || record.appearance.x != material_id)
+            continue;
+        if (water_evaluate_surface(
+                slot, record.extent_generation.z, material_id, world_xz,
+                geometric_normal, animation_time_seconds, base_roughness,
+                state))
+            return true;
+    }
+    state.shading_normal = normalize(geometric_normal);
+    state.roughness = clamp(base_roughness, 0.0, 1.0);
+    state.field = water_invalid_sample();
+    state.animated = false;
+    return false;
 }
 
 #endif

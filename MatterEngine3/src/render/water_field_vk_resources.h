@@ -16,7 +16,7 @@ namespace viewer {
 class WaterFieldVkResources {
 public:
     struct StagedImages {
-        std::array<matter::VkImageResource, 3> images{};
+        std::array<matter::VkImageResource, 4> images{};
     };
 
     explicit WaterFieldVkResources(matter::VulkanDevice& vulkan) noexcept;

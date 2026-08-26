@@ -19,8 +19,29 @@ struct WaterSurfaceFieldSample {
     float turbulence = 0.0f;
     float aeration = 0.0f;
     float foam_potential = 0.0f;
+    float local_foam_multiplier = 1.0f;
+    float local_threshold_offset = 0.0f;
+    float local_wave_multiplier = 1.0f;
     hydrology::RiverFeature feature = hydrology::RiverFeature::Calm;
     bool valid = false;
+};
+
+struct WaterOpticalState {
+    matter::Float3 transmittance{1.0f, 1.0f, 1.0f};
+    matter::Float3 scattering_color{};
+    float bottom_visibility = 1.0f;
+    float reflection_weight = 0.0f;
+    float coherent_transmission_weight = 1.0f;
+    float diffuse_scattering_weight = 0.0f;
+};
+
+struct WaterFoamState {
+    float macro_mask = 0.0f;
+    float breakup_detail = 0.0f;
+    float coverage = 0.0f;
+    float local_multiplier = 1.0f;
+    float threshold_offset = 0.0f;
+    float wave_multiplier = 1.0f;
 };
 
 struct WaterDualPhase {
@@ -32,6 +53,9 @@ struct WaterSurfaceEvaluation {
     matter::Float3 shading_normal{0.0f, 1.0f, 0.0f};
     float roughness = 0.0f;
     WaterSurfaceFieldSample field{};
+    WaterOpticalState optics{};
+    WaterFoamState foam{};
+    float reactivity = 0.0f;
     bool animated = false;
 };
 

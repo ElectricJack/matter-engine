@@ -16,8 +16,8 @@ bool fail(WaterFieldError& error, WaterFieldErrorCode code,
 
 struct UploadRecord {
     VkBuffer staging = VK_NULL_HANDLE;
-    std::array<matter::VkImageResource*, 3> images{};
-    std::array<VkDeviceSize, 3> offsets{};
+    std::array<matter::VkImageResource*, 4> images{};
+    std::array<VkDeviceSize, 4> offsets{};
     VkExtent3D extent{};
 };
 
@@ -101,6 +101,7 @@ bool WaterFieldVkResources::initialize(WaterFieldError& error) {
     zero.image_a_rgba16f.assign(4u, 0u);
     zero.image_b_rgba16f.assign(4u, 0u);
     zero.image_c_rgba8.assign(4u, 0u);
+    zero.image_d_rgba16f.assign(4u, 0u);
     StagedImages dummy;
     if (!stage(zero, dummy, error)) {
         vkDestroySampler(vulkan_->device(), linear, nullptr);
@@ -137,9 +138,10 @@ bool WaterFieldVkResources::stage(const PackedWaterField& field,
                     "packed water field has invalid image sizes or metadata");
 
     const VkExtent3D extent{field.layout.width, field.layout.depth, 1u};
-    const VkFormat formats[3] = {VK_FORMAT_R16G16B16A16_SFLOAT,
+    const VkFormat formats[4] = {VK_FORMAT_R16G16B16A16_SFLOAT,
                                  VK_FORMAT_R16G16B16A16_SFLOAT,
-                                 VK_FORMAT_R8G8B8A8_UNORM};
+                                 VK_FORMAT_R8G8B8A8_UNORM,
+                                 VK_FORMAT_R16G16B16A16_SFLOAT};
     StagedImages candidate;
     std::string vk_error;
     for (std::uint32_t index = 0u; index != candidate.images.size(); ++index) {
@@ -154,15 +156,21 @@ bool WaterFieldVkResources::stage(const PackedWaterField& field,
         }
     }
 
-    const VkDeviceSize byte_sizes[3] = {
+    const VkDeviceSize byte_sizes[4] = {
         static_cast<VkDeviceSize>(field.image_a_rgba16f.size() *
                                   sizeof(std::uint16_t)),
         static_cast<VkDeviceSize>(field.image_b_rgba16f.size() *
                                   sizeof(std::uint16_t)),
-        static_cast<VkDeviceSize>(field.image_c_rgba8.size())};
-    const VkDeviceSize offsets[3] = {0u, byte_sizes[0],
-                                     byte_sizes[0] + byte_sizes[1]};
-    const VkDeviceSize total = offsets[2] + byte_sizes[2];
+        static_cast<VkDeviceSize>(field.image_c_rgba8.size()),
+        static_cast<VkDeviceSize>(field.image_d_rgba16f.size() *
+                                  sizeof(std::uint16_t))};
+    const auto align_up = [](VkDeviceSize value, VkDeviceSize alignment) {
+        return (value + alignment - 1u) / alignment * alignment;
+    };
+    const VkDeviceSize offsets[4] = {
+        0u, byte_sizes[0], byte_sizes[0] + byte_sizes[1],
+        align_up(byte_sizes[0] + byte_sizes[1] + byte_sizes[2], 8u)};
+    const VkDeviceSize total = offsets[3] + byte_sizes[3];
     matter::VkBufferResource staging;
     if (!matter::create_buffer(
             *vulkan_, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -181,6 +189,9 @@ bool WaterFieldVkResources::stage(const PackedWaterField& field,
     std::memcpy(static_cast<std::byte*>(staging.mapped) + offsets[2],
                 field.image_c_rgba8.data(),
                 static_cast<std::size_t>(byte_sizes[2]));
+    std::memcpy(static_cast<std::byte*>(staging.mapped) + offsets[3],
+                field.image_d_rgba16f.data(),
+                static_cast<std::size_t>(byte_sizes[3]));
     if (!matter::flush_buffer(staging, 0u, total, vk_error)) {
         return fail(error, WaterFieldErrorCode::UploadFailure,
                     "water field staging flush failed: " + vk_error);
@@ -239,7 +250,7 @@ void WaterFieldVkResources::collect(
 
 VkImageView WaterFieldVkResources::image_view(
     WaterFieldBinding binding, std::uint32_t channel) const noexcept {
-    if (!binding.valid() || binding.slot >= slots_.size() || channel >= 3u)
+    if (!binding.valid() || binding.slot >= slots_.size() || channel >= 4u)
         return VK_NULL_HANDLE;
     const Slot& slot = slots_[binding.slot];
     return slot.occupied && slot.generation == binding.generation
@@ -249,7 +260,7 @@ VkImageView WaterFieldVkResources::image_view(
 
 VkImageView WaterFieldVkResources::descriptor_view(
     std::uint32_t slot, std::uint32_t channel) const noexcept {
-    if (!initialized_ || channel >= 3u) return VK_NULL_HANDLE;
+    if (!initialized_ || channel >= 4u) return VK_NULL_HANDLE;
     if (slot < slots_.size() && slots_[slot].occupied)
         return slots_[slot].images.images[channel].view;
     return dummy_.images[channel].view;
@@ -257,8 +268,8 @@ VkImageView WaterFieldVkResources::descriptor_view(
 
 VkSampler WaterFieldVkResources::sampler(
     std::uint32_t channel) const noexcept {
-    if (!initialized_ || channel >= 3u) return VK_NULL_HANDLE;
-    return channel < 2u ? linear_sampler_ : nearest_sampler_;
+    if (!initialized_ || channel >= 4u) return VK_NULL_HANDLE;
+    return channel == 2u ? nearest_sampler_ : linear_sampler_;
 }
 
 void WaterFieldVkResources::append_frame_lifetimes(

@@ -298,7 +298,7 @@ VkPipelineStageFlags2 gbuffer_sampled_stages(
     if (attachment_index < 4)
         stages |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     if (attachment_index == 1 || attachment_index == 3 ||
-        attachment_index == 4)
+        attachment_index == 4 || attachment_index == 5)
         stages |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     if (native_ray_tracing_available && attachment_index < 3)
         stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
@@ -394,6 +394,7 @@ struct RasterRecord {
     matter::VkImageResource* orm;
     matter::VkImageResource* velocity;
     matter::VkImageResource* material_instance;
+    matter::VkImageResource* reactivity;
     matter::VkImageResource* depth;
     matter::VkImageResource* hdr;
     matter::VkImageResource* visibility;
@@ -499,9 +500,9 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     // CPU takes to build the command buffer, never how long the GPU runs it.
     // GPU time for the same passes comes from the kGpuZone* timestamps.
     PROFILE_SCOPE_NAMED(z_gbuffer, "raster.gbuffer");
-    matter::VkImageResource* colors[] = {record.albedo, record.normal,
-                                         record.orm, record.velocity,
-                                         record.material_instance};
+    matter::VkImageResource* colors[] = {
+        record.albedo, record.normal, record.orm, record.velocity,
+        record.material_instance, record.reactivity};
     for (auto* color : colors) {
         transition_for_use(command_buffer, *color,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -530,10 +531,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     const VkRect2D scissor{{0, 0}, record.extent};
     const VkDeviceSize vertex_offset = 0;
 
-    // --- GBuffer pass: 5-color MRT + depth write ---
+    // --- GBuffer pass: 6-color MRT + depth write ---
     const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
-    VkRenderingAttachmentInfo color_attachments[5]{};
-    for (size_t i = 0; i < 5; ++i) {
+    VkRenderingAttachmentInfo color_attachments[6]{};
+    for (size_t i = 0; i < 6; ++i) {
         color_attachments[i].sType =
             VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         color_attachments[i].imageView = colors[i]->view;
@@ -557,7 +558,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = record.extent;
     rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 5;
+    rendering.colorAttachmentCount = 6;
     rendering.pColorAttachments = color_attachments;
     rendering.pDepthAttachment = &depth_attachment;
     // WP-E: VT pool/indirection uploads and the feedback clear are transfers,
@@ -766,7 +767,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         record.ts_written[record.gbuffer_zone] |= 2u;
     }
 
-    for (uint32_t index = 0; index < 5; ++index) {
+    for (uint32_t index = 0; index < 6; ++index) {
         auto* color = colors[index];
         const VkPipelineStageFlags2 sampled_stages = gbuffer_sampled_stages(
             index, record.native_ray_tracing_available);
@@ -1294,7 +1295,7 @@ bool VkSceneRenderer::test_water_field_descriptors_match(
         frame.water_field_records.buffer == VK_NULL_HANDLE ||
         frame.water_field_generations[binding.slot] != binding.generation)
         return false;
-    for (std::uint32_t channel = 0u; channel != 3u; ++channel) {
+    for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
         if (frame.water_field_views[channel][binding.slot] !=
             water_field_resources_.image_view(binding, channel))
             return false;
@@ -1993,7 +1994,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // it left was not free: a default-constructed VkDescriptorSetLayoutBinding
     // has binding 0, so the array carried a DUPLICATE of binding 0 and layout
     // creation failed -- taking every cull smoke mode with it.
-    std::array<VkDescriptorSetLayoutBinding, 24> scene_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 25> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -2039,14 +2040,14 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     scene_bindings[19] = descriptor_binding(
         19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
-    for (uint32_t binding = 20u; binding <= 22u; ++binding) {
+    for (uint32_t binding = 20u; binding <= 23u; ++binding) {
         scene_bindings[binding] = descriptor_binding(
             binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             VK_SHADER_STAGE_FRAGMENT_BIT);
         scene_bindings[binding].descriptorCount = kWaterFieldBindingSlots;
     }
-    scene_bindings[23] = descriptor_binding(
-        23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+    scene_bindings[24] = descriptor_binding(
+        24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -2204,7 +2205,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
 
 bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
-    std::array<VkDescriptorSetLayoutBinding, 21> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 22> bindings{};
     for (uint32_t binding = 0; binding <= 10; ++binding)
         bindings[binding] = descriptor_binding(
             binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -2221,6 +2222,9 @@ bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
             VK_SHADER_STAGE_COMPUTE_BIT);
     bindings[20] = descriptor_binding(20, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                       VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[21] = descriptor_binding(21,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo set_create{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     set_create.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -2264,7 +2268,7 @@ bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
 
 bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
-    std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 10> bindings{};
     for (uint32_t binding = 0; binding < 6; ++binding)
         bindings[binding] = descriptor_binding(
             binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -2274,6 +2278,9 @@ bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
     bindings[7] = descriptor_binding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      VK_SHADER_STAGE_COMPUTE_BIT);
     bindings[8] = descriptor_binding(8,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[9] = descriptor_binding(9,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo set_create{
@@ -2417,7 +2424,12 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                VK_SHADER_STAGE_MISS_BIT_KHR),
-        descriptor_binding(24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        descriptor_binding(24, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(25, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
@@ -2428,6 +2440,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     bindings[21].descriptorCount = kWaterFieldBindingSlots;
     bindings[22].descriptorCount = kWaterFieldBindingSlots;
     bindings[23].descriptorCount = kWaterFieldBindingSlots;
+    bindings[24].descriptorCount = kWaterFieldBindingSlots;
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     set_info.bindingCount =
@@ -2718,7 +2731,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     dynamic.dynamicStateCount = 2;
     dynamic.pDynamicStates = dynamic_values;
 
-    // GBuffer pipeline: 5-color MRT + depth write.
+    // GBuffer pipeline: 6-color MRT + depth write.
     VkPipelineDepthStencilStateCreateInfo depth_stencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth_stencil.depthTestEnable  = VK_TRUE;
@@ -2726,7 +2739,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     // Reversed-Z: nearer geometry has a larger NDC depth, so passing requires
     // depth >= existing (was <= under standard-Z).
     depth_stencil.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL;
-    VkPipelineColorBlendAttachmentState blend_attachments[5]{};
+    VkPipelineColorBlendAttachmentState blend_attachments[6]{};
     for (auto& blend : blend_attachments) {
         blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
                                VK_COLOR_COMPONENT_G_BIT |
@@ -2735,15 +2748,15 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     }
     VkPipelineColorBlendStateCreateInfo color_blend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    color_blend.attachmentCount = 5;
+    color_blend.attachmentCount = 6;
     color_blend.pAttachments = blend_attachments;
     const VkFormat gbuffer_formats[] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT,
-        VK_FORMAT_R32G32_UINT};
+        VK_FORMAT_R32G32_UINT, VK_FORMAT_R8_UNORM};
     VkPipelineRenderingCreateInfo rendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 5;
+    rendering.colorAttachmentCount = 6;
     rendering.pColorAttachmentFormats = gbuffer_formats;
     rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     VkGraphicsPipelineCreateInfo raster_create{
@@ -3566,8 +3579,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 33},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
-             (120 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
-              vt::kVtChannelCount + 3u * kWaterFieldBindingSlots)},
+             (132 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+              vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -3792,7 +3805,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
              frame_slot_count *
                  (5 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
-                  vt::kVtChannelCount + 3u * kWaterFieldBindingSlots)},
+                  vt::kVtChannelCount + 4u * kWaterFieldBindingSlots)},
             // 6 storage images: visibility, raw diffuse, raw specular +
             // aux, raw transmission + aux (RT PBR Phase 1).
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 6},
@@ -3906,7 +3919,7 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
         return false;
 
     std::array<std::array<VkDescriptorImageInfo,
-                          kWaterFieldBindingSlots>, 3>
+                          kWaterFieldBindingSlots>, 4>
         image_infos{};
     for (std::uint32_t channel = 0u; channel != image_infos.size();
          ++channel) {
@@ -3923,8 +3936,8 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
     const VkDescriptorBufferInfo buffer_info{
         frame.water_field_records.buffer, 0u,
         sizeof(WaterFieldGpuRecord) * kWaterFieldBindingSlots};
-    std::array<VkWriteDescriptorSet, 4> writes{};
-    for (std::uint32_t channel = 0u; channel != 3u; ++channel) {
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
         VkWriteDescriptorSet& write = writes[channel];
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write.dstSet = frame.descriptor_sets[1];
@@ -3933,24 +3946,24 @@ bool VkSceneRenderer::write_water_field_descriptors_for_frame(
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         write.pImageInfo = image_infos[channel].data();
     }
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = frame.descriptor_sets[1];
-    writes[3].dstBinding = 23u;
-    writes[3].descriptorCount = 1u;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[3].pBufferInfo = &buffer_info;
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = frame.descriptor_sets[1];
+    writes[4].dstBinding = 24u;
+    writes[4].descriptorCount = 1u;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[4].pBufferInfo = &buffer_info;
     vkUpdateDescriptorSets(vulkan_->device(),
                            static_cast<std::uint32_t>(writes.size()),
                            writes.data(), 0u, nullptr);
     frame.water_field_raster_descriptors_valid = true;
 
     if (rt_set != VK_NULL_HANDLE) {
-        for (std::uint32_t channel = 0u; channel != 3u; ++channel) {
+        for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
             writes[channel].dstSet = rt_set;
             writes[channel].dstBinding = 21u + channel;
         }
-        writes[3].dstSet = rt_set;
-        writes[3].dstBinding = 24u;
+        writes[4].dstSet = rt_set;
+        writes[4].dstBinding = 25u;
         vkUpdateDescriptorSets(vulkan_->device(),
                                static_cast<std::uint32_t>(writes.size()),
                                writes.data(), 0u, nullptr);
@@ -7620,6 +7633,7 @@ bool VkSceneRenderer::init(std::string& error) {
         orm_.reset();
         velocity_.reset();
         material_instance_.reset();
+        reactivity_.reset();
         depth_.reset();
         hdr_.reset();
         raster_extent_ = {};
@@ -8563,6 +8577,9 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         value.uint32[0] = f.material_index;
         value.uint32[1] = f.instance_token;
         clear_color(renderer.material_instance_, value);
+        value = {};
+        value.float32[0] = f.reactivity;
+        clear_color(renderer.reactivity_, value);
         const auto sampled = [&](matter::VkImageResource& image,
                                  VkImageAspectFlags aspect) {
             transition_for_use(command_buffer, image,
@@ -8660,7 +8677,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         {upload.lifetime, readback.lifetime, raw_diffuse_.lifetime,
          raw_specular_.lifetime, raw_specular_aux_.lifetime,
          velocity_.lifetime, depth_.lifetime, normal_.lifetime,
-         material_instance_.lifetime,
+         material_instance_.lifetime, reactivity_.lifetime,
          gi_history_[0].radiance.lifetime, gi_history_[0].moments.lifetime,
          gi_history_[0].history_length.lifetime, gi_history_[0].depth.lifetime,
          gi_history_[0].normal.lifetime, gi_history_[0].identity.lifetime,
@@ -8832,6 +8849,17 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                    &copy);
         }
+        transition_for_use(command_buffer, renderer.reactivity_,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        const VkClearColorValue zero_reactivity{};
+        const VkImageSubresourceRange reactivity_range{
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(command_buffer, renderer.reactivity_.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &zero_reactivity, 1, &reactivity_range);
         matter::VulkanFrame fake{};
         fake.command_buffer = command_buffer;
         fake.frame_slot = renderer.active_frame_index_;
@@ -8903,6 +8931,7 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
          gi_history_[gi_composite_history_index_].normal.lifetime,
          gi_history_[gi_composite_history_index_].identity.lifetime,
          gi_history_[gi_composite_history_index_].history_length.lifetime,
+         reactivity_.lifetime,
          gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
          frames_[active_frame_index_].gi_atrous_markers.lifetime});
     gi_candidate_frame_serial_ = saved_candidate_serial;
@@ -9234,6 +9263,7 @@ bool VkSceneRenderer::record_gi_temporal_signal(
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
+    sampled(reactivity_);
     sampled(previous.radiance);
     sampled(previous.moments);
     sampled(previous.history_length);
@@ -9250,7 +9280,7 @@ bool VkSceneRenderer::record_gi_temporal_signal(
     storage(candidate.rejection);
     storage(candidate.aux);
 
-    VkDescriptorImageInfo infos[21]{};
+    VkDescriptorImageInfo infos[22]{};
     const auto combined = [&](uint32_t binding,
                               const matter::VkImageResource& image) {
         infos[binding] = {composite_sampler_, image.view,
@@ -9269,6 +9299,7 @@ bool VkSceneRenderer::record_gi_temporal_signal(
     combined(10, previous.identity);
     combined(18, raw_aux);
     combined(19, previous.aux);
+    combined(21, reactivity_);
     matter::VkImageResource* outputs[] = {
         &candidate.radiance, &candidate.moments, &candidate.history_length,
         &candidate.depth, &candidate.normal, &candidate.identity,
@@ -9277,22 +9308,22 @@ bool VkSceneRenderer::record_gi_temporal_signal(
         infos[binding] = {VK_NULL_HANDLE, outputs[binding - 11]->view,
                           VK_IMAGE_LAYOUT_GENERAL};
     infos[20] = {VK_NULL_HANDLE, candidate.aux.view, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet writes[21]{};
+    VkWriteDescriptorSet writes[22]{};
     FrameResources& resources = frames_[frame.frame_slot];
     const VkDescriptorSet temporal_set =
         resources.gi_temporal_descriptor_sets[signal_mode];
-    for (uint32_t binding = 0; binding < 21; ++binding) {
+    for (uint32_t binding = 0; binding < 22; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = temporal_set;
         writes[binding].dstBinding = binding;
         writes[binding].descriptorCount = 1;
         writes[binding].descriptorType =
-            binding <= 10 || binding == 18 || binding == 19
+            binding <= 10 || binding == 18 || binding == 19 || binding == 21
                 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
                 : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[binding].pImageInfo = &infos[binding];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 21, writes, 0, nullptr);
+    vkUpdateDescriptorSets(vulkan_->device(), 22, writes, 0, nullptr);
     VulkanGiTemporalConstants constants{};
     constants.temporal_extent[0] = raw_diffuse_extent_.width;
     constants.temporal_extent[1] = raw_diffuse_extent_.height;
@@ -9341,7 +9372,7 @@ bool VkSceneRenderer::record_gi_temporal_signal(
     update_composite_descriptor(resources);
     std::vector<std::shared_ptr<void>> retained{
         raw_signal.lifetime, raw_aux.lifetime, velocity_.lifetime, depth_.lifetime,
-        normal_.lifetime, material_instance_.lifetime};
+        normal_.lifetime, material_instance_.lifetime, reactivity_.lifetime};
     for (GiHistorySet* set : {&previous, &candidate}) {
         retained.push_back(set->radiance.lifetime);
         retained.push_back(set->moments.lifetime);
@@ -9397,6 +9428,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
     sampled(guide.identity);
     sampled(guide.history_length);
     sampled(guide.aux);
+    sampled(reactivity_);
     for (uint32_t output_index = 0; output_index < 2; ++output_index) {
         auto& output = filtered[output_index];
         transition_for_use(frame.command_buffer, output,
@@ -9417,7 +9449,7 @@ bool VkSceneRenderer::record_gi_atrous_signal(
             inputs[set_index], &guide.moments, &guide.depth,
             &guide.normal, &guide.identity, &guide.history_length};
         VkDescriptorImageInfo infos[7]{};
-        VkWriteDescriptorSet writes[9]{};
+        VkWriteDescriptorSet writes[10]{};
         for (uint32_t binding = 0; binding < 6; ++binding) {
             infos[binding] = {composite_sampler_, sampled_images[binding]->view,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -9455,7 +9487,17 @@ bool VkSceneRenderer::record_gi_atrous_signal(
         writes[8].descriptorCount = 1;
         writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[8].pImageInfo = &aux_info;
-        vkUpdateDescriptorSets(vulkan_->device(), 9, writes, 0, nullptr);
+        VkDescriptorImageInfo reactivity_info{
+            composite_sampler_, reactivity_.view,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[9].dstSet =
+            resources.gi_atrous_descriptor_sets[descriptor_index];
+        writes[9].dstBinding = 9;
+        writes[9].descriptorCount = 1;
+        writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[9].pImageInfo = &reactivity_info;
+        vkUpdateDescriptorSets(vulkan_->device(), 10, writes, 0, nullptr);
     }
 
     constexpr uint32_t steps[5] = {1, 2, 4, 8, 16};
@@ -9514,7 +9556,8 @@ bool VkSceneRenderer::record_gi_atrous_signal(
         {guide.radiance.lifetime, guide.moments.lifetime,
          guide.depth.lifetime, guide.normal.lifetime,
          guide.identity.lifetime, guide.history_length.lifetime,
-         guide.aux.lifetime, filtered[0].lifetime, filtered[1].lifetime,
+         guide.aux.lifetime, reactivity_.lifetime,
+         filtered[0].lifetime, filtered[1].lifetime,
          resources.gi_atrous_markers.lifetime},
         error);
 }
@@ -13277,7 +13320,8 @@ bool VkSceneRenderer::record_cull_and_render(
     PROFILE_SCOPE_NAMED(z_retain, "cull.retain");
     std::vector<std::shared_ptr<void>> attachments{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        material_instance_.lifetime, selected.materials.lifetime,
+        material_instance_.lifetime, reactivity_.lifetime,
+        selected.materials.lifetime,
         depth_.lifetime, hdr_.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
         raw_specular_.lifetime, raw_specular_aux_.lifetime,
@@ -13482,6 +13526,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         &orm_,
                         &velocity_,
                         &material_instance_,
+                        &reactivity_,
                         &depth_,
                         &hdr_,
                         &visibility_,
@@ -13761,6 +13806,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         orm_.image != VK_NULL_HANDLE && depth_.image != VK_NULL_HANDLE &&
         velocity_.image != VK_NULL_HANDLE &&
         material_instance_.image != VK_NULL_HANDLE &&
+        reactivity_.image != VK_NULL_HANDLE &&
         hdr_.image != VK_NULL_HANDLE &&
         visibility_.image != VK_NULL_HANDLE &&
         raw_diffuse_.image != VK_NULL_HANDLE &&
@@ -13783,6 +13829,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource orm;
     matter::VkImageResource velocity;
     matter::VkImageResource material_instance;
+    matter::VkImageResource reactivity;
     matter::VkImageResource depth;
     matter::VkImageResource hdr;
     matter::VkImageResource visibility;
@@ -13832,6 +13879,11 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                               gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                               material_instance, error) ||
+        !matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
+                              VK_FORMAT_R8_UNORM, extent,
+                              gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                              reactivity, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_D32_SFLOAT, extent,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
@@ -13933,6 +13985,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     orm_ = std::move(orm);
     velocity_ = std::move(velocity);
     material_instance_ = std::move(material_instance);
+    reactivity_ = std::move(reactivity);
     depth_ = std::move(depth);
     // The identity-buffer reduction's source is the material_instance_
     // attachment replaced just below, so its descriptors have to be rewritten.
@@ -14034,6 +14087,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.orm = &orm_;
     record.velocity = &velocity_;
     record.material_instance = &material_instance_;
+    record.reactivity = &reactivity_;
     record.depth = &depth_;
     record.hdr = &hdr_;
     record.visibility = &visibility_;
@@ -14098,7 +14152,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     vt_begin_frame(selected, 0);
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        material_instance_.lifetime, depth_.lifetime, hdr_.lifetime,
+        material_instance_.lifetime, reactivity_.lifetime, depth_.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
         vertices_.lifetime, indices_.lifetime, selected.commands.lifetime,
         selected.frame_constants.lifetime, selected.draw_transforms.lifetime,
@@ -14800,6 +14854,7 @@ VkRasterAttachments VkSceneRenderer::raster_attachments() const {
             {orm_.image, orm_.format},
             {velocity_.image, velocity_.format},
             {material_instance_.image, material_instance_.format},
+            {reactivity_.image, reactivity_.format},
             {depth_.image, depth_.format},
             {hdr_.image, hdr_.format},
             raster_extent_};
@@ -15150,6 +15205,7 @@ void VkSceneRenderer::reset() {
         orm_.reset();
         velocity_.reset();
         material_instance_.reset();
+        reactivity_.reset();
         depth_.reset();
         hdr_.reset();
         raster_extent_ = {};

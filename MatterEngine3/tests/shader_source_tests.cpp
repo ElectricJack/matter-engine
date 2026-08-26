@@ -58,6 +58,8 @@ int main() {
         read_shader("../shaders_vk/gbuffer.frag");
     const std::string water_rt =
         read_shader("../shaders_vk/rt_lighting.rgen");
+    const std::string water_visibility =
+        read_shader("../shaders_vk/rt_visibility.rahit");
     assert(!water_common.empty());
     assert(water_raster.find("#include \"water_surface.glsl\"") !=
            std::string::npos);
@@ -78,6 +80,32 @@ int main() {
     assert(water_common.find(
                "for (int band = 0; band < WATER_WAVE_BAND_COUNT; ++band)") !=
            std::string::npos);
+    assert(water_common.find("uniform sampler2D water_field_d") !=
+           std::string::npos);
+    assert(water_common.find("optics_shallow") != std::string::npos &&
+           water_common.find("foam_controls") != std::string::npos &&
+           water_common.find("water_breakup_noise") != std::string::npos);
+    assert(water_raster.find("out_reactivity") != std::string::npos);
+    // A closed water mesh contributes an entry and exit any-hit to a sun
+    // shadow ray.  Its dark display albedo is not an absorption coefficient:
+    // using it as the tint twice blackens the riverbed even when the authored
+    // shallow optics are almost clear.  Water shadows use the material's
+    // optical absorption lane (with the same black-means-clear compatibility
+    // rule as the refraction walk); ordinary colored glass stays unchanged.
+    assert(water_visibility.find("WATER_SURFACE_MATERIAL_FLAG") !=
+           std::string::npos);
+    assert(water_visibility.find("material.absorption_pad.rgb") !=
+           std::string::npos);
+    assert(water_visibility.find("water_shadow_absorption") !=
+           std::string::npos);
+    const std::string gi_temporal =
+        read_shader("../shaders_vk/gi_temporal.comp");
+    const std::string gi_atrous =
+        read_shader("../shaders_vk/gi_atrous.comp");
+    assert(gi_temporal.find("reactivityTex") != std::string::npos &&
+           gi_temporal.find("float alpha = mix") != std::string::npos);
+    assert(gi_atrous.find("reactivityTex") != std::string::npos &&
+           gi_atrous.find("float wr = exp") != std::string::npos);
 
     // Task 7: every production lighting consumer must use the shared physical
     // environment path; a procedural fallback would make raster/RT/fog diverge.

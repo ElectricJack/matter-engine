@@ -23,6 +23,83 @@ bool finite(matter::Float3 value) {
     return finite(value.x) && finite(value.y) && finite(value.z);
 }
 
+bool bounded_color(matter::Float3 value) {
+    return finite(value) && value.x >= 0.0f && value.y >= 0.0f &&
+           value.z >= 0.0f && value.x <= 100.0f && value.y <= 100.0f &&
+           value.z <= 100.0f;
+}
+
+bool valid_appearance_controls(const matter::WaterSurfaceDefinition& surface) {
+    const auto in_range = [](float value, float low, float high) {
+        return finite(value) && value >= low && value <= high;
+    };
+    const auto& optics = surface.optics;
+    const auto& foam = surface.foam;
+    if (!bounded_color(optics.shallow_absorption) ||
+        !bounded_color(optics.deep_absorption) ||
+        !bounded_color(optics.scattering_color) ||
+        !finite(optics.shallow_distance_m) ||
+        optics.shallow_distance_m <= 0.0f ||
+        !finite(optics.deep_distance_m) || optics.deep_distance_m <= 0.0f ||
+        !finite(optics.scattering_distance_m) ||
+        optics.scattering_distance_m <= 0.0f ||
+        !in_range(optics.anisotropy, -0.95f, 0.95f) ||
+        !in_range(optics.ior, 1.0f, 2.5f) ||
+        !in_range(foam.threshold, 0.0f, 1.0f) ||
+        !in_range(foam.gain, 0.0f, 16.0f) ||
+        !in_range(foam.persistence_s, 0.0f, 60.0f) ||
+        !in_range(foam.breakup_scale_m, 0.0001f, 100.0f) ||
+        !in_range(foam.roughness_gain, 0.0f, 1.0f) ||
+        !in_range(foam.scattering_gain, 0.0f, 16.0f) ||
+        !in_range(foam.transmission_loss, 0.0f, 1.0f) ||
+        !in_range(foam.normal_softening, 0.0f, 1.0f))
+        return false;
+    for (const auto& local : surface.local_overrides) {
+        if (!finite(local.center_m) ||
+            !in_range(local.foam_multiplier, 0.0f, 8.0f) ||
+            !in_range(local.wave_multiplier, 0.0f, 8.0f) ||
+            !in_range(local.threshold_offset, -1.0f, 1.0f))
+            return false;
+        if (local.shape == matter::WaterLocalOverrideDefinition::Shape::Sphere) {
+            if (!finite(local.radius_m) || local.radius_m <= 0.0f) return false;
+        } else if (!finite(local.half_extents_m) ||
+                   local.half_extents_m.x <= 0.0f ||
+                   local.half_extents_m.y <= 0.0f ||
+                   local.half_extents_m.z <= 0.0f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+float local_override_influence(
+    const matter::WaterLocalOverrideDefinition& local,
+    matter::Float3 world, float cell_size_m) noexcept {
+    const float dx = world.x - local.center_m.x;
+    const float dy = world.y - local.center_m.y;
+    const float dz = world.z - local.center_m.z;
+    if (local.shape == matter::WaterLocalOverrideDefinition::Shape::Sphere) {
+        const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance >= local.radius_m) return 0.0f;
+        const float feather = std::max(cell_size_m, 0.15f * local.radius_m);
+        return std::clamp((local.radius_m - distance) / feather, 0.0f, 1.0f);
+    }
+    const float ax = std::fabs(dx);
+    const float ay = std::fabs(dy);
+    const float az = std::fabs(dz);
+    if (ax >= local.half_extents_m.x || ay >= local.half_extents_m.y ||
+        az >= local.half_extents_m.z)
+        return 0.0f;
+    const float minimum_extent = std::min(
+        local.half_extents_m.x,
+        std::min(local.half_extents_m.y, local.half_extents_m.z));
+    const float feather = std::max(cell_size_m, 0.15f * minimum_extent);
+    const float edge_distance = std::min(
+        local.half_extents_m.x - ax,
+        std::min(local.half_extents_m.y - ay, local.half_extents_m.z - az));
+    return std::clamp(edge_distance / feather, 0.0f, 1.0f);
+}
+
 std::uint16_t float_to_half_saturated(float value) noexcept {
     value = std::max(-65504.0f, std::min(65504.0f, value));
     std::uint32_t bits = 0;
@@ -76,11 +153,18 @@ bool packed_shape_valid(const PackedWaterField& field) noexcept {
     const std::size_t channels = cells * 4u;
     if (field.image_a_rgba16f.size() != channels ||
         field.image_b_rgba16f.size() != channels ||
-        field.image_c_rgba8.size() != channels)
+        field.image_c_rgba8.size() != channels ||
+        field.image_d_rgba16f.size() != channels)
         return false;
     if (!field.appearance_valid) return true;
     if (field.material_id == UINT32_MAX || field.appearance_hash == 0u)
         return false;
+    matter::WaterSurfaceDefinition appearance{};
+    appearance.material_id = field.material_id;
+    appearance.optics = field.optics;
+    appearance.foam = field.foam;
+    appearance.appearance_hash = field.appearance_hash;
+    if (!valid_appearance_controls(appearance)) return false;
     for (const auto& wave : field.wave_bands) {
         if (!finite(wave.wavelength_m) || wave.wavelength_m <= 0.0f ||
             !finite(wave.normal_amplitude) || wave.normal_amplitude < 0.0f ||
@@ -178,6 +262,30 @@ WaterFieldGpuRecord make_water_field_gpu_record(
         record.appearance[2] =
             static_cast<std::uint32_t>(field.appearance_hash >> 32u);
         record.appearance[3] = 1u;
+        const auto& optics = field.optics;
+        record.optics_shallow[0] = optics.shallow_absorption.x;
+        record.optics_shallow[1] = optics.shallow_absorption.y;
+        record.optics_shallow[2] = optics.shallow_absorption.z;
+        record.optics_shallow[3] = optics.shallow_distance_m;
+        record.optics_deep[0] = optics.deep_absorption.x;
+        record.optics_deep[1] = optics.deep_absorption.y;
+        record.optics_deep[2] = optics.deep_absorption.z;
+        record.optics_deep[3] = optics.deep_distance_m;
+        record.optics_scattering[0] = optics.scattering_color.x;
+        record.optics_scattering[1] = optics.scattering_color.y;
+        record.optics_scattering[2] = optics.scattering_color.z;
+        record.optics_scattering[3] = optics.scattering_distance_m;
+        record.optics_misc[0] = optics.anisotropy;
+        record.optics_misc[1] = optics.ior;
+        const auto& foam = field.foam;
+        record.foam_controls[0] = foam.threshold;
+        record.foam_controls[1] = foam.gain;
+        record.foam_controls[2] = foam.persistence_s;
+        record.foam_controls[3] = foam.breakup_scale_m;
+        record.foam_response[0] = foam.roughness_gain;
+        record.foam_response[1] = foam.scattering_gain;
+        record.foam_response[2] = foam.transmission_loss;
+        record.foam_response[3] = foam.normal_softening;
     }
     return record;
 }
@@ -224,7 +332,8 @@ bool pack_water_field(const WaterFieldPackInput& input,
         if (input.water_surface->wave_bands.size() !=
                 candidate.wave_bands.size() ||
             input.water_surface->material_id == UINT32_MAX ||
-            input.water_surface->appearance_hash == 0u) {
+            input.water_surface->appearance_hash == 0u ||
+            !valid_appearance_controls(*input.water_surface)) {
             return fail(error, WaterFieldErrorCode::InvalidInput,
                         "water appearance requires one material and exactly three wave bands");
         }
@@ -232,6 +341,8 @@ bool pack_water_field(const WaterFieldPackInput& input,
                   input.water_surface->wave_bands.end(),
                   candidate.wave_bands.begin());
         candidate.material_id = input.water_surface->material_id;
+        candidate.optics = input.water_surface->optics;
+        candidate.foam = input.water_surface->foam;
         candidate.appearance_hash = input.water_surface->appearance_hash;
         candidate.appearance_valid = true;
     }
@@ -240,6 +351,7 @@ bool pack_water_field(const WaterFieldPackInput& input,
         candidate.image_a_rgba16f.assign(channels, 0u);
         candidate.image_b_rgba16f.assign(channels, 0u);
         candidate.image_c_rgba8.assign(channels, 0u);
+        candidate.image_d_rgba16f.assign(channels, 0u);
     } catch (const std::bad_alloc&) {
         return fail(error, WaterFieldErrorCode::AllocationFailure,
                     "water field image packing allocation failed");
@@ -299,6 +411,36 @@ bool pack_water_field(const WaterFieldPackInput& input,
         candidate.image_c_rgba8[offset + 2u] = 255u;
         candidate.image_c_rgba8[offset + 3u] =
             encode_water_feature(presentation.feature);
+        float local_foam_multiplier = 1.0f;
+        float local_threshold_offset = 0.0f;
+        float local_wave_multiplier = 1.0f;
+        if (input.water_surface) {
+            const std::uint32_t cell_x =
+                static_cast<std::uint32_t>(cell % width);
+            const std::uint32_t cell_z =
+                static_cast<std::uint32_t>(cell / width);
+            const matter::Float3 world{
+                layout.origin_m.x +
+                    (static_cast<float>(cell_x) + 0.5f) * layout.cell_size_m,
+                gameplay.height_m,
+                layout.origin_m.z +
+                    (static_cast<float>(cell_z) + 0.5f) * layout.cell_size_m};
+            for (const auto& local : input.water_surface->local_overrides) {
+                const float influence =
+                    local_override_influence(local, world, layout.cell_size_m);
+                local_foam_multiplier *= 1.0f +
+                    (local.foam_multiplier - 1.0f) * influence;
+                local_threshold_offset += local.threshold_offset * influence;
+                local_wave_multiplier *= 1.0f +
+                    (local.wave_multiplier - 1.0f) * influence;
+            }
+        }
+        candidate.image_d_rgba16f[offset + 0u] = float_to_half_saturated(
+            std::clamp(local_foam_multiplier, 0.0f, 8.0f));
+        candidate.image_d_rgba16f[offset + 1u] = float_to_half_saturated(
+            std::clamp(local_threshold_offset, -1.0f, 1.0f));
+        candidate.image_d_rgba16f[offset + 2u] = float_to_half_saturated(
+            std::clamp(local_wave_multiplier, 0.0f, 8.0f));
     }
     if (!packed_shape_valid(candidate))
         return fail(error, WaterFieldErrorCode::InvalidInput,

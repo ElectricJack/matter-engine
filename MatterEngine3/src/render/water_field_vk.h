@@ -44,10 +44,15 @@ struct PackedWaterField {
     std::vector<std::uint16_t> image_b_rgba16f;
     // Image C: aeration, foam potential, wet validity, feature / 6.
     std::vector<std::uint8_t> image_c_rgba8;
+    // Image D: local foam multiplier, threshold offset, wave multiplier,
+    // reserved. Wet cells without an override contain (1, 0, 1, 0).
+    std::vector<std::uint16_t> image_d_rgba16f;
     std::uint64_t runtime_digest = 0;
     std::uint64_t presentation_digest = 0;
     std::uint32_t material_id = UINT32_MAX;
     std::array<matter::WaterWaveBandDefinition, 3> wave_bands{};
+    matter::WaterOpticalDefinition optics{};
+    matter::WaterFoamDefinition foam{};
     std::uint64_t appearance_hash = 0;
     bool appearance_valid = false;
 };
@@ -70,9 +75,9 @@ struct WaterFieldBinding {
     }
 };
 
-// Seven std430 vec4 lanes shared by raster set 1 binding 23 and RT set 0
-// binding 24. Task 8 appends three authored wave bands and appearance
-// identity after Task 7's immutable mapping/digest prefix.
+// Thirteen std430 vec4 lanes shared by raster and RT. The immutable mapping,
+// identity, authored waves, optics, and foam controls are deliberately kept in
+// one record so every water shading path consumes the same appearance.
 struct alignas(16) WaterFieldGpuRecord {
     float origin_cell_size[4]{};          // origin X/Z, cell size, reserved
     std::uint32_t extent_generation[4]{}; // width, depth, generation, valid
@@ -80,10 +85,16 @@ struct alignas(16) WaterFieldGpuRecord {
     std::uint32_t presentation_digest[2]{}; // low, high
     float wave_bands[3][4]{}; // wavelength, amplitude, speed, response
     std::uint32_t appearance[4]{}; // material id, hash low/high, valid
+    float optics_shallow[4]{}; // absorption RGB, reference distance
+    float optics_deep[4]{}; // absorption RGB, reference distance
+    float optics_scattering[4]{}; // color RGB, reference distance
+    float optics_misc[4]{}; // anisotropy, IOR, reserved, reserved
+    float foam_controls[4]{}; // threshold, gain, persistence, breakup scale
+    float foam_response[4]{}; // roughness, scattering, transmission, softening
 };
 
-static_assert(sizeof(WaterFieldGpuRecord) == 112u,
-              "WaterFieldGpuRecord must remain seven std430 vec4 lanes");
+static_assert(sizeof(WaterFieldGpuRecord) == 208u,
+              "WaterFieldGpuRecord must remain thirteen std430 vec4 lanes");
 
 WaterFieldGpuRecord make_water_field_gpu_record(
     const PackedWaterField& field, WaterFieldBinding binding) noexcept;

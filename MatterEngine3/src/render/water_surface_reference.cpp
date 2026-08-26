@@ -48,6 +48,30 @@ float dot(matter::Float3 a, matter::Float3 b) noexcept {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
+float luminance(matter::Float3 value) noexcept {
+    return 0.2126f * value.x + 0.7152f * value.y + 0.0722f * value.z;
+}
+
+matter::Float3 mix3(matter::Float3 a, matter::Float3 b, float t) noexcept {
+    return {lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t)};
+}
+
+float smoothstep(float low, float high, float value) noexcept {
+    if (!(high > low)) return value >= high ? 1.0f : 0.0f;
+    const float t = clamp01((value - low) / (high - low));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+float breakup_noise(matter::Float2 position, float scale_m) noexcept {
+    const float scale = std::max(scale_m, 0.001f);
+    const float phase = position.x * (2.17f / scale) +
+                        position.y * (3.11f / scale);
+    const float secondary = position.x * (5.03f / scale) -
+                            position.y * (1.73f / scale);
+    return clamp01(0.5f + 0.32f * std::sin(phase) +
+                   0.18f * std::sin(secondary + std::sin(phase)));
+}
+
 std::size_t cell_offset(const PackedWaterField& field, std::uint32_t x,
                         std::uint32_t z) noexcept {
     return (static_cast<std::size_t>(z) * field.layout.width + x) * 4u;
@@ -149,6 +173,12 @@ bool water_sample_field_reference(
     output.aeration = field.image_c_rgba8[nearest + 0u] * kUnorm;
     output.foam_potential = field.image_c_rgba8[nearest + 1u] * kUnorm;
     output.feature = decode_water_feature(field.image_c_rgba8[nearest + 3u]);
+    output.local_foam_multiplier = continuous_channel(
+        field.image_d_rgba16f, field, relative_x, relative_z, 0u);
+    output.local_threshold_offset = continuous_channel(
+        field.image_d_rgba16f, field, relative_x, relative_z, 1u);
+    output.local_wave_multiplier = continuous_channel(
+        field.image_d_rgba16f, field, relative_x, relative_z, 2u);
     output.valid = true;
     return true;
 }
@@ -253,7 +283,8 @@ std::array<float, kWaterWaveBandCount> water_band_responses_reference(
         broad_driver, chop_driver, capillary_driver};
     for (int band = 0; band != kWaterWaveBandCount; ++band) {
         const float response = clamp01(surface.wave_bands[band].response);
-        result[band] = lerp(1.0f - response, 1.0f, drivers[band]);
+        result[band] = lerp(1.0f - response, 1.0f, drivers[band]) *
+                       std::max(0.0f, field.local_wave_multiplier);
     }
     return result;
 }
@@ -273,6 +304,84 @@ bool water_evaluate_surface_reference(
                                       requested_binding, world_xz,
                                       output.field))
         return false;
+
+    const auto feature_foam_bias = [](hydrology::RiverFeature feature) {
+        switch (feature) {
+            case hydrology::RiverFeature::Rapid: return 0.10f;
+            case hydrology::RiverFeature::Waterfall: return 0.30f;
+            case hydrology::RiverFeature::Impact: return 0.35f;
+            case hydrology::RiverFeature::Spillway: return 0.25f;
+            case hydrology::RiverFeature::Current: return 0.02f;
+            default: return 0.0f;
+        }
+    };
+    output.foam.local_multiplier =
+        std::max(0.0f, output.field.local_foam_multiplier);
+    output.foam.threshold_offset = output.field.local_threshold_offset;
+    output.foam.wave_multiplier =
+        std::max(0.0f, output.field.local_wave_multiplier);
+    const float foam_driver =
+        output.field.foam_potential + 0.35f * output.field.aeration +
+        feature_foam_bias(output.field.feature);
+    output.foam.macro_mask = clamp01(
+        (foam_driver - surface.foam.threshold -
+         output.foam.threshold_offset) * surface.foam.gain);
+    matter::Float2 foam_position = world_xz;
+    if (surface.foam.persistence_s > 0.0f) {
+        const float age = std::fmod(
+            std::max(0.0f, animation_time_seconds),
+            std::max(0.001f, surface.foam.persistence_s));
+        (void)water_backtrace_rk2_reference(
+            field, published_binding, requested_binding, world_xz, age,
+            20.0f, foam_position);
+    }
+    output.foam.breakup_detail =
+        breakup_noise(foam_position, surface.foam.breakup_scale_m);
+    output.foam.coverage = clamp01(
+        output.foam.macro_mask * output.foam.local_multiplier *
+        lerp(0.85f, 1.0f, output.foam.breakup_detail));
+
+    const float depth_blend =
+        smoothstep(1.5f, 4.0f, std::max(0.0f, output.field.depth_m));
+    const matter::Float3 absorption = mix3(
+        surface.optics.shallow_absorption,
+        surface.optics.deep_absorption, depth_blend);
+    const float absorption_distance = std::max(
+        0.001f, lerp(surface.optics.shallow_distance_m,
+                     surface.optics.deep_distance_m, depth_blend));
+    const float optical_depth =
+        std::max(0.0f, output.field.depth_m) / absorption_distance;
+    output.optics.transmittance = {
+        std::exp(-absorption.x * optical_depth),
+        std::exp(-absorption.y * optical_depth),
+        std::exp(-absorption.z * optical_depth)};
+    output.optics.bottom_visibility =
+        clamp01(luminance(output.optics.transmittance));
+    const float ior = std::clamp(surface.optics.ior, 1.0f, 2.5f);
+    const float fresnel0 = (ior - 1.0f) / (ior + 1.0f);
+    output.optics.reflection_weight = fresnel0 * fresnel0;
+    output.optics.coherent_transmission_weight = clamp01(
+        (1.0f - output.optics.reflection_weight) *
+        output.optics.bottom_visibility *
+        (1.0f - output.foam.coverage *
+                    clamp01(surface.foam.transmission_loss)));
+    const float remaining = std::max(
+        0.0f, 1.0f - output.optics.reflection_weight -
+                  output.optics.coherent_transmission_weight);
+    const float depth_scattering = 1.0f - std::exp(
+        -std::max(0.0f, output.field.depth_m) /
+        std::max(0.001f, surface.optics.scattering_distance_m));
+    output.optics.diffuse_scattering_weight = std::min(
+        remaining,
+        depth_scattering + output.foam.coverage *
+                               std::max(0.0f, surface.foam.scattering_gain));
+    output.optics.scattering_color = mix3(
+        surface.optics.scattering_color, {0.92f, 0.97f, 1.0f},
+        output.foam.coverage);
+    output.reactivity = clamp01(std::max(
+        output.foam.coverage,
+        0.35f * clamp01(output.field.turbulence) +
+            0.15f * clamp01(output.field.aeration)));
 
     const auto responses = water_band_responses_reference(surface, output.field);
     matter::Float2 flow{output.field.velocity_mps.x,
@@ -358,10 +467,14 @@ bool water_evaluate_surface_reference(
             animated = base;
         }
     }
-    output.shading_normal = animated;
+    const float normal_softening =
+        output.foam.coverage * clamp01(surface.foam.normal_softening);
+    output.shading_normal = normalize(
+        mix3(animated, base, normal_softening), base);
     output.roughness = clamp01(
         base_roughness + 0.05f * std::min(slope_length, 1.0f) +
-        0.08f * clamp01(output.field.turbulence));
+        0.08f * clamp01(output.field.turbulence) +
+        output.foam.coverage * clamp01(surface.foam.roughness_gain));
     output.animated = true;
     return true;
 }
