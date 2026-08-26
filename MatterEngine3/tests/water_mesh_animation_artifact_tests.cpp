@@ -1,0 +1,237 @@
+#include "check.h"
+
+#include "hydrology/water_mesh_animation_artifact.h"
+
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <limits>
+#include <vector>
+
+namespace {
+
+hydrology::WaterMeshAnimation animation_fixture() {
+    hydrology::WaterMeshAnimation animation{};
+    animation.frames_per_second = 30u;
+    animation.phase_offset_frames = 15u;
+    animation.duration_seconds = 1.0f;
+    animation.frames.resize(30u);
+    for (std::uint32_t frame = 0u; frame != 30u; ++frame) {
+        const float x = -4.0f + 0.1f * static_cast<float>(frame);
+        auto& mesh = animation.frames[frame];
+        mesh.positions = {x, 1.0f, -2.0f,
+                          x + 0.75f, 1.05f, -2.0f,
+                          x, 1.5f, -1.5f};
+        mesh.normals = {0.0f, 1.0f, 0.0f,
+                        0.15f, 0.977241f, 0.15f,
+                        -0.2f, 0.959166f, 0.2f};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = 4u;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    }
+    return animation;
+}
+
+hydrology::WaterMeshAnimationArtifactMetadata metadata_fixture() {
+    return {"upper-main", 0xabcdu, 0x1111u, 0u, 0.2f};
+}
+
+void test_pack_round_trip_and_frame_spans() {
+    const auto animation = animation_fixture();
+    hydrology::WaterMeshAnimationArtifact artifact{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              metadata_fixture(), animation, artifact, error),
+          error.message.c_str());
+    CHECK(sizeof(hydrology::PackedWaterAnimationVertex) == 12u,
+          "the v1 packed vertex ABI remains twelve bytes");
+    CHECK(artifact.frames.size() == 30u && artifact.material == 4u &&
+              artifact.frame_payload.size() == 30u * (3u * 12u + 3u * 4u),
+          "thirty frames retain compact vertices and uint32 indices only");
+
+    std::vector<std::uint8_t> bytes;
+    CHECK(hydrology::serialize_water_mesh_animation_artifact(
+              artifact, bytes, error),
+          error.message.c_str());
+    hydrology::WaterMeshAnimationArtifact loaded{};
+    CHECK(hydrology::deserialize_water_mesh_animation_artifact(
+              bytes, loaded, error),
+          error.message.c_str());
+    CHECK(loaded.identity == artifact.identity &&
+              loaded.frames_per_second == 30u &&
+              loaded.phase_offset_frames == 15u &&
+              loaded.frames == artifact.frames &&
+              loaded.frame_payload == artifact.frame_payload &&
+              loaded.payload_digest != 0u,
+          "serialize/deserialize preserves directory, payload, and digest");
+
+    hydrology::WaterMeshAnimationFrameSpan span{};
+    CHECK(hydrology::water_mesh_animation_frame_span(
+              loaded, 7u, span, error) &&
+              span.vertex_count == 3u && span.index_count == 3u &&
+              span.vertex_bytes == 36u && span.index_bytes == 12u,
+          "one compressed frame is exposed without decoding the animation");
+    gpu_meshing::MeshResult decoded{};
+    CHECK(hydrology::decode_water_mesh_animation_frame(
+              loaded, 7u, decoded, error),
+          error.message.c_str());
+    const auto& source = animation.frames[7u];
+    const matter::Float3 extent{
+        loaded.quantization_bounds_m.max_m.x -
+            loaded.quantization_bounds_m.min_m.x,
+        loaded.quantization_bounds_m.max_m.y -
+            loaded.quantization_bounds_m.min_m.y,
+        loaded.quantization_bounds_m.max_m.z -
+            loaded.quantization_bounds_m.min_m.z,
+    };
+    const float extents[3] = {extent.x, extent.y, extent.z};
+    for (std::size_t value = 0u; value != source.positions.size(); ++value) {
+        const float half_step =
+            extents[value % 3u] / (2.0f * 65535.0f) + 2e-6f;
+        CHECK(std::fabs(decoded.positions[value] - source.positions[value]) <=
+                  half_step,
+              "position quantization stays within half a UNORM16 step");
+    }
+    for (std::size_t vertex = 0u; vertex != 3u; ++vertex) {
+        const float dot =
+            decoded.normals[vertex * 3u + 0u] *
+                source.normals[vertex * 3u + 0u] +
+            decoded.normals[vertex * 3u + 1u] *
+                source.normals[vertex * 3u + 1u] +
+            decoded.normals[vertex * 3u + 2u] *
+                source.normals[vertex * 3u + 2u];
+        CHECK(dot >= std::cos(3.14159265358979323846f / 180.0f),
+              "octahedral normal round-trip remains within one degree");
+    }
+    CHECK(decoded.indices == source.indices,
+          "packed frames preserve exact uint32 topology");
+}
+
+void test_corruption_and_invalid_meshes_fail_closed() {
+    auto animation = animation_fixture();
+    hydrology::WaterMeshAnimationArtifact artifact{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              metadata_fixture(), animation, artifact, error),
+          error.message.c_str());
+    std::vector<std::uint8_t> bytes;
+    CHECK(hydrology::serialize_water_mesh_animation_artifact(
+              artifact, bytes, error),
+          error.message.c_str());
+    hydrology::WaterMeshAnimationArtifact loaded{};
+
+    auto corrupt = bytes;
+    corrupt[0] ^= 0xffu;
+    CHECK(!hydrology::deserialize_water_mesh_animation_artifact(
+              corrupt, loaded, error),
+          "bad animation magic is rejected");
+    corrupt = bytes;
+    corrupt[8] = 2u;
+    CHECK(!hydrology::deserialize_water_mesh_animation_artifact(
+              corrupt, loaded, error),
+          "unknown animation version is rejected");
+    corrupt = bytes;
+    corrupt.pop_back();
+    CHECK(!hydrology::deserialize_water_mesh_animation_artifact(
+              corrupt, loaded, error),
+          "truncated animation payload is rejected");
+    corrupt = bytes;
+    corrupt.back() ^= 1u;
+    CHECK(!hydrology::deserialize_water_mesh_animation_artifact(
+              corrupt, loaded, error),
+          "animation payload digest mismatch is rejected");
+    corrupt = bytes;
+    const std::uint64_t too_large = (1ull << 30u) + 1u;
+    for (unsigned byte = 0u; byte != 8u; ++byte)
+        corrupt[16u + byte] =
+            static_cast<std::uint8_t>(too_large >> (byte * 8u));
+    CHECK(!hydrology::deserialize_water_mesh_animation_artifact(
+              corrupt, loaded, error) &&
+              error.code == gpu_meshing::ErrorCode::LimitExceeded,
+          "declared files above one GiB fail before allocation");
+
+    auto invalid_artifact = artifact;
+    invalid_artifact.frames[0].index_payload_offset =
+        std::numeric_limits<std::uint64_t>::max();
+    CHECK(!hydrology::serialize_water_mesh_animation_artifact(
+              invalid_artifact, corrupt, error),
+          "overflowed frame directory offsets are rejected");
+    invalid_artifact = artifact;
+    invalid_artifact.quantization_bounds_m.min_m.x =
+        std::numeric_limits<float>::quiet_NaN();
+    CHECK(!hydrology::serialize_water_mesh_animation_artifact(
+              invalid_artifact, corrupt, error),
+          "non-finite quantization bounds are rejected");
+    invalid_artifact = artifact;
+    invalid_artifact.frames[0].content_digest ^= 1u;
+    CHECK(!hydrology::serialize_water_mesh_animation_artifact(
+              invalid_artifact, corrupt, error),
+          "per-frame packed-payload digest mismatch is rejected");
+
+    animation.frames[3].indices[2] = 99u;
+    CHECK(!hydrology::pack_water_mesh_animation_artifact(
+              metadata_fixture(), animation, artifact, error),
+          "out-of-range animation indices are rejected");
+    animation = animation_fixture();
+    animation.frames[4].positions[0] =
+        std::numeric_limits<float>::quiet_NaN();
+    CHECK(!hydrology::pack_water_mesh_animation_artifact(
+              metadata_fixture(), animation, artifact, error),
+          "non-finite animation geometry is rejected");
+
+    animation = animation_fixture();
+    auto& collapsing = animation.frames[0];
+    collapsing.positions = {
+        -4.0f, 1.0f, -2.0f,
+        -4.0f + 1e-7f, 1.0f, -2.0f,
+        -4.0f, 1.0f + 1e-7f, -2.0f,
+    };
+    collapsing.content_digest = gpu_meshing::mesh_content_digest(collapsing);
+    CHECK(!hydrology::pack_water_mesh_animation_artifact(
+              metadata_fixture(), animation, artifact, error),
+          "triangles collapsed by shared-AABB quantization are rejected");
+}
+
+void test_immutable_save_never_replaces_different_content() {
+    const auto animation = animation_fixture();
+    hydrology::WaterMeshAnimationArtifact artifact{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              metadata_fixture(), animation, artifact, error),
+          error.message.c_str());
+    const auto path = std::filesystem::temp_directory_path() /
+        "matter-water-animation-immutable-test.mhwa";
+    std::error_code filesystem_error;
+    std::filesystem::remove(path, filesystem_error);
+    CHECK(hydrology::save_water_mesh_animation_artifact_immutable(
+              path, artifact, error),
+          error.message.c_str());
+    CHECK(hydrology::save_water_mesh_animation_artifact_immutable(
+              path, artifact, error),
+          "saving identical bytes to an immutable path succeeds");
+
+    auto different_metadata = metadata_fixture();
+    different_metadata.semantic_key += 1u;
+    hydrology::WaterMeshAnimationArtifact different{};
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              different_metadata, animation, different, error),
+          error.message.c_str());
+    CHECK(!hydrology::save_water_mesh_animation_artifact_immutable(
+              path, different, error),
+          "differing bytes never replace an immutable animation artifact");
+    hydrology::WaterMeshAnimationArtifact reopened{};
+    CHECK(hydrology::load_water_mesh_animation_artifact(
+              path, reopened, error) &&
+              reopened.semantic_key == artifact.semantic_key,
+          "a rejected immutable save leaves the installed artifact intact");
+    std::filesystem::remove(path, filesystem_error);
+}
+
+}  // namespace
+
+int main() {
+    test_pack_round_trip_and_frame_spans();
+    test_corruption_and_invalid_meshes_fail_closed();
+    test_immutable_save_never_replaces_different_content();
+    return check_summary();
+}

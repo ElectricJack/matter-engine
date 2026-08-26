@@ -38,6 +38,8 @@ MatterEngine3/src/hydrology/spillway_handoff.cpp|all
 MatterEngine3/src/hydrology/fluid_emission.cpp|all
 MatterEngine3/src/hydrology/fill_sensor.cpp|all
 MatterEngine3/src/hydrology/water_mesh_animation_capture.cpp|all
+MatterEngine3/src/hydrology/water_mesh_animation.cpp|all
+MatterEngine3/src/hydrology/water_mesh_animation_artifact.cpp|all
 MatterEngine3/src/terrain_river_overlay.cpp|all
 MatterEngine3/src/script_rng_binding.cpp|all
 MatterEngine3/src/part_asset_v2.cpp|all
