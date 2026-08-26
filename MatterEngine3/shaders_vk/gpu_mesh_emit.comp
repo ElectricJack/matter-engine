@@ -93,8 +93,11 @@ vec3 gpuMeshAnalyticNormal(vec3 point) {
                                                   params.binDimsAndCount.xyz);
                 for (uint cursor = binOffsets[bin];
                      cursor < binOffsets[bin] + binCounts[bin]; ++cursor) {
-                    const GpuMeshParticle particle =
-                        particles[particleIds[cursor]];
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight =
+                        gpuMeshParticlePhaseWeight(particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
                     const vec3 delta = point - particle.positionM;
                     const float squared = dot(delta, delta);
                     if (squared > radiusSquared) continue;
@@ -113,17 +116,22 @@ vec3 gpuMeshAnalyticNormal(vec3 point) {
                                                   params.binDimsAndCount.xyz);
                 for (uint cursor = binOffsets[bin];
                      cursor < binOffsets[bin] + binCounts[bin]; ++cursor) {
-                    const GpuMeshParticle particle =
-                        particles[particleIds[cursor]];
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight =
+                        gpuMeshParticlePhaseWeight(particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
                     const vec3 delta = point - particle.positionM;
                     const float squared = dot(delta, delta);
                     if (squared > radiusSquared) continue;
                     const float length = sqrt(squared);
                     if (length <= 1e-8) continue;
                     const float distance = length - particle.radiusM;
-                    const float weight = params.spacingAndBlend.w <= 1e-5
+                    const float weight = phaseWeight *
+                        (params.spacingAndBlend.w <= 1e-5
                         ? (abs(distance - minimum) <= 1e-6 ? 1.0 : 0.0)
-                        : exp(-(distance - minimum) / params.spacingAndBlend.w);
+                        : exp(-(distance - minimum) /
+                              params.spacingAndBlend.w));
                     gradient += weight * delta / length;
                     weightSum += weight;
                 }
@@ -135,7 +143,7 @@ vec3 gpuMeshAnalyticNormal(vec3 point) {
 
 void main() {
     const uint activeIndex = gl_GlobalInvocationID.x;
-    if (activeIndex >= params.counts.z) return;
+    if (activeIndex >= params.counts.w) return;
     const uint cellId = activeCells[activeIndex];
     const uvec3 cellDimensions = params.sampleDimsAndCount.xyz - uvec3(1u);
     const uint x = cellId % cellDimensions.x;

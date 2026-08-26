@@ -49,6 +49,7 @@ void main() {
 
     float minimum = uintBitsToFloat(0x7f800000u);
     uint neighborCount = 0u;
+    float onlyWeight = 0.0;
     for (int bz = binMin.z; bz <= binMax.z; ++bz) {
         for (int by = binMin.y; by <= binMax.y; ++by) {
             for (int bx = binMin.x; bx <= binMax.x; ++bx) {
@@ -57,20 +58,24 @@ void main() {
                 const uint begin = offsets[bin];
                 const uint end = begin + counts[bin];
                 for (uint cursor = begin; cursor < end; ++cursor) {
-                    const GpuMeshParticle particle =
-                        particles[particleIds[cursor]];
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight =
+                        gpuMeshParticlePhaseWeight(particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
                     const vec3 delta = point - particle.positionM;
                     const float distanceSquared = dot(delta, delta);
                     if (distanceSquared > queryRadiusSquared) continue;
                     minimum = min(minimum,
                                   sqrt(distanceSquared) - particle.radiusM);
+                    onlyWeight = phaseWeight;
                     ++neighborCount;
                 }
             }
         }
     }
     if (neighborCount == 0u || params.spacingAndBlend.w <= 1e-5 ||
-        neighborCount == 1u) {
+        (neighborCount == 1u && onlyWeight == 1.0)) {
         field[sampleIndex] = minimum;
         return;
     }
@@ -84,15 +89,18 @@ void main() {
                 const uint begin = offsets[bin];
                 const uint end = begin + counts[bin];
                 for (uint cursor = begin; cursor < end; ++cursor) {
-                    const GpuMeshParticle particle =
-                        particles[particleIds[cursor]];
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight =
+                        gpuMeshParticlePhaseWeight(particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
                     const vec3 delta = point - particle.positionM;
                     const float distanceSquared = dot(delta, delta);
                     if (distanceSquared > queryRadiusSquared) continue;
                     const float distance =
                         sqrt(distanceSquared) - particle.radiusM;
-                    sum += exp(-(distance - minimum) /
-                               params.spacingAndBlend.w);
+                    sum += phaseWeight * exp(-(distance - minimum) /
+                                             params.spacingAndBlend.w);
                 }
             }
         }

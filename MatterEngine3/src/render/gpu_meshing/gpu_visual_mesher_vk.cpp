@@ -184,6 +184,8 @@ static_assert(sizeof(BinParams) == 48,
               "bin params must match three std430 vec4 values");
 static_assert(sizeof(FieldParams) == 112,
               "field params must match seven std430 vec4 values");
+// FieldParams::counts.z and query_radius_and_padding.yz are the phase split
+// and weights declared by GpuMeshFieldParams in gpu_mesh_common.glsl.
 static_assert(sizeof(ParticleSample) == 16,
               "particle samples must match the GLSL particle ABI");
 
@@ -519,8 +521,10 @@ struct GpuVisualMesher::Impl {
              layout.sample_dims[2], layout.grid_vertices},
             {layout.bin_dims[0], layout.bin_dims[1], layout.bin_dims[2],
              layout.bins},
-            {job.particle_count, contributing_particles, 0u, 0u},
-            {layout.query_radius_m, 0.0f, 0.0f, 0.0f},
+            {job.particle_count, contributing_particles,
+             resolved_particle_phase_split(job), 0u},
+            {layout.query_radius_m, job.phase_blend.primary_weight,
+             job.phase_blend.secondary_weight, 0.0f},
         };
         if (!upload(vulkan, params_buffer, &params, sizeof(params), error) ||
             (!resident &&
@@ -772,7 +776,7 @@ struct GpuVisualMesher::Impl {
         if (!create_gpu_buffer(vulkan, output_bytes, output_buffer, error))
             return false;
 
-        params.counts[2] = active_cells;
+        params.counts[3] = active_cells;
         if (!upload(vulkan, params_buffer, &params, sizeof(params), error) ||
             !ensure_pipeline(vulkan, emit, "gpu_mesh_emit.comp.spv", 13u,
                              error))

@@ -62,13 +62,15 @@ std::vector<uint32_t> reference_scan(const std::vector<uint32_t>& input,
 void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
                          const std::vector<gpu_meshing::ParticleSample>& samples,
                          gpu_meshing::Aabb bounds, float blend,
-                         const char* label) {
+                         const char* label,
+                         gpu_meshing::ParticlePhaseBlend phase_blend = {}) {
     gpu_meshing::ParticleJob job{};
     job.particles = samples.data();
     job.particle_count = static_cast<uint32_t>(samples.size());
     job.bounds_m = bounds;
     job.voxel_m = 0.25f;
     job.blend_width_m = blend;
+    job.phase_blend = phase_blend;
     job.limits = {64u, 1u << 20u, 1u << 20u, 1u << 20u};
 
     std::vector<float> first;
@@ -115,7 +117,7 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
                 const float reference =
                     gpu_meshing::evaluate_particle_field_reference(
                         samples.data(), static_cast<uint32_t>(samples.size()),
-                        blend, point);
+                        blend, phase_blend, point);
                 const float oracle = ProbeFieldScalar(
                     scratch, surface_particles.data(), max_radius,
                     static_cast<int>(surface_particles.size()), blend, nullptr,
@@ -126,8 +128,11 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
                               "GPU field finite classification matches reference");
                     GPU_CHECK(std::fabs(first[index] - reference) <= 2e-5f,
                               "GPU field matches compiler-neutral reference");
-                    GPU_CHECK(std::fabs(first[index] - oracle) <= 2e-5f,
-                              "GPU field matches MatterSurface ProbeFieldScalar");
+                    if (phase_blend.primary_weight == 1.0f &&
+                        phase_blend.secondary_weight == 0.0f) {
+                        GPU_CHECK(std::fabs(first[index] - oracle) <= 2e-5f,
+                                  "GPU field matches MatterSurface ProbeFieldScalar");
+                    }
                 } else {
                     GPU_CHECK(!std::isfinite(first[index]) &&
                                   !std::isfinite(oracle),
@@ -303,11 +308,20 @@ int run_gpu_visual_mesher_vk_tests(matter::VulkanDevice& vulkan) {
          {{-1.5f, -1.1f, -0.7f}, 0.45f}},
         {{-3.0f, -2.0f, -1.5f}, {-0.5f, 0.0f, 0.5f}}, 0.18f,
         "translated blended-sphere GPU field dispatch succeeds");
+    check_field_fixture(
+        mesher,
+        {{{-0.35f, 0.0f, 0.0f}, 0.5f},
+         {{0.45f, 0.0f, 0.0f}, 0.5f}},
+        {{-1.5f, -1.0f, -1.0f}, {1.5f, 1.0f, 1.0f}}, 0.18f,
+        "dual-phase weighted GPU field dispatch succeeds",
+        {1u, 0.35f, 0.65f});
 
     const std::vector<gpu_meshing::ParticleSample> one_sphere{
         {{0.0f, 0.0f, 0.0f}, 0.65f}};
     const gpu_meshing::MeshResult sphere = check_mesh_fixture(
         mesher, one_sphere, 0.0f, "single-sphere GPU extraction succeeds");
+    GPU_CHECK(sphere.content_digest == 0x374942c8f77e4eb9ull,
+              "default static GPU mesh retains its accepted content digest");
     for (size_t vertex = 0; vertex < sphere.positions.size() / 3u; ++vertex) {
         const float x = sphere.positions[vertex * 3u + 0u];
         const float y = sphere.positions[vertex * 3u + 1u];
@@ -585,6 +599,12 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
                                      .count();
     artifact.gameplay_field =
         gpu_meshing::fixtures::synthetic_flowing_water_gameplay();
+    artifact.presentation_field.resize(artifact.gameplay_field.size());
+    for (std::size_t index = 0u;
+         index != artifact.gameplay_field.size(); ++index) {
+        artifact.presentation_field[index].wet_valid =
+            artifact.gameplay_field[index].wet_valid;
+    }
     artifact.gameplay_layout = gameplay_layout;
     artifact.provenance = {0x10deu, 0x2684u, 1u, 0x05060100u, 3u};
 

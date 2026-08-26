@@ -45,6 +45,12 @@ struct Limits {
     std::uint32_t max_mesh_indices = 0;
 };
 
+struct ParticlePhaseBlend {
+    std::uint32_t split_index = 0;
+    float primary_weight = 1.0f;
+    float secondary_weight = 0.0f;
+};
+
 struct ParticleJob {
     const ParticleSample* particles = nullptr;
     std::uint32_t particle_count = 0;
@@ -55,6 +61,7 @@ struct ParticleJob {
     std::uint32_t material = 4;
     Limits limits{};
     std::uint64_t generation = 0;
+    ParticlePhaseBlend phase_blend{};
 };
 
 struct BuildControl {
@@ -101,10 +108,20 @@ struct Stats {
 bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
                            Error& error);
 
+std::uint32_t resolved_particle_phase_split(
+    const ParticleJob& job) noexcept;
+
 float evaluate_particle_field_reference(const ParticleSample* particles,
                                         std::uint32_t particle_count,
                                         float blend_width_m,
                                         matter::Float3 point_m);
+
+float evaluate_particle_field_reference(
+    const ParticleSample* particles,
+    std::uint32_t particle_count,
+    float blend_width_m,
+    ParticlePhaseBlend phase_blend,
+    matter::Float3 point_m);
 
 bool exclusive_scan_reference(const std::vector<std::uint32_t>& input,
                               std::vector<std::uint32_t>& output,

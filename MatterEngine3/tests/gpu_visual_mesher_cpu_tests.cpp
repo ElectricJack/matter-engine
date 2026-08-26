@@ -168,6 +168,84 @@ void test_reference_field_matches_matter_surface_oracle() {
           "sphere center equals negative radius");
 }
 
+void test_phase_weighted_reference_field_blends_two_captures() {
+    gpu_meshing::ParticleSample particles[2] = {
+        {{-0.35f, 0.0f, 0.0f}, 0.5f},
+        {{0.45f, 0.0f, 0.0f}, 0.5f},
+    };
+    constexpr float blend = 0.18f;
+    const matter::Float3 probe{0.1f, 0.05f, 0.0f};
+    const float primary_only =
+        gpu_meshing::evaluate_particle_field_reference(
+            particles, 2u, blend, {1u, 1.0f, 0.0f}, probe);
+    const float primary_reference =
+        gpu_meshing::evaluate_particle_field_reference(
+            particles, 1u, blend, probe);
+    CHECK(std::memcmp(&primary_only, &primary_reference, sizeof(float)) == 0,
+          "primary weight one ignores the secondary capture exactly");
+
+    const float secondary_only =
+        gpu_meshing::evaluate_particle_field_reference(
+            particles, 2u, blend, {1u, 0.0f, 1.0f}, probe);
+    const float secondary_reference =
+        gpu_meshing::evaluate_particle_field_reference(
+            particles + 1u, 1u, blend, probe);
+    CHECK(std::memcmp(&secondary_only, &secondary_reference, sizeof(float)) == 0,
+          "secondary weight one ignores the primary capture exactly");
+
+    particles[1] = particles[0];
+    const float half_and_half =
+        gpu_meshing::evaluate_particle_field_reference(
+            particles, 2u, blend, {1u, 0.5f, 0.5f}, probe);
+    CHECK(std::fabs(half_and_half - primary_reference) <= 1e-6f,
+          "two coincident half-weight particles equal one full-weight particle");
+
+    particles[1].position_m.x =
+        std::numeric_limits<float>::quiet_NaN();
+    const float skipped_nan =
+        gpu_meshing::evaluate_particle_field_reference(
+            particles, 2u, blend, {1u, 1.0f, 0.0f}, probe);
+    CHECK(std::isfinite(skipped_nan) &&
+              std::memcmp(&skipped_nan, &primary_reference,
+                          sizeof(float)) == 0,
+          "a zero-weight phase is skipped before it can introduce NaN");
+}
+
+void test_phase_weighted_job_validation_fails_closed() {
+    gpu_meshing::ParticleSample particles[2] = {
+        {{-0.25f, 0.0f, 0.0f}, 0.5f},
+        {{0.25f, 0.0f, 0.0f}, 0.5f},
+    };
+    gpu_meshing::ParticleSample one_particle[1];
+    auto job = one_sphere_job(one_particle);
+    job.particles = particles;
+    job.particle_count = 2u;
+    job.blend_width_m = 0.15f;
+    CHECK(gpu_meshing::resolved_particle_phase_split(job) == 2u,
+          "a default static descriptor resolves every particle as primary");
+    job.phase_blend = {1u, 1.0f, 0.0f};
+    CHECK(gpu_meshing::resolved_particle_phase_split(job) == 1u,
+          "an explicit animation endpoint retains its authored split");
+
+    job.phase_blend = {3u, 0.5f, 0.5f};
+    CHECK(rejects(job, gpu_meshing::ErrorCode::InvalidInput),
+          "phase split beyond particle count is rejected");
+    job.phase_blend = {1u, -0.1f, 1.1f};
+    CHECK(rejects(job, gpu_meshing::ErrorCode::InvalidInput),
+          "negative phase weight is rejected");
+    job.phase_blend = {
+        1u, 0.5f, std::numeric_limits<float>::quiet_NaN()};
+    CHECK(rejects(job, gpu_meshing::ErrorCode::InvalidInput),
+          "non-finite phase weight is rejected");
+    job.phase_blend = {1u, 0.4f, 0.5f};
+    CHECK(rejects(job, gpu_meshing::ErrorCode::InvalidInput),
+          "phase weights must sum to one");
+    job.phase_blend = {1u, 0.5f, 0.5f};
+    job.blend_width_m = 0.0f;
+    CHECK(rejects(job, gpu_meshing::ErrorCode::InvalidInput),
+          "dual-phase jobs require a nonzero smooth-min width");
+}
+
 void test_reference_scan_covers_empty_zero_max_and_overflow() {
     std::vector<std::uint32_t> output;
     std::uint32_t total = 99;
@@ -355,6 +433,8 @@ int main() {
     test_validates_and_derives_particle_grid();
     test_validation_fails_closed_without_rejecting_supported_edges();
     test_reference_field_matches_matter_surface_oracle();
+    test_phase_weighted_reference_field_blends_two_captures();
+    test_phase_weighted_job_validation_fails_closed();
     test_reference_scan_covers_empty_zero_max_and_overflow();
     test_mesh_digest_is_stable_and_sensitive();
     test_gameplay_identity_ignores_visual_job_bounds();

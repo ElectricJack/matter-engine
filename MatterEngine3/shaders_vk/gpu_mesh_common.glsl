@@ -22,6 +22,16 @@ struct GpuMeshFieldParams {
     vec4 queryRadiusAndPadding;
 };
 
+// counts.z is the first secondary-phase particle index. The primary and
+// secondary smooth-min weights are queryRadiusAndPadding.yz. counts.w is the
+// emit-only active-cell count.
+float gpuMeshParticlePhaseWeight(uint particleId,
+                                 GpuMeshFieldParams params) {
+    return particleId < params.counts.z
+        ? params.queryRadiusAndPadding.y
+        : params.queryRadiusAndPadding.z;
+}
+
 uint gpuMeshLinearBin(uvec3 coordinate, uvec3 dimensions) {
     return coordinate.x + dimensions.x *
         (coordinate.y + dimensions.y * coordinate.z);

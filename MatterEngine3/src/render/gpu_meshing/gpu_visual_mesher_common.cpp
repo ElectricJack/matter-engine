@@ -111,6 +111,22 @@ bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
     if (!finite(job.blend_width_m) || job.blend_width_m < 0.0f)
         return fail(error, ErrorCode::InvalidInput,
                     "particle mesh blend width must be nonnegative and finite");
+    const ParticlePhaseBlend& phase = job.phase_blend;
+    if (phase.split_index > job.particle_count)
+        return fail(error, ErrorCode::InvalidInput,
+                    "particle phase split exceeds particle count");
+    if (!finite(phase.primary_weight) ||
+        !finite(phase.secondary_weight) ||
+        phase.primary_weight < 0.0f || phase.secondary_weight < 0.0f)
+        return fail(error, ErrorCode::InvalidInput,
+                    "particle phase weights must be finite and nonnegative");
+    if (std::fabs((phase.primary_weight + phase.secondary_weight) - 1.0f) >
+        1e-5f)
+        return fail(error, ErrorCode::InvalidInput,
+                    "particle phase weights must sum to one");
+    if (phase.secondary_weight > 0.0f && job.blend_width_m <= 1e-5f)
+        return fail(error, ErrorCode::InvalidInput,
+                    "dual-phase particle meshing requires a positive blend width");
     if (!finite(job.iso_value))
         return fail(error, ErrorCode::InvalidInput,
                     "particle mesh isolevel must be finite");
@@ -204,6 +220,15 @@ bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
     return true;
 }
 
+std::uint32_t resolved_particle_phase_split(
+    const ParticleJob& job) noexcept {
+    return job.phase_blend.split_index == 0u &&
+            job.phase_blend.primary_weight == 1.0f &&
+            job.phase_blend.secondary_weight == 0.0f
+        ? job.particle_count
+        : job.phase_blend.split_index;
+}
+
 float evaluate_particle_field_reference(const ParticleSample* particles,
                                         std::uint32_t particle_count,
                                         float blend_width_m,
@@ -245,6 +270,74 @@ float evaluate_particle_field_reference(const ParticleSample* particles,
             std::sqrt(distance_squared) - particles[index].radius_m;
         sum += std::exp(-(distance - minimum) / blend_width_m);
     }
+    return minimum - blend_width_m * std::log(sum);
+}
+
+float evaluate_particle_field_reference(
+    const ParticleSample* particles,
+    std::uint32_t particle_count,
+    float blend_width_m,
+    ParticlePhaseBlend phase_blend,
+    matter::Float3 point_m) {
+    if (particles == nullptr || particle_count == 0)
+        return std::numeric_limits<float>::infinity();
+    const std::uint32_t split = phase_blend.split_index == 0u &&
+            phase_blend.primary_weight == 1.0f &&
+            phase_blend.secondary_weight == 0.0f
+        ? particle_count
+        : phase_blend.split_index;
+    const auto particle_weight = [&](std::uint32_t index) noexcept {
+        return index < split ? phase_blend.primary_weight
+                             : phase_blend.secondary_weight;
+    };
+
+    float max_radius = 0.0f;
+    for (std::uint32_t index = 0; index != particle_count; ++index) {
+        if (particle_weight(index) == 0.0f) continue;
+        max_radius = std::max(max_radius, particles[index].radius_m);
+    }
+    const float query_radius = max_radius * 2.5f + blend_width_m * 4.0f;
+    const float query_radius_squared = query_radius * query_radius;
+
+    float minimum = std::numeric_limits<float>::infinity();
+    std::uint32_t neighbors = 0;
+    float only_weight = 0.0f;
+    for (std::uint32_t index = 0; index != particle_count; ++index) {
+        const float weight = particle_weight(index);
+        if (weight == 0.0f) continue;
+        const matter::Float3 center = particles[index].position_m;
+        const float dx = point_m.x - center.x;
+        const float dy = point_m.y - center.y;
+        const float dz = point_m.z - center.z;
+        const float distance_squared = dx * dx + dy * dy + dz * dz;
+        if (distance_squared > query_radius_squared) continue;
+        const float distance =
+            std::sqrt(distance_squared) - particles[index].radius_m;
+        minimum = std::min(minimum, distance);
+        only_weight = weight;
+        ++neighbors;
+    }
+    if (neighbors == 0) return std::numeric_limits<float>::infinity();
+    if (blend_width_m <= 1e-5f ||
+        (neighbors == 1u && only_weight == 1.0f))
+        return minimum;
+
+    float sum = 0.0f;
+    for (std::uint32_t index = 0; index != particle_count; ++index) {
+        const float weight = particle_weight(index);
+        if (weight == 0.0f) continue;
+        const matter::Float3 center = particles[index].position_m;
+        const float dx = point_m.x - center.x;
+        const float dy = point_m.y - center.y;
+        const float dz = point_m.z - center.z;
+        const float distance_squared = dx * dx + dy * dy + dz * dz;
+        if (distance_squared > query_radius_squared) continue;
+        const float distance =
+            std::sqrt(distance_squared) - particles[index].radius_m;
+        sum += weight *
+            std::exp(-(distance - minimum) / blend_width_m);
+    }
+    if (sum <= 0.0f) return std::numeric_limits<float>::infinity();
     return minimum - blend_width_m * std::log(sum);
 }
 
