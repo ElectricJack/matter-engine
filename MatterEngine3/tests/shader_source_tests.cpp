@@ -49,21 +49,22 @@ int main() {
     assert(t3.find("OVERRIDE MARKER") != std::string::npos);
     matter::set_shader_override_dir(nullptr);
 
-    // Baked water animation stays packed until a selected 30 Hz frame reaches
-    // its Vulkan slot. The compute ABI and the 28-byte raster specialization
-    // must remain explicit source/inventory entries.
-    const std::string water_decode =
-        read_shader("../shaders_vk/water_animation_decode.comp");
+    // Baked water animation stays packed through the GPU upload. The water
+    // vertex specialization decodes the 12-byte file ABI directly, avoiding
+    // a full-frame compute expansion and its device-memory round trip.
     const std::string raster_vertex =
         read_shader("../shaders_vk/raster.vert");
+    const std::string renderer_header =
+        read_shader("../src/render/vk_scene_renderer.h");
+    const std::string renderer_source =
+        read_shader("../src/render/vk_scene_renderer.cpp");
     const std::string root_cmake = read_shader("../../CMakeLists.txt");
     const std::string engine_makefile = read_shader("../Makefile");
-    assert(water_decode.find("local_size_x = 64") != std::string::npos);
-    assert(water_decode.find("uint words[]") != std::string::npos);
-    assert(water_decode.find("WaterAnimationVertex") != std::string::npos);
-    assert(water_decode.find("decoded_vertices.vertices") !=
-           std::string::npos);
     assert(raster_vertex.find("MATTER_WATER_ANIMATION_VERTEX_INPUT") !=
+           std::string::npos);
+    assert(raster_vertex.find("uvec3 in_water_packed") != std::string::npos);
+    assert(raster_vertex.find("decode_water_octahedral") != std::string::npos);
+    assert(raster_vertex.find("debug_push.water_bounds_min") !=
            std::string::npos);
     const std::string cull_shader = read_shader("../shaders_vk/cull.comp");
     assert(cull_shader.find("if (instance.water_pad0 != 0u) return;") !=
@@ -71,10 +72,16 @@ int main() {
     assert(root_cmake.find(
                "raster_water.vert|raster.vert|MATTER_WATER_ANIMATION_VERTEX_INPUT") !=
            std::string::npos);
-    assert(engine_makefile.find("water_animation_decode.comp.spv") !=
-               std::string::npos &&
-           engine_makefile.find("raster_water.vert.spv") !=
+    assert(engine_makefile.find("water_animation_decode.comp.spv") ==
                std::string::npos);
+    assert(engine_makefile.find("raster_water.vert.spv") !=
+           std::string::npos);
+    assert(renderer_header.find("kGpuZoneWaterDecode") != std::string::npos);
+    assert(renderer_header.find("kGpuZoneWaterDraw") != std::string::npos);
+    assert(renderer_source.find("record.water_decode_zone") !=
+           std::string::npos);
+    assert(renderer_source.find("record.water_draw_zone") !=
+           std::string::npos);
 
     // River presentation Task 8: raster and RT must share one bounded water
     // evaluator. Private copies inevitably drift at reset boundaries and make

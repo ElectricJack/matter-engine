@@ -6,7 +6,7 @@
 
 **Architecture:** The DSL opts a network into one fixed animation profile: 30 frames over one second with a half-second phase offset. PhysX keeps a rolling device-side capture ring and performs one host readback after the accepted fill state. Each output frame is meshed from two captured particle sets using per-phase smooth-min weights. Baking writes independently validated section and handoff animation artifacts. Runtime keeps the compressed frames on the CPU, uploads and decodes only a changed 30 Hz frame into the active Vulkan frame slot, draws it directly through a water-specialized raster pipeline, and suppresses only the static proxy's raster submission. Any load, decode, upload, or draw preparation failure restores the static mesh without affecting physics, collision, or ray tracing.
 
-**Toolchain:** C++20, MSVC v143, CMake/CTest through `tools/build-windows.ps1`, PhysX 5 GPU/CUDA interop, Vulkan compute and raster pipelines, GLSL/SPIR-V, QuickJS world DSL.
+**Toolchain:** C++20, MSVC v143, CMake/CTest through `tools/build-windows.ps1`, PhysX 5 GPU/CUDA interop, packed Vulkan raster decoding, GLSL/SPIR-V, QuickJS world DSL.
 
 **Design authority:** `docs/superpowers/specs/2026-08-26-baked-water-mesh-animation-design.md`.
 
@@ -363,12 +363,23 @@ Commit:
 feat(render): load and schedule baked water animation
 ```
 
-## Task 7: Add GPU decode and raster-only dynamic water drawing
+## Task 7: Add packed GPU decode and raster-only dynamic water drawing
+
+> Acceptance optimization (2026-08-26): the initial compute expansion was
+> visually correct but measured about 6 ms for RiverFloatLab. The final path
+> keeps the same GPU decode contract but performs it in `raster_water.vert`
+> directly from the packed 12-byte vertex buffer. A second measurement showed
+> the replacement staging-to-device copies still dominated at about 5.5 ms,
+> so the final frame-slot buffers are persistently mapped and GPU-visible:
+> changed frames write them once, then raster reads them directly. This
+> eliminates the 28-byte expanded buffer, compute descriptors/pipeline, and
+> both redundant full-frame device copies. The focused tests below were
+> updated to gate this lower-bandwidth path.
 
 **Files:**
 
-- Create: `MatterEngine3/shaders_vk/water_animation_decode.comp`
 - Modify: `MatterEngine3/shaders_vk/raster.vert`
+- Modify: `MatterEngine3/shaders_vk/gbuffer.frag`
 - Modify: `MatterEngine3/src/render/vk_scene_renderer.h`
 - Modify: `MatterEngine3/src/render/vk_scene_renderer.cpp`
 - Modify: `CMakeLists.txt`
@@ -381,20 +392,20 @@ feat(render): load and schedule baked water animation
 
 Add tests for:
 
-- The packed 12-byte vertex ABI and decoded 28-byte `VkWaterAnimationVertex` ABI.
-- The shader inventory contains `water_animation_decode.comp.spv` and the `raster_water.vert.spv` specialization.
-- GPU decode matches the CPU oracle on a known triangle.
+- The packed 12-byte vertex ABI and 28-byte CPU decode-oracle ABI.
+- The shader inventory contains the `raster_water.vert.spv` specialization and no obsolete water compute decoder.
+- Packed vertex-shader decode matches the CPU oracle on a known triangle.
 - Upload occurs once per selected frame per Vulkan frame slot, not once per render frame.
-- Decode dispatch precedes vertex/index reads with compute-write to vertex/index-read barriers.
+- Host writes precede vertex/index reads with explicit host-write barriers.
 - Direct indexed draws use the static proxy instance transform and the existing water material/field descriptors.
 - Dynamic water vertices are never submitted to BLAS build/update paths.
 - Resource replacement is generation-checked and old resources survive until their owning frame fences retire.
 
 Build the test and shader targets and record the expected missing shader/pipeline failures.
 
-### Step 2: Implement packed upload and compute decode
+### Step 2: Implement packed upload and vertex-shader decode
 
-Compile `water_animation_decode.comp` and a `MATTER_WATER_ANIMATION_VERTEX_INPUT` specialization of `raster.vert`. The compute shader decodes frame-local bounds, uint16 positions, oct normals, and material index into:
+Compile a `MATTER_WATER_ANIMATION_VERTEX_INPUT` specialization of `raster.vert`. The vertex shader reads a 12-byte `uvec3`, decodes frame-local uint16 positions and oct normals from per-draw push bounds, and forwards the material index. Keep the following expanded record only as the CPU oracle used by tests:
 
 ```cpp
 struct VkWaterAnimationVertex {
@@ -404,11 +415,11 @@ struct VkWaterAnimationVertex {
 };
 ```
 
-Allocate packed staging, decoded vertex, and index buffers per Vulkan frame slot at activation using the maximum loaded frame sizes. On a changed selected frame, copy packed vertices and indices, dispatch decode, and issue explicit barriers. If the frame is unchanged in that slot, reuse its decoded buffers with no upload or dispatch.
+Allocate persistently mapped, host-visible, preferably device-local packed vertex and index buffers per Vulkan frame slot at activation using the maximum loaded frame sizes. On a changed selected frame, write packed vertices and indices and issue explicit host-write-to-raster-read barriers. If the frame is unchanged in that slot, reuse the buffers with no upload. There is no compute expansion or decoded GPU buffer.
 
 ### Step 3: Implement the direct raster draw
 
-Extend renderer frame preparation with `VkWaterAnimationRasterDraw` records. Bind the water-specialized vertex pipeline after existing static/skinned draws in the G-buffer pass, bind the decoded vertex and current index buffers, push the proxy instance transform index, and issue `vkCmdDrawIndexed`. Feed existing `gbuffer.frag`/`water_surface.glsl` descriptors so transparency, depth fog, animated normals, and foam fields stay on the accepted material path.
+Extend renderer frame preparation with `VkWaterAnimationRasterDraw` records. Bind the water-specialized vertex pipeline after existing static/skinned draws in the G-buffer pass, bind the packed vertex and current index buffers, push decode bounds plus the proxy instance transform/material indices, and issue `vkCmdDrawIndexed`. Feed existing `gbuffer.frag`/`water_surface.glsl` descriptors so transparency, depth fog, animated normals, and foam fields stay on the accepted material path.
 
 Add a runtime per-part `rt_proxy_only` raster-suppression flag. The culling/raster path skips proxy geometry while animation is healthy; ray tracing selection ignores this flag. Do not add dynamic BLAS resources or updates.
 

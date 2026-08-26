@@ -790,40 +790,7 @@ bool write_network_timing_trace(
         error = "could not open network timing trace";
         return false;
     }
-    stream << std::fixed << std::setprecision(3)
-           << "{\n  \"networkState\": \"Ready\",\n  \"sections\": [\n";
-    for (std::size_t index = 0u;
-         index != result.timings.sections.size(); ++index) {
-        const auto& timing = result.timings.sections[index];
-        const auto section = std::find_if(
-            result.sections.begin(), result.sections.end(),
-            [&](const auto& value) {
-                return value.section.section_id == timing.id;
-            });
-        const std::uint32_t particles = section == result.sections.end()
-            ? 0u : section->stats.active_particles;
-        const std::uint32_t escaped = section == result.sections.end()
-            ? 0u : section->stats.escaped_particles;
-        stream << "    {\"id\":" << std::quoted(timing.id)
-               << ",\"cacheHit\":" << std::boolalpha << timing.cache_hit
-               << ",\"setupMs\":" << timing.setup_ms
-               << ",\"physxInitMs\":" << timing.physx_init_ms
-               << ",\"simulateMs\":" << timing.simulate_ms
-               << ",\"gpuMeshMs\":" << timing.gpu_mesh_ms
-               << ",\"cpuMeshMs\":" << timing.cpu_mesh_ms
-               << ",\"particles\":" << particles
-               << ",\"escaped\":" << escaped << "}"
-               << (index + 1u == result.timings.sections.size() ? "\n" : ",\n");
-    }
-    stream << "  ],\n  \"handoffMeshMs\":"
-           << result.timings.handoff_mesh_ms
-           << ",\n  \"serializeMs\":" << result.timings.serialize_ms
-           << ",\n  \"totalWallMs\":" << result.timings.total_wall_ms
-           << ",\n  \"visualVertices\":"
-           << result.products.visual_mesh.positions.size() / 3u
-           << ",\n  \"visualTriangles\":"
-           << result.products.visual_mesh.indices.size() / 3u
-           << "\n}\n";
+    stream << hydrology::hydrology_network_timing_trace_json(result);
     if (!stream) {
         error = "could not write network timing trace";
         return false;
@@ -2084,6 +2051,16 @@ bool LocalProvider::run_authored_fluid_bake(
                     output, request.product_settings, request.terrain,
                     candidate, section_error, &product_timings))
                 return false;
+            gpu_meshing::Error digest_error{};
+            if (!hydrology::hydrology_artifact_payload_digest(
+                    candidate, candidate.payload_digest, digest_error)) {
+                section_error = {
+                    hydrology::FluidBakeCode::ProductFailure,
+                    digest_error.message.empty()
+                        ? "accepted section payload digest is unavailable"
+                        : digest_error.message};
+                return false;
+            }
             section_timings.gpu_mesh_ms = product_timings.gpu_mesh_ms;
             section_timings.cpu_mesh_ms = product_timings.cpu_mesh_ms;
             if (animation_enabled) {
@@ -2093,6 +2070,23 @@ bool LocalProvider::run_authored_fluid_bake(
                         "accepted animated section has no particle capture"};
                     return false;
                 }
+                const auto& capture = *output.animation_capture;
+                section_timings.animation_capture_ms =
+                    capture.host_readback_ms;
+                section_timings.animation_device_capture_bytes =
+                    capture.device_storage_bytes;
+                if (!capture.frames.empty()) {
+                    section_timings.animation_capture_first_step =
+                        capture.frames.front().simulation_step;
+                    section_timings.animation_capture_last_step =
+                        capture.frames.back().simulation_step;
+                }
+                section_timings.animation_capture_particle_counts.reserve(
+                    capture.frames.size());
+                for (const auto& frame : capture.frames) {
+                    section_timings.animation_capture_particle_counts.push_back(
+                        static_cast<std::uint32_t>(frame.positions_m.size()));
+                }
                 const auto animation_mesh_start =
                     std::chrono::steady_clock::now();
                 const hydrology::WaterMeshAnimationMesher animation_mesher =
@@ -2100,23 +2094,42 @@ bool LocalProvider::run_authored_fluid_bake(
                         gpu_meshing::MeshResult& mesh,
                         gpu_meshing::Stats& stats,
                         gpu_meshing::Error& mesh_error) {
-                        std::string run_error;
-                        const auto invoke = [&](std::string&) {
-                            return cfg_.vk_particle_visual_bake(
-                                job, mesh, stats, mesh_error,
-                                {context.callbacks.cancelled, {}});
-                        };
-                        const bool completed = cfg_.gpu_run
-                            ? cfg_.gpu_run(
-                                  "hydrology_section_animation", invoke,
-                                  run_error)
-                            : invoke(run_error);
-                        if (!completed && mesh_error.message.empty())
-                            mesh_error = {
-                                gpu_meshing::ErrorCode::VulkanFailure,
-                                run_error.empty()
-                                    ? "Vulkan section animation meshing failed"
-                                    : run_error};
+                        const hydrology::PhysxFluidBake::VisualMesher
+                            chunk_mesher =
+                                [&](const gpu_meshing::ParticleJob& chunk_job,
+                                    gpu_meshing::MeshResult& chunk_mesh,
+                                    gpu_meshing::Stats& chunk_stats,
+                                    gpu_meshing::Error& chunk_error,
+                                    const gpu_meshing::BuildControl&) {
+                                    std::string run_error;
+                                    const auto invoke = [&](std::string&) {
+                                        return cfg_.vk_particle_visual_bake(
+                                            chunk_job, chunk_mesh, chunk_stats,
+                                            chunk_error,
+                                            {context.callbacks.cancelled, {}});
+                                    };
+                                    const bool completed = cfg_.gpu_run
+                                        ? cfg_.gpu_run(
+                                              "hydrology_section_animation",
+                                              invoke, run_error)
+                                        : invoke(run_error);
+                                    if (!completed &&
+                                        chunk_error.message.empty()) {
+                                        chunk_error = {
+                                            gpu_meshing::ErrorCode::VulkanFailure,
+                                            run_error.empty()
+                                                ? "Vulkan section animation meshing failed"
+                                                : run_error};
+                                    }
+                                    return completed;
+                                };
+                        const bool completed =
+                            hydrology::PhysxFluidBake::build_visual_job_chunks(
+                                job, chunk_mesher, mesh, mesh_error);
+                        stats = {};
+                        stats.particles = job.particle_count;
+                        stats.triangles = static_cast<std::uint32_t>(
+                            mesh.indices.size() / 3u);
                         return completed;
                     };
                 hydrology::WaterMeshAnimation raw_animation{};
@@ -2174,18 +2187,29 @@ bool LocalProvider::run_authored_fluid_bake(
                     request.cache_path, candidate, artifact_error) ||
                 !hydrology::load_artifact_validated(
                     request.cache_path, candidate.product_keys.visual,
-                    candidate, artifact_error, request.semantic_key) ||
-                (animation_enabled &&
-                 (!hydrology::save_water_mesh_animation_artifact_immutable(
-                      animation_path, animation_candidate, artifact_error) ||
-                  !load_water_animation_cache(
-                      animation_path, section.id, animation_semantic_key,
-                      candidate.payload_digest,
-                      river_network_->fluid.mesh_animation,
-                      animation_candidate)))) {
+                    candidate, artifact_error, request.semantic_key)) {
                 section_error = {hydrology::FluidBakeCode::ProductFailure,
                                  artifact_error.message};
                 return false;
+            }
+            if (animation_enabled) {
+                const auto animation_serialize_start =
+                    std::chrono::steady_clock::now();
+                if (!hydrology::save_water_mesh_animation_artifact_immutable(
+                        animation_path, animation_candidate, artifact_error) ||
+                    !load_water_animation_cache(
+                        animation_path, section.id, animation_semantic_key,
+                        candidate.payload_digest,
+                        river_network_->fluid.mesh_animation,
+                        animation_candidate)) {
+                    section_error = {hydrology::FluidBakeCode::ProductFailure,
+                                     artifact_error.message};
+                    return false;
+                }
+                section_timings.animation_serialize_ms =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() -
+                        animation_serialize_start).count();
             }
             network_result.timings.serialize_ms +=
                 std::chrono::duration<double, std::milli>(
@@ -2194,8 +2218,26 @@ bool LocalProvider::run_authored_fluid_bake(
 
         section_result.artifact = candidate;
         if (animation_enabled) {
-            section_timings.animation_bytes =
-                animation_candidate.frame_payload.size();
+            std::error_code size_error;
+            section_timings.animation_bytes = std::filesystem::file_size(
+                animation_path, size_error);
+            if (size_error)
+                section_timings.animation_bytes =
+                    animation_candidate.frame_payload.size();
+            section_timings.animation_semantic_key =
+                animation_candidate.semantic_key;
+            section_timings.animation_payload_digest =
+                animation_candidate.payload_digest;
+            section_timings.animation_frame_vertex_counts.reserve(
+                animation_candidate.frames.size());
+            section_timings.animation_frame_triangle_counts.reserve(
+                animation_candidate.frames.size());
+            for (const auto& frame : animation_candidate.frames) {
+                section_timings.animation_frame_vertex_counts.push_back(
+                    frame.vertex_count);
+                section_timings.animation_frame_triangle_counts.push_back(
+                    frame.index_count / 3u);
+            }
             section_result.animation = animation_candidate;
         }
         section_result.downstream_handoff = downstream_handoff;

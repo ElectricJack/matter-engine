@@ -1413,6 +1413,71 @@ void test_accepted_visual_chunks_capacity_without_truncation() {
           "accepted water chunks an over-cap visual grid without truncating any required product");
 }
 
+void test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss() {
+    std::vector<gpu_meshing::ParticleSample> particles;
+    for (std::uint32_t index = 0u; index != 8u; ++index)
+        particles.push_back({{static_cast<float>(index) * 0.25f,
+                              0.0f, 0.0f}, 0.65f});
+    for (std::uint32_t index = 0u; index != 8u; ++index)
+        particles.push_back({{static_cast<float>(index) * 0.25f,
+                              0.0f, 0.25f}, 0.65f});
+
+    gpu_meshing::ParticleJob root{};
+    root.particles = particles.data();
+    root.particle_count = static_cast<std::uint32_t>(particles.size());
+    root.bounds_m = {{-2.0f, -2.0f, -2.0f}, {4.0f, 2.0f, 2.0f}};
+    root.voxel_m = 0.1f;
+    root.blend_width_m = 0.05f;
+    root.material = 4u;
+    root.phase_blend = {8u, 0.4f, 0.6f};
+    root.limits = {64u, 2500u, 65536u, 65536u};
+
+    std::uint32_t calls = 0u;
+    bool phase_order_preserved = true;
+    bool empty_authored_margin_removed = true;
+    auto mesher = [&](const gpu_meshing::ParticleJob& job,
+                      gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
+                      gpu_meshing::Error&,
+                      const gpu_meshing::BuildControl&) {
+        ++calls;
+        empty_authored_margin_removed &=
+            job.bounds_m.min_m.x > root.bounds_m.min_m.x &&
+            job.bounds_m.max_m.x < root.bounds_m.max_m.x;
+        phase_order_preserved &=
+            std::fabs(job.phase_blend.primary_weight - 0.4f) < 1.0e-6f &&
+            std::fabs(job.phase_blend.secondary_weight - 0.6f) < 1.0e-6f &&
+            job.phase_blend.split_index <= job.particle_count;
+        for (std::uint32_t index = 0u;
+             index != job.phase_blend.split_index; ++index)
+            phase_order_preserved &=
+                std::fabs(job.particles[index].position_m.z) < 1.0e-6f;
+        for (std::uint32_t index = job.phase_blend.split_index;
+             index != job.particle_count; ++index)
+            phase_order_preserved &=
+                std::fabs(job.particles[index].position_m.z - 0.25f) < 1.0e-6f;
+
+        const float x = (job.bounds_m.min_m.x + job.bounds_m.max_m.x) * 0.5f;
+        const float y = (job.bounds_m.min_m.y + job.bounds_m.max_m.y) * 0.5f;
+        const float z = (job.bounds_m.min_m.z + job.bounds_m.max_m.z) * 0.5f;
+        mesh.positions = {x, y, z, x + 0.01f, y, z, x, y + 0.01f, z};
+        mesh.normals = {0.0f, 0.0f, 1.0f,
+                        0.0f, 0.0f, 1.0f,
+                        0.0f, 0.0f, 1.0f};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = job.material;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+        return true;
+    };
+    gpu_meshing::MeshResult mesh{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::PhysxFluidBake::build_visual_job_chunks(
+              root, mesher, mesh, error), error.message.c_str());
+    CHECK(calls >= 2u && phase_order_preserved &&
+              empty_authored_margin_removed &&
+              mesh.material == 4u && !mesh.indices.empty(),
+          "dual-phase animation keeps authored voxel resolution by chunking the over-cap grid");
+}
+
 void test_product_keys_follow_the_settings_the_extractors_consume() {
     FluidBakeOutput output{};
     output.particles = {
@@ -2366,6 +2431,7 @@ int main() {
     test_capacity_statistics_and_sensor_consistency_are_distinct();
     test_accepted_snapshot_builds_all_products_or_publishes_nothing();
     test_accepted_visual_chunks_capacity_without_truncation();
+    test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss();
     test_product_keys_follow_the_settings_the_extractors_consume();
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
     test_world_session_runs_authored_fluid_bake_before_publication();

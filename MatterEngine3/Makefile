@@ -325,7 +325,6 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/atmosphere_irradiance.comp.spv \
          build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
-         build/shaders_vk/water_animation_decode.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/visible_ids.comp.spv \
          build/shaders_vk/visibility_id.vert.spv \

@@ -100,6 +100,8 @@ void test_common_clock_and_per_slot_upload_decisions() {
           "the common 30 Hz clock wraps exactly at one second");
 
     auto selection = playback.make_selection();
+    const std::uint64_t validations_after_activation =
+        hydrology::water_mesh_animation_validation_count();
     CHECK(playback.select(0.10, 0u, selection, fallback) &&
               selection.frame_index == 3u && selection.upload_required &&
               selection.draws.size() == 3u,
@@ -118,6 +120,9 @@ void test_common_clock_and_per_slot_upload_decisions() {
     CHECK(playback.select(0.14, 0u, selection, fallback) &&
               selection.upload_required && selection.frame_index == 4u,
           "advancing to the next 30 Hz frame requests one slot-local upload");
+    CHECK(hydrology::water_mesh_animation_validation_count() ==
+              validations_after_activation,
+          "steady-state playback uses frame spans proven during transactional activation without re-hashing artifacts");
     std::filesystem::remove_all(fixture.root);
 }
 

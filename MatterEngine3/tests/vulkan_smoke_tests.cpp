@@ -397,9 +397,12 @@ void test_atmosphere_timing_contract() {
               Renderer::kGpuZoneCloudShadows == 13 &&
               Renderer::kGpuZoneVolDensity == 14 &&
               Renderer::kGpuZoneVolScatter == 15 &&
-              Renderer::kGpuZoneVolIntegrate == 16 &&
-              Renderer::kGpuZoneCount == 17,
+              Renderer::kGpuZoneVolIntegrate == 16,
           "atmosphere timings append five exact GPU zones");
+    CHECK(Renderer::kGpuZoneWaterDecode == 17 &&
+              Renderer::kGpuZoneWaterDraw == 18 &&
+              Renderer::kGpuZoneCount == 19,
+          "water animation timings append decode and draw GPU zones");
 
     std::array<uint32_t, 3> boundaries{};
     viewer::VolumetricPassBoundary boundary =

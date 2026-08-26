@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-26
 
-**Status:** Chat design approved; awaiting written-spec review
+**Status:** Implemented and accepted on `codex/dualsphysics-fluid-spike`
 
 **Scope:** PhysX section capture, weighted loop meshing, animation artifacts,
 Vulkan raster playback, RiverFloatLab acceptance
@@ -241,11 +241,14 @@ The existing shader animation time uses the same clock.
 Animated water uses a dedicated raster-only direct-draw lane. It does not enter
 the immutable static vertex arena, cull command table, BLAS builder, or TLAS.
 Per Vulkan frame slot, the renderer owns bounded water-animation vertex and
-index buffers. When the selected 30 Hz frame changes, it uploads that frame's
-packed payload, decodes positions/normals on the GPU, copies indices, and then
-draws it in the ordinary G-buffer pass.
+index buffers. When the selected 30 Hz frame changes, it writes that frame's
+packed vertex and index payloads into fence-owned, persistently mapped
+GPU-visible buffers and draws them directly in the ordinary G-buffer pass. The
+water vertex specialization decodes the 12-byte packed position/normal ABI.
+This preserves GPU decode while avoiding both a 28-byte-per-vertex compute
+expansion and a redundant staging-to-device full-frame copy.
 
-The decoded vertex is water-specific:
+The CPU decode oracle is water-specific:
 
 ```cpp
 struct VkWaterAnimationVertex {
@@ -255,15 +258,18 @@ struct VkWaterAnimationVertex {
 };
 ```
 
-The water raster vertex specialization supplies constant tint and surface
-channels and reads transform, water-field binding, generation, and temporal
-identity from the same draw-transform record as static water. It feeds the
-existing `gbuffer.frag` and shared `water_surface.glsl`; there is no second
-water material implementation.
+Runtime keeps this expanded record out of device memory. Per-draw quantization
+bounds and material identity travel in graphics push constants; the water
+raster vertex specialization decodes each indexed vertex, supplies constant
+tint and surface channels, and reads transform, water-field binding,
+generation, and temporal identity from the same draw-transform record as
+static water. It feeds the existing `gbuffer.frag` and shared
+`water_surface.glsl`; there is no second water material implementation.
 
-Uploads occur only when the 30 Hz frame changes, not every presentation frame.
-Every buffer and dispatch is retained by the normal frame-serial lifetime
-system. Bounds and counts are validated before command recording. A rejected
+Writes occur only when the 30 Hz frame changes, not every presentation frame.
+Every mapped buffer is owned by one Vulkan frame slot and retained by the
+normal frame-serial lifetime system. Bounds
+and counts are validated before command recording. A rejected
 frame records no animated draw and leaves the static fallback visible.
 
 ### 7.3 Static ray-tracing proxy

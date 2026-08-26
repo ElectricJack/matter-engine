@@ -81,16 +81,9 @@ bool WaterAnimationGpuCapacity::valid() const noexcept {
 }
 
 std::uint64_t WaterAnimationGpuCapacity::gpu_bytes_per_slot() const noexcept {
-    if (!valid() ||
-        decoded_vertex_count >
-            std::numeric_limits<std::uint64_t>::max() /
-                sizeof(VkWaterAnimationVertex))
-        return 0u;
+    if (!valid()) return 0u;
     std::uint64_t result = packed_vertex_bytes;
-    if (!add_u64(result,
-                 decoded_vertex_count * sizeof(VkWaterAnimationVertex),
-                 result) ||
-        !add_u64(result, index_bytes, result))
+    if (!add_u64(result, index_bytes, result))
         return 0u;
     return result;
 }
@@ -136,7 +129,6 @@ bool WaterAnimationGpuSchedule::publish(
                 static_cast<std::size_t>(capacity.packed_vertex_bytes));
             frame.indices.reserve(static_cast<std::size_t>(
                 capacity.index_bytes / sizeof(std::uint32_t)));
-            frame.decode_dispatches.reserve(capacity.draw_count);
             frame.draws.reserve(capacity.draw_count);
         }
     } catch (...) {
@@ -150,6 +142,7 @@ bool WaterAnimationGpuSchedule::publish(
     selected_frames_ = std::move(selected);
     capacity_ = capacity;
     generation_ = generation;
+    steady_state_allocation_count_ = 0u;
     return true;
 }
 
@@ -176,9 +169,13 @@ bool WaterAnimationGpuSchedule::prepare(
                         static_cast<std::int32_t>(selection.frame_index);
     frame.upload_required = upload;
     frame.frame_index = selection.frame_index;
-    frame.decode_dispatches.clear();
     frame.barriers = {};
     if (!upload) return true;
+
+    const std::size_t packed_capacity_before =
+        frame.packed_vertices.capacity();
+    const std::size_t index_capacity_before = frame.indices.capacity();
+    const std::size_t draw_capacity_before = frame.draws.capacity();
 
     std::uint64_t vertex_bytes = 0u;
     std::uint64_t vertex_count = 0u;
@@ -214,7 +211,7 @@ bool WaterAnimationGpuSchedule::prepare(
         index_bytes / sizeof(std::uint32_t)));
     frame.draws.clear();
     std::size_t packed_offset = 0u;
-    std::size_t index_offset = 0u;
+    std::size_t index_byte_offset = 0u;
     std::uint32_t output_vertex = 0u;
     for (std::size_t draw_index = 0u;
          draw_index != selection.draws.size(); ++draw_index) {
@@ -222,7 +219,8 @@ bool WaterAnimationGpuSchedule::prepare(
         const auto& packed = selected.packed;
         std::memcpy(frame.packed_vertices.data() + packed_offset,
                     packed.vertex_data, packed.vertex_bytes);
-        std::memcpy(frame.indices.data() + index_offset,
+        std::memcpy(reinterpret_cast<std::uint8_t*>(frame.indices.data()) +
+                        index_byte_offset,
                     packed.index_data, packed.index_bytes);
         const auto* local_indices = reinterpret_cast<const std::uint32_t*>(
             packed.index_data);
@@ -233,37 +231,21 @@ bool WaterAnimationGpuSchedule::prepare(
                               error);
         }
 
-        VkWaterAnimationDecodeDispatch dispatch{};
-        dispatch.push.bounds_min[0] = selected.quantization_bounds_m.min_m.x;
-        dispatch.push.bounds_min[1] = selected.quantization_bounds_m.min_m.y;
-        dispatch.push.bounds_min[2] = selected.quantization_bounds_m.min_m.z;
-        dispatch.push.bounds_extent[0] =
-            selected.quantization_bounds_m.max_m.x -
-            selected.quantization_bounds_m.min_m.x;
-        dispatch.push.bounds_extent[1] =
-            selected.quantization_bounds_m.max_m.y -
-            selected.quantization_bounds_m.min_m.y;
-        dispatch.push.bounds_extent[2] =
-            selected.quantization_bounds_m.max_m.z -
-            selected.quantization_bounds_m.min_m.z;
-        dispatch.push.packed_word_offset =
-            static_cast<std::uint32_t>(packed_offset / sizeof(std::uint32_t));
-        dispatch.push.output_vertex = output_vertex;
-        dispatch.push.vertex_count = packed.vertex_count;
-        dispatch.push.material_index = selected.material_index;
-        dispatch.group_count_x = (packed.vertex_count + 63u) / 64u;
-        frame.decode_dispatches.push_back(dispatch);
         frame.draws.push_back(
-            {static_cast<std::uint32_t>(index_offset /
+            {static_cast<std::uint32_t>(index_byte_offset /
                                         sizeof(std::uint32_t)),
              packed.index_count, output_vertex, packed.vertex_count,
              proxy_transform_slots[draw_index], selected.material_index,
-             selected.handoff});
+             selected.quantization_bounds_m, selected.handoff});
         packed_offset += packed.vertex_bytes;
-        index_offset += packed.index_bytes;
+        index_byte_offset += packed.index_bytes;
         output_vertex += packed.vertex_count;
     }
-    frame.barriers = {true, true, true, true};
+    frame.barriers = {true, true};
+    if (frame.packed_vertices.capacity() != packed_capacity_before ||
+        frame.indices.capacity() != index_capacity_before ||
+        frame.draws.capacity() != draw_capacity_before)
+        ++steady_state_allocation_count_;
     selected_frames_[frame_slot] =
         static_cast<std::int32_t>(selection.frame_index);
     return true;

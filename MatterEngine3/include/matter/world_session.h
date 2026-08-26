@@ -357,6 +357,12 @@ struct FrameStats {
     float gpu_vol_density_ms    = 0;
     float gpu_vol_scatter_ms    = 0;
     float gpu_vol_integrate_ms  = 0;
+    // Raw, most recently retired upload/copy plus vertex-decode/direct-raster
+    // time for baked water animation. Kept raw for percentile capture.
+    float gpu_water_animation_ms = 0;
+    uint64_t water_animation_uploads = 0;
+    uint64_t water_animation_decode_dispatches = 0;
+    uint64_t water_animation_steady_state_allocations = 0;
     uint32_t vol_grid_w = 0, vol_grid_h = 0, vol_grid_d = 0;
     uint64_t vol_memory_bytes = 0;
     uint64_t cloud_shadow_memory_bytes = 0;

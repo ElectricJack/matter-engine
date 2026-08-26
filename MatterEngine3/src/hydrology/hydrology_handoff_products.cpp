@@ -10,7 +10,9 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -334,15 +336,9 @@ bool cut_boundary_paths(const gpu_meshing::MeshResult& mesh,
             std::to_string(cut) + ")";
         return false;
     }
-    for (const auto& neighbours : adjacency)
-        if (neighbours.size() > 2u) {
-            diagnostic = "has a branched boundary vertex of degree " +
-                std::to_string(neighbours.size());
-            return false;
-        }
-
     while (!remaining.empty()) {
-        const auto seed = *remaining.begin();
+        const auto seed = *std::min_element(
+            remaining.begin(), remaining.end());
         std::vector<std::uint32_t> component;
         std::vector<std::uint32_t> stack{edge_first(seed)};
         std::unordered_set<std::uint32_t> seen;
@@ -351,36 +347,44 @@ bool cut_boundary_paths(const gpu_meshing::MeshResult& mesh,
             stack.pop_back();
             if (!seen.insert(vertex).second) continue;
             component.push_back(vertex);
-            for (const auto neighbour : adjacency[vertex])
-                stack.push_back(neighbour);
-        }
-        std::uint32_t start = component.front();
-        bool closed = true;
-        for (const auto vertex : component) {
-            if (adjacency[vertex].size() == 1u) {
-                closed = false;
-                start = vertex;
-                break;
+            for (const auto neighbour : adjacency[vertex]) {
+                if (remaining.count(edge_key(vertex, neighbour)) != 0u)
+                    stack.push_back(neighbour);
             }
-            start = std::min(start, vertex);
+        }
+        std::uint32_t start = *std::min_element(
+            component.begin(), component.end());
+        bool have_endpoint = false;
+        for (const auto vertex : component) {
+            std::size_t unused_degree = 0u;
+            for (const auto neighbour : adjacency[vertex]) {
+                if (remaining.count(edge_key(vertex, neighbour)) != 0u)
+                    ++unused_degree;
+            }
+            if (unused_degree == 1u &&
+                (!have_endpoint || vertex < start)) {
+                start = vertex;
+                have_endpoint = true;
+            }
         }
 
         CutPath path{};
-        path.closed = closed;
         std::uint32_t current = start;
         while (true) {
             path.points.push_back(mesh_point(mesh, current));
             std::uint32_t next = std::numeric_limits<std::uint32_t>::max();
             for (const auto neighbour : adjacency[current]) {
                 const auto edge = edge_key(current, neighbour);
-                if (remaining.erase(edge) != 0u) {
+                if (remaining.count(edge) != 0u && neighbour < next)
                     next = neighbour;
-                    break;
-                }
             }
             if (next == std::numeric_limits<std::uint32_t>::max()) break;
+            remaining.erase(edge_key(current, next));
             current = next;
-            if (closed && current == start) break;
+            if (current == start) {
+                path.closed = true;
+                break;
+            }
         }
         if (path.points.size() >= 2u) paths.push_back(std::move(path));
     }
@@ -1761,6 +1765,91 @@ bool load_handoff_artifact_validated(
         return false;
     }
     return true;
+}
+
+std::string hydrology_network_timing_trace_json(
+    const HydrologyNetworkBakeResult& result) {
+    const auto hex64 = [](std::uint64_t value) {
+        std::ostringstream stream;
+        stream << std::hex << std::setfill('0') << std::setw(16) << value;
+        return stream.str();
+    };
+    const auto write_u32_array = [](std::ostringstream& stream,
+                                    const std::vector<std::uint32_t>& values) {
+        stream << '[';
+        for (std::size_t index = 0u; index != values.size(); ++index) {
+            if (index != 0u) stream << ',';
+            stream << values[index];
+        }
+        stream << ']';
+    };
+
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3)
+           << "{\n  \"networkState\": \"Ready\",\n  \"sections\": [\n";
+    for (std::size_t index = 0u;
+         index != result.timings.sections.size(); ++index) {
+        const auto& timing = result.timings.sections[index];
+        const auto section = std::find_if(
+            result.sections.begin(), result.sections.end(),
+            [&](const auto& value) {
+                return value.section.section_id == timing.id;
+            });
+        const std::uint32_t particles = section == result.sections.end()
+            ? 0u : section->stats.active_particles;
+        const std::uint32_t escaped = section == result.sections.end()
+            ? 0u : section->stats.escaped_particles;
+        const std::uint32_t accepted_step = section == result.sections.end()
+            ? 0u : section->stats.simulated_steps;
+        stream << "    {\"id\":" << std::quoted(timing.id)
+               << ",\"cacheHit\":" << std::boolalpha << timing.cache_hit
+               << ",\"setupMs\":" << timing.setup_ms
+               << ",\"physxInitMs\":" << timing.physx_init_ms
+               << ",\"simulateMs\":" << timing.simulate_ms
+               << ",\"gpuMeshMs\":" << timing.gpu_mesh_ms
+               << ",\"animationCaptureMs\":" << timing.animation_capture_ms
+               << ",\"animationMeshMs\":" << timing.animation_mesh_ms
+               << ",\"animationSerializeMs\":"
+               << timing.animation_serialize_ms
+               << ",\"cpuMeshMs\":" << timing.cpu_mesh_ms
+               << ",\"particles\":" << particles
+               << ",\"escaped\":" << escaped
+               << ",\"acceptedStep\":" << accepted_step
+               << ",\"animationCacheHit\":"
+               << timing.animation_cache_hit
+               << ",\"animationBytes\":" << timing.animation_bytes
+               << ",\"animationDeviceCaptureBytes\":"
+               << timing.animation_device_capture_bytes
+               << ",\"animationSemanticKey\":"
+               << std::quoted(hex64(timing.animation_semantic_key))
+               << ",\"animationPayloadDigest\":"
+               << std::quoted(hex64(timing.animation_payload_digest))
+               << ",\"animationCaptureFirstStep\":"
+               << timing.animation_capture_first_step
+               << ",\"animationCaptureLastStep\":"
+               << timing.animation_capture_last_step
+               << ",\"animationCaptureParticleCounts\":";
+        write_u32_array(stream, timing.animation_capture_particle_counts);
+        stream << ",\"animationFrameVertexCounts\":";
+        write_u32_array(stream, timing.animation_frame_vertex_counts);
+        stream << ",\"animationFrameTriangleCounts\":";
+        write_u32_array(stream, timing.animation_frame_triangle_counts);
+        stream << '}'
+               << (index + 1u == result.timings.sections.size()
+                       ? "\n" : ",\n");
+    }
+    stream << "  ],\n  \"handoffMeshMs\":"
+           << result.timings.handoff_mesh_ms
+           << ",\n  \"handoffAnimationMeshMs\":"
+           << result.timings.handoff_animation_mesh_ms
+           << ",\n  \"serializeMs\":" << result.timings.serialize_ms
+           << ",\n  \"totalWallMs\":" << result.timings.total_wall_ms
+           << ",\n  \"visualVertices\":"
+           << result.products.visual_mesh.positions.size() / 3u
+           << ",\n  \"visualTriangles\":"
+           << result.products.visual_mesh.indices.size() / 3u
+           << "\n}\n";
+    return stream.str();
 }
 
 }  // namespace hydrology

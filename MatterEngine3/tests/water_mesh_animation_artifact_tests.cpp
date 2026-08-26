@@ -181,15 +181,24 @@ void test_corruption_and_invalid_meshes_fail_closed() {
 
     animation = animation_fixture();
     auto& collapsing = animation.frames[0];
-    collapsing.positions = {
+    collapsing.positions.insert(collapsing.positions.end(), {
         -4.0f, 1.0f, -2.0f,
         -4.0f + 1e-7f, 1.0f, -2.0f,
         -4.0f, 1.0f + 1e-7f, -2.0f,
-    };
+    });
+    collapsing.normals.insert(collapsing.normals.end(), {
+        0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+    });
+    collapsing.indices.insert(collapsing.indices.end(), {3u, 4u, 5u});
     collapsing.content_digest = gpu_meshing::mesh_content_digest(collapsing);
-    CHECK(!hydrology::pack_water_mesh_animation_artifact(
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
               metadata_fixture(), animation, artifact, error),
-          "triangles collapsed by shared-AABB quantization are rejected");
+          error.message.c_str());
+    CHECK(artifact.frames[0].vertex_count == 6u &&
+              artifact.frames[0].index_count == 3u,
+          "quantization omits only collapsed zero-area triangles and retains the usable surface");
 }
 
 void test_immutable_save_never_replaces_different_content() {

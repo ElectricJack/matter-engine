@@ -83,6 +83,10 @@ bool water_mesh_animation_frame_span(
     WaterMeshAnimationFrameSpan& span,
     gpu_meshing::Error& error);
 
+// Diagnostic count used by playback/performance regression tests. Loading and
+// serialization are expected to validate; steady-state frame selection is not.
+std::uint64_t water_mesh_animation_validation_count() noexcept;
+
 bool decode_water_mesh_animation_frame(
     const WaterMeshAnimationArtifact& artifact,
     std::uint32_t frame_index,

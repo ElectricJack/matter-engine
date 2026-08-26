@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -104,6 +105,7 @@ private:
     struct Asset {
         hydrology::HydrologyWaterAnimationReference reference{};
         std::shared_ptr<const hydrology::WaterMeshAnimationArtifact> artifact;
+        std::array<hydrology::WaterMeshAnimationFrameSpan, 30u> frame_spans{};
         bool handoff = false;
         std::uint64_t serialized_bytes = 0u;
     };

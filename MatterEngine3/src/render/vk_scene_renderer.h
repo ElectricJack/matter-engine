@@ -181,7 +181,7 @@ inline uint32_t vulkan_history_token(uint64_t instance_id) {
 // stop shading and emit a flat, self-lit line colour, so it must never be
 // raised on a device that fell back to fill -- see select_raster_pipelines,
 // which is the single place that decides both at once.
-struct RasterDebugPushConstants {
+struct alignas(16) RasterDebugPushConstants {
     uint32_t direct_lod = 0;
     uint32_t direct_lod_valid = 0;
     uint32_t lod_tint_enabled = 0;
@@ -195,13 +195,18 @@ struct RasterDebugPushConstants {
     // NOTE: distinct from tileset POM, which already excludes impostors
     // outright (`tileset_slot >= 0 && !is_impostor`).
     uint32_t impostor_parallax_enabled = 1;
+    uint32_t water_padding0[3]{};
+    float water_bounds_min[4]{};
+    float water_bounds_extent[4]{};
+    uint32_t water_material_index = 0u;
+    uint32_t water_padding1[3]{};
 };
-// FIVE words now. The GLSL block is declared identically in BOTH gbuffer.frag
+// The GLSL block is declared identically in BOTH gbuffer.frag
 // and raster.vert; all three must be changed together, and the shaders need
 // `make -C MatterEngine3 vulkan-spirv` -- a plain build silently keeps the old
 // SPIR-V and the new word reads as garbage.
-static_assert(sizeof(RasterDebugPushConstants) == 20,
-              "raster debug push constants must remain five uint32_t words");
+static_assert(sizeof(RasterDebugPushConstants) == 80,
+              "raster push constants must remain five aligned vec4 records");
 
 // Keep raster-pipeline choice atomic: an unavailable or partially created line
 // variant must never produce a mixed fill/line frame, and must never leave the
@@ -254,10 +259,31 @@ inline RasterDebugPushConstants make_raster_debug_push_constants(
     matter::GeometryDebugView geometry_debug_view,
     bool wireframe_enabled,
     bool impostor_parallax_enabled = true) noexcept {
-    return {direct_lod, direct_lod_valid ? 1u : 0u,
-            geometry_debug_view == matter::GeometryDebugView::LodTint ? 1u : 0u,
-            wireframe_enabled ? 1u : 0u,
-            impostor_parallax_enabled ? 1u : 0u};
+    RasterDebugPushConstants result{};
+    result.direct_lod = direct_lod;
+    result.direct_lod_valid = direct_lod_valid ? 1u : 0u;
+    result.lod_tint_enabled =
+        geometry_debug_view == matter::GeometryDebugView::LodTint ? 1u : 0u;
+    result.wireframe_enabled = wireframe_enabled ? 1u : 0u;
+    result.impostor_parallax_enabled = impostor_parallax_enabled ? 1u : 0u;
+    return result;
+}
+
+inline RasterDebugPushConstants make_water_animation_push_constants(
+    const RasterDebugPushConstants& base,
+    const VkWaterAnimationRasterDraw& draw) noexcept {
+    RasterDebugPushConstants result = base;
+    result.water_bounds_min[0] = draw.quantization_bounds_m.min_m.x;
+    result.water_bounds_min[1] = draw.quantization_bounds_m.min_m.y;
+    result.water_bounds_min[2] = draw.quantization_bounds_m.min_m.z;
+    result.water_bounds_extent[0] = draw.quantization_bounds_m.max_m.x -
+                                    draw.quantization_bounds_m.min_m.x;
+    result.water_bounds_extent[1] = draw.quantization_bounds_m.max_m.y -
+                                    draw.quantization_bounds_m.min_m.y;
+    result.water_bounds_extent[2] = draw.quantization_bounds_m.max_m.z -
+                                    draw.quantization_bounds_m.min_m.z;
+    result.water_material_index = draw.material_index;
+    return result;
 }
 
 // Emission is stored as log2(1 + strength) in the alpha channel of the
@@ -1474,10 +1500,25 @@ public:
     static constexpr uint32_t kGpuZoneVolDensity    = 14;
     static constexpr uint32_t kGpuZoneVolScatter    = 15;
     static constexpr uint32_t kGpuZoneVolIntegrate  = 16;
-    static constexpr uint32_t kGpuZoneCount         = 17;
+    static constexpr uint32_t kGpuZoneWaterDecode   = 17;
+    static constexpr uint32_t kGpuZoneWaterDraw     = 18;
+    static constexpr uint32_t kGpuZoneCount         = 19;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
+    }
+    float gpu_zone_last_ms(uint32_t zone) const {
+        return zone < kGpuZoneCount ? gpu_last_ms_[zone] : 0.0f;
+    }
+    std::uint64_t water_animation_upload_count() const noexcept {
+        return water_animation_upload_count_;
+    }
+    std::uint64_t water_animation_decode_dispatch_count() const noexcept {
+        return water_animation_decode_dispatch_count_;
+    }
+    std::uint64_t water_animation_steady_state_allocation_count() const
+        noexcept {
+        return water_animation_schedule_.steady_state_allocation_count();
     }
     // A poisoned renderer fails closed. reset() then performs a full GPU
     // resource/pipeline teardown, clears the poison, and requires re-init
@@ -2087,7 +2128,6 @@ private:
     bool create_environment_layout(std::string& error);
     bool create_environment_resources(std::string& error);
     bool create_raster_pipelines(std::string& error);
-    bool create_water_animation_decode_pipeline(std::string& error);
     bool create_display_pipeline(std::string& error);
     bool create_overlay_line_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
@@ -2360,9 +2400,6 @@ private:
     // is the same frame with the interiors removed.
     VkPipeline wireframe_raster_pipeline_ = VK_NULL_HANDLE;
     VkPipeline wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
-    VkDescriptorSetLayout water_animation_decode_set_layout_ = VK_NULL_HANDLE;
-    VkPipelineLayout water_animation_decode_pipeline_layout_ = VK_NULL_HANDLE;
-    VkPipeline water_animation_decode_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
@@ -2399,15 +2436,11 @@ private:
     uint32_t frame_resource_slot_capacity_ = 0;
 
     struct WaterAnimationVulkanFrame {
-        matter::VkBufferResource packed_vertices;
-        matter::VkBufferResource index_upload;
-        matter::VkBufferResource decoded_vertices;
+        matter::VkBufferResource vertices;
         matter::VkBufferResource indices;
-        VkDescriptorSet decode_set = VK_NULL_HANDLE;
     };
     struct WaterAnimationVulkanGeneration {
         std::uint64_t generation = 0u;
-        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         std::vector<WaterAnimationVulkanFrame> frames;
     };
     struct RetiredWaterAnimationVulkanGeneration {
@@ -2945,6 +2978,11 @@ private:
     float timestamp_period_ns_ = 0.0f;
     // EMA-smoothed per-zone GPU timings (ms). Updated each frame on readback.
     float gpu_smoothed_ms_[kGpuZoneCount]{};
+    // Most recently retired raw sample per zone. Acceptance/perf capture uses
+    // this rather than an EMA so median and p95 retain their meaning.
+    float gpu_last_ms_[kGpuZoneCount]{};
+    std::uint64_t water_animation_upload_count_ = 0u;
+    std::uint64_t water_animation_decode_dispatch_count_ = 0u;
     // Helper recorded per-frame to stamp the command buffer.
     void write_gpu_timestamp(VkCommandBuffer cmd, uint32_t zone_id,
                              bool is_end, FrameResources& frame);

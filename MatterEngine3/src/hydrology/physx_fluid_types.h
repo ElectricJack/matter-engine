@@ -243,6 +243,8 @@ struct FluidParticleAnimationFrame {
 struct FluidParticleAnimationCapture {
     std::uint32_t frames_per_second = 0;
     std::uint32_t phase_offset_frames = 0;
+    double host_readback_ms = 0.0;
+    std::uint64_t device_storage_bytes = 0u;
     std::vector<FluidParticleAnimationFrame> frames;
 };
 

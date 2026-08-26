@@ -50,6 +50,12 @@ using ArtifactBuilder = std::function<bool(HydrologyArtifact& artifact,
 bool serialize_artifact(const HydrologyArtifact& artifact,
                         std::vector<std::uint8_t>& bytes,
                         gpu_meshing::Error& error);
+// Derives the exact immutable-file payload digest without publishing a cache
+// file. Animation artifacts use this value as their source identity while the
+// complete section transaction is still being assembled in memory.
+bool hydrology_artifact_payload_digest(
+    const HydrologyArtifact& artifact, std::uint64_t& payload_digest,
+    gpu_meshing::Error& error);
 bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
                           HydrologyArtifact& artifact,
                           gpu_meshing::Error& error);

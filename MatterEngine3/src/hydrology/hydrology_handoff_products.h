@@ -37,9 +37,19 @@ struct HydrologySectionTimings {
     double physx_init_ms = 0.0;
     double simulate_ms = 0.0;
     double gpu_mesh_ms = 0.0;
+    double animation_capture_ms = 0.0;
     double animation_mesh_ms = 0.0;
+    double animation_serialize_ms = 0.0;
     double cpu_mesh_ms = 0.0;
     std::uint64_t animation_bytes = 0u;
+    std::uint64_t animation_device_capture_bytes = 0u;
+    std::uint64_t animation_semantic_key = 0u;
+    std::uint64_t animation_payload_digest = 0u;
+    std::uint32_t animation_capture_first_step = 0u;
+    std::uint32_t animation_capture_last_step = 0u;
+    std::vector<std::uint32_t> animation_capture_particle_counts;
+    std::vector<std::uint32_t> animation_frame_vertex_counts;
+    std::vector<std::uint32_t> animation_frame_triangle_counts;
     bool animation_cache_hit = false;
 };
 
@@ -61,6 +71,9 @@ struct HydrologyNetworkBakeResult {
     gpu_meshing::MeshResult failed_debug_visual;
     HydrologyNetworkTimings timings{};
 };
+
+std::string hydrology_network_timing_trace_json(
+    const HydrologyNetworkBakeResult& result);
 
 struct HandoffProductSettings {
     gpu_meshing::ParticleJob visual_job{};

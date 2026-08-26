@@ -70,6 +70,38 @@ gpu_meshing::ParticleJob tight_visual_job(
     return result;
 }
 
+gpu_meshing::ParticleJob tight_visual_job(
+    const gpu_meshing::ParticleJob& authored) {
+    gpu_meshing::ParticleJob result = authored;
+    if (authored.particle_count == 0u || authored.particles == nullptr)
+        return result;
+    matter::Float3 minimum = authored.particles[0].position_m;
+    matter::Float3 maximum = minimum;
+    float maximum_radius = authored.particles[0].radius_m;
+    for (std::uint32_t index = 1u; index != authored.particle_count; ++index) {
+        const gpu_meshing::ParticleSample& particle = authored.particles[index];
+        minimum.x = std::min(minimum.x, particle.position_m.x);
+        minimum.y = std::min(minimum.y, particle.position_m.y);
+        minimum.z = std::min(minimum.z, particle.position_m.z);
+        maximum.x = std::max(maximum.x, particle.position_m.x);
+        maximum.y = std::max(maximum.y, particle.position_m.y);
+        maximum.z = std::max(maximum.z, particle.position_m.z);
+        maximum_radius = std::max(maximum_radius, particle.radius_m);
+    }
+    const float padding = maximum_radius * 2.5f +
+                          authored.blend_width_m * 4.0f +
+                          authored.voxel_m;
+    result.bounds_m.min_m = {
+        std::max(authored.bounds_m.min_m.x, minimum.x - padding),
+        std::max(authored.bounds_m.min_m.y, minimum.y - padding),
+        std::max(authored.bounds_m.min_m.z, minimum.z - padding)};
+    result.bounds_m.max_m = {
+        std::min(authored.bounds_m.max_m.x, maximum.x + padding),
+        std::min(authored.bounds_m.max_m.y, maximum.y + padding),
+        std::min(authored.bounds_m.max_m.z, maximum.z + padding)};
+    return result;
+}
+
 bool fail(FluidBakeCode code, const char* message,
           FluidBakeOutput& output, FluidBakeError& error) {
     output = {};
@@ -425,28 +457,18 @@ bool validate_failed_debug_snapshot(const FluidBakeInput& input,
     return true;
 }
 
-bool build_particle_visual_chunks(
-    const std::vector<FluidParticle>& source,
-    const PhysxFluidBake::ProductBuildSettings& settings,
+bool build_particle_visual_job_chunks_impl(
+    const gpu_meshing::ParticleJob& root_template,
     const PhysxFluidBake::VisualMesher& visual_mesher,
     gpu_meshing::MeshResult& merged, gpu_meshing::Error& error) {
     merged = {};
-    merged.material = 4u;
+    merged.material = root_template.material;
 
     // Establish one immutable grid for the complete particle envelope.  Every
     // retry below is an integer cell range of this grid, so neighbouring jobs
     // evaluate their overlap at the same sample locations instead of creating
     // unrelated tight grids (the source of the false transverse gaps).
-    const gpu_meshing::ParticleJob root_template = tight_visual_job(
-        source, settings.particle_radius_m, settings.visual_job);
-    std::vector<gpu_meshing::ParticleSample> root_particles;
-    root_particles.reserve(source.size());
-    for (const FluidParticle& particle : source)
-        root_particles.push_back(
-            {particle.position_m, settings.particle_radius_m});
     gpu_meshing::ParticleJob layout_job = root_template;
-    layout_job.particles = root_particles.data();
-    layout_job.particle_count = static_cast<std::uint32_t>(root_particles.size());
     layout_job.limits.max_particles = std::numeric_limits<std::uint32_t>::max();
     layout_job.limits.max_grid_vertices =
         std::numeric_limits<std::uint32_t>::max();
@@ -502,7 +524,7 @@ bool build_particle_visual_chunks(
         }
     };
     const float weld_tolerance =
-        std::max(1.0e-5f, settings.visual_job.voxel_m * 1.0e-4f);
+        std::max(1.0e-5f, root_template.voxel_m * 1.0e-4f);
     const float weld_tolerance_squared = weld_tolerance * weld_tolerance;
     std::unordered_map<WeldKey, std::vector<std::uint32_t>, WeldKeyHash>
         weld_buckets;
@@ -574,7 +596,7 @@ bool build_particle_visual_chunks(
             }
         }
         const std::size_t vertex_count = merged.positions.size() / 3u;
-        if (vertex_count >= settings.visual_job.limits.max_mesh_vertices ||
+        if (vertex_count >= root_template.limits.max_mesh_vertices ||
             vertex_count >= std::numeric_limits<std::uint32_t>::max()) {
             error = {gpu_meshing::ErrorCode::LimitExceeded,
                      "particle-water chunks exceed the global vertex limit"};
@@ -594,7 +616,8 @@ bool build_particle_visual_chunks(
 
     const auto append_owned_triangles = [&](const CellRange& owned,
                                             const gpu_meshing::MeshResult& chunk) {
-        if (chunk.material != 4u || chunk.positions.size() % 3u != 0u ||
+        if (chunk.material != root_template.material ||
+            chunk.positions.size() % 3u != 0u ||
             chunk.normals.size() != chunk.positions.size() ||
             chunk.indices.size() % 3u != 0u) {
             error = {gpu_meshing::ErrorCode::ArtifactFailure,
@@ -613,7 +636,7 @@ bool build_particle_visual_chunks(
              triangle != chunk.indices.size() / 3u; ++triangle) {
             if (!owns_triangle(owned, chunk, triangle)) continue;
             if (merged.indices.size() + 3u >
-                settings.visual_job.limits.max_mesh_indices) {
+                root_template.limits.max_mesh_indices) {
                 error = {gpu_meshing::ErrorCode::LimitExceeded,
                          "particle-water chunks exceed the global index limit"};
                 return false;
@@ -662,7 +685,7 @@ bool build_particle_visual_chunks(
             if (mesh_range.end[axis] != root_layout.cell_dims[axis])
                 ++mesh_range.end[axis];
         }
-        gpu_meshing::ParticleJob visual_template = settings.visual_job;
+        gpu_meshing::ParticleJob visual_template = root_template;
         for (std::size_t axis = 0; axis != 3u; ++axis) {
             set_coordinate(visual_template.bounds_m.min_m, axis,
                            grid_coordinate(axis, mesh_range.begin[axis]));
@@ -670,10 +693,16 @@ bool build_particle_visual_chunks(
                            grid_coordinate(axis, mesh_range.end[axis]));
         }
 
-        std::vector<FluidParticle> halo_particles;
-        halo_particles.reserve(source.size());
+        std::vector<gpu_meshing::ParticleSample> primary_particles;
+        std::vector<gpu_meshing::ParticleSample> secondary_particles;
+        primary_particles.reserve(root_template.particle_count);
+        secondary_particles.reserve(root_template.particle_count);
         const float halo = root_layout.query_radius_m;
-        for (const FluidParticle& particle : source) {
+        for (std::uint32_t particle_index = 0u;
+             particle_index != root_template.particle_count;
+             ++particle_index) {
+            const gpu_meshing::ParticleSample& particle =
+                root_template.particles[particle_index];
             bool relevant = true;
             for (std::size_t axis = 0; axis != 3u; ++axis) {
                 const float value = coordinate(particle.position_m, axis);
@@ -683,16 +712,34 @@ bool build_particle_visual_chunks(
                     break;
                 }
             }
-            if (relevant) halo_particles.push_back(particle);
+            if (!relevant) continue;
+            const bool secondary =
+                root_template.phase_blend.secondary_weight > 0.0f &&
+                particle_index >= root_template.phase_blend.split_index;
+            (secondary ? secondary_particles : primary_particles)
+                .push_back(particle);
         }
-        if (halo_particles.empty()) return true;
+        if (primary_particles.empty() && secondary_particles.empty())
+            return true;
 
         std::vector<gpu_meshing::ParticleSample> job_particles;
-        gpu_meshing::ParticleJob job{};
+        job_particles.reserve(primary_particles.size() +
+                              secondary_particles.size());
+        job_particles.insert(job_particles.end(), primary_particles.begin(),
+                             primary_particles.end());
+        const std::uint32_t phase_split =
+            static_cast<std::uint32_t>(job_particles.size());
+        job_particles.insert(job_particles.end(), secondary_particles.begin(),
+                             secondary_particles.end());
+        gpu_meshing::ParticleJob job = visual_template;
+        job.particles = job_particles.data();
+        job.particle_count =
+            static_cast<std::uint32_t>(job_particles.size());
+        job.phase_blend = root_template.phase_blend;
+        job.phase_blend.split_index = phase_split;
         gpu_meshing::Error job_error{};
-        if (!make_fluid_particle_job(
-                halo_particles, settings.particle_radius_m, visual_template,
-                job_particles, job, job_error)) {
+        gpu_meshing::GridLayout job_layout{};
+        if (!gpu_meshing::validate_particle_job(job, job_layout, job_error)) {
             if (job_error.code == gpu_meshing::ErrorCode::LimitExceeded)
                 return split_chunk();
             error = std::move(job_error);
@@ -731,7 +778,56 @@ bool build_particle_visual_chunks(
     return true;
 }
 
+bool build_particle_visual_chunks(
+    const std::vector<FluidParticle>& source,
+    const PhysxFluidBake::ProductBuildSettings& settings,
+    const PhysxFluidBake::VisualMesher& visual_mesher,
+    gpu_meshing::MeshResult& merged, gpu_meshing::Error& error) {
+    gpu_meshing::ParticleJob root_job = tight_visual_job(
+        source, settings.particle_radius_m, settings.visual_job);
+    std::vector<gpu_meshing::ParticleSample> root_particles;
+    root_particles.reserve(source.size());
+    for (const FluidParticle& particle : source)
+        root_particles.push_back(
+            {particle.position_m, settings.particle_radius_m});
+    root_job.particles = root_particles.data();
+    root_job.particle_count =
+        static_cast<std::uint32_t>(root_particles.size());
+    return build_particle_visual_job_chunks_impl(
+        root_job, visual_mesher, merged, error);
+}
+
 }  // namespace
+
+bool PhysxFluidBake::build_visual_job_chunks(
+    const gpu_meshing::ParticleJob& root_job,
+    const VisualMesher& visual_mesher,
+    gpu_meshing::MeshResult& merged,
+    gpu_meshing::Error& error) noexcept {
+    merged = {};
+    error = {};
+    try {
+        if (!visual_mesher) {
+            error = {gpu_meshing::ErrorCode::InvalidInput,
+                     "particle-water visual mesher is missing"};
+            return false;
+        }
+        const gpu_meshing::ParticleJob tight_job = tight_visual_job(root_job);
+        return build_particle_visual_job_chunks_impl(
+            tight_job, visual_mesher, merged, error);
+    } catch (const std::exception& exception) {
+        merged = {};
+        error = {gpu_meshing::ErrorCode::ArtifactFailure,
+                 std::string("particle-water chunk meshing failed: ") +
+                     exception.what()};
+        return false;
+    } catch (...) {
+        merged = {};
+        error = {gpu_meshing::ErrorCode::ArtifactFailure,
+                 "particle-water chunk meshing raised an unknown exception"};
+        return false;
+    }
+}
 
 bool PhysxFluidBake::run(const FluidBakeInput& input,
                          IFluidBakeBackend& backend,

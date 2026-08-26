@@ -500,6 +500,24 @@ void test_atomic_save_validated_load_and_cache_hit() {
     std::filesystem::remove_all(root);
 }
 
+void test_payload_digest_is_available_before_animation_packaging() {
+    const auto artifact = fixture_artifact();
+    std::uint64_t digest = 0u;
+    gpu_meshing::Error error{};
+    CHECK(hydrology::hydrology_artifact_payload_digest(
+              artifact, digest, error), error.message.c_str());
+    CHECK(digest != 0u,
+          "an accepted static artifact exposes its source digest before disk publication");
+
+    std::vector<std::uint8_t> bytes;
+    hydrology::HydrologyArtifact reopened{};
+    CHECK(hydrology::serialize_artifact(artifact, bytes, error) &&
+              hydrology::deserialize_artifact(bytes, reopened, error),
+          error.message.c_str());
+    CHECK(digest == reopened.payload_digest,
+          "the pre-publication digest exactly matches the immutable artifact header");
+}
+
 }  // namespace
 
 int main() {
@@ -512,5 +530,6 @@ int main() {
     test_cpu_fallback_preserves_fine_particle_water_on_a_coarse_query_lattice();
     test_artifact_round_trip_and_corruption_closure();
     test_atomic_save_validated_load_and_cache_hit();
+    test_payload_digest_is_available_before_animation_packaging();
     return check_summary();
 }

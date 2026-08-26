@@ -248,6 +248,8 @@ Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash
 }
 Require-Text $main 'end_to_end_cadence' 'end-to-end performance metric label'
 Require-Text $main 'perf_frame_cadence_ms' 'end-to-end performance frame sample'
+Require-Text $main 'perf: static geometry stable' 'performance sampling waits for completed terrain streaming'
+Require-Text $main 'GLFW_DECORATED, GLFW_FALSE' 'headless performance framebuffer is not clipped by window chrome'
 Forbid-Text $main 'perf_frame_times.push_back(stats.frame_ms)' 'CPU-only render timing sample'
 $perfFrameStart = $main.IndexOf('const auto perf_frame_start = std::chrono::steady_clock::now();')
 $pollEvents = $main.IndexOf('glfwPollEvents();')

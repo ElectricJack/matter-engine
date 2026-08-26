@@ -91,6 +91,15 @@ layout(push_constant) uniform RasterDebugPushConstants {
     // raster.vert and in RasterDebugPushConstants (vk_scene_renderer.h); the
     // three must stay identical.
     uint impostor_parallax_enabled;
+    uint water_padding0;
+    uint water_padding1;
+    uint water_padding2;
+    vec4 water_bounds_min;
+    vec4 water_bounds_extent;
+    uint water_material_index;
+    uint water_padding3;
+    uint water_padding4;
+    uint water_padding5;
 } debug_push;
 
 layout(location = 0) out vec4 out_albedo;

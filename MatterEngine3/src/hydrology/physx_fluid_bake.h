@@ -43,6 +43,16 @@ public:
         const std::vector<FluidParticle>& particles, float particle_radius_m,
         const gpu_meshing::ParticleJob& authored);
 
+    // Uses the same cell-aligned halo/crop/weld strategy as accepted static
+    // water, while retaining dual-phase ordering and weights. This keeps a
+    // large animation frame at the authored voxel size instead of rejecting
+    // its full-section dense grid or silently lowering resolution.
+    static bool build_visual_job_chunks(
+        const gpu_meshing::ParticleJob& root_job,
+        const VisualMesher& visual_mesher,
+        gpu_meshing::MeshResult& merged,
+        gpu_meshing::Error& error) noexcept;
+
     // Called only after run() has accepted the sorted final snapshot.  It is
     // deliberately renderer-agnostic: the caller supplies the existing Vulkan
     // particle mesher seam and no PhysX extraction API is involved.

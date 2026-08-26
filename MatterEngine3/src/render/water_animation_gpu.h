@@ -12,9 +12,9 @@
 
 namespace viewer {
 
-// This is the only vertex ABI consumed by raster_water.vert. The file keeps
-// the much smaller 12-byte PackedWaterAnimationVertex until a selected frame
-// is decoded on the GPU.
+// CPU decode oracle for artifact validation/tests. Runtime rasterization keeps
+// the 12-byte PackedWaterAnimationVertex intact and decodes it in the water
+// vertex specialization, so it never allocates this expanded record.
 struct VkWaterAnimationVertex {
     matter::Float3 position{};
     matter::Float3 normal{};
@@ -27,23 +27,18 @@ static_assert(offsetof(VkWaterAnimationVertex, position) == 0u &&
                   offsetof(VkWaterAnimationVertex, normal) == 12u &&
                   offsetof(VkWaterAnimationVertex, material_index) == 24u,
               "GPU water animation attributes changed ABI");
+inline constexpr std::uint32_t kWaterAnimationRasterVertexStride =
+    sizeof(hydrology::PackedWaterAnimationVertex);
 
-struct alignas(16) VkWaterAnimationDecodePush {
-    float bounds_min[4]{};
-    float bounds_extent[4]{};
-    std::uint32_t packed_word_offset = 0u;
-    std::uint32_t output_vertex = 0u;
-    std::uint32_t vertex_count = 0u;
-    std::uint32_t material_index = 0u;
-};
-
-static_assert(sizeof(VkWaterAnimationDecodePush) == 48u,
-              "water animation decode push ABI must be three vec4 records");
-
-struct VkWaterAnimationDecodeDispatch {
-    VkWaterAnimationDecodePush push{};
-    std::uint32_t group_count_x = 0u;
-};
+// Keep the fence-owned direct-raster buffers host visible for upload and prefer
+// a coherent device-local BAR heap so the packed stream stays in GPU-local
+// memory while it is consumed. Vulkan may fall back to any HOST_VISIBLE type
+// when this combined heap is unavailable.
+inline constexpr VkMemoryPropertyFlags kWaterAnimationRequiredMemory =
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+inline constexpr VkMemoryPropertyFlags kWaterAnimationPreferredMemory =
+    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 struct VkWaterAnimationRasterDraw {
     std::uint32_t first_index = 0u;
@@ -52,14 +47,13 @@ struct VkWaterAnimationRasterDraw {
     std::uint32_t vertex_count = 0u;
     std::uint32_t proxy_transform_slot = 0u;
     std::uint32_t material_index = 0u;
+    gpu_meshing::Aabb quantization_bounds_m{};
     bool handoff = false;
 };
 
 struct WaterAnimationGpuBarriers {
-    bool host_write_to_compute_read = false;
-    bool host_write_to_transfer_read = false;
-    bool compute_write_to_vertex_read = false;
-    bool transfer_write_to_index_read = false;
+    bool host_write_to_vertex_read = false;
+    bool host_write_to_index_read = false;
 };
 
 struct WaterAnimationGpuCapacity {
@@ -91,13 +85,10 @@ struct WaterAnimationGpuFrame {
     bool upload_required = false;
     std::vector<std::uint8_t> packed_vertices;
     std::vector<std::uint32_t> indices;
-    std::vector<VkWaterAnimationDecodeDispatch> decode_dispatches;
     std::vector<VkWaterAnimationRasterDraw> draws;
     WaterAnimationGpuBarriers barriers{};
-    VkBufferUsageFlags decoded_buffer_usage =
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBufferUsageFlags raster_vertex_buffer_usage =
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 };
 
 VkWaterAnimationVertex decode_water_animation_vertex_cpu(
@@ -133,6 +124,9 @@ public:
     const WaterAnimationGpuCapacity& capacity() const noexcept {
         return capacity_;
     }
+    std::uint64_t steady_state_allocation_count() const noexcept {
+        return steady_state_allocation_count_;
+    }
 
 private:
     struct Retired {
@@ -145,6 +139,7 @@ private:
     std::vector<WaterAnimationGpuFrame> frames_;
     std::vector<std::int32_t> selected_frames_;
     std::vector<Retired> retired_;
+    std::uint64_t steady_state_allocation_count_ = 0u;
 };
 
 }  // namespace viewer

@@ -120,10 +120,14 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
   - `MATTER_CAM_PATH_EXIT=1` — quit once the path (plus its FIFO drain tail) ends.
   - `MATTER_CAM_PATH_WARMUP=<n>` — frames to hold at the first pose after the
     world is drawable; default **30**.
-  - `MATTER_CAM_PATH_SETTLE=<seconds>` — wall-clock seconds of unchanged
+- `MATTER_CAM_PATH_SETTLE=<seconds>` — wall-clock seconds of unchanged
     `resident_sectors` required before the path starts (0 = off, frame-warmup
-    only). Deliberately wall-clock, not a frame count, so it means the same
-    thing at any framerate.
+  only). Deliberately wall-clock, not a frame count, so it means the same
+  thing at any framerate.
+- `MATTER_WINDOW_WIDTH` / `MATTER_WINDOW_HEIGHT` — optional paired initial
+  framebuffer dimensions for automated screenshots and resolution-specific
+  performance gates. Both must be set; replays continue to use their recorded
+  dimensions.
 - `MATTER_SCREENSHOT=<path>` — capture-then-quit: writes one PNG after settling
   and exits.
   - `MATTER_SCREENSHOT_SETTLE=<n>` — frames to hold before capture; default **3**.
@@ -150,6 +154,10 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
   backend (`WinDirWatcher`, `MatterEngine3/src/file_watcher.h`) is a stub.
 - `MATTER_VK_VALIDATION=1` — opt in to Vulkan validation layers (off by default
   so machines without the Vulkan SDK aren't broken by default).
+- `MATTER_WATER_ANIMATION_FORCE_LOAD_FAILURE=1` — QA fault injection: resolves
+  baked-water animation references through a deliberately missing subdirectory
+  so the accepted static-water fallback can be captured without corrupting or
+  moving real cache artifacts.
 - `MATTER_TEST_RESIZE` — exercises a forced window resize once baked, for resize
   regression testing.
 - `MATTER_FORCE_LOD_TINT` — forces the LOD-rung debug tint view on.
@@ -162,7 +170,11 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
 - `MATTER_PERF_OUTPUT`, `MATTER_PERF_WARMUP_SECONDS`, `MATTER_PERF_SAMPLE_SECONDS`
   — headless perf run (§ recipe 8 in the QA cookbook). **Must be set together**;
   setting any subset is a fatal startup error
-  (`read_perf_run_config` in `main.cpp`).
+  (`read_perf_run_config` in `main.cpp`). The hidden window is borderless so
+  `MATTER_WINDOW_WIDTH/HEIGHT` describe the exact framebuffer. Sampling begins
+  only after the static vertex/cluster upload counters remain unchanged for 30
+  rendered frames, preventing terrain-sector publication from contaminating a
+  steady-state GPU measurement.
 - `MATTER_HIZ` — dead. Legacy env var, retained only to print
   `MATTER_HIZ: not available in Vulkan milestone; ignored` instead of silently
   doing nothing.

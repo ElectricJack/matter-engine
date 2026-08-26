@@ -622,6 +622,9 @@ struct PerfCounters {
     uint64_t cluster_uploads = 0;
     uint64_t instance_uploads = 0;
     uint64_t immediate_submits = 0;
+    uint64_t water_animation_uploads = 0;
+    uint64_t water_animation_decode_dispatches = 0;
+    uint64_t water_animation_steady_state_allocations = 0;
 };
 
 bool parse_perf_seconds(const char* value, const char* name, double& result,
@@ -662,7 +665,10 @@ bool read_perf_run_config(PerfRunConfig& config, std::string& error) {
 
 PerfCounters capture_perf_counters(const matter::FrameStats& stats) {
     return {stats.vk_vertex_uploads, stats.vk_cluster_uploads,
-            stats.vk_instance_uploads, stats.vk_immediate_submits};
+            stats.vk_instance_uploads, stats.vk_immediate_submits,
+            stats.water_animation_uploads,
+            stats.water_animation_decode_dispatches,
+            stats.water_animation_steady_state_allocations};
 }
 
 double median_of_sorted(const std::vector<double>& sorted) {
@@ -812,7 +818,9 @@ void emit_registration_census(
 }
 
 bool write_perf_result(const PerfRunConfig& config, const std::string& world,
-                       std::vector<double> frame_times, const PerfCounters& start,
+                       std::vector<double> frame_times,
+                       std::vector<double> water_animation_times,
+                       const PerfCounters& start,
                        const PerfCounters& finish,
                        const matter::FrameStats& frame_stats,
                        const viewer::ViewerStats& loop_stats,
@@ -828,6 +836,14 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
     const size_t p95_index = static_cast<size_t>(
         std::ceil(static_cast<double>(frame_times.size()) * 0.95)) - 1;
     const double p95_frame_ms = frame_times[p95_index];
+    if (water_animation_times.size() != frame_times.size()) {
+        error = "water-animation GPU samples do not match performance frames";
+        return false;
+    }
+    std::sort(water_animation_times.begin(), water_animation_times.end());
+    const double median_water_animation_ms =
+        median_of_sorted(water_animation_times);
+    const double p95_water_animation_ms = water_animation_times[p95_index];
     const double median_fps = median_frame_ms > 0.0 ? 1000.0 / median_frame_ms : 0.0;
     std::ofstream output(config.output_path, std::ios::out | std::ios::trunc);
     if (!output) {
@@ -848,6 +864,19 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << (finish.instance_uploads - start.instance_uploads)
            << ",\"immediate_submit_delta\":"
            << (finish.immediate_submits - start.immediate_submits)
+           << ",\"water_animation_gpu_median_ms\":"
+           << median_water_animation_ms
+           << ",\"water_animation_gpu_p95_ms\":"
+           << p95_water_animation_ms
+           << ",\"water_animation_upload_delta\":"
+           << (finish.water_animation_uploads -
+               start.water_animation_uploads)
+           << ",\"water_animation_decode_dispatch_delta\":"
+           << (finish.water_animation_decode_dispatches -
+               start.water_animation_decode_dispatches)
+           << ",\"water_animation_steady_state_allocation_delta\":"
+           << (finish.water_animation_steady_state_allocations -
+               start.water_animation_steady_state_allocations)
            << ",\"selected_dlss_mode\":\""
            << matter::dlss_mode_name(frame_stats.dlss_selected_mode) << "\""
            << ",\"active_dlss_mode\":\""
@@ -927,6 +956,8 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_dlss_ms\":" << frame_stats.gpu_dlss_ms
            << ",\"gpu_composite_ms\":" << frame_stats.gpu_composite_ms
            << ",\"gpu_vt_ms\":" << frame_stats.gpu_vt_ms
+           << ",\"gpu_water_animation_ms\":"
+           << frame_stats.gpu_water_animation_ms
            // CPU render-thread split (last sampled frame).
            << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
            << ",\"cpu_build_ms\":" << frame_stats.build_ms
@@ -981,12 +1012,48 @@ int main() {
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    if (registration_census_mode) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    // Perf mode is an automated GPU measurement, not an interactive editor
+    // session. Keeping its window hidden prevents the Windows desktop manager
+    // from clipping oversized acceptance resolutions to the work area or
+    // throttling an occluded surface to roughly one present per second.
+    if (registration_census_mode || perf.enabled)
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    if (perf.enabled)
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    int initial_window_width = replay.valid && replay.frame_width > 0
+        ? static_cast<int>(replay.frame_width) : 1280;
+    int initial_window_height = replay.valid && replay.frame_height > 0
+        ? static_cast<int>(replay.frame_height) : 720;
+    if (!replay.valid) {
+        const char* width_env = std::getenv("MATTER_WINDOW_WIDTH");
+        const char* height_env = std::getenv("MATTER_WINDOW_HEIGHT");
+        if ((width_env == nullptr) != (height_env == nullptr)) {
+            MATTER_LOGE(
+                "editor",
+                "FATAL: MATTER_WINDOW_WIDTH and MATTER_WINDOW_HEIGHT must be set together\n");
+            glfwTerminate();
+            return 1;
+        }
+        if (width_env && height_env) {
+            char* width_end = nullptr;
+            char* height_end = nullptr;
+            const long width = std::strtol(width_env, &width_end, 10);
+            const long height = std::strtol(height_env, &height_end, 10);
+            if (!width_end || *width_end != '\0' || !height_end ||
+                *height_end != '\0' || width < 320 || width > 16384 ||
+                height < 240 || height > 16384) {
+                MATTER_LOGE(
+                    "editor",
+                    "FATAL: MATTER_WINDOW_WIDTH/HEIGHT must be integers in [320,16384]x[240,16384]\n");
+                glfwTerminate();
+                return 1;
+            }
+            initial_window_width = static_cast<int>(width);
+            initial_window_height = static_cast<int>(height);
+        }
+    }
     GLFWwindow* window = glfwCreateWindow(
-        replay.valid && replay.frame_width > 0
-            ? static_cast<int>(replay.frame_width) : 1280,
-        replay.valid && replay.frame_height > 0
-            ? static_cast<int>(replay.frame_height) : 720,
+        initial_window_width, initial_window_height,
         "MatterEngine3 World Viewer", nullptr, nullptr);
     if (!window) {
         MATTER_LOGE("editor", "FATAL: glfwCreateWindow failed\n");
@@ -2177,11 +2244,17 @@ int main() {
         if (fatal_error_reason.empty()) fatal_error_reason = reason;
     };
     enum class PerfPhase { WaitingForBake, Warming, Sampling, Complete };
+    constexpr std::uint32_t kPerfStaticStableFrames = 30u;
     PerfPhase perf_phase = PerfPhase::WaitingForBake;
     std::chrono::steady_clock::time_point perf_phase_start{};
+    std::uint64_t perf_last_static_vertex_uploads = 0u;
+    std::uint64_t perf_last_static_cluster_uploads = 0u;
+    std::uint32_t perf_static_stable_frames = 0u;
+    bool perf_observed_static_uploads = false;
     PerfCounters perf_start_counters{};
     uint64_t perf_start_dlss_resets = 0;
     std::vector<double> perf_frame_times;
+    std::vector<double> perf_water_animation_times;
     auto previous_time = std::chrono::steady_clock::now();
     double hud_frame_ms = 0.0;
 
@@ -4881,10 +4954,26 @@ int main() {
             const auto perf_now = std::chrono::steady_clock::now();
             if (perf_phase == PerfPhase::WaitingForBake) {
                 if (bake_ready && frame_stats.instances_drawn > 0) {
-                    perf_phase = PerfPhase::Warming;
-                    perf_phase_start = perf_now;
-                    std::printf("perf: bake ready; warming for %.3f seconds\n",
-                                perf.warmup_seconds);
+                    const bool static_uploads_unchanged =
+                        perf_observed_static_uploads &&
+                        frame_stats.vk_vertex_uploads ==
+                            perf_last_static_vertex_uploads &&
+                        frame_stats.vk_cluster_uploads ==
+                            perf_last_static_cluster_uploads;
+                    perf_static_stable_frames = static_uploads_unchanged
+                        ? perf_static_stable_frames + 1u : 0u;
+                    perf_last_static_vertex_uploads =
+                        frame_stats.vk_vertex_uploads;
+                    perf_last_static_cluster_uploads =
+                        frame_stats.vk_cluster_uploads;
+                    perf_observed_static_uploads = true;
+                    if (perf_static_stable_frames >= kPerfStaticStableFrames) {
+                        perf_phase = PerfPhase::Warming;
+                        perf_phase_start = perf_now;
+                        std::printf(
+                            "perf: static geometry stable for %u frames; warming for %.3f seconds\n",
+                            kPerfStaticStableFrames, perf.warmup_seconds);
+                    }
                 }
             } else if (perf_phase == PerfPhase::Warming &&
                        std::chrono::duration<double>(perf_now - perf_phase_start)
@@ -4894,10 +4983,13 @@ int main() {
                 perf_start_counters = capture_perf_counters(frame_stats);
                 perf_start_dlss_resets = frame_stats.dlss_reset_count;
                 perf_frame_times.clear();
+                perf_water_animation_times.clear();
                 std::printf("perf: sampling for %.3f seconds\n",
                             perf.sample_seconds);
             } else if (perf_phase == PerfPhase::Sampling) {
                 perf_frame_times.push_back(perf_frame_cadence_ms);
+                perf_water_animation_times.push_back(
+                    frame_stats.gpu_water_animation_ms);
                 if (std::chrono::duration<double>(perf_now - perf_phase_start)
                         .count() >= perf.sample_seconds) {
                     const PerfCounters perf_finish_counters =
@@ -4906,7 +4998,9 @@ int main() {
                         vulkan->validation_error_count();
                     if (!write_perf_result(
                             perf, worlds[stats.world_current].world_name,
-                            perf_frame_times, perf_start_counters,
+                            perf_frame_times,
+                            perf_water_animation_times,
+                            perf_start_counters,
                             perf_finish_counters, frame_stats, stats,
                             perf_start_dlss_resets,
                             validation_errors, perf_error)) {

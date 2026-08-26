@@ -22,6 +22,7 @@ constexpr std::uint32_t kPhaseOffsetFrames = 15u;
 constexpr std::uint64_t kFrameRecordBytes = 56u;
 constexpr std::uint32_t kMaxIdentityBytes = 1024u;
 constexpr float kNormalLengthEpsilon = 1e-8f;
+std::atomic<std::uint64_t> g_validation_count{0u};
 
 static_assert(sizeof(PackedWaterAnimationVertex) == 12u,
               "water animation packed vertex ABI must be 12 bytes");
@@ -407,6 +408,7 @@ bool frame_range(const WaterMeshAnimationFrameRecord& frame,
 
 bool validate_artifact(const WaterMeshAnimationArtifact& artifact,
                        gpu_meshing::Error& error) {
+    g_validation_count.fetch_add(1u, std::memory_order_relaxed);
     if (artifact.identity.empty() ||
         artifact.identity.size() > kMaxIdentityBytes ||
         artifact.semantic_key == 0u ||
@@ -583,6 +585,10 @@ bool write_file(const std::filesystem::path& path,
 
 }  // namespace
 
+std::uint64_t water_mesh_animation_validation_count() noexcept {
+    return g_validation_count.load(std::memory_order_relaxed);
+}
+
 bool operator==(const WaterMeshAnimationFrameRecord& a,
                 const WaterMeshAnimationFrameRecord& b) noexcept {
     return a.vertex_payload_offset == b.vertex_payload_offset &&
@@ -703,7 +709,7 @@ bool pack_water_mesh_animation_artifact(
         frame.vertex_payload_offset = payload.bytes.size();
         frame.vertex_count =
             static_cast<std::uint32_t>(mesh.positions.size() / 3u);
-        frame.index_count = static_cast<std::uint32_t>(mesh.indices.size());
+        frame.index_count = 0u;
         frame.bounds_m = frame_bounds[frame_index];
         std::vector<matter::Float3> decoded;
         decoded.reserve(frame.vertex_count);
@@ -752,20 +758,25 @@ bool pack_water_mesh_animation_artifact(
             decoded.push_back(decoded_position);
         }
         frame.index_payload_offset = payload.bytes.size();
-        for (std::uint32_t index : mesh.indices) {
-            if (!payload.u32(index))
-                return fail(error, gpu_meshing::ErrorCode::LimitExceeded,
-                            "water animation packed payload exceeds one GiB");
-        }
         for (std::size_t index = 0u; index != mesh.indices.size(); index += 3u) {
             if (triangle_area_squared(decoded[mesh.indices[index]],
                                       decoded[mesh.indices[index + 1u]],
                                       decoded[mesh.indices[index + 2u]]) <=
                 1e-20f) {
-                return fail(
-                    error, gpu_meshing::ErrorCode::ArtifactFailure,
-                    "water animation quantization introduced a zero-area triangle");
+                continue;
             }
+            if (!payload.u32(mesh.indices[index]) ||
+                !payload.u32(mesh.indices[index + 1u]) ||
+                !payload.u32(mesh.indices[index + 2u])) {
+                return fail(error, gpu_meshing::ErrorCode::LimitExceeded,
+                            "water animation packed payload exceeds one GiB");
+            }
+            frame.index_count += 3u;
+        }
+        if (frame.index_count == 0u) {
+            return fail(
+                error, gpu_meshing::ErrorCode::ArtifactFailure,
+                "water animation quantization removed every triangle in a frame");
         }
         const std::size_t begin =
             static_cast<std::size_t>(frame.vertex_payload_offset);

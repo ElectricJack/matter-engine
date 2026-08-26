@@ -48,6 +48,39 @@ bool reference_matches(
                     : artifact.source_secondary_payload_digest == 0u);
 }
 
+bool cache_validated_frame_spans(
+    const hydrology::WaterMeshAnimationArtifact& artifact,
+    std::array<hydrology::WaterMeshAnimationFrameSpan, 30u>& spans) noexcept {
+    if (artifact.frames.size() != spans.size()) return false;
+    const std::uint64_t payload_size = artifact.frame_payload.size();
+    for (std::size_t index = 0u; index != spans.size(); ++index) {
+        const auto& frame = artifact.frames[index];
+        const std::uint64_t vertex_bytes =
+            static_cast<std::uint64_t>(frame.vertex_count) *
+            sizeof(hydrology::PackedWaterAnimationVertex);
+        const std::uint64_t index_bytes =
+            static_cast<std::uint64_t>(frame.index_count) *
+            sizeof(std::uint32_t);
+        if (frame.vertex_payload_offset > payload_size ||
+            vertex_bytes > payload_size - frame.vertex_payload_offset ||
+            frame.index_payload_offset !=
+                frame.vertex_payload_offset + vertex_bytes ||
+            frame.index_payload_offset > payload_size ||
+            index_bytes > payload_size - frame.index_payload_offset)
+            return false;
+        spans[index] = {
+            artifact.frame_payload.data() +
+                static_cast<std::size_t>(frame.vertex_payload_offset),
+            artifact.frame_payload.data() +
+                static_cast<std::size_t>(frame.index_payload_offset),
+            static_cast<std::size_t>(vertex_bytes),
+            static_cast<std::size_t>(index_bytes),
+            frame.vertex_count,
+            frame.index_count};
+    }
+    return true;
+}
+
 }  // namespace
 
 std::uint32_t water_animation_frame(double network_seconds) noexcept {
@@ -83,16 +116,12 @@ bool WaterMeshAnimationPlayback::select(
         water_animation_frame(network_seconds);
     for (std::size_t index = 0u; index != assets_.size(); ++index) {
         const auto& asset = assets_[index];
-        hydrology::WaterMeshAnimationFrameSpan span{};
-        gpu_meshing::Error error{};
-        if (!asset.artifact ||
-            !hydrology::water_mesh_animation_frame_span(
-                *asset.artifact, frame_index, span, error))
+        if (!asset.artifact || frame_index >= asset.frame_spans.size())
             return reject(WaterAnimationFallbackReason::CorruptArtifact,
-                          error.message.empty()
-                              ? "water animation frame directory is invalid"
-                              : error.message,
-                          fallback);
+                           "water animation frame directory is invalid",
+                           fallback);
+        const hydrology::WaterMeshAnimationFrameSpan span =
+            asset.frame_spans[frame_index];
         selection.draws[index] = {
             asset.artifact->identity, asset.handoff, frame_index,
             asset.artifact->material,
@@ -210,12 +239,17 @@ bool activate_water_mesh_animation_playback(
             return reject(WaterAnimationFallbackReason::MismatchedReference,
                           "water animation artifact does not match its manifest reference",
                           fallback);
+        std::array<hydrology::WaterMeshAnimationFrameSpan, 30u> frame_spans{};
+        if (!cache_validated_frame_spans(*mutable_artifact, frame_spans))
+            return reject(WaterAnimationFallbackReason::CorruptArtifact,
+                          "water animation frame directory is invalid",
+                          fallback);
         candidate.compressed_bytes_ += bytes;
         candidate.assets_.push_back({
             reference,
             std::shared_ptr<const hydrology::WaterMeshAnimationArtifact>(
                 std::move(mutable_artifact)),
-            handoff, bytes});
+            frame_spans, handoff, bytes});
         return true;
     };
     for (const auto& reference : manifest.section_animations)

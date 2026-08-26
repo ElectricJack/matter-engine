@@ -3,6 +3,7 @@
 #include "hydrology/river_presentation_field.h"
 
 #include <cmath>
+#include <string>
 #include <vector>
 
 namespace {
@@ -152,6 +153,47 @@ hydrology::WaterMeshAnimationArtifact animation_artifact(
     CHECK(hydrology::pack_water_mesh_animation_artifact(
               {id, upstream ? 1011u : 2022u,
                upstream ? 1001u : 2002u, 0u, 0.5f},
+              animation, artifact, error), error.message.c_str());
+    return artifact;
+}
+
+gpu_meshing::MeshResult branched_cut_mesh(float cut_x, float far_x) {
+    gpu_meshing::MeshResult mesh{};
+    const matter::Float3 centre{cut_x, 1.0f, 0.0f};
+    const matter::Float3 far_centre{far_x, 1.0f, 0.0f};
+    const matter::Float3 outer[] = {
+        {cut_x, 1.0f, -4.0f}, {cut_x, 1.0f, 4.0f},
+        {cut_x, 0.25f, 0.0f}, {cut_x, 2.0f, 0.0f},
+    };
+    for (const auto& point : outer) {
+        const std::uint32_t base = static_cast<std::uint32_t>(
+            mesh.positions.size() / 3u);
+        const matter::Float3 far_point{far_x, point.y, point.z};
+        for (const auto& vertex : {centre, point, far_point, far_centre}) {
+            mesh.positions.insert(mesh.positions.end(),
+                                  {vertex.x, vertex.y, vertex.z});
+            mesh.normals.insert(mesh.normals.end(), {0.0f, 1.0f, 0.0f});
+        }
+        mesh.indices.insert(mesh.indices.end(),
+                            {base, base + 1u, base + 2u,
+                             base, base + 2u, base + 3u});
+    }
+    mesh.material = 4u;
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    return mesh;
+}
+
+hydrology::WaterMeshAnimationArtifact branched_animation_artifact() {
+    hydrology::WaterMeshAnimation animation{};
+    animation.frames_per_second = 30u;
+    animation.phase_offset_frames = 15u;
+    animation.duration_seconds = 1.0f;
+    animation.frames.assign(30u, quad(2.5f, 10.0f, 1.0f, -4.5f, 4.5f));
+    animation.frames[7u] = branched_cut_mesh(2.5f, 10.0f);
+    hydrology::WaterMeshAnimationArtifact artifact{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              {"lower", 2022u, 2002u, 0u, 0.5f},
               animation, artifact, error), error.message.c_str());
     return artifact;
 }
@@ -410,6 +452,62 @@ void test_builds_frame_aligned_handoff_animation() {
               upstream, mismatched, spillway(), 0.5f,
               handoff_animation, error),
           "a missing adjacent frame prevents handoff animation publication");
+
+    const auto branched = branched_animation_artifact();
+    CHECK(hydrology::build_handoff_water_animation_artifact(
+              upstream, branched, spillway(), 0.5f,
+              handoff_animation, error), error.message.c_str());
+    CHECK(handoff_animation.frames.size() == 30u,
+          "a marching-cubes cut junction is decomposed into deterministic edge-disjoint bridge paths");
+}
+
+void test_formats_animation_acceptance_timing_trace() {
+    hydrology::HydrologyNetworkBakeResult result{};
+    hydrology::HydrologyArtifact section = section_artifact(true);
+    section.stats.simulated_steps = 240u;
+    section.stats.active_particles = 321u;
+    section.stats.escaped_particles = 2u;
+    result.sections.push_back(std::move(section));
+
+    hydrology::HydrologySectionTimings timing{};
+    timing.id = "upper";
+    timing.simulate_ms = 12.5;
+    timing.animation_capture_ms = 1.25;
+    timing.animation_mesh_ms = 7.75;
+    timing.animation_serialize_ms = 0.5;
+    timing.animation_bytes = 123456u;
+    timing.animation_device_capture_bytes = 654321u;
+    timing.animation_semantic_key = 0x1234u;
+    timing.animation_payload_digest = 0x5678u;
+    timing.animation_capture_first_step = 124u;
+    timing.animation_capture_last_step = 240u;
+    timing.animation_capture_particle_counts = {300u, 310u};
+    timing.animation_frame_vertex_counts = {100u, 110u};
+    timing.animation_frame_triangle_counts = {50u, 55u};
+    result.timings.sections.push_back(std::move(timing));
+    result.timings.handoff_animation_mesh_ms = 2.5;
+
+    const std::string json =
+        hydrology::hydrology_network_timing_trace_json(result);
+    CHECK(json.find("\"animationCaptureMs\":1.250") != std::string::npos &&
+              json.find("\"animationMeshMs\":7.750") != std::string::npos &&
+              json.find("\"animationSerializeMs\":0.500") != std::string::npos &&
+              json.find("\"animationBytes\":123456") != std::string::npos &&
+              json.find("\"animationDeviceCaptureBytes\":654321") != std::string::npos,
+          "timing trace exposes animation time and memory lanes");
+    CHECK(json.find("\"animationCaptureFirstStep\":124") != std::string::npos &&
+              json.find("\"animationCaptureLastStep\":240") != std::string::npos &&
+              json.find("\"animationCaptureParticleCounts\":[300,310]") != std::string::npos &&
+              json.find("\"animationFrameVertexCounts\":[100,110]") != std::string::npos &&
+              json.find("\"animationFrameTriangleCounts\":[50,55]") != std::string::npos,
+          "timing trace exposes the retained capture and every mesh frame");
+    CHECK(json.find("\"animationSemanticKey\":\"0000000000001234\"") !=
+                  std::string::npos &&
+              json.find("\"animationPayloadDigest\":\"0000000000005678\"") !=
+                  std::string::npos &&
+              json.find("\"handoffAnimationMeshMs\":2.500") !=
+                  std::string::npos,
+          "timing trace exposes immutable animation identity and handoff cost");
 }
 
 }  // namespace
@@ -420,5 +518,6 @@ int main() {
     test_keeps_water_in_the_removed_dam_footprint();
     test_stitches_split_section_contours_to_one_smoothed_collar();
     test_builds_frame_aligned_handoff_animation();
+    test_formats_animation_acceptance_timing_trace();
     return check_summary();
 }

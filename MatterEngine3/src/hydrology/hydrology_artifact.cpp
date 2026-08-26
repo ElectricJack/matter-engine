@@ -441,6 +441,26 @@ bool serialize_artifact(const HydrologyArtifact& artifact,
     return true;
 }
 
+bool hydrology_artifact_payload_digest(
+    const HydrologyArtifact& artifact, std::uint64_t& payload_digest,
+    gpu_meshing::Error& error) {
+    payload_digest = 0u;
+    std::vector<std::uint8_t> bytes;
+    if (!serialize_artifact(artifact, bytes, error)) return false;
+    Reader header(bytes.data() + sizeof(kMagic), bytes.size() - sizeof(kMagic));
+    std::uint32_t version = 0u;
+    std::uint64_t payload_size = 0u;
+    std::uint64_t digest = 0u;
+    if (!header.u32(version) || !header.u64(payload_size) ||
+        !header.u64(digest) || version != kVersion || digest == 0u ||
+        payload_size != bytes.size() - kHeaderBytes) {
+        return fail(error, "hydrology artifact payload digest is unavailable");
+    }
+    payload_digest = digest;
+    error = {};
+    return true;
+}
+
 bool deserialize_artifact(const std::vector<std::uint8_t>& bytes,
                           HydrologyArtifact& artifact,
                           gpu_meshing::Error& error) {

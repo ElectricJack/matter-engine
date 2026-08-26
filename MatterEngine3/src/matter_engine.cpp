@@ -12116,11 +12116,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             std::string animation_error;
             if (animation_authored) {
                 try {
+                    std::filesystem::path animation_cache_root =
+                        authored_fluid_binding->animation_cache_root;
+                    if (const char* force_failure = std::getenv(
+                            "MATTER_WATER_ANIMATION_FORCE_LOAD_FAILURE");
+                        force_failure && std::strcmp(force_failure, "1") == 0)
+                        animation_cache_root /=
+                            "__qa_forced_missing_animation_artifacts__";
                     viewer::WaterMeshAnimationPlayback candidate_playback{};
                     viewer::WaterAnimationFallback fallback{};
                     if (!viewer::activate_water_mesh_animation_playback(
                             manifest,
-                            authored_fluid_binding->animation_cache_root,
+                            animation_cache_root,
                             frame.frame_slot_count,
                             700ull * 1024ull * 1024ull,
                             candidate_playback, fallback)) {
@@ -12792,6 +12799,17 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_vol_density_ms      = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolDensity);
     impl_->stats.gpu_vol_scatter_ms      = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolScatter);
     impl_->stats.gpu_vol_integrate_ms    = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolIntegrate);
+    impl_->stats.gpu_water_animation_ms  =
+        impl_->vk_scene->gpu_zone_last_ms(
+            viewer::VkSceneRenderer::kGpuZoneWaterDecode) +
+        impl_->vk_scene->gpu_zone_last_ms(
+            viewer::VkSceneRenderer::kGpuZoneWaterDraw);
+    impl_->stats.water_animation_uploads =
+        impl_->vk_scene->water_animation_upload_count();
+    impl_->stats.water_animation_decode_dispatches =
+        impl_->vk_scene->water_animation_decode_dispatch_count();
+    impl_->stats.water_animation_steady_state_allocations =
+        impl_->vk_scene->water_animation_steady_state_allocation_count();
     const matter::FroxelGridDimensions vol_dimensions = impl_->vk_scene->volumetrics_dimensions();
     impl_->stats.vol_grid_w = vol_dimensions.width;
     impl_->stats.vol_grid_h = vol_dimensions.height;

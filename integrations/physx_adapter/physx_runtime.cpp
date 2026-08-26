@@ -379,6 +379,7 @@ public:
               const std::vector<std::uint32_t>& quarantine_flags,
               hydrology::FluidParticleAnimationCapture& capture,
               hydrology::FluidBakeError& error) {
+        const auto read_start = std::chrono::steady_clock::now();
         std::vector<hydrology::WaterMeshAnimationCaptureSlot> slots;
         if (!ring_.chronological_slots(slots, error)) return false;
         std::vector<std::vector<physx::PxVec4>> host_positions(slots.size());
@@ -423,6 +424,9 @@ public:
         candidate.frames_per_second = 30u;
         candidate.phase_offset_frames =
             ring_.schedule().phase_offset_frames;
+        candidate.device_storage_bytes =
+            static_cast<std::uint64_t>(ring_.schedule().frame_count) *
+            static_cast<std::uint64_t>(capacity_) * sizeof(physx::PxVec4);
         candidate.frames.reserve(slots.size());
         for (std::size_t frame_index = 0u;
              frame_index < slots.size(); ++frame_index) {
@@ -449,6 +453,9 @@ public:
             }
             candidate.frames.push_back(std::move(frame));
         }
+        candidate.host_readback_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - read_start).count();
         capture = std::move(candidate);
         error = {};
         return true;
