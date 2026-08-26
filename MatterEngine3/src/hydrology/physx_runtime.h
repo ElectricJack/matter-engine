@@ -45,6 +45,7 @@ public:
 enum class PhysxRuntimeEvent : std::uint8_t {
     ActivationUploaded = 0,
     SimulateBegin,
+    AnimationFrameCaptured,
     SensorCountsReady,
     BatchComplete,
 };

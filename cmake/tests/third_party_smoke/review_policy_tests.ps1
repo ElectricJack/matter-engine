@@ -26,8 +26,8 @@ if ($LASTEXITCODE -ne 0 -or $commands.Count -eq 0) {
     throw 'Ninja returned no autoremesher command closure'
 }
 $compileCommands = @($commands | Where-Object { $_ -match '\bcl\.exe\b' })
-if ($compileCommands.Count -ne 172) {
-    throw "Expected 172 autoremesher compile commands, got $($compileCommands.Count)"
+if ($compileCommands.Count -ne 173) {
+    throw "Expected 173 autoremesher compile commands, got $($compileCommands.Count)"
 }
 $normalizedConfigHeader = $configHeader.Replace('\', '/')
 $withoutForcedHeader = @($compileCommands | Where-Object {
@@ -128,6 +128,6 @@ foreach ($symbol in $renamedSymbols) {
 }
 
 Write-Output 'matter_third_party_review_policy: clean'
-Write-Output '  autoremesher: forced NDEBUG undef on 172 commands'
+Write-Output '  autoremesher: forced NDEBUG undef on 173 commands'
 Write-Output '  NL optional loaders: 16 real definitions renamed; fallback names authoritative'
 Write-Output '  smoke: empty-input remesh call present'

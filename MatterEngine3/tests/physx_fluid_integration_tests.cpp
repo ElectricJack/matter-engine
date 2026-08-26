@@ -241,6 +241,8 @@ void test_pbd_batch_loop_uses_gpu_sensor_and_returns_one_snapshot() {
               finite(output.particles[0].position_m) &&
               finite(output.particles[1].velocity_mps),
           "accepted native run copies one finite stable-id snapshot");
+    CHECK(!output.animation_capture.has_value(),
+          "a network without meshAnimation retains the single-snapshot path");
     // Golden snapshot captured from this fixed fixture using the unmodified
     // PhysX 5.6.1 SnippetPBF material/offset/mass setup on the reference RTX
     // 4090. Tolerances allow same-architecture driver variation while catching
@@ -308,6 +310,53 @@ void test_pbd_batch_loop_uses_gpu_sensor_and_returns_one_snapshot() {
     }
     CHECK(fourth_simulate < first_sensor,
           "sensor counts return to the host once after the fixed-step batch");
+}
+
+void test_pbd_animation_capture_is_device_rolled_and_host_compacted_once() {
+    auto input = pbd_basin_input();
+    input.settings.fixed_step_seconds = 1.0f / 120.0f;
+    input.settings.batch_steps = 120u;
+    input.settings.max_steps = 120u;
+    input.settings.max_particles = 128u;
+    input.emitters.front().stop_step = 120u;
+    input.network.fluid.mesh_animation = {
+        true, 30u, 1.0f, 0.5f, 30u, 4u, 15u,
+    };
+
+    RuntimeTrace trace{};
+    hydrology::PhysxRuntimeOptions options{};
+    options.execution_hook = &record_runtime_event;
+    options.execution_hook_user_data = &trace;
+    hydrology::PhysxRuntime runtime(options);
+    hydrology::FluidBakeOutput output{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::PhysxFluidBake::run(
+              input, runtime, {}, output, error),
+          error.message.c_str());
+    CHECK(output.animation_capture.has_value(),
+          "an accepted animation-enabled run publishes its rolling capture");
+    if (!output.animation_capture) return;
+    const auto& capture = *output.animation_capture;
+    CHECK(capture.frames_per_second == 30u &&
+              capture.phase_offset_frames == 15u &&
+              capture.frames.size() == 30u &&
+              capture.frames.front().simulation_step == 4u &&
+              capture.frames.back().simulation_step == 120u,
+          "the host snapshot contains the chronological one-second history");
+    bool finite_positions = true;
+    for (const auto& frame : capture.frames) {
+        for (matter::Float3 position : frame.positions_m)
+            finite_positions = finite_positions && finite(position);
+    }
+    CHECK(finite_positions,
+          "every captured frame stores only finite compacted positions");
+    const auto captured_events = static_cast<std::uint32_t>(std::count_if(
+        trace.events.begin(), trace.events.end(), [](const auto& event) {
+            return std::get<0>(event) ==
+                hydrology::PhysxRuntimeEvent::AnimationFrameCaptured;
+        }));
+    CHECK(captured_events == 30u,
+          "the adapter reports one bounded diagnostic for each retained slot");
 }
 
 void test_pbd_ribbon_emitter_activates_a_broad_grid() {
@@ -903,6 +952,7 @@ int main() {
     test_initialization_exceptions_do_not_cross_the_backend_boundary();
     test_exact_sdk_cuda_context_and_rtx_identity();
     test_pbd_batch_loop_uses_gpu_sensor_and_returns_one_snapshot();
+    test_pbd_animation_capture_is_device_rolled_and_host_compacted_once();
     test_pbd_ribbon_emitter_activates_a_broad_grid();
     test_pbd_particles_reach_and_rest_on_authored_collision();
     test_native_quarantine_excludes_escaped_ids_from_sensor_and_snapshot();

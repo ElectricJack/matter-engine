@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,7 @@ enum class FluidBakeCode : std::uint8_t {
     Escaped,
     NonFinite,
     SensorNotReached,
+    InsufficientAnimationHistory,
     ProductFailure,
     DeviceLost,
 };
@@ -233,11 +235,23 @@ struct FluidBakeStats {
     matter::HydrologyEscapePolicy escape_policy{};
 };
 
+struct FluidParticleAnimationFrame {
+    std::uint32_t simulation_step = 0;
+    std::vector<matter::Float3> positions_m;
+};
+
+struct FluidParticleAnimationCapture {
+    std::uint32_t frames_per_second = 0;
+    std::uint32_t phase_offset_frames = 0;
+    std::vector<FluidParticleAnimationFrame> frames;
+};
+
 struct FluidBakeOutput {
     std::vector<FluidParticle> particles;
     std::vector<FluidQuarantinedParticle> quarantined_particles;
     FillSensorResult sensor{};
     FluidBakeStats stats{};
+    std::optional<FluidParticleAnimationCapture> animation_capture;
 };
 
 struct FluidBakeProgress {

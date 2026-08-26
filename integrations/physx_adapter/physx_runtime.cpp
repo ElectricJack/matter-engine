@@ -5,6 +5,7 @@
 #include "hydrology/fill_sensor.h"
 #include "hydrology/fluid_emitter_layout.h"
 #include "hydrology/fluid_emission.h"
+#include "hydrology/water_mesh_animation_capture.h"
 #include "physx_raii.h"
 
 #include "PxPhysicsAPI.h"
@@ -23,6 +24,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -316,6 +318,229 @@ public:
 private:
     physx::PxPBDParticleSystem* system_ = nullptr;
     physx::PxParticleBuffer* buffer_ = nullptr;
+};
+
+class DeviceWaterAnimationCaptureRing final {
+public:
+    DeviceWaterAnimationCaptureRing(
+        physx::PxCudaContextManager& cuda,
+        hydrology::WaterMeshAnimationCaptureSchedule schedule,
+        std::uint32_t maximum_particles)
+        : cuda_(&cuda), ring_(schedule),
+          slot_counts_(schedule.frame_count, 0u),
+          maximum_particles_(maximum_particles) {}
+
+    ~DeviceWaterAnimationCaptureRing() { release(); }
+
+    DeviceWaterAnimationCaptureRing(
+        const DeviceWaterAnimationCaptureRing&) = delete;
+    DeviceWaterAnimationCaptureRing& operator=(
+        const DeviceWaterAnimationCaptureRing&) = delete;
+
+    bool enqueue(const physx::PxVec4* device_positions,
+                 std::uint32_t particle_count,
+                 std::uint32_t simulation_step,
+                 hydrology::FluidBakeError& error) {
+        if (!device_positions || particle_count > maximum_particles_) {
+            error = {
+                hydrology::FluidBakeCode::CapacityExceeded,
+                "water animation capture exceeds its particle capacity",
+            };
+            return false;
+        }
+        if (!ensure_capacity(particle_count, error)) return false;
+        const std::uint32_t slot = ring_.next_storage_slot();
+        physx::PxCUresult result = CUDA_SUCCESS;
+        if (particle_count != 0u) {
+            physx::PxScopedCudaLock lock(*cuda_);
+            const std::size_t byte_count =
+                static_cast<std::size_t>(particle_count) *
+                sizeof(physx::PxVec4);
+            result = cuda_->getCudaContext()->memcpyDtoDAsync(
+                slot_address(storage_, slot, capacity_),
+                reinterpret_cast<CUdeviceptr>(device_positions),
+                byte_count, nullptr);
+        }
+        if (result != CUDA_SUCCESS) {
+            error = {
+                cuda_failure_code(result.value, *cuda_),
+                "CUDA water animation device capture failed with code " +
+                    std::to_string(result.value),
+            };
+            return false;
+        }
+        slot_counts_[slot] = particle_count;
+        ring_.record(simulation_step, particle_count);
+        error = {};
+        return true;
+    }
+
+    bool read(const std::vector<std::uint64_t>& particle_ids,
+              const std::vector<std::uint32_t>& quarantine_flags,
+              hydrology::FluidParticleAnimationCapture& capture,
+              hydrology::FluidBakeError& error) {
+        std::vector<hydrology::WaterMeshAnimationCaptureSlot> slots;
+        if (!ring_.chronological_slots(slots, error)) return false;
+        std::vector<std::vector<physx::PxVec4>> host_positions(slots.size());
+        physx::PxCUresult result = CUDA_SUCCESS;
+        {
+            physx::PxScopedCudaLock lock(*cuda_);
+            physx::PxCudaContext* context = cuda_->getCudaContext();
+            for (std::size_t index = 0u;
+                 index < slots.size() && result == CUDA_SUCCESS; ++index) {
+                const auto& slot = slots[index];
+                if (slot.particle_count > particle_ids.size() ||
+                    slot.particle_count > quarantine_flags.size() ||
+                    slot.particle_count > capacity_) {
+                    error = {
+                        hydrology::FluidBakeCode::BackendFailure,
+                        "water animation capture metadata exceeds stable particle arrays",
+                    };
+                    return false;
+                }
+                host_positions[index].resize(slot.particle_count);
+                if (slot.particle_count == 0u) continue;
+                result = context->memcpyDtoHAsync(
+                    host_positions[index].data(),
+                    slot_address(storage_, slot.storage_slot, capacity_),
+                    static_cast<std::size_t>(slot.particle_count) *
+                        sizeof(physx::PxVec4),
+                    nullptr);
+            }
+            if (result == CUDA_SUCCESS)
+                result = context->streamSynchronize(nullptr);
+        }
+        if (result != CUDA_SUCCESS) {
+            error = {
+                cuda_failure_code(result.value, *cuda_),
+                "CUDA water animation host snapshot failed with code " +
+                    std::to_string(result.value),
+            };
+            return false;
+        }
+
+        hydrology::FluidParticleAnimationCapture candidate{};
+        candidate.frames_per_second = 30u;
+        candidate.phase_offset_frames =
+            ring_.schedule().phase_offset_frames;
+        candidate.frames.reserve(slots.size());
+        for (std::size_t frame_index = 0u;
+             frame_index < slots.size(); ++frame_index) {
+            const std::uint32_t particle_count =
+                slots[frame_index].particle_count;
+            std::vector<matter::Float3> positions;
+            positions.reserve(particle_count);
+            for (const physx::PxVec4& position :
+                 host_positions[frame_index]) {
+                positions.push_back({position.x, position.y, position.z});
+            }
+            std::vector<std::uint64_t> ids(
+                particle_ids.begin(),
+                particle_ids.begin() + particle_count);
+            std::vector<std::uint32_t> quarantine(
+                quarantine_flags.begin(),
+                quarantine_flags.begin() + particle_count);
+            hydrology::FluidParticleAnimationFrame frame{};
+            if (!hydrology::compact_water_mesh_animation_frame(
+                    slots[frame_index].simulation_step,
+                    positions, ids, quarantine, maximum_particles_,
+                    frame, error)) {
+                return false;
+            }
+            candidate.frames.push_back(std::move(frame));
+        }
+        capture = std::move(candidate);
+        error = {};
+        return true;
+    }
+
+private:
+    static CUdeviceptr slot_address(CUdeviceptr storage,
+                                    std::uint32_t slot,
+                                    std::uint32_t capacity) noexcept {
+        return storage + static_cast<std::size_t>(slot) *
+            static_cast<std::size_t>(capacity) * sizeof(physx::PxVec4);
+    }
+
+    bool ensure_capacity(std::uint32_t particle_count,
+                         hydrology::FluidBakeError& error) {
+        if (particle_count <= capacity_) return true;
+        std::uint32_t new_capacity =
+            std::min(maximum_particles_, std::max(8192u, capacity_));
+        while (new_capacity < particle_count) {
+            if (new_capacity > maximum_particles_ / 2u) {
+                new_capacity = maximum_particles_;
+                break;
+            }
+            new_capacity *= 2u;
+        }
+        if (new_capacity < particle_count ||
+            ring_.schedule().frame_count >
+                std::numeric_limits<std::size_t>::max() /
+                    sizeof(physx::PxVec4) /
+                    static_cast<std::size_t>(new_capacity)) {
+            error = {
+                hydrology::FluidBakeCode::CapacityExceeded,
+                "water animation capture allocation size overflowed",
+            };
+            return false;
+        }
+        const std::size_t allocation_bytes =
+            static_cast<std::size_t>(ring_.schedule().frame_count) *
+            static_cast<std::size_t>(new_capacity) *
+            sizeof(physx::PxVec4);
+        CUdeviceptr replacement = 0;
+        physx::PxCUresult result = CUDA_SUCCESS;
+        {
+            physx::PxScopedCudaLock lock(*cuda_);
+            physx::PxCudaContext* context = cuda_->getCudaContext();
+            result = context->memAlloc(&replacement, allocation_bytes);
+            for (std::uint32_t slot = 0u;
+                 slot < slot_counts_.size() && result == CUDA_SUCCESS;
+                 ++slot) {
+                if (storage_ == 0 || slot_counts_[slot] == 0u) continue;
+                result = context->memcpyDtoDAsync(
+                    slot_address(replacement, slot, new_capacity),
+                    slot_address(storage_, slot, capacity_),
+                    static_cast<std::size_t>(slot_counts_[slot]) *
+                        sizeof(physx::PxVec4),
+                    nullptr);
+            }
+            if (result == CUDA_SUCCESS)
+                result = context->streamSynchronize(nullptr);
+            if (result == CUDA_SUCCESS && storage_ != 0)
+                result = context->memFree(storage_);
+            if (result != CUDA_SUCCESS && replacement != 0)
+                (void)context->memFree(replacement);
+        }
+        if (result != CUDA_SUCCESS) {
+            error = {
+                cuda_failure_code(result.value, *cuda_),
+                "CUDA water animation capture allocation failed with code " +
+                    std::to_string(result.value),
+            };
+            return false;
+        }
+        storage_ = replacement;
+        capacity_ = new_capacity;
+        error = {};
+        return true;
+    }
+
+    void release() noexcept {
+        if (!cuda_ || storage_ == 0) return;
+        physx::PxScopedCudaLock lock(*cuda_);
+        (void)cuda_->getCudaContext()->memFree(storage_);
+        storage_ = 0;
+        capacity_ = 0;
+    }
+
+    physx::PxCudaContextManager* cuda_ = nullptr;
+    hydrology::WaterMeshAnimationCaptureRing ring_;
+    std::vector<std::uint32_t> slot_counts_;
+    std::uint32_t maximum_particles_ = 0;
+    std::uint32_t capacity_ = 0;
+    CUdeviceptr storage_ = 0;
 };
 
 physx::PxFilterFlags probe_filter_shader(
@@ -937,6 +1162,22 @@ struct PhysxRuntime::Impl {
                                 gpu_sensor.last_cuda_error(), *cuda),
                             gpu_sensor_error);
         }
+        const auto animation_schedule =
+            make_water_mesh_animation_capture_schedule(
+                input.network.fluid.mesh_animation);
+        if (input.network.fluid.mesh_animation.enabled &&
+            !animation_schedule) {
+            return fail_run(
+                FluidBakeCode::InvalidInput,
+                "PhysX PBD water animation capture schedule is invalid");
+        }
+        std::unique_ptr<DeviceWaterAnimationCaptureRing> animation_capture;
+        if (animation_schedule) {
+            animation_capture =
+                std::make_unique<DeviceWaterAnimationCaptureRing>(
+                    *cuda, *animation_schedule,
+                    input.settings.max_particles);
+        }
 
         FluidEmissionState emission_state{};
         FillSensorState fill_state{};
@@ -1186,6 +1427,18 @@ struct PhysxRuntime::Impl {
                 output.stats.peak_particles = std::max(
                     output.stats.peak_particles, active_particles);
 
+                bool animation_frame_captured = false;
+                if (animation_capture &&
+                    animation_schedule->should_capture(step)) {
+                    FluidBakeError capture_error{};
+                    if (!animation_capture->enqueue(
+                            particle_buffer->getPositionInvMasses(),
+                            active_particles, step, capture_error)) {
+                        return fail_run(capture_error.code,
+                                        capture_error.message);
+                    }
+                    animation_frame_captured = true;
+                }
                 if (!gpu_sensor.enqueue(
                         particle_buffer->getPositionInvMasses(),
                         active_particles, input.sensor,
@@ -1194,6 +1447,10 @@ struct PhysxRuntime::Impl {
                     return fail_run(cuda_failure_code(
                                         gpu_sensor.last_cuda_error(), *cuda),
                                     gpu_sensor_error);
+                }
+                if (animation_frame_captured) {
+                    notify(PhysxRuntimeEvent::AnimationFrameCaptured,
+                           step, active_particles);
                 }
             }
 
@@ -1345,6 +1602,17 @@ struct PhysxRuntime::Impl {
         FluidBakeError snapshot_error{};
         if (!capture_finite_host_snapshot(snapshot_error)) {
             return fail_run(snapshot_error.code, snapshot_error.message);
+        }
+        if (animation_capture) {
+            FluidParticleAnimationCapture capture{};
+            FluidBakeError capture_error{};
+            if (!animation_capture->read(
+                    particle_ids, quarantine_flags, capture,
+                    capture_error)) {
+                return fail_run(capture_error.code,
+                                capture_error.message);
+            }
+            output.animation_capture = std::move(capture);
         }
         output.stats.wall_seconds =
             std::chrono::duration<double>(
