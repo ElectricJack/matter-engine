@@ -16,6 +16,7 @@ using matter::HydrologyBackend;
 using matter::HydrologyBakeLimits;
 using matter::HydrologyEmitter;
 using matter::HydrologyFillSensor;
+using matter::HydrologyMeshAnimationProfile;
 using matter::HydrologyPbdSettings;
 using matter::HydrologyQualitySettings;
 using matter::HydrologyVirtualDam;
@@ -477,6 +478,68 @@ bool finish_minimal_water_network(RiverNetworkBuilder& builder,
            builder.set_bake_sequential(error) && builder.finish(out, error);
 }
 
+void test_mesh_animation_profile_is_fixed_canonical_and_step_aligned() {
+    std::string error;
+    HydrologyPbdSettings pbd{};
+    HydrologyMeshAnimationProfile profile{};
+    profile.frames_per_second = 30u;
+    profile.duration_seconds = 1.0f;
+    profile.phase_offset_seconds = 0.5f;
+
+    RiverNetworkBuilder dry_builder(0.5f, 0x52495645u);
+    CHECK(dry_builder.set_pbd(pbd, error), error.c_str());
+    RiverNetworkDefinition dry;
+    CHECK(finish_minimal_water_network(dry_builder, dry, error), error.c_str());
+    CHECK(!dry.fluid.mesh_animation.enabled,
+          "omitting meshAnimation preserves the disabled static-water path");
+
+    RiverNetworkBuilder animated_builder(0.5f, 0x52495645u);
+    CHECK(animated_builder.set_pbd(pbd, error), error.c_str());
+    CHECK(animated_builder.set_mesh_animation(profile, error), error.c_str());
+    RiverNetworkDefinition animated;
+    CHECK(finish_minimal_water_network(animated_builder, animated, error),
+          error.c_str());
+    CHECK(animated.fluid.mesh_animation.enabled &&
+              animated.fluid.mesh_animation.frames_per_second == 30u &&
+              animated.fluid.mesh_animation.frame_count == 30u &&
+              animated.fluid.mesh_animation.sample_step_stride == 4u &&
+              animated.fluid.mesh_animation.phase_offset_frames == 15u,
+          "the fixed profile derives a 30-frame, four-step, half-cycle schedule");
+    CHECK(animated.canonical_text != dry.canonical_text &&
+              animated.canonical_hash != dry.canonical_hash &&
+              animated.canonical_text.find("mesh-animation=") !=
+                  std::string::npos,
+          "mesh animation settings participate in canonical bytes and keys");
+
+    RiverNetworkBuilder same_builder(0.5f, 0x52495645u);
+    CHECK(same_builder.set_pbd(pbd, error), error.c_str());
+    CHECK(same_builder.set_mesh_animation(profile, error), error.c_str());
+    RiverNetworkDefinition same;
+    CHECK(finish_minimal_water_network(same_builder, same, error), error.c_str());
+    CHECK(same.canonical_text == animated.canonical_text &&
+              same.canonical_hash == animated.canonical_hash,
+          "identical animation declarations remain deterministic");
+
+    RiverNetworkBuilder invalid_rate(0.5f, 1u);
+    CHECK(invalid_rate.set_pbd(pbd, error), error.c_str());
+    profile.frames_per_second = 31u;
+    error.clear();
+    CHECK(!invalid_rate.set_mesh_animation(profile, error) &&
+              error.find("hydrology.meshAnimation.framesPerSecond") !=
+                  std::string::npos,
+          "v1 rejects unsupported animation frame rates at the authored path");
+
+    RiverNetworkBuilder incompatible_step(0.5f, 1u);
+    pbd.fixed_step_seconds = 1.0f / 100.0f;
+    CHECK(incompatible_step.set_pbd(pbd, error), error.c_str());
+    profile.frames_per_second = 30u;
+    error.clear();
+    CHECK(!incompatible_step.set_mesh_animation(profile, error) &&
+              error.find("hydrology.meshAnimation.fixedStep") !=
+                  std::string::npos,
+          "animation sampling rejects fixed steps that do not land on 30 Hz");
+}
+
 bool author_valid_water(RiverNetworkBuilder& builder, bool reverse_waves,
                         std::string& error) {
     WaterOpticalDefinition optics{};
@@ -586,6 +649,7 @@ int main() {
     test_authored_fluid_defaults_are_dry_and_hermetic();
     test_authored_fluid_is_canonical_and_preserves_multiple_emitters();
     test_authored_fluid_rejects_invalid_ranges();
+    test_mesh_animation_profile_is_fixed_canonical_and_step_aligned();
     test_water_appearance_is_separate_and_ordered();
     test_water_appearance_rejects_invalid_ranges();
     return check_summary();

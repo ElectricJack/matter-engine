@@ -99,6 +99,16 @@ struct HydrologyQualitySettings {
     std::uint32_t max_mesh_indices = 12582912;
 };
 
+struct HydrologyMeshAnimationProfile {
+    bool enabled = false;
+    std::uint32_t frames_per_second = 0;
+    float duration_seconds = 0.0f;
+    float phase_offset_seconds = 0.0f;
+    std::uint32_t frame_count = 0;
+    std::uint32_t sample_step_stride = 0;
+    std::uint32_t phase_offset_frames = 0;
+};
+
 struct HydrologyFluidRequest {
     HydrologyBackend backend = HydrologyBackend::Disabled;
     HydrologyPbdSettings pbd{};
@@ -107,6 +117,7 @@ struct HydrologyFluidRequest {
     HydrologyVirtualDam virtual_dam{};
     HydrologyFillSensor fill_sensor{};
     HydrologyQualitySettings quality{};
+    HydrologyMeshAnimationProfile mesh_animation{};
 };
 
 enum class HydrologyState : std::uint8_t { Pending, Baking, Ready, Stale, Invalid };

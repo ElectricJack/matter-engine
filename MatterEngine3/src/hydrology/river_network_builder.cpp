@@ -12,6 +12,7 @@ using matter::HydrologyBackend;
 using matter::HydrologyBakeLimits;
 using matter::HydrologyEmitter;
 using matter::HydrologyFillSensor;
+using matter::HydrologyMeshAnimationProfile;
 using matter::HydrologyPbdSettings;
 using matter::HydrologyQualitySettings;
 using matter::HydrologyVirtualDam;
@@ -203,6 +204,20 @@ std::string canonical_text(const RiverNetworkDefinition& network) {
     append_uint(text, network.fluid.pbd.solver_iterations);
     text.push_back(',');
     append_uint(text, network.fluid.pbd.max_neighbors);
+    if (network.fluid.mesh_animation.enabled) {
+        text += "\nmesh-animation=";
+        append_uint(text, network.fluid.mesh_animation.frames_per_second);
+        text.push_back(',');
+        append_float(text, network.fluid.mesh_animation.duration_seconds);
+        text.push_back(',');
+        append_float(text, network.fluid.mesh_animation.phase_offset_seconds);
+        text.push_back(',');
+        append_uint(text, network.fluid.mesh_animation.frame_count);
+        text.push_back(',');
+        append_uint(text, network.fluid.mesh_animation.sample_step_stride);
+        text.push_back(',');
+        append_uint(text, network.fluid.mesh_animation.phase_offset_frames);
+    }
     text += "\nlimits=";
     append_uint(text, network.fluid.limits.batch_steps);
     text.push_back(',');
@@ -654,6 +669,50 @@ bool RiverNetworkBuilder::set_pbd(const HydrologyPbdSettings& settings,
         return fail(error, path + ".maxNeighbors", "maxNeighbors must be positive");
     fluid_.pbd = settings;
     has_pbd_ = true;
+    return true;
+}
+
+bool RiverNetworkBuilder::set_mesh_animation(
+    const HydrologyMeshAnimationProfile& profile, std::string& error) {
+    if (finished_)
+        return fail(error, "hydrology.build", "network is already built");
+    const std::string path = "hydrology.meshAnimation";
+    if (has_mesh_animation_)
+        return fail(error, path,
+                    "meshAnimation may be declared only once");
+    if (!has_pbd_)
+        return fail(error, path + ".fixedStep",
+                    "pbd must be declared before meshAnimation");
+    if (profile.frames_per_second != 30u)
+        return fail(error, path + ".framesPerSecond",
+                    "framesPerSecond must be 30");
+    if (!finite(profile.duration_seconds) ||
+        profile.duration_seconds != 1.0f)
+        return fail(error, path + ".duration", "duration must be 1.0");
+    if (!finite(profile.phase_offset_seconds) ||
+        profile.phase_offset_seconds != 0.5f)
+        return fail(error, path + ".phaseOffset",
+                    "phaseOffset must be 0.5");
+
+    const double stride = 1.0 /
+        (static_cast<double>(profile.frames_per_second) *
+         static_cast<double>(fluid_.pbd.fixed_step_seconds));
+    const double rounded_stride = std::round(stride);
+    constexpr double schedule_tolerance = 1.0e-5;
+    if (!std::isfinite(stride) || rounded_stride < 1.0 ||
+        rounded_stride >
+            static_cast<double>(std::numeric_limits<std::uint32_t>::max()) ||
+        std::fabs(stride - rounded_stride) > schedule_tolerance)
+        return fail(error, path + ".fixedStep",
+                    "fixedStep must place 30 Hz samples on integer simulation steps");
+
+    fluid_.mesh_animation = profile;
+    fluid_.mesh_animation.enabled = true;
+    fluid_.mesh_animation.frame_count = 30u;
+    fluid_.mesh_animation.sample_step_stride =
+        static_cast<std::uint32_t>(rounded_stride);
+    fluid_.mesh_animation.phase_offset_frames = 15u;
+    has_mesh_animation_ = true;
     return true;
 }
 

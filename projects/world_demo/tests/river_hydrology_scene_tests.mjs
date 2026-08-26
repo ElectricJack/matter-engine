@@ -61,5 +61,8 @@ assert.ok(scene.channelProfile.some(point => point.width >= 34),
   'the first pool visibly widens beyond the rapids');
 assert.ok(scene.channelProfile.some(point => point.width >= 36),
   'the final pool visibly widens beyond the lower rapids');
+assert.match(sharedSource,
+  /network\.meshAnimation\(\{\s*framesPerSecond:\s*30,\s*duration:\s*1(?:\.0)?,\s*phaseOffset:\s*0\.5,?\s*\}\)/s,
+  'the accepted RiverFloat network opts into the fixed 30 Hz mesh animation profile');
 
 console.log('river_hydrology_scene_tests: PASS');

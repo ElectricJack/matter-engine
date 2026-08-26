@@ -2437,6 +2437,8 @@ class River extends World {
     network.backend("physx");
     network.pbd({particleSpacing: .2, restDensity: 1000, fixedStep: 1 / 120,
                  iterations: 4, maxNeighbors: 96});
+    network.meshAnimation({framesPerSecond: 30, duration: 1.0,
+                           phaseOffset: 0.5});
     network.limits({batchSteps: 256, maxSteps: 65536, maxParticles: 1000000});
     network.escapePolicy({absoluteCount: 32, ratio: .0001});
     network.emitter({id: "main-inlet", position: [0,18,0], direction: [1,0,0],
@@ -2500,7 +2502,11 @@ class River extends World {
               definition.river_network->fluid.emitters.size() == 2u &&
               definition.river_network->fluid.limits.batch_steps == 256u &&
               definition.river_network->fluid.limits.escape_policy.absolute_count == 32u &&
-              definition.river_network->fluid.limits.escape_policy.ratio == 0.0001f,
+              definition.river_network->fluid.limits.escape_policy.ratio == 0.0001f &&
+              definition.river_network->fluid.mesh_animation.enabled &&
+              definition.river_network->fluid.mesh_animation.frame_count == 30u &&
+              definition.river_network->fluid.mesh_animation.sample_step_stride == 4u &&
+              definition.river_network->fluid.mesh_animation.phase_offset_frames == 15u,
           "the loader retains builder-style sections and authored fluid settings");
     CHECK(!definition.river_network->canonical_text.empty() &&
               definition.river_network->canonical_hash != 0u,
@@ -2722,6 +2728,18 @@ void test_world_loader_rejects_imperative_river_failures() {
       const n=riverNetwork({cellSize:.5,seed:1});
       n.waterSurface(7).localOverride({shape:"capsule"});
     )JS", "hydrology.waterSurface.localOverride.shape");
+    rejects("InvalidMeshAnimationRate.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:1/120,
+             iterations:4,maxNeighbors:96});
+      n.meshAnimation({framesPerSecond:31,duration:1,phaseOffset:.5});
+    )JS", "hydrology.meshAnimation.framesPerSecond");
+    rejects("IncompatibleMeshAnimationStep.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:1/100,
+             iterations:4,maxNeighbors:96});
+      n.meshAnimation({framesPerSecond:30,duration:1,phaseOffset:.5});
+    )JS", "hydrology.meshAnimation.fixedStep");
 }
 
 void test_world_loader_rejects_dual_hydrology_configuration() {

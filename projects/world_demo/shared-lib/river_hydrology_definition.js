@@ -222,6 +222,11 @@ export function authorRiverHydrologyNetwork(worldSeed, waterSurfaceMaterial = nu
     iterations: 4,
     maxNeighbors: 96,
   });
+  network.meshAnimation({
+    framesPerSecond: 30,
+    duration: 1.0,
+    phaseOffset: 0.5,
+  });
   network.limits({ batchSteps: 256, maxSteps, maxParticles: 4000000 });
   network.escapePolicy({ absoluteCount: 32, ratio: 0.0001 });
   network.emitter({

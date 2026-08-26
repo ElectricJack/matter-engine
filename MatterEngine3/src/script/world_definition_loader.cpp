@@ -1173,6 +1173,29 @@ JSValue network_pbd(JSContext* context, JSValueConst this_value,
     return JS_DupValue(context, this_value);
 }
 
+JSValue network_mesh_animation(JSContext* context, JSValueConst this_value,
+                               int argument_count,
+                               JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyMeshAnimationProfile profile{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_uint32(context, arguments[0], "framesPerSecond",
+                         profile.frames_per_second) ||
+        !required_float(context, arguments[0], "duration",
+                        profile.duration_seconds) ||
+        !required_float(context, arguments[0], "phaseOffset",
+                        profile.phase_offset_seconds)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.meshAnimation: meshAnimation requires framesPerSecond/duration/phaseOffset");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_mesh_animation(profile, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
 JSValue network_limits(JSContext* context, JSValueConst this_value,
                        int argument_count, JSValueConst* arguments) {
     RiverNetworkHandle* handle = active_network_handle(context, this_value);
@@ -1399,6 +1422,9 @@ JSValue river_network(JSContext* context, JSValueConst,
                       JS_NewCFunction(context, network_backend, "backend", 1));
     JS_SetPropertyStr(context, object, "pbd",
                       JS_NewCFunction(context, network_pbd, "pbd", 1));
+    JS_SetPropertyStr(
+        context, object, "meshAnimation",
+        JS_NewCFunction(context, network_mesh_animation, "meshAnimation", 1));
     JS_SetPropertyStr(context, object, "limits",
                       JS_NewCFunction(context, network_limits, "limits", 1));
     JS_SetPropertyStr(context, object, "escapePolicy",

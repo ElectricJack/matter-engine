@@ -50,6 +50,9 @@ public:
     bool set_backend(matter::HydrologyBackend backend, std::string& error);
     bool set_pbd(const matter::HydrologyPbdSettings& settings,
                  std::string& error);
+    bool set_mesh_animation(
+        const matter::HydrologyMeshAnimationProfile& profile,
+        std::string& error);
     bool set_limits(const matter::HydrologyBakeLimits& limits,
                     std::string& error);
     bool set_escape_policy(const matter::HydrologyEscapePolicy& policy,
@@ -102,6 +105,7 @@ private:
     bool bake_sequential_ = false;
     bool has_backend_ = false;
     bool has_pbd_ = false;
+    bool has_mesh_animation_ = false;
     bool has_limits_ = false;
     bool has_escape_policy_ = false;
     bool has_virtual_dam_ = false;
