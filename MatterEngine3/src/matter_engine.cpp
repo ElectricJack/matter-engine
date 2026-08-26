@@ -49,6 +49,7 @@
 #include "matter/vulkan_device.h"
 #include "hydrology/hydrology_artifact.h"
 #include "render/gpu_meshing/water_scene_part.h"
+#include "render/water_mesh_animation_playback.h"
 #include "render/vk_instance_cache.h"
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
@@ -715,6 +716,8 @@ struct WorldSession::Impl {
         std::shared_ptr<const viewer::VkScenePart> part;
         viewer::VkSceneInstance instance{};
         viewer::PackedWaterField water_field{};
+        hydrology::HydrologyNetworkArtifact animation_manifest{};
+        std::filesystem::path animation_cache_root;
     };
     std::shared_ptr<const AuthoredFluidRenderBinding>
         failed_fluid_debug_binding;
@@ -724,6 +727,12 @@ struct WorldSession::Impl {
     std::shared_ptr<const AuthoredFluidRenderBinding>
         vk_authored_fluid_render_binding;
     viewer::WaterFieldBinding vk_authored_water_field_binding{};
+    viewer::WaterMeshAnimationPlayback vk_water_animation_playback;
+    viewer::WaterAnimationFrameSelection vk_water_animation_selection;
+    std::vector<std::uint32_t> vk_water_animation_proxy_indices;
+    std::uint64_t vk_water_animation_generation = 0u;
+    std::uint64_t vk_water_animation_next_generation = 1u;
+    bool vk_water_animation_active = false;
     std::atomic<float> water_animation_time_seconds{0.0f};
     viewer::VulkanInstanceCache vk_instance_cache;
     viewer::TemporalState vk_temporal;
@@ -3599,6 +3608,8 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             render->part = std::move(authored_part);
             render->instance = authored_instance;
             render->water_field = std::move(packed_water_field);
+            render->animation_manifest = network_result.manifest;
+            render->animation_cache_root = cfg.cache_root;
             publication_candidate->render = std::move(render);
 #endif
         }
@@ -11638,8 +11649,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         return false;
     }
     impl_->vk_scene->collect_water_fields(impl_->vk_skin_completed_serial);
+    impl_->vk_scene->collect_water_animation(
+        impl_->vk_skin_completed_serial);
+    const float water_animation_time_seconds =
+        impl_->water_animation_time_seconds.load(std::memory_order_relaxed);
     impl_->vk_scene->set_water_animation_time(
-        impl_->water_animation_time_seconds.load(std::memory_order_relaxed));
+        water_animation_time_seconds);
     impl_->vk_scene->set_geometry_debug_view(opts.geometry_debug_view);
     impl_->vk_scene->set_wireframe(opts.wireframe);
     impl_->vk_scene->set_impostor_parallax(opts.impostor_parallax);
@@ -12049,6 +12064,26 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->load_authored_fluid_publication();
     const auto authored_fluid_binding = authored_fluid_publication
         ? authored_fluid_publication->render : nullptr;
+    std::uint32_t authored_water_proxy_instance_index = UINT32_MAX;
+    const std::uint64_t water_retire_after_serial =
+        frame.serial +
+        std::max<std::uint64_t>(frame.frame_slot_count, 1u);
+    const auto disable_water_mesh_animation =
+        [this, water_retire_after_serial](const char* reason) {
+            if (impl_->vk_scene->water_animation_generation() != 0u)
+                impl_->vk_scene->clear_water_animation(
+                    water_retire_after_serial);
+            impl_->vk_water_animation_playback = {};
+            impl_->vk_water_animation_selection = {};
+            impl_->vk_water_animation_proxy_indices.clear();
+            impl_->vk_water_animation_generation = 0u;
+            impl_->vk_water_animation_active = false;
+            if (reason && reason[0] != '\0')
+                MATTER_LOGW(
+                    "hydrology",
+                    "water mesh animation fell back to the accepted static surface: %s\n",
+                    reason);
+        };
     if (authored_fluid_binding && authored_fluid_binding->part) {
         if (impl_->vk_scene->ensure_part(*authored_fluid_binding->part, err) < 0)
             return false;
@@ -12072,6 +12107,87 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 return false;
             }
             impl_->vk_authored_water_field_binding = published;
+            const auto& manifest =
+                authored_fluid_binding->animation_manifest;
+            const bool animation_authored =
+                !manifest.section_animations.empty() ||
+                !manifest.handoff_animations.empty();
+            bool animation_activated = false;
+            std::string animation_error;
+            if (animation_authored) {
+                try {
+                    viewer::WaterMeshAnimationPlayback candidate_playback{};
+                    viewer::WaterAnimationFallback fallback{};
+                    if (!viewer::activate_water_mesh_animation_playback(
+                            manifest,
+                            authored_fluid_binding->animation_cache_root,
+                            frame.frame_slot_count,
+                            700ull * 1024ull * 1024ull,
+                            candidate_playback, fallback)) {
+                        animation_error = fallback.message.empty()
+                            ? "compressed animation activation failed"
+                            : fallback.message;
+                    } else {
+                        const viewer::WaterAnimationPlaybackCapacity measured =
+                            candidate_playback.maximum_frame_capacity();
+                        viewer::WaterAnimationGpuCapacity capacity{
+                            measured.packed_vertex_bytes,
+                            measured.decoded_vertex_count,
+                            measured.index_bytes,
+                            measured.draw_count};
+                        viewer::WaterAnimationFrameSelection selection =
+                            candidate_playback.make_selection();
+                        std::vector<std::uint32_t> proxy_indices(
+                            measured.draw_count, UINT32_MAX);
+                        std::uint64_t generation =
+                            impl_->vk_water_animation_next_generation;
+                        if (generation <=
+                            impl_->vk_scene->water_animation_generation())
+                            generation =
+                                impl_->vk_scene->water_animation_generation() +
+                                1u;
+                        viewer::WaterAnimationGpuError gpu_error{};
+                        if (generation == 0u ||
+                            !impl_->vk_scene->publish_water_animation(
+                                generation, frame.frame_slot_count, capacity,
+                                water_retire_after_serial, gpu_error)) {
+                            animation_error = gpu_error.message.empty()
+                                ? "Vulkan animation resource publication failed"
+                                : gpu_error.message;
+                        } else {
+                            impl_->vk_water_animation_playback =
+                                std::move(candidate_playback);
+                            impl_->vk_water_animation_selection =
+                                std::move(selection);
+                            impl_->vk_water_animation_proxy_indices =
+                                std::move(proxy_indices);
+                            impl_->vk_water_animation_generation = generation;
+                            impl_->vk_water_animation_next_generation =
+                                generation + 1u;
+                            impl_->vk_water_animation_active = true;
+                            animation_activated = true;
+                            MATTER_LOGI(
+                                "hydrology",
+                                "water mesh animation activated: generation=%llu draws=%u compressed=%.1f MiB slot=%.1f MiB\n",
+                                static_cast<unsigned long long>(generation),
+                                measured.draw_count,
+                                static_cast<double>(
+                                    impl_->vk_water_animation_playback
+                                        .compressed_bytes()) /
+                                    (1024.0 * 1024.0),
+                                static_cast<double>(
+                                    capacity.gpu_bytes_per_slot()) /
+                                    (1024.0 * 1024.0));
+                        }
+                    }
+                } catch (const std::bad_alloc&) {
+                    animation_error =
+                        "water animation runtime allocation failed";
+                }
+            }
+            if (!animation_activated)
+                disable_water_mesh_animation(
+                    animation_authored ? animation_error.c_str() : nullptr);
             impl_->vk_authored_fluid_render_binding =
                 authored_fluid_binding;
         }
@@ -12081,7 +12197,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             return false;
         if (instance_view != &acceptance_instances)
             acceptance_instances = cached_instances;
-        acceptance_instances.push_back(authored_fluid_binding->instance);
+        authored_water_proxy_instance_index =
+            static_cast<std::uint32_t>(acceptance_instances.size());
+        viewer::VkSceneInstance water_instance =
+            authored_fluid_binding->instance;
+        gpu_meshing::set_water_scene_animation_active(
+            water_instance, impl_->vk_water_animation_active);
+        acceptance_instances.push_back(water_instance);
         instance_view = &acceptance_instances;
     } else if (impl_->vk_authored_water_field_binding.valid()) {
         viewer::WaterFieldError field_error{};
@@ -12098,6 +12220,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         }
         impl_->vk_authored_water_field_binding = {};
         impl_->vk_authored_fluid_render_binding.reset();
+        disable_water_mesh_animation(nullptr);
     }
     const auto failed_fluid_debug_binding = std::atomic_load_explicit(
         &impl_->failed_fluid_debug_binding, std::memory_order_acquire);
@@ -12110,6 +12233,53 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         acceptance_instances.push_back(
             failed_fluid_debug_binding->instance);
         instance_view = &acceptance_instances;
+    }
+    if (impl_->vk_water_animation_active) {
+        std::string animation_frame_error;
+        bool prepared =
+            authored_water_proxy_instance_index != UINT32_MAX &&
+            authored_water_proxy_instance_index <
+                acceptance_instances.size() &&
+            impl_->vk_scene->water_animation_generation() ==
+                impl_->vk_water_animation_generation;
+        if (prepared) {
+            std::fill(
+                impl_->vk_water_animation_proxy_indices.begin(),
+                impl_->vk_water_animation_proxy_indices.end(),
+                authored_water_proxy_instance_index);
+            viewer::WaterAnimationFallback fallback{};
+            prepared = impl_->vk_water_animation_playback.select(
+                static_cast<double>(water_animation_time_seconds),
+                frame.frame_slot,
+                impl_->vk_water_animation_selection, fallback);
+            if (!prepared)
+                animation_frame_error = fallback.message.empty()
+                    ? "30 Hz frame selection failed"
+                    : fallback.message;
+        } else {
+            animation_frame_error =
+                "animation generation or static proxy mapping became stale";
+        }
+        if (prepared) {
+            viewer::WaterAnimationGpuError gpu_error{};
+            prepared = impl_->vk_scene->prepare_water_animation_frame(
+                impl_->vk_water_animation_generation, frame.frame_slot,
+                impl_->vk_water_animation_selection,
+                impl_->vk_water_animation_proxy_indices, gpu_error);
+            if (!prepared)
+                animation_frame_error = gpu_error.message.empty()
+                    ? "GPU frame upload/decode preparation failed"
+                    : gpu_error.message;
+        }
+        if (!prepared) {
+            disable_water_mesh_animation(animation_frame_error.c_str());
+            if (authored_water_proxy_instance_index <
+                acceptance_instances.size())
+                gpu_meshing::set_water_scene_animation_active(
+                    acceptance_instances[
+                        authored_water_proxy_instance_index],
+                    false);
+        }
     }
     const auto& instances = *instance_view;
     if (instances.empty()) {

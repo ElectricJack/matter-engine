@@ -84,6 +84,21 @@ void test_converts_to_one_authored_water_part() {
                     0.5f * std::sqrt(52.0f)) < 1e-6f,
           "water conversion computes cluster radius from its diagonal");
 
+    viewer::VkSceneInstance proxy{};
+    proxy.part_hash = part->part_hash;
+    proxy.instance_id = instance_id;
+    proxy.ray_traced = true;
+    gpu_meshing::set_water_scene_animation_active(proxy, true);
+    CHECK(proxy.rt_proxy_only && proxy.ray_traced &&
+              proxy.part_hash == part->part_hash &&
+              proxy.instance_id == instance_id,
+          "healthy animation suppresses only static proxy raster visibility");
+    gpu_meshing::set_water_scene_animation_active(proxy, false);
+    CHECK(!proxy.rt_proxy_only && proxy.ray_traced &&
+              proxy.part_hash == part->part_hash &&
+              proxy.instance_id == instance_id,
+          "fallback restores raster visibility without changing RT identity");
+
     std::shared_ptr<const viewer::VkScenePart> repeated;
     uint64_t repeated_instance = 0;
     CHECK(gpu_meshing::build_water_scene_part(

@@ -45,6 +45,21 @@ struct WaterAnimationFrameSelection {
     std::vector<WaterAnimationFrameDraw> draws;
 };
 
+// Largest synchronized frame across every section and handoff in a loaded
+// network. The renderer uses this once at publication to allocate fixed
+// per-frame-slot buffers; steady-state selection never grows storage.
+struct WaterAnimationPlaybackCapacity {
+    std::uint64_t packed_vertex_bytes = 0u;
+    std::uint64_t decoded_vertex_count = 0u;
+    std::uint64_t index_bytes = 0u;
+    std::uint32_t draw_count = 0u;
+
+    bool valid() const noexcept {
+        return packed_vertex_bytes != 0u && decoded_vertex_count != 0u &&
+               index_bytes != 0u && draw_count != 0u;
+    }
+};
+
 struct DecodedWaterAnimationVertex {
     matter::Float3 position{};
     matter::Float3 normal{};
@@ -62,6 +77,9 @@ public:
         return compressed_bytes_;
     }
     std::size_t asset_count() const noexcept { return assets_.size(); }
+    WaterAnimationPlaybackCapacity maximum_frame_capacity() const noexcept {
+        return capacity_;
+    }
 
     WaterAnimationFrameSelection make_selection() const;
 
@@ -93,6 +111,7 @@ private:
     std::vector<Asset> assets_;
     std::vector<std::int32_t> last_uploaded_frame_;
     std::uint64_t compressed_bytes_ = 0u;
+    WaterAnimationPlaybackCapacity capacity_{};
 };
 
 bool activate_water_mesh_animation_playback(

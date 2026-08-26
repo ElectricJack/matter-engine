@@ -241,6 +241,153 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
           "water field: immutable uploads produce no Vulkan validation errors");
 }
 
+void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::string error;
+    CHECK(renderer.init(error),
+          error.empty() ? "water animation: initialize renderer"
+                        : error.c_str());
+    if (!error.empty()) return;
+
+    viewer::WaterFieldError field_error{};
+    viewer::WaterFieldBinding field{};
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x5151u), nullptr, 0u, field,
+              field_error),
+          field_error.message.c_str());
+    viewer::VkScenePart proxy_part =
+        known_raster_triangle(0x5741544552414e49ull, 7u);
+    proxy_part.water_field_binding = field;
+    CHECK(renderer.ensure_part(proxy_part, error) >= 0,
+          error.empty() ? "water animation: register static proxy"
+                        : error.c_str());
+
+    const std::array<hydrology::PackedWaterAnimationVertex, 3> vertices{{
+        {0u, 0u, 0u},
+        {65535u, 0u, 0u},
+        {0xffff0000u, 0u, 0u},
+    }};
+    const std::array<std::uint32_t, 3> indices{{0u, 1u, 2u}};
+    viewer::WaterAnimationFrameSelection selection{};
+    selection.frame_index = 0u;
+    selection.upload_required = true;
+    selection.draws.push_back({
+        "smoke-water", false, 0u, 7u,
+        {{-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}},
+        {reinterpret_cast<const std::uint8_t*>(vertices.data()),
+         reinterpret_cast<const std::uint8_t*>(indices.data()),
+         vertices.size() * sizeof(vertices[0]),
+         indices.size() * sizeof(indices[0]),
+         static_cast<std::uint32_t>(vertices.size()),
+         static_cast<std::uint32_t>(indices.size())}});
+    const viewer::WaterAnimationGpuCapacity capacity{
+        vertices.size() * sizeof(vertices[0]), vertices.size(),
+        indices.size() * sizeof(indices[0]), 1u};
+    viewer::WaterAnimationGpuError animation_error{};
+    CHECK(renderer.publish_water_animation(
+              11u, 2u, capacity, 0u, animation_error),
+          animation_error.message.c_str());
+    renderer.set_test_device_limits(
+        capacity.packed_vertex_bytes - 1u,
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(), UINT32_MAX, UINT32_MAX);
+    CHECK(!renderer.publish_water_animation(
+              12u, 2u, capacity, 0u, animation_error) &&
+              renderer.water_animation_generation() == 11u,
+          "water animation: rejected GPU capacity preserves the live generation");
+    renderer.clear_test_device_limits(error);
+    CHECK(error.empty(), "water animation: restore physical device limits");
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(
+              camera, 320u, 200u, matrices, error),
+          error.empty() ? "water animation: build frame matrices"
+                        : error.c_str());
+
+    matter::VulkanFrame frame{};
+    CHECK(vulkan.begin_frame(frame, error),
+          error.empty() ? "water animation: begin animated frame"
+                        : error.c_str());
+    if (frame.command_buffer != VK_NULL_HANDLE) {
+        CHECK(renderer.prepare_water_animation_frame(
+                  11u, frame.frame_slot, selection, {0u}, animation_error),
+              animation_error.message.c_str());
+        viewer::VkSceneInstance proxy{};
+        proxy.part_hash = proxy_part.part_hash;
+        proxy.object_to_world = viewer::mat4_identity();
+        proxy.instance_id = 0x5741544552ull;
+        proxy.ray_traced = true;
+        proxy.rt_proxy_only = true;
+        CHECK(renderer.update_instances({proxy}, error),
+              error.empty() ? "water animation: upload suppressed proxy"
+                            : error.c_str());
+        std::vector<viewer::DrawCommand> commands;
+        CHECK(renderer.dispatch_culling(
+                  matrices, camera.position, 1.0f, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? "water animation: inspect suppressed cull"
+                            : error.c_str());
+        CHECK(std::none_of(
+                  commands.begin(), commands.end(),
+                  [](const viewer::DrawCommand& command) {
+                      return command.instance_count != 0u;
+                  }),
+              "water animation: RT proxy contributes no static raster draw");
+        const bool recorded = renderer.prepare_frame(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_cull_and_render(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        const bool ended = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, ended);
+        renderer.finish_dynamic_frame(frame.serial);
+        CHECK(ended,
+              error.empty() ? "water animation: record direct animated draw"
+                            : error.c_str());
+        vulkan.wait_idle();
+
+        renderer.clear_water_animation(frame.serial + 2u);
+        CHECK(renderer.water_animation_generation() == 0u,
+              "water animation: fallback clears the dynamic generation first");
+        proxy.rt_proxy_only = false;
+        CHECK(renderer.update_instances({proxy}, error) &&
+                  renderer.dispatch_culling(
+                      matrices, camera.position, 1.0f, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? "water animation: restore static proxy raster"
+                            : error.c_str());
+        CHECK(std::any_of(
+                  commands.begin(), commands.end(),
+                  [](const viewer::DrawCommand& command) {
+                      return command.instance_count != 0u;
+                  }),
+              "water animation: fallback immediately restores static raster");
+        renderer.collect_water_animation(frame.serial + 2u);
+
+        CHECK(renderer.publish_water_animation(
+                  12u, 2u, capacity, frame.serial + 2u, animation_error) &&
+                  renderer.water_animation_generation() == 12u,
+              animation_error.message.empty()
+                  ? "water animation: later valid generation reactivates"
+                  : animation_error.message.c_str());
+        CHECK(!renderer.prepare_water_animation_frame(
+                  11u, frame.frame_slot, selection, {0u}, animation_error) &&
+                  renderer.water_animation_generation() == 12u,
+              "water animation: stale preparation cannot mutate a live generation");
+        renderer.clear_water_animation(frame.serial + 4u);
+        renderer.collect_water_animation(frame.serial + 4u);
+    }
+    CHECK(vulkan.validation_error_count() == 0u,
+          "water animation: activation, draw, fallback, and retirement have no validation errors");
+}
+
 void test_atmosphere_timing_contract() {
     using Renderer = viewer::VkSceneRenderer;
     CHECK(Renderer::kGpuZoneTotal == 0 && Renderer::kGpuZoneVolumetrics == 9 &&
@@ -12465,6 +12612,16 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "water-field") {
             run_water_field_upload_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "water-animation") {
+            run_water_animation_activation_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

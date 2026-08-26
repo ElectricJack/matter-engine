@@ -85,6 +85,13 @@ void test_common_clock_and_per_slot_upload_decisions() {
     CHECK(viewer::activate_water_mesh_animation_playback(
               fixture.manifest, fixture.root, 3u, 700ull * 1024ull * 1024ull,
               playback, fallback), fallback.message.c_str());
+    const viewer::WaterAnimationPlaybackCapacity capacity =
+        playback.maximum_frame_capacity();
+    CHECK(capacity.packed_vertex_bytes == 3u * 3u * 12u &&
+              capacity.decoded_vertex_count == 3u * 3u &&
+              capacity.index_bytes == 3u * 3u * sizeof(std::uint32_t) &&
+              capacity.draw_count == 3u,
+          "activation precomputes the maximum synchronized frame capacity");
     CHECK(viewer::water_animation_frame(0.0) == 0u &&
               viewer::water_animation_frame(1.0 / 30.0) == 1u &&
               viewer::water_animation_frame(29.9 / 30.0) == 29u &&
@@ -100,10 +107,10 @@ void test_common_clock_and_per_slot_upload_decisions() {
     for (const auto& draw : selection.draws)
         CHECK(draw.frame_index == selection.frame_index,
               "sections and handoffs share the selected frame");
-    const auto capacity = selection.draws.capacity();
+    const auto draw_capacity = selection.draws.capacity();
     CHECK(playback.select(0.11, 0u, selection, fallback) &&
               !selection.upload_required &&
-              selection.draws.capacity() == capacity,
+              selection.draws.capacity() == draw_capacity,
           "paused or same-interval playback performs no upload or allocation");
     CHECK(playback.select(0.11, 1u, selection, fallback) &&
               selection.upload_required,

@@ -1590,9 +1590,22 @@ bool VkSceneRenderer::publish_water_animation(
             generation, frame_slots, capacity, retire_after_serial,
             schedule_error))
         return reject_candidate(schedule_error.message);
-    if (water_animation_resources_.descriptor_pool != VK_NULL_HANDLE)
-        retired_water_animation_resources_.push_back(
-            {retire_after_serial, std::move(water_animation_resources_)});
+    if (water_animation_resources_.descriptor_pool != VK_NULL_HANDLE) {
+        // VkDescriptorPool is a plain handle, so the compiler-generated move
+        // copies it instead of relinquishing ownership. Populate the retired
+        // slot first, then exchange every scalar handle out of the live
+        // generation; otherwise clear -> reactivate retires and destroys the
+        // same descriptor pool twice.
+        retired_water_animation_resources_.emplace_back();
+        auto& retired = retired_water_animation_resources_.back();
+        retired.retire_after_serial = retire_after_serial;
+        retired.resources.generation = std::exchange(
+            water_animation_resources_.generation, 0u);
+        retired.resources.descriptor_pool = std::exchange(
+            water_animation_resources_.descriptor_pool, VK_NULL_HANDLE);
+        retired.resources.frames =
+            std::move(water_animation_resources_.frames);
+    }
     water_animation_resources_ = std::move(candidate);
     water_animation_proxy_instance_indices_.assign(capacity.draw_count,
                                                     UINT32_MAX);
@@ -1655,9 +1668,17 @@ bool VkSceneRenderer::prepare_water_animation_frame(
 void VkSceneRenderer::clear_water_animation(
     std::uint64_t retire_after_serial) {
     water_animation_schedule_.clear(retire_after_serial);
-    if (water_animation_resources_.descriptor_pool != VK_NULL_HANDLE)
-        retired_water_animation_resources_.push_back(
-            {retire_after_serial, std::move(water_animation_resources_)});
+    if (water_animation_resources_.descriptor_pool != VK_NULL_HANDLE) {
+        retired_water_animation_resources_.emplace_back();
+        auto& retired = retired_water_animation_resources_.back();
+        retired.retire_after_serial = retire_after_serial;
+        retired.resources.generation = std::exchange(
+            water_animation_resources_.generation, 0u);
+        retired.resources.descriptor_pool = std::exchange(
+            water_animation_resources_.descriptor_pool, VK_NULL_HANDLE);
+        retired.resources.frames =
+            std::move(water_animation_resources_.frames);
+    }
     water_animation_proxy_instance_indices_.clear();
     water_animation_direct_transform_slots_.clear();
     command_template_dirty_ = true;

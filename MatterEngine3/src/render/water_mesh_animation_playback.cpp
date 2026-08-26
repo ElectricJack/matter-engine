@@ -1,5 +1,6 @@
 #include "render/water_mesh_animation_playback.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <system_error>
@@ -165,6 +166,10 @@ bool activate_water_mesh_animation_playback(
     WaterMeshAnimationPlayback candidate{};
     const std::size_t asset_count = manifest.section_animations.size() +
         manifest.handoff_animations.size();
+    if (asset_count > std::numeric_limits<std::uint32_t>::max())
+        return reject(WaterAnimationFallbackReason::InvalidConfiguration,
+                      "water animation has too many synchronized draws",
+                      fallback);
     candidate.assets_.reserve(asset_count);
     candidate.last_uploaded_frame_.assign(vulkan_frame_slots, -1);
     const auto load = [&](
@@ -217,6 +222,48 @@ bool activate_water_mesh_animation_playback(
         if (!load(reference, false)) return false;
     for (const auto& reference : manifest.handoff_animations)
         if (!load(reference, true)) return false;
+    candidate.capacity_.draw_count =
+        static_cast<std::uint32_t>(candidate.assets_.size());
+    for (std::uint32_t frame = 0u; frame != 30u; ++frame) {
+        std::uint64_t vertex_bytes = 0u;
+        std::uint64_t vertex_count = 0u;
+        std::uint64_t index_bytes = 0u;
+        for (const auto& asset : candidate.assets_) {
+            if (!asset.artifact || frame >= asset.artifact->frames.size())
+                return reject(WaterAnimationFallbackReason::CorruptArtifact,
+                              "water animation frame directory is incomplete",
+                              fallback);
+            const auto& record = asset.artifact->frames[frame];
+            const std::uint64_t asset_vertex_bytes =
+                static_cast<std::uint64_t>(record.vertex_count) *
+                sizeof(hydrology::PackedWaterAnimationVertex);
+            const std::uint64_t asset_index_bytes =
+                static_cast<std::uint64_t>(record.index_count) *
+                sizeof(std::uint32_t);
+            if (asset_vertex_bytes >
+                    std::numeric_limits<std::uint64_t>::max() - vertex_bytes ||
+                record.vertex_count >
+                    std::numeric_limits<std::uint64_t>::max() - vertex_count ||
+                asset_index_bytes >
+                    std::numeric_limits<std::uint64_t>::max() - index_bytes)
+                return reject(WaterAnimationFallbackReason::CorruptArtifact,
+                              "water animation synchronized frame size overflows",
+                              fallback);
+            vertex_bytes += asset_vertex_bytes;
+            vertex_count += record.vertex_count;
+            index_bytes += asset_index_bytes;
+        }
+        candidate.capacity_.packed_vertex_bytes = std::max(
+            candidate.capacity_.packed_vertex_bytes, vertex_bytes);
+        candidate.capacity_.decoded_vertex_count = std::max(
+            candidate.capacity_.decoded_vertex_count, vertex_count);
+        candidate.capacity_.index_bytes = std::max(
+            candidate.capacity_.index_bytes, index_bytes);
+    }
+    if (!candidate.capacity_.valid())
+        return reject(WaterAnimationFallbackReason::CorruptArtifact,
+                      "water animation contains no renderable synchronized frame",
+                      fallback);
     playback = std::move(candidate);
     return true;
 }

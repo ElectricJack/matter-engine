@@ -1,6 +1,7 @@
 #include "check.h"
 
 #include "hydrology/hydrology_handoff_products.h"
+#include "hydrology/hydrology_network_artifact.h"
 #include "hydrology/river_runtime_internal.h"
 #include "matter/river_runtime.h"
 
@@ -211,6 +212,48 @@ void test_binding_rejects_invalid_metadata_and_layout() {
           "an out-of-domain internal feature cannot enter the public binding");
 }
 
+void test_visual_animation_metadata_cannot_change_gameplay_products() {
+    auto products = analytic_products();
+    const std::uint64_t runtime_digest =
+        hydrology::hydrology_runtime_field_digest(
+            products.gameplay_layout, products.gameplay_field);
+    const std::uint64_t presentation_digest =
+        hydrology::hydrology_presentation_field_digest(
+            products.gameplay_layout, products.presentation_field);
+    hydrology::HydrologyNetworkArtifact manifest{};
+    manifest.state = hydrology::HydrologyNetworkState::Ready;
+    manifest.runtime_field_digest = runtime_digest;
+    manifest.presentation_field_digest = presentation_digest;
+    manifest.section_animations.push_back(
+        {"upper", "hydrology/animations/upper.mhwa", 101u,
+         1001u, 0u, 30u, 30u, 9001u});
+    manifest.handoff_animations.push_back(
+        {"pool", "hydrology/animations/handoffs/pool.mhwa", 202u,
+         1001u, 2002u, 30u, 30u, 9002u});
+    CHECK(hydrology::hydrology_runtime_field_digest(
+              products.gameplay_layout, products.gameplay_field) ==
+              runtime_digest &&
+              hydrology::hydrology_presentation_field_digest(
+                  products.gameplay_layout, products.presentation_field) ==
+              presentation_digest &&
+              manifest.runtime_field_digest == runtime_digest &&
+              manifest.presentation_field_digest == presentation_digest,
+          "visual animation references cannot alter buoyancy or presentation fields");
+
+    auto slot = std::make_shared<matter::detail::RiverRuntimePublicationSlot>();
+    auto identity =
+        std::make_shared<matter::detail::RiverRuntimePublicationIdentity>();
+    const auto binding = analytic_binding(products, slot, identity);
+    matter::detail::RiverRuntimeBindingAccess::publish(slot, identity);
+    matter::RiverFieldSample sample{};
+    CHECK(binding && binding->generation() == 701u &&
+              binding->runtime_digest() == runtime_digest &&
+              binding->presentation_digest() == presentation_digest &&
+              binding->sample({1.0f, 0.0f, 1.0f}, sample) &&
+              sample.wet_valid,
+          "animation-enabled manifests retain the accepted gameplay binding");
+}
+
 static_assert(std::is_nothrow_destructible_v<matter::RiverRuntimeBinding>);
 static_assert(noexcept(std::declval<const matter::RiverRuntimeBinding&>().sample(
     matter::Float3{}, std::declval<matter::RiverFieldSample&>())));
@@ -222,5 +265,6 @@ int main() {
     test_batch_null_and_count_contracts();
     test_analytic_sampling_and_publication_lease();
     test_binding_rejects_invalid_metadata_and_layout();
+    test_visual_animation_metadata_cannot_change_gameplay_products();
     return check_summary();
 }
