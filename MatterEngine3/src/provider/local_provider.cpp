@@ -551,6 +551,34 @@ std::uint64_t section_revision(
     return nonzero_hash(hash);
 }
 
+std::uint64_t section_water_animation_semantic_key(
+    std::uint64_t section_semantic_key,
+    std::uint64_t section_payload_digest,
+    const matter::HydrologyMeshAnimationProfile& profile,
+    const std::vector<hydrology::SpillwayHandoffRecord>& ownership) {
+    std::uint64_t hash = UINT64_C(14695981039346656037);
+    hash_string(hash, "water-mesh-animation-v1");
+    hash_value(hash, section_semantic_key);
+    hash_value(hash, section_payload_digest);
+    hash_value(hash, profile.frames_per_second);
+    hash_value(hash, profile.duration_seconds);
+    hash_value(hash, profile.phase_offset_seconds);
+    hash_value(hash, profile.frame_count);
+    hash_value(hash, profile.sample_step_stride);
+    hash_value(hash, profile.phase_offset_frames);
+    for (const auto& handoff : ownership)
+        hash_value(hash, handoff.semantic_key);
+    return nonzero_hash(hash);
+}
+
+std::filesystem::path section_water_animation_path(
+    const std::filesystem::path& cache_root,
+    const std::string& section_id,
+    std::uint64_t semantic_key) {
+    return cache_root / "hydrology" / "animations" /
+        (safe_cache_id(section_id) + "-" + hex64(semantic_key) + ".mhwa");
+}
+
 std::uint64_t collision_mesh_revision(
     const hydrology::FluidCollisionMesh& mesh) {
     std::uint64_t hash = UINT64_C(14695981039346656037);
@@ -1151,6 +1179,33 @@ bool load_semantic_cache(const FluidBakeRequest& request,
            cache_matches_request(artifact, request);
 }
 
+bool load_water_animation_cache(
+    const std::filesystem::path& path,
+    const std::string& section_id,
+    std::uint64_t semantic_key,
+    std::uint64_t source_payload_digest,
+    const matter::HydrologyMeshAnimationProfile& profile,
+    hydrology::WaterMeshAnimationArtifact& artifact) {
+    artifact = {};
+    gpu_meshing::Error error{};
+    hydrology::WaterMeshAnimationArtifact candidate{};
+    if (!hydrology::load_water_mesh_animation_artifact(
+            path, candidate, error))
+        return false;
+    if (candidate.identity != section_id ||
+        candidate.semantic_key != semantic_key ||
+        candidate.source_primary_payload_digest != source_payload_digest ||
+        candidate.source_secondary_payload_digest != 0u ||
+        candidate.frames_per_second != profile.frames_per_second ||
+        candidate.frames.size() != profile.frame_count ||
+        candidate.phase_offset_frames != profile.phase_offset_frames ||
+        candidate.duration_seconds != profile.duration_seconds ||
+        candidate.payload_digest == 0u)
+        return false;
+    artifact = std::move(candidate);
+    return true;
+}
+
 } // namespace
 
 LocalProviderConfig make_engine_local_provider_config(
@@ -1652,6 +1707,32 @@ bool LocalProvider::run_authored_fluid_bake(
                 section.after_section_ids,
                 found->semantic_key,
                 found->payload_digest});
+            if (river_network_->fluid.mesh_animation.enabled) {
+                const auto animation = std::find_if(
+                    out.section_animations.begin(),
+                    out.section_animations.end(),
+                    [&](const auto& value) {
+                        return value.identity == section.id;
+                    });
+                if (animation == out.section_animations.end() ||
+                    animation->source_primary_payload_digest !=
+                        found->payload_digest) {
+                    fluid_error = {
+                        hydrology::FluidBakeCode::ProductFailure,
+                        "ready network is missing a matching section animation"};
+                    return false;
+                }
+                manifest.section_animations.push_back({
+                    section.id,
+                    "hydrology/animations/" + safe_cache_id(section.id) +
+                        "-" + hex64(animation->semantic_key) + ".mhwa",
+                    animation->semantic_key,
+                    animation->source_primary_payload_digest,
+                    0u,
+                    static_cast<std::uint32_t>(animation->frames.size()),
+                    animation->frames_per_second,
+                    animation->payload_digest});
+            }
         }
         for (const auto& handoff : out.handoffs) {
             manifest.handoffs.push_back({
@@ -1662,6 +1743,35 @@ bool LocalProvider::run_authored_fluid_bake(
                  handoff.handoff.downstream_section_id},
                 handoff.semantic_key,
                 handoff.payload_digest});
+            if (river_network_->fluid.mesh_animation.enabled) {
+                const auto animation = std::find_if(
+                    out.handoff_animations.begin(),
+                    out.handoff_animations.end(),
+                    [&](const auto& value) {
+                        return value.identity == handoff.id;
+                    });
+                if (animation == out.handoff_animations.end() ||
+                    animation->source_primary_payload_digest !=
+                        handoff.upstream_payload_digest ||
+                    animation->source_secondary_payload_digest !=
+                        handoff.downstream_payload_digest) {
+                    fluid_error = {
+                        hydrology::FluidBakeCode::ProductFailure,
+                        "ready network is missing a matching handoff animation"};
+                    return false;
+                }
+                manifest.handoff_animations.push_back({
+                    handoff.id,
+                    "hydrology/animations/handoffs/" +
+                        safe_cache_id(handoff.id) + "-" +
+                        hex64(animation->semantic_key) + ".mhwa",
+                    animation->semantic_key,
+                    animation->source_primary_payload_digest,
+                    animation->source_secondary_payload_digest,
+                    static_cast<std::uint32_t>(animation->frames.size()),
+                    animation->frames_per_second,
+                    animation->payload_digest});
+            }
         }
         if (context.callbacks.cancelled && context.callbacks.cancelled()) {
             fluid_error = {hydrology::FluidBakeCode::Cancelled,
@@ -1720,7 +1830,8 @@ bool LocalProvider::run_authored_fluid_bake(
 
     // Preserve the established one-section lifecycle and cache behavior for
     // existing worlds while publishing it through the network contract.
-    if (river_network_->sections.size() == 1u) {
+    if (river_network_->sections.size() == 1u &&
+        !river_network_->fluid.mesh_animation.enabled) {
         hydrology::HydrologyArtifact section{};
         gpu_meshing::MeshResult debug{};
         const bool accepted = run_authored_fluid_bake(
@@ -1822,10 +1933,65 @@ bool LocalProvider::run_authored_fluid_bake(
                 abs_cache_root_, request, section_error))
             return false;
         requests[section.id] = request;
+        const matter::RiverSectionDefinition* downstream_section = nullptr;
+        for (const auto& possible : river_network_->sections) {
+            if (std::find(possible.after_section_ids.begin(),
+                          possible.after_section_ids.end(), section.id) ==
+                possible.after_section_ids.end())
+                continue;
+            if (downstream_section) {
+                section_error = {
+                    hydrology::FluidBakeCode::InvalidInput,
+                    "river section fan-out is outside the two-section milestone"};
+                return false;
+            }
+            downstream_section = &possible;
+        }
+        std::optional<hydrology::SpillwayHandoffRecord> downstream_handoff;
+        if (downstream_section) {
+            const auto river = std::find_if(
+                river_network_->rivers.begin(), river_network_->rivers.end(),
+                [&](const auto& value) { return value.name == section.river; });
+            hydrology::SpillwayHandoffRecord handoff{};
+            if (river == river_network_->rivers.end() ||
+                !hydrology::resolve_spillway_handoff(
+                    section, *downstream_section,
+                    geometries[geometry_index->second],
+                    river->inlet.flow_m3s, handoff, section_error))
+                return false;
+            handoff.temporary_dam_exclusion_bounds_m =
+                request.temporary_dam_bounds_m;
+            handoff.semantic_key =
+                hydrology::spillway_handoff_semantic_key(handoff);
+            downstream_handoff = handoff;
+        }
+        std::vector<hydrology::SpillwayHandoffRecord> animation_ownership =
+            upstream;
+        if (downstream_handoff)
+            animation_ownership.push_back(*downstream_handoff);
         status.input_key = hex64(request.semantic_key);
         hydrology::HydrologyArtifact candidate{};
-        const bool cache_hit = load_semantic_cache(request, candidate);
+        hydrology::WaterMeshAnimationArtifact animation_candidate{};
+        const bool static_cache_hit = load_semantic_cache(request, candidate);
+        const bool animation_enabled =
+            river_network_->fluid.mesh_animation.enabled;
+        std::uint64_t animation_semantic_key = 0u;
+        std::filesystem::path animation_path;
+        bool animation_cache_hit = !animation_enabled;
+        if (static_cache_hit && animation_enabled) {
+            animation_semantic_key = section_water_animation_semantic_key(
+                request.semantic_key, candidate.payload_digest,
+                river_network_->fluid.mesh_animation, animation_ownership);
+            animation_path = section_water_animation_path(
+                abs_cache_root_, section.id, animation_semantic_key);
+            animation_cache_hit = load_water_animation_cache(
+                animation_path, section.id, animation_semantic_key,
+                candidate.payload_digest,
+                river_network_->fluid.mesh_animation, animation_candidate);
+        }
+        const bool cache_hit = static_cache_hit && animation_cache_hit;
         section_timings.cache_hit = cache_hit;
+        section_timings.animation_cache_hit = animation_cache_hit;
         section_timings.setup_ms =
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - setup_start).count();
@@ -1920,6 +2086,84 @@ bool LocalProvider::run_authored_fluid_bake(
                 return false;
             section_timings.gpu_mesh_ms = product_timings.gpu_mesh_ms;
             section_timings.cpu_mesh_ms = product_timings.cpu_mesh_ms;
+            if (animation_enabled) {
+                if (!output.animation_capture) {
+                    section_error = {
+                        hydrology::FluidBakeCode::ProductFailure,
+                        "accepted animated section has no particle capture"};
+                    return false;
+                }
+                const auto animation_mesh_start =
+                    std::chrono::steady_clock::now();
+                const hydrology::WaterMeshAnimationMesher animation_mesher =
+                    [&](const gpu_meshing::ParticleJob& job,
+                        gpu_meshing::MeshResult& mesh,
+                        gpu_meshing::Stats& stats,
+                        gpu_meshing::Error& mesh_error) {
+                        std::string run_error;
+                        const auto invoke = [&](std::string&) {
+                            return cfg_.vk_particle_visual_bake(
+                                job, mesh, stats, mesh_error,
+                                {context.callbacks.cancelled, {}});
+                        };
+                        const bool completed = cfg_.gpu_run
+                            ? cfg_.gpu_run(
+                                  "hydrology_section_animation", invoke,
+                                  run_error)
+                            : invoke(run_error);
+                        if (!completed && mesh_error.message.empty())
+                            mesh_error = {
+                                gpu_meshing::ErrorCode::VulkanFailure,
+                                run_error.empty()
+                                    ? "Vulkan section animation meshing failed"
+                                    : run_error};
+                        return completed;
+                    };
+                hydrology::WaterMeshAnimation raw_animation{};
+                gpu_meshing::Error animation_error{};
+                if (!hydrology::build_water_mesh_animation(
+                        *output.animation_capture,
+                        request.product_settings.particle_radius_m,
+                        request.product_settings.visual_job,
+                        animation_mesher, raw_animation, animation_error)) {
+                    section_error = {
+                        hydrology::FluidBakeCode::ProductFailure,
+                        animation_error.message.empty()
+                            ? "section water animation meshing failed"
+                            : animation_error.message};
+                    return false;
+                }
+                hydrology::WaterMeshAnimation owned_animation{};
+                if (!hydrology::clip_section_water_mesh_animation(
+                        raw_animation, section.id, animation_ownership,
+                        request.product_settings.visual_job.voxel_m,
+                        owned_animation, section_error))
+                    return false;
+                animation_semantic_key =
+                    section_water_animation_semantic_key(
+                        request.semantic_key, candidate.payload_digest,
+                        river_network_->fluid.mesh_animation,
+                        animation_ownership);
+                animation_path = section_water_animation_path(
+                    abs_cache_root_, section.id, animation_semantic_key);
+                if (!hydrology::pack_water_mesh_animation_artifact(
+                        {section.id, animation_semantic_key,
+                         candidate.payload_digest, 0u,
+                         request.product_settings.visual_job.voxel_m},
+                        owned_animation, animation_candidate,
+                        animation_error)) {
+                    section_error = {
+                        hydrology::FluidBakeCode::ProductFailure,
+                        animation_error.message.empty()
+                            ? "section water animation packing failed"
+                            : animation_error.message};
+                    return false;
+                }
+                section_timings.animation_mesh_ms =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() -
+                        animation_mesh_start).count();
+            }
             std::string trace_error;
             (void)write_particle_trace(
                 request, output, hydrology::FluidBakeCode::Ready,
@@ -1930,7 +2174,15 @@ bool LocalProvider::run_authored_fluid_bake(
                     request.cache_path, candidate, artifact_error) ||
                 !hydrology::load_artifact_validated(
                     request.cache_path, candidate.product_keys.visual,
-                    candidate, artifact_error, request.semantic_key)) {
+                    candidate, artifact_error, request.semantic_key) ||
+                (animation_enabled &&
+                 (!hydrology::save_water_mesh_animation_artifact_immutable(
+                      animation_path, animation_candidate, artifact_error) ||
+                  !load_water_animation_cache(
+                      animation_path, section.id, animation_semantic_key,
+                      candidate.payload_digest,
+                      river_network_->fluid.mesh_animation,
+                      animation_candidate)))) {
                 section_error = {hydrology::FluidBakeCode::ProductFailure,
                                  artifact_error.message};
                 return false;
@@ -1941,37 +2193,12 @@ bool LocalProvider::run_authored_fluid_bake(
         }
 
         section_result.artifact = candidate;
-        const matter::RiverSectionDefinition* downstream = nullptr;
-        for (const auto& possible : river_network_->sections) {
-            if (std::find(possible.after_section_ids.begin(),
-                          possible.after_section_ids.end(), section.id) ==
-                possible.after_section_ids.end())
-                continue;
-            if (downstream) {
-                section_error = {
-                    hydrology::FluidBakeCode::InvalidInput,
-                    "river section fan-out is outside the two-section milestone"};
-                return false;
-            }
-            downstream = &possible;
+        if (animation_enabled) {
+            section_timings.animation_bytes =
+                animation_candidate.frame_payload.size();
+            section_result.animation = animation_candidate;
         }
-        if (downstream) {
-            const auto river = std::find_if(
-                river_network_->rivers.begin(), river_network_->rivers.end(),
-                [&](const auto& value) { return value.name == section.river; });
-            hydrology::SpillwayHandoffRecord handoff{};
-            if (river == river_network_->rivers.end() ||
-                !hydrology::resolve_spillway_handoff(
-                    section, *downstream,
-                    geometries[geometry_index->second],
-                    river->inlet.flow_m3s, handoff, section_error))
-                return false;
-            handoff.temporary_dam_exclusion_bounds_m =
-                request.temporary_dam_bounds_m;
-            handoff.semantic_key =
-                hydrology::spillway_handoff_semantic_key(handoff);
-            section_result.downstream_handoff = handoff;
-        }
+        section_result.downstream_handoff = downstream_handoff;
         status.completed_sections = static_cast<std::uint32_t>(order + 1u);
         status.progress = static_cast<float>(order + 1u) /
             static_cast<float>(river_network_->sections.size());
@@ -2004,8 +2231,37 @@ bool LocalProvider::run_authored_fluid_bake(
         return false;
     }
 
-    for (auto& accepted : sequence.sections)
+    for (auto& accepted : sequence.sections) {
         network_result.sections.push_back(std::move(accepted.artifact));
+        if (accepted.animation)
+            network_result.section_animations.push_back(
+                std::move(*accepted.animation));
+    }
+    if (network_result.sections.size() == 1u) {
+        const auto& section = network_result.sections.front();
+        network_result.products.visual_mesh = section.visual_mesh;
+        network_result.products.coarse_cpu_mesh = section.coarse_cpu_mesh;
+        network_result.products.gameplay_layout = section.gameplay_layout;
+        network_result.products.gameplay_field = section.gameplay_field;
+        network_result.products.presentation_field =
+            section.presentation_field;
+        if (!finalize_manifest(network_result)) {
+            status.state = fluid_error.code ==
+                    hydrology::FluidBakeCode::Cancelled
+                ? matter::HydrologyState::Stale
+                : matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+        status.state = matter::HydrologyState::Ready;
+        status.cache_hit = all_cache_hits;
+        status.progress = 1.0f;
+        status.completed_sections = 1u;
+        status.current_section = 1u;
+        status.payload_digest =
+            hex64(network_result.manifest.payload_digest);
+        return true;
+    }
     std::vector<hydrology::SpillwayHandoffRecord> handoff_records;
     for (const auto& accepted : sequence.sections)
         if (accepted.downstream_handoff)
@@ -2115,6 +2371,48 @@ bool LocalProvider::run_authored_fluid_bake(
     network_result.timings.handoff_mesh_ms =
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - handoff_mesh_start).count();
+    hydrology::WaterMeshAnimationArtifact handoff_animation{};
+    std::filesystem::path handoff_animation_path;
+    if (river_network_->fluid.mesh_animation.enabled) {
+        const auto upstream_animation = std::find_if(
+            network_result.section_animations.begin(),
+            network_result.section_animations.end(),
+            [&](const auto& value) {
+                return value.identity == handoff.upstream_section_id;
+            });
+        const auto downstream_animation = std::find_if(
+            network_result.section_animations.begin(),
+            network_result.section_animations.end(),
+            [&](const auto& value) {
+                return value.identity == handoff.downstream_section_id;
+            });
+        if (upstream_animation == network_result.section_animations.end() ||
+            downstream_animation == network_result.section_animations.end()) {
+            fluid_error = {
+                hydrology::FluidBakeCode::ProductFailure,
+                "handoff animation is missing an adjacent section animation"};
+            status.state = matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+        const auto animation_start = std::chrono::steady_clock::now();
+        if (!hydrology::build_handoff_water_animation_artifact(
+                *upstream_animation, *downstream_animation, handoff,
+                handoff_settings.visual_job.voxel_m,
+                handoff_animation, fluid_error)) {
+            status.state = matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+        network_result.timings.handoff_animation_mesh_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - animation_start).count();
+        handoff_animation_path =
+            std::filesystem::path(abs_cache_root_) / "hydrology" /
+            "animations" / "handoffs" /
+            (safe_cache_id(handoff.id) + "-" +
+             hex64(handoff_animation.semantic_key) + ".mhwa");
+    }
     const auto handoff_path = std::filesystem::path(abs_cache_root_) /
         "hydrology" / "handoffs" /
         (safe_cache_id(handoff_artifact.id) + "-" +
@@ -2128,7 +2426,10 @@ bool LocalProvider::run_authored_fluid_bake(
             handoff_path, handoff_artifact.semantic_key,
             handoff_artifact.upstream_payload_digest,
             handoff_artifact.downstream_payload_digest,
-            reopened_handoff, artifact_error)) {
+            reopened_handoff, artifact_error) ||
+        (river_network_->fluid.mesh_animation.enabled &&
+         !hydrology::save_water_mesh_animation_artifact_immutable(
+             handoff_animation_path, handoff_animation, artifact_error))) {
         fluid_error = {hydrology::FluidBakeCode::ProductFailure,
                        artifact_error.message};
         status.state = matter::HydrologyState::Invalid;
@@ -2139,6 +2440,29 @@ bool LocalProvider::run_authored_fluid_bake(
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - handoff_serialize_start).count();
     network_result.handoffs.push_back(std::move(reopened_handoff));
+    if (river_network_->fluid.mesh_animation.enabled) {
+        hydrology::WaterMeshAnimationArtifact reopened_animation{};
+        if (!hydrology::load_water_mesh_animation_artifact(
+                handoff_animation_path, reopened_animation,
+                artifact_error) ||
+            reopened_animation.identity != handoff.id ||
+            reopened_animation.semantic_key !=
+                handoff_animation.semantic_key ||
+            reopened_animation.source_primary_payload_digest !=
+                handoff_animation.source_primary_payload_digest ||
+            reopened_animation.source_secondary_payload_digest !=
+                handoff_animation.source_secondary_payload_digest) {
+            fluid_error = {hydrology::FluidBakeCode::ProductFailure,
+                           artifact_error.message.empty()
+                               ? "published handoff animation validation failed"
+                               : artifact_error.message};
+            status.state = matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+        network_result.handoff_animations.push_back(
+            std::move(reopened_animation));
+    }
     if (!finalize_manifest(network_result)) {
         status.state = fluid_error.code == hydrology::FluidBakeCode::Cancelled
             ? matter::HydrologyState::Stale

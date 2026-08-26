@@ -1,6 +1,7 @@
 #include "hydrology/river_section_coordinator.h"
 
 #include <algorithm>
+#include <array>
 #include <exception>
 #include <unordered_set>
 
@@ -44,6 +45,22 @@ std::string section_path(const std::string& id) {
 
 std::string handoff_path(const std::string& id) {
     return "handoffs/" + id + ".mhyd";
+}
+
+std::string animation_key_hex(std::uint64_t key) {
+    std::array<char, 16u> encoded{};
+    constexpr char digits[] = "0123456789abcdef";
+    for (std::size_t index = 0u; index != encoded.size(); ++index) {
+        const auto shift = static_cast<unsigned>((15u - index) * 4u);
+        encoded[index] = digits[(key >> shift) & 0x0fu];
+    }
+    return std::string(encoded.data(), encoded.size());
+}
+
+std::string section_animation_path(const std::string& id,
+                                   std::uint64_t semantic_key) {
+    return "hydrology/animations/" + id + "-" +
+        animation_key_hex(semantic_key) + ".mhwa";
 }
 
 } // namespace
@@ -120,6 +137,33 @@ bool run_river_section_sequence(
                  result.artifact.section.river_id != section.river)) {
                 return fail(output, error, FluidBakeCode::BackendFailure,
                             "river section executor returned the wrong accepted identity");
+            }
+            if (network.fluid.mesh_animation.enabled) {
+                if (!result.animation ||
+                    result.animation->identity != section.id ||
+                    result.animation->semantic_key == 0u ||
+                    result.animation->source_primary_payload_digest !=
+                        result.artifact.payload_digest ||
+                    result.animation->source_secondary_payload_digest != 0u ||
+                    result.animation->frames_per_second !=
+                        network.fluid.mesh_animation.frames_per_second ||
+                    result.animation->frames.size() !=
+                        network.fluid.mesh_animation.frame_count ||
+                    result.animation->payload_digest == 0u) {
+                    return fail(
+                        output, error, FluidBakeCode::ProductFailure,
+                        "animation-enabled section is missing its matching water animation");
+                }
+                output.manifest.section_animations.push_back({
+                    section.id,
+                    section_animation_path(
+                        section.id, result.animation->semantic_key),
+                    result.animation->semantic_key,
+                    result.animation->source_primary_payload_digest,
+                    0u,
+                    static_cast<std::uint32_t>(result.animation->frames.size()),
+                    result.animation->frames_per_second,
+                    result.animation->payload_digest});
             }
             if (result.downstream_handoff) {
                 const auto& handoff = *result.downstream_handoff;

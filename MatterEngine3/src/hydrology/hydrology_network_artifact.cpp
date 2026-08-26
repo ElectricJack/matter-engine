@@ -5,6 +5,7 @@
 #endif
 
 #include "hydrology/hydrology_network_artifact.h"
+#include "hydrology/water_mesh_animation_artifact.h"
 
 #include <algorithm>
 #include <atomic>
@@ -36,7 +37,8 @@ namespace hydrology {
 namespace {
 
 constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'N', 'E', 'T', '2'};
-constexpr std::uint32_t kVersion = 2u;
+constexpr std::uint32_t kLegacyVersion = 2u;
+constexpr std::uint32_t kAnimationVersion = 3u;
 constexpr std::uint64_t kMaxPayloadBytes = 16ull * 1024ull * 1024ull;
 constexpr std::uint32_t kMaxStringBytes = 4096u;
 constexpr std::uint32_t kMaxReferences = 4096u;
@@ -306,6 +308,42 @@ bool validate_field_package(const std::filesystem::path& manifest_path,
     return true;
 }
 
+bool validate_animation_package(
+    const std::filesystem::path& manifest_path,
+    const HydrologyNetworkArtifact& manifest,
+    gpu_meshing::Error& error) {
+    if (manifest.state != HydrologyNetworkState::Ready ||
+        manifest.section_animations.empty())
+        return true;
+    const auto cache_root = network_cache_root(manifest_path);
+    const auto validate = [&](const HydrologyWaterAnimationReference& reference,
+                              bool handoff) {
+        WaterMeshAnimationArtifact artifact{};
+        if (!load_water_mesh_animation_artifact(
+                cache_root / reference.relative_path, artifact, error))
+            return false;
+        if (artifact.identity != reference.id ||
+            artifact.semantic_key != reference.semantic_key ||
+            artifact.source_primary_payload_digest !=
+                reference.source_primary_payload_digest ||
+            artifact.source_secondary_payload_digest !=
+                reference.source_secondary_payload_digest ||
+            artifact.frames.size() != reference.frame_count ||
+            artifact.frames_per_second != reference.frames_per_second ||
+            artifact.payload_digest != reference.payload_digest ||
+            (handoff ==
+             (artifact.source_secondary_payload_digest == 0u)))
+            return fail(error,
+                        "hydrology water animation package is stale");
+        return true;
+    };
+    for (const auto& reference : manifest.section_animations)
+        if (!validate(reference, false)) return false;
+    for (const auto& reference : manifest.handoff_animations)
+        if (!validate(reference, true)) return false;
+    return true;
+}
+
 void canonicalize_references(
     std::vector<HydrologyArtifactReference>& references) {
     for (auto& reference : references)
@@ -323,6 +361,29 @@ void canonicalize_field_products(
                   return static_cast<std::uint8_t>(lhs.kind) <
                          static_cast<std::uint8_t>(rhs.kind);
               });
+}
+
+void canonicalize_animation_references(
+    std::vector<HydrologyWaterAnimationReference>& references) {
+    std::sort(references.begin(), references.end(),
+              [](const auto& lhs, const auto& rhs) {
+                  return lhs.id < rhs.id;
+              });
+}
+
+bool valid_animation_reference(
+    const HydrologyWaterAnimationReference& reference) {
+    const std::filesystem::path path(reference.relative_path);
+    const std::string normalized = path.lexically_normal().generic_string();
+    return !reference.id.empty() &&
+           reference.id.size() <= kMaxStringBytes &&
+           cache_relative_path(reference.relative_path) &&
+           normalized.rfind("hydrology/animations/", 0u) == 0u &&
+           path.extension() == ".mhwa" && reference.semantic_key != 0u &&
+           reference.source_primary_payload_digest != 0u &&
+           reference.frame_count == 30u &&
+           reference.frames_per_second == 30u &&
+           reference.payload_digest != 0u;
 }
 
 bool validate_references(
@@ -360,6 +421,8 @@ bool validate_manifest(const HydrologyNetworkArtifact& artifact,
         return false;
     if (artifact.state != HydrologyNetworkState::Ready) {
         return artifact.sections.empty() && artifact.handoffs.empty() &&
+               artifact.section_animations.empty() &&
+               artifact.handoff_animations.empty() &&
                artifact.topological_order.empty() &&
                artifact.runtime_field_digest == 0u &&
                artifact.presentation_field_digest == 0u &&
@@ -428,6 +491,58 @@ bool validate_manifest(const HydrologyNetworkArtifact& artifact,
             if (section_ids.find(dependency) == section_ids.end()) return false;
         }
     }
+
+    const bool animation_enabled = !artifact.section_animations.empty() ||
+        !artifact.handoff_animations.empty();
+    if (!animation_enabled) return true;
+    if (artifact.section_animations.size() != artifact.sections.size() ||
+        artifact.handoff_animations.size() != artifact.handoffs.size())
+        return false;
+    std::unordered_set<std::string> animation_paths;
+    for (std::size_t index = 0u;
+         index != artifact.section_animations.size(); ++index) {
+        const auto& reference = artifact.section_animations[index];
+        if (!valid_animation_reference(reference) ||
+            reference.id != artifact.topological_order[index] ||
+            reference.source_secondary_payload_digest != 0u ||
+            !animation_paths.insert(reference.relative_path).second)
+            return false;
+        const auto section = std::find_if(
+            artifact.sections.begin(), artifact.sections.end(),
+            [&](const auto& value) { return value.id == reference.id; });
+        if (section == artifact.sections.end() ||
+            section->payload_digest !=
+                reference.source_primary_payload_digest)
+            return false;
+    }
+    for (const auto& reference : artifact.handoff_animations) {
+        if (!valid_animation_reference(reference) ||
+            reference.source_secondary_payload_digest == 0u ||
+            !animation_paths.insert(reference.relative_path).second)
+            return false;
+        const auto handoff = std::find_if(
+            artifact.handoffs.begin(), artifact.handoffs.end(),
+            [&](const auto& value) { return value.id == reference.id; });
+        if (handoff == artifact.handoffs.end() ||
+            handoff->dependencies.size() != 2u)
+            return false;
+        std::uint64_t dependency_digests[2]{};
+        for (std::size_t index = 0u; index != 2u; ++index) {
+            const auto section = std::find_if(
+                artifact.sections.begin(), artifact.sections.end(),
+                [&](const auto& value) {
+                    return value.id == handoff->dependencies[index];
+                });
+            if (section == artifact.sections.end()) return false;
+            dependency_digests[index] = section->payload_digest;
+        }
+        const bool sources_match =
+            (reference.source_primary_payload_digest == dependency_digests[0] &&
+             reference.source_secondary_payload_digest == dependency_digests[1]) ||
+            (reference.source_primary_payload_digest == dependency_digests[1] &&
+             reference.source_secondary_payload_digest == dependency_digests[0]);
+        if (!sources_match) return false;
+    }
     return true;
 }
 
@@ -452,6 +567,30 @@ bool read_reference(Reader& reader, HydrologyArtifactReference& reference) {
     for (auto& dependency : reference.dependencies)
         if (!reader.string(dependency)) return false;
     return reader.u64(reference.semantic_key) &&
+           reader.u64(reference.payload_digest);
+}
+
+void write_animation_reference(
+    Writer& writer, const HydrologyWaterAnimationReference& reference) {
+    writer.string(reference.id);
+    writer.string(reference.relative_path);
+    writer.u64(reference.semantic_key);
+    writer.u64(reference.source_primary_payload_digest);
+    writer.u64(reference.source_secondary_payload_digest);
+    writer.u32(reference.frame_count);
+    writer.u32(reference.frames_per_second);
+    writer.u64(reference.payload_digest);
+}
+
+bool read_animation_reference(
+    Reader& reader, HydrologyWaterAnimationReference& reference) {
+    return reader.string(reference.id) &&
+           reader.string(reference.relative_path) &&
+           reader.u64(reference.semantic_key) &&
+           reader.u64(reference.source_primary_payload_digest) &&
+           reader.u64(reference.source_secondary_payload_digest) &&
+           reader.u32(reference.frame_count) &&
+           reader.u32(reference.frames_per_second) &&
            reader.u64(reference.payload_digest);
 }
 
@@ -1608,6 +1747,7 @@ static bool serialize_network_artifact_impl(
     HydrologyNetworkArtifact canonical = artifact;
     canonicalize_references(canonical.sections);
     canonicalize_references(canonical.handoffs);
+    canonicalize_animation_references(canonical.handoff_animations);
     canonicalize_field_products(canonical.field_products);
     if (!validate_manifest(canonical, false))
         return fail(error, "hydrology network manifest is invalid");
@@ -1640,6 +1780,18 @@ static bool serialize_network_artifact_impl(
     payload.u32(static_cast<std::uint32_t>(canonical.handoffs.size()));
     for (const auto& reference : canonical.handoffs)
         write_reference(payload, reference);
+    const bool animation_enabled = !canonical.section_animations.empty() ||
+        !canonical.handoff_animations.empty();
+    if (animation_enabled) {
+        payload.u32(static_cast<std::uint32_t>(
+            canonical.section_animations.size()));
+        for (const auto& reference : canonical.section_animations)
+            write_animation_reference(payload, reference);
+        payload.u32(static_cast<std::uint32_t>(
+            canonical.handoff_animations.size()));
+        for (const auto& reference : canonical.handoff_animations)
+            write_animation_reference(payload, reference);
+    }
     if (payload.bytes.size() > kMaxPayloadBytes)
         return fail(error, "hydrology network manifest exceeds its payload limit");
 
@@ -1647,7 +1799,7 @@ static bool serialize_network_artifact_impl(
         digest_bytes(payload.bytes.data(), payload.bytes.size());
     Writer file;
     file.raw(kMagic, sizeof(kMagic));
-    file.u32(kVersion);
+    file.u32(animation_enabled ? kAnimationVersion : kLegacyVersion);
     file.u64(payload.bytes.size());
     file.u64(digest);
     file.raw(payload.bytes.data(), payload.bytes.size());
@@ -1676,7 +1828,8 @@ static bool deserialize_network_artifact_impl(
     std::uint64_t payload_size = 0u;
     std::uint64_t expected_digest = 0u;
     if (!header.u32(version) || !header.u64(payload_size) ||
-        !header.u64(expected_digest) || version != kVersion ||
+        !header.u64(expected_digest) ||
+        (version != kLegacyVersion && version != kAnimationVersion) ||
         payload_size > kMaxPayloadBytes ||
         payload_size != bytes.size() - kHeaderBytes)
         return fail(error, "hydrology network manifest header is invalid");
@@ -1733,9 +1886,28 @@ static bool deserialize_network_artifact_impl(
     for (auto& reference : candidate.handoffs)
         if (!read_reference(reader, reference))
             return fail(error, "hydrology network handoff reference is invalid");
+    if (version == kAnimationVersion) {
+        if (!reader.u32(count) || count > kMaxReferences)
+            return fail(error,
+                        "hydrology network section animation count is invalid");
+        candidate.section_animations.resize(count);
+        for (auto& reference : candidate.section_animations)
+            if (!read_animation_reference(reader, reference))
+                return fail(error,
+                            "hydrology network section animation reference is invalid");
+        if (!reader.u32(count) || count > kMaxReferences)
+            return fail(error,
+                        "hydrology network handoff animation count is invalid");
+        candidate.handoff_animations.resize(count);
+        for (auto& reference : candidate.handoff_animations)
+            if (!read_animation_reference(reader, reference))
+                return fail(error,
+                            "hydrology network handoff animation reference is invalid");
+    }
     candidate.payload_digest = expected_digest;
     canonicalize_references(candidate.sections);
     canonicalize_references(candidate.handoffs);
+    canonicalize_animation_references(candidate.handoff_animations);
     canonicalize_field_products(candidate.field_products);
     if (reader.remaining != 0u || !validate_manifest(candidate, false))
         return fail(error, "hydrology network manifest has invalid data");
@@ -1758,6 +1930,7 @@ static bool save_network_artifact_atomic_impl(
     std::vector<std::uint8_t> bytes;
     if (!serialize_network_artifact(artifact, bytes, error)) return false;
     if (!validate_field_package(path, artifact, error)) return false;
+    if (!validate_animation_package(path, artifact, error)) return false;
     const std::filesystem::path parent = path.parent_path().empty()
         ? std::filesystem::path(".") : path.parent_path();
     const std::filesystem::path target_name = path.filename();
@@ -1926,6 +2099,7 @@ static bool load_network_artifact_validated_impl(
         return fail(error, "hydrology network manifest is not ready or is stale");
     }
     if (!validate_field_package(path, candidate, error)) return false;
+    if (!validate_animation_package(path, candidate, error)) return false;
     artifact = std::move(candidate);
     return true;
 }

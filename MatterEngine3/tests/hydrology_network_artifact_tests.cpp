@@ -2,6 +2,7 @@
 
 #include "hydrology/hydrology_field_artifact.h"
 #include "hydrology/hydrology_network_artifact.h"
+#include "hydrology/water_mesh_animation_artifact.h"
 
 #include <algorithm>
 #include <chrono>
@@ -96,6 +97,50 @@ hydrology::HydrologyNetworkArtifact fixture_manifest(bool reversed = false) {
                      manifest.handoffs.front().dependencies.end());
     }
     return manifest;
+}
+
+hydrology::HydrologyNetworkArtifact animated_fixture_manifest() {
+    auto manifest = fixture_manifest();
+    manifest.section_animations = {
+        {"upper", "hydrology/animations/upper-000000000000000b.mhwa",
+         11u, 111u, 0u, 30u, 30u, 1111u},
+        {"lower", "hydrology/animations/lower-0000000000000016.mhwa",
+         22u, 222u, 0u, 30u, 30u, 2222u},
+    };
+    manifest.handoff_animations = {
+        {"pool-one",
+         "hydrology/animations/handoffs/pool-one-0000000000000021.mhwa",
+         33u, 111u, 222u, 30u, 30u, 3333u},
+    };
+    return manifest;
+}
+
+hydrology::WaterMeshAnimationArtifact animation_fixture(
+    const hydrology::HydrologyWaterAnimationReference& reference) {
+    hydrology::WaterMeshAnimation animation{};
+    animation.frames_per_second = 30u;
+    animation.phase_offset_frames = 15u;
+    animation.duration_seconds = 1.0f;
+    animation.frames.resize(30u);
+    for (std::uint32_t frame = 0u; frame != 30u; ++frame) {
+        auto& mesh = animation.frames[frame];
+        const float offset = static_cast<float>(frame) * 0.001f;
+        mesh.positions = {offset, 0.0f, 0.0f,
+                          1.0f + offset, 0.1f, 0.0f,
+                          offset, 0.5f, 1.0f};
+        mesh.normals = {0,1,0, 0,1,0, 0,1,0};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = 4u;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    }
+    hydrology::WaterMeshAnimationArtifact artifact{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              {reference.id, reference.semantic_key,
+               reference.source_primary_payload_digest,
+               reference.source_secondary_payload_digest, 0.2f},
+              animation, artifact, error), error.message.c_str());
+    return artifact;
 }
 
 bool write_bytes(const std::filesystem::path& path,
@@ -429,6 +474,106 @@ void test_manifest_round_trip_is_canonical_and_transactional() {
     check_manifest_preserved(
         reopened, sentinel,
         "manifest truncation preserves the caller's prior valid object");
+}
+
+void test_animation_manifest_extension_and_legacy_bytes() {
+    gpu_meshing::Error error{};
+    std::vector<std::uint8_t> legacy;
+    CHECK(hydrology::serialize_network_artifact(
+              fixture_manifest(), legacy, error), error.message.c_str());
+    CHECK(legacy.size() > 12u && legacy[8] == 2u && legacy[9] == 0u &&
+              legacy[10] == 0u && legacy[11] == 0u,
+          "animation-disabled manifests retain the exact version-two path");
+
+    auto animated = animated_fixture_manifest();
+    std::vector<std::uint8_t> bytes;
+    CHECK(hydrology::serialize_network_artifact(animated, bytes, error),
+          error.message.c_str());
+    CHECK(bytes.size() > 12u && bytes[8] == 3u && bytes != legacy,
+          "animation references select a digest-participating version-three manifest");
+    hydrology::HydrologyNetworkArtifact loaded{};
+    CHECK(hydrology::deserialize_network_artifact(bytes, loaded, error),
+          error.message.c_str());
+    CHECK(loaded.section_animations.size() == 2u &&
+              loaded.section_animations[0].id == "upper" &&
+              loaded.section_animations[1].id == "lower" &&
+              loaded.handoff_animations.size() == 1u &&
+              loaded.handoff_animations[0].source_primary_payload_digest == 111u &&
+              loaded.handoff_animations[0].source_secondary_payload_digest == 222u,
+          "section animations follow topology and handoff sources round-trip");
+
+    auto changed = animated;
+    changed.section_animations[0].payload_digest++;
+    std::vector<std::uint8_t> changed_bytes;
+    CHECK(hydrology::serialize_network_artifact(
+              changed, changed_bytes, error) && changed_bytes != bytes,
+          "animation payload references participate in manifest digesting");
+    auto invalid = animated;
+    std::swap(invalid.section_animations[0], invalid.section_animations[1]);
+    CHECK(!hydrology::serialize_network_artifact(
+              invalid, changed_bytes, error),
+          "section animation references must remain in topological order");
+    invalid = animated;
+    invalid.handoff_animations.clear();
+    CHECK(!hydrology::serialize_network_artifact(
+              invalid, changed_bytes, error),
+          "a ready animated manifest requires every handoff animation");
+    invalid = animated;
+    invalid.section_animations[0].relative_path = "../upper.mhwa";
+    CHECK(!hydrology::serialize_network_artifact(
+              invalid, changed_bytes, error),
+          "animation references remain confined to the network cache");
+}
+
+void test_ready_animation_package_rejects_missing_or_corrupt_payload() {
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("matter-hydrology-animation-package-" + std::to_string(stamp));
+    const auto manifest_path = root / "hydrology" / "network.mhyn";
+    auto manifest = animated_fixture_manifest();
+    gpu_meshing::Error error{};
+    CHECK(save_field_pair(root, error), error.message.c_str());
+    for (auto& reference : manifest.section_animations) {
+        auto artifact = animation_fixture(reference);
+        CHECK(hydrology::save_water_mesh_animation_artifact_immutable(
+                  root / reference.relative_path, artifact, error),
+              error.message.c_str());
+        CHECK(hydrology::load_water_mesh_animation_artifact(
+                  root / reference.relative_path, artifact, error),
+              error.message.c_str());
+        reference.payload_digest = artifact.payload_digest;
+    }
+    for (auto& reference : manifest.handoff_animations) {
+        auto artifact = animation_fixture(reference);
+        CHECK(hydrology::save_water_mesh_animation_artifact_immutable(
+                  root / reference.relative_path, artifact, error),
+              error.message.c_str());
+        CHECK(hydrology::load_water_mesh_animation_artifact(
+                  root / reference.relative_path, artifact, error),
+              error.message.c_str());
+        reference.payload_digest = artifact.payload_digest;
+    }
+    CHECK(hydrology::save_network_artifact_atomic(
+              manifest_path, manifest, error), error.message.c_str());
+    hydrology::HydrologyNetworkArtifact loaded{};
+    CHECK(hydrology::load_network_artifact_validated(
+              manifest_path, manifest.network_key,
+              manifest.terrain_revision, loaded, error),
+          error.message.c_str());
+    const auto preserved = loaded;
+    const auto corrupt_path =
+        root / manifest.section_animations.front().relative_path;
+    auto corrupt = read_bytes(corrupt_path);
+    corrupt.back() ^= 0x80u;
+    CHECK(write_bytes(corrupt_path, corrupt),
+          "animation corruption fixture was written");
+    CHECK(!hydrology::load_network_artifact_validated(
+              manifest_path, manifest.network_key,
+              manifest.terrain_revision, loaded, error) &&
+              loaded.payload_digest == preserved.payload_digest,
+          "a corrupt animation prevents Ready activation transactionally");
+    std::filesystem::remove_all(root);
 }
 
 void test_typed_field_wire_format_and_ready_package_closure() {
@@ -1026,6 +1171,8 @@ void test_manifest_publication_is_confined_and_transactional() {
 
 int main() {
     test_manifest_round_trip_is_canonical_and_transactional();
+    test_animation_manifest_extension_and_legacy_bytes();
+    test_ready_animation_package_rejects_missing_or_corrupt_payload();
     test_typed_field_wire_format_and_ready_package_closure();
     test_ready_package_rejects_reparse_escape_when_supported();
     test_allocation_failure_closes_native_resources_transactionally();

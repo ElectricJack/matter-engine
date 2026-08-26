@@ -133,6 +133,29 @@ hydrology::HandoffProductSettings settings() {
     return result;
 }
 
+hydrology::WaterMeshAnimationArtifact animation_artifact(
+    const char* id, bool upstream) {
+    hydrology::WaterMeshAnimation animation{};
+    animation.frames_per_second = 30u;
+    animation.phase_offset_frames = 15u;
+    animation.duration_seconds = 1.0f;
+    for (std::uint32_t frame = 0u; frame != 30u; ++frame) {
+        animation.frames.push_back(quad(
+            upstream ? -10.0f : 2.5f,
+            upstream ? -2.5f : 10.0f,
+            1.0f + static_cast<float>(frame) * 0.001f,
+            upstream ? -4.25f : -4.5f,
+            upstream ? 4.25f : 4.5f));
+    }
+    hydrology::WaterMeshAnimationArtifact artifact{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              {id, upstream ? 1011u : 2022u,
+               upstream ? 1001u : 2002u, 0u, 0.5f},
+              animation, artifact, error), error.message.c_str());
+    return artifact;
+}
+
 const hydrology::PhysxFluidBake::VisualMesher synthetic_visual_mesher =
     [](const gpu_meshing::ParticleJob& job, gpu_meshing::MeshResult& mesh,
        gpu_meshing::Stats& stats, gpu_meshing::Error& error,
@@ -352,6 +375,43 @@ void test_builds_deterministic_seam_without_dam_curtain() {
           "handoff aggregation is deterministic across repeated builds");
 }
 
+void test_builds_frame_aligned_handoff_animation() {
+    const auto upstream = animation_artifact("upper", true);
+    const auto downstream = animation_artifact("lower", false);
+    hydrology::WaterMeshAnimationArtifact handoff_animation{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::build_handoff_water_animation_artifact(
+              upstream, downstream, spillway(), 0.5f,
+              handoff_animation, error), error.message.c_str());
+    CHECK(handoff_animation.identity == "pool-one" &&
+              handoff_animation.frames.size() == 30u &&
+              handoff_animation.frames_per_second == 30u &&
+              handoff_animation.source_primary_payload_digest == 1001u &&
+              handoff_animation.source_secondary_payload_digest == 2002u,
+          "handoff animation preserves frame alignment and both static sources");
+    gpu_meshing::MeshResult frame{};
+    gpu_meshing::Error artifact_error{};
+    CHECK(hydrology::decode_water_mesh_animation_frame(
+              handoff_animation, 17u, frame, artifact_error),
+          artifact_error.message.c_str());
+    float minimum = 1000.0f;
+    float maximum = -1000.0f;
+    for (std::size_t index = 0u; index < frame.positions.size(); index += 3u) {
+        minimum = std::min(minimum, frame.positions[index]);
+        maximum = std::max(maximum, frame.positions[index]);
+    }
+    CHECK(std::fabs(minimum + 2.5f) <= 0.01f &&
+              std::fabs(maximum - 2.5f) <= 0.01f,
+          "handoff frame bridge terminates on the authored ownership cuts");
+
+    auto mismatched = downstream;
+    mismatched.frames.pop_back();
+    CHECK(!hydrology::build_handoff_water_animation_artifact(
+              upstream, mismatched, spillway(), 0.5f,
+              handoff_animation, error),
+          "a missing adjacent frame prevents handoff animation publication");
+}
+
 }  // namespace
 
 int main() {
@@ -359,5 +419,6 @@ int main() {
     test_stitches_independently_meshed_cut_contours();
     test_keeps_water_in_the_removed_dam_footprint();
     test_stitches_split_section_contours_to_one_smoothed_collar();
+    test_builds_frame_aligned_handoff_animation();
     return check_summary();
 }

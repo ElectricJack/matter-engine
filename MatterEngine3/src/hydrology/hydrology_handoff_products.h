@@ -5,6 +5,7 @@
 #include "hydrology/hydrology_network_artifact.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/spillway_handoff.h"
+#include "hydrology/water_mesh_animation_artifact.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -36,12 +37,16 @@ struct HydrologySectionTimings {
     double physx_init_ms = 0.0;
     double simulate_ms = 0.0;
     double gpu_mesh_ms = 0.0;
+    double animation_mesh_ms = 0.0;
     double cpu_mesh_ms = 0.0;
+    std::uint64_t animation_bytes = 0u;
+    bool animation_cache_hit = false;
 };
 
 struct HydrologyNetworkTimings {
     std::vector<HydrologySectionTimings> sections;
     double handoff_mesh_ms = 0.0;
+    double handoff_animation_mesh_ms = 0.0;
     double serialize_ms = 0.0;
     double total_wall_ms = 0.0;
 };
@@ -50,6 +55,8 @@ struct HydrologyNetworkBakeResult {
     HydrologyNetworkArtifact manifest{};
     std::vector<HydrologyArtifact> sections;
     std::vector<HydrologyHandoffArtifact> handoffs;
+    std::vector<WaterMeshAnimationArtifact> section_animations;
+    std::vector<WaterMeshAnimationArtifact> handoff_animations;
     HydrologyNetworkProducts products{};
     gpu_meshing::MeshResult failed_debug_visual;
     HydrologyNetworkTimings timings{};
@@ -69,6 +76,22 @@ bool build_handoff_artifact(
     const PhysxFluidBake::VisualMesher& visual_mesher,
     HydrologyHandoffArtifact& artifact,
     HydrologyNetworkProducts& products,
+    FluidBakeError& error);
+
+bool build_handoff_water_animation_artifact(
+    const WaterMeshAnimationArtifact& upstream,
+    const WaterMeshAnimationArtifact& downstream,
+    const SpillwayHandoffRecord& handoff,
+    float visual_voxel_m,
+    WaterMeshAnimationArtifact& artifact,
+    FluidBakeError& error);
+
+bool clip_section_water_mesh_animation(
+    const WaterMeshAnimation& source,
+    const std::string& section_id,
+    const std::vector<SpillwayHandoffRecord>& handoffs,
+    float visual_voxel_m,
+    WaterMeshAnimation& owned,
     FluidBakeError& error);
 
 bool validate_handoff_products(

@@ -31,6 +31,17 @@ struct HydrologyArtifactReference {
     std::uint64_t payload_digest = 0;
 };
 
+struct HydrologyWaterAnimationReference {
+    std::string id;
+    std::string relative_path;
+    std::uint64_t semantic_key = 0;
+    std::uint64_t source_primary_payload_digest = 0;
+    std::uint64_t source_secondary_payload_digest = 0;
+    std::uint32_t frame_count = 0;
+    std::uint32_t frames_per_second = 0;
+    std::uint64_t payload_digest = 0;
+};
+
 struct HydrologyNetworkArtifact {
     HydrologyNetworkState state = HydrologyNetworkState::Incomplete;
     std::uint64_t network_key = 0;
@@ -40,6 +51,8 @@ struct HydrologyNetworkArtifact {
     std::vector<HydrologyFieldProductReference> field_products;
     std::vector<HydrologyArtifactReference> sections;
     std::vector<HydrologyArtifactReference> handoffs;
+    std::vector<HydrologyWaterAnimationReference> section_animations;
+    std::vector<HydrologyWaterAnimationReference> handoff_animations;
     std::vector<std::string> topological_order;
     matter::Aabb bounds_m{};
     std::uint64_t payload_digest = 0;

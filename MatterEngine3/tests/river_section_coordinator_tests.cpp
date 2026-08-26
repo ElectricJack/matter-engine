@@ -167,11 +167,79 @@ void test_cancellation_is_observed_between_sections() {
           "cancellation retains accepted upstream work without marking failure");
 }
 
+void test_animation_enabled_sequence_requires_every_section_product() {
+    auto definition = network();
+    definition.fluid.mesh_animation.enabled = true;
+    definition.fluid.mesh_animation.frames_per_second = 30u;
+    definition.fluid.mesh_animation.frame_count = 30u;
+    definition.fluid.mesh_animation.phase_offset_frames = 15u;
+    definition.fluid.mesh_animation.duration_seconds = 1.0f;
+    const auto executor = [](const matter::RiverSectionDefinition& section,
+                             const std::vector<hydrology::SpillwayHandoffRecord>&,
+                             hydrology::SectionBakeResult& result,
+                             hydrology::FluidBakeError&) {
+        result = {};
+        result.artifact.accepted = true;
+        result.artifact.section.section_id = section.id;
+        result.artifact.section.river_id = section.river;
+        result.artifact.semantic_key = section.id == "upper" ? 11u : 22u;
+        result.artifact.payload_digest = section.id == "upper" ? 111u : 222u;
+        hydrology::WaterMeshAnimationArtifact animation{};
+        animation.identity = section.id;
+        animation.semantic_key = section.id == "upper" ? 1011u : 1022u;
+        animation.source_primary_payload_digest =
+            result.artifact.payload_digest;
+        animation.frames_per_second = 30u;
+        animation.phase_offset_frames = 15u;
+        animation.duration_seconds = 1.0f;
+        animation.frames.resize(30u);
+        animation.payload_digest = section.id == "upper" ? 1111u : 2222u;
+        result.animation = std::move(animation);
+        if (section.id == "upper") {
+            hydrology::SpillwayHandoffRecord handoff{};
+            handoff.id = "pool-one";
+            handoff.upstream_section_id = "upper";
+            handoff.downstream_section_id = "lower";
+            handoff.semantic_key = 17u;
+            result.downstream_handoff = handoff;
+        }
+        return true;
+    };
+    hydrology::RiverSectionSequenceResult output{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::run_river_section_sequence(
+              definition, graph(), executor, {}, output, error),
+          error.message.c_str());
+    CHECK(output.manifest.section_animations.size() == 2u &&
+              output.manifest.section_animations[0].id == "upper" &&
+              output.manifest.section_animations[1].id == "lower" &&
+              output.manifest.section_animations[0].frame_count == 30u &&
+              output.manifest.section_animations[0].frames_per_second == 30u,
+          "animation-enabled sections publish one topological reference each");
+
+    const auto missing = [](const matter::RiverSectionDefinition& section,
+                            const std::vector<hydrology::SpillwayHandoffRecord>&,
+                            hydrology::SectionBakeResult& result,
+                            hydrology::FluidBakeError&) {
+        result.artifact.accepted = true;
+        result.artifact.section.section_id = section.id;
+        result.artifact.section.river_id = section.river;
+        result.artifact.semantic_key = 1u;
+        result.artifact.payload_digest = 2u;
+        return true;
+    };
+    CHECK(!hydrology::run_river_section_sequence(
+              definition, graph(), missing, {}, output, error) &&
+              output.manifest.state == hydrology::HydrologyNetworkState::Failed,
+          "a missing section animation prevents animated network completion");
+}
+
 } // namespace
 
 int main() {
     test_sections_run_serially_with_accepted_handoff();
     test_lower_failure_preserves_upper_and_stops();
     test_cancellation_is_observed_between_sections();
+    test_animation_enabled_sequence_requires_every_section_product();
     return check_summary();
 }

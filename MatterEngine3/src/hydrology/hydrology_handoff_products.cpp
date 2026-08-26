@@ -546,21 +546,22 @@ void append_closed_cap(const CutPath& path, MeshAssembler& output) {
                         path.points[(index + 1u) % path.points.size()]);
 }
 
-bool append_cut_stitches(const gpu_meshing::MeshResult& first,
-                         const gpu_meshing::MeshResult& second,
-                         const SpillwayHandoffRecord& handoff,
-                         float cut,
-                         MeshAssembler& output,
-                         std::string& diagnostic) {
+bool append_cut_bridge(const gpu_meshing::MeshResult& first,
+                       float first_cut,
+                       const gpu_meshing::MeshResult& second,
+                       float second_cut,
+                       const SpillwayHandoffRecord& handoff,
+                       MeshAssembler& output,
+                       std::string& diagnostic) {
     diagnostic.clear();
     std::vector<CutPath> first_paths;
     std::vector<CutPath> second_paths;
     std::string first_diagnostic;
     std::string second_diagnostic;
     const bool first_valid = cut_boundary_paths(
-        first, handoff, cut, first_paths, first_diagnostic);
+        first, handoff, first_cut, first_paths, first_diagnostic);
     const bool second_valid = cut_boundary_paths(
-        second, handoff, cut, second_paths, second_diagnostic);
+        second, handoff, second_cut, second_paths, second_diagnostic);
     if (!first_valid || !second_valid) {
         diagnostic = !first_valid
             ? "first mesh " + first_diagnostic
@@ -610,6 +611,16 @@ bool append_cut_stitches(const gpu_meshing::MeshResult& first,
     for (std::size_t index = 0u; index != second_closed.size(); ++index)
         if (!consumed[index]) append_closed_cap(second_closed[index], output);
     return true;
+}
+
+bool append_cut_stitches(const gpu_meshing::MeshResult& first,
+                         const gpu_meshing::MeshResult& second,
+                         const SpillwayHandoffRecord& handoff,
+                         float cut,
+                         MeshAssembler& output,
+                         std::string& diagnostic) {
+    return append_cut_bridge(first, cut, second, cut, handoff, output,
+                             diagnostic);
 }
 
 bool valid_layout(const GameplayFieldLayout& layout) {
@@ -1345,6 +1356,195 @@ bool build_handoff_artifact(
         products = {};
         return fail("handoff product construction raised an unknown exception",
                     error);
+    }
+}
+
+bool build_handoff_water_animation_artifact(
+    const WaterMeshAnimationArtifact& upstream,
+    const WaterMeshAnimationArtifact& downstream,
+    const SpillwayHandoffRecord& handoff,
+    float visual_voxel_m,
+    WaterMeshAnimationArtifact& artifact,
+    FluidBakeError& error) {
+    artifact = {};
+    error = {};
+    try {
+        if (upstream.identity != handoff.upstream_section_id ||
+            downstream.identity != handoff.downstream_section_id ||
+            handoff.id.empty() || handoff.semantic_key == 0u ||
+            handoff.semantic_key != spillway_handoff_semantic_key(handoff) ||
+            upstream.semantic_key == 0u || downstream.semantic_key == 0u ||
+            upstream.source_primary_payload_digest == 0u ||
+            downstream.source_primary_payload_digest == 0u ||
+            upstream.source_secondary_payload_digest != 0u ||
+            downstream.source_secondary_payload_digest != 0u ||
+            upstream.frames.empty() ||
+            upstream.frames.size() != downstream.frames.size() ||
+            upstream.frames_per_second != downstream.frames_per_second ||
+            upstream.phase_offset_frames != downstream.phase_offset_frames ||
+            upstream.duration_seconds != downstream.duration_seconds ||
+            upstream.material != downstream.material ||
+            !finite(visual_voxel_m) || visual_voxel_m <= 0.0f ||
+            handoff.upstream_visual_cut_m >=
+                handoff.downstream_visual_cut_m)
+            return fail("handoff animation input is invalid", error);
+
+        WaterMeshAnimation animation{};
+        animation.frames_per_second = upstream.frames_per_second;
+        animation.phase_offset_frames = upstream.phase_offset_frames;
+        animation.duration_seconds = upstream.duration_seconds;
+        animation.frames.reserve(upstream.frames.size());
+        gpu_meshing::Error artifact_error{};
+        const float weld = std::max(1.0e-5f, visual_voxel_m * 1.0e-4f);
+        for (std::uint32_t frame_index = 0u;
+             frame_index != upstream.frames.size(); ++frame_index) {
+            gpu_meshing::MeshResult upstream_frame{};
+            gpu_meshing::MeshResult downstream_frame{};
+            if (!decode_water_mesh_animation_frame(
+                    upstream, frame_index, upstream_frame, artifact_error) ||
+                !decode_water_mesh_animation_frame(
+                    downstream, frame_index, downstream_frame,
+                    artifact_error)) {
+                error = {FluidBakeCode::ProductFailure,
+                         artifact_error.message.empty()
+                             ? "handoff animation frame decode failed"
+                             : artifact_error.message};
+                return false;
+            }
+            MeshAssembler upstream_owned(weld);
+            MeshAssembler downstream_owned(weld);
+            if (!append_clipped_mesh(
+                    upstream_frame, handoff, false, 0.0f, true,
+                    handoff.upstream_visual_cut_m, upstream_owned) ||
+                !append_clipped_mesh(
+                    downstream_frame, handoff, true,
+                    handoff.downstream_visual_cut_m, false, 0.0f,
+                    downstream_owned))
+                return fail("handoff animation ownership clipping failed",
+                            error);
+            gpu_meshing::MeshResult upstream_piece = upstream_owned.finish();
+            gpu_meshing::MeshResult downstream_piece =
+                downstream_owned.finish();
+            if (!valid_mesh(upstream_piece) || !valid_mesh(downstream_piece))
+                return fail("handoff animation ownership piece is invalid",
+                            error);
+
+            MeshAssembler bridge(weld);
+            std::string diagnostic;
+            if (!append_cut_bridge(
+                    upstream_piece, handoff.upstream_visual_cut_m,
+                    downstream_piece, handoff.downstream_visual_cut_m,
+                    handoff, bridge, diagnostic)) {
+                error = {FluidBakeCode::ProductFailure,
+                         "handoff animation contour bridge failed at frame " +
+                             std::to_string(frame_index) + ": " + diagnostic};
+                return false;
+            }
+            gpu_meshing::MeshResult frame = bridge.finish();
+            if (!valid_mesh(frame))
+                return fail("handoff animation bridge frame is invalid",
+                            error);
+            animation.frames.push_back(std::move(frame));
+        }
+
+        Digest semantic(UINT64_C(0x48414e44414e494d));
+        semantic.u64(handoff.semantic_key);
+        semantic.u64(upstream.semantic_key);
+        semantic.u64(downstream.semantic_key);
+        semantic.u64(upstream.source_primary_payload_digest);
+        semantic.u64(downstream.source_primary_payload_digest);
+        semantic.floating(visual_voxel_m);
+        semantic.u64(animation.frames_per_second);
+        semantic.u64(animation.phase_offset_frames);
+        semantic.u64(animation.frames.size());
+        const WaterMeshAnimationArtifactMetadata metadata{
+            handoff.id, semantic.finish(),
+            upstream.source_primary_payload_digest,
+            downstream.source_primary_payload_digest, visual_voxel_m};
+        if (!pack_water_mesh_animation_artifact(
+                metadata, animation, artifact, artifact_error)) {
+            error = {FluidBakeCode::ProductFailure,
+                     artifact_error.message.empty()
+                         ? "handoff animation packing failed"
+                         : artifact_error.message};
+            return false;
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        artifact = {};
+        error = {FluidBakeCode::ProductFailure, exception.what()};
+        return false;
+    } catch (...) {
+        artifact = {};
+        return fail("handoff animation construction raised an unknown exception",
+                    error);
+    }
+}
+
+bool clip_section_water_mesh_animation(
+    const WaterMeshAnimation& source,
+    const std::string& section_id,
+    const std::vector<SpillwayHandoffRecord>& handoffs,
+    float visual_voxel_m,
+    WaterMeshAnimation& owned,
+    FluidBakeError& error) {
+    owned = {};
+    error = {};
+    try {
+        if (section_id.empty() || source.frames.empty() ||
+            source.frames_per_second == 0u ||
+            !finite(source.duration_seconds) ||
+            source.duration_seconds <= 0.0f || !finite(visual_voxel_m) ||
+            visual_voxel_m <= 0.0f)
+            return fail("section animation ownership input is invalid", error);
+        owned.frames_per_second = source.frames_per_second;
+        owned.phase_offset_frames = source.phase_offset_frames;
+        owned.duration_seconds = source.duration_seconds;
+        owned.frames.reserve(source.frames.size());
+        const float weld = std::max(1.0e-5f, visual_voxel_m * 1.0e-4f);
+        for (const auto& source_frame : source.frames) {
+            if (!valid_mesh(source_frame))
+                return fail("section animation contains an invalid frame",
+                            error);
+            gpu_meshing::MeshResult frame = source_frame;
+            for (const auto& handoff : handoffs) {
+                const bool upstream_owner =
+                    handoff.upstream_section_id == section_id;
+                const bool downstream_owner =
+                    handoff.downstream_section_id == section_id;
+                if (upstream_owner == downstream_owner)
+                    return fail(
+                        "section animation ownership handoff identity is invalid",
+                        error);
+                MeshAssembler clipped(weld);
+                const bool appended = upstream_owner
+                    ? append_clipped_mesh(
+                          frame, handoff, false, 0.0f, true,
+                          handoff.upstream_visual_cut_m, clipped)
+                    : append_clipped_mesh(
+                          frame, handoff, true,
+                          handoff.downstream_visual_cut_m, false, 0.0f,
+                          clipped);
+                if (!appended)
+                    return fail("section animation ownership clipping failed",
+                                error);
+                frame = clipped.finish();
+                if (!valid_mesh(frame))
+                    return fail(
+                        "section animation ownership produced an empty frame",
+                        error);
+            }
+            owned.frames.push_back(std::move(frame));
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        owned = {};
+        error = {FluidBakeCode::ProductFailure, exception.what()};
+        return false;
+    } catch (...) {
+        owned = {};
+        return fail(
+            "section animation ownership raised an unknown exception", error);
     }
 }
 
