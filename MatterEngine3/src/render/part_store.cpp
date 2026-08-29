@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 #include <sys/stat.h>
 
@@ -417,6 +418,83 @@ static std::string select_artifact_root(uint64_t part_hash, const std::string& s
         if (::stat(scratch_path.c_str(), &st) == 0) return scratch_dir;
     }
     return cache_root;
+}
+
+// A flat merges every drawable reached by the canonical part walk into one
+// renderer-facing drawable, so it can carry only one resolved RT eligibility.
+// Prove that value from canonical REP0+RNDR metadata before load_flat touches
+// the shared BLAS. Mixed, malformed, cyclic, or otherwise unprovable trees
+// fail closed to the compositional path, which retains per-node policy.
+static bool resolve_uniform_flat_render_policy(
+        const std::string& artifact_root, uint64_t root_hash,
+        const part_asset::StaticPartSnapshot& root_snapshot,
+        matter::PartRenderPolicy& flat_policy_out) {
+    struct CanonicalPolicyNode {
+        part_asset::StaticPartSnapshot snapshot;
+        matter::PartRenderPolicy policy;
+    };
+    std::unordered_map<uint64_t, std::unique_ptr<CanonicalPolicyNode>> cache;
+    std::unordered_set<uint64_t> active;
+    uint8_t eligibility_mask = 0;
+
+    const auto load_node = [&](uint64_t hash) -> CanonicalPolicyNode* {
+        const auto found = cache.find(hash);
+        if (found != cache.end()) return found->second.get();
+        auto node = std::make_unique<CanonicalPolicyNode>();
+        const std::string path =
+            artifact_root + "/" + part_asset::cache_path_resolved(hash);
+        if (hash == root_hash) {
+            node->snapshot = root_snapshot;
+        } else if (!part_asset::load_static_part_snapshot(
+                       path, hash, node->snapshot)) {
+            return nullptr;
+        }
+        if (!matter::load_part_render_policy(
+                path, hash, node->snapshot.children.size(), node->policy)) {
+            return nullptr;
+        }
+        CanonicalPolicyNode* result = node.get();
+        cache.emplace(hash, std::move(node));
+        return result;
+    };
+
+    std::function<bool(uint64_t, matter::RayTracingOverride, int)> walk;
+    walk = [&](uint64_t hash, matter::RayTracingOverride incoming, int depth) {
+        // Matches FlattenTargets::max_depth and walk_part_tree: nodes through
+        // depth 8 are included; deeper descendants are not in the flat.
+        if (depth > 8) return true;
+        if (!active.insert(hash).second) return false;
+        CanonicalPolicyNode* node = load_node(hash);
+        if (!node) {
+            active.erase(hash);
+            return false;
+        }
+        if (node->snapshot.has_geometry) {
+            const bool resolved = matter::resolve_ray_traced(
+                incoming, node->policy.ray_traced);
+            eligibility_mask |= resolved ? 0x2u : 0x1u;
+            if (eligibility_mask == 0x3u) {
+                active.erase(hash);
+                return false;
+            }
+        }
+        for (size_t index = 0; index != node->snapshot.children.size(); ++index) {
+            if (!walk(node->snapshot.children[index].child_resolved_hash,
+                      node->policy.child_overrides[index], depth + 1)) {
+                active.erase(hash);
+                return false;
+            }
+        }
+        active.erase(hash);
+        return true;
+    };
+
+    if (!walk(root_hash, matter::RayTracingOverride::Inherit, 0) ||
+        eligibility_mask == 0)
+        return false;
+    flat_policy_out = {};
+    flat_policy_out.ray_traced = eligibility_mask == 0x2u;
+    return true;
 }
 
 bool PartStore::has(uint64_t part_hash) const {
@@ -1617,7 +1695,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         const std::string selected_root = select_artifact_root(part_hash, scratch_dir_, cache_root_);
         const std::string canonical_part =
             selected_root + "/" + part_asset::cache_path_resolved(part_hash);
-        uint64_t canonical_fingerprint = 0;
+        part_asset::StaticPartSnapshot canonical_snapshot;
         LoadedPart flat;
         // MATTER_FLAT_GATE_LOG: which admission gate rejects a written flat.
         // Fable's hypothesis is that installed variants are LINKED, so gate #1
@@ -1626,18 +1704,20 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         static const bool flat_gate_log =
             std::getenv("MATTER_FLAT_GATE_LOG") != nullptr;
         const bool snap_ok = part_asset::load_static_part_snapshot(
-            canonical_part, part_hash, canonical_fingerprint);
+            canonical_part, part_hash, canonical_snapshot);
         matter::PartRenderPolicy flat_render_policy;
-        const bool flat_ok = snap_ok && load_flat(part_hash, selected_root, flat) &&
-            matter::load_part_render_policy(canonical_part, part_hash,
-                                            flat.children.size(),
-                                            flat_render_policy);
+        const bool policy_ok = snap_ok && resolve_uniform_flat_render_policy(
+            selected_root, part_hash, canonical_snapshot, flat_render_policy);
+        bool flat_loaded = false;
+        const bool flat_ok = policy_ok &&
+            (flat_loaded = load_flat(part_hash, selected_root, flat));
         if (flat_ok) flat.render_policy = std::move(flat_render_policy);
         if (flat_gate_log && !flat_ok)
             MATTER_LOGD("flatgate",
-                         "%016llx REJECT snapshot=%d load_flat=%d\n",
+                         "%016llx REJECT snapshot=%d policy=%d load_flat=%d\n",
                          (unsigned long long)part_hash, snap_ok ? 1 : 0,
-                         snap_ok ? (flat_ok ? 1 : 0) : -1);
+                         snap_ok ? (policy_ok ? 1 : 0) : -1,
+                         policy_ok ? (flat_loaded ? 1 : 0) : -1);
         // Same question as MATTER_FLAT_GATE_LOG, as a counter rather than a
         // console line -- a rejection rate is what matters here, not each
         // individual hash, and per-item stderr has measurably distorted this
@@ -1674,7 +1754,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             const bool fingerprint_stable =
                 part_asset::load_static_part_snapshot(canonical_part, part_hash,
                                                       final_fingerprint) &&
-                final_fingerprint == canonical_fingerprint;
+                final_fingerprint == canonical_snapshot.fingerprint;
             // The SECOND way a flat is abandoned: it loaded fine, but the part
             // was replaced (a newly linked generation) between the two
             // snapshots, so this falls through to the coherent loader too.
@@ -1722,10 +1802,11 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 loaded_[part_hash].expansion = std::move(exp);
                 return &loaded_[part_hash];
             }
-            // The decoded flat was never published. Undo every shared-BLAS
-            // registration before retrying the coherent Part path below.
-            release_loaded_part_blas(blas_, flat);
         }
+        // Track decode independently from every subsequent admission gate. A
+        // decoded flat that is not published must always surrender every
+        // shared-BLAS registration before the coherent fallback starts.
+        if (flat_loaded) release_loaded_part_blas(blas_, flat);
     }
 
     // Read a linked artifact as a bounded coherent snapshot (see

@@ -684,8 +684,9 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
               renderer_error.empty() ? "register cached water raster part"
                                      : renderer_error.c_str());
     const matter::Mat4f identity_transform = viewer::mat4_identity();
-    const viewer::VkSceneInstance instance{
+    viewer::VkSceneInstance instance{
         part->part_hash, identity_transform, instance_id};
+    instance.ray_traced = false;
     GPU_CHECK(renderer.update_instances({instance}, renderer_error),
               renderer_error.empty() ? "register cached water instance"
                                      : renderer_error.c_str());
@@ -722,14 +723,8 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
                                      : renderer_error.c_str());
 
     std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
-    GPU_CHECK(renderer.fill_rt_instances(rt_instances) == 1 &&
-                  rt_instances[0].part_hash == part->part_hash,
-              "cached water instance enters the native-RT registration lane");
-    const auto rt_geometry = viewer::vk_scene_detail::select_rt_instance_geometry(
-        *part, identity_transform, camera.position, 1.0f);
-    GPU_CHECK(!rt_geometry.empty() &&
-                  rt_geometry[0].index_count == part->indices.size(),
-              "cached water supplies indexed BLAS geometry");
+    GPU_CHECK(renderer.fill_rt_instances(rt_instances) == 0,
+              "cached water instance stays out of the native-RT registration lane");
 
     std::printf(
         "gpu-mesher acceptance: particles=%u grid=%u cells=%u active=%u "

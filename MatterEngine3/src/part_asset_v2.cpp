@@ -1141,15 +1141,29 @@ bool load_animation_link(const std::string& path, uint64_t expected_resolved_has
 }
 
 bool load_static_part_snapshot(const std::string& path, uint64_t expected_resolved_hash,
-                               uint64_t& fingerprint_out) {
-    fingerprint_out = 0;
+                               StaticPartSnapshot& snapshot_out) {
+    snapshot_out = {};
     PartV2Preflight preflight;
     std::optional<PartAnimationLink> link;
     if (!preflight_v2_file(path, expected_resolved_hash, preflight, nullptr, nullptr) ||
         !parse_v2_suffix(preflight, expected_resolved_hash, true, nullptr, &link,
-                         nullptr, nullptr) ||
+                          nullptr, nullptr) ||
         link) return false;
-    fingerprint_out = fnv1a64(preflight.bytes.data(), preflight.bytes.size());
+    snapshot_out.fingerprint =
+        fnv1a64(preflight.bytes.data(), preflight.bytes.size());
+    snapshot_out.has_geometry = !preflight.common.blas_entries.empty();
+    snapshot_out.children = std::move(preflight.common.children);
+    return true;
+}
+
+bool load_static_part_snapshot(const std::string& path, uint64_t expected_resolved_hash,
+                               uint64_t& fingerprint_out) {
+    StaticPartSnapshot snapshot;
+    if (!load_static_part_snapshot(path, expected_resolved_hash, snapshot)) {
+        fingerprint_out = 0;
+        return false;
+    }
+    fingerprint_out = snapshot.fingerprint;
     return true;
 }
 

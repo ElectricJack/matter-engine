@@ -98,13 +98,14 @@ static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t has
 // A static canonical Part plus its independent flattened raster artifact.  This
 // is deliberately separate from publish_rigid_bundle: the regression below
 // proves that a nearby static flat can never downgrade a selected linked Part.
-static bool publish_flat(const std::filesystem::path& root, uint64_t hash) {
+static bool publish_flat(const std::filesystem::path& root, uint64_t hash,
+                         float x_offset = 0.0f) {
     namespace fs = std::filesystem;
     std::error_code ec; fs::create_directories(root / "parts", ec);
     if (ec) return false;
     Tri triangle{};
-    triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0);
-    triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    triangle.vertex0=make_float3(x_offset,0,0); triangle.vertex1=make_float3(x_offset+1,0,0);
+    triangle.vertex2=make_float3(x_offset,1,0); triangle.centroid=make_float3(x_offset+1.f/3,1.f/3,0);
     TriEx extra{};
     BLASManager flat_blas; TLASManager flat_tlas(4);
     const uint32_t flat_index=static_cast<uint32_t>(flat_blas.get_entries().size());
@@ -136,6 +137,38 @@ static bool publish_static_part(const std::filesystem::path& root, uint64_t hash
 
 static bool publish_static_part_and_flat(const std::filesystem::path& root, uint64_t hash) {
     return publish_static_part(root, hash) && publish_flat(root, hash);
+}
+
+static bool publish_static_composite(
+        const std::filesystem::path& root, uint64_t hash,
+        const std::vector<part_asset::ChildInstance>& children,
+        const matter::PartRenderPolicy& policy) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(root / "parts", ec);
+    if (ec) return false;
+    BLASManager source;
+    TLASManager tlas(4);
+    Tri triangle{};
+    triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0);
+    triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    TriEx extra{};
+    const BLASHandle handle=source.register_triangles(&triangle,1,&extra);
+    TLASManager::DrawInstance instance{};
+    instance.blas_handle=handle;
+    tlas.draw_batch({instance});
+    tlas.build(source);
+    const std::string path =
+        (root / part_asset::cache_path_resolved(hash)).string();
+    return part_asset::save_v2(path, source, tlas, children.data(),
+                               children.size(), {}, hash) &&
+           matter::save_part_render_policy(path, hash, policy);
+}
+
+static uint64_t total_blas_refs(viewer::PartStore& store) {
+    uint64_t refs = 0;
+    for (const auto& entry : store.blas().get_entries()) refs += entry->ref_count;
+    return refs;
 }
 
 static part_asset::ChildInstance child_instance(uint64_t hash) {
@@ -447,6 +480,104 @@ static void test_partstore_rejected_flat_candidate_releases_shared_blas() {
     raced.release(hash);
     CHECK(raced.blas().live_count() == 0,
           "A8 rejected flat candidate leaves no BLAS after linked part release");
+}
+
+// Flat v6 intentionally erases the canonical child table after merging the
+// subtree. RNDR cardinality and eligibility therefore have to be proved from
+// the canonical REP0 before the flat registers anything in the shared BLAS.
+static void test_partstore_policy_safe_flat_admission() {
+    namespace fs = std::filesystem;
+    using matter::RayTracingOverride;
+    const fs::path root =
+        fs::temp_directory_path() / "me3_partstore_policy_safe_flat";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); }
+    } cleanup{root};
+
+    constexpr uint64_t uniform_child = 0xf1a7000000000001ull;
+    constexpr uint64_t uniform_parent = 0xf1a7000000000002ull;
+    CHECK(publish_static_part(root / "uniform", uniform_child),
+          "flat policy: writes uniform child canonical Part");
+    matter::PartRenderPolicy uniform_policy;
+    uniform_policy.child_overrides = {RayTracingOverride::Inherit};
+    CHECK(publish_static_composite(
+              root / "uniform", uniform_parent,
+              {child_instance(uniform_child)}, uniform_policy) &&
+              publish_flat(root / "uniform", uniform_parent, 4.0f),
+          "flat policy: writes default-true composite RNDR and FLAT");
+    viewer::PartStore uniform((root / "uniform").string());
+    const viewer::LoadedPart* uniform_loaded =
+        uniform.get_or_load(uniform_parent);
+    CHECK(uniform_loaded && uniform_loaded->children.empty() &&
+              !uniform_loaded->clusters.empty(),
+          "flat policy: uniform default-true composite selects flattened path");
+    CHECK(uniform_loaded && uniform_loaded->render_policy.ray_traced,
+          "flat policy: admitted composite retains one proven true eligibility");
+
+    constexpr uint64_t mixed_child = 0xf1a7000000000011ull;
+    constexpr uint64_t mixed_parent = 0xf1a7000000000012ull;
+    const fs::path baseline_root = root / "mixed-baseline";
+    const fs::path candidate_root = root / "mixed-candidate";
+    matter::PartRenderPolicy raster_child_policy;
+    raster_child_policy.ray_traced = false;
+    matter::PartRenderPolicy mixed_parent_policy;
+    mixed_parent_policy.child_overrides = {RayTracingOverride::Inherit};
+    const auto publish_mixed = [&](const fs::path& at, bool with_flat) {
+        const std::string child_path =
+            (at / part_asset::cache_path_resolved(mixed_child)).string();
+        return publish_static_part(at, mixed_child) &&
+               matter::save_part_render_policy(
+                   child_path, mixed_child, raster_child_policy) &&
+               publish_static_composite(
+                   at, mixed_parent, {child_instance(mixed_child)},
+                   mixed_parent_policy) &&
+               (!with_flat || publish_flat(at, mixed_parent, 4.0f));
+    };
+    CHECK(publish_mixed(baseline_root, false),
+          "flat policy: writes mixed canonical baseline without FLAT");
+    viewer::PartStore baseline(baseline_root.string());
+    const viewer::LoadedPart* baseline_loaded =
+        baseline.get_or_load(mixed_parent);
+    CHECK(baseline_loaded && baseline_loaded->children.size() == 1,
+          "flat policy: mixed baseline selects compositional path");
+    const size_t baseline_live = baseline.blas().live_count();
+    const uint64_t baseline_refs = total_blas_refs(baseline);
+
+    CHECK(publish_mixed(candidate_root, true),
+          "flat policy: writes mixed canonical candidate with FLAT");
+    viewer::PartStore candidate(candidate_root.string());
+    const viewer::LoadedPart* candidate_loaded =
+        candidate.get_or_load(mixed_parent);
+    CHECK(candidate_loaded && candidate_loaded->children.size() == 1,
+          "flat policy: mixed subtree rejects FLAT and selects compositional path");
+    CHECK(candidate.blas().live_count() == baseline_live,
+          "flat policy: mixed FLAT rejection adds no shared BLAS entries");
+    CHECK(total_blas_refs(candidate) == baseline_refs,
+          "flat policy: mixed FLAT rejection adds no shared BLAS references");
+
+    constexpr uint64_t malformed_hash = 0xf1a7000000000021ull;
+    const fs::path malformed_root = root / "malformed";
+    CHECK(publish_static_part_and_flat(malformed_root, malformed_hash),
+          "flat policy: writes malformed-policy canonical Part and FLAT");
+    const uint8_t malformed_payload = 0xffu;
+    CHECK(part_bundle::write_section(
+              (malformed_root /
+               part_asset::cache_path_resolved(malformed_hash)).string(),
+              malformed_hash, part_bundle::kSectionRenderPolicy,
+              &malformed_payload, sizeof(malformed_payload)),
+          "flat policy: writes malformed present RNDR beside FLAT");
+    viewer::PartStore malformed(malformed_root.string());
+    const size_t malformed_live_before = malformed.blas().live_count();
+    const uint64_t malformed_refs_before = total_blas_refs(malformed);
+    CHECK(malformed.get_or_load(malformed_hash) == nullptr,
+          "flat policy: malformed RNDR plus FLAT fails closed");
+    CHECK(malformed.blas().live_count() == malformed_live_before,
+          "flat policy: malformed RNDR rejection adds no shared BLAS entries");
+    CHECK(total_blas_refs(malformed) == malformed_refs_before,
+          "flat policy: malformed RNDR rejection adds no shared BLAS references");
 }
 
 static viewer::RasterMeshData two_triangle_rigid_mesh() {
@@ -883,6 +1014,7 @@ int main() {
     test_partstore_retries_after_torn_generation_and_recovers_same_store();
     test_partstore_flat_never_downgrades_selected_linked_part();
     test_partstore_rejected_flat_candidate_releases_shared_blas();
+    test_partstore_policy_safe_flat_admission();
 
     if (g_failures) {
         printf("partstore_tests: %d FAILURE(S)\n", g_failures);

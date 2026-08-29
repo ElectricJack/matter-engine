@@ -291,9 +291,21 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
 bool load_animation_link(const std::string& path, uint64_t expected_resolved_hash,
                          std::optional<PartAnimationLink>& animation_link_out);
 
-// Read one exact, fully validated canonical v2 Part snapshot and report a
-// fingerprint of the bytes that were parsed. Returns false for an animated
-// (ANLK-bearing), malformed, or unreadable Part. Callers that use an adjacent
+struct StaticPartSnapshot {
+    uint64_t fingerprint = 0;
+    bool has_geometry = false;
+    std::vector<ChildInstance> children;
+};
+
+// Read one exact, fully validated canonical v2 Part snapshot without
+// reconstructing renderer managers. Returns false for an animated
+// (ANLK-bearing), malformed, or unreadable Part. The child table is the
+// canonical REP0 table; adjacent flattened artifacts deliberately serialize an
+// empty table and therefore cannot supply policy cardinality themselves.
+bool load_static_part_snapshot(const std::string& path, uint64_t expected_resolved_hash,
+                               StaticPartSnapshot& snapshot_out);
+
+// Fingerprint-only compatibility overload. Callers that use an adjacent
 // static acceleration can compare two snapshots to reject a replacement that
 // raced their acceleration load.
 bool load_static_part_snapshot(const std::string& path, uint64_t expected_resolved_hash,
