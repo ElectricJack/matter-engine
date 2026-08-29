@@ -41,6 +41,7 @@ MatterEngine3/src/hydrology/fill_sensor.cpp|all
 MatterEngine3/src/hydrology/water_mesh_animation_capture.cpp|all
 MatterEngine3/src/hydrology/water_mesh_animation.cpp|all
 MatterEngine3/src/hydrology/water_mesh_animation_artifact.cpp|all
+MatterEngine3/src/hydrology/water_boundary_animation_source.cpp|all
 MatterEngine3/src/render/water_mesh_animation_playback.cpp|all
 MatterEngine3/src/terrain_river_overlay.cpp|all
 MatterEngine3/src/script_rng_binding.cpp|all

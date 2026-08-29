@@ -355,6 +355,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/water_mesh_animation_tests.cpp)
     matter_add_engine_cpu_test(water_mesh_animation_artifact_tests
         MatterEngine3/tests/water_mesh_animation_artifact_tests.cpp)
+    matter_add_engine_cpu_test(water_boundary_animation_source_tests
+        MatterEngine3/tests/water_boundary_animation_source_tests.cpp)
     matter_add_engine_cpu_test(water_mesh_animation_playback_tests
         MatterEngine3/tests/water_mesh_animation_playback_tests.cpp)
     matter_add_engine_cpu_test(river_presentation_field_tests
