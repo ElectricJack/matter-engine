@@ -251,6 +251,18 @@ float water_feature_foam_bias(uint feature) {
     return feature == 1u ? 0.02 : 0.0;
 }
 
+float water_foam_driver(WaterFieldSample field) {
+    float primary = clamp(field.foam_potential, 0.0, 1.0);
+    float turbulence_support =
+        0.10 * clamp(field.turbulence, 0.0, 1.0);
+    float aeration_support = 0.20 * clamp(field.aeration, 0.0, 1.0);
+    float feature_support =
+        min(water_feature_foam_bias(field.feature), 0.15);
+    return clamp(primary + turbulence_support + aeration_support +
+                     feature_support,
+                 0.0, 1.0);
+}
+
 float water_breakup_noise(vec2 position, float scale_m) {
     float scale = max(scale_m, 0.001);
     float phase = position.x * (2.17 / scale) +
@@ -259,6 +271,46 @@ float water_breakup_noise(vec2 position, float scale_m) {
                       position.y * (1.73 / scale);
     return clamp(0.5 + 0.32 * sin(phase) +
                  0.18 * sin(secondary + sin(phase)), 0.0, 1.0);
+}
+
+WaterOpticalState water_evaluate_optics(
+    WaterFieldGpuRecord record, float optical_distance_m,
+    float foam_coverage) {
+    WaterOpticalState optics;
+    float optical_distance = max(optical_distance_m, 0.0);
+    float bounded_foam_coverage = clamp(foam_coverage, 0.0, 1.0);
+    float depth_blend = smoothstep(1.5, 4.0, optical_distance);
+    vec3 absorption = mix(record.optics_shallow.rgb,
+                          record.optics_deep.rgb, depth_blend);
+    float absorption_distance = max(
+        0.001, mix(record.optics_shallow.a, record.optics_deep.a,
+                   depth_blend));
+    float optical_depth = optical_distance / absorption_distance;
+    optics.transmittance = exp(-absorption * optical_depth);
+    optics.bottom_visibility = clamp(
+        dot(optics.transmittance, vec3(0.2126, 0.7152, 0.0722)),
+        0.0, 1.0);
+    float ior = clamp(record.optics_misc.y, 1.0, 2.5);
+    float f0 = (ior - 1.0) / (ior + 1.0);
+    optics.reflection_weight = f0 * f0;
+    optics.coherent_transmission_weight = clamp(
+        (1.0 - optics.reflection_weight) * optics.bottom_visibility *
+        (1.0 - bounded_foam_coverage *
+                   clamp(record.foam_response.z, 0.0, 1.0)),
+        0.0, 1.0);
+    float optical_remaining = max(
+        0.0, 1.0 - optics.reflection_weight -
+             optics.coherent_transmission_weight);
+    float depth_scattering = 1.0 - exp(
+        -optical_distance / max(record.optics_scattering.a, 0.001));
+    optics.diffuse_scattering_weight = min(
+        optical_remaining,
+        depth_scattering + bounded_foam_coverage *
+                               max(record.foam_response.y, 0.0));
+    optics.scattering_color = mix(
+        record.optics_scattering.rgb, vec3(0.92, 0.97, 1.0),
+        bounded_foam_coverage);
+    return optics;
 }
 
 bool water_evaluate_surface(uint slot, uint generation, uint material_id,
@@ -289,9 +341,7 @@ bool water_evaluate_surface(uint slot, uint generation, uint material_id,
     state.foam.local_multiplier = max(state.field.local_foam_multiplier, 0.0);
     state.foam.threshold_offset = state.field.local_threshold_offset;
     state.foam.wave_multiplier = max(state.field.local_wave_multiplier, 0.0);
-    float foam_driver = state.field.foam_potential +
-                        0.35 * state.field.aeration +
-                        water_feature_foam_bias(state.field.feature);
+    float foam_driver = water_foam_driver(state.field);
     state.foam.macro_mask = clamp(
         (foam_driver - record.foam_controls.x -
          state.foam.threshold_offset) * record.foam_controls.y,
@@ -309,37 +359,8 @@ bool water_evaluate_surface(uint slot, uint generation, uint material_id,
         state.foam.macro_mask * state.foam.local_multiplier *
         mix(0.85, 1.0, state.foam.breakup_detail), 0.0, 1.0);
 
-    float depth_blend = smoothstep(1.5, 4.0, max(state.field.depth, 0.0));
-    vec3 absorption = mix(record.optics_shallow.rgb,
-                          record.optics_deep.rgb, depth_blend);
-    float absorption_distance = max(
-        0.001, mix(record.optics_shallow.a, record.optics_deep.a,
-                   depth_blend));
-    float optical_depth = max(state.field.depth, 0.0) / absorption_distance;
-    state.optics.transmittance = exp(-absorption * optical_depth);
-    state.optics.bottom_visibility = clamp(
-        dot(state.optics.transmittance, vec3(0.2126, 0.7152, 0.0722)),
-        0.0, 1.0);
-    float ior = clamp(record.optics_misc.y, 1.0, 2.5);
-    float f0 = (ior - 1.0) / (ior + 1.0);
-    state.optics.reflection_weight = f0 * f0;
-    state.optics.coherent_transmission_weight = clamp(
-        (1.0 - state.optics.reflection_weight) *
-        state.optics.bottom_visibility *
-        (1.0 - state.foam.coverage * clamp(record.foam_response.z, 0.0, 1.0)),
-        0.0, 1.0);
-    float optical_remaining = max(
-        0.0, 1.0 - state.optics.reflection_weight -
-             state.optics.coherent_transmission_weight);
-    float depth_scattering = 1.0 - exp(
-        -max(state.field.depth, 0.0) /
-        max(record.optics_scattering.a, 0.001));
-    state.optics.diffuse_scattering_weight = min(
-        optical_remaining,
-        depth_scattering + state.foam.coverage * max(record.foam_response.y, 0.0));
-    state.optics.scattering_color = mix(
-        record.optics_scattering.rgb, vec3(0.92, 0.97, 1.0),
-        state.foam.coverage);
+    state.optics = water_evaluate_optics(
+        record, max(state.field.depth, 0.0), state.foam.coverage);
     state.reactivity = clamp(max(
         state.foam.coverage,
         0.35 * clamp(state.field.turbulence, 0.0, 1.0) +

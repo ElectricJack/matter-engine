@@ -120,6 +120,17 @@ float feature_response(hydrology::RiverFeature feature) noexcept {
     }
 }
 
+float feature_foam_bias(hydrology::RiverFeature feature) noexcept {
+    switch (feature) {
+        case hydrology::RiverFeature::Rapid: return 0.10f;
+        case hydrology::RiverFeature::Waterfall: return 0.30f;
+        case hydrology::RiverFeature::Impact: return 0.35f;
+        case hydrology::RiverFeature::Spillway: return 0.25f;
+        case hydrology::RiverFeature::Current: return 0.02f;
+        default: return 0.0f;
+    }
+}
+
 }  // namespace
 
 bool water_sample_field_reference(
@@ -289,6 +300,63 @@ std::array<float, kWaterWaveBandCount> water_band_responses_reference(
     return result;
 }
 
+WaterOpticalState water_optical_state_reference(
+    const matter::WaterSurfaceDefinition& surface,
+    float optical_distance_m, float foam_coverage) noexcept {
+    WaterOpticalState optics{};
+    const float optical_distance = std::max(0.0f, optical_distance_m);
+    const float bounded_foam_coverage = clamp01(foam_coverage);
+    const float depth_blend = smoothstep(1.5f, 4.0f, optical_distance);
+    const matter::Float3 absorption = mix3(
+        surface.optics.shallow_absorption,
+        surface.optics.deep_absorption, depth_blend);
+    const float absorption_distance = std::max(
+        0.001f, lerp(surface.optics.shallow_distance_m,
+                     surface.optics.deep_distance_m, depth_blend));
+    const float optical_depth = optical_distance / absorption_distance;
+    optics.transmittance = {
+        std::exp(-absorption.x * optical_depth),
+        std::exp(-absorption.y * optical_depth),
+        std::exp(-absorption.z * optical_depth)};
+    optics.bottom_visibility = clamp01(luminance(optics.transmittance));
+    const float ior = std::clamp(surface.optics.ior, 1.0f, 2.5f);
+    const float fresnel0 = (ior - 1.0f) / (ior + 1.0f);
+    optics.reflection_weight = fresnel0 * fresnel0;
+    optics.coherent_transmission_weight = clamp01(
+        (1.0f - optics.reflection_weight) * optics.bottom_visibility *
+        (1.0f - bounded_foam_coverage *
+                    clamp01(surface.foam.transmission_loss)));
+    const float remaining = std::max(
+        0.0f, 1.0f - optics.reflection_weight -
+                  optics.coherent_transmission_weight);
+    const float depth_scattering = 1.0f - std::exp(
+        -optical_distance /
+        std::max(0.001f, surface.optics.scattering_distance_m));
+    optics.diffuse_scattering_weight = std::min(
+        remaining,
+        depth_scattering + bounded_foam_coverage *
+                               std::max(0.0f, surface.foam.scattering_gain));
+    optics.scattering_color = mix3(
+        surface.optics.scattering_color, {0.92f, 0.97f, 1.0f},
+        bounded_foam_coverage);
+    return optics;
+}
+
+float water_foam_driver_reference(
+    float foam_potential, float turbulence, float aeration,
+    hydrology::RiverFeature feature) noexcept {
+    const float primary = std::clamp(foam_potential, 0.0f, 1.0f);
+    const float turbulence_support =
+        0.10f * std::clamp(turbulence, 0.0f, 1.0f);
+    const float aeration_support =
+        0.20f * std::clamp(aeration, 0.0f, 1.0f);
+    const float feature_support =
+        std::min(feature_foam_bias(feature), 0.15f);
+    return std::clamp(primary + turbulence_support + aeration_support +
+                          feature_support,
+                      0.0f, 1.0f);
+}
+
 bool water_evaluate_surface_reference(
     const PackedWaterField& field, WaterFieldBinding published_binding,
     WaterFieldBinding requested_binding,
@@ -305,24 +373,14 @@ bool water_evaluate_surface_reference(
                                       output.field))
         return false;
 
-    const auto feature_foam_bias = [](hydrology::RiverFeature feature) {
-        switch (feature) {
-            case hydrology::RiverFeature::Rapid: return 0.10f;
-            case hydrology::RiverFeature::Waterfall: return 0.30f;
-            case hydrology::RiverFeature::Impact: return 0.35f;
-            case hydrology::RiverFeature::Spillway: return 0.25f;
-            case hydrology::RiverFeature::Current: return 0.02f;
-            default: return 0.0f;
-        }
-    };
     output.foam.local_multiplier =
         std::max(0.0f, output.field.local_foam_multiplier);
     output.foam.threshold_offset = output.field.local_threshold_offset;
     output.foam.wave_multiplier =
         std::max(0.0f, output.field.local_wave_multiplier);
-    const float foam_driver =
-        output.field.foam_potential + 0.35f * output.field.aeration +
-        feature_foam_bias(output.field.feature);
+    const float foam_driver = water_foam_driver_reference(
+        output.field.foam_potential, output.field.turbulence,
+        output.field.aeration, output.field.feature);
     output.foam.macro_mask = clamp01(
         (foam_driver - surface.foam.threshold -
          output.foam.threshold_offset) * surface.foam.gain);
@@ -341,43 +399,8 @@ bool water_evaluate_surface_reference(
         output.foam.macro_mask * output.foam.local_multiplier *
         lerp(0.85f, 1.0f, output.foam.breakup_detail));
 
-    const float depth_blend =
-        smoothstep(1.5f, 4.0f, std::max(0.0f, output.field.depth_m));
-    const matter::Float3 absorption = mix3(
-        surface.optics.shallow_absorption,
-        surface.optics.deep_absorption, depth_blend);
-    const float absorption_distance = std::max(
-        0.001f, lerp(surface.optics.shallow_distance_m,
-                     surface.optics.deep_distance_m, depth_blend));
-    const float optical_depth =
-        std::max(0.0f, output.field.depth_m) / absorption_distance;
-    output.optics.transmittance = {
-        std::exp(-absorption.x * optical_depth),
-        std::exp(-absorption.y * optical_depth),
-        std::exp(-absorption.z * optical_depth)};
-    output.optics.bottom_visibility =
-        clamp01(luminance(output.optics.transmittance));
-    const float ior = std::clamp(surface.optics.ior, 1.0f, 2.5f);
-    const float fresnel0 = (ior - 1.0f) / (ior + 1.0f);
-    output.optics.reflection_weight = fresnel0 * fresnel0;
-    output.optics.coherent_transmission_weight = clamp01(
-        (1.0f - output.optics.reflection_weight) *
-        output.optics.bottom_visibility *
-        (1.0f - output.foam.coverage *
-                    clamp01(surface.foam.transmission_loss)));
-    const float remaining = std::max(
-        0.0f, 1.0f - output.optics.reflection_weight -
-                  output.optics.coherent_transmission_weight);
-    const float depth_scattering = 1.0f - std::exp(
-        -std::max(0.0f, output.field.depth_m) /
-        std::max(0.001f, surface.optics.scattering_distance_m));
-    output.optics.diffuse_scattering_weight = std::min(
-        remaining,
-        depth_scattering + output.foam.coverage *
-                               std::max(0.0f, surface.foam.scattering_gain));
-    output.optics.scattering_color = mix3(
-        surface.optics.scattering_color, {0.92f, 0.97f, 1.0f},
-        output.foam.coverage);
+    output.optics = water_optical_state_reference(
+        surface, std::max(output.field.depth_m, 0.0f), output.foam.coverage);
     output.reactivity = clamp01(std::max(
         output.foam.coverage,
         0.35f * clamp01(output.field.turbulence) +

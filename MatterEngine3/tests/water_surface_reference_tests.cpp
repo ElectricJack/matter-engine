@@ -13,6 +13,10 @@ bool close(float actual, float expected, float epsilon = kEpsilon) {
     return std::fabs(actual - expected) <= epsilon;
 }
 
+float luminance(matter::Float3 value) {
+    return 0.2126f * value.x + 0.7152f * value.y + 0.0722f * value.z;
+}
+
 viewer::PackedWaterField make_field(
     bool curved = false, float depth_m = 2.0f, float turbulence = 0.5f,
     float aeration = 0.25f, float foam_potential = 0.1f,
@@ -169,6 +173,90 @@ void test_shallow_clarity_and_depth_tint() {
                   deep.optics.diffuse_scattering_weight <=
               1.0f + 2.0e-6f,
           "water optical lobes remain energy bounded at every depth");
+}
+
+void test_optical_state_is_bounded_and_darkens_monotonically_with_distance() {
+    const matter::WaterSurfaceDefinition surface = make_surface();
+    const viewer::WaterOpticalState distance_states[] = {
+        viewer::water_optical_state_reference(surface, 0.25f, 0.0f),
+        viewer::water_optical_state_reference(surface, 0.75f, 0.0f),
+        viewer::water_optical_state_reference(surface, 3.0f, 0.0f),
+        viewer::water_optical_state_reference(surface, 8.0f, 0.0f),
+    };
+    bool bounded = true;
+    bool monotonic = true;
+    for (std::size_t index = 0u; index != 4u; ++index) {
+        const matter::Float3 transmission = distance_states[index].transmittance;
+        bounded = bounded && std::isfinite(transmission.x) &&
+                  std::isfinite(transmission.y) &&
+                  std::isfinite(transmission.z) && transmission.x >= 0.0f &&
+                  transmission.x <= 1.0f && transmission.y >= 0.0f &&
+                  transmission.y <= 1.0f && transmission.z >= 0.0f &&
+                  transmission.z <= 1.0f;
+        if (index != 0u) {
+            const matter::Float3 previous =
+                distance_states[index - 1u].transmittance;
+            monotonic = monotonic && transmission.x <= previous.x &&
+                        transmission.y <= previous.y &&
+                        transmission.z <= previous.z;
+        }
+    }
+    CHECK(bounded,
+          "Beer-Lambert transmission stays finite and bounded at every optical distance");
+    CHECK(monotonic,
+          "every transmission channel darkens monotonically with optical distance");
+    CHECK(luminance(distance_states[1].transmittance) >
+              luminance(distance_states[2].transmittance),
+          "0.75 m of water retains more transmitted luminance than 3 m");
+
+    const viewer::WaterOpticalState clear =
+        viewer::water_optical_state_reference(surface, 0.75f, 0.0f);
+    const viewer::WaterOpticalState foamy =
+        viewer::water_optical_state_reference(surface, 0.75f, 1.0f);
+    CHECK(foamy.coherent_transmission_weight <
+              clear.coherent_transmission_weight,
+          "full foam coverage suppresses coherent transmission");
+}
+
+void test_baked_whitewater_dominates_bounded_foam_support() {
+    const float turbulent = viewer::water_foam_driver_reference(
+        0.85f, 0.90f, 0.10f, hydrology::RiverFeature::Calm);
+    const float aerated = viewer::water_foam_driver_reference(
+        0.05f, 0.05f, 1.00f, hydrology::RiverFeature::Calm);
+    const float feature_only = viewer::water_foam_driver_reference(
+        0.00f, 0.00f, 0.00f, hydrology::RiverFeature::Waterfall);
+    const float aeration_support_only = viewer::water_foam_driver_reference(
+        0.00f, 0.00f, 1.00f, hydrology::RiverFeature::Calm);
+    CHECK(turbulent > 0.80f,
+          "baked turbulence-primary whitewater remains a strong foam signal");
+    CHECK(aerated <= 0.26f,
+          "aeration is bounded support rather than a primary foam signal");
+    CHECK(close(aeration_support_only, 0.20f),
+          "aeration-only support is capped at exactly twenty percent");
+    CHECK(feature_only <= 0.15f,
+          "feature labels contribute at most bounded foam support");
+    CHECK(turbulent > aerated && aerated >= feature_only,
+          "baked whitewater dominates aeration and feature-only support");
+
+    const matter::WaterSurfaceDefinition surface = make_surface();
+    const viewer::WaterFieldBinding binding{5u, 14u};
+    viewer::WaterSurfaceEvaluation baked_whitewater{};
+    viewer::WaterSurfaceEvaluation waterfall_label_only{};
+    CHECK(viewer::water_evaluate_surface_reference(
+              make_field(false, 0.9f, 0.90f, 0.10f, 0.85f,
+                         hydrology::RiverFeature::Calm, &surface),
+              binding, binding, surface, {1.5f, 1.5f},
+              {0.0f, 1.0f, 0.0f}, 2.75f, 0.06f, baked_whitewater) &&
+              baked_whitewater.foam.macro_mask > 0.0f,
+          "high baked foam potential crosses the authored threshold without a waterfall label");
+    CHECK(viewer::water_evaluate_surface_reference(
+              make_field(false, 0.9f, 0.0f, 0.0f, 0.0f,
+                         hydrology::RiverFeature::Waterfall, &surface),
+              binding, binding, surface, {1.5f, 1.5f},
+              {0.0f, 1.0f, 0.0f}, 2.75f, 0.06f,
+              waterfall_label_only) &&
+              waterfall_label_only.foam.coverage < 1.0f,
+          "feature-only foam support cannot create full whitewater coverage");
 }
 
 void test_automatic_foam_and_local_override() {
@@ -339,6 +427,8 @@ void test_three_band_response_and_hemisphere_safety() {
 int main() {
     test_authored_waves_pack_into_the_slot_record();
     test_shallow_clarity_and_depth_tint();
+    test_optical_state_is_bounded_and_darkens_monotonically_with_distance();
+    test_baked_whitewater_dominates_bounded_foam_support();
     test_automatic_foam_and_local_override();
     test_world_mapping_borders_and_dry_rejection();
     test_three_step_rk2_backtrace();

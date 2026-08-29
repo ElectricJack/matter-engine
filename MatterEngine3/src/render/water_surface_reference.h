@@ -77,6 +77,14 @@ std::array<float, kWaterWaveBandCount> water_band_responses_reference(
     const matter::WaterSurfaceDefinition& surface,
     const WaterSurfaceFieldSample& field) noexcept;
 
+WaterOpticalState water_optical_state_reference(
+    const matter::WaterSurfaceDefinition& surface,
+    float optical_distance_m, float foam_coverage) noexcept;
+
+float water_foam_driver_reference(
+    float foam_potential, float turbulence, float aeration,
+    hydrology::RiverFeature feature) noexcept;
+
 bool water_evaluate_surface_reference(
     const PackedWaterField& field, WaterFieldBinding published_binding,
     WaterFieldBinding requested_binding,
