@@ -404,6 +404,9 @@ if(BUILD_TESTING)
         MatterEngine3/tests/water_field_vk_tests.cpp)
     matter_add_engine_cpu_test(water_surface_reference_tests
         MatterEngine3/tests/water_surface_reference_tests.cpp)
+    matter_add_engine_cpu_test(water_forward_reference_tests
+        MatterEngine3/tests/water_forward_reference_tests.cpp
+        MatterEngine3/src/render/water_forward_reference.cpp)
     matter_add_engine_cpu_test(shader_source_tests
         MatterEngine3/tests/shader_source_tests.cpp)
 

@@ -101,6 +101,34 @@ int main() {
                                    "shaders_vk/cloud_shadow_common.glsl"})
         assert(water_forward_dependency_rule.find(dependency) !=
                std::string::npos);
+    const std::string water_forward =
+        read_shader("../shaders_vk/water_forward.frag");
+    const std::string water_screen =
+        read_shader("../shaders_vk/water_screen_space.glsl");
+    assert(water_forward.find("water_refract_scene") != std::string::npos);
+    assert(water_forward.find("water_reflect_scene") != std::string::npos);
+    assert(water_forward.find("water_evaluate_optics") != std::string::npos);
+    assert(water_screen.find("const int WATER_REFLECTION_STEPS = 24;") !=
+           std::string::npos);
+    assert(water_screen.find(
+               "const int WATER_REFLECTION_REFINEMENT_STEPS = 4;") !=
+           std::string::npos);
+    assert(water_screen.find(
+               "step < WATER_REFLECTION_STEPS") != std::string::npos);
+    assert(water_screen.find(
+               "refinement < WATER_REFLECTION_REFINEMENT_STEPS") !=
+           std::string::npos);
+    assert(water_forward.find("sample_physical_sky") != std::string::npos);
+    for (const char* forbidden : {"visibility_texture", "raw_diffuse",
+                                  "raw_specular", "raw_transmission",
+                                  "accelerationStructureEXT", "rayQuery",
+                                  "traceRayEXT", "topLevelAS", "tlas",
+                                  "sample_cloud_transmittance",
+                                  "GL_EXT_ray_query",
+                                  "GL_EXT_ray_tracing"}) {
+        assert(water_forward.find(forbidden) == std::string::npos);
+        assert(water_screen.find(forbidden) == std::string::npos);
+    }
     assert(renderer_header.find("kGpuZoneWaterDecode") != std::string::npos);
     assert(renderer_header.find("kGpuZoneWaterDraw") != std::string::npos);
     assert(renderer_source.find("record.water_decode_zone") !=
