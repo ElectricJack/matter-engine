@@ -9,6 +9,8 @@
 
 namespace {
 
+constexpr std::uint32_t kAuthoredWaterMaterial = 19u;
+
 hydrology::WaterMeshAnimationArtifact make_artifact(
     const std::string& id, std::uint64_t semantic,
     std::uint64_t primary, std::uint64_t secondary = 0u) {
@@ -83,8 +85,9 @@ void test_common_clock_and_per_slot_upload_decisions() {
     viewer::WaterMeshAnimationPlayback playback{};
     viewer::WaterAnimationFallback fallback{};
     CHECK(viewer::activate_water_mesh_animation_playback(
-              fixture.manifest, fixture.root, 3u, 700ull * 1024ull * 1024ull,
-              playback, fallback), fallback.message.c_str());
+              fixture.manifest, fixture.root, kAuthoredWaterMaterial,
+              3u, 700ull * 1024ull * 1024ull, playback, fallback),
+          fallback.message.c_str());
     const viewer::WaterAnimationPlaybackCapacity capacity =
         playback.maximum_frame_capacity();
     CHECK(capacity.packed_vertex_bytes == 3u * 3u * 12u &&
@@ -102,9 +105,7 @@ void test_common_clock_and_per_slot_upload_decisions() {
     auto selection = playback.make_selection();
     const std::uint64_t validations_after_activation =
         hydrology::water_mesh_animation_validation_count();
-    constexpr std::uint32_t kAuthoredWaterMaterial = 19u;
-    CHECK(playback.select(0.10, 0u, kAuthoredWaterMaterial, selection,
-                          fallback) &&
+    CHECK(playback.select(0.10, 0u, selection, fallback) &&
               selection.frame_index == 3u && selection.upload_required &&
               selection.draws.size() == 3u,
           "the first frame-slot use selects one frame for every product");
@@ -113,17 +114,14 @@ void test_common_clock_and_per_slot_upload_decisions() {
                   draw.material_index == kAuthoredWaterMaterial,
               "sections and handoffs share the selected frame and the authored runtime water material");
     const auto draw_capacity = selection.draws.capacity();
-    CHECK(playback.select(0.11, 0u, kAuthoredWaterMaterial, selection,
-                          fallback) &&
+    CHECK(playback.select(0.11, 0u, selection, fallback) &&
               !selection.upload_required &&
               selection.draws.capacity() == draw_capacity,
           "paused or same-interval playback performs no upload or allocation");
-    CHECK(playback.select(0.11, 1u, kAuthoredWaterMaterial, selection,
-                          fallback) &&
+    CHECK(playback.select(0.11, 1u, selection, fallback) &&
               selection.upload_required,
           "a newly acquired Vulkan frame slot uploads its current frame once");
-    CHECK(playback.select(0.14, 0u, kAuthoredWaterMaterial, selection,
-                          fallback) &&
+    CHECK(playback.select(0.14, 0u, selection, fallback) &&
               selection.upload_required && selection.frame_index == 4u,
           "advancing to the next 30 Hz frame requests one slot-local upload");
     CHECK(hydrology::water_mesh_animation_validation_count() ==
@@ -137,8 +135,9 @@ void test_cpu_decode_oracle_and_transactional_fallbacks() {
     viewer::WaterMeshAnimationPlayback playback{};
     viewer::WaterAnimationFallback fallback{};
     CHECK(viewer::activate_water_mesh_animation_playback(
-              fixture.manifest, fixture.root, 2u, 700ull * 1024ull * 1024ull,
-              playback, fallback), fallback.message.c_str());
+              fixture.manifest, fixture.root, kAuthoredWaterMaterial,
+              2u, 700ull * 1024ull * 1024ull, playback, fallback),
+          fallback.message.c_str());
     std::vector<viewer::DecodedWaterAnimationVertex> vertices;
     std::vector<std::uint32_t> indices;
     CHECK(playback.decode_frame_for_test(
@@ -156,14 +155,14 @@ void test_cpu_decode_oracle_and_transactional_fallbacks() {
     auto mismatched = fixture.manifest;
     mismatched.section_animations[0].semantic_key++;
     CHECK(!viewer::activate_water_mesh_animation_playback(
-              mismatched, fixture.root, 2u, 700ull * 1024ull * 1024ull,
-              playback, fallback) &&
+              mismatched, fixture.root, kAuthoredWaterMaterial,
+              2u, 700ull * 1024ull * 1024ull, playback, fallback) &&
               fallback.reason ==
                   viewer::WaterAnimationFallbackReason::MismatchedReference &&
               playback.compressed_bytes() == active_bytes,
           "mismatched activation falls back without replacing the active set");
     CHECK(!viewer::activate_water_mesh_animation_playback(
-              fixture.manifest, fixture.root, 2u, 1u,
+              fixture.manifest, fixture.root, kAuthoredWaterMaterial, 2u, 1u,
               playback, fallback) &&
               fallback.reason ==
                   viewer::WaterAnimationFallbackReason::CpuBudgetExceeded &&
@@ -172,7 +171,7 @@ void test_cpu_decode_oracle_and_transactional_fallbacks() {
     std::filesystem::remove(
         fixture.root / fixture.manifest.section_animations[1].relative_path);
     CHECK(!viewer::activate_water_mesh_animation_playback(
-              fixture.manifest, fixture.root, 2u,
+              fixture.manifest, fixture.root, kAuthoredWaterMaterial, 2u,
               700ull * 1024ull * 1024ull, playback, fallback) &&
               fallback.reason ==
                   viewer::WaterAnimationFallbackReason::MissingArtifact,
@@ -193,7 +192,8 @@ void test_cpu_decode_oracle_and_transactional_fallbacks() {
         stream.write(&value, 1);
     }
     CHECK(!viewer::activate_water_mesh_animation_playback(
-              corrupt_fixture.manifest, corrupt_fixture.root, 2u,
+              corrupt_fixture.manifest, corrupt_fixture.root,
+              kAuthoredWaterMaterial, 2u,
               700ull * 1024ull * 1024ull, playback, fallback) &&
               fallback.reason ==
                   viewer::WaterAnimationFallbackReason::CorruptArtifact,

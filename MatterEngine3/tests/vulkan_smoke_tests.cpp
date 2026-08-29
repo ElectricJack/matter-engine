@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -34,6 +35,7 @@
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
 #include "render/water_field_vk.h"
+#include "render/water_mesh_animation_playback.h"
 #include "render/vt_residency.h"
 #include "render/vk_volumetrics.h"
 #include "render/vk_atmosphere.h"
@@ -48,6 +50,89 @@
 #include "impostor_bake.h"   // M2.5 kQuadMarker, the billboard sentinel
 
 namespace {
+
+constexpr std::uint32_t kWaterForwardArtifactMaterial = 4u;
+constexpr std::uint32_t kWaterForwardAuthoredMaterial = 19u;
+
+struct WaterForwardPlaybackFixture {
+    std::filesystem::path root;
+    viewer::WaterMeshAnimationPlayback playback;
+    viewer::WaterMeshAnimationPlayback provenance_playback;
+};
+
+bool make_water_forward_playback_fixture(
+    WaterForwardPlaybackFixture& fixture, std::string& message) {
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    fixture.root = std::filesystem::temp_directory_path() /
+        ("matter-water-forward-smoke-" + std::to_string(stamp));
+
+    hydrology::WaterMeshAnimation animation{};
+    animation.frames_per_second = 30u;
+    animation.phase_offset_frames = 15u;
+    animation.duration_seconds = 1.0f;
+    animation.frames.resize(30u);
+    for (auto& mesh : animation.frames) {
+        mesh.positions = {
+            -0.75f, -0.75f, -2.0f,
+             0.75f, -0.75f, -2.0f,
+             0.0f,   1.5f,  -2.0f};
+        mesh.normals = {0.0f, 1.0f, 0.0f,
+                        0.0f, 1.0f, 0.0f,
+                        0.0f, 1.0f, 0.0f};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = kWaterForwardArtifactMaterial;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    }
+
+    constexpr std::uint64_t kSemantic = UINT64_C(0x77666d73656d);
+    constexpr std::uint64_t kPrimary = UINT64_C(0x77667072696d);
+    hydrology::WaterMeshAnimationArtifact artifact{};
+    gpu_meshing::Error artifact_error{};
+    if (!hydrology::pack_water_mesh_animation_artifact(
+            {"forward-water", kSemantic, kPrimary, 0u, 0.2f},
+            animation, artifact, artifact_error)) {
+        message = artifact_error.message;
+        return false;
+    }
+
+    hydrology::HydrologyNetworkArtifact manifest{};
+    manifest.state = hydrology::HydrologyNetworkState::Ready;
+    manifest.section_animations = {{
+        "forward-water", "hydrology/animations/forward-water.mhwa",
+        kSemantic, kPrimary, 0u, 30u, 30u, artifact.payload_digest}};
+    if (!hydrology::save_water_mesh_animation_artifact_immutable(
+            fixture.root / manifest.section_animations.front().relative_path,
+            artifact, artifact_error)) {
+        message = artifact_error.message;
+        return false;
+    }
+    if (!hydrology::load_water_mesh_animation_artifact(
+            fixture.root / manifest.section_animations.front().relative_path,
+            artifact, artifact_error)) {
+        message = artifact_error.message;
+        return false;
+    }
+    manifest.section_animations.front().payload_digest =
+        artifact.payload_digest;
+
+    viewer::WaterAnimationFallback fallback{};
+    if (!viewer::activate_water_mesh_animation_playback(
+            manifest, fixture.root, kWaterForwardAuthoredMaterial,
+            2u, 64u * 1024u * 1024u,
+            fixture.playback, fallback)) {
+        message = fallback.message;
+        return false;
+    }
+    if (!viewer::activate_water_mesh_animation_playback(
+            manifest, fixture.root, kWaterForwardArtifactMaterial,
+            2u, 64u * 1024u * 1024u,
+            fixture.provenance_playback, fallback)) {
+        message = fallback.message;
+        return false;
+    }
+    return true;
+}
 
 viewer::VkScenePart known_raster_triangle(uint64_t hash,
                                           uint32_t material_index = 7u);
@@ -71,7 +156,7 @@ viewer::PackedWaterField make_water_forward_field_fixture(
         {0.0f, 0.0f, 0.90f, 0.95f, 0.85f,
          hydrology::RiverFeature::Rapid, true});
     matter::WaterSurfaceDefinition surface{};
-    surface.material_id = 7u;
+    surface.material_id = kWaterForwardAuthoredMaterial;
     surface.optics.shallow_absorption = {0.03f, 0.015f, 0.008f};
     surface.optics.deep_absorption = {0.18f, 0.055f, 0.025f};
     surface.optics.scattering_color = {0.08f, 0.22f, 0.24f};
@@ -598,20 +683,26 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
     gi.enabled = 0u;
     renderer.set_gi_settings(gi);
 
-    std::vector<MaterialGpuRecord> materials(8);
+    std::vector<MaterialGpuRecord> materials(
+        kWaterForwardAuthoredMaterial + 1u);
     materials[2].base_roughness[0] = 0.55f;
     materials[2].base_roughness[1] = 0.18f;
     materials[2].base_roughness[2] = 0.08f;
     materials[2].base_roughness[3] = 0.65f;
     materials[2].metal_opacity_spec_coat[1] = 1.0f;
     materials[2].scattering_shape[3] = 1.0f;
-    materials[7].base_roughness[0] = 0.06f;
-    materials[7].base_roughness[1] = 0.22f;
-    materials[7].base_roughness[2] = 0.38f;
-    materials[7].base_roughness[3] = 0.20f;
-    materials[7].metal_opacity_spec_coat[1] = 1.0f;
-    materials[7].scattering_shape[3] = 1.0f;
-    materials[7].flags_misc[0] = MATERIAL_WATER_SURFACE;
+    materials[kWaterForwardArtifactMaterial].base_roughness[0] = 0.5f;
+    materials[kWaterForwardArtifactMaterial].base_roughness[1] = 0.5f;
+    materials[kWaterForwardArtifactMaterial].base_roughness[2] = 0.5f;
+    materials[kWaterForwardArtifactMaterial].base_roughness[3] = 1.0f;
+    auto& water_material = materials[kWaterForwardAuthoredMaterial];
+    water_material.base_roughness[0] = 0.06f;
+    water_material.base_roughness[1] = 0.22f;
+    water_material.base_roughness[2] = 0.38f;
+    water_material.base_roughness[3] = 0.20f;
+    water_material.metal_opacity_spec_coat[1] = 1.0f;
+    water_material.scattering_shape[3] = 1.0f;
+    water_material.flags_misc[0] = MATERIAL_WATER_SURFACE;
     CHECK(renderer.update_materials(materials, 1u, 1u, error),
           error.empty() ? "water forward: upload materials" : error.c_str());
 
@@ -696,7 +787,8 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
               make_water_forward_field_fixture(0x7766u), nullptr, 0u, field,
               field_error),
           field_error.message.c_str());
-    viewer::VkScenePart proxy = known_raster_triangle(0x776670726f7879ull, 7u);
+    viewer::VkScenePart proxy = known_raster_triangle(
+        0x776670726f7879ull, kWaterForwardAuthoredMaterial);
     proxy.water_field_binding = field;
     proxy.raster_water_surface = true;
     CHECK(renderer.ensure_part(proxy, error) >= 0,
@@ -713,40 +805,87 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "water forward: stage active proxy ownership"
                         : error.c_str());
 
-    const std::array<hydrology::PackedWaterAnimationVertex, 3> vertices{{
-        {0u, 0u, 0u},
-        {65535u, 0u, 0u},
-        {0xffff0000u, 0u, 0u},
-    }};
-    const std::array<std::uint32_t, 3> indices{{0u, 1u, 2u}};
-    viewer::WaterAnimationFrameSelection selection{};
-    selection.frame_index = 0u;
-    selection.upload_required = true;
-    selection.draws.push_back({
-        "forward-water", false, 0u, 7u,
-        {{-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}},
-        {reinterpret_cast<const std::uint8_t*>(vertices.data()),
-         reinterpret_cast<const std::uint8_t*>(indices.data()),
-         vertices.size() * sizeof(vertices[0]),
-         indices.size() * sizeof(indices[0]),
-         static_cast<std::uint32_t>(vertices.size()),
-         static_cast<std::uint32_t>(indices.size())}});
+    WaterForwardPlaybackFixture playback_fixture{};
+    std::string playback_error;
+    if (!make_water_forward_playback_fixture(
+            playback_fixture, playback_error)) {
+        CHECK(false, playback_error.c_str());
+        return;
+    }
+    viewer::WaterAnimationFallback playback_fallback{};
+    std::vector<viewer::DecodedWaterAnimationVertex> provenance_vertices;
+    std::vector<std::uint32_t> provenance_indices;
+    CHECK(playback_fixture.playback.decode_frame_for_test(
+              0u, 0u, provenance_vertices, provenance_indices,
+              playback_fallback) &&
+              provenance_vertices.size() == 3u &&
+              provenance_indices == std::vector<std::uint32_t>({0u, 1u, 2u}) &&
+              std::all_of(provenance_vertices.begin(),
+                          provenance_vertices.end(),
+                          [](const auto& vertex) {
+                              return vertex.material_index ==
+                                  kWaterForwardArtifactMaterial;
+                          }),
+          playback_fallback.message.empty()
+              ? "water forward: decoded artifact keeps legacy material 4"
+              : playback_fallback.message.c_str());
+    viewer::WaterAnimationFrameSelection selection =
+        playback_fixture.playback.make_selection();
+    const viewer::WaterAnimationPlaybackCapacity measured =
+        playback_fixture.playback.maximum_frame_capacity();
     const viewer::WaterAnimationGpuCapacity capacity{
-        vertices.size() * sizeof(vertices[0]), vertices.size(),
-        indices.size() * sizeof(indices[0]), 1u};
+        measured.packed_vertex_bytes, measured.decoded_vertex_count,
+        measured.index_bytes, measured.draw_count};
     viewer::WaterAnimationGpuError animation_error{};
     CHECK(renderer.publish_water_animation(71u, 2u, capacity, 0u,
                                            animation_error),
           animation_error.message.c_str());
 
+    matter::VulkanFrame mismatch_frame{};
+    CHECK(vulkan.begin_frame(mismatch_frame, error),
+          error.empty() ? "water forward: begin provenance mismatch frame"
+                        : error.c_str());
+    CHECK(playback_fixture.provenance_playback.select(
+              0.0, mismatch_frame.frame_slot, selection,
+              playback_fallback) &&
+              renderer.prepare_water_animation_frame(
+                  71u, mismatch_frame.frame_slot, selection, {1u},
+                  animation_error),
+          !playback_fallback.message.empty()
+              ? playback_fallback.message.c_str()
+              : animation_error.message.c_str());
+    if (!finish_frame(mismatch_frame,
+                      "water forward: render provenance mismatch"))
+        return;
+    viewer::VkRasterPixel mismatch_center{};
+    const bool read_mismatch = renderer.readback_raster_pixel(
+        center_x, center_y, mismatch_center, error);
+    std::printf(
+        "water forward mismatch: reactivity=%.4f material=%u "
+        "artifact=%u authored=%u\n",
+        mismatch_center.reactivity, mismatch_center.material_index,
+        kWaterForwardArtifactMaterial, kWaterForwardAuthoredMaterial);
+    CHECK(read_mismatch &&
+              mismatch_center.material_index ==
+                  kWaterForwardArtifactMaterial &&
+              mismatch_center.reactivity == 0.0f,
+          error.empty()
+              ? "water forward: field identity rejects artifact material 4"
+              : error.c_str());
+
     matter::VulkanFrame active_frame{};
     CHECK(vulkan.begin_frame(active_frame, error),
           error.empty() ? "water forward: begin active frame"
                         : error.c_str());
-    CHECK(renderer.prepare_water_animation_frame(
-              71u, active_frame.frame_slot, selection, {1u},
-              animation_error),
-          animation_error.message.c_str());
+    CHECK(playback_fixture.playback.select(
+              1.0 / 30.0, active_frame.frame_slot, selection,
+              playback_fallback) &&
+              renderer.prepare_water_animation_frame(
+                  71u, active_frame.frame_slot, selection, {1u},
+                  animation_error),
+          !playback_fallback.message.empty()
+              ? playback_fallback.message.c_str()
+              : animation_error.message.c_str());
     if (!finish_frame(active_frame,
                       "water forward: render active direct water"))
         return;
@@ -801,7 +940,7 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
               std::isfinite(active_center.velocity.y) &&
               active_center.reactivity > 0.0f,
           "water forward: water wins reversed-Z and writes finite temporal rejection");
-    CHECK(active_center.material_index == 7u &&
+    CHECK(active_center.material_index == kWaterForwardAuthoredMaterial &&
               active_center.instance_token ==
                   viewer::vulkan_history_token(proxy_instance.instance_id),
           "water forward: direct water writes unmasked material and proxy identity");
@@ -836,12 +975,14 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
     viewer::VkRasterPixel fallback_center{};
     CHECK(renderer.readback_raster_pixel(center_x, center_y,
                                          fallback_center, error) &&
-              fallback_center.material_index == 7u &&
+              fallback_center.material_index ==
+                  kWaterForwardAuthoredMaterial &&
               fallback_center.instance_token ==
                   viewer::vulkan_history_token(proxy_instance.instance_id),
           error.empty() ? "water forward: static fallback writes final identity"
                         : error.c_str());
     renderer.collect_water_animation(active_frame.serial + 2u);
+    std::filesystem::remove_all(playback_fixture.root);
     CHECK(vulkan.validation_error_count() == 0u,
           "water forward: active and fallback frames have no validation errors");
 }

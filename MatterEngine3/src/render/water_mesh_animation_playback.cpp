@@ -101,7 +101,6 @@ WaterMeshAnimationPlayback::make_selection() const {
 bool WaterMeshAnimationPlayback::select(
     double network_seconds,
     std::uint32_t frame_slot,
-    std::uint32_t render_material_index,
     WaterAnimationFrameSelection& selection,
     WaterAnimationFallback& fallback) noexcept {
     fallback = {};
@@ -125,7 +124,7 @@ bool WaterMeshAnimationPlayback::select(
             asset.frame_spans[frame_index];
         selection.draws[index] = {
             asset.artifact->identity, asset.handoff, frame_index,
-            render_material_index,
+            render_material_index_,
             asset.artifact->quantization_bounds_m, span};
     }
     selection.frame_index = frame_index;
@@ -176,6 +175,7 @@ bool WaterMeshAnimationPlayback::decode_frame_for_test(
 bool activate_water_mesh_animation_playback(
     const hydrology::HydrologyNetworkArtifact& manifest,
     const std::filesystem::path& cache_root,
+    std::uint32_t render_material_index,
     std::uint32_t vulkan_frame_slots,
     std::uint64_t cpu_budget_bytes,
     WaterMeshAnimationPlayback& playback,
@@ -187,13 +187,15 @@ bool activate_water_mesh_animation_playback(
                       "hydrology manifest has no water animation",
                       fallback);
     if (manifest.state != hydrology::HydrologyNetworkState::Ready ||
-        cache_root.empty() || vulkan_frame_slots == 0u ||
+        cache_root.empty() || render_material_index == UINT32_MAX ||
+        vulkan_frame_slots == 0u ||
         cpu_budget_bytes == 0u)
         return reject(WaterAnimationFallbackReason::InvalidConfiguration,
                       "water animation activation input is invalid",
                       fallback);
 
     WaterMeshAnimationPlayback candidate{};
+    candidate.render_material_index_ = render_material_index;
     const std::size_t asset_count = manifest.section_animations.size() +
         manifest.handoff_animations.size();
     if (asset_count > std::numeric_limits<std::uint32_t>::max())

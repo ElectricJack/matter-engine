@@ -12140,6 +12140,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     if (!viewer::activate_water_mesh_animation_playback(
                             manifest,
                             animation_cache_root,
+                            authored_fluid_binding->water_material_id,
                             frame.frame_slot_count,
                             700ull * 1024ull * 1024ull,
                             candidate_playback, fallback)) {
@@ -12270,7 +12271,6 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             prepared = impl_->vk_water_animation_playback.select(
                 static_cast<double>(water_animation_time_seconds),
                 frame.frame_slot,
-                authored_fluid_binding->water_material_id,
                 impl_->vk_water_animation_selection, fallback);
             if (!prepared)
                 animation_frame_error = fallback.message.empty()

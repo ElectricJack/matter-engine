@@ -86,7 +86,6 @@ public:
 
     bool select(double network_seconds,
                 std::uint32_t frame_slot,
-                std::uint32_t render_material_index,
                 WaterAnimationFrameSelection& selection,
                 WaterAnimationFallback& fallback) noexcept;
 
@@ -100,7 +99,8 @@ public:
 private:
     friend bool activate_water_mesh_animation_playback(
         const hydrology::HydrologyNetworkArtifact&,
-        const std::filesystem::path&, std::uint32_t, std::uint64_t,
+        const std::filesystem::path&, std::uint32_t, std::uint32_t,
+        std::uint64_t,
         WaterMeshAnimationPlayback&, WaterAnimationFallback&);
 
     struct Asset {
@@ -114,12 +114,14 @@ private:
     std::vector<Asset> assets_;
     std::vector<std::int32_t> last_uploaded_frame_;
     std::uint64_t compressed_bytes_ = 0u;
+    std::uint32_t render_material_index_ = UINT32_MAX;
     WaterAnimationPlaybackCapacity capacity_{};
 };
 
 bool activate_water_mesh_animation_playback(
     const hydrology::HydrologyNetworkArtifact& manifest,
     const std::filesystem::path& cache_root,
+    std::uint32_t render_material_index,
     std::uint32_t vulkan_frame_slots,
     std::uint64_t cpu_budget_bytes,
     WaterMeshAnimationPlayback& playback,
