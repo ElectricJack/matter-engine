@@ -157,6 +157,11 @@ bool build_handoff_animation_frames(
     HandoffAnimationBuildDiagnostics& diagnostics,
     FluidBakeError& error);
 
+bool checked_handoff_animation_workset_bytes(
+    const std::array<std::uint64_t, 4>& decoded_position_counts,
+    std::uint64_t particle_sample_capacity,
+    std::uint64_t& bytes) noexcept;
+
 std::uint64_t derive_handoff_animation_semantic_key(
     const HandoffAnimationBuildInput& input,
     std::uint64_t upstream_animation_payload_digest,

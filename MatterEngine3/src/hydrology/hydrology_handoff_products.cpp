@@ -1299,6 +1299,29 @@ bool replace_file(const std::filesystem::path& source,
 
 }  // namespace
 
+bool checked_handoff_animation_workset_bytes(
+    const std::array<std::uint64_t, 4>& decoded_position_counts,
+    std::uint64_t particle_sample_capacity,
+    std::uint64_t& bytes) noexcept {
+    bytes = 0u;
+    std::uint64_t decoded_bytes = 0u;
+    for (const std::uint64_t count : decoded_position_counts) {
+        if (count > UINT64_MAX / sizeof(matter::Float3)) return false;
+        const std::uint64_t frame_bytes =
+            count * sizeof(matter::Float3);
+        if (decoded_bytes > UINT64_MAX - frame_bytes) return false;
+        decoded_bytes += frame_bytes;
+    }
+    if (particle_sample_capacity >
+        UINT64_MAX / sizeof(gpu_meshing::ParticleSample))
+        return false;
+    const std::uint64_t particle_bytes =
+        particle_sample_capacity * sizeof(gpu_meshing::ParticleSample);
+    if (decoded_bytes > UINT64_MAX - particle_bytes) return false;
+    bytes = decoded_bytes + particle_bytes;
+    return true;
+}
+
 std::uint64_t hydrology_runtime_field_digest(
     const GameplayFieldLayout& layout,
     const std::vector<GameplaySample>& field) noexcept {
@@ -1593,6 +1616,12 @@ bool build_handoff_animation_frames(
     output = {};
     diagnostics = {};
     error = {};
+    const auto reject = [&](std::string message) {
+        output = {};
+        diagnostics = {};
+        error = {FluidBakeCode::ProductFailure, std::move(message)};
+        return false;
+    };
     try {
         if (!mesher || !input.upstream || !input.downstream ||
             !input.upstream_bulk || !input.downstream_bulk ||
@@ -1602,8 +1631,7 @@ bool build_handoff_animation_frames(
                 spillway_handoff_semantic_key(input.handoff) ||
             input.handoff.upstream_visual_cut_m >=
                 input.handoff.downstream_visual_cut_m)
-            return fail("handoff shared-field root metadata is invalid",
-                        error);
+            return reject("handoff shared-field root metadata is invalid");
         if (
             input.upstream->section_id !=
                 input.handoff.upstream_section_id ||
@@ -1629,43 +1657,40 @@ bool build_handoff_animation_frames(
                 input.downstream->particle_radius_m ||
             input.upstream->blend_width_m !=
                 input.downstream->blend_width_m)
-            return fail("handoff shared-field boundary sources are invalid",
-                        error);
+            return reject(
+                "handoff shared-field boundary sources are invalid");
         if (input.upstream_bulk->identity !=
                 input.handoff.upstream_section_id ||
             input.downstream_bulk->identity !=
                 input.handoff.downstream_section_id)
-            return fail("handoff owned bulk identities are invalid", error);
+            return reject("handoff owned bulk identities are invalid");
         if (input.upstream_bulk->source_primary_payload_digest !=
                 input.upstream->source_section_payload_digest ||
             input.downstream_bulk->source_primary_payload_digest !=
                 input.downstream->source_section_payload_digest ||
             input.upstream_bulk->source_secondary_payload_digest != 0u ||
             input.downstream_bulk->source_secondary_payload_digest != 0u)
-            return fail("handoff owned bulk source digests are invalid",
-                        error);
+            return reject("handoff owned bulk source digests are invalid");
         if (input.upstream_bulk->payload_digest == 0u ||
             input.downstream_bulk->payload_digest == 0u ||
             input.upstream_bulk->frames.size() != 30u ||
             input.downstream_bulk->frames.size() != 30u)
-            return fail("handoff owned bulk payloads are invalid", error);
+            return reject("handoff owned bulk payloads are invalid");
         if (input.upstream_bulk->frames_per_second != 30u ||
             input.downstream_bulk->frames_per_second != 30u ||
             input.upstream_bulk->phase_offset_frames != 15u ||
             input.downstream_bulk->phase_offset_frames != 15u)
-            return fail("handoff owned bulk phase profiles are invalid",
-                        error);
+            return reject("handoff owned bulk phase profiles are invalid");
         if (!same_lattice(input.upstream_bulk->lattice, input.lattice) ||
             !same_lattice(input.downstream_bulk->lattice, input.lattice))
-            return fail("handoff owned bulk lattices are invalid", error);
+            return reject("handoff owned bulk lattices are invalid");
         if (input.visual_template.material != 4u ||
             input.visual_template.voxel_m != input.lattice.voxel_m ||
             input.visual_template.blend_width_m !=
                 input.upstream->blend_width_m ||
             !same_lattice(input.visual_template.sampling_lattice,
                           input.lattice))
-            return fail("handoff shared-field visual template is invalid",
-                        error);
+            return reject("handoff shared-field visual template is invalid");
 
         float support_radius_m = 0.0f;
         gpu_meshing::Error mesh_error{};
@@ -1673,8 +1698,7 @@ bool build_handoff_animation_frames(
                 input.upstream->particle_radius_m,
                 input.visual_template.blend_width_m,
                 support_radius_m, mesh_error)) {
-            error = {FluidBakeCode::ProductFailure, mesh_error.message};
-            return false;
+            return reject(mesh_error.message);
         }
         output.frames_per_second = 30u;
         output.phase_offset_frames = 15u;
@@ -1748,13 +1772,10 @@ bool build_handoff_animation_frames(
                 !decode_water_boundary_frame(
                     *input.downstream, phase.secondary_capture,
                     downstream_secondary, mesh_error)) {
-                error = {FluidBakeCode::ProductFailure,
-                         "handoff boundary frame decode failed at frame " +
-                             std::to_string(frame_index) + ": " +
-                             mesh_error.message};
-                output = {};
-                diagnostics = {};
-                return false;
+                return reject(
+                    "handoff boundary frame decode failed at frame " +
+                    std::to_string(frame_index) + ": " +
+                    mesh_error.message);
             }
 
             std::vector<gpu_meshing::ParticleSample> particles;
@@ -1763,18 +1784,27 @@ bool build_handoff_animation_frames(
                 upstream_secondary.size() + downstream_secondary.size());
             if (!append_source(upstream_primary, true, particles) ||
                 !append_source(downstream_primary, false, particles))
-                return fail("handoff primary boundary frame is invalid",
-                            error);
+                return reject("handoff primary boundary frame is invalid");
             const std::uint32_t phase_split =
                 static_cast<std::uint32_t>(particles.size());
             if (!append_source(upstream_secondary, true, particles) ||
                 !append_source(downstream_secondary, false, particles))
-                return fail("handoff secondary boundary frame is invalid",
-                            error);
+                return reject("handoff secondary boundary frame is invalid");
             if (particles.empty() ||
                 particles.size() > std::numeric_limits<std::uint32_t>::max())
-                return fail("handoff shared field has no bounded particles",
-                            error);
+                return reject(
+                    "handoff shared field has no bounded particles");
+
+            std::uint64_t live_workset_bytes = 0u;
+            if (!checked_handoff_animation_workset_bytes(
+                    {static_cast<std::uint64_t>(upstream_primary.size()),
+                     static_cast<std::uint64_t>(downstream_primary.size()),
+                     static_cast<std::uint64_t>(upstream_secondary.size()),
+                     static_cast<std::uint64_t>(downstream_secondary.size())},
+                    static_cast<std::uint64_t>(particles.capacity()),
+                    live_workset_bytes))
+                return reject(
+                    "handoff shared-field live workset byte accounting overflowed");
 
             gpu_meshing::ParticleJob job = input.visual_template;
             job.bounds_m.min_m = {
@@ -1800,24 +1830,21 @@ bool build_handoff_animation_frames(
             gpu_meshing::MeshResult joint_mesh{};
             if (!PhysxFluidBake::build_visual_job_chunks(
                     job, mesher, joint_mesh, mesh_error)) {
-                error = {FluidBakeCode::ProductFailure,
-                         "handoff shared field mesh failed at frame " +
-                             std::to_string(frame_index) + ": " +
-                             mesh_error.message};
-                output = {};
-                diagnostics = {};
-                return false;
+                return reject(
+                    "handoff shared field mesh failed at frame " +
+                    std::to_string(frame_index) + ": " +
+                    mesh_error.message);
             }
             gpu_meshing::MeshResult strip{};
             if (!filter_cell_owned_mesh(
                     joint_mesh, input.handoff, input.lattice,
                     WaterCellOwnership::Between, strip) ||
                 !valid_mesh(strip))
-                return fail("handoff shared-field strip is empty or invalid",
-                            error);
+                return reject(
+                    "handoff shared-field strip is empty or invalid");
             HandoffFrameProducts products{};
             if (!partition_handoff_strip(strip, input.handoff, products))
-                return fail("handoff strip index partition failed", error);
+                return reject("handoff strip index partition failed");
             gpu_meshing::MeshResult upstream_bulk_frame{};
             gpu_meshing::MeshResult downstream_bulk_frame{};
             if (!decode_water_mesh_animation_frame(
@@ -1826,13 +1853,10 @@ bool build_handoff_animation_frames(
                 !decode_water_mesh_animation_frame(
                     *input.downstream_bulk, frame_index,
                     downstream_bulk_frame, mesh_error)) {
-                error = {FluidBakeCode::ProductFailure,
-                         "handoff owned bulk decode failed at frame " +
-                             std::to_string(frame_index) + ": " +
-                             mesh_error.message};
-                output = {};
-                diagnostics = {};
-                return false;
+                return reject(
+                    "handoff owned bulk decode failed at frame " +
+                    std::to_string(frame_index) + ": " +
+                    mesh_error.message);
             }
             FluidBakeError continuity_error{};
             const WaterCellOwnershipCut upstream_cut{
@@ -1850,13 +1874,10 @@ bool build_handoff_animation_frames(
             if (!upstream_measured || !water_cut_is_assertion_weldable(
                     diagnostics.upstream_cut[frame_index],
                     continuity_tolerance)) {
-                error = {FluidBakeCode::ProductFailure,
-                         cell_boundary_failure(
-                             "upstream", frame_index,
-                             diagnostics.upstream_cut[frame_index],
-                             continuity_error.message)};
-                output = {};
-                return false;
+                return reject(cell_boundary_failure(
+                    "upstream", frame_index,
+                    diagnostics.upstream_cut[frame_index],
+                    continuity_error.message));
             }
             continuity_error = {};
             const bool downstream_measured =
@@ -1868,13 +1889,10 @@ bool build_handoff_animation_frames(
             if (!downstream_measured || !water_cut_is_assertion_weldable(
                     diagnostics.downstream_cut[frame_index],
                     continuity_tolerance)) {
-                error = {FluidBakeCode::ProductFailure,
-                         cell_boundary_failure(
-                             "downstream", frame_index,
-                             diagnostics.downstream_cut[frame_index],
-                             continuity_error.message)};
-                output = {};
-                return false;
+                return reject(cell_boundary_failure(
+                    "downstream", frame_index,
+                    diagnostics.downstream_cut[frame_index],
+                    continuity_error.message));
             }
             diagnostics.upstream_band[frame_index] =
                 products.upstream_band;
@@ -1884,16 +1902,11 @@ bool build_handoff_animation_frames(
             diagnostics.frame_mesh_ms[frame_index] =
                 std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - frame_start).count();
-            const std::uint64_t decoded_position_bytes =
-                static_cast<std::uint64_t>(
-                    upstream_primary.size() + downstream_primary.size() +
-                    upstream_secondary.size() +
-                    downstream_secondary.size()) * sizeof(matter::Float3);
             diagnostics.peak_build_cpu_payload_bytes = std::max(
                 diagnostics.peak_build_cpu_payload_bytes,
                 saturating_payload_sum({
                     animation_mesh_payload_bytes(output),
-                    decoded_position_bytes,
+                    live_workset_bytes,
                     mesh_payload_bytes(joint_mesh),
                     mesh_payload_bytes(upstream_bulk_frame),
                     mesh_payload_bytes(downstream_bulk_frame),
@@ -1901,16 +1914,14 @@ bool build_handoff_animation_frames(
             output.frames.push_back(
                 std::move(products.replacement_strip));
         }
-        return output.frames.size() == 30u;
+        if (output.frames.size() != 30u)
+            return reject(
+                "handoff shared-field construction produced an incomplete loop");
+        return true;
     } catch (const std::exception& exception) {
-        output = {};
-        diagnostics = {};
-        error = {FluidBakeCode::ProductFailure, exception.what()};
-        return false;
+        return reject(exception.what());
     } catch (...) {
-        output = {};
-        diagnostics = {};
-        return fail("handoff shared-field construction failed", error);
+        return reject("handoff shared-field construction failed");
     }
 }
 

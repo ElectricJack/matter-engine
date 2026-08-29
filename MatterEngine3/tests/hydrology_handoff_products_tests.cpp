@@ -1131,6 +1131,102 @@ void test_shared_strip_chunking_is_geometry_equivalent() {
     }
 }
 
+void test_late_empty_workset_failure_clears_every_partial_product() {
+    auto fixture = shared_field_fixture();
+    const auto make_late_rejected_source = [&](bool upstream) {
+        auto capture = boundary_capture(
+            upstream, upstream ? fixture.upstream_source.crop_bounds_m
+                               : fixture.downstream_source.crop_bounds_m);
+        const matter::Float3 crossing{
+            upstream ? 0.49f : -0.49f,
+            upstream ? 1.10f : 1.20f, 0.0f};
+        capture.frames[7u].positions_m = {crossing};
+        capture.frames[22u].positions_m = {crossing};
+        hydrology::WaterBoundaryAnimationSource source{};
+        gpu_meshing::Error source_error{};
+        CHECK(hydrology::build_water_boundary_animation_source(
+                  capture, upstream ? "upper" : "lower",
+                  upstream ? 1001u : 2002u, fixture.input.handoff,
+                  fixture.input.lattice, 0.05f, 0.01f, upstream,
+                  source, source_error),
+              source_error.message.c_str());
+        return source;
+    };
+    fixture.upstream_source = make_late_rejected_source(true);
+    fixture.downstream_source = make_late_rejected_source(false);
+    bind_shared_field_fixture(fixture);
+
+    hydrology::WaterMeshAnimation output{};
+    hydrology::HandoffAnimationBuildDiagnostics diagnostics{};
+    hydrology::FluidBakeError error{};
+    const bool built = hydrology::build_handoff_animation_frames(
+        fixture.input, canonical_plane_mesher, output, diagnostics, error);
+    bool diagnostics_empty =
+        diagnostics.artifact_file_bytes == 0u &&
+        diagnostics.peak_build_cpu_payload_bytes == 0u &&
+        diagnostics.peak_decoded_boundary_frames == 0u &&
+        !diagnostics.source_blend_required;
+    for (std::size_t frame = 0u;
+         frame != diagnostics.frame_mesh_ms.size(); ++frame) {
+        diagnostics_empty = diagnostics_empty &&
+            diagnostics.frame_mesh_ms[frame] == 0.0 &&
+            diagnostics.upstream_cut[frame].first_points == 0u &&
+            diagnostics.downstream_cut[frame].first_points == 0u &&
+            diagnostics.upstream_band[frame].index_count == 0u &&
+            diagnostics.collar[frame].index_count == 0u &&
+            diagnostics.downstream_band[frame].index_count == 0u;
+    }
+    CHECK(!built &&
+              error.code == hydrology::FluidBakeCode::ProductFailure &&
+              error.message.find("no bounded particles") !=
+                  std::string::npos,
+          "frame seven reports a well-defined direct ProductFailure after earlier frames were accepted");
+    CHECK(output.frames.empty() && output.frames_per_second == 0u &&
+              output.phase_offset_frames == 0u &&
+              output.duration_seconds == 0.0f && diagnostics_empty,
+          "every direct late-frame failure clears all partial animation frames and diagnostics");
+}
+
+void test_checked_handoff_animation_workset_accounting() {
+    static_assert(sizeof(matter::Float3) == 12u,
+                  "decoded positions are three packed floats");
+    static_assert(sizeof(gpu_meshing::ParticleSample) == 16u,
+                  "retained contributors are one Float3 and one radius");
+
+    std::uint64_t bytes = 99u;
+    CHECK(hydrology::checked_handoff_animation_workset_bytes(
+              {2u, 3u, 5u, 7u}, 11u, bytes) &&
+              bytes == 17u * 12u + 11u * 16u,
+          "the live workset exactly counts four decoded Float3 arrays and ParticleSample vector capacity");
+
+    const std::uint64_t decoded_overflow =
+        std::numeric_limits<std::uint64_t>::max() /
+            sizeof(matter::Float3) + 1u;
+    bytes = 99u;
+    CHECK(!hydrology::checked_handoff_animation_workset_bytes(
+              {decoded_overflow, 0u, 0u, 0u}, 0u, bytes) &&
+              bytes == 0u,
+          "decoded-position multiplication overflow fails closed");
+
+    const std::uint64_t particle_overflow =
+        std::numeric_limits<std::uint64_t>::max() /
+            sizeof(gpu_meshing::ParticleSample) + 1u;
+    bytes = 99u;
+    CHECK(!hydrology::checked_handoff_animation_workset_bytes(
+              {0u, 0u, 0u, 0u}, particle_overflow, bytes) &&
+              bytes == 0u,
+          "retained-particle multiplication overflow fails closed");
+
+    const std::uint64_t decoded_near_limit =
+        std::numeric_limits<std::uint64_t>::max() /
+            sizeof(matter::Float3);
+    bytes = 99u;
+    CHECK(!hydrology::checked_handoff_animation_workset_bytes(
+              {decoded_near_limit, 0u, 0u, 0u}, 1u, bytes) &&
+              bytes == 0u,
+          "the decoded-plus-particle total uses checked addition");
+}
+
 void test_formats_animation_acceptance_timing_trace() {
     hydrology::HydrologyNetworkBakeResult result{};
     hydrology::HydrologyArtifact section = section_artifact(true);
@@ -1234,6 +1330,8 @@ int main() {
     test_shared_cell_ownership_passes_every_frame_boundary();
     test_joint_builder_reapplies_exact_dam_support_exclusion();
     test_shared_strip_chunking_is_geometry_equivalent();
+    test_late_empty_workset_failure_clears_every_partial_product();
+    test_checked_handoff_animation_workset_accounting();
     test_formats_animation_acceptance_timing_trace();
     return check_summary();
 }

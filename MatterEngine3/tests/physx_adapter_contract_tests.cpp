@@ -1975,6 +1975,10 @@ struct LifecycleBackendState {
     std::thread::id run_thread{};
     std::vector<std::string> lifecycle_events;
     float static_payload_velocity_delta = 0.0f;
+    float animation_capture_y_delta = 0.0f;
+    float handoff_visual_y_delta = 0.0f;
+    bool block_handoff_animation_publication = false;
+    std::atomic<bool> handoff_animation_blocker_installed{false};
     double wall_seconds = 0.01;
     std::uint32_t run_delay_ms = 0u;
 };
@@ -2122,6 +2126,8 @@ public:
                                : input.geometry.centreline.front().position_m);
                 captured.positions_m.push_back(
                     {bulk.x, bulk.y + 0.25f, bulk.z});
+                for (auto& position : captured.positions_m)
+                    position.y += state_->animation_capture_y_delta;
             }
             output.animation_capture = std::move(capture);
         }
@@ -2171,6 +2177,98 @@ struct WorldSessionFluidCase {
     std::vector<std::string> lifecycle_events;
 };
 
+bool install_handoff_animation_directory_blocker(
+    const std::filesystem::path& root,
+    const gpu_meshing::ParticleJob& visual_template) {
+    const auto cache_root = root / ".cache" / "Demo";
+    std::vector<hydrology::WaterBoundaryAnimationSource> sources;
+    std::vector<hydrology::WaterMeshAnimationArtifact> section_animations;
+    hydrology::HydrologyHandoffArtifact static_handoff{};
+    bool have_static_handoff = false;
+    std::error_code filesystem_error;
+    gpu_meshing::Error artifact_error{};
+    if (!std::filesystem::exists(cache_root, filesystem_error) ||
+        filesystem_error)
+        return false;
+    for (const auto& entry :
+         std::filesystem::recursive_directory_iterator(
+             cache_root, filesystem_error)) {
+        if (filesystem_error || !entry.is_regular_file()) continue;
+        const auto& path = entry.path();
+        if (path.extension() == ".mhwb") {
+            hydrology::WaterBoundaryAnimationSource source{};
+            if (hydrology::load_water_boundary_animation_source(
+                    path, source, artifact_error))
+                sources.push_back(std::move(source));
+        } else if (path.extension() == ".mhwa" &&
+                   path.parent_path().filename() != "handoffs") {
+            hydrology::WaterMeshAnimationArtifact animation{};
+            if (hydrology::load_water_mesh_animation_artifact(
+                    path, animation, artifact_error))
+                section_animations.push_back(std::move(animation));
+        } else if (path.extension() == ".mhyd" &&
+                   path.parent_path().filename() == "handoffs") {
+            std::ifstream stream(path, std::ios::binary);
+            std::vector<std::uint8_t> bytes(
+                (std::istreambuf_iterator<char>(stream)),
+                std::istreambuf_iterator<char>{});
+            if (hydrology::deserialize_handoff_artifact(
+                    bytes, static_handoff, artifact_error))
+                have_static_handoff = true;
+        }
+    }
+    if (!have_static_handoff) return false;
+    const auto source_for = [&](const std::string& section_id) {
+        return std::find_if(
+            sources.begin(), sources.end(), [&](const auto& source) {
+                return source.section_id == section_id &&
+                    source.handoff_semantic_key ==
+                        static_handoff.handoff.semantic_key;
+            });
+    };
+    const auto animation_for = [&](const std::string& section_id) {
+        return std::find_if(
+            section_animations.begin(), section_animations.end(),
+            [&](const auto& animation) {
+                return animation.identity == section_id;
+            });
+    };
+    const auto upstream_source = source_for(
+        static_handoff.handoff.upstream_section_id);
+    const auto downstream_source = source_for(
+        static_handoff.handoff.downstream_section_id);
+    const auto upstream_animation = animation_for(
+        static_handoff.handoff.upstream_section_id);
+    const auto downstream_animation = animation_for(
+        static_handoff.handoff.downstream_section_id);
+    if (upstream_source == sources.end() ||
+        downstream_source == sources.end() ||
+        upstream_animation == section_animations.end() ||
+        downstream_animation == section_animations.end())
+        return false;
+    const hydrology::HandoffAnimationBuildInput input{
+        &*upstream_source, &*downstream_source,
+        &*upstream_animation, &*downstream_animation,
+        static_handoff.handoff, visual_template.sampling_lattice,
+        visual_template};
+    const std::uint64_t semantic =
+        hydrology::derive_handoff_animation_semantic_key(
+            input, upstream_animation->payload_digest,
+            downstream_animation->payload_digest);
+    if (semantic == 0u) return false;
+    std::ostringstream semantic_hex;
+    semantic_hex << std::hex << std::nouppercase << std::setfill('0')
+                 << std::setw(16) << semantic;
+    const auto blocked_path = cache_root / "hydrology" / "animations" /
+        "handoffs" /
+        (static_handoff.id + "-" + semantic_hex.str() + ".mhwa");
+    filesystem_error.clear();
+    return !std::filesystem::exists(blocked_path, filesystem_error) &&
+        !filesystem_error &&
+        std::filesystem::create_directory(blocked_path, filesystem_error) &&
+        !filesystem_error;
+}
+
 WorldSessionFluidCase run_world_session_fluid_case(
     const std::filesystem::path& root,
     const WorldSessionFluidOptions& options,
@@ -2219,6 +2317,7 @@ WorldSessionFluidCase run_world_session_fluid_case(
                 result.visual_thread = std::this_thread::get_id();
                 result.backend_released_before_visual =
                     backend_state->release_calls.load() > 0;
+                bool handoff_draw = false;
                 {
                     std::size_t boundary_files = 0u;
                     const auto boundary_root = root / ".cache";
@@ -2234,12 +2333,14 @@ WorldSessionFluidCase run_world_session_fluid_case(
                     }
                     const int run_ordinal =
                         backend_state->run_calls.load();
+                    const bool animated_draw =
+                        job.phase_blend.split_index != 0u ||
+                        job.phase_blend.secondary_weight != 0.0f;
                     const bool static_draw =
                         run_ordinal > visualized_run_ordinal;
                     if (static_draw)
                         visualized_run_ordinal = run_ordinal;
-                    const bool handoff_draw =
-                        run_ordinal >= 2 && !static_draw &&
+                    handoff_draw = !animated_draw && !static_draw &&
                         boundary_files >= 2u;
                     std::lock_guard<std::mutex> lock(
                         backend_state->thread_mutex);
@@ -2333,7 +2434,20 @@ WorldSessionFluidCase run_world_session_fluid_case(
                                 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
                 mesh.indices = {0u, 1u, 2u, 0u, 2u, 3u};
                 mesh.material = job.material;
+                if (handoff_draw &&
+                    backend_state->handoff_visual_y_delta != 0.0f) {
+                    for (std::size_t index = 1u;
+                         index < mesh.positions.size(); index += 3u)
+                        mesh.positions[index] +=
+                            backend_state->handoff_visual_y_delta;
+                }
                 mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+                if (handoff_draw &&
+                    backend_state->block_handoff_animation_publication) {
+                    backend_state->handoff_animation_blocker_installed.store(
+                        install_handoff_animation_directory_blocker(
+                            root, job));
+                }
                 return true;
             });
         if (options.renderer_luid_valid)
@@ -3258,6 +3372,185 @@ void test_world_session_boundary_sidecar_cache_is_transactional_and_local() {
     std::filesystem::remove_all(root, filesystem_error);
 }
 
+void test_valid_static_handoff_is_not_rewritten_before_late_animation_failure() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-handoff-late-failure-contract";
+    const auto cache_root = root / ".cache";
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(root, filesystem_error);
+
+    WorldSessionFluidOptions options{};
+    options.two_sections = true;
+    options.mesh_animation = true;
+    auto cold_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase cold = run_world_session_fluid_case(
+        root, options, cold_state);
+    const auto manifests = cached_files_with_extension(cache_root, ".mhyn");
+    const auto sidecars = cached_files_with_extension(cache_root, ".mhwb");
+    if (!cold.accepted || manifests.size() != 1u || sidecars.size() != 2u) {
+        CHECK(false,
+              "the late handoff failure fixture begins with one complete Ready package");
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+    ReadyPackageSnapshot accepted{};
+    gpu_meshing::Error package_error{};
+    CHECK(snapshot_ready_package(manifests.front(), accepted, package_error),
+          package_error.message.c_str());
+    const auto static_handoff_path = accepted.cache_root /
+        accepted.manifest.handoffs.front().relative_path;
+    const auto sentinel_write_time =
+        std::filesystem::last_write_time(
+            static_handoff_path, filesystem_error) - std::chrono::hours(24);
+    std::filesystem::last_write_time(
+        static_handoff_path, sentinel_write_time, filesystem_error);
+    CHECK(!filesystem_error,
+          "the late handoff failure fixture installs a stable write-time sentinel");
+    const auto upper_sidecar = find_upper_sidecar(sidecars);
+    CHECK(upper_sidecar != sidecars.end() &&
+              std::filesystem::remove(*upper_sidecar, filesystem_error) &&
+              !filesystem_error,
+          "the late handoff failure fixture forces one boundary-source repair");
+    if (upper_sidecar == sidecars.end() || filesystem_error) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+
+    auto repair_state = std::make_shared<LifecycleBackendState>();
+    repair_state->animation_capture_y_delta = 0.031f;
+    repair_state->block_handoff_animation_publication = true;
+    const WorldSessionFluidCase blocked = run_world_session_fluid_case(
+        root, options, repair_state);
+    ReadyPackageSnapshot after_failure{};
+    package_error = {};
+    CHECK(!blocked.accepted && blocked.backend_run_calls == 1 &&
+              repair_state->handoff_animation_blocker_installed.load(),
+          "a changed boundary source reaches the deliberately late handoff-animation publication blocker");
+    CHECK(snapshot_ready_package(
+              manifests.front(), after_failure, package_error),
+          package_error.message.c_str());
+    CHECK(after_failure.files == accepted.files &&
+              std::filesystem::last_write_time(
+                  static_handoff_path, filesystem_error) ==
+                  sentinel_write_time,
+          "a byte-identical static handoff is reused without rewrite and the previous Ready closure stays byte-identical after a later failure");
+
+    std::filesystem::remove_all(root, filesystem_error);
+}
+
+void test_changed_static_handoff_is_rejected_before_late_publication() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-handoff-mismatch-contract";
+    const auto cache_root = root / ".cache";
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(root, filesystem_error);
+
+    WorldSessionFluidOptions options{};
+    options.two_sections = true;
+    options.mesh_animation = true;
+    auto cold_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase cold = run_world_session_fluid_case(
+        root, options, cold_state);
+    const auto manifests = cached_files_with_extension(cache_root, ".mhyn");
+    const auto sidecars = cached_files_with_extension(cache_root, ".mhwb");
+    if (!cold.accepted || manifests.size() != 1u || sidecars.size() != 2u) {
+        CHECK(false,
+              "the handoff mismatch fixture begins with one complete Ready package");
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+    ReadyPackageSnapshot accepted{};
+    gpu_meshing::Error package_error{};
+    CHECK(snapshot_ready_package(manifests.front(), accepted, package_error),
+          package_error.message.c_str());
+    const auto static_handoff_path = accepted.cache_root /
+        accepted.manifest.handoffs.front().relative_path;
+    const auto upper_sidecar = find_upper_sidecar(sidecars);
+    CHECK(upper_sidecar != sidecars.end() &&
+              std::filesystem::remove(*upper_sidecar, filesystem_error) &&
+              !filesystem_error,
+          "the handoff mismatch fixture forces one boundary-source repair");
+    if (upper_sidecar == sidecars.end() || filesystem_error) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+
+    auto mismatch_state = std::make_shared<LifecycleBackendState>();
+    mismatch_state->animation_capture_y_delta = 0.047f;
+    mismatch_state->handoff_visual_y_delta = 0.25f;
+    mismatch_state->block_handoff_animation_publication = true;
+    const WorldSessionFluidCase mismatch = run_world_session_fluid_case(
+        root, options, mismatch_state);
+    ReadyPackageSnapshot after_mismatch{};
+    package_error = {};
+    CHECK(!mismatch.accepted && mismatch.backend_run_calls == 1 &&
+              mismatch_state->handoff_animation_blocker_installed.load() &&
+              mismatch.status.failure_reason.find(
+                  "rerun changed a valid immutable handoff cache target") !=
+                  std::string::npos,
+          "a byte-different static handoff is rejected before the later animation publication point");
+    CHECK(snapshot_ready_package(
+              manifests.front(), after_mismatch, package_error),
+          package_error.message.c_str());
+    CHECK(after_mismatch.files == accepted.files &&
+              after_mismatch.files.at(static_handoff_path) ==
+                  accepted.files.at(static_handoff_path),
+          "a rejected handoff mismatch leaves every artifact referenced by the previous Ready manifest byte-identical and valid");
+
+    std::filesystem::remove_all(root, filesystem_error);
+}
+
+void test_corrupt_static_handoff_target_repairs_normally() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-corrupt-handoff-repair-contract";
+    const auto cache_root = root / ".cache";
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(root, filesystem_error);
+
+    WorldSessionFluidOptions options{};
+    options.two_sections = true;
+    options.mesh_animation = true;
+    auto cold_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase cold = run_world_session_fluid_case(
+        root, options, cold_state);
+    const auto manifests = cached_files_with_extension(cache_root, ".mhyn");
+    if (!cold.accepted || manifests.size() != 1u) {
+        CHECK(false,
+              "the corrupt handoff fixture begins with one complete Ready package");
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+    ReadyPackageSnapshot accepted{};
+    gpu_meshing::Error package_error{};
+    CHECK(snapshot_ready_package(manifests.front(), accepted, package_error),
+          package_error.message.c_str());
+    const auto static_handoff_path = accepted.cache_root /
+        accepted.manifest.handoffs.front().relative_path;
+    const auto static_size = std::filesystem::file_size(
+        static_handoff_path, filesystem_error);
+    CHECK(!filesystem_error && static_size > 32u,
+          "the corrupt handoff fixture locates the Ready static target");
+    std::filesystem::resize_file(
+        static_handoff_path, static_size - 1u, filesystem_error);
+    CHECK(!filesystem_error,
+          "the corrupt handoff fixture truncates only the static handoff target");
+
+    auto repair_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase repaired = run_world_session_fluid_case(
+        root, options, repair_state);
+    ReadyPackageSnapshot after_repair{};
+    package_error = {};
+    CHECK(repaired.accepted && repaired.visual_calls == 1,
+          "an invalid static handoff target remains eligible for ordinary deterministic repair");
+    CHECK(snapshot_ready_package(
+              manifests.front(), after_repair, package_error),
+          package_error.message.c_str());
+    CHECK(after_repair.files == accepted.files,
+          "ordinary static handoff repair restores the complete prior Ready closure");
+
+    std::filesystem::remove_all(root, filesystem_error);
+}
+
 void test_world_session_fluid_cache_hit_skips_solver_and_renderer() {
     const auto root = std::filesystem::temp_directory_path() /
                       "matter-live-fluid-cache-contract";
@@ -3561,6 +3854,9 @@ int main() {
     test_static_payload_mismatch_fails_before_sidecar_publication();
     test_corrupt_static_target_repairs_normally();
     test_world_session_boundary_sidecar_cache_is_transactional_and_local();
+    test_valid_static_handoff_is_not_rewritten_before_late_animation_failure();
+    test_changed_static_handoff_is_rejected_before_late_publication();
+    test_corrupt_static_handoff_target_repairs_normally();
     test_world_session_fluid_cache_hit_skips_solver_and_renderer();
     test_world_session_fluid_device_mismatch_is_a_hard_dry_error();
     test_world_session_fluid_missing_device_identity_is_a_hard_dry_error();

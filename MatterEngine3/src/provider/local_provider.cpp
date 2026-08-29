@@ -1337,6 +1337,20 @@ bool same_serialized_hydrology_artifact(
            first_bytes == second_bytes;
 }
 
+bool same_serialized_handoff_artifact(
+    const hydrology::HydrologyHandoffArtifact& first,
+    const hydrology::HydrologyHandoffArtifact& second,
+    gpu_meshing::Error& error) {
+    std::vector<std::uint8_t> first_bytes;
+    std::vector<std::uint8_t> second_bytes;
+    error = {};
+    return hydrology::serialize_handoff_artifact(
+               first, first_bytes, error) &&
+           hydrology::serialize_handoff_artifact(
+               second, second_bytes, error) &&
+           first_bytes == second_bytes;
+}
+
 bool load_water_animation_cache(
     const std::filesystem::path& path,
     const std::string& section_id,
@@ -2773,8 +2787,6 @@ bool LocalProvider::run_authored_fluid_bake(
     network_result.timings.peak_build_cpu_payload_bytes = std::max(
         network_result.timings.peak_build_cpu_payload_bytes,
         handoff_timings.boundary_source_bytes);
-    // Handoff products do not yet have an independent cache. Keep these
-    // per-id flags explicit instead of inheriting the adjacent section hits.
     handoff_timings.static_cache_hit = false;
     handoff_timings.animation_cache_hit = false;
     const auto handoff_mesh_start = std::chrono::steady_clock::now();
@@ -2789,6 +2801,37 @@ bool LocalProvider::run_authored_fluid_bake(
     network_result.timings.handoff_mesh_ms =
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - handoff_mesh_start).count();
+    const auto handoff_path = std::filesystem::path(abs_cache_root_) /
+        "hydrology" / "handoffs" /
+        (safe_cache_id(handoff_artifact.id) + "-" +
+         hex64(handoff_artifact.semantic_key) + ".mhyd");
+    std::optional<hydrology::HydrologyHandoffArtifact>
+        protected_handoff_artifact;
+    gpu_meshing::Error artifact_error{};
+    hydrology::HydrologyHandoffArtifact cached_handoff{};
+    gpu_meshing::Error ignored_handoff_cache_error{};
+    if (hydrology::load_handoff_artifact_validated(
+            handoff_path, handoff_artifact.semantic_key,
+            handoff_artifact.upstream_payload_digest,
+            handoff_artifact.downstream_payload_digest,
+            cached_handoff, ignored_handoff_cache_error)) {
+        protected_handoff_artifact = std::move(cached_handoff);
+        handoff_timings.static_cache_hit = true;
+        if (!same_serialized_handoff_artifact(
+                *protected_handoff_artifact, handoff_artifact,
+                artifact_error)) {
+            fluid_error = {
+                hydrology::FluidBakeCode::ProductFailure,
+                artifact_error.message.empty()
+                    ? "rerun changed a valid immutable handoff cache target"
+                    : artifact_error.message};
+            status.state = matter::HydrologyState::Invalid;
+            status.failure_reason = fluid_error.message;
+            return false;
+        }
+    } else {
+        all_cache_hits = false;
+    }
     hydrology::WaterMeshAnimationArtifact handoff_animation{};
     hydrology::HandoffAnimationBuildDiagnostics handoff_diagnostics{};
     std::filesystem::path handoff_animation_path;
@@ -2917,20 +2960,34 @@ bool LocalProvider::run_authored_fluid_bake(
             network_result.timings.peak_build_cpu_payload_bytes,
             handoff_timings.peak_build_cpu_payload_bytes);
     }
-    const auto handoff_path = std::filesystem::path(abs_cache_root_) /
-        "hydrology" / "handoffs" /
-        (safe_cache_id(handoff_artifact.id) + "-" +
-         hex64(handoff_artifact.semantic_key) + ".mhyd");
-    gpu_meshing::Error artifact_error{};
     hydrology::HydrologyHandoffArtifact reopened_handoff{};
     const auto handoff_serialize_start = std::chrono::steady_clock::now();
-    if (!hydrology::save_handoff_artifact_atomic(
-            handoff_path, handoff_artifact, artifact_error) ||
-        !hydrology::load_handoff_artifact_validated(
-            handoff_path, handoff_artifact.semantic_key,
-            handoff_artifact.upstream_payload_digest,
-            handoff_artifact.downstream_payload_digest,
-            reopened_handoff, artifact_error) ||
+    bool static_handoff_ready = false;
+    if (protected_handoff_artifact) {
+        static_handoff_ready =
+            hydrology::load_handoff_artifact_validated(
+                handoff_path, handoff_artifact.semantic_key,
+                handoff_artifact.upstream_payload_digest,
+                handoff_artifact.downstream_payload_digest,
+                reopened_handoff, artifact_error) &&
+            same_serialized_handoff_artifact(
+                *protected_handoff_artifact, reopened_handoff,
+                artifact_error);
+        if (!static_handoff_ready && artifact_error.message.empty())
+            artifact_error = {
+                gpu_meshing::ErrorCode::InvalidInput,
+                "valid immutable handoff cache target changed during repair"};
+    } else {
+        static_handoff_ready =
+            hydrology::save_handoff_artifact_atomic(
+                handoff_path, handoff_artifact, artifact_error) &&
+            hydrology::load_handoff_artifact_validated(
+                handoff_path, handoff_artifact.semantic_key,
+                handoff_artifact.upstream_payload_digest,
+                handoff_artifact.downstream_payload_digest,
+                reopened_handoff, artifact_error);
+    }
+    if (!static_handoff_ready ||
         (river_network_->fluid.mesh_animation.enabled &&
          !hydrology::save_water_mesh_animation_artifact_immutable(
              handoff_animation_path, handoff_animation, artifact_error))) {
