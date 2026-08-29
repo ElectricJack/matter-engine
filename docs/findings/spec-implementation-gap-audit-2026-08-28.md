@@ -21,14 +21,20 @@ The repository is much more complete than the raw archive makes it appear. Of 24
 
 The large superseded count is healthy history, not 88 lost features. It is dominated by the OpenGL-to-Vulkan transition, several generations of LOD/impostor design, the retired ExplorerDemo, deleted probe/CUDA-OptiX paths, and the failed bespoke LBM river solver that was replaced by the accepted in-process PhysX PBD pipeline.
 
-The main current problem is not the fluid bake itself. The current river foundation is real: imperative river DSL, carved terrain, PhysX section bakes, sequential spillway handoff, static collision/gameplay fields, floating bodies, raster water, foam/wave shading, and 30-frame baked mesh animation are present. The urgent gap is that the water presentation architecture drifted:
+The main current problem is not the fluid bake itself. The current river foundation is real: imperative river DSL, carved terrain, PhysX section bakes, sequential spillway handoff, static collision/gameplay fields, floating bodies, raster water, foam/wave shading, and 30-frame baked mesh animation are present. The audit originally found that the water presentation architecture had drifted:
 
 - the implementation plan requires raster-only animated geometry and a static RT proxy;
-- the later-edited design and dirty working tree added per-frame compute decode and cached animated BLAS geometry;
+- the later-edited design and audited dirty working tree added per-frame compute decode and cached animated BLAS geometry;
 - the live run allocates about 63 MiB per animation-frame BLAS, reaching about 1.89 GiB for 30 frames;
-- the approved 2026-08-28 direction now pins animated water to raster-only rendering and requires a general part/instance ray-tracing eligibility flag.
+- the approved 2026-08-28 direction pinned animated water to raster-only rendering and required a general part/instance ray-tracing eligibility flag.
 
-The decision is captured in `docs/superpowers/specs/2026-08-28-render-eligibility-and-document-lifecycle-design.md`. The remaining gap is implementation: remove animated-water RT geometry and bring the raster water material up to the surrounding RT scene's visual standard.
+That implementation gap is now closed. The general part/instance `rayTraced`
+contract is implemented, every engine-generated water path is pinned false,
+and animated-water RT decode, BLAS construction/caching, and TLAS insertion
+have been removed. Native acceptance evidence is recorded in
+`docs/findings/render-eligibility-acceptance-2026-08-29.md`. The remaining
+water work is the forward raster-water optics and matched visual/performance
+acceptance; those are the next committed plan, not part of this closure.
 
 ## What is ready versus not ready
 
@@ -40,13 +46,14 @@ The decision is captured in `docs/superpowers/specs/2026-08-28-render-eligibilit
 - Engine-wide bounded terrain collision and river float bodies.
 - Immutable gameplay/presentation river fields.
 - Dedicated raster water material with flow animation, depth response, foam, and baked 30-frame mesh playback.
+- General authored/static/dynamic ray-tracing eligibility, including mixed placements of one shared part.
+- Animated and fallback water are currently raster-only and perform zero animated-water RT decode, BLAS, or TLAS work.
 - Current core engine/editor foundations: part graph, JS authoring, async bake, streaming, Vulkan renderer, native RT, DLSS bridge, ECS, Box3D, chart VT, atmosphere/clouds, profiler, event system, BakeTrace/Part Workbench, and Vulkan-only `.gtex` bake.
 
 ### Not ready or not complete
 
-- The raster-only water architecture is approved, but the current dirty tree still builds/caches animated-water BLASes.
 - Raster refraction, shallow-visible depth fog, turbulence foam, reflections, full evidence automation, and final performance gates remain incomplete. The retired High/Ultra RT-water requirements should not be implemented.
-- A clean, reproducible acceptance run does not cover the current dirty water/shadow tree.
+- The render-eligibility and raster-only-water behavior has a native acceptance run; representative forward-water screenshots and matched performance captures remain outstanding.
 - The stable-slot/O(changed) RT TLAS CPU mirror redesign is missing.
 - The current branch lacks the completed character-controller work that exists on `main`/`feature/character-controller`.
 - The final LOD/VT proxy-world, visibility, unified-budget, and acceptance endpoint is incomplete.
@@ -55,7 +62,7 @@ The decision is captured in `docs/superpowers/specs/2026-08-28-render-eligibilit
 
 ## Priority gap register
 
-### P0 — Implement the approved raster-only animated-water policy
+### Closed 2026-08-29 — Approved raster-only animated-water policy
 
 **Affected documents**
 
@@ -68,21 +75,33 @@ The decision is captured in `docs/superpowers/specs/2026-08-28-render-eligibilit
 
 The animation plan says the moving geometry is raster-only, the accepted static mesh remains the RT proxy, and animated vertices never enter BLAS build/update paths (`2026-08-26-baked-water-mesh-animation.md:5-7,24,395-424`). The amended design instead suppresses the static proxy in RT, compute-decodes every selected frame for RT, and caches one BLAS per loop frame (`2026-08-26-baked-water-mesh-animation-design.md:275-295`).
 
-The dirty working tree follows the amended design in `MatterEngine3/src/render/vk_scene_renderer.cpp:13130-13448` and `MatterEngine3/shaders_vk/water_animation_rt_decode.comp`. Existing live evidence records 30 roughly 63 MiB BLAS entries and a final cache near 1,891 MiB in `.codex-tmp/live-editor/river.stderr.log:50-222`. A 10-shadow-sample run measured 14.05 ms median frame time, with 11.43 ms in RT GI/transmission, while the water animation raster work itself was about 0.06 ms (`.codex-tmp/render-perf/current-rt-s10.jsonl:1`). This is not a causal no-water-BLAS comparison: the warmed run reports `gpu_blas_ms=0`, so it proves the cache-memory cost and the overall RT cost, not that animated-water BLAS caused the 11.43 ms. A matched A/B remains required.
+The audited dirty working tree followed the amended design in the then-current
+renderer and `water_animation_rt_decode.comp`. Existing live evidence recorded
+30 roughly 63 MiB BLAS entries and a final cache near 1,891 MiB in
+`.codex-tmp/live-editor/river.stderr.log:50-222`. A 10-shadow-sample run measured
+14.05 ms median frame time, with 11.43 ms in RT GI/transmission, while the water
+animation raster work itself was about 0.06 ms
+(`.codex-tmp/render-perf/current-rt-s10.jsonl:1`). This remains historical
+evidence of the removed path, not a causal A/B measurement.
 
-**Gap**
+**Current state**
 
-The authoritative design now requires animated water to remain raster-only, but the implementation still contains animated RT compute decode, BLAS caching, and TLAS insertion.
+Animated water and its accepted static fallback are raster-only. The former
+compute decode shader/path, per-frame water BLAS build/cache, and water TLAS
+records are removed. Synthetic Vulkan coverage proves an all-false part builds
+no BLAS/TLAS, while a mixed false/true pair shares exactly one eligible BLAS.
 
 **Closure**
 
-1. Add the general part/instance `rayTraced` boolean and mark water false.
-2. Delete or disable animated RT compute decode, per-frame BLAS construction/cache, TLAS insertion, and their 2 GiB budget.
-3. Preserve the recent correct shadow behavior for raster water and static scene receivers.
-4. Add tests proving animated water never enters BLAS/TLAS preparation.
-5. Re-measure the same RiverFloatLab cameras at 1, 10, and 16 shadow samples.
+1. Implemented the general part/instance `rayTraced` boolean and marked water false.
+2. Removed animated RT compute decode, per-frame BLAS construction/cache, TLAS insertion, and their 2 GiB budget.
+3. Preserved the raster-water and static-receiver shadow work in the shared dirty tree.
+4. Added Vulkan tests proving false-only, mixed shared-part, active-water, and fallback-water behavior.
+5. Deferred matched RiverFloatLab visual/performance measurement to the forward-water optics plan.
 
-**Impact:** highest. This removes the proven animated-BLAS memory cost, creates the matched measurement needed to quantify the performance change, and aligns the renderer with the gameplay requirement: realistic moving water without runtime fluid interaction.
+**Impact:** the proven animated-BLAS memory path is removed and the renderer is
+aligned with the raster-only water decision. Forward-water optical quality and
+matched performance measurement remain active work.
 
 ### P0 — Re-scope and finish river presentation acceptance
 
@@ -303,12 +322,11 @@ No implementation effort should be scheduled from a superseded document without 
 
 ## Recommended execution order
 
-1. **Add general RT eligibility and remove animated-water RT geometry.** Delete compute decode, BLAS cache/build, TLAS records, and the 2 GiB cache budget; add negative BLAS/TLAS tests.
-2. **Improve and accept raster water.** Depth visibility/fog, refraction/distortion, SSR/environment fallback, foam/waves/reactivity, correct shadow reception, and matched performance captures.
-3. **Integrate the completed character controller.** Bring the existing M0–M4 work from `main`/`feature/character-controller` into the fluid branch and validate fixed-step movement and terrain collision in the river world.
-4. **Create one clean playtest baseline.** MSVC/PhysX cold bake, cache-hit run, five river cameras, controller-driven character movement, floating crates/rafts with terrain collision, memory/perf CSV, and a live editor acceptance.
-5. **Address scaling before expanding world length.** Stable-slot TLAS mirror, app-lane publish tail, dynamic-layout memoization, and remaining LOD/VT visibility/budget work.
-6. **Schedule lower-priority rendering/authoring gaps explicitly.** Do not let old partial specs silently compete with the river/gameplay roadmap.
+1. **Improve and accept raster water.** Depth visibility/fog, refraction/distortion, SSR/environment fallback, foam/waves/reactivity, correct shadow reception, and matched performance captures.
+2. **Integrate the completed character controller.** Bring the existing M0–M4 work from `main`/`feature/character-controller` into the fluid branch and validate fixed-step movement and terrain collision in the river world.
+3. **Create one clean playtest baseline.** MSVC/PhysX cold bake, cache-hit run, five river cameras, controller-driven character movement, floating crates/rafts with terrain collision, memory/perf CSV, and a live editor acceptance.
+4. **Address scaling before expanding world length.** Stable-slot TLAS mirror, app-lane publish tail, dynamic-layout memoization, and remaining LOD/VT visibility/budget work.
+5. **Schedule lower-priority rendering/authoring gaps explicitly.** Do not let old partial specs silently compete with the river/gameplay roadmap.
 
 ## Audit methodology and limits
 

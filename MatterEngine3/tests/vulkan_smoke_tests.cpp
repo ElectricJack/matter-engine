@@ -404,8 +404,22 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                       return command.instance_count != 0u;
                   }),
               "water animation: fallback immediately restores static raster");
+        std::uint32_t fallback_raster_placements = 0u;
+        for (const viewer::DrawCommand& command : commands)
+            fallback_raster_placements += command.instance_count;
+        std::vector<viewer::VkSceneRenderer::RtInstance>
+            fallback_rt_instances;
+        CHECK(fallback_raster_placements == 1u &&
+                  renderer.fill_rt_instances(fallback_rt_instances) == 0u,
+              "water animation: fallback has one raster placement and no RT instance");
         CHECK(!proxy.ray_traced,
               "water animation: accepted static fallback remains raster-only");
+        std::printf(
+            "water animation fallback counters: raster=%u rt_instances=%zu "
+            "decode=%llu\n",
+            fallback_raster_placements, fallback_rt_instances.size(),
+            static_cast<unsigned long long>(
+                renderer.water_animation_decode_dispatch_count()));
         renderer.collect_water_animation(frame.serial + 2u);
 
         CHECK(renderer.publish_water_animation(
@@ -423,6 +437,135 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
     }
     CHECK(vulkan.validation_error_count() == 0u,
           "water animation: activation, draw, fallback, and retirement have no validation errors");
+}
+
+void run_render_eligibility_acceptance_path(matter::VulkanDevice& vulkan) {
+    CHECK(vulkan.ray_tracing_available(),
+          vulkan.ray_tracing_unavailable_reason().empty()
+              ? "render eligibility: native ray tracing is available"
+              : vulkan.ray_tracing_unavailable_reason().c_str());
+    if (!vulkan.ray_tracing_available()) return;
+
+    struct Counts {
+        std::uint32_t raster_placements = 0u;
+        std::size_t rt_instances = 0u;
+        std::size_t rt_records = 0u;
+        std::uint32_t blas_builds = 0u;
+        std::uint64_t tlas_before = 0u;
+        std::uint64_t tlas_after = 0u;
+    };
+
+    const auto run_case = [&](std::uint64_t part_hash,
+                              const std::vector<viewer::VkSceneInstance>&
+                                  instances,
+                              const char* label) {
+        Counts counts{};
+        std::string error;
+        viewer::VkSceneRenderer renderer(vulkan);
+        CHECK(renderer.init(error), error.empty() ? label : error.c_str());
+        if (!error.empty()) return counts;
+
+        std::vector<MaterialGpuRecord> materials(8);
+        materials[7].metal_opacity_spec_coat[1] = 1.0f;
+        materials[7].scattering_shape[3] = 1.0f;
+        CHECK(renderer.update_materials(materials, 1u, 1u, error) &&
+                  renderer.ensure_part(
+                      known_raster_triangle(part_hash), error) >= 0 &&
+                  renderer.update_instances(instances, error),
+              error.empty() ? label : error.c_str());
+        if (!error.empty()) return counts;
+
+        matter::VulkanRayTracingSettings rt{};
+        rt.enabled = true;
+        rt.max_distance = 100.0f;
+        renderer.set_ray_tracing_settings(rt);
+
+        matter::CameraDesc camera{};
+        camera.position = {0.0f, 0.0f, 0.0f};
+        camera.target = {0.0f, 0.0f, -1.0f};
+        camera.up = {0.0f, 1.0f, 0.0f};
+        camera.vertical_fov_radians = 1.57079632679f;
+        camera.near_plane = 0.1f;
+        camera.far_plane = 10.0f;
+        viewer::FrameMatrices matrices{};
+        CHECK(viewer::build_frame_matrices(
+                  camera, 320u, 200u, matrices, error),
+              error.empty() ? label : error.c_str());
+
+        std::vector<viewer::DrawCommand> commands;
+        CHECK(renderer.dispatch_culling(
+                  matrices, camera.position, 1.0f, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? label : error.c_str());
+        for (const viewer::DrawCommand& command : commands)
+            counts.raster_placements += command.instance_count;
+
+        std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
+        counts.rt_instances = renderer.fill_rt_instances(rt_instances);
+        counts.tlas_before = renderer.rt_tlas_build_count();
+
+        matter::VulkanFrame frame{};
+        const bool began = vulkan.begin_frame(frame, error);
+        const bool recorded = began &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        counts.rt_records = renderer.test_last_rt_geometry_records().size();
+        counts.blas_builds = renderer.test_last_rt_blas_build_count();
+        const bool submitted = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, submitted);
+        CHECK(submitted, error.empty() ? label : error.c_str());
+        vulkan.wait_idle();
+        counts.tlas_after = renderer.rt_tlas_build_count();
+        return counts;
+    };
+
+    constexpr std::uint64_t kPartHash = 0x454c494749424c45ull;
+    viewer::VkSceneInstance false_instance{};
+    false_instance.part_hash = kPartHash;
+    false_instance.object_to_world = viewer::mat4_identity();
+    false_instance.instance_id = 0x46414c5345ull;
+    false_instance.ray_traced = false;
+    const Counts false_only = run_case(
+        kPartHash, {false_instance},
+        "render eligibility: record false-only synthetic scene");
+    CHECK(false_only.raster_placements == 1u &&
+              false_only.rt_instances == 0u && false_only.rt_records == 0u &&
+              false_only.blas_builds == 0u &&
+              false_only.tlas_after == false_only.tlas_before,
+          "render eligibility: false-only instance stays raster-visible and performs no RT work");
+    std::printf(
+        "render eligibility false-only: raster=%u rt_instances=%zu "
+        "records=%zu blas=%u tlas_before=%llu tlas_after=%llu\n",
+        false_only.raster_placements, false_only.rt_instances,
+        false_only.rt_records, false_only.blas_builds,
+        static_cast<unsigned long long>(false_only.tlas_before),
+        static_cast<unsigned long long>(false_only.tlas_after));
+
+    viewer::VkSceneInstance traced_instance = false_instance;
+    traced_instance.object_to_world.m[12] = 0.35f;
+    traced_instance.instance_id = 0x54525545ull;
+    traced_instance.ray_traced = true;
+    false_instance.object_to_world.m[12] = -0.35f;
+    const Counts mixed = run_case(
+        kPartHash, {false_instance, traced_instance},
+        "render eligibility: record mixed shared-part synthetic scene");
+    CHECK(mixed.raster_placements == 2u && mixed.rt_instances == 1u &&
+              mixed.rt_records == 1u && mixed.blas_builds == 1u &&
+              mixed.tlas_after == mixed.tlas_before + 1u,
+          "render eligibility: mixed shared part keeps both raster placements and builds one eligible RT record/BLAS");
+    std::printf(
+        "render eligibility mixed: raster=%u rt_instances=%zu records=%zu "
+        "blas=%u tlas_before=%llu tlas_after=%llu\n",
+        mixed.raster_placements, mixed.rt_instances, mixed.rt_records,
+        mixed.blas_builds,
+        static_cast<unsigned long long>(mixed.tlas_before),
+        static_cast<unsigned long long>(mixed.tlas_after));
+
+    CHECK(vulkan.validation_error_count() == 0u,
+          "render eligibility: false-only and mixed scenes have no Vulkan validation errors");
 }
 
 void test_atmosphere_timing_contract() {
@@ -12673,6 +12816,7 @@ int main() {
             return check_summary();
         }
         if (smoke_mode && std::string(smoke_mode) == "water-animation") {
+            run_render_eligibility_acceptance_path(*vulkan);
             run_water_animation_activation_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
