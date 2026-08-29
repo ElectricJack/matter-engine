@@ -2523,8 +2523,9 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                         : error.c_str());
 
     const matter::Mat4f identity = identity_matrix();
-    CHECK(renderer.update_instances({{900, identity, 111},
-                                     {901, identity, 222}}, error),
+    std::vector<viewer::VkSceneInstance> policy_instances{
+        {900, identity, 111}, {901, identity, 222}};
+    CHECK(renderer.update_instances(policy_instances, error),
           error.empty() ? "upload raster instances" : error.c_str());
 
     matter::CameraDesc camera{};
@@ -2539,6 +2540,17 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "build raster frame matrices" : error.c_str());
     CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
           error.empty() ? "dispatch raster culling" : error.c_str());
+    std::vector<viewer::VkSceneRenderer::RtInstance> policy_rt_instances;
+    CHECK(renderer.fill_rt_instances(policy_rt_instances) == 2,
+          "static instances initially participate in RT");
+    policy_instances[0].ray_traced = false;
+    CHECK(renderer.update_instances(policy_instances, error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "apply static RT policy-only update" : error.c_str());
+    policy_rt_instances.clear();
+    CHECK(renderer.fill_rt_instances(policy_rt_instances) == 1 &&
+              policy_rt_instances[0].part_hash == 901,
+          "static RT policy-only update refreshes RT membership");
     std::vector<viewer::DrawCommand> raster_commands;
     CHECK(renderer.readback_commands(raster_commands, error),
           error.empty() ? "read raster indirect commands" : error.c_str());

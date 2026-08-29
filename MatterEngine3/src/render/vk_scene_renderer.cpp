@@ -10877,8 +10877,16 @@ bool VkSceneRenderer::update_instances(
     // One slots compare, not two: `identical` and `layout_changed` asked the
     // same O(instances) question and both used to walk the array.
     const bool slots_equal = candidate_slots == instance_part_slots_;
+    const bool rt_equal =
+        candidate_rt.size() == rt_instances_.size() &&
+        std::equal(candidate_rt.begin(), candidate_rt.end(),
+                   rt_instances_.begin(),
+                   [](const RtInstance& left, const RtInstance& right) {
+                       return std::memcmp(&left, &right, sizeof(left)) == 0;
+                   });
     const bool identical =
         candidate_instances.size() == instance_staging_.size() && slots_equal &&
+        rt_equal &&
         std::equal(candidate_instances.begin(), candidate_instances.end(),
                    instance_staging_.begin(),
                    [](const GpuInstance& left, const GpuInstance& right) {
