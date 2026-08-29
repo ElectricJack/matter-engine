@@ -1,8 +1,10 @@
 #include "check.h"
 #include "hydrology/hydrology_handoff_products.h"
 #include "hydrology/river_presentation_field.h"
+#include "hydrology/water_mesh_continuity.h"
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -213,6 +215,133 @@ const hydrology::PhysxFluidBake::VisualMesher synthetic_visual_mesher =
         error = {};
         return true;
     };
+
+gpu_meshing::MeshResult continuity_ribbon(float height_m) {
+    return quad(-5.0f, 0.0f, height_m, -4.0f, 4.0f);
+}
+
+void set_mesh_normal(gpu_meshing::MeshResult& mesh,
+                     matter::Float3 normal) {
+    for (std::size_t index = 0u; index != mesh.normals.size(); index += 3u) {
+        mesh.normals[index + 0u] = normal.x;
+        mesh.normals[index + 1u] = normal.y;
+        mesh.normals[index + 2u] = normal.z;
+    }
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+}
+
+void append_duplicate_coplanar_triangle(gpu_meshing::MeshResult& mesh,
+                                        float cut_x) {
+    const auto append = [&]() {
+        const auto base = static_cast<std::uint32_t>(
+            mesh.positions.size() / 3u);
+        mesh.positions.insert(mesh.positions.end(), {
+            cut_x, 44.0f, -1.0f,
+            cut_x, 45.0f, 0.0f,
+            cut_x, 44.0f, 1.0f});
+        mesh.normals.insert(mesh.normals.end(), {
+            1.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f});
+        mesh.indices.insert(mesh.indices.end(),
+                            {base, base + 1u, base + 2u});
+    };
+    append();
+    append();
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+}
+
+void test_measures_section_cut_continuity_without_welding() {
+    const auto handoff = spillway();
+    hydrology::WaterCutContourMetrics metrics{};
+    hydrology::FluidBakeError error{};
+
+    CHECK(hydrology::measure_water_cut_continuity(
+              continuity_ribbon(44.9f), continuity_ribbon(48.8f), handoff,
+              -2.5f, 1.0e-4f, metrics, error),
+          error.message.c_str());
+    CHECK(metrics.first_points != 0u && metrics.second_points != 0u,
+          "intersected ribbon contours report deterministic point counts");
+    CHECK(metrics.symmetric_hausdorff_m >= 3.8f &&
+              std::fabs(metrics.first_height_quantiles_m[1] -
+                        metrics.second_height_quantiles_m[1]) >= 3.8f,
+          "the historical section-height mismatch remains measurable");
+    CHECK(!hydrology::water_cut_is_assertion_weldable(
+              metrics, 0.15f / 16.0f),
+          "a multi-metre contour mismatch is never accepted as a weld");
+
+    const auto exact = continuity_ribbon(44.9f);
+    CHECK(hydrology::measure_water_cut_continuity(
+              exact, exact, handoff, -2.5f, 1.0e-4f, metrics, error),
+          error.message.c_str());
+    CHECK(metrics.symmetric_hausdorff_m == 0.0f &&
+              metrics.rms_distance_m == 0.0f &&
+              metrics.unmatched_open_edges == 0u &&
+              metrics.duplicate_coplanar_triangles == 0u &&
+              hydrology::water_cut_is_assertion_weldable(
+                  metrics, 0.15f / 16.0f),
+          "an exact shared contour is assertion-weldable without geometry edits");
+
+    auto discontinuous = exact;
+    set_mesh_normal(discontinuous, {0.2f, 0.9797959f, 0.0f});
+    CHECK(hydrology::measure_water_cut_continuity(
+              exact, discontinuous, handoff, -2.5f, 1.0e-4f,
+              metrics, error),
+          error.message.c_str());
+    CHECK(metrics.minimum_normal_dot < 0.995f &&
+              metrics.p95_normal_angle_degrees > 0.0f &&
+              !hydrology::water_cut_is_assertion_weldable(
+                  metrics, 0.15f / 16.0f),
+          "a normal discontinuity reports angle evidence and rejects welding");
+
+    auto missing_segment = exact;
+    missing_segment.indices.resize(3u);
+    missing_segment.content_digest =
+        gpu_meshing::mesh_content_digest(missing_segment);
+    CHECK(hydrology::measure_water_cut_continuity(
+              exact, missing_segment, handoff, -2.5f, 1.0e-4f,
+              metrics, error),
+          error.message.c_str());
+    CHECK(metrics.unmatched_open_edges == 1u &&
+              !hydrology::water_cut_is_assertion_weldable(
+                  metrics, 0.15f / 16.0f),
+          "one missing cut segment leaves unmatched combined boundary edges");
+
+    auto duplicated = exact;
+    append_duplicate_coplanar_triangle(duplicated, -2.5f);
+    CHECK(hydrology::measure_water_cut_continuity(
+              duplicated, exact, handoff, -2.5f, 1.0e-4f,
+              metrics, error),
+          error.message.c_str());
+    CHECK(metrics.duplicate_coplanar_triangles != 0u &&
+              !hydrology::water_cut_is_assertion_weldable(
+                  metrics, 0.15f / 16.0f),
+          "equal-position co-planar triangle triples reject duplicate ownership");
+}
+
+void test_cut_continuity_fails_closed_on_invalid_meshes() {
+    const auto handoff = spillway();
+    const auto exact = continuity_ribbon(44.9f);
+    hydrology::WaterCutContourMetrics metrics{};
+    hydrology::FluidBakeError error{};
+    auto absent = exact;
+    for (std::size_t index = 0u; index != absent.positions.size(); index += 3u)
+        absent.positions[index] = 10.0f;
+    absent.content_digest = gpu_meshing::mesh_content_digest(absent);
+    CHECK(!hydrology::measure_water_cut_continuity(
+              exact, absent, handoff, -2.5f, 1.0e-4f, metrics, error) &&
+              error.code == hydrology::FluidBakeCode::ProductFailure,
+          "a missing cut contour fails closed");
+
+    auto non_finite = exact;
+    non_finite.positions[1u] =
+        std::numeric_limits<float>::quiet_NaN();
+    CHECK(!hydrology::measure_water_cut_continuity(
+              exact, non_finite, handoff, -2.5f, 1.0e-4f,
+              metrics, error) &&
+              error.code == hydrology::FluidBakeCode::ProductFailure,
+          "non-finite water geometry fails closed");
+}
 
 void test_stitches_independently_meshed_cut_contours() {
     auto upstream = section_artifact(true);
@@ -513,6 +642,8 @@ void test_formats_animation_acceptance_timing_trace() {
 }  // namespace
 
 int main() {
+    test_measures_section_cut_continuity_without_welding();
+    test_cut_continuity_fails_closed_on_invalid_meshes();
     test_builds_deterministic_seam_without_dam_curtain();
     test_stitches_independently_meshed_cut_contours();
     test_keeps_water_in_the_removed_dam_footprint();

@@ -26,6 +26,7 @@ MatterEngine3/src/render/water_surface_reference.cpp|all
 MatterEngine3/src/hydrology/hydrology_artifact.cpp|all
 MatterEngine3/src/hydrology/hydrology_network_artifact.cpp|all
 MatterEngine3/src/hydrology/hydrology_handoff_products.cpp|all
+MatterEngine3/src/hydrology/water_mesh_continuity.cpp|all
 MatterEngine3/src/hydrology/river_network_builder.cpp|all
 MatterEngine3/src/hydrology/river_geometry.cpp|all
 MatterEngine3/src/hydrology/physx_fluid_bake.cpp|all
