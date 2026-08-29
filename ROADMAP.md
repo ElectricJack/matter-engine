@@ -1,6 +1,6 @@
 # MatterEngine roadmap
 
-**Updated:** 2026-08-28
+**Updated:** 2026-08-29
 
 This is the current product priority list. Completed implementation records
 live under `docs/completed/`; superseded directions live under
@@ -30,10 +30,14 @@ Authority:
 1. Extend the sequential bake into reliable longer river sections while
    preserving continuous spillway handoffs, waterfalls, pools, and the shared
    animation clock.
-2. Build the first focused rapids playtest around controllable floating craft.
-3. Run a clean MSVC/PhysX cold bake and cache-hit acceptance with terrain
-   collision, buoyancy, animated playback, the standard river cameras, and
-   retained screenshots/timings.
+2. Integrate the completed character-controller work from `main`/
+   `feature/character-controller` into the fluid branch and validate its
+   fixed-step movement and terrain collision in the river world.
+3. Build the first focused rapids playtest around the controller-driven player
+   and controllable floating craft.
+4. Run a clean MSVC/PhysX cold bake and cache-hit acceptance with character
+   movement, terrain collision, buoyancy, animated playback, the standard
+   river cameras, and retained screenshots/timings.
 
 The fluid simulation, collision mesh, and gameplay flow fields remain baked.
 Runtime water interaction is not required.
@@ -55,8 +59,6 @@ These are preserved ideas, not scheduled commitments:
 
 - whether animated models should default to raster-only; individual models
   can opt out of RT first;
-- when to integrate the completed character-controller branch for a character
-  playtest;
 - authoring/editor additions: native Windows live-edit watching, lattice DSL,
   true round extrusion joins, and the interactive Settle Lab;
 - animation additions: gameplay bindings, general constrained IK, and an

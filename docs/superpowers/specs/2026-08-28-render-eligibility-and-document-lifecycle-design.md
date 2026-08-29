@@ -117,8 +117,9 @@ The root `ROADMAP.md` will be replaced by a concise prioritized roadmap:
 
 1. **Now:** general ray-tracing eligibility, raster-only animated water, and
    raster water shader quality.
-2. **Next:** reliable longer sequential rivers and the first focused gameplay
-   playtest with floating craft.
+2. **Next:** reliable longer sequential rivers, integration of the completed
+   character-controller work, and the first focused gameplay playtest with
+   floating craft.
 3. **Scale before expansion:** renderer and publication bottlenecks proven by
    the implementation-gap audit, including changed-only TLAS maintenance and
    remaining publish/LOD work.

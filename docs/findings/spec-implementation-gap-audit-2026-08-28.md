@@ -305,8 +305,8 @@ No implementation effort should be scheduled from a superseded document without 
 
 1. **Add general RT eligibility and remove animated-water RT geometry.** Delete compute decode, BLAS cache/build, TLAS records, and the 2 GiB cache budget; add negative BLAS/TLAS tests.
 2. **Improve and accept raster water.** Depth visibility/fog, refraction/distortion, SSR/environment fallback, foam/waves/reactivity, correct shadow reception, and matched performance captures.
-3. **Create one clean playtest baseline.** MSVC/PhysX cold bake, cache-hit run, five river cameras, floating crates/rafts with terrain collision, memory/perf CSV, and a live editor acceptance.
-4. **Integrate only the gameplay prerequisites needed next.** Bring the character controller from `main` if the next test requires a walking player; otherwise design raft input/control first.
+3. **Integrate the completed character controller.** Bring the existing M0–M4 work from `main`/`feature/character-controller` into the fluid branch and validate fixed-step movement and terrain collision in the river world.
+4. **Create one clean playtest baseline.** MSVC/PhysX cold bake, cache-hit run, five river cameras, controller-driven character movement, floating crates/rafts with terrain collision, memory/perf CSV, and a live editor acceptance.
 5. **Address scaling before expanding world length.** Stable-slot TLAS mirror, app-lane publish tail, dynamic-layout memoization, and remaining LOD/VT visibility/budget work.
 6. **Schedule lower-priority rendering/authoring gaps explicitly.** Do not let old partial specs silently compete with the river/gameplay roadmap.
 
