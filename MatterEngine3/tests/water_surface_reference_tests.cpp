@@ -461,6 +461,27 @@ void test_mesh_water_survives_missing_fringe_data_but_not_corrupt_binding() {
           "a corrupt packed field remains fail-closed");
 }
 
+void test_material_lookup_skips_dry_overlap_for_later_wet_support() {
+    const matter::WaterSurfaceDefinition surface = make_surface();
+    const viewer::PackedWaterField dry =
+        make_sparse_field(7u, 7u, {}, &surface);
+    const viewer::PackedWaterField wet = make_sparse_field(
+        7u, 7u,
+        {{3u, 3u, 77.0f, 6.0f, 0.0f, 0.0f,
+          hydrology::RiverFeature::Current}},
+        &surface);
+    const viewer::PackedWaterField* fields[] = {&dry, &wet};
+    const viewer::WaterFieldBinding bindings[] = {{0u, 4u}, {1u, 9u}};
+    viewer::WaterSurfaceEvaluation evaluated{};
+    CHECK(viewer::water_evaluate_surface_for_material_reference(
+              fields, bindings, 2u, surface.material_id, surface,
+              {3.5f, 3.5f}, {0.0f, 1.0f, 0.0f}, 1.25f, 0.06f,
+              evaluated) &&
+              close(evaluated.field.surface_height_m, 77.0f) &&
+              close(evaluated.field.depth_m, 6.0f),
+          "material-only lookup skips an earlier dry same-material rectangle for a later field with bounded wet support");
+}
+
 void test_three_step_rk2_backtrace() {
     const viewer::WaterFieldBinding binding{1u, 4u};
     matter::Float2 traced{};
@@ -572,6 +593,7 @@ int main() {
     test_world_mapping_borders_and_dry_rejection();
     test_fringe_sampling_renormalizes_only_nearby_wet_cells();
     test_mesh_water_survives_missing_fringe_data_but_not_corrupt_binding();
+    test_material_lookup_skips_dry_overlap_for_later_wet_support();
     test_three_step_rk2_backtrace();
     test_dual_phase_reset_boundaries();
     test_three_band_response_and_hemisphere_safety();

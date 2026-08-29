@@ -575,4 +575,36 @@ bool water_evaluate_surface_reference(
     return true;
 }
 
+bool water_evaluate_surface_for_material_reference(
+    const PackedWaterField* const* fields,
+    const WaterFieldBinding* published_bindings, std::size_t field_count,
+    std::uint32_t material_id,
+    const matter::WaterSurfaceDefinition& surface, matter::Float2 world_xz,
+    matter::Float3 geometric_normal, float animation_time_seconds,
+    float base_roughness, WaterSurfaceEvaluation& output) noexcept {
+    output = {};
+    output.shading_normal = normalize(geometric_normal, {0.0f, 1.0f, 0.0f});
+    output.roughness = clamp01(base_roughness);
+    if (fields == nullptr || published_bindings == nullptr ||
+        surface.material_id != material_id)
+        return false;
+    for (std::size_t index = 0u; index != field_count; ++index) {
+        const PackedWaterField* field = fields[index];
+        const WaterFieldBinding binding = published_bindings[index];
+        if (field == nullptr || !field->appearance_valid ||
+            field->material_id != material_id)
+            continue;
+        WaterSurfaceFieldSample supported{};
+        if (!water_sample_field_reference(*field, binding, binding, world_xz,
+                                          supported))
+            continue;
+        if (water_evaluate_surface_reference(
+                *field, binding, binding, surface, world_xz,
+                geometric_normal, animation_time_seconds, base_roughness,
+                output))
+            return true;
+    }
+    return false;
+}
+
 }  // namespace viewer

@@ -5,6 +5,7 @@
 #include "water_field_vk.h"
 
 #include <array>
+#include <cstddef>
 
 namespace viewer {
 
@@ -92,6 +93,14 @@ matter::Float3 water_apply_foam_radiance_reference(
 bool water_evaluate_surface_reference(
     const PackedWaterField& field, WaterFieldBinding published_binding,
     WaterFieldBinding requested_binding,
+    const matter::WaterSurfaceDefinition& surface, matter::Float2 world_xz,
+    matter::Float3 geometric_normal, float animation_time_seconds,
+    float base_roughness, WaterSurfaceEvaluation& output) noexcept;
+
+bool water_evaluate_surface_for_material_reference(
+    const PackedWaterField* const* fields,
+    const WaterFieldBinding* published_bindings, std::size_t field_count,
+    std::uint32_t material_id,
     const matter::WaterSurfaceDefinition& surface, matter::Float2 world_xz,
     matter::Float3 geometric_normal, float animation_time_seconds,
     float base_roughness, WaterSurfaceEvaluation& output) noexcept;

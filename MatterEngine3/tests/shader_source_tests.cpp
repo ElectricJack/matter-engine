@@ -297,6 +297,25 @@ int main() {
     assert(water_forward.find("bool surface_valid") != std::string::npos);
     assert(water_forward.find("else if (surface_valid)") !=
            std::string::npos);
+    const size_t material_lookup = water_common.find(
+        "bool water_evaluate_surface_for_material(");
+    const size_t material_lookup_open =
+        water_common.find('{', material_lookup);
+    const size_t material_lookup_close =
+        matching_closing_brace(water_common, material_lookup_open);
+    const std::string material_lookup_body =
+        material_lookup != std::string::npos &&
+                material_lookup_close != std::string::npos
+            ? water_common.substr(material_lookup,
+                                  material_lookup_close - material_lookup + 1u)
+            : std::string{};
+    const size_t material_wet_support = material_lookup_body.find(
+        "water_sample_field(slot, record.extent_generation.z, material_id");
+    const size_t material_surface_evaluation = material_lookup_body.find(
+        "water_evaluate_surface(");
+    assert(material_wet_support != std::string::npos &&
+           material_surface_evaluation != std::string::npos &&
+           material_wet_support < material_surface_evaluation);
     // A closed water mesh contributes an entry and exit any-hit to a sun
     // shadow ray.  Its dark display albedo is not an absorption coefficient:
     // using it as the tint twice blackens the riverbed even when the authored

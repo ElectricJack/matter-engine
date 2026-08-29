@@ -141,7 +141,8 @@ viewer::VkScenePart water_forward_background_triangle(uint64_t hash,
 bool close3(matter::Float3 actual, matter::Float3 expected, float epsilon);
 
 viewer::PackedWaterField make_water_forward_field_fixture(
-    std::uint64_t digest, bool wet = true) {
+    std::uint64_t digest, bool wet = true, float depth_m = 1.5f,
+    bool whitewater = true) {
     hydrology::GameplayFieldLayout layout{};
     layout.origin_m = {-2.0f, 0.0f, -3.0f};
     layout.cell_size_m = 0.5f;
@@ -151,14 +152,17 @@ viewer::PackedWaterField make_water_forward_field_fixture(
         static_cast<std::size_t>(layout.width) * layout.depth;
     const std::vector<hydrology::GameplaySample> gameplay(
         cell_count, wet ? hydrology::GameplaySample{
-                              0.0f, 1.5f, 2.0f, 0.0f, 0.5f, true}
+                              0.0f, depth_m, 2.0f, 0.0f, 0.5f, true}
                         : hydrology::GameplaySample{});
     const std::vector<hydrology::PresentationSample> presentation(
         cell_count,
-        wet ? hydrology::PresentationSample{
+        wet && whitewater ? hydrology::PresentationSample{
                   0.0f, 0.0f, 0.90f, 0.95f, 0.85f,
                   hydrology::RiverFeature::Rapid, true}
-            : hydrology::PresentationSample{});
+            : wet ? hydrology::PresentationSample{
+                        0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                        hydrology::RiverFeature::Calm, true}
+                  : hydrology::PresentationSample{});
     matter::WaterSurfaceDefinition surface{};
     surface.material_id = kWaterForwardAuthoredMaterial;
     surface.optics.shallow_absorption = {0.03f, 0.015f, 0.008f};
@@ -174,6 +178,9 @@ viewer::PackedWaterField make_water_forward_field_fixture(
         {1.6f, 0.24f, 1.4f, 0.75f},
         {0.28f, 0.08f, 2.1f, 0.20f},
     };
+    if (!whitewater) {
+        for (auto& wave : surface.wave_bands) wave.normal_amplitude = 0.0f;
+    }
     surface.foam = {0.30f, 2.0f, 2.5f, 0.7f,
                     0.55f, 1.4f, 0.72f, 0.6f};
     surface.appearance_hash = UINT64_C(0x7761746572667764);
@@ -1093,6 +1100,176 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
     std::filesystem::remove_all(playback_fixture.root);
     CHECK(vulkan.validation_error_count() == 0u,
           "water forward: active and fallback frames have no validation errors");
+}
+
+void run_water_material_lookup_overlap_path(matter::VulkanDevice& vulkan) {
+    CHECK(vulkan.ray_tracing_available(),
+          vulkan.ray_tracing_unavailable_reason().empty()
+              ? "water material overlap: native ray tracing is available"
+              : vulkan.ray_tracing_unavailable_reason().c_str());
+    if (!vulkan.ray_tracing_available()) return;
+
+    const auto render_case = [&](bool dry_first, viewer::VkRasterPixel& pixel) {
+        viewer::VkSceneRenderer renderer(vulkan);
+        std::string error;
+        if (!renderer.init(error)) {
+            CHECK(false, error.empty()
+                             ? "water material overlap: initialize renderer"
+                             : error.c_str());
+            return false;
+        }
+
+        matter::VulkanRayTracingSettings rt{};
+        rt.enabled = true;
+        rt.max_distance = 20.0f;
+        renderer.set_ray_tracing_settings(rt);
+        matter::VulkanGiSettings gi{};
+        gi.enabled = 1u;
+        gi.max_bounces = 1u;
+        gi.samples_per_pixel = 1u;
+        gi.denoiser_iterations = 0u;
+        gi.diffuse_multiplier = 0.0f;
+        gi.reflection_multiplier = 0.0f;
+        gi.max_reflection_roughness = 0.02f;
+        gi.transmission_multiplier = 1.0f;
+        gi.scattering_multiplier = 0.0f;
+        renderer.set_gi_settings(gi);
+
+        std::vector<MaterialGpuRecord> materials(
+            kWaterForwardAuthoredMaterial + 1u);
+        auto& background_material = materials[2u];
+        background_material.base_roughness[0] = 0.8f;
+        background_material.base_roughness[1] = 0.7f;
+        background_material.base_roughness[2] = 0.6f;
+        background_material.base_roughness[3] = 1.0f;
+        background_material.metal_opacity_spec_coat[1] = 1.0f;
+        background_material.scattering_shape[3] = 1.0f;
+        auto& water_material = materials[kWaterForwardAuthoredMaterial];
+        water_material.base_roughness[0] = 0.06f;
+        water_material.base_roughness[1] = 0.22f;
+        water_material.base_roughness[2] = 0.38f;
+        water_material.base_roughness[3] = 0.02f;
+        water_material.metal_opacity_spec_coat[1] = 1.0f;
+        water_material.scattering_shape[3] = 1.0f;
+        water_material.transmission[0] = 1.0f;
+        water_material.transmission[1] = 1.333f;
+        water_material.transmission[2] = 0.25f;
+        water_material.transmission[3] = 100.0f;
+        water_material.absorption_pad[0] = 1.0f;
+        water_material.absorption_pad[1] = 1.0f;
+        water_material.absorption_pad[2] = 1.0f;
+        water_material.flags_misc[0] = MATERIAL_WATER_SURFACE;
+        if (!renderer.update_materials(materials, 1u, 1u, error)) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+
+        const viewer::VkScenePart background =
+            water_forward_background_triangle(0x77666f766c6267ull, 2u);
+        const viewer::VkScenePart probe = known_raster_triangle(
+            0x77666f766c7072ull, kWaterForwardAuthoredMaterial);
+        if (renderer.ensure_part(background, error) < 0 ||
+            renderer.ensure_part(probe, error) < 0) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+        viewer::VkSceneInstance background_instance{};
+        background_instance.part_hash = background.part_hash;
+        background_instance.object_to_world = viewer::mat4_identity();
+        background_instance.instance_id = 0x77666f766c6269ull;
+        background_instance.ray_traced = true;
+        viewer::VkSceneInstance probe_instance{};
+        probe_instance.part_hash = probe.part_hash;
+        probe_instance.object_to_world = viewer::mat4_identity();
+        probe_instance.instance_id = 0x77666f766c7069ull;
+        probe_instance.ray_traced = false;
+        if (!renderer.update_instances(
+                {background_instance, probe_instance}, error)) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+
+        viewer::WaterFieldError field_error{};
+        viewer::WaterFieldBinding dry_binding{};
+        if (dry_first && !renderer.publish_water_field(
+                             make_water_forward_field_fixture(
+                                 0x77666f766c6472ull, false, 0.0f, false),
+                             nullptr, 0u, dry_binding, field_error)) {
+            CHECK(false, field_error.message.c_str());
+            return false;
+        }
+        viewer::WaterFieldBinding wet_binding{};
+        if (!renderer.publish_water_field(
+                make_water_forward_field_fixture(
+                    0x77666f766c7765ull, true, 8.0f, false),
+                nullptr, 0u, wet_binding, field_error)) {
+            CHECK(false, field_error.message.c_str());
+            return false;
+        }
+        CHECK(!dry_first ||
+                  (dry_binding.slot < wet_binding.slot &&
+                   dry_binding.generation != 0u &&
+                   wet_binding.generation != 0u),
+              "water material overlap: dry record precedes wet record");
+
+        matter::CameraDesc camera{};
+        camera.position = {0.0f, 0.0f, 0.0f};
+        camera.target = {0.0f, 0.0f, -1.0f};
+        camera.up = {0.0f, 1.0f, 0.0f};
+        camera.vertical_fov_radians = 1.57079632679f;
+        camera.near_plane = 0.1f;
+        camera.far_plane = 20.0f;
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+        viewer::FrameMatrices matrices{};
+        const bool recorded = viewer::build_frame_matrices(
+                                  camera, frame.extent.width,
+                                  frame.extent.height, matrices, error) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        const bool ended = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, ended);
+        renderer.finish_dynamic_frame(frame.serial);
+        if (!ended) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+        vulkan.wait_idle();
+        if (!renderer.readback_raster_pixel(
+                frame.extent.width / 2u, frame.extent.height / 2u,
+                pixel, error)) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+        return true;
+    };
+
+    viewer::VkRasterPixel wet_only{};
+    viewer::VkRasterPixel dry_then_wet{};
+    const bool rendered = render_case(false, wet_only) &&
+                          render_case(true, dry_then_wet);
+    const float overlap_delta =
+        std::fabs(wet_only.hdr.x - dry_then_wet.hdr.x) +
+        std::fabs(wet_only.hdr.y - dry_then_wet.hdr.y) +
+        std::fabs(wet_only.hdr.z - dry_then_wet.hdr.z);
+    std::printf(
+        "water material overlap: wet=%.4f/%.4f/%.4f "
+        "dry-then-wet=%.4f/%.4f/%.4f delta=%.5f\n",
+        wet_only.hdr.x, wet_only.hdr.y, wet_only.hdr.z,
+        dry_then_wet.hdr.x, dry_then_wet.hdr.y, dry_then_wet.hdr.z,
+        overlap_delta);
+    CHECK(rendered && overlap_delta < 0.001f &&
+              wet_only.material_index == kWaterForwardAuthoredMaterial &&
+              dry_then_wet.material_index == kWaterForwardAuthoredMaterial,
+          "water material overlap: an earlier dry rectangle cannot hide a later same-material field with wet support");
+    CHECK(vulkan.validation_error_count() == 0u,
+          "water material overlap: two-record RT lookup has no validation errors");
 }
 
 void run_render_eligibility_acceptance_path(matter::VulkanDevice& vulkan) {
@@ -13614,6 +13791,7 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "water-forward") {
             run_water_forward_path(*vulkan);
+            run_water_material_lookup_overlap_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

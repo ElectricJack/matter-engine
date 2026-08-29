@@ -579,6 +579,10 @@ bool water_evaluate_surface_for_material(
             record.appearance.w == 0u || record.appearance.x != material_id)
             continue;
         if (!water_field_record_contains_fringe(record, world_xz)) continue;
+        WaterFieldSample supported_field;
+        if (!water_sample_field(slot, record.extent_generation.z, material_id,
+                                world_xz, supported_field))
+            continue;
         if (water_evaluate_surface(
                 slot, record.extent_generation.z, material_id, world_xz,
                 geometric_normal, animation_time_seconds, base_roughness,
