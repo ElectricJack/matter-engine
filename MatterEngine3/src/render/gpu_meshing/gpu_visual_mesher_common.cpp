@@ -50,14 +50,44 @@ bool dimension_for_extent(float extent, float voxel, std::uint32_t& cells,
     return true;
 }
 
-bool lattice_cell_index(double coordinate_m, double anchor_m, double voxel_m,
+float lattice_face_coordinate(float anchor_m, float voxel_m,
+                              std::int64_t cell_index) noexcept {
+    return anchor_m + voxel_m * static_cast<float>(cell_index);
+}
+
+bool lattice_cell_index(float coordinate_m, float anchor_m, float voxel_m,
                         bool upper, std::int64_t& index, Error& error) {
-    const double relative = (coordinate_m - anchor_m) / voxel_m;
-    const double rounded = upper ? std::ceil(relative) : std::floor(relative);
     constexpr double kInt64Minimum = -0x1p63;
     constexpr double kInt64Limit = 0x1p63;
-    if (!std::isfinite(relative) || !std::isfinite(rounded) ||
-        rounded < kInt64Minimum || rounded >= kInt64Limit) {
+    const double relative =
+        (static_cast<double>(coordinate_m) -
+         static_cast<double>(anchor_m)) /
+        static_cast<double>(voxel_m);
+    if (!std::isfinite(relative))
+        return fail(error, ErrorCode::Overflow,
+                    "particle lattice cell index overflows int64");
+
+    // A face emitted by this lattice is a float value. Dividing that value
+    // back by the exact stored float voxel may land just to either side of
+    // its integer (0.75f / 0.15f is below 5). Recognize only a bit-identical
+    // reconstruction of the nearest integer face. This is bounded by one
+    // representable value: the adjacent floats remain genuinely outside and
+    // continue through outward floor/ceil below.
+    const double nearest = std::round(relative);
+    if (std::isfinite(nearest) && nearest >= kInt64Minimum &&
+        nearest < kInt64Limit) {
+        const auto candidate = static_cast<std::int64_t>(nearest);
+        if (same_float_bits(
+                coordinate_m,
+                lattice_face_coordinate(anchor_m, voxel_m, candidate))) {
+            index = candidate;
+            return true;
+        }
+    }
+
+    const double rounded = upper ? std::ceil(relative) : std::floor(relative);
+    if (!std::isfinite(rounded) || rounded < kInt64Minimum ||
+        rounded >= kInt64Limit) {
         return fail(error, ErrorCode::Overflow,
                     "particle lattice cell index overflows int64");
     }
@@ -246,14 +276,14 @@ bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
         for (std::size_t axis = 0u; axis != 3u; ++axis) {
             std::int64_t upper = 0;
             if (!lattice_cell_index(
-                    static_cast<double>(coordinate(job.bounds_m.min_m, axis)),
-                    static_cast<double>(coordinate(lattice.origin_m, axis)),
-                    static_cast<double>(lattice.voxel_m), false,
+                    coordinate(job.bounds_m.min_m, axis),
+                    coordinate(lattice.origin_m, axis),
+                    lattice.voxel_m, false,
                     layout.cell_min[axis], error) ||
                 !lattice_cell_index(
-                    static_cast<double>(coordinate(job.bounds_m.max_m, axis)),
-                    static_cast<double>(coordinate(lattice.origin_m, axis)),
-                    static_cast<double>(lattice.voxel_m), true, upper, error) ||
+                    coordinate(job.bounds_m.max_m, axis),
+                    coordinate(lattice.origin_m, axis),
+                    lattice.voxel_m, true, upper, error) ||
                 !lattice_cell_span(layout.cell_min[axis], upper,
                                    cells[axis], error)) {
                 return false;
@@ -270,8 +300,13 @@ bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
                 return fail(error, ErrorCode::Overflow,
                             "particle lattice origin overflows float");
             }
-            set_coordinate(layout.origin_m, axis,
-                           static_cast<float>(snapped));
+            const float snapped_face = lattice_face_coordinate(
+                coordinate(lattice.origin_m, axis), lattice.voxel_m,
+                layout.cell_min[axis]);
+            if (!finite(snapped_face))
+                return fail(error, ErrorCode::Overflow,
+                            "particle lattice origin overflows float");
+            set_coordinate(layout.origin_m, axis, snapped_face);
         }
         layout.spacing_m = {
             lattice.voxel_m, lattice.voxel_m, lattice.voxel_m};

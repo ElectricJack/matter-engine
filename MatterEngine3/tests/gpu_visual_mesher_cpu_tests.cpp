@@ -99,6 +99,46 @@ void test_world_anchored_lattice_expands_outward_without_drifting() {
           "a canonical job rejects a voxel that is not bit-equal to its lattice voxel");
 }
 
+void test_canonical_lattice_faces_round_trip_to_the_same_integer_cell() {
+    constexpr float voxel = 0.15f;
+    const float cell_five_face = voxel * 5.0f;
+    gpu_meshing::ParticleSample particles[1];
+    auto job = one_sphere_job(particles);
+    job.bounds_m = {
+        {cell_five_face, 0.01f, 0.01f},
+        {cell_five_face + 0.01f, 0.10f, 0.10f}};
+    job.voxel_m = voxel;
+    job.sampling_lattice = {{0.0f, 0.0f, 0.0f}, voxel, 1u};
+
+    gpu_meshing::GridLayout layout{};
+    gpu_meshing::Error error{};
+    CHECK(gpu_meshing::validate_particle_job(job, layout, error),
+          error.message.c_str());
+    CHECK(cell_five_face == 0.75f && layout.cell_min[0] == 5 &&
+              layout.cell_dims[0] == 1u &&
+              layout.origin_m.x == cell_five_face,
+          "a representable canonical face at 0.15 * cell 5 round-trips to cell 5 without acquiring cell 4");
+
+    auto below_face = job;
+    below_face.bounds_m.min_m.x = std::nextafter(
+        cell_five_face, -std::numeric_limits<float>::infinity());
+    gpu_meshing::GridLayout below_layout{};
+    CHECK(gpu_meshing::validate_particle_job(
+              below_face, below_layout, error) &&
+              below_layout.cell_min[0] == 4,
+          "the representable float immediately below a canonical face still expands outward into the preceding cell");
+
+    auto above_face = job;
+    above_face.bounds_m.max_m.x = std::nextafter(
+        cell_five_face, std::numeric_limits<float>::infinity());
+    gpu_meshing::GridLayout above_layout{};
+    CHECK(gpu_meshing::validate_particle_job(
+              above_face, above_layout, error) &&
+              above_layout.cell_min[0] == 5 &&
+              above_layout.cell_dims[0] == 1u,
+          "the representable float immediately above a canonical face still expands outward into the following cell");
+}
+
 void test_canonical_lattice_rejects_support_and_grid_overflow_before_allocation() {
     float support = 0.0f;
     gpu_meshing::Error error{};
@@ -572,6 +612,7 @@ void test_v5_cache_keys_require_persisted_presentation_identity() {
 
 int main() {
     test_world_anchored_lattice_expands_outward_without_drifting();
+    test_canonical_lattice_faces_round_trip_to_the_same_integer_cell();
     test_canonical_lattice_rejects_support_and_grid_overflow_before_allocation();
     test_validates_and_derives_particle_grid();
     test_validation_fails_closed_without_rejecting_supported_edges();

@@ -1581,6 +1581,69 @@ void test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss() 
           "unchunked section animation jobs inherit byte-identical lattice metadata");
 }
 
+void test_canonical_chunks_keep_exact_integer_ranges_at_the_tight_cap() {
+    constexpr float voxel = 0.15f;
+    std::vector<gpu_meshing::ParticleSample> particles{
+        {{0.45f, 0.45f, 0.45f}, 0.10f},
+        {{1.05f, 0.45f, 0.45f}, 0.10f},
+    };
+    gpu_meshing::ParticleJob root{};
+    root.particles = particles.data();
+    root.particle_count = static_cast<std::uint32_t>(particles.size());
+    root.bounds_m = {{0.0f, 0.0f, 0.0f}, {1.5f, 1.5f, 1.5f}};
+    root.voxel_m = voxel;
+    root.blend_width_m = 0.0f;
+    root.sampling_lattice = {{0.0f, 0.0f, 0.0f}, voxel, 1u};
+    root.material = 4u;
+    root.limits = {2u, 64u, 1u, 1u};
+
+    std::uint32_t calls = 0u;
+    bool exact_integer_ranges = true;
+    bool saw_exact_cap = false;
+    const auto mesher = [&](const gpu_meshing::ParticleJob& job,
+                            gpu_meshing::MeshResult& mesh,
+                            gpu_meshing::Stats&,
+                            gpu_meshing::Error& error,
+                            const gpu_meshing::BuildControl&) {
+        gpu_meshing::GridLayout layout{};
+        if (!gpu_meshing::validate_particle_job(job, layout, error))
+            return false;
+        ++calls;
+        saw_exact_cap |= layout.grid_vertices == root.limits.max_grid_vertices;
+        for (std::size_t axis = 0u; axis != 3u; ++axis) {
+            const auto coordinate = [axis](matter::Float3 value) {
+                return axis == 0u ? value.x : axis == 1u ? value.y : value.z;
+            };
+            const std::int64_t expected_min = static_cast<std::int64_t>(
+                std::llround(static_cast<double>(
+                    coordinate(job.bounds_m.min_m)) /
+                    static_cast<double>(voxel)));
+            const std::int64_t expected_max = static_cast<std::int64_t>(
+                std::llround(static_cast<double>(
+                    coordinate(job.bounds_m.max_m)) /
+                    static_cast<double>(voxel)));
+            exact_integer_ranges &=
+                layout.cell_min[axis] == expected_min &&
+                layout.cell_dims[axis] ==
+                    static_cast<std::uint32_t>(expected_max - expected_min);
+        }
+        mesh = {};
+        mesh.material = job.material;
+        return true;
+    };
+
+    gpu_meshing::MeshResult mesh{};
+    gpu_meshing::Error error{};
+    const bool built = hydrology::PhysxFluidBake::build_visual_job_chunks(
+        root, mesher, mesh, error);
+    CHECK(built, error.message.c_str());
+    CHECK(calls > 1u, "the tight cap forces repeated canonical subdivision");
+    CHECK(exact_integer_ranges,
+          "every submitted canonical child preserves its intended integer cell range");
+    CHECK(saw_exact_cap,
+          "a recursive child consumes the exact 64-sample grid cap without acquiring an extra cell");
+}
+
 void test_product_keys_follow_the_settings_the_extractors_consume() {
     FluidBakeOutput output{};
     output.particles = {
@@ -2546,6 +2609,7 @@ int main() {
     test_accepted_snapshot_builds_all_products_or_publishes_nothing();
     test_accepted_visual_chunks_capacity_without_truncation();
     test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss();
+    test_canonical_chunks_keep_exact_integer_ranges_at_the_tight_cap();
     test_product_keys_follow_the_settings_the_extractors_consume();
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
     test_world_session_runs_authored_fluid_bake_before_publication();
