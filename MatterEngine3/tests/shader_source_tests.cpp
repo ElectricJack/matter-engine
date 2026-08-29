@@ -199,9 +199,10 @@ int main() {
     }
     assert(renderer_header.find("kGpuZoneWaterDecode") != std::string::npos);
     assert(renderer_header.find("kGpuZoneWaterDraw") != std::string::npos);
-    assert(renderer_source.find("record.water_decode_zone") !=
+    assert(renderer_source.find(
+               "water_forward.timing_zone = kGpuZoneWaterDraw") !=
            std::string::npos);
-    assert(renderer_source.find("record.water_draw_zone") !=
+    assert(renderer_source.find("kGpuZoneWaterDecode") ==
            std::string::npos);
 
     // River presentation Task 8: raster and RT must share one bounded water
@@ -217,6 +218,11 @@ int main() {
         read_shader("../shaders_vk/rt_visibility.rahit");
     assert(!water_common.empty());
     assert(water_raster.find("#include \"water_surface.glsl\"") !=
+           std::string::npos);
+    assert(water_common.find("vec3 water_apply_foam_radiance") !=
+           std::string::npos);
+    assert(water_forward.find(
+               "water_apply_foam_radiance(color, surface.foam.coverage)") !=
            std::string::npos);
     assert(water_rt.find("#include \"water_surface.glsl\"") !=
            std::string::npos);

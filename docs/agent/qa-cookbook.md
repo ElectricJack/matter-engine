@@ -288,6 +288,30 @@ The body CSV/diagnostics seam, marker-order assertions, and the dedicated
 read-only control surface exists. Do not infer or fabricate those results from
 screenshots.
 
+## 13. Raster-water forward-optics acceptance
+
+After building the native MSVC editor, compare the forward raster-water path
+against the committed-date local baseline with one five-camera RiverFloatLab
+capture and matched 1, 10, and 16 shadow-sample performance runs:
+
+```powershell
+$baseline = (Resolve-Path 'build/qa/raster-water-forward-2026-08-29/baseline').Path
+$candidate = (New-Item -ItemType Directory -Force `
+    'build/qa/raster-water-forward-2026-08-29/candidate').FullName
+& MatterEngine3/tools/run_raster_water_forward_acceptance.ps1 `
+    -BaselineDir $baseline -OutputDir $candidate
+```
+
+The runner exits nonzero if a screenshot or its completion sidecar is missing
+or empty, if Vulkan validation/water-decode/steady-allocation counters are
+nonzero, if the copied HDR-plus-depth payload is not exactly 12 logical bytes
+per internal pixel, or if any matched timing exceeds its allowed regression.
+It writes the five native-size PNGs under `<candidate>/screenshots/`, the
+three performance JSON files at the candidate root, and complete run logs in
+the sibling `capture/` and `run-*/` directories. Visual acceptance still
+requires opening all five PNGs at native size and checking the criteria in
+`docs/findings/raster-water-forward-optics-acceptance-2026-08-29.md`.
+
 ---
 
 ## Traps
