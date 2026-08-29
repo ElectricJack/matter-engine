@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -51,6 +52,60 @@ void test_packed_vertex_and_direct_decode_abi() {
           "baked water animation vertices retain the 12-byte file ABI");
     CHECK(viewer::kWaterAnimationRasterVertexStride == 12u,
           "the raster lane consumes packed vertices without a 28-byte expansion");
+}
+
+void test_diagnostic_abi_and_parser_contract() {
+    CHECK(sizeof(viewer::WaterForwardConstants) == 128u &&
+              offsetof(viewer::WaterForwardConstants, diagnostics) == 112u,
+          "water forward diagnostics append one std140 uvec4");
+    CHECK(sizeof(viewer::RasterDebugPushConstants) == 80u &&
+              offsetof(viewer::RasterDebugPushConstants,
+                       water_diagnostic_identity) == 20u,
+          "water identity reuses the first trailing push word without growing the ABI");
+    CHECK(static_cast<std::uint32_t>(viewer::WaterDiagnosticView::None) == 0u &&
+              static_cast<std::uint32_t>(viewer::WaterDiagnosticView::Identity) == 1u &&
+              static_cast<std::uint32_t>(viewer::WaterDiagnosticView::GeometryNormal) == 2u &&
+              static_cast<std::uint32_t>(viewer::WaterDiagnosticView::FoamDriver) == 3u,
+          "water diagnostic enum mapping is stable for GLSL");
+
+    viewer::WaterDiagnosticSettings settings{};
+    std::string error;
+    CHECK(viewer::parse_water_diagnostic_settings(nullptr, nullptr,
+                                                   settings, error) &&
+              !settings.capture_frame_enabled &&
+              settings.view == viewer::WaterDiagnosticView::None &&
+              error.empty(),
+          "absent diagnostic controls preserve normal live presentation");
+    CHECK(viewer::parse_water_diagnostic_settings(
+              "0", "identity", settings, error) &&
+              settings.capture_frame_enabled && settings.capture_frame == 0u &&
+              settings.view == viewer::WaterDiagnosticView::Identity &&
+              std::fabs(viewer::water_capture_time_seconds(settings) -
+                        (0.5 / 30.0)) < 1.0e-12,
+          "frame zero selects its midpoint and identity maps exactly");
+    CHECK(viewer::parse_water_diagnostic_settings(
+              "29", "geometry-normal", settings, error) &&
+              settings.capture_frame == 29u &&
+              settings.view == viewer::WaterDiagnosticView::GeometryNormal &&
+              std::fabs(viewer::water_capture_time_seconds(settings) -
+                        (29.5 / 30.0)) < 1.0e-12,
+          "frame 29 selects its midpoint and geometry-normal maps exactly");
+    CHECK(viewer::parse_water_diagnostic_settings(
+              "15", "foam-driver", settings, error) &&
+              settings.view == viewer::WaterDiagnosticView::FoamDriver,
+          "foam-driver maps exactly");
+    CHECK(!viewer::parse_water_diagnostic_settings(
+              "30", nullptr, settings, error) &&
+              error == "MATTER_WATER_CAPTURE_FRAME must be an integer from 0 through 29",
+          "out-of-range capture frame fails startup with the exact control name");
+    CHECK(!viewer::parse_water_diagnostic_settings(
+              "7junk", nullptr, settings, error) &&
+              error == "MATTER_WATER_CAPTURE_FRAME must be an integer from 0 through 29",
+          "partially parsed capture frame fails startup");
+    CHECK(!viewer::parse_water_diagnostic_settings(
+              nullptr, "normal", settings, error) &&
+              error == "MATTER_WATER_DIAGNOSTIC_VIEW must be identity, geometry-normal, or foam-driver",
+          "unknown diagnostic view fails startup instead of silently selecting normal");
 }
 
 void test_direct_raster_buffers_prefer_device_local_coherent_memory() {
@@ -120,11 +175,15 @@ void test_per_slot_upload_draw_and_barrier_contract() {
               capacity.packed_vertex_bytes + capacity.index_bytes,
           "a slot contains one GPU-visible packed vertex/index pair without transfer duplicates");
 
-    CHECK(schedule.prepare(41u, 0u, selected, transforms, error),
+    const std::vector<std::uint32_t> moved_transforms{43u};
+    CHECK(schedule.prepare(41u, 0u, selected, moved_transforms, error),
           error.message.c_str());
     frame = schedule.frame(0u);
     CHECK(frame && !frame->upload_required && frame->draws.size() == 1u,
           "an unchanged frame slot reuses its packed raster buffers without upload");
+    CHECK(frame && frame->draws[0].proxy_transform_slot ==
+                       moved_transforms[0],
+          "an unchanged frame refreshes the direct draw transform after a renderer layout change");
     CHECK(schedule.prepare(41u, 1u, selected, transforms, error) &&
               schedule.frame(1u) && schedule.frame(1u)->upload_required,
           "a different Vulkan frame slot receives its own first upload");
@@ -169,8 +228,34 @@ void test_multiple_draws_pack_indices_at_element_offsets() {
           "multiple animation draws concatenate index payloads contiguously");
     CHECK(frame && frame->draws.size() == 2u &&
               frame->draws[0].first_index == 0u &&
-              frame->draws[1].first_index == 3u,
-          "multiple animation draws publish element-based first-index offsets");
+              frame->draws[1].first_index == 3u &&
+              frame->draws[0].diagnostic_identity != 0u &&
+              frame->draws[1].diagnostic_identity != 0u &&
+              frame->draws[0].diagnostic_identity !=
+                  frame->draws[1].diagnostic_identity &&
+              frame->draws[0].diagnostic_identity ==
+                  viewer::water_animation_diagnostic_identity("section-0") &&
+              frame->draws[1].diagnostic_identity ==
+                  viewer::water_animation_diagnostic_identity("section-1"),
+          "multiple animation draws retain offsets and stable complete-identity hashes");
+    const viewer::RasterDebugPushConstants static_push =
+        viewer::make_raster_debug_push_constants(
+            0u, false, matter::GeometryDebugView::None, false);
+    const viewer::RasterDebugPushConstants animated_push =
+        viewer::make_water_animation_push_constants(
+            static_push, frame->draws[1]);
+    CHECK(static_push.water_diagnostic_identity == 0u &&
+              animated_push.water_diagnostic_identity ==
+                  frame->draws[1].diagnostic_identity &&
+              animated_push.water_padding0[0] == 0u &&
+              animated_push.water_padding0[1] == 0u,
+          "static water stays zero while every valid direct draw reaches the reused push word");
+    CHECK(viewer::water_animation_diagnostic_identity("section-0") ==
+              0x5e8f36b9u &&
+              viewer::water_animation_diagnostic_identity("section-0") ==
+                  viewer::water_animation_diagnostic_identity("section-0") &&
+              viewer::water_animation_diagnostic_identity("") != 0u,
+          "diagnostic identity hashing is deterministic and never emits zero");
     CHECK(schedule.steady_state_allocation_count() == 0u,
           "published maximum capacities prevent steady-state frame allocations");
 }
@@ -226,6 +311,7 @@ void test_active_and_rejected_direct_frames() {
 
 int main() {
     test_packed_vertex_and_direct_decode_abi();
+    test_diagnostic_abi_and_parser_contract();
     test_direct_raster_buffers_prefer_device_local_coherent_memory();
     test_decode_matches_known_triangle_oracle();
     test_per_slot_upload_draw_and_barrier_contract();

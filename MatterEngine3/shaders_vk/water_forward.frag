@@ -38,6 +38,7 @@ layout(location = 6) flat in uint in_material_valid;
 layout(location = 7) in vec3 in_world_pos;
 layout(location = 15) flat in uint in_water_binding_slot;
 layout(location = 16) flat in uint in_water_generation;
+layout(location = 17) flat in uint in_water_diagnostic_identity;
 
 layout(location = 0) out vec4 out_hdr;
 layout(location = 1) out vec2 out_velocity;
@@ -59,7 +60,18 @@ void main() {
                                in_material_index, in_world_pos.xz, in_normal,
                                frame.water_animation.x, roughness, surface);
 
-    if (field_valid) {
+    uint diagnostic_view = water_forward.diagnostics.x;
+    if (diagnostic_view != WATER_DIAGNOSTIC_NONE) {
+        if (diagnostic_view == WATER_DIAGNOSTIC_IDENTITY) {
+            uint identity = in_water_diagnostic_identity != 0u
+                ? in_water_diagnostic_identity : in_instance_token;
+            color = water_diagnostic_identity_color(identity);
+        } else if (diagnostic_view == WATER_DIAGNOSTIC_GEOMETRY_NORMAL) {
+            color = normalize(in_normal) * 0.5 + 0.5;
+        } else if (diagnostic_view == WATER_DIAGNOSTIC_FOAM_DRIVER) {
+            color = field_valid ? water_foam_driver_heatmap(surface.foam.coverage) : vec3(0.0);
+        }
+    } else if (field_valid) {
         WaterFieldGpuRecord record =
             water_field_records[in_water_binding_slot];
         vec3 view_direction = normalize(

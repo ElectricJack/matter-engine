@@ -739,6 +739,7 @@ struct WorldSession::Impl {
     std::uint64_t vk_water_animation_peak_activation_cpu_bytes = 0u;
     std::uint64_t vk_water_animation_gpu_bytes_per_slot = 0u;
     std::atomic<float> water_animation_time_seconds{0.0f};
+    viewer::WaterDiagnosticSettings vk_water_diagnostic_settings{};
     viewer::VulkanInstanceCache vk_instance_cache;
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
@@ -10201,8 +10202,19 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
 
 #ifdef MATTER_VULKAN_VIEWER
     if (impl_->render_device) {
+        std::string water_diagnostic_error;
+        if (!viewer::parse_water_diagnostic_settings(
+                std::getenv("MATTER_WATER_CAPTURE_FRAME"),
+                std::getenv("MATTER_WATER_DIAGNOSTIC_VIEW"),
+                simpl->vk_water_diagnostic_settings,
+                water_diagnostic_error)) {
+            err = "open_world: " + water_diagnostic_error;
+            return nullptr;
+        }
         simpl->vk_scene =
             std::make_unique<viewer::VkSceneRenderer>(*impl_->render_device);
+        simpl->vk_scene->set_water_diagnostic_view(
+            simpl->vk_water_diagnostic_settings.view);
         if (const char* raw =
                 std::getenv("MATTER_GPU_MESHER_ACCEPTANCE_ARTIFACT")) {
             const std::filesystem::path path(raw);
@@ -11661,10 +11673,15 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->collect_water_fields(impl_->vk_skin_completed_serial);
     impl_->vk_scene->collect_water_animation(
         impl_->vk_skin_completed_serial);
-    const float water_animation_time_seconds =
+    const float live_water_animation_time_seconds =
         impl_->water_animation_time_seconds.load(std::memory_order_relaxed);
+    const double water_presentation_time_seconds =
+        impl_->vk_water_diagnostic_settings.capture_frame_enabled
+            ? viewer::water_capture_time_seconds(
+                  impl_->vk_water_diagnostic_settings)
+            : static_cast<double>(live_water_animation_time_seconds);
     impl_->vk_scene->set_water_animation_time(
-        water_animation_time_seconds);
+        static_cast<float>(water_presentation_time_seconds));
     impl_->vk_scene->set_geometry_debug_view(opts.geometry_debug_view);
     impl_->vk_scene->set_wireframe(opts.wireframe);
     impl_->vk_scene->set_impostor_parallax(opts.impostor_parallax);
@@ -12298,7 +12315,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 authored_water_proxy_instance_index);
             viewer::WaterAnimationFallback fallback{};
             prepared = impl_->vk_water_animation_playback.select(
-                static_cast<double>(water_animation_time_seconds),
+                water_presentation_time_seconds,
                 frame.frame_slot,
                 impl_->vk_water_animation_selection, fallback);
             if (!prepared)

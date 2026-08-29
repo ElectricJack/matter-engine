@@ -10,7 +10,36 @@ layout(set = 2, binding = 2, std140) uniform WaterForwardConstants {
     vec4 to_sun;
     vec4 viewport_refraction;
     vec4 reflection_controls;
+    uvec4 diagnostics;
 } water_forward;
+
+const uint WATER_DIAGNOSTIC_NONE = 0u;
+const uint WATER_DIAGNOSTIC_IDENTITY = 1u;
+const uint WATER_DIAGNOSTIC_GEOMETRY_NORMAL = 2u;
+const uint WATER_DIAGNOSTIC_FOAM_DRIVER = 3u;
+
+uint water_diagnostic_hash(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return value;
+}
+
+vec3 water_diagnostic_identity_color(uint identity) {
+    uint mixed = water_diagnostic_hash(identity);
+    return vec3(float((mixed >> 0u) & 255u),
+                float((mixed >> 8u) & 255u),
+                float((mixed >> 16u) & 255u)) / 319.0 + vec3(0.2);
+}
+
+vec3 water_foam_driver_heatmap(float coverage) {
+    float value = clamp(coverage, 0.0, 1.0);
+    return vec3(smoothstep(0.5, 1.0, value),
+                smoothstep(0.2, 0.75, value),
+                smoothstep(0.0, 0.35, value));
+}
 
 struct WaterScreenSample {
     vec2 uv;

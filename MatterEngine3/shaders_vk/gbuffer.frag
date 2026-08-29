@@ -72,6 +72,8 @@ layout(location = 12) flat in vec3 in_model_basis_x;
 layout(location = 13) flat in vec3 in_model_basis_y;
 layout(location = 15) flat in uint in_water_binding_slot;
 layout(location = 16) flat in uint in_water_generation;
+// Shared raster vertex interface; ordinary/static draws always supply zero.
+layout(location = 17) flat in uint in_water_diagnostic_identity;
 
 // M2.5 impostor atlas, scene set binding 15. Layer pairs: 2*slot is the SHADE
 // layer (rg = octahedral object-space normal, b = baked AO, a = fractional
@@ -91,7 +93,7 @@ layout(push_constant) uniform RasterDebugPushConstants {
     // raster.vert and in RasterDebugPushConstants (vk_scene_renderer.h); the
     // three must stay identical.
     uint impostor_parallax_enabled;
-    uint water_padding0;
+    uint water_diagnostic_identity;
     uint water_padding1;
     uint water_padding2;
     vec4 water_bounds_min;

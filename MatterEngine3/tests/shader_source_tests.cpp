@@ -219,6 +219,43 @@ int main() {
     assert(!water_common.empty());
     assert(water_raster.find("#include \"water_surface.glsl\"") !=
            std::string::npos);
+    assert(renderer_header.find("uint32_t diagnostics[4]") !=
+           std::string::npos);
+    assert(water_screen.find("uvec4 diagnostics;") != std::string::npos);
+    assert(raster_vertex.find(
+               "layout(location = 17) flat out uint out_water_diagnostic_identity") !=
+           std::string::npos);
+    assert(water_raster.find(
+               "layout(location = 17) flat in uint in_water_diagnostic_identity") !=
+           std::string::npos);
+    assert(water_forward.find(
+               "layout(location = 17) flat in uint in_water_diagnostic_identity") !=
+           std::string::npos);
+    assert(raster_vertex.find("uint water_diagnostic_identity;") !=
+           std::string::npos);
+    assert(water_raster.find("uint water_diagnostic_identity;") !=
+           std::string::npos);
+    assert(water_forward.find("WATER_DIAGNOSTIC_IDENTITY") !=
+               std::string::npos &&
+           water_forward.find("WATER_DIAGNOSTIC_GEOMETRY_NORMAL") !=
+               std::string::npos &&
+           water_forward.find("WATER_DIAGNOSTIC_FOAM_DRIVER") !=
+               std::string::npos);
+    const size_t diagnostic_branch = water_forward.find(
+        "if (diagnostic_view != WATER_DIAGNOSTIC_NONE)");
+    const size_t normal_optics_branch = water_forward.find(
+        "else if (field_valid)", diagnostic_branch);
+    const size_t first_optics_sample = water_forward.find(
+        "water_refract_scene", diagnostic_branch);
+    assert(diagnostic_branch != std::string::npos &&
+           normal_optics_branch != std::string::npos &&
+           first_optics_sample > normal_optics_branch);
+    assert(water_forward.find(
+               "normalize(in_normal) * 0.5 + 0.5") !=
+           std::string::npos);
+    assert(water_forward.find(
+               "field_valid ? water_foam_driver_heatmap(surface.foam.coverage) : vec3(0.0)") !=
+           std::string::npos);
     assert(water_common.find("vec3 water_apply_foam_radiance") !=
            std::string::npos);
     assert(water_forward.find(

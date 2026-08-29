@@ -158,6 +158,18 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
   baked-water animation references through a deliberately missing subdirectory
   so the accepted static-water fallback can be captured without corrupting or
   moving real cache artifacts.
+- `MATTER_WATER_CAPTURE_FRAME=<0..29>` — freezes only cosmetic baked-water
+  presentation at the midpoint of the selected 30 Hz frame,
+  `(frame + 0.5) / 30`. It does not change simulation time, bake phase, or the
+  network clock stored in hydrology artifacts. A present malformed or
+  out-of-range value is a fatal world-open error.
+- `MATTER_WATER_DIAGNOSTIC_VIEW=identity|geometry-normal|foam-driver` — replaces
+  forward water optics with a retained QA view: stable section/handoff
+  ownership color, pre-shading geometry normal, or baked foam-driver heat map.
+  The variable must be absent for normal rendering; an empty or unknown value
+  is a fatal world-open error. Use it with `MATTER_WATER_CAPTURE_FRAME` and
+  `MatterEngine3/tools/run_water_mesh_continuity_diagnostics.ps1`; these views
+  diagnose boundaries and are not visual-acceptance evidence by themselves.
 - `MATTER_TEST_RESIZE` — exercises a forced window resize once baked, for resize
   regression testing.
 - `MATTER_FORCE_LOD_TINT` — forces the LOD-rung debug tint view on.

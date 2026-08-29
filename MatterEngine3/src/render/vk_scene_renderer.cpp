@@ -4616,6 +4616,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             static_cast<float>(raster_extent_.height), 24.0f, 0.75f};
         frame.water_forward_constants_cache.reflection_controls = {
             24.0f, 2.0f, 0.25f, 80.0f};
+        frame.water_forward_constants_cache.diagnostics[0] =
+            static_cast<std::uint32_t>(water_diagnostic_view_);
         if (!matter::upload_buffer(
                 *vulkan_, frame.water_forward_constants,
                 &frame.water_forward_constants_cache,
@@ -4828,6 +4830,8 @@ bool VkSceneRenderer::upload_water_forward_constants(
                                      static_cast<float>(extent.height),
                                      24.0f, 0.75f};
     constants.reflection_controls = {24.0f, 2.0f, 0.25f, 80.0f};
+    constants.diagnostics[0] =
+        static_cast<std::uint32_t>(water_diagnostic_view_);
     frame.water_forward_constants_cache = constants;
     return matter::upload_buffer(
         *vulkan_, frame.water_forward_constants, &constants,
@@ -15248,6 +15252,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         static_cast<float>(width), static_cast<float>(height), 24.0f, 0.75f};
     selected.water_forward_constants_cache.reflection_controls = {
         24.0f, 2.0f, 0.25f, 80.0f};
+    selected.water_forward_constants_cache.diagnostics[0] =
+        static_cast<std::uint32_t>(water_diagnostic_view_);
     if (!matter::upload_buffer(
             *vulkan_, selected.water_forward_constants,
             &selected.water_forward_constants_cache,

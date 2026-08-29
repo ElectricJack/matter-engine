@@ -69,6 +69,7 @@ layout(location = 12) flat out vec3 out_model_basis_x;
 layout(location = 13) flat out vec3 out_model_basis_y;
 layout(location = 15) flat out uint out_water_binding_slot;
 layout(location = 16) flat out uint out_water_generation;
+layout(location = 17) flat out uint out_water_diagnostic_identity;
 
 layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 world_to_clip;
@@ -106,7 +107,7 @@ layout(push_constant) uniform RasterDebugPushConstants {
     // raster.vert and in RasterDebugPushConstants (vk_scene_renderer.h); the
     // three must stay identical.
     uint impostor_parallax_enabled;
-    uint water_padding0;
+    uint water_diagnostic_identity;
     uint water_padding1;
     uint water_padding2;
     vec4 water_bounds_min;
@@ -411,6 +412,11 @@ void main() {
                            : draw.selected_lod;
     out_water_binding_slot = draw.water_binding_slot;
     out_water_generation = draw.water_generation;
+#ifdef MATTER_WATER_ANIMATION_VERTEX_INPUT
+    out_water_diagnostic_identity = debug_push.water_diagnostic_identity;
+#else
+    out_water_diagnostic_identity = 0u;
+#endif
 #if defined(MATTER_SKINNED_VERTEX_INPUT) || \
     defined(MATTER_WATER_ANIMATION_VERTEX_INPUT)
     // Animated props carry no warp field; su == 0 selects the world-XZ

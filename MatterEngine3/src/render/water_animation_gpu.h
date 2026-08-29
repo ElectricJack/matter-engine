@@ -8,9 +8,41 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace viewer {
+
+// Off-by-default capture diagnostics shared by the cosmetic playback selector
+// and the forward water pass. Values are an explicit CPU/GLSL ABI.
+enum class WaterDiagnosticView : std::uint32_t {
+    None = 0u,
+    Identity = 1u,
+    GeometryNormal = 2u,
+    FoamDriver = 3u,
+};
+
+struct WaterDiagnosticSettings {
+    bool capture_frame_enabled = false;
+    std::uint32_t capture_frame = 0u;
+    WaterDiagnosticView view = WaterDiagnosticView::None;
+};
+
+// Pure parser used once by WorldSession::open_world. Null means absent; an
+// empty or malformed present value is an error rather than an implicit off.
+bool parse_water_diagnostic_settings(
+    const char* capture_frame, const char* diagnostic_view,
+    WaterDiagnosticSettings& settings, std::string& error) noexcept;
+
+inline double water_capture_time_seconds(
+    const WaterDiagnosticSettings& settings) noexcept {
+    return (static_cast<double>(settings.capture_frame) + 0.5) / 30.0;
+}
+
+// Stable FNV-1a over the complete playback identity bytes. Zero is reserved
+// for static water and therefore remapped to a fixed nonzero token.
+std::uint32_t water_animation_diagnostic_identity(
+    std::string_view identity) noexcept;
 
 // CPU decode oracle for artifact validation/tests. Runtime rasterization keeps
 // the 12-byte PackedWaterAnimationVertex intact and decodes it in the water
@@ -47,6 +79,7 @@ struct VkWaterAnimationRasterDraw {
     std::uint32_t vertex_count = 0u;
     std::uint32_t proxy_transform_slot = 0u;
     std::uint32_t material_index = 0u;
+    std::uint32_t diagnostic_identity = 0u;
     gpu_meshing::Aabb quantization_bounds_m{};
     bool handoff = false;
 };

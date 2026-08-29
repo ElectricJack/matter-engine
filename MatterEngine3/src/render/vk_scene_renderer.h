@@ -90,14 +90,16 @@ struct alignas(16) WaterForwardConstants {
     matter::Float4 to_sun;
     matter::Float4 viewport_refraction;
     matter::Float4 reflection_controls;
+    uint32_t diagnostics[4]{};
 };
-static_assert(sizeof(WaterForwardConstants) == 112,
+static_assert(sizeof(WaterForwardConstants) == 128,
               "water forward constants must match the std140 shader block");
 static_assert(std::is_standard_layout_v<WaterForwardConstants>);
 static_assert(offsetof(WaterForwardConstants, clip_to_world) == 0);
 static_assert(offsetof(WaterForwardConstants, to_sun) == 64);
 static_assert(offsetof(WaterForwardConstants, viewport_refraction) == 80);
 static_assert(offsetof(WaterForwardConstants, reflection_controls) == 96);
+static_assert(offsetof(WaterForwardConstants, diagnostics) == 112);
 
 struct ResolvedAtmosphereStatus {
     uint64_t generation_serial = 0;
@@ -209,7 +211,10 @@ struct alignas(16) RasterDebugPushConstants {
     // NOTE: distinct from tileset POM, which already excludes impostors
     // outright (`tileset_slot >= 0 && !is_impostor`).
     uint32_t impostor_parallax_enabled = 1;
-    uint32_t water_padding0[3]{};
+    // Zero is the static-water sentinel. Animated direct draws replace this
+    // first pre-existing padding word with a hash of their playback identity.
+    uint32_t water_diagnostic_identity = 0u;
+    uint32_t water_padding0[2]{};
     float water_bounds_min[4]{};
     float water_bounds_extent[4]{};
     uint32_t water_material_index = 0u;
@@ -297,6 +302,7 @@ inline RasterDebugPushConstants make_water_animation_push_constants(
     result.water_bounds_extent[2] = draw.quantization_bounds_m.max_m.z -
                                     draw.quantization_bounds_m.min_m.z;
     result.water_material_index = draw.material_index;
+    result.water_diagnostic_identity = draw.diagnostic_identity;
     return result;
 }
 
@@ -1048,6 +1054,9 @@ public:
     void set_water_animation_time(float seconds) noexcept {
         water_animation_time_seconds_ =
             std::isfinite(seconds) && seconds >= 0.0f ? seconds : 0.0f;
+    }
+    void set_water_diagnostic_view(WaterDiagnosticView view) noexcept {
+        water_diagnostic_view_ = view;
     }
     // Publishes one immutable animation generation. GPU buffers are allocated
     // per Vulkan frame slot; a failed candidate leaves the previous generation
@@ -2987,6 +2996,7 @@ private:
     std::string last_rt_fallback_reason_;
     TemporalFrame temporal_frame_{};
     float water_animation_time_seconds_ = 0.0f;
+    WaterDiagnosticView water_diagnostic_view_ = WaterDiagnosticView::None;
 
     // ---- update_instances() unchanged-input fast path --------------------
     // The candidate instance set update_instances() builds is a pure function

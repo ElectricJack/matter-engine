@@ -959,6 +959,38 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
               baseline_control.instance_token == active_control.instance_token,
           "water forward: load-preserving pass leaves neighboring opaque pixels byte-identical");
 
+    renderer.set_water_diagnostic_view(
+        viewer::WaterDiagnosticView::Identity);
+    matter::VulkanFrame identity_frame{};
+    CHECK(vulkan.begin_frame(identity_frame, error),
+          error.empty() ? "water forward: begin identity diagnostic frame"
+                        : error.c_str());
+    CHECK(playback_fixture.playback.select(
+              1.0 / 30.0, identity_frame.frame_slot, selection,
+              playback_fallback) &&
+              renderer.prepare_water_animation_frame(
+                  71u, identity_frame.frame_slot, selection, {1u},
+                  animation_error),
+          !playback_fallback.message.empty()
+              ? playback_fallback.message.c_str()
+              : animation_error.message.c_str());
+    if (!finish_frame(identity_frame,
+                      "water forward: render identity diagnostic"))
+        return;
+    viewer::VkRasterPixel identity_center{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         identity_center, error),
+          error.empty() ? "water forward: read identity diagnostic"
+                        : error.c_str());
+    std::printf("water forward identity: hdr=%.4f/%.4f/%.4f\n",
+                identity_center.hdr.x, identity_center.hdr.y,
+                identity_center.hdr.z);
+    CHECK(close3({identity_center.hdr.x, identity_center.hdr.y,
+                  identity_center.hdr.z},
+                 {0.25642633f, 0.74545455f, 0.33793103f}, 2.0e-3f),
+          "water forward: direct identity selects the stable artifact hash color");
+    renderer.set_water_diagnostic_view(viewer::WaterDiagnosticView::None);
+
     renderer.clear_water_animation(active_frame.serial + 2u);
     proxy_instance.rt_proxy_only = false;
     CHECK(renderer.update_instances({background_instance, proxy_instance},
@@ -3258,7 +3290,7 @@ void run_rt_lod_payload_contract_tests() {
 void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
-    CHECK(sizeof(viewer::WaterForwardConstants) == 112u,
+    CHECK(sizeof(viewer::WaterForwardConstants) == 128u,
           "water forward constants ABI");
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
@@ -3412,6 +3444,24 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               forward_constants.reflection_controls.z == 0.25f &&
               forward_constants.reflection_controls.w == 80.0f,
           "water forward reflection constants");
+    CHECK(forward_constants.diagnostics[0] == 0u &&
+              forward_constants.diagnostics[1] == 0u &&
+              forward_constants.diagnostics[2] == 0u &&
+              forward_constants.diagnostics[3] == 0u,
+          "water forward diagnostics are off and zero-filled by default");
+    renderer.set_water_diagnostic_view(
+        viewer::WaterDiagnosticView::Identity);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "render identity diagnostic constants"
+                        : error.c_str());
+    const viewer::WaterForwardConstants identity_constants =
+        renderer.test_water_forward_constants(0u);
+    CHECK(identity_constants.diagnostics[0] == 1u &&
+              identity_constants.diagnostics[1] == 0u &&
+              identity_constants.diagnostics[2] == 0u &&
+              identity_constants.diagnostics[3] == 0u,
+          "selected identity view reaches the GPU UBO with reserved words zero");
+    renderer.set_water_diagnostic_view(viewer::WaterDiagnosticView::None);
     const VkImage opaque_hdr_at_initial_extent =
         renderer.test_opaque_hdr_image();
     const VkImage opaque_depth_at_initial_extent =

@@ -1,6 +1,7 @@
 #include "render/water_animation_gpu.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -67,6 +68,51 @@ bool finite_bounds(const gpu_meshing::Aabb& bounds) noexcept {
 }
 
 }  // namespace
+
+bool parse_water_diagnostic_settings(
+    const char* capture_frame, const char* diagnostic_view,
+    WaterDiagnosticSettings& settings, std::string& error) noexcept {
+    WaterDiagnosticSettings parsed{};
+    error.clear();
+    if (capture_frame != nullptr) {
+        const std::string_view text(capture_frame);
+        std::uint32_t frame = 0u;
+        const auto result = std::from_chars(
+            text.data(), text.data() + text.size(), frame, 10);
+        if (text.empty() || result.ec != std::errc{} ||
+            result.ptr != text.data() + text.size() || frame >= 30u) {
+            error = "MATTER_WATER_CAPTURE_FRAME must be an integer from 0 through 29";
+            return false;
+        }
+        parsed.capture_frame_enabled = true;
+        parsed.capture_frame = frame;
+    }
+    if (diagnostic_view != nullptr) {
+        const std::string_view text(diagnostic_view);
+        if (text == "identity")
+            parsed.view = WaterDiagnosticView::Identity;
+        else if (text == "geometry-normal")
+            parsed.view = WaterDiagnosticView::GeometryNormal;
+        else if (text == "foam-driver")
+            parsed.view = WaterDiagnosticView::FoamDriver;
+        else {
+            error = "MATTER_WATER_DIAGNOSTIC_VIEW must be identity, geometry-normal, or foam-driver";
+            return false;
+        }
+    }
+    settings = parsed;
+    return true;
+}
+
+std::uint32_t water_animation_diagnostic_identity(
+    std::string_view identity) noexcept {
+    std::uint32_t hash = 2166136261u;
+    for (const unsigned char byte : identity) {
+        hash ^= static_cast<std::uint32_t>(byte);
+        hash *= 16777619u;
+    }
+    return hash != 0u ? hash : 1u;
+}
 
 bool WaterAnimationGpuCapacity::valid() const noexcept {
     if (packed_vertex_bytes == 0u || decoded_vertex_count == 0u ||
@@ -170,7 +216,17 @@ bool WaterAnimationGpuSchedule::prepare(
     frame.upload_required = upload;
     frame.frame_index = selection.frame_index;
     frame.barriers = {};
-    if (!upload) return true;
+    if (!upload) {
+        if (frame.draws.size() != proxy_transform_slots.size())
+            return reject(WaterAnimationGpuErrorCode::InvalidSelection,
+                          "water animation cached draw mapping is invalid",
+                          error);
+        for (std::size_t draw_index = 0u;
+             draw_index != frame.draws.size(); ++draw_index)
+            frame.draws[draw_index].proxy_transform_slot =
+                proxy_transform_slots[draw_index];
+        return true;
+    }
 
     const std::size_t packed_capacity_before =
         frame.packed_vertices.capacity();
@@ -236,6 +292,7 @@ bool WaterAnimationGpuSchedule::prepare(
                                         sizeof(std::uint32_t)),
              packed.index_count, output_vertex, packed.vertex_count,
              proxy_transform_slots[draw_index], selected.material_index,
+             water_animation_diagnostic_identity(selected.identity),
              selected.quantization_bounds_m, selected.handoff});
         packed_offset += packed.vertex_bytes;
         index_byte_offset += packed.index_bytes;
