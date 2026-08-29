@@ -3,6 +3,9 @@
 #include "hydrology/fill_sensor.h"
 #include "hydrology/authored_fluid_request.h"
 #include "hydrology/fluid_emission.h"
+#include "hydrology/hydrology_field_artifact.h"
+#include "hydrology/hydrology_handoff_products.h"
+#include "hydrology/hydrology_network_artifact.h"
 #include "hydrology/physx_collision_input.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/spillway_handoff.h"
@@ -1969,6 +1972,7 @@ struct LifecycleBackendState {
     std::mutex thread_mutex;
     std::thread::id run_thread{};
     std::vector<std::string> lifecycle_events;
+    float static_payload_velocity_delta = 0.0f;
 };
 
 class LifecycleBackend final : public IFluidBakeBackend {
@@ -2069,6 +2073,9 @@ public:
             output.particles[2].position_m = clamp_inside(
                 {collar.x - 0.2f, collar.y + 0.2f, collar.z - 0.2f});
         }
+        if (completed && !output.particles.empty())
+            output.particles.back().velocity_mps.x +=
+                state_->static_payload_velocity_delta;
         if (completed && input.network.fluid.mesh_animation.enabled) {
             hydrology::FluidParticleAnimationCapture capture{};
             capture.frames_per_second =
@@ -2613,6 +2620,189 @@ std::map<std::filesystem::path, std::vector<std::uint8_t>> snapshot_files(
     return result;
 }
 
+struct ReadyPackageSnapshot {
+    hydrology::HydrologyNetworkArtifact manifest{};
+    std::filesystem::path cache_root;
+    std::map<std::filesystem::path, std::vector<std::uint8_t>> files;
+};
+
+bool read_package_file(
+    const std::filesystem::path& path,
+    std::vector<std::uint8_t>& bytes) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) return false;
+    bytes.assign(std::istreambuf_iterator<char>(stream),
+                 std::istreambuf_iterator<char>());
+    return stream.good() || stream.eof();
+}
+
+bool snapshot_ready_package(
+    const std::filesystem::path& manifest_path,
+    ReadyPackageSnapshot& snapshot,
+    gpu_meshing::Error& error) {
+    snapshot = {};
+    std::vector<std::uint8_t> manifest_bytes;
+    if (!read_package_file(manifest_path, manifest_bytes) ||
+        !hydrology::deserialize_network_artifact(
+            manifest_bytes, snapshot.manifest, error))
+        return false;
+    snapshot.files[manifest_path] = std::move(manifest_bytes);
+    const auto cache_root = manifest_path.parent_path().filename() ==
+            "hydrology"
+        ? manifest_path.parent_path().parent_path()
+        : manifest_path.parent_path();
+    snapshot.cache_root = cache_root;
+    const auto capture = [&](const std::string& relative_path,
+                             std::vector<std::uint8_t>& bytes) {
+        const auto path = cache_root / relative_path;
+        if (!read_package_file(path, bytes)) return false;
+        snapshot.files[path] = bytes;
+        return true;
+    };
+    for (const auto& reference : snapshot.manifest.field_products) {
+        std::vector<std::uint8_t> bytes;
+        hydrology::HydrologyFieldProduct product{};
+        if (!capture(reference.relative_path, bytes) ||
+            !hydrology::load_hydrology_field_product_validated(
+                cache_root / reference.relative_path, reference.kind,
+                reference.payload_digest, product, error))
+            return false;
+    }
+    for (const auto& reference : snapshot.manifest.sections) {
+        std::vector<std::uint8_t> bytes;
+        hydrology::HydrologyArtifact artifact{};
+        if (!capture(reference.relative_path, bytes) ||
+            !hydrology::deserialize_artifact(bytes, artifact, error) ||
+            artifact.section.section_id != reference.id ||
+            artifact.semantic_key != reference.semantic_key ||
+            artifact.payload_digest != reference.payload_digest)
+            return false;
+    }
+    for (const auto& reference : snapshot.manifest.handoffs) {
+        std::vector<std::uint8_t> bytes;
+        hydrology::HydrologyHandoffArtifact artifact{};
+        if (!capture(reference.relative_path, bytes) ||
+            !hydrology::deserialize_handoff_artifact(
+                bytes, artifact, error) ||
+            artifact.id != reference.id ||
+            artifact.semantic_key != reference.semantic_key ||
+            artifact.payload_digest != reference.payload_digest)
+            return false;
+    }
+    const auto validate_animation = [&](const auto& reference) {
+        std::vector<std::uint8_t> bytes;
+        hydrology::WaterMeshAnimationArtifact artifact{};
+        if (!capture(reference.relative_path, bytes) ||
+            !hydrology::load_water_mesh_animation_artifact(
+                cache_root / reference.relative_path, artifact, error))
+            return false;
+        return artifact.identity == reference.id &&
+               artifact.semantic_key == reference.semantic_key &&
+               artifact.source_primary_payload_digest ==
+                   reference.source_primary_payload_digest &&
+               artifact.source_secondary_payload_digest ==
+                   reference.source_secondary_payload_digest &&
+               artifact.frames.size() == reference.frame_count &&
+               artifact.frames_per_second == reference.frames_per_second &&
+               artifact.payload_digest == reference.payload_digest;
+    };
+    for (const auto& reference : snapshot.manifest.section_animations)
+        if (!validate_animation(reference)) return false;
+    for (const auto& reference : snapshot.manifest.handoff_animations)
+        if (!validate_animation(reference)) return false;
+    return true;
+}
+
+void test_failed_sidecar_repair_preserves_ready_package_closure() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-static-repair-transaction-contract";
+    const auto cache_root = root / ".cache";
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(root, filesystem_error);
+
+    WorldSessionFluidOptions options{};
+    options.two_sections = true;
+    options.mesh_animation = true;
+    auto cold_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase cold = run_world_session_fluid_case(
+        root, options, cold_state);
+    const auto manifests = cached_files_with_extension(cache_root, ".mhyn");
+    const auto sidecars = cached_files_with_extension(cache_root, ".mhwb");
+    CHECK(cold.accepted && manifests.size() == 1u && sidecars.size() == 2u,
+          "the static repair transaction fixture begins with one complete Ready package and both endpoint sidecars");
+    if (!cold.accepted || manifests.size() != 1u || sidecars.size() != 2u) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+
+    ReadyPackageSnapshot accepted{};
+    gpu_meshing::Error package_error{};
+    CHECK(snapshot_ready_package(manifests.front(), accepted, package_error),
+          package_error.message.c_str());
+    const auto static_path = accepted.cache_root /
+        accepted.manifest.sections.front().relative_path;
+    const std::uintmax_t static_size =
+        std::filesystem::file_size(static_path, filesystem_error);
+    CHECK(!filesystem_error && static_size > 28u,
+          "the ordinary corruption fixture finds a complete static artifact");
+    std::filesystem::resize_file(
+        static_path, static_size - 1u, filesystem_error);
+    CHECK(!filesystem_error,
+          "the ordinary corruption fixture truncates the static artifact");
+    auto corrupt_static_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase repaired_static = run_world_session_fluid_case(
+        root, options, corrupt_static_state);
+    ReadyPackageSnapshot after_static_repair{};
+    CHECK(repaired_static.accepted,
+          "an ordinarily corrupt static cache target still produces an accepted repair");
+    CHECK(repaired_static.backend_run_calls == 1,
+          ("ordinary static corruption reruns only its affected section; observed " +
+           std::to_string(repaired_static.backend_run_calls)).c_str());
+    CHECK(snapshot_ready_package(
+              manifests.front(), after_static_repair, package_error),
+          package_error.message.c_str());
+    CHECK(after_static_repair.files == accepted.files,
+          "ordinary static repair restores every byte of the prior Ready package");
+    const auto upper_sidecar = std::find_if(
+        sidecars.begin(), sidecars.end(), [](const auto& path) {
+            return path.filename().string().rfind("upper-", 0u) == 0u;
+        });
+    CHECK(upper_sidecar != sidecars.end(),
+          "the transaction fixture locates the Ready upstream sidecar");
+    if (upper_sidecar == sidecars.end()) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+    std::filesystem::remove(*upper_sidecar, filesystem_error);
+    std::filesystem::create_directory(*upper_sidecar, filesystem_error);
+    {
+        std::ofstream blocker(*upper_sidecar / "blocker");
+        blocker << "force a later immutable sidecar publication failure";
+    }
+
+    auto repair_state = std::make_shared<LifecycleBackendState>();
+    repair_state->static_payload_velocity_delta = 3.0f;
+    const WorldSessionFluidCase failed_repair = run_world_session_fluid_case(
+        root, options, repair_state);
+    ReadyPackageSnapshot after_failure{};
+    package_error = {};
+    CHECK(failed_repair.backend_run_calls == 1 &&
+              std::find(failed_repair.lifecycle_events.begin(),
+                        failed_repair.lifecycle_events.end(),
+                        "handoff-after-boundary-save") ==
+                  failed_repair.lifecycle_events.end(),
+          "a sidecar-driven miss reruns only the affected section with deliberately changed accepted static bytes and cannot reach handoff publication");
+    CHECK(snapshot_ready_package(
+              manifests.front(), after_failure, package_error),
+          package_error.message.c_str());
+    CHECK(after_failure.files == accepted.files &&
+              after_failure.manifest.payload_digest ==
+                  accepted.manifest.payload_digest,
+          "a failed sidecar repair leaves the Ready manifest and every referenced field, section, animation, and handoff file byte-identical and valid");
+
+    std::filesystem::remove_all(root, filesystem_error);
+}
+
 void test_world_session_boundary_sidecar_cache_is_transactional_and_local() {
     const auto root = std::filesystem::temp_directory_path() /
                       "matter-live-fluid-boundary-cache-contract";
@@ -3097,6 +3287,7 @@ int main() {
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
     test_world_session_runs_authored_fluid_bake_before_publication();
     test_world_session_publishes_complete_two_section_network();
+    test_failed_sidecar_repair_preserves_ready_package_closure();
     test_world_session_boundary_sidecar_cache_is_transactional_and_local();
     test_world_session_fluid_cache_hit_skips_solver_and_renderer();
     test_world_session_fluid_device_mismatch_is_a_hard_dry_error();

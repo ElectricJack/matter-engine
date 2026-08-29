@@ -1325,6 +1325,18 @@ bool load_semantic_cache(const FluidBakeRequest& request,
            cache_matches_request(artifact, request);
 }
 
+bool same_serialized_hydrology_artifact(
+    const hydrology::HydrologyArtifact& first,
+    const hydrology::HydrologyArtifact& second,
+    gpu_meshing::Error& error) {
+    std::vector<std::uint8_t> first_bytes;
+    std::vector<std::uint8_t> second_bytes;
+    error = {};
+    return hydrology::serialize_artifact(first, first_bytes, error) &&
+           hydrology::serialize_artifact(second, second_bytes, error) &&
+           first_bytes == second_bytes;
+}
+
 bool load_water_animation_cache(
     const std::filesystem::path& path,
     const std::string& section_id,
@@ -2124,6 +2136,10 @@ bool LocalProvider::run_authored_fluid_bake(
         std::vector<hydrology::WaterBoundaryAnimationSource>
             boundary_candidates;
         const bool static_cache_hit = load_semantic_cache(request, candidate);
+        const std::optional<hydrology::HydrologyArtifact>
+            protected_static_artifact = static_cache_hit
+                ? std::optional<hydrology::HydrologyArtifact>(candidate)
+                : std::nullopt;
         const bool animation_enabled =
             river_network_->fluid.mesh_animation.enabled;
         std::uint64_t animation_semantic_key = 0u;
@@ -2275,6 +2291,16 @@ bool LocalProvider::run_authored_fluid_bake(
                     hydrology::FluidBakeCode::ProductFailure,
                     digest_error.message.empty()
                         ? "accepted section payload digest is unavailable"
+                        : digest_error.message};
+                return false;
+            }
+            if (protected_static_artifact &&
+                !same_serialized_hydrology_artifact(
+                    *protected_static_artifact, candidate, digest_error)) {
+                section_error = {
+                    hydrology::FluidBakeCode::ProductFailure,
+                    digest_error.message.empty()
+                        ? "rerun changed a valid immutable section cache target"
                         : digest_error.message};
                 return false;
             }
@@ -2442,11 +2468,26 @@ bool LocalProvider::run_authored_fluid_bake(
                 candidate.visual_mesh, true, trace_error);
             gpu_meshing::Error artifact_error{};
             const auto serialize_start = std::chrono::steady_clock::now();
-            if (!hydrology::save_artifact_atomic(
-                    request.cache_path, candidate, artifact_error) ||
-                !hydrology::load_artifact_validated(
-                    request.cache_path, candidate.product_keys.visual,
-                    candidate, artifact_error, request.semantic_key)) {
+            if (protected_static_artifact) {
+                hydrology::HydrologyArtifact reopened{};
+                if (!load_semantic_cache(request, reopened) ||
+                    !same_serialized_hydrology_artifact(
+                        *protected_static_artifact, reopened,
+                        artifact_error)) {
+                    section_error = {
+                        hydrology::FluidBakeCode::ProductFailure,
+                        artifact_error.message.empty()
+                            ? "valid immutable section cache target changed during repair"
+                            : artifact_error.message};
+                    return false;
+                }
+                candidate = std::move(reopened);
+            } else if (!hydrology::save_artifact_atomic(
+                           request.cache_path, candidate, artifact_error) ||
+                       !hydrology::load_artifact_validated(
+                           request.cache_path,
+                           candidate.product_keys.visual, candidate,
+                           artifact_error, request.semantic_key)) {
                 section_error = {hydrology::FluidBakeCode::ProductFailure,
                                  artifact_error.message};
                 return false;
