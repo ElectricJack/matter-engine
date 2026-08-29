@@ -55,7 +55,7 @@ void main() {
     }
 
     WaterSurfaceState surface;
-    bool field_valid = in_material_valid != 0u &&
+    bool surface_valid = in_material_valid != 0u &&
         water_evaluate_surface(in_water_binding_slot, in_water_generation,
                                in_material_index, in_world_pos.xz, in_normal,
                                frame.water_animation.x, roughness, surface);
@@ -69,9 +69,9 @@ void main() {
         } else if (diagnostic_view == WATER_DIAGNOSTIC_GEOMETRY_NORMAL) {
             color = normalize(in_normal) * 0.5 + 0.5;
         } else if (diagnostic_view == WATER_DIAGNOSTIC_FOAM_DRIVER) {
-            color = field_valid ? water_foam_driver_heatmap(surface.foam.coverage) : vec3(0.0);
+            color = surface_valid ? water_foam_driver_heatmap(surface.foam.coverage) : vec3(0.0);
         }
-    } else if (field_valid) {
+    } else if (surface_valid) {
         WaterFieldGpuRecord record =
             water_field_records[in_water_binding_slot];
         vec3 view_direction = normalize(
@@ -114,7 +114,7 @@ void main() {
     out_hdr = vec4(color, 1.0);
     out_velocity = in_velocity_valid.z != 0.0
         ? in_velocity_valid.xy : vec2(0.0);
-    out_reactivity = field_valid ? surface.reactivity : 0.0;
+    out_reactivity = surface_valid ? surface.reactivity : 0.0;
     out_material_instance = uvec2(in_material_index, in_instance_token);
     gl_FragDepth = gl_FragCoord.z;
 }

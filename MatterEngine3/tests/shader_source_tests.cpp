@@ -244,7 +244,7 @@ int main() {
     const size_t diagnostic_branch = water_forward.find(
         "if (diagnostic_view != WATER_DIAGNOSTIC_NONE)");
     const size_t normal_optics_branch = water_forward.find(
-        "else if (field_valid)", diagnostic_branch);
+        "else if (surface_valid)", diagnostic_branch);
     const size_t first_optics_sample = water_forward.find(
         "water_refract_scene", diagnostic_branch);
     assert(diagnostic_branch != std::string::npos &&
@@ -254,7 +254,7 @@ int main() {
                "normalize(in_normal) * 0.5 + 0.5") !=
            std::string::npos);
     assert(water_forward.find(
-               "field_valid ? water_foam_driver_heatmap(surface.foam.coverage) : vec3(0.0)") !=
+               "surface_valid ? water_foam_driver_heatmap(surface.foam.coverage) : vec3(0.0)") !=
            std::string::npos);
     assert(water_common.find("vec3 water_apply_foam_radiance") !=
            std::string::npos);
@@ -272,6 +272,16 @@ int main() {
            std::string::npos);
     assert(water_common.find("const int WATER_PHASE_COUNT = 2;") !=
            std::string::npos);
+    assert(water_common.find("const int WATER_FIELD_FRINGE_RADIUS = 2;") !=
+           std::string::npos);
+    assert(water_common.find("water_field_record_matches") !=
+           std::string::npos);
+    assert(water_common.find("water_default_fringe_sample") !=
+           std::string::npos);
+    assert(water_common.find("water_field_a[nonuniformEXT") !=
+           std::string::npos);
+    assert(water_common.find("water_field_c[nonuniformEXT") !=
+           std::string::npos);
     assert(water_common.find(
                "for (int step = 0; step < WATER_BACKTRACE_STEPS; ++step)") !=
            std::string::npos);
@@ -284,6 +294,9 @@ int main() {
            water_common.find("foam_controls") != std::string::npos &&
            water_common.find("water_breakup_noise") != std::string::npos);
     assert(water_raster.find("out_reactivity") != std::string::npos);
+    assert(water_forward.find("bool surface_valid") != std::string::npos);
+    assert(water_forward.find("else if (surface_valid)") !=
+           std::string::npos);
     // A closed water mesh contributes an entry and exit any-hit to a sun
     // shadow ray.  Its dark display albedo is not an absorption coefficient:
     // using it as the tint twice blackens the riverbed even when the authored

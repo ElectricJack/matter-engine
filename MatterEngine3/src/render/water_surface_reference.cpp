@@ -77,33 +77,96 @@ std::size_t cell_offset(const PackedWaterField& field, std::uint32_t x,
     return (static_cast<std::size_t>(z) * field.layout.width + x) * 4u;
 }
 
-float continuous_channel(const std::vector<std::uint16_t>& image,
-                         const PackedWaterField& field, float relative_x,
-                         float relative_z, std::uint32_t channel) noexcept {
-    const float texel_x = relative_x - 0.5f;
-    const float texel_z = relative_z - 0.5f;
-    const int x0_unclamped = static_cast<int>(std::floor(texel_x));
-    const int z0_unclamped = static_cast<int>(std::floor(texel_z));
-    const float tx = texel_x - static_cast<float>(x0_unclamped);
-    const float tz = texel_z - static_cast<float>(z0_unclamped);
-    const auto clamp_x = [&field](int x) {
-        return static_cast<std::uint32_t>(std::max(
-            0, std::min(x, static_cast<int>(field.layout.width) - 1)));
-    };
-    const auto clamp_z = [&field](int z) {
-        return static_cast<std::uint32_t>(std::max(
-            0, std::min(z, static_cast<int>(field.layout.depth) - 1)));
-    };
-    const std::uint32_t x0 = clamp_x(x0_unclamped);
-    const std::uint32_t x1 = clamp_x(x0_unclamped + 1);
-    const std::uint32_t z0 = clamp_z(z0_unclamped);
-    const std::uint32_t z1 = clamp_z(z0_unclamped + 1);
-    const auto fetch = [&](std::uint32_t x, std::uint32_t z) {
-        return water_half_to_float(image[cell_offset(field, x, z) + channel]);
-    };
-    const float row0 = lerp(fetch(x0, z0), fetch(x1, z0), tx);
-    const float row1 = lerp(fetch(x0, z1), fetch(x1, z1), tx);
-    return lerp(row0, row1, tz);
+bool wet_cell(const PackedWaterField& field, int x, int z) noexcept {
+    if (x < 0 || z < 0 || x >= static_cast<int>(field.layout.width) ||
+        z >= static_cast<int>(field.layout.depth))
+        return false;
+    return field.image_c_rgba8[cell_offset(
+               field, static_cast<std::uint32_t>(x),
+               static_cast<std::uint32_t>(z)) + 2u] >= 128u;
+}
+
+struct FieldAccumulator {
+    float a[4]{};
+    float b[4]{};
+    float c[2]{};
+    float d[3]{};
+    float weight = 0.0f;
+    float feature_weight = -1.0f;
+    std::size_t feature_index = SIZE_MAX;
+    hydrology::RiverFeature feature = hydrology::RiverFeature::Calm;
+};
+
+void accumulate_cell(const PackedWaterField& field, int x, int z,
+                     float weight, FieldAccumulator& sum) noexcept {
+    if (!(weight > 0.0f) || !wet_cell(field, x, z)) return;
+    const auto ux = static_cast<std::uint32_t>(x);
+    const auto uz = static_cast<std::uint32_t>(z);
+    const std::size_t offset = cell_offset(field, ux, uz);
+    for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
+        sum.a[channel] += weight * water_half_to_float(
+            field.image_a_rgba16f[offset + channel]);
+        sum.b[channel] += weight * water_half_to_float(
+            field.image_b_rgba16f[offset + channel]);
+    }
+    constexpr float kUnorm = 1.0f / 255.0f;
+    sum.c[0] += weight * field.image_c_rgba8[offset + 0u] * kUnorm;
+    sum.c[1] += weight * field.image_c_rgba8[offset + 1u] * kUnorm;
+    for (std::uint32_t channel = 0u; channel != 3u; ++channel)
+        sum.d[channel] += weight * water_half_to_float(
+            field.image_d_rgba16f[offset + channel]);
+    const std::size_t index = static_cast<std::size_t>(z) *
+                                  field.layout.width +
+                              static_cast<std::size_t>(x);
+    if (weight > sum.feature_weight ||
+        (weight == sum.feature_weight && index < sum.feature_index)) {
+        sum.feature_weight = weight;
+        sum.feature_index = index;
+        sum.feature = decode_water_feature(field.image_c_rgba8[offset + 3u]);
+    }
+    sum.weight += weight;
+}
+
+void finish_sample(const PackedWaterField& field, float relative_x,
+                   float relative_z, const FieldAccumulator& sum,
+                   WaterSurfaceFieldSample& output) noexcept {
+    const float inverse = 1.0f / sum.weight;
+    output.surface_height_m = sum.a[0] * inverse;
+    output.depth_m = sum.a[1] * inverse;
+    output.velocity_mps = {sum.a[2] * inverse, sum.b[0] * inverse,
+                           sum.a[3] * inverse};
+    const float normal_x = sum.b[1] * inverse;
+    const float normal_z = sum.b[2] * inverse;
+    output.base_normal = normalize(
+        {normal_x,
+         std::sqrt(std::max(0.0f, 1.0f - normal_x * normal_x -
+                                      normal_z * normal_z)),
+         normal_z},
+        {0.0f, 1.0f, 0.0f});
+    output.turbulence = sum.b[3] * inverse;
+    output.aeration = sum.c[0] * inverse;
+    output.foam_potential = sum.c[1] * inverse;
+    output.local_foam_multiplier = sum.d[0] * inverse;
+    output.local_threshold_offset = sum.d[1] * inverse;
+    output.local_wave_multiplier = sum.d[2] * inverse;
+    output.feature = sum.feature;
+
+    // Classification was nearest-filtered before the fringe fix. Preserve
+    // it exactly whenever the cell owning the query is wet; only a dry query
+    // borrows categorical/support values from interpolated wet neighbours.
+    const int nearest_x = static_cast<int>(std::floor(relative_x));
+    const int nearest_z = static_cast<int>(std::floor(relative_z));
+    if (wet_cell(field, nearest_x, nearest_z)) {
+        const std::size_t nearest = cell_offset(
+            field, static_cast<std::uint32_t>(nearest_x),
+            static_cast<std::uint32_t>(nearest_z));
+        constexpr float kUnorm = 1.0f / 255.0f;
+        output.aeration = field.image_c_rgba8[nearest + 0u] * kUnorm;
+        output.foam_potential = field.image_c_rgba8[nearest + 1u] * kUnorm;
+        output.feature = decode_water_feature(
+            field.image_c_rgba8[nearest + 3u]);
+    }
+    output.valid = true;
 }
 
 float feature_response(hydrology::RiverFeature feature) noexcept {
@@ -147,50 +210,43 @@ bool water_sample_field_reference(
         (world_xz.x - field.layout.origin_m.x) / field.layout.cell_size_m;
     const float relative_z =
         (world_xz.y - field.layout.origin_m.z) / field.layout.cell_size_m;
-    if (!(relative_x >= 0.0f) || !(relative_z >= 0.0f) ||
-        !(relative_x < static_cast<float>(field.layout.width)) ||
-        !(relative_z < static_cast<float>(field.layout.depth)))
+    const float radius = static_cast<float>(kWaterFieldFringeRadius);
+    if (relative_x < -radius || relative_z < -radius ||
+        relative_x >= static_cast<float>(field.layout.width) + radius ||
+        relative_z >= static_cast<float>(field.layout.depth) + radius)
         return false;
-    const std::uint32_t nearest_x =
-        static_cast<std::uint32_t>(std::floor(relative_x));
-    const std::uint32_t nearest_z =
-        static_cast<std::uint32_t>(std::floor(relative_z));
-    const std::size_t nearest = cell_offset(field, nearest_x, nearest_z);
-    if (field.image_c_rgba8[nearest + 2u] < 128u) return false;
 
-    output.surface_height_m = continuous_channel(
-        field.image_a_rgba16f, field, relative_x, relative_z, 0u);
-    output.depth_m = continuous_channel(
-        field.image_a_rgba16f, field, relative_x, relative_z, 1u);
-    output.velocity_mps.x = continuous_channel(
-        field.image_a_rgba16f, field, relative_x, relative_z, 2u);
-    output.velocity_mps.z = continuous_channel(
-        field.image_a_rgba16f, field, relative_x, relative_z, 3u);
-    output.velocity_mps.y = continuous_channel(
-        field.image_b_rgba16f, field, relative_x, relative_z, 0u);
-    const float normal_x = continuous_channel(
-        field.image_b_rgba16f, field, relative_x, relative_z, 1u);
-    const float normal_z = continuous_channel(
-        field.image_b_rgba16f, field, relative_x, relative_z, 2u);
-    output.base_normal = normalize(
-        {normal_x,
-         std::sqrt(std::max(0.0f, 1.0f - normal_x * normal_x -
-                                      normal_z * normal_z)),
-         normal_z},
-        {0.0f, 1.0f, 0.0f});
-    output.turbulence = continuous_channel(
-        field.image_b_rgba16f, field, relative_x, relative_z, 3u);
-    constexpr float kUnorm = 1.0f / 255.0f;
-    output.aeration = field.image_c_rgba8[nearest + 0u] * kUnorm;
-    output.foam_potential = field.image_c_rgba8[nearest + 1u] * kUnorm;
-    output.feature = decode_water_feature(field.image_c_rgba8[nearest + 3u]);
-    output.local_foam_multiplier = continuous_channel(
-        field.image_d_rgba16f, field, relative_x, relative_z, 0u);
-    output.local_threshold_offset = continuous_channel(
-        field.image_d_rgba16f, field, relative_x, relative_z, 1u);
-    output.local_wave_multiplier = continuous_channel(
-        field.image_d_rgba16f, field, relative_x, relative_z, 2u);
-    output.valid = true;
+    const float texel_x = relative_x - 0.5f;
+    const float texel_z = relative_z - 0.5f;
+    const int x0 = static_cast<int>(std::floor(texel_x));
+    const int z0 = static_cast<int>(std::floor(texel_z));
+    const float tx = texel_x - static_cast<float>(x0);
+    const float tz = texel_z - static_cast<float>(z0);
+    FieldAccumulator sum{};
+    accumulate_cell(field, x0, z0, (1.0f - tx) * (1.0f - tz), sum);
+    accumulate_cell(field, x0 + 1, z0, tx * (1.0f - tz), sum);
+    accumulate_cell(field, x0, z0 + 1, (1.0f - tx) * tz, sum);
+    accumulate_cell(field, x0 + 1, z0 + 1, tx * tz, sum);
+
+    const int center_x = static_cast<int>(std::floor(relative_x));
+    const int center_z = static_cast<int>(std::floor(relative_z));
+    for (int ring = 1; !(sum.weight > 0.0f) &&
+                       ring <= kWaterFieldFringeRadius; ++ring) {
+        for (int z = center_z - ring; z <= center_z + ring; ++z) {
+            for (int x = center_x - ring; x <= center_x + ring; ++x) {
+                if (std::max(std::abs(x - center_x),
+                             std::abs(z - center_z)) != ring)
+                    continue;
+                const float dx = static_cast<float>(x) + 0.5f - relative_x;
+                const float dz = static_cast<float>(z) + 0.5f - relative_z;
+                accumulate_cell(field, x, z,
+                                1.0f / std::max(dx * dx + dz * dz, 0.25f),
+                                sum);
+            }
+        }
+    }
+    if (!(sum.weight > 0.0f)) return false;
+    finish_sample(field, relative_x, relative_z, sum, output);
     return true;
 }
 
@@ -374,10 +430,21 @@ bool water_evaluate_surface_reference(
     output.roughness = clamp01(base_roughness);
     if (surface.wave_bands.size() != kWaterWaveBandCount ||
         !std::isfinite(animation_time_seconds) ||
-        !water_sample_field_reference(field, published_binding,
-                                      requested_binding, world_xz,
-                                      output.field))
+        !packed_water_field_valid(field) || !published_binding.valid() ||
+        published_binding.slot != requested_binding.slot ||
+        published_binding.generation != requested_binding.generation ||
+        !std::isfinite(world_xz.x) || !std::isfinite(world_xz.y))
         return false;
+    if (!water_sample_field_reference(field, published_binding,
+                                      requested_binding, world_xz,
+                                      output.field)) {
+        output.field = {};
+        output.field.depth_m = 0.15f;
+        output.field.base_normal = output.shading_normal;
+        output.field.local_foam_multiplier = 1.0f;
+        output.field.local_wave_multiplier = 1.0f;
+        output.field.valid = true;
+    }
 
     output.foam.local_multiplier =
         std::max(0.0f, output.field.local_foam_multiplier);

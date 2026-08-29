@@ -141,7 +141,7 @@ viewer::VkScenePart water_forward_background_triangle(uint64_t hash,
 bool close3(matter::Float3 actual, matter::Float3 expected, float epsilon);
 
 viewer::PackedWaterField make_water_forward_field_fixture(
-    std::uint64_t digest) {
+    std::uint64_t digest, bool wet = true) {
     hydrology::GameplayFieldLayout layout{};
     layout.origin_m = {-2.0f, 0.0f, -3.0f};
     layout.cell_size_m = 0.5f;
@@ -150,11 +150,15 @@ viewer::PackedWaterField make_water_forward_field_fixture(
     const std::size_t cell_count =
         static_cast<std::size_t>(layout.width) * layout.depth;
     const std::vector<hydrology::GameplaySample> gameplay(
-        cell_count, {0.0f, 1.5f, 2.0f, 0.0f, 0.5f, true});
+        cell_count, wet ? hydrology::GameplaySample{
+                              0.0f, 1.5f, 2.0f, 0.0f, 0.5f, true}
+                        : hydrology::GameplaySample{});
     const std::vector<hydrology::PresentationSample> presentation(
         cell_count,
-        {0.0f, 0.0f, 0.90f, 0.95f, 0.85f,
-         hydrology::RiverFeature::Rapid, true});
+        wet ? hydrology::PresentationSample{
+                  0.0f, 0.0f, 0.90f, 0.95f, 0.85f,
+                  hydrology::RiverFeature::Rapid, true}
+            : hydrology::PresentationSample{});
     matter::WaterSurfaceDefinition surface{};
     surface.material_id = kWaterForwardAuthoredMaterial;
     surface.optics.shallow_absorption = {0.03f, 0.015f, 0.008f};
@@ -958,6 +962,45 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
               baseline_control.material_index == active_control.material_index &&
               baseline_control.instance_token == active_control.instance_token,
           "water forward: load-preserving pass leaves neighboring opaque pixels byte-identical");
+
+    viewer::WaterFieldBinding dry_field{};
+    CHECK(renderer.publish_water_field(
+              make_water_forward_field_fixture(0x7788u, false), &field,
+              active_frame.serial + 8u, dry_field, field_error) &&
+              renderer.set_part_water_field_binding(proxy.part_hash,
+                                                    dry_field, error),
+          !field_error.message.empty() ? field_error.message.c_str()
+                                       : error.c_str());
+    matter::VulkanFrame dry_fringe_frame{};
+    CHECK(vulkan.begin_frame(dry_fringe_frame, error),
+          error.empty() ? "water forward: begin field-fringe fallback frame"
+                        : error.c_str());
+    CHECK(playback_fixture.playback.select(
+              1.0 / 30.0, dry_fringe_frame.frame_slot, selection,
+              playback_fallback) &&
+              renderer.prepare_water_animation_frame(
+                  71u, dry_fringe_frame.frame_slot, selection, {1u},
+                  animation_error),
+          !playback_fallback.message.empty()
+              ? playback_fallback.message.c_str()
+              : animation_error.message.c_str());
+    if (!finish_frame(dry_fringe_frame,
+                      "water forward: render field-fringe fallback"))
+        return;
+    viewer::VkRasterPixel dry_fringe_center{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         dry_fringe_center, error),
+          error.empty() ? "water forward: read field-fringe fallback"
+                        : error.c_str());
+    std::printf("water forward dry fringe: hdr=%.4f/%.4f/%.4f\n",
+                dry_fringe_center.hdr.x, dry_fringe_center.hdr.y,
+                dry_fringe_center.hdr.z);
+    CHECK(!close3({dry_fringe_center.hdr.x, dry_fringe_center.hdr.y,
+                   dry_fringe_center.hdr.z},
+                  {0.06f, 0.22f, 0.38f}, 1.0e-2f) &&
+              dry_fringe_center.material_index ==
+                  kWaterForwardAuthoredMaterial,
+          "water forward: a mesh fragment without nearby flow data still uses water optics instead of raw albedo");
 
     renderer.set_water_diagnostic_view(
         viewer::WaterDiagnosticView::Identity);

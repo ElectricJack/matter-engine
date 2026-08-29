@@ -10,6 +10,7 @@ namespace viewer {
 
 constexpr int kWaterBacktraceSteps = 3;
 constexpr int kWaterWaveBandCount = 3;
+constexpr int kWaterFieldFringeRadius = 2;
 
 struct WaterSurfaceFieldSample {
     float surface_height_m = 0.0f;

@@ -95,6 +95,43 @@ matter::WaterSurfaceDefinition make_surface() {
     return surface;
 }
 
+struct SparseWetCell {
+    std::uint32_t x = 0u;
+    std::uint32_t z = 0u;
+    float height_m = 0.0f;
+    float depth_m = 0.2f;
+    float aeration = 0.0f;
+    float foam_potential = 0.0f;
+    hydrology::RiverFeature feature = hydrology::RiverFeature::Calm;
+};
+
+viewer::PackedWaterField make_sparse_field(
+    std::uint32_t width, std::uint32_t depth,
+    const std::vector<SparseWetCell>& wet_cells,
+    const matter::WaterSurfaceDefinition* surface = nullptr) {
+    hydrology::GameplayFieldLayout layout{};
+    layout.cell_size_m = 1.0f;
+    layout.width = width;
+    layout.depth = depth;
+    const std::size_t count = static_cast<std::size_t>(width) * depth;
+    std::vector<hydrology::GameplaySample> gameplay(count);
+    std::vector<hydrology::PresentationSample> presentation(count);
+    for (const SparseWetCell& wet : wet_cells) {
+        const std::size_t index = static_cast<std::size_t>(wet.z) * width + wet.x;
+        gameplay[index] = {wet.height_m, wet.depth_m, 2.0f, 0.0f, -1.0f,
+                           true};
+        presentation[index] = {0.1f, -0.2f, 0.5f, wet.aeration,
+                               wet.foam_potential, wet.feature, true};
+    }
+    viewer::PackedWaterField packed;
+    viewer::WaterFieldError error;
+    CHECK(viewer::pack_water_field(
+              {layout, &gameplay, &presentation, 0x551u, 0x552u, surface},
+              packed, error),
+          error.message.c_str());
+    return packed;
+}
+
 void test_authored_waves_pack_into_the_slot_record() {
     hydrology::GameplayFieldLayout layout{};
     layout.cell_size_m = 1.0f;
@@ -340,17 +377,88 @@ void test_world_mapping_borders_and_dry_rejection() {
               field, published, published, {0.0f, 0.0f}, sample) &&
               close(sample.surface_height_m, 0.0f),
           "the minimum field border clamps continuously inside its first cell");
-    CHECK(!viewer::water_sample_field_reference(
-              field, published, published, {-0.001f, 0.5f}, sample),
-          "coordinates outside the field fail closed before a clamped fetch");
-    CHECK(!viewer::water_sample_field_reference(
-              field, published, published, {6.5f, 0.5f}, sample),
-          "nearest wet classification rejects a dry cell before interpolation");
+    CHECK(viewer::water_sample_field_reference(
+              field, published, published, {-0.001f, 0.5f}, sample) &&
+              close(sample.surface_height_m, 0.0f),
+          "a sub-cell mesh fringe outside the field borrows its adjacent wet border");
+    CHECK(viewer::water_sample_field_reference(
+              field, published, published, {6.5f, 0.5f}, sample) &&
+              sample.surface_height_m >= 5.0f &&
+              sample.surface_height_m <= 15.0f,
+          "a dry edge cell borrows bounded flow data from the adjacent wet channel");
     CHECK(!viewer::water_sample_field_reference(
               field, published, {2u, 10u}, {2.5f, 2.5f}, sample) &&
               !viewer::water_sample_field_reference(
                   field, published, {3u, 9u}, {2.5f, 2.5f}, sample),
           "slot or generation mismatch returns static fallback data");
+}
+
+void test_fringe_sampling_renormalizes_only_nearby_wet_cells() {
+    const viewer::WaterFieldBinding binding{2u, 9u};
+    viewer::WaterSurfaceFieldSample sample{};
+    const viewer::PackedWaterField mixed = make_sparse_field(
+        6u, 6u,
+        {{1u, 1u, 10.0f, 0.2f, 0.2f, 0.1f,
+          hydrology::RiverFeature::Rapid},
+         {1u, 2u, 30.0f, 0.6f, 0.6f, 0.7f,
+          hydrology::RiverFeature::Waterfall}});
+    CHECK(viewer::water_sample_field_reference(
+              mixed, binding, binding, {2.0f, 2.0f}, sample) &&
+              close(sample.surface_height_m, 20.0f) &&
+              close(sample.depth_m, 0.4f) && close(sample.aeration, 0.4f, 0.01f) &&
+              close(sample.foam_potential, 0.4f, 0.01f),
+          "a dry fringe sample renormalizes bilinear weights over only wet contributors");
+    CHECK(sample.feature == hydrology::RiverFeature::Rapid,
+          "equal fringe weights choose the lowest-index categorical feature deterministically");
+
+    const viewer::PackedWaterField one_cell = make_sparse_field(
+        7u, 7u, {{4u, 3u, 41.0f, 0.2f, 0.0f, 0.0f,
+                  hydrology::RiverFeature::Current}});
+    CHECK(viewer::water_sample_field_reference(
+              one_cell, binding, binding, {3.5f, 3.5f}, sample) &&
+              close(sample.surface_height_m, 41.0f),
+          "the bounded fringe search finds a wet contributor one cell away");
+
+    const viewer::PackedWaterField two_cells = make_sparse_field(
+        8u, 8u, {{5u, 3u, 52.0f, 0.2f, 0.0f, 0.0f,
+                  hydrology::RiverFeature::Current}});
+    CHECK(viewer::water_sample_field_reference(
+              two_cells, binding, binding, {3.5f, 3.5f}, sample) &&
+              close(sample.surface_height_m, 52.0f),
+          "the bounded fringe search reaches exactly two cells when the inner halo is dry");
+
+    const viewer::PackedWaterField beyond_halo = make_sparse_field(
+        9u, 9u, {{6u, 3u, 63.0f, 0.2f, 0.0f, 0.0f,
+                  hydrology::RiverFeature::Current}});
+    CHECK(!viewer::water_sample_field_reference(
+              beyond_halo, binding, binding, {3.5f, 3.5f}, sample),
+          "the two-cell halo never pulls flow data across a wider dry bank");
+}
+
+void test_mesh_water_survives_missing_fringe_data_but_not_corrupt_binding() {
+    const matter::WaterSurfaceDefinition surface = make_surface();
+    const viewer::WaterFieldBinding binding{3u, 11u};
+    const viewer::PackedWaterField dry = make_sparse_field(7u, 7u, {}, &surface);
+    viewer::WaterSurfaceEvaluation evaluated{};
+    CHECK(viewer::water_evaluate_surface_reference(
+              dry, binding, binding, surface, {3.5f, 3.5f},
+              {0.0f, 1.0f, 0.0f}, 1.25f, 0.06f, evaluated) &&
+              evaluated.animated && evaluated.field.valid &&
+              evaluated.field.depth_m > 0.0f &&
+              evaluated.field.depth_m <= 0.25f &&
+              close(evaluated.field.foam_potential, 0.0f) &&
+              evaluated.optics.bottom_visibility > 0.95f,
+          "an authoritative water mesh uses conservative clear-water optics when no nearby field sample exists");
+    CHECK(!viewer::water_evaluate_surface_reference(
+              dry, binding, {3u, 12u}, surface, {3.5f, 3.5f},
+              {0.0f, 1.0f, 0.0f}, 1.25f, 0.06f, evaluated),
+          "a stale field generation remains rejected instead of receiving fringe defaults");
+    viewer::PackedWaterField corrupt = dry;
+    corrupt.image_a_rgba16f.pop_back();
+    CHECK(!viewer::water_evaluate_surface_reference(
+              corrupt, binding, binding, surface, {3.5f, 3.5f},
+              {0.0f, 1.0f, 0.0f}, 1.25f, 0.06f, evaluated),
+          "a corrupt packed field remains fail-closed");
 }
 
 void test_three_step_rk2_backtrace() {
@@ -462,6 +570,8 @@ int main() {
     test_foam_coverage_produces_a_visible_bounded_radiance_lobe();
     test_automatic_foam_and_local_override();
     test_world_mapping_borders_and_dry_rejection();
+    test_fringe_sampling_renormalizes_only_nearby_wet_cells();
+    test_mesh_water_survives_missing_fringe_data_but_not_corrupt_binding();
     test_three_step_rk2_backtrace();
     test_dual_phase_reset_boundaries();
     test_three_band_response_and_hemisphere_safety();

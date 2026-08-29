@@ -28,6 +28,7 @@ const uint WATER_SURFACE_MATERIAL_FLAG = 1u << 4;
 const int WATER_BACKTRACE_STEPS = 3;
 const int WATER_WAVE_BAND_COUNT = 3;
 const int WATER_PHASE_COUNT = 2;
+const int WATER_FIELD_FRINGE_RADIUS = 2;
 const float WATER_PI = 3.14159265358979323846;
 const float WATER_TWO_PI = 6.28318530717958647692;
 const float WATER_MAX_SHADING_SPEED = 20.0;
@@ -128,6 +129,133 @@ WaterFieldSample water_invalid_sample() {
     return result;
 }
 
+WaterFieldSample water_default_fringe_sample(vec3 geometric_normal) {
+    WaterFieldSample result = water_invalid_sample();
+    result.depth = 0.15;
+    result.base_normal = normalize(geometric_normal);
+    result.valid = true;
+    return result;
+}
+
+bool water_field_record_matches(uint slot, uint generation,
+                                uint material_id,
+                                out WaterFieldGpuRecord record) {
+    if (slot >= WATER_FIELD_SLOT_COUNT || generation == 0u ||
+        slot >= water_field_records.length())
+        return false;
+    record = water_field_records[slot];
+    return record.extent_generation.w != 0u &&
+           record.extent_generation.z == generation &&
+           record.appearance.w != 0u &&
+           record.appearance.x == material_id &&
+           record.extent_generation.x != 0u &&
+           record.extent_generation.y != 0u &&
+           record.origin_cell_size.z > 0.0;
+}
+
+bool water_field_record_contains_fringe(WaterFieldGpuRecord record,
+                                        vec2 world_xz) {
+    vec2 relative =
+        (world_xz - record.origin_cell_size.xy) / record.origin_cell_size.z;
+    vec2 radius = vec2(float(WATER_FIELD_FRINGE_RADIUS));
+    vec2 extent = vec2(record.extent_generation.xy);
+    return !any(isnan(relative)) && !any(isinf(relative)) &&
+           all(greaterThanEqual(relative, -radius)) &&
+           all(lessThan(relative, extent + radius));
+}
+
+struct WaterFieldAccumulator {
+    vec4 field_a;
+    vec4 field_b;
+    vec2 classification;
+    vec3 local_override;
+    float weight;
+    float feature_weight;
+    uint feature_index;
+    uint feature;
+};
+
+WaterFieldAccumulator water_empty_accumulator() {
+    WaterFieldAccumulator sum;
+    sum.field_a = vec4(0.0);
+    sum.field_b = vec4(0.0);
+    sum.classification = vec2(0.0);
+    sum.local_override = vec3(0.0);
+    sum.weight = 0.0;
+    sum.feature_weight = -1.0;
+    sum.feature_index = 0xffffffffu;
+    sum.feature = 0u;
+    return sum;
+}
+
+void water_accumulate_cell(uint descriptor_slot,
+                           WaterFieldGpuRecord record, ivec2 cell,
+                           float weight, inout WaterFieldAccumulator sum) {
+    ivec2 extent = ivec2(record.extent_generation.xy);
+    if (!(weight > 0.0) || any(lessThan(cell, ivec2(0))) ||
+        any(greaterThanEqual(cell, extent)))
+        return;
+    vec4 classification = texelFetch(
+        water_field_c[nonuniformEXT(descriptor_slot)], cell, 0);
+    if (classification.b < 0.5) return;
+    sum.field_a += weight * texelFetch(
+        water_field_a[nonuniformEXT(descriptor_slot)], cell, 0);
+    sum.field_b += weight * texelFetch(
+        water_field_b[nonuniformEXT(descriptor_slot)], cell, 0);
+    sum.classification += weight * classification.rg;
+    sum.local_override += weight * texelFetch(
+        water_field_d[nonuniformEXT(descriptor_slot)], cell, 0).rgb;
+    uint linear_index = uint(cell.y) * record.extent_generation.x +
+                        uint(cell.x);
+    if (weight > sum.feature_weight ||
+        (weight == sum.feature_weight && linear_index < sum.feature_index)) {
+        sum.feature_weight = weight;
+        sum.feature_index = linear_index;
+        sum.feature = uint(floor(classification.a * 6.0 + 0.5));
+    }
+    sum.weight += weight;
+}
+
+WaterFieldSample water_finish_accumulator(
+    uint descriptor_slot, WaterFieldGpuRecord record, vec2 relative,
+    WaterFieldAccumulator sum) {
+    WaterFieldSample result = water_invalid_sample();
+    float inverse_weight = 1.0 / sum.weight;
+    vec4 field_a = sum.field_a * inverse_weight;
+    vec4 field_b = sum.field_b * inverse_weight;
+    vec2 classification = sum.classification * inverse_weight;
+    vec3 local_override = sum.local_override * inverse_weight;
+    float normal_y = sqrt(max(0.0, 1.0 - dot(field_b.yz, field_b.yz)));
+    result.surface_height = field_a.x;
+    result.depth = field_a.y;
+    result.velocity = vec3(field_a.z, field_b.x, field_a.w);
+    result.base_normal = normalize(vec3(field_b.y, normal_y, field_b.z));
+    result.turbulence = field_b.w;
+    result.aeration = classification.r;
+    result.foam_potential = classification.g;
+    result.local_foam_multiplier = local_override.r;
+    result.local_threshold_offset = local_override.g;
+    result.local_wave_multiplier = local_override.b;
+    result.feature = sum.feature;
+
+    // Classification used nearest filtering before fringe interpolation.
+    // Preserve that exact contract whenever the query's owning cell is wet.
+    ivec2 nearest_cell = ivec2(floor(relative));
+    ivec2 extent = ivec2(record.extent_generation.xy);
+    if (all(greaterThanEqual(nearest_cell, ivec2(0))) &&
+        all(lessThan(nearest_cell, extent))) {
+        vec4 nearest_classification = texelFetch(
+            water_field_c[nonuniformEXT(descriptor_slot)], nearest_cell, 0);
+        if (nearest_classification.b >= 0.5) {
+            result.aeration = nearest_classification.r;
+            result.foam_potential = nearest_classification.g;
+            result.feature = uint(floor(nearest_classification.a * 6.0 + 0.5));
+        }
+    }
+    result.valid = true;
+    return result;
+}
+
 vec2 water_clamp_length(vec2 value, float maximum) {
     float magnitude = length(value);
     return magnitude > maximum && magnitude > 0.0
@@ -137,44 +265,46 @@ vec2 water_clamp_length(vec2 value, float maximum) {
 bool water_sample_field(uint slot, uint generation, uint material_id,
                         vec2 world_xz, out WaterFieldSample result) {
     result = water_invalid_sample();
-    if (slot >= WATER_FIELD_SLOT_COUNT || generation == 0u ||
-        slot >= water_field_records.length())
-        return false;
-    WaterFieldGpuRecord record = water_field_records[slot];
-    if (record.extent_generation.w == 0u ||
-        record.extent_generation.z != generation ||
-        record.appearance.w == 0u || record.appearance.x != material_id ||
-        record.extent_generation.x == 0u || record.extent_generation.y == 0u ||
-        !(record.origin_cell_size.z > 0.0))
+    WaterFieldGpuRecord record;
+    if (!water_field_record_matches(slot, generation, material_id, record) ||
+        !water_field_record_contains_fringe(record, world_xz))
         return false;
     vec2 relative =
         (world_xz - record.origin_cell_size.xy) / record.origin_cell_size.z;
-    vec2 extent = vec2(record.extent_generation.xy);
-    if (any(lessThan(relative, vec2(0.0))) ||
-        any(greaterThanEqual(relative, extent)))
-        return false;
-    vec2 uv = relative / extent;
     uint descriptor_slot = nonuniformEXT(slot);
-    vec4 classification =
-        textureLod(water_field_c[descriptor_slot], uv, 0.0);
-    if (classification.b < 0.5) return false;
-    vec4 field_a = textureLod(water_field_a[descriptor_slot], uv, 0.0);
-    vec4 field_b = textureLod(water_field_b[descriptor_slot], uv, 0.0);
-    vec4 field_d = textureLod(water_field_d[descriptor_slot], uv, 0.0);
-    float normal_y = sqrt(max(0.0, 1.0 - dot(field_b.yz, field_b.yz)));
-    result.surface_height = field_a.x;
-    result.depth = field_a.y;
-    result.velocity = vec3(field_a.z, field_b.x, field_a.w);
-    result.base_normal = normalize(vec3(field_b.y, normal_y, field_b.z));
-    result.turbulence = field_b.w;
-    result.aeration = classification.r;
-    result.foam_potential = classification.g;
-    result.local_foam_multiplier = field_d.r;
-    result.local_threshold_offset = field_d.g;
-    result.local_wave_multiplier = field_d.b;
-    result.feature = uint(floor(classification.a * 6.0 + 0.5));
-    result.valid = true;
-    return true;
+    vec2 texel = relative - vec2(0.5);
+    ivec2 base = ivec2(floor(texel));
+    vec2 fraction = fract(texel);
+    WaterFieldAccumulator sum = water_empty_accumulator();
+    water_accumulate_cell(descriptor_slot, record, base,
+                          (1.0 - fraction.x) * (1.0 - fraction.y), sum);
+    water_accumulate_cell(descriptor_slot, record, base + ivec2(1, 0),
+                          fraction.x * (1.0 - fraction.y), sum);
+    water_accumulate_cell(descriptor_slot, record, base + ivec2(0, 1),
+                          (1.0 - fraction.x) * fraction.y, sum);
+    water_accumulate_cell(descriptor_slot, record, base + ivec2(1, 1),
+                          fraction.x * fraction.y, sum);
+
+    ivec2 center = ivec2(floor(relative));
+    for (int ring = 1; !(sum.weight > 0.0) &&
+                       ring <= WATER_FIELD_FRINGE_RADIUS; ++ring) {
+        for (int z = -WATER_FIELD_FRINGE_RADIUS;
+             z <= WATER_FIELD_FRINGE_RADIUS; ++z) {
+            for (int x = -WATER_FIELD_FRINGE_RADIUS;
+                 x <= WATER_FIELD_FRINGE_RADIUS; ++x) {
+                if (max(abs(x), abs(z)) != ring) continue;
+                ivec2 cell = center + ivec2(x, z);
+                vec2 delta = vec2(cell) + vec2(0.5) - relative;
+                float weight = 1.0 / max(dot(delta, delta), 0.25);
+                water_accumulate_cell(descriptor_slot, record, cell,
+                                      weight, sum);
+            }
+        }
+    }
+    if (!(sum.weight > 0.0)) return false;
+    result = water_finish_accumulator(
+        descriptor_slot, record, relative, sum);
+    return result.valid;
 }
 
 vec2 water_backtrace_rk2(uint slot, uint generation, uint material_id,
@@ -339,10 +469,12 @@ bool water_evaluate_surface(uint slot, uint generation, uint material_id,
     state.foam.wave_multiplier = 1.0;
     state.reactivity = 0.0;
     state.animated = false;
+    WaterFieldGpuRecord record;
+    if (!water_field_record_matches(slot, generation, material_id, record))
+        return false;
     if (!water_sample_field(slot, generation, material_id, world_xz,
                             state.field))
-        return false;
-    WaterFieldGpuRecord record = water_field_records[slot];
+        state.field = water_default_fringe_sample(state.shading_normal);
     state.foam.local_multiplier = max(state.field.local_foam_multiplier, 0.0);
     state.foam.threshold_offset = state.field.local_threshold_offset;
     state.foam.wave_multiplier = max(state.field.local_wave_multiplier, 0.0);
@@ -446,6 +578,7 @@ bool water_evaluate_surface_for_material(
         if (record.extent_generation.w == 0u ||
             record.appearance.w == 0u || record.appearance.x != material_id)
             continue;
+        if (!water_field_record_contains_fringe(record, world_xz)) continue;
         if (water_evaluate_surface(
                 slot, record.extent_generation.z, material_id, world_xz,
                 geometric_normal, animation_time_seconds, base_roughness,
