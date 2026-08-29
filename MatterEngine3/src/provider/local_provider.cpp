@@ -2284,6 +2284,14 @@ bool LocalProvider::run_authored_fluid_bake(
                     output, request.product_settings, request.terrain,
                     candidate, section_error, &product_timings))
                 return false;
+            if (protected_static_artifact) {
+                // Backend elapsed time is observational telemetry, not static
+                // hydrology identity. Keep the measured simulate_ms above,
+                // while canonicalizing only this serialized metadata field to
+                // the already-Ready artifact before deriving payload identity.
+                candidate.stats.wall_seconds =
+                    protected_static_artifact->stats.wall_seconds;
+            }
             gpu_meshing::Error digest_error{};
             if (!hydrology::hydrology_artifact_payload_digest(
                     candidate, candidate.payload_digest, digest_error)) {

@@ -1973,6 +1973,8 @@ struct LifecycleBackendState {
     std::thread::id run_thread{};
     std::vector<std::string> lifecycle_events;
     float static_payload_velocity_delta = 0.0f;
+    double wall_seconds = 0.01;
+    std::uint32_t run_delay_ms = 0u;
 };
 
 class LifecycleBackend final : public IFluidBakeBackend {
@@ -2076,6 +2078,10 @@ public:
         if (completed && !output.particles.empty())
             output.particles.back().velocity_mps.x +=
                 state_->static_payload_velocity_delta;
+        if (completed) output.stats.wall_seconds = state_->wall_seconds;
+        if (state_->run_delay_ms != 0u)
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(state_->run_delay_ms));
         if (completed && input.network.fluid.mesh_animation.enabled) {
             hydrology::FluidParticleAnimationCapture capture{};
             capture.frames_per_second =
@@ -2713,10 +2719,51 @@ bool snapshot_ready_package(
     return true;
 }
 
-void test_failed_sidecar_repair_preserves_ready_package_closure() {
+double maximum_json_number_after(
+    const std::vector<std::uint8_t>& bytes,
+    const std::string& token) {
+    const std::string text(bytes.begin(), bytes.end());
+    double maximum = -1.0;
+    std::size_t position = 0u;
+    while ((position = text.find(token, position)) != std::string::npos) {
+        position += token.size();
+        try {
+            std::size_t consumed = 0u;
+            const double value = std::stod(text.substr(position), &consumed);
+            maximum = std::max(maximum, value);
+            position += consumed;
+        } catch (const std::exception&) {
+            return maximum;
+        }
+    }
+    return maximum;
+}
+
+std::vector<std::filesystem::path>::const_iterator find_upper_sidecar(
+    const std::vector<std::filesystem::path>& sidecars) {
+    return std::find_if(sidecars.begin(), sidecars.end(), [](const auto& path) {
+        return path.filename().string().rfind("upper-", 0u) == 0u;
+    });
+}
+
+bool install_sidecar_directory_blocker(
+    const std::filesystem::path& path,
+    std::error_code& filesystem_error) {
+    filesystem_error.clear();
+    if (!std::filesystem::remove(path, filesystem_error) || filesystem_error ||
+        !std::filesystem::create_directory(path, filesystem_error) ||
+        filesystem_error)
+        return false;
+    std::ofstream blocker(path / "blocker");
+    blocker << "force a late immutable sidecar publication failure";
+    return static_cast<bool>(blocker);
+}
+
+void test_wall_time_only_sidecar_repair_reuses_ready_static_target() {
     const auto root = std::filesystem::temp_directory_path() /
-                      "matter-live-fluid-static-repair-transaction-contract";
+                      "matter-live-fluid-wall-time-repair-contract";
     const auto cache_root = root / ".cache";
+    const auto trace_root = root / "timing-trace";
     std::error_code filesystem_error;
     std::filesystem::remove_all(root, filesystem_error);
 
@@ -2729,8 +2776,192 @@ void test_failed_sidecar_repair_preserves_ready_package_closure() {
     const auto manifests = cached_files_with_extension(cache_root, ".mhyn");
     const auto sidecars = cached_files_with_extension(cache_root, ".mhwb");
     CHECK(cold.accepted && manifests.size() == 1u && sidecars.size() == 2u,
-          "the static repair transaction fixture begins with one complete Ready package and both endpoint sidecars");
+          "the wall-time repair fixture begins with one complete Ready package and both endpoint sidecars");
     if (!cold.accepted || manifests.size() != 1u || sidecars.size() != 2u) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+
+    ReadyPackageSnapshot accepted{};
+    gpu_meshing::Error package_error{};
+    CHECK(snapshot_ready_package(manifests.front(), accepted, package_error),
+          package_error.message.c_str());
+    const auto static_path = accepted.cache_root /
+        accepted.manifest.sections.front().relative_path;
+    const auto static_write_time =
+        std::filesystem::last_write_time(static_path, filesystem_error);
+    CHECK(!filesystem_error,
+          "the wall-time repair fixture records the immutable static target write time");
+    const auto upper_sidecar = find_upper_sidecar(sidecars);
+    CHECK(upper_sidecar != sidecars.end(),
+          "the wall-time repair fixture locates the Ready upstream sidecar");
+    if (upper_sidecar == sidecars.end()) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+    std::filesystem::remove(*upper_sidecar, filesystem_error);
+
+    auto repair_state = std::make_shared<LifecycleBackendState>();
+    repair_state->wall_seconds = 7.25;
+    repair_state->run_delay_ms = 15u;
+#ifdef _WIN32
+    CHECK(_putenv_s("MATTER_HYDROLOGY_TRACE_DIR",
+                    trace_root.string().c_str()) == 0,
+          "the wall-time repair fixture enables timing telemetry");
+#else
+    CHECK(setenv("MATTER_HYDROLOGY_TRACE_DIR",
+                 trace_root.string().c_str(), 1) == 0,
+          "the wall-time repair fixture enables timing telemetry");
+#endif
+    const WorldSessionFluidCase repaired = run_world_session_fluid_case(
+        root, options, repair_state);
+#ifdef _WIN32
+    CHECK(_putenv_s("MATTER_HYDROLOGY_TRACE_DIR", "") == 0,
+          "the wall-time repair fixture clears timing telemetry");
+#else
+    CHECK(unsetenv("MATTER_HYDROLOGY_TRACE_DIR") == 0,
+          "the wall-time repair fixture clears timing telemetry");
+#endif
+    ReadyPackageSnapshot after_repair{};
+    package_error = {};
+    CHECK(snapshot_ready_package(
+              manifests.front(), after_repair, package_error),
+          package_error.message.c_str());
+    std::vector<std::uint8_t> timing_bytes;
+    const double maximum_simulate_ms = read_package_file(
+        trace_root / "timings.json", timing_bytes)
+        ? maximum_json_number_after(timing_bytes, "\"simulateMs\":")
+        : -1.0;
+    CHECK(repaired.accepted && repaired.backend_run_calls == 1,
+          "a sidecar miss whose rerun differs only in wall-clock metadata repairs successfully");
+    CHECK(maximum_simulate_ms >= 10.0,
+          "wall-time normalization retains the actual measured simulateMs telemetry");
+    CHECK(after_repair.files == accepted.files &&
+              std::filesystem::last_write_time(
+                  static_path, filesystem_error) == static_write_time,
+          "a wall-time-only repair reuses the valid immutable static target without rewriting it");
+
+    auto repaired_sidecars = cached_files_with_extension(cache_root, ".mhwb");
+    const auto repaired_upper = find_upper_sidecar(repaired_sidecars);
+    CHECK(repaired_upper != repaired_sidecars.end() &&
+              install_sidecar_directory_blocker(
+                  *repaired_upper, filesystem_error),
+          "the wall-time repair fixture installs a deliberately late sidecar blocker");
+    if (repaired_upper == repaired_sidecars.end() || filesystem_error) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+
+    auto blocked_state = std::make_shared<LifecycleBackendState>();
+    blocked_state->wall_seconds = 8.5;
+    const WorldSessionFluidCase blocked = run_world_session_fluid_case(
+        root, options, blocked_state);
+    ReadyPackageSnapshot after_blocker{};
+    package_error = {};
+    const auto owned_animation = std::find(
+        blocked.lifecycle_events.begin(), blocked.lifecycle_events.end(),
+        "owned-animation");
+    CHECK(!blocked.accepted && blocked.backend_run_calls == 1 &&
+              owned_animation != blocked.lifecycle_events.end() &&
+              blocked.status.failure_reason.find(
+                  "could not retire invalid water boundary cache target") !=
+                  std::string::npos,
+          "a wall-time-only rerun passes static admission, builds its owned animation, and reaches the deliberately late sidecar blocker");
+    CHECK(snapshot_ready_package(
+              manifests.front(), after_blocker, package_error),
+          package_error.message.c_str());
+    CHECK(after_blocker.files == accepted.files &&
+              std::filesystem::last_write_time(
+                  static_path, filesystem_error) == static_write_time,
+          "the reached late blocker leaves the Ready closure valid and byte-identical without rewriting its static target");
+
+    std::filesystem::remove_all(root, filesystem_error);
+}
+
+void test_static_payload_mismatch_fails_before_sidecar_publication() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-static-mismatch-contract";
+    const auto cache_root = root / ".cache";
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(root, filesystem_error);
+
+    WorldSessionFluidOptions options{};
+    options.two_sections = true;
+    options.mesh_animation = true;
+    auto cold_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase cold = run_world_session_fluid_case(
+        root, options, cold_state);
+    const auto manifests = cached_files_with_extension(cache_root, ".mhyn");
+    const auto sidecars = cached_files_with_extension(cache_root, ".mhwb");
+    if (!cold.accepted || manifests.size() != 1u || sidecars.size() != 2u) {
+        CHECK(false,
+              "the static mismatch fixture begins with one complete Ready package");
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+
+    ReadyPackageSnapshot accepted{};
+    gpu_meshing::Error package_error{};
+    CHECK(snapshot_ready_package(manifests.front(), accepted, package_error),
+          package_error.message.c_str());
+    const auto static_path = accepted.cache_root /
+        accepted.manifest.sections.front().relative_path;
+    const auto static_write_time =
+        std::filesystem::last_write_time(static_path, filesystem_error);
+    const auto upper_sidecar = find_upper_sidecar(sidecars);
+    CHECK(upper_sidecar != sidecars.end() &&
+              install_sidecar_directory_blocker(
+                  *upper_sidecar, filesystem_error),
+          "the static mismatch fixture installs an unreachable late blocker");
+    if (upper_sidecar == sidecars.end() || filesystem_error) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+
+    auto mismatch_state = std::make_shared<LifecycleBackendState>();
+    mismatch_state->wall_seconds = 9.75;
+    mismatch_state->static_payload_velocity_delta = 3.0f;
+    const WorldSessionFluidCase mismatch = run_world_session_fluid_case(
+        root, options, mismatch_state);
+    ReadyPackageSnapshot after_mismatch{};
+    package_error = {};
+    CHECK(!mismatch.accepted && mismatch.backend_run_calls == 1 &&
+              mismatch.status.failure_reason.find(
+                  "rerun changed a valid immutable section cache target") !=
+                  std::string::npos &&
+              std::find(mismatch.lifecycle_events.begin(),
+                        mismatch.lifecycle_events.end(),
+                        "owned-animation") ==
+                  mismatch.lifecycle_events.end(),
+          "a particle/static payload mismatch fails before owned-animation or blocked sidecar publication");
+    CHECK(snapshot_ready_package(
+              manifests.front(), after_mismatch, package_error),
+          package_error.message.c_str());
+    CHECK(after_mismatch.files == accepted.files &&
+              std::filesystem::last_write_time(
+                  static_path, filesystem_error) == static_write_time,
+          "an early static mismatch leaves the complete Ready closure byte-identical and valid");
+
+    std::filesystem::remove_all(root, filesystem_error);
+}
+
+void test_corrupt_static_target_repairs_normally() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-corrupt-static-repair-contract";
+    const auto cache_root = root / ".cache";
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(root, filesystem_error);
+
+    WorldSessionFluidOptions options{};
+    options.two_sections = true;
+    options.mesh_animation = true;
+    auto cold_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase cold = run_world_session_fluid_case(
+        root, options, cold_state);
+    const auto manifests = cached_files_with_extension(cache_root, ".mhyn");
+    if (!cold.accepted || manifests.size() != 1u) {
+        CHECK(false,
+              "the corrupt static fixture begins with one complete Ready package");
         std::filesystem::remove_all(root, filesystem_error);
         return;
     }
@@ -2744,61 +2975,23 @@ void test_failed_sidecar_repair_preserves_ready_package_closure() {
     const std::uintmax_t static_size =
         std::filesystem::file_size(static_path, filesystem_error);
     CHECK(!filesystem_error && static_size > 28u,
-          "the ordinary corruption fixture finds a complete static artifact");
+          "the corrupt static fixture finds a complete static artifact");
     std::filesystem::resize_file(
         static_path, static_size - 1u, filesystem_error);
     CHECK(!filesystem_error,
-          "the ordinary corruption fixture truncates the static artifact");
-    auto corrupt_static_state = std::make_shared<LifecycleBackendState>();
-    const WorldSessionFluidCase repaired_static = run_world_session_fluid_case(
-        root, options, corrupt_static_state);
-    ReadyPackageSnapshot after_static_repair{};
-    CHECK(repaired_static.accepted,
-          "an ordinarily corrupt static cache target still produces an accepted repair");
-    CHECK(repaired_static.backend_run_calls == 1,
-          ("ordinary static corruption reruns only its affected section; observed " +
-           std::to_string(repaired_static.backend_run_calls)).c_str());
-    CHECK(snapshot_ready_package(
-              manifests.front(), after_static_repair, package_error),
-          package_error.message.c_str());
-    CHECK(after_static_repair.files == accepted.files,
-          "ordinary static repair restores every byte of the prior Ready package");
-    const auto upper_sidecar = std::find_if(
-        sidecars.begin(), sidecars.end(), [](const auto& path) {
-            return path.filename().string().rfind("upper-", 0u) == 0u;
-        });
-    CHECK(upper_sidecar != sidecars.end(),
-          "the transaction fixture locates the Ready upstream sidecar");
-    if (upper_sidecar == sidecars.end()) {
-        std::filesystem::remove_all(root, filesystem_error);
-        return;
-    }
-    std::filesystem::remove(*upper_sidecar, filesystem_error);
-    std::filesystem::create_directory(*upper_sidecar, filesystem_error);
-    {
-        std::ofstream blocker(*upper_sidecar / "blocker");
-        blocker << "force a later immutable sidecar publication failure";
-    }
+          "the corrupt static fixture truncates the static artifact");
 
     auto repair_state = std::make_shared<LifecycleBackendState>();
-    repair_state->static_payload_velocity_delta = 3.0f;
-    const WorldSessionFluidCase failed_repair = run_world_session_fluid_case(
+    const WorldSessionFluidCase repaired = run_world_session_fluid_case(
         root, options, repair_state);
-    ReadyPackageSnapshot after_failure{};
-    package_error = {};
-    CHECK(failed_repair.backend_run_calls == 1 &&
-              std::find(failed_repair.lifecycle_events.begin(),
-                        failed_repair.lifecycle_events.end(),
-                        "handoff-after-boundary-save") ==
-                  failed_repair.lifecycle_events.end(),
-          "a sidecar-driven miss reruns only the affected section with deliberately changed accepted static bytes and cannot reach handoff publication");
+    ReadyPackageSnapshot after_repair{};
+    CHECK(repaired.accepted && repaired.backend_run_calls == 1,
+          "ordinary static corruption reruns only its affected section and remains repairable");
     CHECK(snapshot_ready_package(
-              manifests.front(), after_failure, package_error),
+              manifests.front(), after_repair, package_error),
           package_error.message.c_str());
-    CHECK(after_failure.files == accepted.files &&
-              after_failure.manifest.payload_digest ==
-                  accepted.manifest.payload_digest,
-          "a failed sidecar repair leaves the Ready manifest and every referenced field, section, animation, and handoff file byte-identical and valid");
+    CHECK(after_repair.files == accepted.files,
+          "ordinary static repair restores every byte of the prior Ready package");
 
     std::filesystem::remove_all(root, filesystem_error);
 }
@@ -3287,7 +3480,9 @@ int main() {
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
     test_world_session_runs_authored_fluid_bake_before_publication();
     test_world_session_publishes_complete_two_section_network();
-    test_failed_sidecar_repair_preserves_ready_package_closure();
+    test_wall_time_only_sidecar_repair_reuses_ready_static_target();
+    test_static_payload_mismatch_fails_before_sidecar_publication();
+    test_corrupt_static_target_repairs_normally();
     test_world_session_boundary_sidecar_cache_is_transactional_and_local();
     test_world_session_fluid_cache_hit_skips_solver_and_renderer();
     test_world_session_fluid_device_mismatch_is_a_hard_dry_error();
