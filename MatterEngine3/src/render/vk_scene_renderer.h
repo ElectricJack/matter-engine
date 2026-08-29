@@ -332,6 +332,8 @@ bool checked_dispatch_groups(uint32_t instance_count,
                              std::string& error);
 bool checked_size_to_int(size_t count, int& result, const char* label,
                          std::string& error);
+uint64_t water_forward_image_bytes_for_extent(uint32_t width,
+                                              uint32_t height) noexcept;
 size_t frame_constants_size_for_test() noexcept;
 VkPipelineStageFlags2 ray_depth_destination_stages(
     bool native_ray_tracing_available) noexcept;
@@ -1210,6 +1212,12 @@ public:
     WaterForwardObservation test_water_forward_observation() const noexcept {
         return last_water_forward_observation_;
     }
+    uint8_t test_gpu_zone_written(uint32_t frame_slot,
+                                  uint32_t zone) const noexcept {
+        return frame_slot < frames_.size() && zone < kGpuZoneCount
+                   ? frames_[frame_slot].ts_written[zone]
+                   : 0u;
+    }
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
         return test_last_rt_geometry_records_;
@@ -1556,6 +1564,15 @@ public:
 
     uint32_t raster_width() const { return raster_extent_.width; }
     uint32_t raster_height() const { return raster_extent_.height; }
+    uint64_t water_forward_image_bytes() const noexcept {
+        if (opaque_hdr_.image == VK_NULL_HANDLE ||
+            opaque_depth_.image == VK_NULL_HANDLE ||
+            opaque_hdr_.extent.width != opaque_depth_.extent.width ||
+            opaque_hdr_.extent.height != opaque_depth_.extent.height)
+            return 0u;
+        return vk_scene_detail::water_forward_image_bytes_for_extent(
+            opaque_hdr_.extent.width, opaque_hdr_.extent.height);
+    }
 
     // GPU timer results (ms, EMA-smoothed). Zones are non-overlapping;
     // each begin is recorded after the previous zone's end.
@@ -2667,6 +2684,9 @@ private:
         uint32_t direct_index_count = 0u;
         uint32_t draw_transform_slots = 0u;
         RasterDebugPushConstants debug_push{};
+        VkQueryPool timing_pool = VK_NULL_HANDLE;
+        uint8_t* timing_written = nullptr;
+        uint32_t timing_zone = 0u;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         WaterForwardObservation* observation = nullptr;
 #endif

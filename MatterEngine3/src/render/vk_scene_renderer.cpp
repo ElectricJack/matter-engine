@@ -471,8 +471,6 @@ struct RasterRecord {
     uint32_t water_vertex_count = 0u;
     uint32_t water_transform_base = 0u;
     bool water_upload_required = false;
-    uint32_t water_decode_zone = 0u;
-    uint32_t water_draw_zone = 0u;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     uint32_t* recorded_water_draw_count = nullptr;
 #endif
@@ -530,13 +528,6 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         record.water_indices != VK_NULL_HANDLE &&
         record.water_vertex_bytes != 0u &&
         record.water_index_bytes != 0u) {
-        const bool time_water_decode =
-            record.ts_pool != VK_NULL_HANDLE && record.ts_written != nullptr;
-        if (time_water_decode) {
-            write_ts(command_buffer, record.ts_pool,
-                     record.water_decode_zone, false);
-            record.ts_written[record.water_decode_zone] |= 1u;
-        }
         VkBufferMemoryBarrier2 host_barriers[2]{};
         for (VkBufferMemoryBarrier2& barrier : host_barriers) {
             barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -560,12 +551,6 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         host_dependency.bufferMemoryBarrierCount = 2u;
         host_dependency.pBufferMemoryBarriers = host_barriers;
         vkCmdPipelineBarrier2(command_buffer, &host_dependency);
-
-        if (time_water_decode) {
-            write_ts(command_buffer, record.ts_pool,
-                     record.water_decode_zone, true);
-            record.ts_written[record.water_decode_zone] |= 2u;
-        }
     }
     matter::VkImageResource* colors[] = {
         record.albedo, record.normal, record.orm, record.velocity,
@@ -1089,6 +1074,16 @@ void VkSceneRenderer::record_water_forward(
         !has_direct)
         return;
 
+    const bool time_forward =
+        record.timing_pool != VK_NULL_HANDLE &&
+        record.timing_written != nullptr &&
+        record.timing_zone < kGpuZoneCount;
+    if (time_forward) {
+        write_ts(command_buffer, record.timing_pool, record.timing_zone,
+                 false);
+        record.timing_written[record.timing_zone] |= 1u;
+    }
+
     transition_for_use(command_buffer, *record.hdr,
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -1309,6 +1304,12 @@ void VkSceneRenderer::record_water_forward(
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    if (time_forward) {
+        write_ts(command_buffer, record.timing_pool, record.timing_zone,
+                 true);
+        record.timing_written[record.timing_zone] |= 2u;
+    }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     if (record.observation) {
@@ -1580,6 +1581,17 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
     }
     result = static_cast<int>(count);
     return true;
+}
+
+uint64_t water_forward_image_bytes_for_extent(uint32_t width,
+                                              uint32_t height) noexcept {
+    constexpr uint64_t kBytesPerPixel = 8u + 4u;
+    const uint64_t pixels = static_cast<uint64_t>(width) *
+                            static_cast<uint64_t>(height);
+    if (pixels == 0u ||
+        pixels > std::numeric_limits<uint64_t>::max() / kBytesPerPixel)
+        return 0u;
+    return pixels * kBytesPerPixel;
 }
 
 }  // namespace vk_scene_detail
@@ -14644,8 +14656,6 @@ bool VkSceneRenderer::record_cull_and_render(
             water_animation_schedule_.capacity().decoded_vertex_count);
         record.water_transform_base = water_animation_transform_base_;
         record.water_upload_required = water_frame->upload_required;
-        record.water_decode_zone = kGpuZoneWaterDecode;
-        record.water_draw_zone = kGpuZoneWaterDraw;
     }
     WaterForwardRecord water_forward{};
     water_forward.extent = raster_extent_;
@@ -14683,6 +14693,9 @@ bool VkSceneRenderer::record_cull_and_render(
         : 0u;
     water_forward.draw_transform_slots = draw_transform_slots_;
     water_forward.debug_push = record.raster_debug_push;
+    water_forward.timing_pool = selected.ts_pool;
+    water_forward.timing_written = selected.ts_written;
+    water_forward.timing_zone = kGpuZoneWaterDraw;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     water_forward.observation = &last_water_forward_observation_;
 #endif

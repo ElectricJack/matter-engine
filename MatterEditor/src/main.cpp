@@ -957,9 +957,10 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_composite_ms\":" << frame_stats.gpu_composite_ms
            << ",\"gpu_vt_ms\":" << frame_stats.gpu_vt_ms
            << ",\"gpu_water_animation_ms\":"
-           << frame_stats.gpu_water_animation_ms
-           // CPU render-thread split (last sampled frame).
-           << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
+           << frame_stats.gpu_water_animation_ms;
+    matter::append_water_forward_perf_json(output, frame_stats);
+    // CPU render-thread split (last sampled frame).
+    output << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
            << ",\"cpu_build_ms\":" << frame_stats.build_ms
            << ",\"cpu_draw_ms\":" << frame_stats.draw_ms
            << ",\"cpu_draw_vt_requests_ms\":" << frame_stats.draw_vt_requests_ms

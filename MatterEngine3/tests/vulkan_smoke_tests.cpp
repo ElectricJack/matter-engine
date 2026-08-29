@@ -13,6 +13,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -584,6 +585,8 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
 void run_water_forward_path(matter::VulkanDevice& vulkan) {
     viewer::VkSceneRenderer renderer(vulkan);
     std::string error;
+    CHECK(renderer.water_forward_image_bytes() == 0u,
+          "water forward: preservation memory is zero before images exist");
     CHECK(renderer.init(error),
           error.empty() ? "water forward: initialize renderer" : error.c_str());
     if (!error.empty()) return;
@@ -664,6 +667,16 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
                       "water forward: render opaque baseline"))
         return;
     const VkExtent2D raster_extent = renderer.test_opaque_extent();
+    const std::uint64_t expected_forward_image_bytes =
+        static_cast<std::uint64_t>(raster_extent.width) *
+        static_cast<std::uint64_t>(raster_extent.height) * 12u;
+    CHECK(renderer.water_forward_image_bytes() ==
+              expected_forward_image_bytes,
+          "water forward: preservation images report exactly twelve logical bytes per raster pixel");
+    CHECK(renderer.test_gpu_zone_written(
+              baseline_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDraw) == 0u,
+          "water forward: a frame without eligible water leaves the forward timing zone unwritten");
     const uint32_t center_x = raster_extent.width / 2u;
     const uint32_t center_y = raster_extent.height / 2u;
     const uint32_t control_x = raster_extent.width / 8u;
@@ -739,6 +752,10 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
         return;
     const viewer::WaterForwardObservation active =
         renderer.test_water_forward_observation();
+    CHECK(renderer.test_gpu_zone_written(
+              active_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDraw) == 3u,
+          "water forward: preservation and forward draw write one complete timestamp pair");
     CHECK(active.static_draws == 0u && active.direct_draws == 1u,
           "water forward: active direct draw exclusively owns water visibility");
     CHECK(active.copied_opaque_hdr && active.copied_opaque_depth &&
@@ -984,6 +1001,27 @@ void test_atmosphere_timing_contract() {
     boundary(viewer::VolumetricPass::Integrate, true);
     CHECK((boundaries == std::array<uint32_t, 3>{1, 1, 1}),
           "atmosphere timings retain one typed boundary for each froxel pass");
+}
+
+void test_water_forward_perf_evidence_contract() {
+    matter::FrameStats stats{};
+    stats.gpu_water_forward_ms = 1.25f;
+    stats.water_forward_width = 320u;
+    stats.water_forward_height = 180u;
+    stats.water_forward_image_bytes = 691200u;
+    std::ostringstream json;
+    matter::append_water_forward_perf_json(json, stats);
+    CHECK(json.str() ==
+              ",\"gpu_water_forward_ms\":1.25"
+              ",\"water_forward_width\":320"
+              ",\"water_forward_height\":180"
+              ",\"water_forward_image_bytes\":691200",
+          "water forward: perf JSON publishes timing, exact dimensions, and logical preservation bytes");
+    CHECK(viewer::vk_scene_detail::water_forward_image_bytes_for_extent(
+              320u, 180u) == 691200u &&
+              viewer::vk_scene_detail::water_forward_image_bytes_for_extent(
+                  UINT32_MAX, UINT32_MAX) == 0u,
+          "water forward: logical preservation byte accounting is exact and overflow-safe");
 }
 
 void test_atmosphere_acceptance_fifo_parser_and_present_sequencer() {
@@ -13174,6 +13212,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 
 int main() {
     test_atmosphere_timing_contract();
+    test_water_forward_perf_evidence_contract();
     test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     const bool animation_skin_only = startup_smoke_mode &&

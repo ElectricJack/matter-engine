@@ -12826,6 +12826,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             viewer::VkSceneRenderer::kGpuZoneWaterDecode) +
         impl_->vk_scene->gpu_zone_last_ms(
             viewer::VkSceneRenderer::kGpuZoneWaterDraw);
+    impl_->stats.gpu_water_forward_ms =
+        impl_->vk_scene->gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneWaterDraw);
+    impl_->stats.water_forward_width = impl_->vk_scene->raster_width();
+    impl_->stats.water_forward_height = impl_->vk_scene->raster_height();
+    impl_->stats.water_forward_image_bytes =
+        impl_->vk_scene->water_forward_image_bytes();
     impl_->stats.water_animation_uploads =
         impl_->vk_scene->water_animation_upload_count();
     impl_->stats.water_animation_decode_dispatches =

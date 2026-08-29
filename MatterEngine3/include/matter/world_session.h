@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -357,9 +358,17 @@ struct FrameStats {
     float gpu_vol_density_ms    = 0;
     float gpu_vol_scatter_ms    = 0;
     float gpu_vol_integrate_ms  = 0;
-    // Raw, most recently retired upload/copy plus vertex-decode/direct-raster
-    // time for baked water animation. Kept raw for percentile capture.
+    // Raw compatibility sum of the retired decode and forward-water lanes.
+    // The decode lane remains append-only but is now unwritten/zero, so this
+    // is the raw forward span. Kept raw for percentile capture.
     float gpu_water_animation_ms = 0;
+    // EMA-smoothed preservation-copy plus forward-water span. The dimensions
+    // and bytes describe the two persistent screen-optics copies at the
+    // internal raster extent; bytes are logical texel payload, not heap use.
+    float gpu_water_forward_ms = 0;
+    uint32_t water_forward_width = 0;
+    uint32_t water_forward_height = 0;
+    uint64_t water_forward_image_bytes = 0;
     uint64_t water_animation_uploads = 0;
     uint64_t water_animation_decode_dispatches = 0;
     uint64_t water_animation_steady_state_allocations = 0;
@@ -379,6 +388,21 @@ struct FrameStats {
     uint64_t ecs_dropped_steps = 0;
     uint64_t ecs_invalid_ticks = 0;
 };
+
+// Appends the stable forward-water evidence fragment used by perf JSON. Kept
+// beside FrameStats so the editor writer and its smoke test share one spelling
+// of the externally consumed keys.
+inline void append_water_forward_perf_json(std::ostream& output,
+                                           const FrameStats& stats) {
+    output << ",\"gpu_water_forward_ms\":"
+           << stats.gpu_water_forward_ms
+           << ",\"water_forward_width\":"
+           << stats.water_forward_width
+           << ",\"water_forward_height\":"
+           << stats.water_forward_height
+           << ",\"water_forward_image_bytes\":"
+           << stats.water_forward_image_bytes;
+}
 
 class WorldSession {
 public:
