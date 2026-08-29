@@ -1128,6 +1128,13 @@ public:
     }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     bool part_is_raster_water(uint64_t part_hash) const noexcept;
+    const std::vector<PartCommandRange>&
+    test_recorded_visibility_id_ranges() const {
+        return recorded_visibility_id_ranges_;
+    }
+    uint32_t test_recorded_water_draw_count() const noexcept {
+        return recorded_water_draw_count_;
+    }
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
         return test_last_rt_geometry_records_;
@@ -2378,6 +2385,8 @@ private:
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
     uint32_t test_last_rt_blas_build_count_ = 0;
     RasterPipelineDrawDebug test_last_raster_pipeline_draw_{};
+    std::vector<PartCommandRange> recorded_visibility_id_ranges_;
+    uint32_t recorded_water_draw_count_ = 0u;
 #endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;

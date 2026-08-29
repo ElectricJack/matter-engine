@@ -473,6 +473,9 @@ struct RasterRecord {
     bool water_upload_required = false;
     uint32_t water_decode_zone = 0u;
     uint32_t water_draw_zone = 0u;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    uint32_t* recorded_water_draw_count = nullptr;
+#endif
 };
 
 struct NeutralVolumeClearRecord {
@@ -875,6 +878,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                              draw.first_index,
                              static_cast<int32_t>(draw.vertex_offset),
                               record.water_transform_base + draw_index);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            if (record.recorded_water_draw_count)
+                ++*record.recorded_water_draw_count;
+#endif
         }
         if (time_water_draw) {
             write_ts(command_buffer, record.ts_pool,
@@ -6330,14 +6337,20 @@ void VkSceneRenderer::record_visibility_id_pass(
             range.command_count >
                 record.static_command_count - range.first_command)
             continue;
-        const uint32_t range_end = range.first_command + range.command_count;
-        for (uint32_t first = range.first_command; first < range_end;
-             first += max_per_call) {
-            const uint32_t count = std::min(max_per_call, range_end - first);
+        uint32_t first = range.first_command;
+        uint32_t remaining = range.command_count;
+        while (remaining != 0u) {
+            const uint32_t count = std::min(max_per_call, remaining);
             vkCmdDrawIndexedIndirect(
                 command_buffer, record.indirect_buffer,
                 static_cast<VkDeviceSize>(first) * sizeof(DrawCommand), count,
                 sizeof(DrawCommand));
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            recorded_visibility_id_ranges_.push_back(
+                {first, count, range.part_slot, range.raster_water_surface});
+#endif
+            first += count;
+            remaining -= count;
         }
     }
     vkCmdEndRendering(command_buffer);
@@ -13608,6 +13621,10 @@ bool VkSceneRenderer::record_cull_and_render(
     matter::Float3 camera_eye, float pixel_budget, std::string& error) {
     error.clear();
     recorded_draw_ranges_.clear();
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    recorded_visibility_id_ranges_.clear();
+    recorded_water_draw_count_ = 0u;
+#endif
     last_rt_available_ = vulkan_->ray_tracing_available();
     last_rt_effective_ = false;
     last_rt_trace_dispatches_ = 0;
@@ -14022,6 +14039,9 @@ bool VkSceneRenderer::record_cull_and_render(
                         &selected.rt_tlas,
                         this,              // WP-E: vt_hooks
                         kGpuZoneVt};       // WP-E: vt_zone
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    record.recorded_water_draw_count = &recorded_water_draw_count_;
+#endif
     const WaterAnimationGpuFrame* water_frame =
         water_animation_schedule_.frame(frame.frame_slot);
     if (water_frame &&
@@ -15699,6 +15719,10 @@ void VkSceneRenderer::reset() {
     command_template_.clear();
     part_command_ranges_.clear();
     recorded_draw_ranges_.clear();
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    recorded_visibility_id_ranges_.clear();
+    recorded_water_draw_count_ = 0u;
+#endif
     raster_command_enabled_.clear();
     uploaded_raster_command_enabled_.clear();
     rt_instances_.clear();

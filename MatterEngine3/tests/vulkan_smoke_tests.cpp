@@ -209,6 +209,11 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
     gi_settings.samples_per_pixel = 1u;
     gi_settings.max_bounces = 1u;
     renderer.set_gi_settings(gi_settings);
+    renderer.set_visibility_reduce(true);
+    renderer.set_test_device_limits(
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(), UINT32_MAX, UINT32_MAX);
     matter::VulkanFrame frame{};
     const bool prepared = vulkan.begin_frame(frame, error) &&
         renderer.prepare_frame(frame, matrices, camera.position, 1.0f, error);
@@ -216,16 +221,63 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
         renderer.record_cull_and_render(frame, matrices, camera.position, 1.0f,
                                         error) &&
         renderer.record_composite_to_swapchain(frame, error);
-    const auto& opaque_ranges = renderer.test_recorded_draw_ranges();
+    const auto opaque_ranges = renderer.test_recorded_draw_ranges();
+    const auto unlimited_id_ranges =
+        renderer.test_recorded_visibility_id_ranges();
     CHECK(recorded && opaque_ranges.size() == 1u &&
               !opaque_ranges[0].raster_water_surface,
           "water field: opaque recording keeps one ordinary range and zero water ranges");
+    CHECK(unlimited_id_ranges.size() == 1u && opaque_ranges.size() == 1u &&
+              unlimited_id_ranges[0].first_command ==
+                  opaque_ranges[0].first_command &&
+              unlimited_id_ranges[0].command_count ==
+                  opaque_ranges[0].command_count &&
+              !unlimited_id_ranges[0].raster_water_surface,
+          "water field: unlimited visibility-ID iteration terminates on the opaque range after water");
     const bool ended = recorded && vulkan.end_frame(frame, error);
     renderer.finish_ray_tracing_frame(frame.serial, ended);
     vulkan.wait_idle();
     CHECK(ended,
           error.empty() ? "water field: prepare descriptor frame"
                         : error.c_str());
+
+    renderer.set_test_device_limits(
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(), UINT32_MAX, 3u);
+    matter::VulkanFrame capped_frame{};
+    const bool capped_recorded = vulkan.begin_frame(capped_frame, error) &&
+        renderer.prepare_frame(capped_frame, matrices, camera.position, 1.0f,
+                               error) &&
+        renderer.record_cull_and_render(capped_frame, matrices,
+                                        camera.position, 1.0f, error) &&
+        renderer.record_composite_to_swapchain(capped_frame, error);
+    const auto capped_id_ranges =
+        renderer.test_recorded_visibility_id_ranges();
+    const bool capped_ended =
+        capped_recorded && vulkan.end_frame(capped_frame, error);
+    renderer.finish_ray_tracing_frame(capped_frame.serial, capped_ended);
+    vulkan.wait_idle();
+    std::uint32_t capped_id_commands = 0u;
+    for (const viewer::PartCommandRange& range : capped_id_ranges)
+        capped_id_commands += range.command_count;
+    CHECK(capped_ended && opaque_ranges.size() == 1u &&
+              capped_id_ranges.size() > 1u &&
+              capped_id_ranges.front().first_command ==
+                  opaque_ranges[0].first_command &&
+              capped_id_commands == opaque_ranges[0].command_count &&
+              std::all_of(
+                  capped_id_ranges.begin(), capped_id_ranges.end(),
+                  [](const viewer::PartCommandRange& range) {
+                      return range.command_count != 0u &&
+                             range.command_count <= 3u &&
+                             !range.raster_water_surface;
+                  }),
+          error.empty()
+              ? "water field: capped visibility-ID iteration splits opaque commands and excludes water"
+              : error.c_str());
+    renderer.clear_test_device_limits(error);
+    CHECK(error.empty(), "water field: restore physical device limits");
     CHECK(renderer.test_water_field_descriptors_match(
               frame.frame_slot, rebound),
           "water field: raster and RT descriptor arrays name one complete generation");
@@ -370,8 +422,8 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                       return command.instance_count != 0u;
                   }),
               "water animation: RT proxy contributes no static raster draw");
-        CHECK(!proxy.ray_traced && selection.draws.size() == 1u,
-              "water animation: active direct owns one draw and stays raster-only");
+        CHECK(!proxy.ray_traced,
+              "water animation: active direct stays raster-only");
         const std::uint64_t tlas_builds_before =
             renderer.rt_tlas_build_count();
         const bool recorded = renderer.prepare_frame(
@@ -387,6 +439,8 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                             : error.c_str());
         CHECK(renderer.test_recorded_draw_ranges().empty(),
               "water animation: classified static water is absent from opaque recording");
+        CHECK(renderer.test_recorded_water_draw_count() == 1u,
+              "water animation: command recording issues exactly one direct indexed draw");
         vulkan.wait_idle();
 
         if (vulkan.ray_tracing_available()) {
