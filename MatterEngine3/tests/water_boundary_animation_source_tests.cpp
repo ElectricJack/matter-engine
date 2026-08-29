@@ -281,9 +281,19 @@ void test_snapped_crop_support_halo_half_open_and_dam_exclusion() {
     const matter::Float3 snapped_minimum = minimum_face;
     const matter::Float3 snapped_maximum = maximum_face;
     const matter::Float3 unrelated{13.0f, 20.0f, 30.0f};
+    const std::array<matter::Float3, 3u> maximum_inside{
+        matter::Float3{std::nextafter(maximum_face.x, minimum_face.x),
+                       22.0f, 32.0f},
+        matter::Float3{11.0f,
+                       std::nextafter(maximum_face.y, minimum_face.y),
+                       32.0f},
+        matter::Float3{11.0f, 22.0f,
+                       std::nextafter(maximum_face.z, minimum_face.z)},
+    };
     const auto capture = crop_capture(
         {support_touch, dam_support_touch, dam_expanded_corner_only,
-         snapped_minimum, snapped_maximum, unrelated});
+         snapped_minimum, snapped_maximum, unrelated, maximum_inside[0],
+         maximum_inside[1], maximum_inside[2]});
 
     hydrology::WaterBoundaryAnimationSource downstream{};
     CHECK(hydrology::build_water_boundary_animation_source(
@@ -302,15 +312,62 @@ void test_snapped_crop_support_halo_half_open_and_dam_exclusion() {
               !hydrology::water_boundary_source_contains(downstream,
                                                           unrelated),
           "one public half-open snapped-crop predicate owns minimum faces, excludes maximum faces, and covers support contributors");
-    CHECK(downstream.frames[0].particle_count == 4u,
+    CHECK(downstream.frames[0].particle_count == 7u,
           "downstream extraction uses the same half-open crop and keeps dam-adjacent support");
+    std::vector<std::uint8_t> downstream_bytes;
+    hydrology::WaterBoundaryAnimationSource reopened{};
+    CHECK(hydrology::serialize_water_boundary_animation_source(
+              downstream, downstream_bytes, error) &&
+              hydrology::deserialize_water_boundary_animation_source(
+                  downstream_bytes, reopened, error),
+          error.message.c_str());
+    std::vector<matter::Float3> reopened_positions;
+    CHECK(hydrology::decode_water_boundary_frame(
+              reopened, 0u, reopened_positions, error),
+          error.message.c_str());
+    CHECK(std::all_of(reopened_positions.begin(), reopened_positions.end(),
+                      [&](matter::Float3 position) {
+                          return hydrology::water_boundary_source_contains(
+                              reopened, position);
+                      }),
+          "every retained point, including nextafter of each exclusive maximum face, decodes inside the same half-open crop after round trip");
+    CHECK(std::any_of(reopened_positions.begin(), reopened_positions.end(),
+                      [&](matter::Float3 position) {
+                          return position.x == minimum_face.x &&
+                                 position.y == minimum_face.y &&
+                                 position.z == minimum_face.z;
+                      }),
+          "the inclusive minimum crop endpoint survives quantization exactly");
+    for (std::size_t index = 1u; index != reopened_positions.size(); ++index) {
+        const matter::Float3 previous = reopened_positions[index - 1u];
+        const matter::Float3 current = reopened_positions[index];
+        const bool ordered =
+            previous.x < current.x ||
+            (previous.x == current.x &&
+             (previous.y < current.y ||
+              (previous.y == current.y && previous.z <= current.z)));
+        CHECK(ordered,
+              "decoded local UNORM16 coordinates preserve lexicographic monotonicity");
+    }
+    for (matter::Float3 expected : maximum_inside) {
+        float nearest_distance = std::numeric_limits<float>::infinity();
+        for (matter::Float3 decoded : reopened_positions) {
+            const float dx = decoded.x - expected.x;
+            const float dy = decoded.y - expected.y;
+            const float dz = decoded.z - expected.z;
+            nearest_distance = std::min(
+                nearest_distance, std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        CHECK(nearest_distance <= reopened.lattice.voxel_m / 16.0f,
+              "exclusive-maximum interior quantization remains within one sixteenth voxel on every axis");
+    }
 
     hydrology::WaterBoundaryAnimationSource upstream{};
     CHECK(hydrology::build_water_boundary_animation_source(
               capture, "upper", 0x222u, handoff, lattice, 0.5f, 0.1f,
               true, upstream, error),
           error.message.c_str());
-    CHECK(upstream.frames[0].particle_count == 3u,
+    CHECK(upstream.frames[0].particle_count == 6u,
           "upstream extraction excludes every intersecting support sphere without dropping an expanded-box corner that cannot reach the dam");
     std::vector<matter::Float3> upstream_positions;
     CHECK(hydrology::decode_water_boundary_frame(
@@ -395,6 +452,13 @@ void test_partial_corrupt_overflow_and_lattice_mismatch_fail_closed() {
               mismatched_source, output, error) && output.empty() &&
               error.code == gpu_meshing::ErrorCode::ArtifactFailure,
           "crop bounds that no longer lie on canonical lattice faces are rejected");
+    auto degenerate_source = source;
+    degenerate_source.crop_bounds_m.max_m.x =
+        degenerate_source.crop_bounds_m.min_m.x;
+    CHECK(!hydrology::serialize_water_boundary_animation_source(
+              degenerate_source, output, error) && output.empty() &&
+              error.code == gpu_meshing::ErrorCode::ArtifactFailure,
+          "a degenerate local quantization extent fails closed");
 
     auto too_large = bytes;
     write_u64(too_large, 16u, (1ull << 30u) + 1u);

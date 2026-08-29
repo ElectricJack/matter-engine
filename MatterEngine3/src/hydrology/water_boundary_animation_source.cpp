@@ -410,8 +410,14 @@ std::uint16_t quantize(float value, float minimum, float maximum) noexcept {
 float dequantize(std::uint16_t value,
                  float minimum,
                  float maximum) noexcept {
-    return minimum + (maximum - minimum) *
-                         (static_cast<float>(value) / 65535.0f);
+    const float decoded = minimum + (maximum - minimum) *
+        (static_cast<float>(value) / 65535.0f);
+    // The crop's maximum face is exclusive. Rounding the final UNORM bin to
+    // that face would move a retained contributor out of the source it came
+    // from, so reserve the largest representable in-crop coordinate as the
+    // upper decoded endpoint. Codes below it retain the ordinary monotonic
+    // UNORM mapping and code zero still reconstructs the inclusive minimum.
+    return std::min(decoded, std::nextafter(maximum, minimum));
 }
 
 bool append_u16(std::vector<std::uint8_t>& bytes,
