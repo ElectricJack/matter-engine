@@ -5,7 +5,7 @@
 - **Target:** new `MatterEngine3/src/bake_trace.{h,cpp}` + trace hooks across the bake pipeline + new MatterEditor `bake_lab.{h,cpp}` mode
 - **Baseline:** `d3bb7a5d` (local main)
 - **Status:** Spec — umbrella; foundation (Part II) ready to implement
-- **Instrument specs:** [settle-tick-optimizer.md](settle-tick-optimizer.md) (committed; engine tools complete, experiment queue unscheduled); [part-workbench.md](part-workbench.md) (**supersedes** this doc's Part Lab §II.3, variant table §II.4, Timeline diff mode in §II.2, and the §I.5 LOD-experimentation machinery — the project pivoted to hands-on tools: asset browser, isolation bake with live LOD watch, and manual per-LOD authoring persisted to part source)
+- **Instrument specs:** [settle-tick-optimizer.md](../../../MatterEngine3/docs/settle-tick-optimizer.md) (committed; engine tools complete, experiment queue unscheduled); [part-workbench.md](../../../MatterEngine3/docs/part-workbench.md) (**supersedes** this doc's Part Lab §II.3, variant table §II.4, Timeline diff mode in §II.2, and the §I.5 LOD-experimentation machinery — the project pivoted to hands-on tools: asset browser, isolation bake with live LOD watch, and manual per-LOD authoring persisted to part source)
 
 ---
 
@@ -104,7 +104,7 @@ Each completed job contributes a row: job descriptor, trace summary (per-phase m
 
 - **Timeline** — flamegraph of a selected run's trace (Lab job or the most recent production bake), spans colored by phase family, counters in tooltips, diff mode showing per-span deltas vs. another run. The universal instrument: works for every phase, present and future.
 - **Part Lab** — module picker (from the world's schema dirs), params editor (seeded from the class's `static params` via the merged-params path, `ScriptHost::last_merged_params`), bake button → job with cold sandbox, phase breakdown, **LOD gallery** (per-rung meshes with tri counts and times), and one-click "add to variant table."
-- **Settle Lab** — as specified in [settle-tick-optimizer.md](settle-tick-optimizer.md): tick transport, collider wireframes colored by sleep state, convergence curves, blame list, A/B ghost with the pose-delta gate. Its transport becomes the shared transport widget bound to the settle `SteppablePhase`.
+- **Settle Lab** — as specified in [settle-tick-optimizer.md](../../../MatterEngine3/docs/settle-tick-optimizer.md): tick transport, collider wireframes colored by sleep state, convergence curves, blame list, A/B ghost with the pose-delta gate. Its transport becomes the shared transport widget bound to the settle `SteppablePhase`.
 - **Op stepper** — `build()` replay for a selected part: step through DSL ops, watch the tree assemble, see per-op cost attribution (which loop of branches burns the time).
 - **Variants** — the table + compare views.
 

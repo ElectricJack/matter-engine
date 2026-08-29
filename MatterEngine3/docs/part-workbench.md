@@ -5,7 +5,7 @@
 - **Target:** MatterEditor Bake Lab window (tabs become **Assets · Workbench · Timeline**) + engine support in `script_host` / `lod_bake` / `part_flatten` / part format / render options
 - **Baseline:** `851d9701` (feature/bake-lab: M1 BakeTrace complete, Lab shell + Timeline flamegraph, settle engine tools)
 - **Status:** Spec — Part I settled with the user; Part II implementation-ready for W1–W4, W5 pins design decisions that need one format bump
-- **Relation:** [bake-lab.md](bake-lab.md) remains the umbrella for BakeTrace/tracing; its M3 (Part Lab), M4 (variant table), task 2.3 (diff mode), and the LOD experiment/rung-substitution machinery are **cut**. [settle-tick-optimizer.md](settle-tick-optimizer.md)'s engine tools (step API, `settle_bench`, pose metric) are complete and remain as manual tools; its experiment queue is no longer scheduled work.
+- **Relation:** [bake-lab.md](../../docs/deprecated/MatterEngine3/bake-lab.md) remains the historical umbrella for BakeTrace/tracing; its M3 (Part Lab), M4 (variant table), task 2.3 (diff mode), and the LOD experiment/rung-substitution machinery are **cut**. [settle-tick-optimizer.md](settle-tick-optimizer.md)'s engine tools (step API, `settle_bench`, pose metric) are complete and remain as manual tools; its experiment queue is no longer scheduled work.
 
 ---
 

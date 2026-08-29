@@ -4,8 +4,15 @@
 
 **Status:** Implemented and accepted on `codex/dualsphysics-fluid-spike`
 
+> **Historical rendering policy:** The per-frame animated-water BLAS/TLAS
+> policy in section 7.3 was superseded on 2026-08-28. Animated water is now
+> raster-only by design; see the current
+> [render-eligibility design](../../../superpowers/specs/2026-08-28-render-eligibility-and-document-lifecycle-design.md). The
+> capture, artifact, meshing, and raster-playback sections remain the record
+> of the landed animation system.
+
 **Scope:** PhysX section capture, weighted loop meshing, animation artifacts,
-Vulkan raster playback, RiverFloatLab acceptance
+Vulkan raster playback, cached native-RT geometry, RiverFloatLab acceptance
 
 ## 1. Purpose
 
@@ -18,10 +25,11 @@ seamless periodic density field. The existing GPU isosurface mesher extracts
 thirty independent visual meshes from that field during the build.
 
 This design supersedes only the "water mesh remains static at runtime" visual
-restriction in `2026-08-24-real-time-river-presentation-floating-bodies-design.md`.
+restriction in the now-deprecated
+[river-presentation design](../../../deprecated/superpowers/specs/2026-08-24-real-time-river-presentation-floating-bodies-design.md).
 The accepted simulation result, gameplay/presentation fields, CPU collision
-mesh, terrain collision, buoyancy inputs, and ray-tracing intersection proxy
-remain static.
+mesh, terrain collision, and buoyancy inputs remain static. A later follow-up
+replaced the static-only ray-tracing proxy with the matching animated frame.
 
 ## 2. Authored contract
 
@@ -84,7 +92,7 @@ the fill sensor's completion batch. It must have:
 - exactly thirty samples separated by four simulation steps;
 - strictly increasing sample steps;
 - finite positions inside the accepted diagnostic policy;
-- no count above `max_visual_particles`; and
+- no capture-frame count above the physical bake's `max_particles`; and
 - the accepted final snapshot as or after its newest sample.
 
 The current batch sensor discovers completion after a batch readback, so the
@@ -238,8 +246,8 @@ The existing shader animation time uses the same clock.
 
 ### 7.2 Vulkan raster lane
 
-Animated water uses a dedicated raster-only direct-draw lane. It does not enter
-the immutable static vertex arena, cull command table, BLAS builder, or TLAS.
+Animated water uses a dedicated direct-draw raster lane. It does not enter the
+immutable static vertex arena or cull command table.
 Per Vulkan frame slot, the renderer owns bounded water-animation vertex and
 index buffers. When the selected 30 Hz frame changes, it writes that frame's
 packed vertex and index payloads into fence-owned, persistently mapped
@@ -272,22 +280,27 @@ normal frame-serial lifetime system. Bounds
 and counts are validated before command recording. A rejected
 frame records no animated draw and leaves the static fallback visible.
 
-### 7.3 Static ray-tracing proxy
+### 7.3 Cached animated ray-tracing geometry
 
-The accepted static water part remains in RT BLAS/TLAS and carries the same
-water field/material binding. While animated raster playback is healthy, its
-ordinary raster draw is suppressed by an explicit renderer-owned
-`rt_proxy_only` classification; RT selection is not suppressed. This is a
-water-specific visibility contract, not a general editor draw override.
+While animated playback is healthy, `rt_proxy_only` suppresses the accepted
+static water proxy in both raster and RT selection. A compute pass expands the
+same packed frame used by raster into a fence-owned 28-byte RT vertex buffer;
+the combined index buffer is rebased once during frame preparation. The BLAS
+therefore traces the exact visible animation frame and keeps reflections,
+shadows, refraction, and fog-depth intersections coherent with the G-buffer.
 
-The animated surface therefore supplies primary G-buffer position, normal,
-depth, foam, and reactivity. Reflections, shadows, and refraction intersection
-continue to see the accepted static proxy. No per-frame BLAS build/refit and no
-portable serialized BLAS are introduced.
+The one-second loop has only thirty stable frame identities. The renderer
+builds a BLAS on the first visit to each identity, caches that acceleration
+structure by animation frame index, and reuses it on every later loop. Decoded
+vertex/index storage remains bounded to frames-in-flight; the cache retains
+only acceleration structures. The default LRU budget is 2048 MiB and can be
+overridden with `MATTER_WATER_BLAS_CACHE_MB`. In-flight submissions retain
+shared ownership, so eviction cannot destroy referenced geometry.
 
-If playback fails, the renderer atomically clears `rt_proxy_only` and renders
-the static proxy in both raster and RT lanes. It never shows no water and never
-mixes an animated frame with a stale field generation.
+If playback, compute decode, or BLAS preparation fails, the renderer clears
+the dynamic generation and restores the accepted static proxy in both raster
+and RT lanes. It never mixes an animated raster frame with stale RT geometry or
+a stale water-field generation.
 
 ## 8. Memory and performance budgets
 
@@ -303,8 +316,9 @@ Version-one budgets are:
 - no more than 300 MiB compressed animation artifact per section;
 - no more than 700 MiB compressed CPU animation payload for the complete
   two-section RiverFloatLab network;
-- no more than 96 MiB additional device memory per simultaneously rendered
-  animated section, excluding the already-existing static proxy BLAS;
+- per-slot packed and decoded animation buffers are bounded by the published
+  frame capacity and the renderer's frames-in-flight count;
+- animated BLAS cache memory is LRU-bounded to 2048 MiB by default;
 - no more than 1.5 ms median and 3.0 ms p95 GPU cost for upload/decode/draw of
   the visible animated water set at 2560x1440 on the installed RTX 4090;
 - no steady-state heap allocation after publication; and
@@ -353,8 +367,11 @@ decode time, uploaded bytes, and animated draw time separately.
 - Two half-phase fixtures do not double the measured surface thickness.
 - Packed vertex GPU decode matches the CPU decoder within quantization bounds.
 - Frame selection wraps from 29 to 0 with a shared network clock.
-- A healthy animated draw suppresses only static proxy raster and retains its
-  RT geometry; a failed draw restores static raster.
+- A healthy animated draw suppresses the static proxy in raster and RT, decodes
+  one matching RT vertex frame, and emits one dynamic RT geometry record.
+- The first visit to a loop frame builds one BLAS; a repeated visit records a
+  cache hit and performs no second BLAS build.
+- A failed animated draw restores the static raster/RT proxy atomically.
 - Repeated presentation frames within one 30 Hz interval upload zero bytes.
 - Field-generation replacement is transactional across proxy and animation.
 
@@ -383,5 +400,6 @@ feature.
 
 This milestone does not add runtime fluid simulation, dynamic water collision,
 particle rendering, arbitrary loop durations, temporal mesh interpolation,
-animated RT BLAS, or new isosurface extraction. The existing GPU mesher and
-water material remain the only visual field and shading implementations.
+portable serialized BLAS, or new isosurface extraction. The existing GPU
+mesher and water material remain the only visual field and shading
+implementations.

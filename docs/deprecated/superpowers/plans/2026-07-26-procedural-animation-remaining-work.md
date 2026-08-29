@@ -2,8 +2,8 @@
 
 **Date:** 2026-07-26
 **Status:** Proposed; sequencing and scope for review
-**Predecessors:** [system design](../specs/2026-07-22-procedural-animation-system-design.md),
-[Phase A–C plan](2026-07-22-procedural-animation-phase-abc.md)
+**Predecessors:** [system design](../../../superpowers/specs/2026-07-22-procedural-animation-system-design.md),
+[Phase A–C plan](../../../completed/superpowers/plans/2026-07-22-procedural-animation-phase-abc.md)
 
 Phases A–C are merged onto current `main`. This document plans the seven items the
 A–C plan listed under "Explicitly Deferred Beyond Phase C", against the code that

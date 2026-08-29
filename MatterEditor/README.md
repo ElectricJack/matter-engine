@@ -102,7 +102,7 @@ when `<vulkan/vulkan_win32.h>` is pulled in (which only happens when
 `#ifdef _WIN32` is a hard compile error on Linux, not a runtime gap. Tracing
 what actually *uses* that capability found nothing: it is unimplemented
 CUDA/OptiX external-memory/semaphore interop
-(`docs/superpowers/specs/2026-07-13-vulkan-temporal-foundation-design.md`),
+(`docs/deprecated/superpowers/specs/2026-07-13-vulkan-temporal-foundation-design.md`),
 with no `vkGetMemoryWin32HandleKHR` / `vkImportSemaphoreWin32HandleKHR` call
 anywhere in this repo. The fix gates all three spots to `_WIN32` (byte-for-byte
 identical on Windows) and simply drops the requirement on Linux rather than

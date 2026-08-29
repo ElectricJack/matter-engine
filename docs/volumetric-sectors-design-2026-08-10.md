@@ -3,7 +3,7 @@
 **Date:** 2026-08-10
 **Status:** design — not yet implemented
 **Test world:** `projects/world_demo/scenes/StreamCaverns` (built for exactly this)
-**Prior art this builds on:** `docs/terrain-nested-sector-lod-2026-08-08.md` (the XZ nested
+**Prior art this builds on:** `docs/deprecated/terrain-nested-sector-lod-2026-08-08.md` (the XZ nested
 system this generalizes), `docs/lod-vt-redesign-2026-08-04.md` §6 (the unbuilt occlusion
 sketch this adopts and concretizes)
 
@@ -93,7 +93,7 @@ The causal chain, established by reading `terrain_mesher.cpp` and the streamer:
    mismatch now prints as a hole to the background, not a dark band.
 
 The published-but-unbuilt mitigation was a group-atomic `WorldDelta` swap
-(`docs/terrain-nested-sector-lod-2026-08-08.md:416-437`). This design goes further and
+(`docs/deprecated/terrain-nested-sector-lod-2026-08-08.md:416-437`). This design goes further and
 removes the need for cross-bake agreement altogether (§4).
 
 ## 3. Design: the volumetric grid
@@ -297,7 +297,7 @@ passenger on the parking gate's batched swap (§4.2), not new machinery.
 1. **Seams always match what is drawn** — correctness during baking, splitting,
    merging, parking, and fast flight follows from construction, not from timing.
 2. **The edge mask leaves the bake identity.** Neighbor level changes stop forcing
-   rebakes (`docs/terrain-nested-sector-lod-2026-08-08.md:154-159` documents today's
+   rebakes (`docs/deprecated/terrain-nested-sector-lod-2026-08-08.md:154-159` documents today's
    cascade), and `assign_nested_masks` / `assign_terrain_lods` pass 3 are deleted —
    the streamer no longer knows seams exist. When a pair changes level in either
    direction, the fix is a microsecond-scale weld update, not a two-sided rebake
