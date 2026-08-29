@@ -96,6 +96,7 @@ void main() {
             clamp(record.foam_response.z, 0.0, 1.0);
         color = transmitted + scattered +
                 reflected_radiance * fresnel * coherent_reflection;
+        color = water_apply_foam_radiance(color, surface.foam.coverage);
     }
 
     out_hdr = vec4(color, 1.0);

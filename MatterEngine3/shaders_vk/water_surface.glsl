@@ -263,6 +263,11 @@ float water_foam_driver(WaterFieldSample field) {
                  0.0, 1.0);
 }
 
+vec3 water_apply_foam_radiance(vec3 base_radiance, float foam_coverage) {
+    return mix(base_radiance, vec3(0.92, 0.97, 1.0),
+               clamp(foam_coverage, 0.0, 1.0));
+}
+
 float water_breakup_noise(vec2 position, float scale_m) {
     float scale = max(scale_m, 0.001);
     float phase = position.x * (2.17 / scale) +

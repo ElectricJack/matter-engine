@@ -259,6 +259,36 @@ void test_baked_whitewater_dominates_bounded_foam_support() {
           "feature-only foam support cannot create full whitewater coverage");
 }
 
+void test_foam_coverage_produces_a_visible_bounded_radiance_lobe() {
+    const matter::Float3 base{0.08f, 0.12f, 0.16f};
+    const matter::Float3 clear =
+        viewer::water_apply_foam_radiance_reference(base, 0.0f);
+    const matter::Float3 partial =
+        viewer::water_apply_foam_radiance_reference(base, 0.5f);
+    const matter::Float3 whitewater =
+        viewer::water_apply_foam_radiance_reference(base, 1.0f);
+    const matter::Float3 clamped_low =
+        viewer::water_apply_foam_radiance_reference(base, -1.0f);
+    const matter::Float3 clamped_high =
+        viewer::water_apply_foam_radiance_reference(base, 2.0f);
+
+    CHECK(close(clear.x, base.x) && close(clear.y, base.y) &&
+              close(clear.z, base.z) && close(clamped_low.x, base.x) &&
+              close(clamped_low.y, base.y) && close(clamped_low.z, base.z),
+          "zero or negative foam coverage leaves clear-water radiance unchanged");
+    CHECK(partial.x > base.x && partial.y > base.y && partial.z > base.z &&
+              partial.x < whitewater.x && partial.y < whitewater.y &&
+              partial.z < whitewater.z &&
+              luminance(partial) > luminance(base),
+          "partial baked foam coverage visibly lifts radiance toward whitewater");
+    CHECK(close(whitewater.x, 0.92f) && close(whitewater.y, 0.97f) &&
+              close(whitewater.z, 1.0f) &&
+              close(clamped_high.x, whitewater.x) &&
+              close(clamped_high.y, whitewater.y) &&
+              close(clamped_high.z, whitewater.z),
+          "full or excessive coverage remains bounded at the physical foam color");
+}
+
 void test_automatic_foam_and_local_override() {
     const matter::WaterSurfaceDefinition surface = make_surface();
     const viewer::WaterFieldBinding binding{5u, 14u};
@@ -429,6 +459,7 @@ int main() {
     test_shallow_clarity_and_depth_tint();
     test_optical_state_is_bounded_and_darkens_monotonically_with_distance();
     test_baked_whitewater_dominates_bounded_foam_support();
+    test_foam_coverage_produces_a_visible_bounded_radiance_lobe();
     test_automatic_foam_and_local_override();
     test_world_mapping_borders_and_dry_rejection();
     test_three_step_rk2_backtrace();

@@ -85,6 +85,9 @@ float water_foam_driver_reference(
     float foam_potential, float turbulence, float aeration,
     hydrology::RiverFeature feature) noexcept;
 
+matter::Float3 water_apply_foam_radiance_reference(
+    matter::Float3 base_radiance, float foam_coverage) noexcept;
+
 bool water_evaluate_surface_reference(
     const PackedWaterField& field, WaterFieldBinding published_binding,
     WaterFieldBinding requested_binding,
