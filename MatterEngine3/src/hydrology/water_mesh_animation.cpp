@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <string>
 
@@ -37,6 +38,105 @@ bool valid_mesh(const gpu_meshing::MeshResult& mesh,
     return mesh.content_digest == gpu_meshing::mesh_content_digest(mesh);
 }
 
+bool same_lattice(const gpu_meshing::ParticleSamplingLattice& first,
+                  const gpu_meshing::ParticleSamplingLattice& second) {
+    return std::memcmp(&first, &second, sizeof(first)) == 0;
+}
+
+bool crop_interiors_overlap(const gpu_meshing::Aabb& first,
+                            const gpu_meshing::Aabb& second) noexcept {
+    return std::max(first.min_m.x, second.min_m.x) <
+               std::min(first.max_m.x, second.max_m.x) &&
+           std::max(first.min_m.y, second.min_m.y) <
+               std::min(first.max_m.y, second.max_m.y) &&
+           std::max(first.min_m.z, second.min_m.z) <
+               std::min(first.max_m.z, second.max_m.z);
+}
+
+bool validate_endpoint_sources(
+    WaterBoundaryAnimationSourceSpan sources,
+    float particle_radius_m,
+    const gpu_meshing::ParticleJob& template_job,
+    gpu_meshing::Error& error) {
+    if (sources.size != 0u && sources.data == nullptr)
+        return fail(error, gpu_meshing::ErrorCode::InvalidInput,
+                    "water mesh animation endpoint source span is invalid");
+    for (std::size_t index = 0u; index != sources.size; ++index) {
+        const WaterBoundaryAnimationSource& source = sources.data[index];
+        if (source.frames.size() != 30u ||
+            source.frames_per_second != 30u ||
+            source.phase_offset_frames != 15u ||
+            source.particle_radius_m != particle_radius_m ||
+            source.blend_width_m != template_job.blend_width_m ||
+            !same_lattice(source.lattice, template_job.sampling_lattice)) {
+            return fail(error, gpu_meshing::ErrorCode::InvalidInput,
+                        "water mesh animation endpoint source metadata does not match the section job");
+        }
+        for (std::size_t other = 0u; other != index; ++other) {
+            if (crop_interiors_overlap(
+                    source.crop_bounds_m,
+                    sources.data[other].crop_bounds_m)) {
+                return fail(error, gpu_meshing::ErrorCode::InvalidInput,
+                            "water mesh animation endpoint source crops overlap");
+            }
+        }
+    }
+    return true;
+}
+
+bool append_normalized_capture_frame(
+    const FluidParticleAnimationCapture& capture,
+    std::uint32_t capture_index,
+    float particle_radius_m,
+    WaterBoundaryAnimationSourceSpan sources,
+    std::vector<gpu_meshing::ParticleSample>& particles,
+    gpu_meshing::Error& error) {
+    const auto& raw = capture.frames[capture_index].positions_m;
+    for (matter::Float3 position : raw) {
+        if (!finite(position))
+            return fail(error, gpu_meshing::ErrorCode::InvalidInput,
+                        "water mesh animation capture has a non-finite particle");
+        bool substituted = false;
+        for (std::size_t source_index = 0u;
+             source_index != sources.size; ++source_index) {
+            if (water_boundary_source_contains(
+                    sources.data[source_index], position)) {
+                substituted = true;
+                break;
+            }
+        }
+        if (!substituted)
+            particles.push_back({position, particle_radius_m});
+    }
+    std::vector<matter::Float3> decoded;
+    for (std::size_t source_index = 0u;
+         source_index != sources.size; ++source_index) {
+        gpu_meshing::Error decode_error{};
+        if (!decode_water_boundary_frame(
+                sources.data[source_index], capture_index, decoded,
+                decode_error)) {
+            return fail(
+                error,
+                decode_error.code == gpu_meshing::ErrorCode::None
+                    ? gpu_meshing::ErrorCode::ArtifactFailure
+                    : decode_error.code,
+                "water mesh animation endpoint frame " +
+                    std::to_string(capture_index) + " failed: " +
+                    decode_error.message);
+        }
+        for (matter::Float3 position : decoded) {
+            if (!water_boundary_source_contains(
+                    sources.data[source_index], position)) {
+                return fail(
+                    error, gpu_meshing::ErrorCode::ArtifactFailure,
+                    "water mesh animation endpoint frame escaped its half-open crop");
+            }
+            particles.push_back({position, particle_radius_m});
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 WaterMeshAnimationPhase water_mesh_animation_phase(
@@ -65,7 +165,8 @@ bool build_water_mesh_animation(
     const gpu_meshing::ParticleJob& template_job,
     const WaterMeshAnimationMesher& mesher,
     WaterMeshAnimation& animation,
-    gpu_meshing::Error& error) {
+    gpu_meshing::Error& error,
+    WaterBoundaryAnimationSourceSpan endpoint_sources) {
     animation = {};
     error = {};
     constexpr std::uint32_t kFrames = 30u;
@@ -78,6 +179,10 @@ bool build_water_mesh_animation(
         return fail(error, gpu_meshing::ErrorCode::InvalidInput,
                     "water mesh animation requires a complete fixed 30-frame capture");
     }
+    if (!validate_endpoint_sources(endpoint_sources, particle_radius_m,
+                                   template_job, error))
+        return false;
+
 
     std::size_t maximum_combined = 0u;
     for (std::uint32_t frame_index = 0u;
@@ -110,29 +215,17 @@ bool build_water_mesh_animation(
          frame_index != kFrames; ++frame_index) {
         const WaterMeshAnimationPhase phase = water_mesh_animation_phase(
             frame_index, kFrames, kPhaseOffset);
-        const auto& primary =
-            capture.frames[phase.primary_capture].positions_m;
-        const auto& secondary =
-            capture.frames[phase.secondary_capture].positions_m;
         particles.clear();
-        for (matter::Float3 position : primary) {
-            if (!finite(position))
-                return fail(error, gpu_meshing::ErrorCode::InvalidInput,
-                            "water mesh animation frame " +
-                                std::to_string(frame_index) +
-                                " has a non-finite primary particle");
-            particles.push_back({position, particle_radius_m});
-        }
+        if (!append_normalized_capture_frame(
+                capture, phase.primary_capture, particle_radius_m,
+                endpoint_sources, particles, error))
+            return false;
         const std::uint32_t split =
             static_cast<std::uint32_t>(particles.size());
-        for (matter::Float3 position : secondary) {
-            if (!finite(position))
-                return fail(error, gpu_meshing::ErrorCode::InvalidInput,
-                            "water mesh animation frame " +
-                                std::to_string(frame_index) +
-                                " has a non-finite secondary particle");
-            particles.push_back({position, particle_radius_m});
-        }
+        if (!append_normalized_capture_frame(
+                capture, phase.secondary_capture, particle_radius_m,
+                endpoint_sources, particles, error))
+            return false;
 
         gpu_meshing::ParticleJob job = template_job;
         job.particles = particles.empty() ? nullptr : particles.data();

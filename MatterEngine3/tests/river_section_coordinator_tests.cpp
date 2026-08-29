@@ -1,6 +1,7 @@
 #include "check.h"
 
 #include "hydrology/river_section_coordinator.h"
+#include "hydrology/water_boundary_animation_source.h"
 
 #include <string>
 #include <vector>
@@ -195,6 +196,13 @@ void test_animation_enabled_sequence_requires_every_section_product() {
         animation.frames.resize(30u);
         animation.payload_digest = section.id == "upper" ? 1111u : 2222u;
         result.animation = std::move(animation);
+        hydrology::WaterBoundaryAnimationSource boundary{};
+        boundary.section_id = section.id;
+        boundary.source_section_payload_digest =
+            result.artifact.payload_digest;
+        boundary.handoff_semantic_key = 17u;
+        boundary.payload_digest = section.id == "upper" ? 3111u : 3222u;
+        result.boundary_sources.push_back(std::move(boundary));
         if (section.id == "upper") {
             hydrology::SpillwayHandoffRecord handoff{};
             handoff.id = "pool-one";
@@ -216,6 +224,12 @@ void test_animation_enabled_sequence_requires_every_section_product() {
               output.manifest.section_animations[0].frame_count == 30u &&
               output.manifest.section_animations[0].frames_per_second == 30u,
           "animation-enabled sections publish one topological reference each");
+    CHECK(output.sections.size() == 2u &&
+              output.sections[0].boundary_sources.size() == 1u &&
+              output.sections[1].boundary_sources.size() == 1u &&
+              output.sections[0].boundary_sources[0].payload_digest == 3111u &&
+              output.sections[1].boundary_sources[0].payload_digest == 3222u,
+          "reopened boundary sources remain transient section results while the runtime manifest contains only section animation references");
 
     const auto missing = [](const matter::RiverSectionDefinition& section,
                             const std::vector<hydrology::SpillwayHandoffRecord>&,

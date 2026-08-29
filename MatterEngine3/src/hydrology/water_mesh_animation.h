@@ -1,8 +1,10 @@
 #pragma once
 
 #include "hydrology/physx_fluid_types.h"
+#include "hydrology/water_boundary_animation_source.h"
 #include "matter/gpu_visual_meshing.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -34,12 +36,20 @@ using WaterMeshAnimationMesher = std::function<bool(
     gpu_meshing::Stats& stats,
     gpu_meshing::Error& error)>;
 
+// C++17-compatible non-owning span. The canonical Windows test graph remains
+// C++17, so this is the pointer/count spelling of the plan's endpoint span.
+struct WaterBoundaryAnimationSourceSpan {
+    const WaterBoundaryAnimationSource* data = nullptr;
+    std::size_t size = 0u;
+};
+
 bool build_water_mesh_animation(
     const FluidParticleAnimationCapture& capture,
     float particle_radius_m,
     const gpu_meshing::ParticleJob& template_job,
     const WaterMeshAnimationMesher& mesher,
     WaterMeshAnimation& animation,
-    gpu_meshing::Error& error);
+    gpu_meshing::Error& error,
+    WaterBoundaryAnimationSourceSpan endpoint_sources = {});
 
 }  // namespace hydrology

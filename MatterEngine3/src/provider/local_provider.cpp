@@ -21,6 +21,7 @@
 #include "hydrology/river_section_coordinator.h"
 #include "hydrology/river_section_graph.h"
 #include "hydrology/hydrology_handoff_products.h"
+#include "hydrology/water_boundary_animation_source.h"
 #include "hydrology/water_visual_products.h"
 #include "terrain_river_overlay.h"
 
@@ -582,6 +583,171 @@ std::filesystem::path section_water_animation_path(
     std::uint64_t semantic_key) {
     return cache_root / "hydrology" / "animations" /
         (safe_cache_id(section_id) + "-" + hex64(semantic_key) + ".mhwa");
+}
+
+struct BoundarySourceCacheExpectation {
+    hydrology::SpillwayHandoffRecord handoff{};
+    bool upstream_endpoint = false;
+    std::uint64_t semantic_key = 0u;
+    std::filesystem::path path;
+    hydrology::WaterBoundaryAnimationSource metadata;
+};
+
+std::uint64_t boundary_source_semantic_key(
+    std::uint64_t section_semantic_key,
+    std::uint64_t section_payload_digest,
+    const hydrology::SpillwayHandoffRecord& handoff,
+    bool upstream_endpoint,
+    const matter::HydrologyMeshAnimationProfile& profile,
+    float particle_radius_m,
+    float blend_width_m,
+    const gpu_meshing::ParticleSamplingLattice& lattice,
+    const gpu_meshing::Aabb& crop_bounds_m) {
+    std::uint64_t hash = UINT64_C(14695981039346656037);
+    hash_string(hash, "water-boundary-animation-source-v1");
+    hash_value(hash, section_semantic_key);
+    hash_value(hash, section_payload_digest);
+    hash_value(hash, handoff.semantic_key);
+    hash_value(hash, upstream_endpoint);
+    hash_value(hash, profile.enabled);
+    hash_value(hash, profile.frames_per_second);
+    hash_value(hash, profile.duration_seconds);
+    hash_value(hash, profile.phase_offset_seconds);
+    hash_value(hash, profile.frame_count);
+    hash_value(hash, profile.sample_step_stride);
+    hash_value(hash, profile.phase_offset_frames);
+    hash_value(hash, particle_radius_m);
+    hash_value(hash, blend_width_m);
+    hash_value(hash, crop_bounds_m.min_m);
+    hash_value(hash, crop_bounds_m.max_m);
+    hash_value(hash, lattice.origin_m);
+    hash_value(hash, lattice.voxel_m);
+    hash_value(hash, lattice.version);
+    return nonzero_hash(hash);
+}
+
+bool same_boundary_source_metadata(
+    const hydrology::WaterBoundaryAnimationSource& source,
+    const BoundarySourceCacheExpectation& expected) {
+    const auto& metadata = expected.metadata;
+    return source.section_id == metadata.section_id &&
+           source.source_section_payload_digest ==
+               metadata.source_section_payload_digest &&
+           source.handoff_semantic_key == metadata.handoff_semantic_key &&
+           std::memcmp(&source.lattice, &metadata.lattice,
+                       sizeof(source.lattice)) == 0 &&
+           source.frames_per_second == metadata.frames_per_second &&
+           source.phase_offset_frames == metadata.phase_offset_frames &&
+           source.particle_radius_m == metadata.particle_radius_m &&
+           source.blend_width_m == metadata.blend_width_m &&
+           source.crop_bounds_m.min_m.x == metadata.crop_bounds_m.min_m.x &&
+           source.crop_bounds_m.min_m.y == metadata.crop_bounds_m.min_m.y &&
+           source.crop_bounds_m.min_m.z == metadata.crop_bounds_m.min_m.z &&
+           source.crop_bounds_m.max_m.x == metadata.crop_bounds_m.max_m.x &&
+           source.crop_bounds_m.max_m.y == metadata.crop_bounds_m.max_m.y &&
+           source.crop_bounds_m.max_m.z == metadata.crop_bounds_m.max_m.z &&
+           source.frames.size() == metadata.frames.size() &&
+           source.payload_digest != 0u;
+}
+
+bool make_boundary_source_cache_expectations(
+    const std::filesystem::path& cache_root,
+    const matter::RiverSectionDefinition& section,
+    std::uint64_t section_semantic_key,
+    std::uint64_t section_payload_digest,
+    const matter::HydrologyMeshAnimationProfile& profile,
+    float particle_radius_m,
+    float blend_width_m,
+    const gpu_meshing::ParticleSamplingLattice& lattice,
+    const std::vector<hydrology::SpillwayHandoffRecord>& ownership,
+    std::vector<BoundarySourceCacheExpectation>& expectations,
+    gpu_meshing::Error& error) {
+    expectations.clear();
+    hydrology::FluidParticleAnimationCapture empty_capture{};
+    empty_capture.frames_per_second = profile.frames_per_second;
+    empty_capture.phase_offset_frames = profile.phase_offset_frames;
+    empty_capture.frames.resize(profile.frame_count);
+    for (std::uint32_t frame = 0u; frame != profile.frame_count; ++frame)
+        empty_capture.frames[frame].simulation_step =
+            (frame + 1u) * profile.sample_step_stride;
+    try {
+        expectations.reserve(ownership.size());
+        for (const auto& handoff : ownership) {
+            const bool upstream_endpoint =
+                handoff.upstream_section_id == section.id;
+            if (!upstream_endpoint &&
+                handoff.downstream_section_id != section.id) {
+                error = {gpu_meshing::ErrorCode::InvalidInput,
+                         "water boundary ownership does not name its section"};
+                expectations.clear();
+                return false;
+            }
+            BoundarySourceCacheExpectation expected{};
+            expected.handoff = handoff;
+            expected.upstream_endpoint = upstream_endpoint;
+            if (!hydrology::build_water_boundary_animation_source(
+                    empty_capture, section.id, section_payload_digest,
+                    handoff, lattice, particle_radius_m, blend_width_m,
+                    upstream_endpoint, expected.metadata, error)) {
+                expectations.clear();
+                return false;
+            }
+            expected.semantic_key = boundary_source_semantic_key(
+                section_semantic_key, section_payload_digest, handoff,
+                upstream_endpoint, profile, particle_radius_m,
+                blend_width_m, lattice, expected.metadata.crop_bounds_m);
+            expected.path = cache_root / "hydrology" / "animations" /
+                "boundaries" /
+                (safe_cache_id(section.id) + "-" +
+                 safe_cache_id(handoff.id) + "-" +
+                 hex64(expected.semantic_key) + ".mhwb");
+            expectations.push_back(std::move(expected));
+        }
+    } catch (const std::bad_alloc&) {
+        expectations.clear();
+        error = {gpu_meshing::ErrorCode::LimitExceeded,
+                 "water boundary cache expectation allocation failed"};
+        return false;
+    }
+    error = {};
+    return true;
+}
+
+bool load_boundary_source_cache(
+    const BoundarySourceCacheExpectation& expected,
+    hydrology::WaterBoundaryAnimationSource& source) {
+    source = {};
+    gpu_meshing::Error error{};
+    hydrology::WaterBoundaryAnimationSource candidate{};
+    if (!hydrology::load_water_boundary_animation_source(
+            expected.path, candidate, error) ||
+        !same_boundary_source_metadata(candidate, expected))
+        return false;
+    source = std::move(candidate);
+    return true;
+}
+
+bool prepare_boundary_source_cache_target(
+    const BoundarySourceCacheExpectation& expected,
+    gpu_meshing::Error& error) {
+    std::error_code filesystem_error;
+    if (!std::filesystem::exists(expected.path, filesystem_error)) {
+        if (!filesystem_error) return true;
+        error = {gpu_meshing::ErrorCode::ArtifactFailure,
+                 "could not inspect water boundary cache target"};
+        return false;
+    }
+    hydrology::WaterBoundaryAnimationSource candidate{};
+    if (load_boundary_source_cache(expected, candidate)) return true;
+    if (!std::filesystem::is_regular_file(expected.path, filesystem_error) ||
+        filesystem_error ||
+        !std::filesystem::remove(expected.path, filesystem_error) ||
+        filesystem_error) {
+        error = {gpu_meshing::ErrorCode::ArtifactFailure,
+                 "could not retire invalid water boundary cache target"};
+        return false;
+    }
+    return true;
 }
 
 std::uint64_t collision_mesh_revision(
@@ -1954,13 +2120,34 @@ bool LocalProvider::run_authored_fluid_bake(
         status.input_key = hex64(request.semantic_key);
         hydrology::HydrologyArtifact candidate{};
         hydrology::WaterMeshAnimationArtifact animation_candidate{};
+        std::vector<BoundarySourceCacheExpectation> boundary_expectations;
+        std::vector<hydrology::WaterBoundaryAnimationSource>
+            boundary_candidates;
         const bool static_cache_hit = load_semantic_cache(request, candidate);
         const bool animation_enabled =
             river_network_->fluid.mesh_animation.enabled;
         std::uint64_t animation_semantic_key = 0u;
         std::filesystem::path animation_path;
         bool animation_cache_hit = !animation_enabled;
+        bool boundary_cache_hit = !animation_enabled;
         if (static_cache_hit && animation_enabled) {
+            gpu_meshing::Error boundary_error{};
+            if (!make_boundary_source_cache_expectations(
+                    abs_cache_root_, section, request.semantic_key,
+                    candidate.payload_digest,
+                    river_network_->fluid.mesh_animation,
+                    request.product_settings.particle_radius_m,
+                    request.product_settings.visual_job.blend_width_m,
+                    request.product_settings.visual_job.sampling_lattice,
+                    animation_ownership, boundary_expectations,
+                    boundary_error)) {
+                section_error = {
+                    hydrology::FluidBakeCode::ProductFailure,
+                    boundary_error.message.empty()
+                        ? "section boundary cache identity failed"
+                        : boundary_error.message};
+                return false;
+            }
             animation_semantic_key = section_water_animation_semantic_key(
                 request.semantic_key, candidate.payload_digest,
                 river_network_->fluid.mesh_animation, animation_ownership,
@@ -1973,8 +2160,20 @@ bool LocalProvider::run_authored_fluid_bake(
                 river_network_->fluid.mesh_animation,
                 request.product_settings.visual_job.sampling_lattice,
                 animation_candidate);
+            boundary_cache_hit = true;
+            boundary_candidates.reserve(boundary_expectations.size());
+            for (const auto& expected : boundary_expectations) {
+                hydrology::WaterBoundaryAnimationSource source{};
+                if (!load_boundary_source_cache(expected, source)) {
+                    boundary_cache_hit = false;
+                    boundary_candidates.clear();
+                    break;
+                }
+                boundary_candidates.push_back(std::move(source));
+            }
         }
-        const bool cache_hit = static_cache_hit && animation_cache_hit;
+        const bool cache_hit =
+            static_cache_hit && animation_cache_hit && boundary_cache_hit;
         section_timings.cache_hit = cache_hit;
         section_timings.animation_cache_hit = animation_cache_hit;
         section_timings.setup_ms =
@@ -2105,6 +2304,44 @@ bool LocalProvider::run_authored_fluid_bake(
                     section_timings.animation_capture_particle_counts.push_back(
                         static_cast<std::uint32_t>(frame.positions_m.size()));
                 }
+                gpu_meshing::Error boundary_error{};
+                if (!make_boundary_source_cache_expectations(
+                        abs_cache_root_, section, request.semantic_key,
+                        candidate.payload_digest,
+                        river_network_->fluid.mesh_animation,
+                        request.product_settings.particle_radius_m,
+                        request.product_settings.visual_job.blend_width_m,
+                        request.product_settings.visual_job.sampling_lattice,
+                        animation_ownership, boundary_expectations,
+                        boundary_error)) {
+                    section_error = {
+                        hydrology::FluidBakeCode::ProductFailure,
+                        boundary_error.message.empty()
+                            ? "section boundary source identity failed"
+                            : boundary_error.message};
+                    return false;
+                }
+                boundary_candidates.clear();
+                boundary_candidates.reserve(boundary_expectations.size());
+                for (const auto& expected : boundary_expectations) {
+                    hydrology::WaterBoundaryAnimationSource source{};
+                    if (!hydrology::build_water_boundary_animation_source(
+                            capture, section.id, candidate.payload_digest,
+                            expected.handoff,
+                            request.product_settings.visual_job.sampling_lattice,
+                            request.product_settings.particle_radius_m,
+                            request.product_settings.visual_job.blend_width_m,
+                            expected.upstream_endpoint, source,
+                            boundary_error)) {
+                        section_error = {
+                            hydrology::FluidBakeCode::ProductFailure,
+                            boundary_error.message.empty()
+                                ? "section boundary source build failed"
+                                : boundary_error.message};
+                        return false;
+                    }
+                    boundary_candidates.push_back(std::move(source));
+                }
                 const auto animation_mesh_start =
                     std::chrono::steady_clock::now();
                 const hydrology::WaterMeshAnimationMesher animation_mesher =
@@ -2156,7 +2393,9 @@ bool LocalProvider::run_authored_fluid_bake(
                         *output.animation_capture,
                         request.product_settings.particle_radius_m,
                         request.product_settings.visual_job,
-                        animation_mesher, raw_animation, animation_error)) {
+                        animation_mesher, raw_animation, animation_error,
+                        {boundary_candidates.data(),
+                         boundary_candidates.size()})) {
                     section_error = {
                         hydrology::FluidBakeCode::ProductFailure,
                         animation_error.message.empty()
@@ -2215,6 +2454,39 @@ bool LocalProvider::run_authored_fluid_bake(
             if (animation_enabled) {
                 const auto animation_serialize_start =
                     std::chrono::steady_clock::now();
+                if (boundary_candidates.size() !=
+                    boundary_expectations.size()) {
+                    section_error = {
+                        hydrology::FluidBakeCode::ProductFailure,
+                        "section boundary source set is incomplete"};
+                    return false;
+                }
+                for (std::size_t boundary_index = 0u;
+                     boundary_index != boundary_expectations.size();
+                     ++boundary_index) {
+                    const auto& expected =
+                        boundary_expectations[boundary_index];
+                    const std::uint64_t expected_payload =
+                        boundary_candidates[boundary_index].payload_digest;
+                    hydrology::WaterBoundaryAnimationSource reopened{};
+                    if (!prepare_boundary_source_cache_target(
+                            expected, artifact_error) ||
+                        !hydrology::save_water_boundary_animation_source_immutable(
+                            expected.path,
+                            boundary_candidates[boundary_index],
+                            artifact_error) ||
+                        !load_boundary_source_cache(expected, reopened) ||
+                        reopened.payload_digest != expected_payload) {
+                        section_error = {
+                            hydrology::FluidBakeCode::ProductFailure,
+                            artifact_error.message.empty()
+                                ? "published water boundary source validation failed"
+                                : artifact_error.message};
+                        return false;
+                    }
+                    boundary_candidates[boundary_index] =
+                        std::move(reopened);
+                }
                 if (!hydrology::save_water_mesh_animation_artifact_immutable(
                         animation_path, animation_candidate, artifact_error) ||
                     !load_water_animation_cache(
@@ -2260,6 +2532,8 @@ bool LocalProvider::run_authored_fluid_bake(
                     frame.index_count / 3u);
             }
             section_result.animation = animation_candidate;
+            section_result.boundary_sources =
+                std::move(boundary_candidates);
         }
         section_result.downstream_handoff = downstream_handoff;
         status.completed_sections = static_cast<std::uint32_t>(order + 1u);
@@ -2424,6 +2698,32 @@ bool LocalProvider::run_authored_fluid_bake(
     hydrology::HydrologyHandoffArtifact handoff_artifact{};
     hydrology::HydrologyHandoffTimings handoff_timings{};
     handoff_timings.id = handoff.id;
+    for (const auto& section_result : sequence.sections) {
+        for (const auto& source : section_result.boundary_sources) {
+            if (source.handoff_semantic_key != handoff.semantic_key) continue;
+            std::vector<std::uint8_t> serialized_source;
+            gpu_meshing::Error source_error{};
+            if (!hydrology::serialize_water_boundary_animation_source(
+                    source, serialized_source, source_error) ||
+                serialized_source.size() >
+                    std::numeric_limits<std::uint64_t>::max() -
+                        handoff_timings.boundary_source_bytes) {
+                fluid_error = {
+                    hydrology::FluidBakeCode::ProductFailure,
+                    source_error.message.empty()
+                        ? "handoff boundary source byte accounting overflowed"
+                        : source_error.message};
+                status.state = matter::HydrologyState::Invalid;
+                status.failure_reason = fluid_error.message;
+                return false;
+            }
+            handoff_timings.boundary_source_bytes +=
+                static_cast<std::uint64_t>(serialized_source.size());
+        }
+    }
+    network_result.timings.peak_build_cpu_payload_bytes = std::max(
+        network_result.timings.peak_build_cpu_payload_bytes,
+        handoff_timings.boundary_source_bytes);
     // Handoff products do not yet have an independent cache. Keep these
     // per-id flags explicit instead of inheriting the adjacent section hits.
     handoff_timings.static_cache_hit = false;
@@ -2545,6 +2845,9 @@ bool LocalProvider::run_authored_fluid_bake(
         }
         network_result.handoff_animations.push_back(
             std::move(reopened_animation));
+    }
+    for (auto& section_result : sequence.sections) {
+        section_result.boundary_sources.clear();
     }
     network_result.timings.handoffs.push_back(std::move(handoff_timings));
     if (!finalize_manifest(network_result)) {

@@ -3,6 +3,7 @@
 #include "hydrology/hydrology_network_artifact.h"
 #include "hydrology/river_section_graph.h"
 #include "hydrology/spillway_handoff.h"
+#include "hydrology/water_boundary_animation_source.h"
 #include "hydrology/water_mesh_animation_artifact.h"
 
 #include <functional>
@@ -15,6 +16,7 @@ namespace hydrology {
 struct SectionBakeResult {
     HydrologyArtifact artifact;
     std::optional<WaterMeshAnimationArtifact> animation;
+    std::vector<WaterBoundaryAnimationSource> boundary_sources;
     std::optional<SpillwayHandoffRecord> downstream_handoff;
     bool cache_hit = false;
 };

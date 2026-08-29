@@ -6,6 +6,7 @@
 #include "hydrology/physx_collision_input.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/spillway_handoff.h"
+#include "hydrology/water_boundary_animation_source.h"
 #include "hydrology/water_mesh_animation.h"
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
 #include "matter/engine_context.h"
@@ -19,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -1581,6 +1583,158 @@ void test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss() 
           "unchunked section animation jobs inherit byte-identical lattice metadata");
 }
 
+hydrology::SpillwayHandoffRecord boundary_substitution_handoff() {
+    hydrology::SpillwayHandoffRecord handoff{};
+    handoff.id = "pool-one";
+    handoff.upstream_section_id = "upper";
+    handoff.downstream_section_id = "lower";
+    handoff.lip_origin_m = {10.0f, 0.0f, 0.0f};
+    handoff.tangent = {1.0f, 0.0f, 0.0f};
+    handoff.lateral = {0.0f, 0.0f, 1.0f};
+    handoff.up = {0.0f, 1.0f, 0.0f};
+    handoff.discharge_m3s = 1.0f;
+    handoff.width_m = 2.0f;
+    handoff.effective_depth_m = 1.0f;
+    handoff.channel_depth_m = 1.0f;
+    handoff.initial_speed_mps = 1.0f;
+    handoff.overlap_m = 2.0f;
+    handoff.upstream_visual_cut_m = -1.0f;
+    handoff.downstream_visual_cut_m = 1.0f;
+    handoff.temporary_dam_exclusion_bounds_m = {
+        {9.8f, -1.0f, -1.0f}, {10.2f, 1.0f, 1.0f}};
+    handoff.semantic_key = hydrology::spillway_handoff_semantic_key(handoff);
+    return handoff;
+}
+
+std::uint64_t canonical_boundary_point_digest(
+    matter::Float3 position,
+    const gpu_meshing::Aabb& crop) {
+    std::array<std::uint8_t, 6u> packed{};
+    const auto pack = [&](float value, float minimum, float maximum,
+                          std::size_t offset) {
+        const double normalized = std::clamp(
+            (static_cast<double>(value) - minimum) /
+                (static_cast<double>(maximum) - minimum),
+            0.0, 1.0);
+        const std::uint16_t quantized = static_cast<std::uint16_t>(
+            std::llround(normalized * 65535.0));
+        packed[offset] = static_cast<std::uint8_t>(quantized & 0xffu);
+        packed[offset + 1u] =
+            static_cast<std::uint8_t>((quantized >> 8u) & 0xffu);
+    };
+    pack(position.x, crop.min_m.x, crop.max_m.x, 0u);
+    pack(position.y, crop.min_m.y, crop.max_m.y, 2u);
+    pack(position.z, crop.min_m.z, crop.max_m.z, 4u);
+    std::uint64_t digest = UINT64_C(1469598103934665603);
+    for (std::uint8_t byte : packed) {
+        digest ^= byte;
+        digest *= UINT64_C(1099511628211);
+    }
+    return digest == 0u ? 1u : digest;
+}
+
+void test_section_animation_substitutes_only_canonical_boundary_contributors() {
+    hydrology::FluidParticleAnimationCapture capture{};
+    capture.frames_per_second = 30u;
+    capture.phase_offset_frames = 15u;
+    capture.frames.resize(30u);
+    for (std::uint32_t frame = 0u; frame != 30u; ++frame) {
+        capture.frames[frame].simulation_step = (frame + 1u) * 4u;
+        capture.frames[frame].positions_m = {
+            {0.5f + static_cast<float>(frame) * 0.001f, 0.0f, 0.0f},
+            {10.1f, 0.2f + static_cast<float>(frame) * 0.001f, 0.1f},
+        };
+    }
+    const auto handoff = boundary_substitution_handoff();
+    const gpu_meshing::ParticleSamplingLattice lattice{
+        {-32.0f, -16.0f, -16.0f}, 0.1f, 1u};
+    hydrology::WaterBoundaryAnimationSource source{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::build_water_boundary_animation_source(
+              capture, "lower", 0x11223344u, handoff, lattice,
+              0.13f, 0.05f, false, source, error),
+          error.message.c_str());
+
+    std::vector<matter::Float3> decoded_primary;
+    std::vector<matter::Float3> decoded_secondary;
+    CHECK(hydrology::decode_water_boundary_frame(
+              source, 0u, decoded_primary, error) &&
+              hydrology::decode_water_boundary_frame(
+                  source, 15u, decoded_secondary, error),
+          error.message.c_str());
+    CHECK(decoded_primary.size() == 1u && decoded_secondary.size() == 1u,
+          "the fixture contributes exactly one canonical endpoint particle per selected capture");
+
+    gpu_meshing::ParticleJob job{};
+    job.bounds_m = {{-2.0f, -2.0f, -2.0f}, {16.0f, 3.0f, 3.0f}};
+    job.voxel_m = 0.1f;
+    job.blend_width_m = 0.05f;
+    job.sampling_lattice = lattice;
+    job.material = 4u;
+    job.limits = {8u, 1u << 20u, 1u << 20u, 1u << 20u};
+
+    std::uint32_t calls = 0u;
+    bool first_pair_matches_sidecar = false;
+    bool first_pair_digests_match_sidecar = false;
+    const auto mesher = [&](const gpu_meshing::ParticleJob& frame_job,
+                            gpu_meshing::MeshResult& mesh,
+                            gpu_meshing::Stats&,
+                            gpu_meshing::Error&) {
+        if (calls++ == 0u) {
+            const auto same = [](matter::Float3 a, matter::Float3 b) {
+                return a.x == b.x && a.y == b.y && a.z == b.z;
+            };
+            first_pair_matches_sidecar =
+                frame_job.particle_count == 4u &&
+                frame_job.phase_blend.split_index == 2u &&
+                frame_job.particles[0].position_m.x == 0.5f &&
+                same(frame_job.particles[1].position_m,
+                     decoded_primary.front()) &&
+                frame_job.particles[2].position_m.x == 0.515f &&
+                same(frame_job.particles[3].position_m,
+                     decoded_secondary.front());
+            first_pair_digests_match_sidecar =
+                canonical_boundary_point_digest(
+                    frame_job.particles[1].position_m,
+                    source.crop_bounds_m) ==
+                    source.frames[0].content_digest &&
+                canonical_boundary_point_digest(
+                    frame_job.particles[3].position_m,
+                    source.crop_bounds_m) ==
+                    source.frames[15].content_digest;
+        }
+        mesh.positions = {0.0f, 0.0f, 0.0f,
+                          0.1f, 0.0f, 0.0f,
+                          0.0f, 0.1f, 0.0f};
+        mesh.normals = {0.0f, 0.0f, 1.0f,
+                        0.0f, 0.0f, 1.0f,
+                        0.0f, 0.0f, 1.0f};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = frame_job.material;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+        return true;
+    };
+    hydrology::WaterMeshAnimation animation{};
+    CHECK(hydrology::build_water_mesh_animation(
+              capture, 0.13f, job, mesher, animation, error,
+              hydrology::WaterBoundaryAnimationSourceSpan{
+                  &source, 1u}) &&
+              calls == 30u && first_pair_matches_sidecar &&
+              first_pair_digests_match_sidecar,
+          "owned section meshing removes raw crop particles and substitutes the exact decoded sidecar contributors and frame digests for the current phase pair");
+
+    const std::array overlapping{source, source};
+    calls = 0u;
+    CHECK(!hydrology::build_water_mesh_animation(
+              capture, 0.13f, job, mesher, animation, error,
+              hydrology::WaterBoundaryAnimationSourceSpan{
+                  overlapping.data(), overlapping.size()}) &&
+              calls == 0u &&
+              error.code == gpu_meshing::ErrorCode::InvalidInput &&
+              error.message.find("overlap") != std::string::npos,
+          "overlapping endpoint crops fail deterministically before meshing instead of choosing substitution precedence");
+}
+
 void test_canonical_chunks_keep_exact_integer_ranges_at_the_tight_cap() {
     constexpr float voxel = 0.15f;
     std::vector<gpu_meshing::ParticleSample> particles{
@@ -1714,7 +1868,9 @@ void test_product_keys_follow_the_settings_the_extractors_consume() {
 bool write_world_session_fixture(const std::filesystem::path& root,
                                  bool fluid_enabled = true,
                                  bool two_sections = false,
-                                 float lower_fill_level = 2.0f) {
+                                 float lower_fill_level = 2.0f,
+                                 bool mesh_animation = false,
+                                 float upper_overlap_m = 2.0f) {
     std::error_code error;
     std::filesystem::create_directories(root / "objects", error);
     if (error) return false;
@@ -1746,15 +1902,24 @@ bool write_world_session_fixture(const std::filesystem::path& root,
     if (fluid_enabled) {
         world <<
              "    n.backend('physx');\n"
-             "    n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:.01,iterations:4,maxNeighbors:96});\n"
+             "    n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:"
+          << (mesh_animation ? "0.008333333333333333" : ".01")
+          << ",iterations:4,maxNeighbors:96});\n";
+        if (mesh_animation) {
+            world <<
+             "    n.meshAnimation({framesPerSecond:30,duration:1,phaseOffset:.5});\n";
+        }
+        world <<
              "    n.limits({batchSteps:8,maxSteps:120,maxParticles:1000});\n"
-             "    n.emitter({id:'main-inlet',position:[1,4,1],direction:[1,0,0],initialVelocity:[1,0,0],flow:1,radius:.5,startTime:0,stopTime:1.2});\n"
+             "    n.emitter({id:'main-inlet',position:[1,4,1],direction:[1,0,0],initialVelocity:[1,0,0],flow:1,radius:.5,startTime:0,stopTime:"
+          << (mesh_animation ? "1" : "1.2") << "});\n"
              "    n.virtualDam({height:4,thickness:.5});\n"
              "    n.fillSensor({upstreamOffset:1,length:1,height:3,resolution:[2,2,2],crestWetFraction:.5,stableWetSteps:1,minimumParticlesPerCell:1});\n"
              "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxVisualParticles:1000,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n";
     }
     world << "    r.section('upper',{from:0,to:8,dryMargin:1}).emitters(['main-inlet']).pool({from:7,to:8,fillLevel:3}).spillway({id:'pool-one',at:8,width:4,effectiveDepth:1,overlap:"
-          << (two_sections ? 2 : 1) << ",damOffset:.5});\n";
+          << (two_sections ? upper_overlap_m : 1.0f)
+          << ",damOffset:.5});\n";
     if (two_sections) {
         world << "    r.section('lower',{from:8,to:18,dryMargin:1}).after('upper').fromSpillway('upper').pool({from:17,to:18,fillLevel:"
               << lower_fill_level
@@ -1803,6 +1968,7 @@ struct LifecycleBackendState {
     bool luid_valid = true;
     std::mutex thread_mutex;
     std::thread::id run_thread{};
+    std::vector<std::string> lifecycle_events;
 };
 
 class LifecycleBackend final : public IFluidBakeBackend {
@@ -1837,6 +2003,8 @@ public:
         {
             std::lock_guard<std::mutex> lock(state_->thread_mutex);
             state_->run_thread = std::this_thread::get_id();
+            state_->lifecycle_events.push_back(
+                "simulate-" + std::to_string(ordinal));
         }
         if (ordinal == 1) state_->first_run_entered.store(true);
         if (ordinal == 1 && state_->block_first_until_cancelled) {
@@ -1901,6 +2069,47 @@ public:
             output.particles[2].position_m = clamp_inside(
                 {collar.x - 0.2f, collar.y + 0.2f, collar.z - 0.2f});
         }
+        if (completed && input.network.fluid.mesh_animation.enabled) {
+            hydrology::FluidParticleAnimationCapture capture{};
+            capture.frames_per_second =
+                input.network.fluid.mesh_animation.frames_per_second;
+            capture.phase_offset_frames =
+                input.network.fluid.mesh_animation.phase_offset_frames;
+            capture.frames.resize(
+                input.network.fluid.mesh_animation.frame_count);
+            for (std::uint32_t frame = 0u;
+                 frame != capture.frames.size(); ++frame) {
+                auto& captured = capture.frames[frame];
+                captured.simulation_step =
+                    (frame + 1u) *
+                    input.network.fluid.mesh_animation.sample_step_stride;
+                captured.positions_m.reserve(output.particles.size() + 2u);
+                for (const auto& particle : output.particles)
+                    captured.positions_m.push_back(particle.position_m);
+                if (!output.particles.empty()) {
+                    const float endpoint_offset =
+                        input.emitters.front().shape ==
+                                hydrology::FluidEmitterShape::Ribbon
+                            ? 1.2f
+                            : -1.2f;
+                    captured.positions_m.push_back({
+                        output.particles.front().position_m.x +
+                            endpoint_offset,
+                        output.particles.front().position_m.y,
+                        output.particles.front().position_m.z});
+                }
+                const matter::Float3 bulk =
+                    input.geometry.centreline.empty()
+                        ? matter::Float3{1.0f, 1.0f, 1.0f}
+                        : (input.emitters.front().shape ==
+                                   hydrology::FluidEmitterShape::Ribbon
+                               ? input.geometry.centreline.back().position_m
+                               : input.geometry.centreline.front().position_m);
+                captured.positions_m.push_back(
+                    {bulk.x, bulk.y + 0.25f, bulk.z});
+            }
+            output.animation_capture = std::move(capture);
+        }
         return completed;
     }
 
@@ -1912,6 +2121,8 @@ struct WorldSessionFluidOptions {
     bool fluid_enabled = true;
     bool two_sections = false;
     float lower_fill_level = 2.0f;
+    bool mesh_animation = false;
+    float upper_overlap_m = 2.0f;
     bool visual_succeeds = true;
     bool supersede_first_run = false;
     bool supersede_at_publication_barrier = false;
@@ -1942,6 +2153,7 @@ struct WorldSessionFluidCase {
     std::thread::id backend_thread{};
     std::thread::id visual_thread{};
     matter::HydrologyStatus status{};
+    std::vector<std::string> lifecycle_events;
 };
 
 WorldSessionFluidCase run_world_session_fluid_case(
@@ -1952,7 +2164,8 @@ WorldSessionFluidCase run_world_session_fluid_case(
     result.caller_thread = std::this_thread::get_id();
     CHECK(write_world_session_fixture(
               root, options.fluid_enabled, options.two_sections,
-              options.lower_fill_level),
+              options.lower_fill_level, options.mesh_animation,
+              options.upper_overlap_m),
           "the live fluid request test created its minimal editor world");
     {
         const std::string cache_root = (root / ".cache").string();
@@ -1977,6 +2190,7 @@ WorldSessionFluidCase run_world_session_fluid_case(
         if (!session) return result;
         result.opened = true;
 
+        int visualized_run_ordinal = 0;
         session->set_test_fluid_bake_dependencies(
             [backend_state] {
                 ++backend_state->factory_calls;
@@ -1990,6 +2204,36 @@ WorldSessionFluidCase run_world_session_fluid_case(
                 result.visual_thread = std::this_thread::get_id();
                 result.backend_released_before_visual =
                     backend_state->release_calls.load() > 0;
+                {
+                    std::size_t boundary_files = 0u;
+                    const auto boundary_root = root / ".cache";
+                    std::error_code scan_error;
+                    if (std::filesystem::exists(boundary_root, scan_error)) {
+                        for (const auto& entry :
+                             std::filesystem::recursive_directory_iterator(
+                                 boundary_root, scan_error)) {
+                            if (!scan_error && entry.is_regular_file() &&
+                                entry.path().extension() == ".mhwb")
+                                ++boundary_files;
+                        }
+                    }
+                    const int run_ordinal =
+                        backend_state->run_calls.load();
+                    const bool static_draw =
+                        run_ordinal > visualized_run_ordinal;
+                    if (static_draw)
+                        visualized_run_ordinal = run_ordinal;
+                    const bool handoff_draw =
+                        run_ordinal >= 2 && !static_draw &&
+                        boundary_files >= 2u;
+                    std::lock_guard<std::mutex> lock(
+                        backend_state->thread_mutex);
+                    backend_state->lifecycle_events.push_back(
+                        handoff_draw
+                            ? "handoff-after-boundary-save"
+                            : (static_draw ? "static-product"
+                                           : "owned-animation"));
+                }
                 if (!options.visual_succeeds) return false;
                 gpu_meshing::GridLayout layout{};
                 if (!gpu_meshing::validate_particle_job(
@@ -2002,12 +2246,39 @@ WorldSessionFluidCase run_world_session_fluid_case(
                         static_cast<float>(layout.cell_dims[1]),
                     layout.origin_m.z + layout.spacing_m.z *
                         static_cast<float>(layout.cell_dims[2])};
-                const float surface_y = 0.0f;
+                float minimum_x = layout.origin_m.x;
+                float maximum_x = grid_max.x;
+                float minimum_z = layout.origin_m.z;
+                float maximum_z = grid_max.z;
+                float surface_y = 0.0f;
+                if (options.mesh_animation &&
+                    (job.phase_blend.split_index != 0u ||
+                     job.phase_blend.secondary_weight != 0.0f) &&
+                    job.particle_count != 0u) {
+                    minimum_x = maximum_x = job.particles[0].position_m.x;
+                    minimum_z = maximum_z = job.particles[0].position_m.z;
+                    surface_y = job.particles[0].position_m.y;
+                    for (std::uint32_t index = 1u;
+                         index != job.particle_count; ++index) {
+                        minimum_x = std::min(
+                            minimum_x, job.particles[index].position_m.x);
+                        maximum_x = std::max(
+                            maximum_x, job.particles[index].position_m.x);
+                        minimum_z = std::min(
+                            minimum_z, job.particles[index].position_m.z);
+                        maximum_z = std::max(
+                            maximum_z, job.particles[index].position_m.z);
+                    }
+                    minimum_x -= 1.0f;
+                    maximum_x += 1.0f;
+                    minimum_z -= 1.0f;
+                    maximum_z += 1.0f;
+                }
                 mesh.positions = {
-                    layout.origin_m.x, surface_y, layout.origin_m.z,
-                    grid_max.x, surface_y, layout.origin_m.z,
-                    grid_max.x, surface_y, grid_max.z,
-                    layout.origin_m.x, surface_y, grid_max.z};
+                    minimum_x, surface_y, minimum_z,
+                    maximum_x, surface_y, minimum_z,
+                    maximum_x, surface_y, maximum_z,
+                    minimum_x, surface_y, maximum_z};
                 mesh.normals = {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
                                 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
                 mesh.indices = {0u, 1u, 2u, 0u, 2u, 3u};
@@ -2169,6 +2440,7 @@ WorldSessionFluidCase run_world_session_fluid_case(
     {
         std::lock_guard<std::mutex> lock(backend_state->thread_mutex);
         result.backend_thread = backend_state->run_thread;
+        result.lifecycle_events = backend_state->lifecycle_events;
     }
     return result;
 }
@@ -2314,6 +2586,216 @@ void test_world_session_publishes_complete_two_section_network() {
               failure.status.current_section_id == "lower",
           "a lower-section failure retains the accepted upper visual for diagnostics but never publishes a partial network");
     std::filesystem::remove_all(failure_root, remove_error);
+}
+
+std::vector<std::filesystem::path> cached_files_with_extension(
+    const std::filesystem::path& root, const char* extension) {
+    std::vector<std::filesystem::path> result;
+    if (!std::filesystem::exists(root)) return result;
+    for (const auto& entry :
+         std::filesystem::recursive_directory_iterator(root)) {
+        if (entry.is_regular_file() && entry.path().extension() == extension)
+            result.push_back(entry.path());
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+std::map<std::filesystem::path, std::vector<std::uint8_t>> snapshot_files(
+    const std::vector<std::filesystem::path>& paths) {
+    std::map<std::filesystem::path, std::vector<std::uint8_t>> result;
+    for (const auto& path : paths) {
+        std::ifstream stream(path, std::ios::binary);
+        result[path] = std::vector<std::uint8_t>(
+            std::istreambuf_iterator<char>(stream),
+            std::istreambuf_iterator<char>());
+    }
+    return result;
+}
+
+void test_world_session_boundary_sidecar_cache_is_transactional_and_local() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      "matter-live-fluid-boundary-cache-contract";
+    const auto cache_root = root / ".cache";
+    std::error_code filesystem_error;
+    std::filesystem::remove_all(root, filesystem_error);
+
+    WorldSessionFluidOptions options{};
+    options.two_sections = true;
+    options.mesh_animation = true;
+    auto cold_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase cold = run_world_session_fluid_case(
+        root, options, cold_state);
+    auto boundary_files = cached_files_with_extension(cache_root, ".mhwb");
+    CHECK(cold.accepted && cold.backend_run_calls == 2 &&
+              boundary_files.size() == 2u,
+          "a cold animated network publishes one immutable boundary source for each side of its handoff before Ready");
+    const auto first_simulation = std::find(
+        cold.lifecycle_events.begin(), cold.lifecycle_events.end(),
+        "simulate-1");
+    const auto second_simulation = std::find(
+        cold.lifecycle_events.begin(), cold.lifecycle_events.end(),
+        "simulate-2");
+    const auto handoff_build = std::find(
+        cold.lifecycle_events.begin(), cold.lifecycle_events.end(),
+        "handoff-after-boundary-save");
+    CHECK(first_simulation != cold.lifecycle_events.end(),
+          "the fake lifecycle trace records upstream simulation");
+    CHECK(second_simulation != cold.lifecycle_events.end(),
+          "the fake lifecycle trace records downstream simulation");
+    CHECK(handoff_build != cold.lifecycle_events.end(),
+          "the fake lifecycle trace records handoff construction only after both immutable boundary files exist");
+    if (first_simulation != cold.lifecycle_events.end() &&
+        second_simulation != cold.lifecycle_events.end() &&
+        handoff_build != cold.lifecycle_events.end()) {
+        CHECK(first_simulation < second_simulation &&
+                  second_simulation < handoff_build,
+              "the two simulations remain serial and precede handoff construction");
+        CHECK(std::find(first_simulation, second_simulation,
+                        "static-product") != second_simulation &&
+                  std::find(first_simulation, second_simulation,
+                            "owned-animation") != second_simulation,
+              "upstream simulation is followed by its static product and sidecar-normalized owned animation");
+        CHECK(std::find(second_simulation, handoff_build,
+                        "static-product") != handoff_build &&
+                  std::find(second_simulation, handoff_build,
+                            "owned-animation") != handoff_build,
+              "downstream simulation is followed by its static product and sidecar-normalized owned animation before handoff construction");
+    }
+    if (boundary_files.size() != 2u) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+    const auto upper_boundary = *std::find_if(
+        boundary_files.begin(), boundary_files.end(), [](const auto& path) {
+            return path.filename().string().rfind("upper-", 0u) == 0u;
+        });
+    const auto lower_boundary = *std::find_if(
+        boundary_files.begin(), boundary_files.end(), [](const auto& path) {
+            return path.filename().string().rfind("lower-", 0u) == 0u;
+        });
+    hydrology::WaterBoundaryAnimationSource original_upper{};
+    hydrology::WaterBoundaryAnimationSource original_lower{};
+    gpu_meshing::Error artifact_error{};
+    CHECK(hydrology::load_water_boundary_animation_source(
+              upper_boundary, original_upper, artifact_error) &&
+              hydrology::load_water_boundary_animation_source(
+                  lower_boundary, original_lower, artifact_error),
+          artifact_error.message.c_str());
+
+    auto warm_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase warm = run_world_session_fluid_case(
+        root, options, warm_state);
+    CHECK(warm.accepted && warm.status.cache_hit &&
+              warm.backend_run_calls == 0,
+          "section cache admission requires and reuses the complete static, v2 animation, and boundary-sidecar set");
+
+    std::filesystem::remove(upper_boundary, filesystem_error);
+    auto missing_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase missing = run_world_session_fluid_case(
+        root, options, missing_state);
+    hydrology::WaterBoundaryAnimationSource rebuilt_upper{};
+    CHECK(missing.accepted && missing.backend_run_calls == 1 &&
+              hydrology::load_water_boundary_animation_source(
+                  upper_boundary, rebuilt_upper, artifact_error) &&
+              rebuilt_upper.payload_digest == original_upper.payload_digest,
+          "a missing upstream sidecar reruns only its affected section and immutably reproduces the same canonical payload");
+
+    {
+        std::fstream corrupt(lower_boundary,
+                             std::ios::binary | std::ios::in | std::ios::out);
+        corrupt.seekp(-1, std::ios::end);
+        const char changed = '\x7f';
+        corrupt.write(&changed, 1);
+    }
+    auto corrupt_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase corrupt = run_world_session_fluid_case(
+        root, options, corrupt_state);
+    hydrology::WaterBoundaryAnimationSource rebuilt_lower{};
+    CHECK(corrupt.accepted && corrupt.backend_run_calls == 1 &&
+              hydrology::load_water_boundary_animation_source(
+                  lower_boundary, rebuilt_lower, artifact_error) &&
+              rebuilt_lower.payload_digest == original_lower.payload_digest,
+          "a corrupt downstream sidecar is never admitted and reruns only the downstream section before handoff assembly");
+
+    {
+        std::fstream partial(upper_boundary,
+                             std::ios::binary | std::ios::in | std::ios::out);
+        const std::streamoff frame_count_offset =
+            112 + static_cast<std::streamoff>(original_upper.section_id.size());
+        partial.seekp(frame_count_offset, std::ios::beg);
+        const std::array<char, 4> twenty_nine{29, 0, 0, 0};
+        partial.write(twenty_nine.data(), twenty_nine.size());
+    }
+    auto partial_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase partial = run_world_session_fluid_case(
+        root, options, partial_state);
+    CHECK(partial.accepted && partial.backend_run_calls == 1,
+          "a 29-frame boundary directory is a section cache miss and cannot flow directly into handoff construction");
+
+    WorldSessionFluidOptions downstream_edit = options;
+    downstream_edit.lower_fill_level = 2.25f;
+    auto downstream_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase downstream = run_world_session_fluid_case(
+        root, downstream_edit, downstream_state);
+    hydrology::WaterBoundaryAnimationSource reused_upper{};
+    CHECK(downstream.accepted && downstream.backend_run_calls == 1 &&
+              hydrology::load_water_boundary_animation_source(
+                  upper_boundary, reused_upper, artifact_error) &&
+              reused_upper.payload_digest == original_upper.payload_digest,
+          "a downstream-only semantic edit reuses the upstream section and exact upstream boundary digest without PhysX");
+
+    WorldSessionFluidOptions handoff_edit = downstream_edit;
+    handoff_edit.upper_overlap_m = 2.1f;
+    auto handoff_edit_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase edited_handoff = run_world_session_fluid_case(
+        root, handoff_edit, handoff_edit_state);
+    CHECK(edited_handoff.accepted && edited_handoff.backend_run_calls == 2,
+          "an upstream handoff semantic edit invalidates both endpoint sidecars and their dependent section animations");
+
+    boundary_files = cached_files_with_extension(cache_root, ".mhwb");
+    const auto current_upper_iterator = std::find_if(
+        boundary_files.begin(), boundary_files.end(), [&](const auto& path) {
+            if (path.filename().string().rfind("upper-", 0u) != 0u)
+                return false;
+            hydrology::WaterBoundaryAnimationSource candidate{};
+            gpu_meshing::Error load_error{};
+            return hydrology::load_water_boundary_animation_source(
+                       path, candidate, load_error) &&
+                   candidate.handoff_semantic_key !=
+                       original_upper.handoff_semantic_key;
+        });
+    CHECK(current_upper_iterator != boundary_files.end(),
+          "the handoff semantic edit publishes a distinct upstream boundary path");
+    if (current_upper_iterator == boundary_files.end()) {
+        std::filesystem::remove_all(root, filesystem_error);
+        return;
+    }
+    const auto current_upper = *current_upper_iterator;
+    const auto ready_manifests = cached_files_with_extension(cache_root, ".mhyn");
+    const auto ready_snapshot = snapshot_files(ready_manifests);
+    std::filesystem::remove(current_upper, filesystem_error);
+    std::filesystem::create_directory(current_upper, filesystem_error);
+    {
+        std::ofstream blocker(current_upper / "blocker");
+        blocker << "prevent immutable installation";
+    }
+    auto save_failure_state = std::make_shared<LifecycleBackendState>();
+    const WorldSessionFluidCase save_failure = run_world_session_fluid_case(
+        root, handoff_edit, save_failure_state);
+    CHECK(!save_failure.accepted,
+          "a sidecar save/reopen failure cannot publish an accepted replacement network");
+    CHECK(save_failure.backend_run_calls == 1 &&
+              std::find(save_failure.lifecycle_events.begin(),
+                        save_failure.lifecycle_events.end(),
+                        "handoff-after-boundary-save") ==
+                  save_failure.lifecycle_events.end(),
+          "a blocked upstream sidecar installation stops before downstream simulation or handoff assembly");
+    CHECK(snapshot_files(cached_files_with_extension(
+              cache_root, ".mhyn")) == ready_snapshot,
+          "a sidecar save/reopen failure cannot replace any previously Ready content-addressed manifest");
+
+    std::filesystem::remove_all(root, filesystem_error);
 }
 
 void test_world_session_fluid_cache_hit_skips_solver_and_renderer() {
@@ -2609,11 +3091,13 @@ int main() {
     test_accepted_snapshot_builds_all_products_or_publishes_nothing();
     test_accepted_visual_chunks_capacity_without_truncation();
     test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss();
+    test_section_animation_substitutes_only_canonical_boundary_contributors();
     test_canonical_chunks_keep_exact_integer_ranges_at_the_tight_cap();
     test_product_keys_follow_the_settings_the_extractors_consume();
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
     test_world_session_runs_authored_fluid_bake_before_publication();
     test_world_session_publishes_complete_two_section_network();
+    test_world_session_boundary_sidecar_cache_is_transactional_and_local();
     test_world_session_fluid_cache_hit_skips_solver_and_renderer();
     test_world_session_fluid_device_mismatch_is_a_hard_dry_error();
     test_world_session_fluid_missing_device_identity_is_a_hard_dry_error();
