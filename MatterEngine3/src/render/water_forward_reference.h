@@ -15,6 +15,7 @@ WaterScreenDepth water_screen_depth_reference(
     float refracted_opaque_ray_distance_m,
     float discontinuity_limit_m) noexcept;
 
+// normal_xz maps world normal +X/+Z to increasing texture UV X/Y.
 matter::Float2 water_refraction_uv_reference(
     matter::Float2 source_uv, matter::Float2 normal_xz,
     float optical_distance_m, matter::Float2 viewport_px,

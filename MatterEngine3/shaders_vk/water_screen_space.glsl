@@ -75,6 +75,19 @@ vec2 water_clamp_pixel_offset(vec2 offset_px, float maximum_px) {
         ? offset_px * (maximum / magnitude) : offset_px;
 }
 
+vec2 water_refraction_uv(vec2 source_uv, vec2 normal_xz,
+                         float optical_distance_m, out bool valid) {
+    vec2 viewport = max(water_forward.viewport_refraction.xy, vec2(1.0));
+    // Float2.y on the CPU is world normal Z. Positive X and Z map directly
+    // to increasing texture UV X and Y, respectively.
+    vec2 offset_px = water_clamp_pixel_offset(
+        normal_xz * max(optical_distance_m, 0.0),
+        water_forward.viewport_refraction.z);
+    vec2 candidate = source_uv + offset_px / viewport;
+    valid = water_uv_inside_half_texel(candidate);
+    return valid ? candidate : source_uv;
+}
+
 WaterScreenSample water_refract_scene(vec3 water_world, vec3 normal,
                                       vec3 view_dir,
                                       float baked_depth_m) {
@@ -89,18 +102,11 @@ WaterScreenSample water_refract_scene(vec3 water_world, vec3 normal,
     if (!water_reconstruct_world(result.uv, center_depth, center_world))
         return result;
 
-    vec2 water_uv;
-    vec2 normal_uv;
-    if (!water_project_uv(water_world, water_uv) ||
-        !water_project_uv(water_world + normal, normal_uv))
-        return result;
-    vec2 viewport = max(water_forward.viewport_refraction.xy, vec2(1.0));
-    vec2 projected_normal_px = (normal_uv - water_uv) * viewport;
-    vec2 offset_px = water_clamp_pixel_offset(
-        projected_normal_px * max(baked_depth_m, 0.0),
-        water_forward.viewport_refraction.z);
-    vec2 refracted_uv = result.uv + offset_px / viewport;
-    if (!water_uv_inside_half_texel(refracted_uv))
+    bool refraction_uv_valid;
+    vec2 refracted_uv = water_refraction_uv(result.uv, normal.xz,
+                                             baked_depth_m,
+                                             refraction_uv_valid);
+    if (!refraction_uv_valid)
         return result;
 
     float refracted_depth = texture(opaque_depth, refracted_uv).r;
@@ -170,6 +176,11 @@ WaterScreenSample water_reflect_scene(vec3 water_world,
     float previous_ray_distance_m = max(ray_distance_m - ray_step_m, 0.0);
     float previous_delta_m = -1.0e30;
     bool previous_valid = false;
+    bool reflection_bracket_valid = false;
+    float reflection_bracket_low_m = 0.0;
+    float reflection_bracket_high_m = 0.0;
+    vec2 reflection_bracket_uv = result.uv;
+    vec3 reflection_bracket_scene_world = water_world;
 
     for (int step = 0; step < WATER_REFLECTION_STEPS; ++step) {
         if (step >= reflection_step_count)
@@ -191,56 +202,63 @@ WaterScreenSample water_reflect_scene(vec3 water_world,
         bool crossed = scene_distance_m > 0.0 && delta_m >= 0.0 &&
                        (!previous_valid || previous_delta_m < 0.0);
         if (crossed) {
-            float low_m = previous_ray_distance_m;
-            float high_m = ray_distance_m;
-            vec2 refined_uv = sample_uv;
-            vec3 refined_scene_world = scene_world;
-            bool refinement_valid = true;
-            for (int refinement = 0;
-                 refinement < WATER_REFLECTION_REFINEMENT_STEPS;
-                 ++refinement) {
-                float middle_m = 0.5 * (low_m + high_m);
-                vec2 middle_uv;
-                float middle_depth;
-                vec3 middle_scene_world;
-                if (!water_project_uv(water_world + direction * middle_m,
-                                      middle_uv) ||
-                    !water_uv_inside_half_texel(middle_uv)) {
-                    refinement_valid = false;
-                    break;
-                }
-                middle_depth = texture(opaque_depth, middle_uv).r;
-                if (!water_reconstruct_world(middle_uv, middle_depth,
-                                             middle_scene_world)) {
-                    refinement_valid = false;
-                    break;
-                }
-                float middle_scene_distance_m =
-                    dot(middle_scene_world - water_world, direction);
-                if (middle_m - middle_scene_distance_m >= 0.0) {
-                    high_m = middle_m;
-                    refined_uv = middle_uv;
-                    refined_scene_world = middle_scene_world;
-                } else {
-                    low_m = middle_m;
-                }
-            }
-            float refined_delta_m =
-                high_m - dot(refined_scene_world - water_world, direction);
-            if (refinement_valid && refined_delta_m >= 0.0 &&
-                refined_delta_m <= hit_thickness_m) {
-                result.uv = refined_uv;
-                result.color = texture(opaque_hdr, refined_uv).rgb;
-                result.distance_m = high_m;
-                result.valid = true;
-                return result;
-            }
+            reflection_bracket_valid = true;
+            reflection_bracket_low_m = previous_ray_distance_m;
+            reflection_bracket_high_m = ray_distance_m;
+            reflection_bracket_uv = sample_uv;
+            reflection_bracket_scene_world = scene_world;
+            break;
         }
         previous_ray_distance_m = ray_distance_m;
         previous_delta_m = delta_m;
         previous_valid = scene_distance_m > 0.0;
         ray_distance_m += ray_step_m;
     }
+
+    if (!reflection_bracket_valid)
+        return result;
+
+    bool refinement_valid = true;
+    for (int refinement = 0;
+         refinement < WATER_REFLECTION_REFINEMENT_STEPS;
+         ++refinement) {
+        float middle_m = 0.5 * (reflection_bracket_low_m +
+                                reflection_bracket_high_m);
+        vec2 middle_uv;
+        if (!water_project_uv(water_world + direction * middle_m,
+                              middle_uv) ||
+            !water_uv_inside_half_texel(middle_uv)) {
+            refinement_valid = false;
+            break;
+        }
+        float middle_depth = texture(opaque_depth, middle_uv).r;
+        vec3 middle_scene_world;
+        if (!water_reconstruct_world(middle_uv, middle_depth,
+                                     middle_scene_world)) {
+            refinement_valid = false;
+            break;
+        }
+        float middle_scene_distance_m =
+            dot(middle_scene_world - water_world, direction);
+        if (middle_m - middle_scene_distance_m >= 0.0) {
+            reflection_bracket_high_m = middle_m;
+            reflection_bracket_uv = middle_uv;
+            reflection_bracket_scene_world = middle_scene_world;
+        } else {
+            reflection_bracket_low_m = middle_m;
+        }
+    }
+
+    float refined_delta_m = reflection_bracket_high_m -
+        dot(reflection_bracket_scene_world - water_world, direction);
+    if (!refinement_valid || refined_delta_m < 0.0 ||
+        refined_delta_m > hit_thickness_m)
+        return result;
+
+    result.uv = reflection_bracket_uv;
+    result.color = texture(opaque_hdr, reflection_bracket_uv).rgb;
+    result.distance_m = reflection_bracket_high_m;
+    result.valid = true;
     return result;
 }
 

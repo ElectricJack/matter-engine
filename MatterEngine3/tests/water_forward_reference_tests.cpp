@@ -84,6 +84,22 @@ void test_refraction_offset_clamps_to_twenty_four_pixels() {
           "requested refraction offset is clamped to twenty four pixels");
 }
 
+void test_flat_up_normal_has_zero_refraction_displacement() {
+    const matter::Float2 source{0.35f, 0.65f};
+    const matter::Float2 refracted = viewer::water_refraction_uv_reference(
+        source, {0.0f, 0.0f}, 40.0f, {100.0f, 200.0f}, 24.0f);
+    CHECK(close(refracted.x, source.x) && close(refracted.y, source.y),
+          "flat up-normal xz projection has zero refraction displacement");
+}
+
+void test_refraction_direction_and_pixel_scale_are_explicit() {
+    const matter::Float2 refracted = viewer::water_refraction_uv_reference(
+        {0.5f, 0.5f}, {0.25f, -0.5f}, 4.0f,
+        {100.0f, 200.0f}, 24.0f);
+    CHECK(close(refracted.x, 0.51f) && close(refracted.y, 0.49f),
+          "positive normal x moves UV right and negative normal z moves UV up at one pixel per metre");
+}
+
 }  // namespace
 
 int main() {
@@ -94,5 +110,7 @@ int main() {
     test_depth_discontinuity_uses_baked_depth();
     test_refraction_rejects_uv_outside_half_texel_inset();
     test_refraction_offset_clamps_to_twenty_four_pixels();
+    test_flat_up_normal_has_zero_refraction_displacement();
+    test_refraction_direction_and_pixel_scale_are_explicit();
     return check_summary();
 }

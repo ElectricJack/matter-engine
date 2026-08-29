@@ -22,6 +22,21 @@ static size_t count_occurrences(const std::string& text,
     return count;
 }
 
+static size_t matching_closing_brace(const std::string& text,
+                                     size_t opening_brace) {
+    if (opening_brace == std::string::npos ||
+        opening_brace >= text.size() || text[opening_brace] != '{')
+        return std::string::npos;
+    int depth = 0;
+    for (size_t offset = opening_brace; offset < text.size(); ++offset) {
+        if (text[offset] == '{')
+            ++depth;
+        else if (text[offset] == '}' && --depth == 0)
+            return offset;
+    }
+    return std::string::npos;
+}
+
 int main() {
     std::string text, err;
     // 1. embedded lookup works and matches the on-disk source.
@@ -117,6 +132,59 @@ int main() {
                "step < WATER_REFLECTION_STEPS") != std::string::npos);
     assert(water_screen.find(
                "refinement < WATER_REFLECTION_REFINEMENT_STEPS") !=
+           std::string::npos);
+    const size_t reflection_march = water_screen.find(
+        "for (int step = 0; step < WATER_REFLECTION_STEPS; ++step)");
+    const size_t reflection_march_open =
+        water_screen.find('{', reflection_march);
+    const size_t reflection_march_close =
+        matching_closing_brace(water_screen, reflection_march_open);
+    const size_t reflection_refinement = water_screen.find(
+        "for (int refinement = 0;");
+    // Brace-scope the march rather than merely counting loop tokens: the
+    // single refinement phase must be after the march has exited, so a failed
+    // refined candidate cannot resume marching and refine a second bracket.
+    assert(reflection_march != std::string::npos &&
+           reflection_march_close != std::string::npos &&
+           reflection_refinement != std::string::npos &&
+           reflection_refinement > reflection_march_close);
+    assert(count_occurrences(water_screen,
+                             "for (int refinement = 0;") == 1u);
+    const size_t missing_bracket_miss = water_screen.find(
+        "if (!reflection_bracket_valid)", reflection_march_close);
+    const size_t invalid_refinement_miss = water_screen.find(
+        "if (!refinement_valid ||", reflection_refinement);
+    const size_t accepted_reflection = water_screen.find(
+        "result.valid = true;", reflection_refinement);
+    assert(missing_bracket_miss > reflection_march_close &&
+           missing_bracket_miss < reflection_refinement &&
+           invalid_refinement_miss > reflection_refinement &&
+           accepted_reflection > invalid_refinement_miss);
+    const size_t refraction_helper =
+        water_screen.find("vec2 water_refraction_uv(");
+    const size_t refraction_helper_open =
+        water_screen.find('{', refraction_helper);
+    const size_t refraction_helper_close =
+        matching_closing_brace(water_screen, refraction_helper_open);
+    assert(refraction_helper != std::string::npos &&
+           refraction_helper_close != std::string::npos);
+    const std::string refraction_contract = water_screen.substr(
+        refraction_helper, refraction_helper_close - refraction_helper);
+    assert(water_screen.find(
+               "water_refraction_uv(result.uv, normal.xz,") !=
+           std::string::npos);
+    assert(refraction_contract.find(
+               "normal_xz * max(optical_distance_m, 0.0)") !=
+           std::string::npos);
+    assert(refraction_contract.find("water_clamp_pixel_offset(") !=
+               std::string::npos &&
+           refraction_contract.find(
+               "water_forward.viewport_refraction.z") !=
+               std::string::npos);
+    assert(refraction_contract.find(
+               "source_uv + offset_px / viewport") !=
+           std::string::npos);
+    assert(water_screen.find("water_world + normal") ==
            std::string::npos);
     assert(water_forward.find("sample_physical_sky") != std::string::npos);
     for (const char* forbidden : {"visibility_texture", "raw_diffuse",

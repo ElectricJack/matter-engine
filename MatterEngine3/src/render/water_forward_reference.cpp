@@ -56,6 +56,8 @@ matter::Float2 water_refraction_uv_reference(
         return source_uv;
     }
 
+    // Float2.y is world normal Z. Positive X and Z map directly to
+    // increasing texture UV X and Y, matching water_screen_space.glsl.
     matter::Float2 offset_px{
         normal_xz.x * std::max(optical_distance_m, 0.0f),
         normal_xz.y * std::max(optical_distance_m, 0.0f)};
