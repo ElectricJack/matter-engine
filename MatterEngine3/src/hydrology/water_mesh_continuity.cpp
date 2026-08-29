@@ -282,6 +282,157 @@ bool extract_contour(const gpu_meshing::MeshResult& mesh,
     return !contour.points.empty();
 }
 
+double coordinate(Vector3d value, std::size_t axis) {
+    if (axis == 0u) return value.x;
+    if (axis == 1u) return value.y;
+    return value.z;
+}
+
+void set_coordinate(Vector3d& value, std::size_t axis, double coordinate_m) {
+    if (axis == 0u) value.x = coordinate_m;
+    else if (axis == 1u) value.y = coordinate_m;
+    else value.z = coordinate_m;
+}
+
+bool edge_on_cell_cut(Vector3d first, Vector3d second,
+                      const WaterCellOwnershipCut& cut,
+                      double tolerance_m) {
+    const Vector3d midpoint = scale(add(first, second), 0.5);
+    const Vector3d lattice_origin{
+        cut.lattice.origin_m.x, cut.lattice.origin_m.y,
+        cut.lattice.origin_m.z};
+    const double voxel = static_cast<double>(cut.lattice.voxel_m);
+    const WaterCellOwnership boundary_owner =
+        cut.signed_cut_m == cut.handoff.upstream_visual_cut_m
+        ? WaterCellOwnership::Before
+        : WaterCellOwnership::After;
+    for (std::size_t axis = 0u; axis != 3u; ++axis) {
+        const double first_relative =
+            (coordinate(first, axis) - coordinate(lattice_origin, axis)) /
+            voxel;
+        const double second_relative =
+            (coordinate(second, axis) - coordinate(lattice_origin, axis)) /
+            voxel;
+        const double face = std::round(first_relative);
+        if (std::fabs(first_relative - face) * voxel > tolerance_m ||
+            std::fabs(second_relative - face) * voxel > tolerance_m)
+            continue;
+        Vector3d before{};
+        Vector3d after{};
+        for (std::size_t cell_axis = 0u; cell_axis != 3u; ++cell_axis) {
+            double cell = 0.0;
+            if (cell_axis == axis) {
+                cell = face - 0.5;
+            } else {
+                const double relative =
+                    (coordinate(midpoint, cell_axis) -
+                     coordinate(lattice_origin, cell_axis)) / voxel;
+                cell = std::floor(relative) + 0.5;
+            }
+            set_coordinate(before, cell_axis,
+                           coordinate(lattice_origin, cell_axis) +
+                               cell * voxel);
+            set_coordinate(after, cell_axis,
+                           coordinate(lattice_origin, cell_axis) +
+                               (cell_axis == axis ? cell + 1.0 : cell) *
+                                   voxel);
+        }
+        const auto ownership = [&](Vector3d center) {
+            return classify_water_cell_ownership(
+                cut.handoff,
+                {static_cast<float>(center.x),
+                 static_cast<float>(center.y),
+                 static_cast<float>(center.z)});
+        };
+        const bool before_owned = ownership(before) == boundary_owner;
+        const bool after_owned = ownership(after) == boundary_owner;
+        if (before_owned != after_owned) return true;
+    }
+    return false;
+}
+
+bool extract_cell_boundary_contour(
+    const gpu_meshing::MeshResult& mesh,
+    const WaterCellOwnershipCut& cut,
+    double endpoint_tolerance_m,
+    CutContour& contour) {
+    contour = {};
+    if (!valid_mesh(mesh)) return false;
+    struct EdgeRecord {
+        std::uint32_t count = 0u;
+        CutSample first{};
+        CutSample second{};
+    };
+    std::map<SegmentKey, EdgeRecord> edges;
+    std::map<EndpointKey, PointAccumulator> point_accumulators;
+    for (std::size_t triangle = 0u; triangle != mesh.indices.size();
+         triangle += 3u) {
+        std::array<EndpointKey, 3> triangle_points{};
+        for (std::size_t corner = 0u; corner != 3u; ++corner) {
+            const std::uint32_t index = mesh.indices[triangle + corner];
+            if (!endpoint_key(mesh_position(mesh, index),
+                              endpoint_tolerance_m,
+                              triangle_points[corner]))
+                return false;
+        }
+        std::sort(triangle_points.begin(), triangle_points.end());
+        contour.coplanar_triangles.push_back({triangle_points});
+        for (std::size_t edge = 0u; edge != 3u; ++edge) {
+            const std::uint32_t first_index = mesh.indices[triangle + edge];
+            const std::uint32_t second_index =
+                mesh.indices[triangle + (edge + 1u) % 3u];
+            CutSample first_sample{mesh_position(mesh, first_index),
+                                   mesh_normal(mesh, first_index)};
+            CutSample second_sample{mesh_position(mesh, second_index),
+                                    mesh_normal(mesh, second_index)};
+            EndpointKey first_key{};
+            EndpointKey second_key{};
+            if (!endpoint_key(first_sample.position, endpoint_tolerance_m,
+                              first_key) ||
+                !endpoint_key(second_sample.position, endpoint_tolerance_m,
+                              second_key))
+                return false;
+            if (second_key < first_key) {
+                std::swap(first_key, second_key);
+                std::swap(first_sample, second_sample);
+            }
+            auto& record = edges[{first_key, second_key}];
+            ++record.count;
+            record.first = first_sample;
+            record.second = second_sample;
+        }
+    }
+    for (const auto& entry : edges) {
+        if ((entry.second.count & 1u) == 0u) continue;
+        if (!edge_on_cell_cut(entry.second.first.position,
+                              entry.second.second.position, cut,
+                              endpoint_tolerance_m))
+            continue;
+        contour.segments.push_back(entry.first);
+        add_point(point_accumulators, entry.first.first,
+                  entry.second.first);
+        add_point(point_accumulators, entry.first.second,
+                  entry.second.second);
+    }
+    if (contour.segments.empty()) return false;
+    std::sort(contour.segments.begin(), contour.segments.end());
+    std::sort(contour.coplanar_triangles.begin(),
+              contour.coplanar_triangles.end());
+    for (const auto& entry : point_accumulators) {
+        const PointAccumulator& accumulator = entry.second;
+        Vector3d normal{};
+        if (accumulator.count == 0u ||
+            !normalize(accumulator.normal_sum, normal))
+            return false;
+        const Vector3d position = scale(
+            accumulator.position_sum,
+            1.0 / static_cast<double>(accumulator.count));
+        if (!finite(position)) return false;
+        contour.points.emplace(entry.first, CutSample{position, normal});
+    }
+    return !contour.points.empty();
+}
+
 float fixed_quantile(std::vector<double> values, double quantile) {
     std::sort(values.begin(), values.end());
     const std::size_t index = static_cast<std::size_t>(std::floor(
@@ -412,12 +563,74 @@ bool finite_metrics(const WaterCutContourMetrics& metrics) {
     return true;
 }
 
+bool reduce_contours(const CutContour& first_contour,
+                     const CutContour& second_contour,
+                     WaterCutContourMetrics& metrics) {
+    if (first_contour.points.size() >
+            std::numeric_limits<std::uint32_t>::max() ||
+        second_contour.points.size() >
+            std::numeric_limits<std::uint32_t>::max())
+        return false;
+    metrics.first_points = static_cast<std::uint32_t>(
+        first_contour.points.size());
+    metrics.second_points = static_cast<std::uint32_t>(
+        second_contour.points.size());
+    metrics.first_height_quantiles_m = height_quantiles(first_contour);
+    metrics.second_height_quantiles_m = height_quantiles(second_contour);
+    metrics.unmatched_open_edges = unmatched_open_edges(
+        first_contour, second_contour);
+    metrics.duplicate_coplanar_triangles =
+        duplicate_coplanar_triangles(first_contour, second_contour);
+
+    double maximum_squared_distance = 0.0;
+    double sum_squared_distance = 0.0;
+    std::vector<double> normal_dots;
+    std::vector<double> normal_angles;
+    normal_dots.reserve(first_contour.points.size() +
+                        second_contour.points.size());
+    normal_angles.reserve(normal_dots.capacity());
+    if (!accumulate_directed_metrics(
+            first_contour, second_contour, maximum_squared_distance,
+            sum_squared_distance, normal_dots, normal_angles) ||
+        !accumulate_directed_metrics(
+            second_contour, first_contour, maximum_squared_distance,
+            sum_squared_distance, normal_dots, normal_angles) ||
+        normal_dots.empty())
+        return false;
+    metrics.symmetric_hausdorff_m = static_cast<float>(
+        std::sqrt(maximum_squared_distance));
+    metrics.rms_distance_m = static_cast<float>(std::sqrt(
+        sum_squared_distance / static_cast<double>(normal_dots.size())));
+    std::sort(normal_dots.begin(), normal_dots.end());
+    metrics.minimum_normal_dot = static_cast<float>(normal_dots.front());
+    metrics.p95_normal_angle_degrees =
+        fixed_quantile(std::move(normal_angles), 0.95);
+    return finite_metrics(metrics);
+}
+
 bool fail(const char* message, FluidBakeError& error) {
     error = {FluidBakeCode::ProductFailure, message};
     return false;
 }
 
 }  // namespace
+
+WaterCellOwnership classify_water_cell_ownership(
+    const SpillwayHandoffRecord& handoff,
+    matter::Float3 root_cell_center) noexcept {
+    const matter::Float3 relative{
+        root_cell_center.x - handoff.lip_origin_m.x,
+        root_cell_center.y - handoff.lip_origin_m.y,
+        root_cell_center.z - handoff.lip_origin_m.z};
+    const float distance = relative.x * handoff.tangent.x +
+        relative.y * handoff.tangent.y +
+        relative.z * handoff.tangent.z;
+    if (distance < handoff.upstream_visual_cut_m)
+        return WaterCellOwnership::Before;
+    if (distance > handoff.downstream_visual_cut_m)
+        return WaterCellOwnership::After;
+    return WaterCellOwnership::Between;
+}
 
 bool measure_water_cut_continuity(
     const gpu_meshing::MeshResult& first,
@@ -447,53 +660,8 @@ bool measure_water_cut_continuity(
                              second_contour))
             return fail("second water mesh has no valid cut contour", error);
 
-        if (first_contour.points.size() >
-                std::numeric_limits<std::uint32_t>::max() ||
-            second_contour.points.size() >
-                std::numeric_limits<std::uint32_t>::max())
-            return fail("water cut contour point count exceeds limits", error);
-        metrics.first_points = static_cast<std::uint32_t>(
-            first_contour.points.size());
-        metrics.second_points = static_cast<std::uint32_t>(
-            second_contour.points.size());
-        metrics.first_height_quantiles_m =
-            height_quantiles(first_contour);
-        metrics.second_height_quantiles_m =
-            height_quantiles(second_contour);
-        metrics.unmatched_open_edges = unmatched_open_edges(
-            first_contour, second_contour);
-        metrics.duplicate_coplanar_triangles =
-            duplicate_coplanar_triangles(first_contour, second_contour);
-
-        double maximum_squared_distance = 0.0;
-        double sum_squared_distance = 0.0;
-        std::vector<double> normal_dots;
-        std::vector<double> normal_angles;
-        normal_dots.reserve(first_contour.points.size() +
-                            second_contour.points.size());
-        normal_angles.reserve(normal_dots.capacity());
-        if (!accumulate_directed_metrics(
-                first_contour, second_contour, maximum_squared_distance,
-                sum_squared_distance, normal_dots, normal_angles) ||
-            !accumulate_directed_metrics(
-                second_contour, first_contour, maximum_squared_distance,
-                sum_squared_distance, normal_dots, normal_angles) ||
-            normal_dots.empty())
+        if (!reduce_contours(first_contour, second_contour, metrics))
             return fail("water cut continuity reduction failed", error);
-        metrics.symmetric_hausdorff_m = static_cast<float>(
-            std::sqrt(maximum_squared_distance));
-        metrics.rms_distance_m = static_cast<float>(std::sqrt(
-            sum_squared_distance /
-            static_cast<double>(normal_dots.size())));
-        std::sort(normal_dots.begin(), normal_dots.end());
-        metrics.minimum_normal_dot =
-            static_cast<float>(normal_dots.front());
-        metrics.p95_normal_angle_degrees =
-            fixed_quantile(std::move(normal_angles), 0.95);
-        if (!finite_metrics(metrics)) {
-            metrics = {};
-            return fail("water cut continuity metrics are non-finite", error);
-        }
         return true;
     } catch (const std::exception& exception) {
         metrics = {};
@@ -502,6 +670,51 @@ bool measure_water_cut_continuity(
     } catch (...) {
         metrics = {};
         return fail("water cut continuity measurement failed", error);
+    }
+}
+
+bool measure_water_cell_boundary_continuity(
+    const gpu_meshing::MeshResult& first,
+    const gpu_meshing::MeshResult& second,
+    const WaterCellOwnershipCut& cut,
+    float edge_match_tolerance_m,
+    WaterCutContourMetrics& metrics,
+    FluidBakeError& error) {
+    metrics = {};
+    error = {};
+    if (cut.lattice.version != 1u ||
+        !std::isfinite(cut.lattice.voxel_m) ||
+        cut.lattice.voxel_m <= 0.0f ||
+        !std::isfinite(cut.signed_cut_m) ||
+        !std::isfinite(edge_match_tolerance_m) ||
+        edge_match_tolerance_m <= 0.0f ||
+        !finite_handoff(cut.handoff) ||
+        (cut.signed_cut_m != cut.handoff.upstream_visual_cut_m &&
+         cut.signed_cut_m != cut.handoff.downstream_visual_cut_m))
+        return fail("water cell boundary continuity input is invalid", error);
+    try {
+        CutContour first_contour{};
+        CutContour second_contour{};
+        if (!extract_cell_boundary_contour(
+                first, cut, edge_match_tolerance_m, first_contour))
+            return fail(
+                "first water mesh has no valid cell boundary contour", error);
+        if (!extract_cell_boundary_contour(
+                second, cut, edge_match_tolerance_m, second_contour))
+            return fail(
+                "second water mesh has no valid cell boundary contour", error);
+        if (!reduce_contours(first_contour, second_contour, metrics))
+            return fail("water cell boundary continuity reduction failed",
+                        error);
+        return true;
+    } catch (const std::exception& exception) {
+        metrics = {};
+        error = {FluidBakeCode::ProductFailure, exception.what()};
+        return false;
+    } catch (...) {
+        metrics = {};
+        return fail("water cell boundary continuity measurement failed",
+                    error);
     }
 }
 

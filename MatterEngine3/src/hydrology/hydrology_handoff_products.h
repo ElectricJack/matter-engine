@@ -55,12 +55,38 @@ struct HydrologySectionTimings {
     bool animation_cache_hit = false;
 };
 
+struct MeshIndexRange {
+    std::uint32_t first_index = 0;
+    std::uint32_t index_count = 0;
+};
+
+struct HandoffFrameProducts {
+    gpu_meshing::MeshResult replacement_strip;
+    MeshIndexRange upstream_band{};
+    MeshIndexRange collar{};
+    MeshIndexRange downstream_band{};
+};
+
+struct HandoffAnimationBuildInput {
+    const WaterBoundaryAnimationSource* upstream = nullptr;
+    const WaterBoundaryAnimationSource* downstream = nullptr;
+    const WaterMeshAnimationArtifact* upstream_bulk = nullptr;
+    const WaterMeshAnimationArtifact* downstream_bulk = nullptr;
+    SpillwayHandoffRecord handoff{};
+    gpu_meshing::ParticleSamplingLattice lattice{};
+    gpu_meshing::ParticleJob visual_template{};
+};
+
 struct HandoffAnimationBuildDiagnostics {
     std::array<double, 30> frame_mesh_ms{};
     std::array<WaterCutContourMetrics, 30> upstream_cut{};
     std::array<WaterCutContourMetrics, 30> downstream_cut{};
+    std::array<MeshIndexRange, 30> upstream_band{};
+    std::array<MeshIndexRange, 30> collar{};
+    std::array<MeshIndexRange, 30> downstream_band{};
     std::uint64_t artifact_file_bytes = 0;
     std::uint64_t peak_build_cpu_payload_bytes = 0;
+    std::uint32_t peak_decoded_boundary_frames = 0;
     bool source_blend_required = false;
 };
 
@@ -118,19 +144,29 @@ bool build_handoff_artifact(
     FluidBakeError& error);
 
 bool build_handoff_water_animation_artifact(
-    const WaterMeshAnimationArtifact& upstream,
-    const WaterMeshAnimationArtifact& downstream,
-    const SpillwayHandoffRecord& handoff,
-    float visual_voxel_m,
+    const HandoffAnimationBuildInput& input,
+    const PhysxFluidBake::VisualMesher& mesher,
     WaterMeshAnimationArtifact& artifact,
-    FluidBakeError& error,
-    HandoffAnimationBuildDiagnostics* diagnostics = nullptr);
+    HandoffAnimationBuildDiagnostics& diagnostics,
+    FluidBakeError& error);
+
+bool build_handoff_animation_frames(
+    const HandoffAnimationBuildInput& input,
+    const PhysxFluidBake::VisualMesher& mesher,
+    WaterMeshAnimation& output,
+    HandoffAnimationBuildDiagnostics& diagnostics,
+    FluidBakeError& error);
+
+std::uint64_t derive_handoff_animation_semantic_key(
+    const HandoffAnimationBuildInput& input,
+    std::uint64_t upstream_animation_payload_digest,
+    std::uint64_t downstream_animation_payload_digest);
 
 bool clip_section_water_mesh_animation(
     const WaterMeshAnimation& source,
     const std::string& section_id,
     const std::vector<SpillwayHandoffRecord>& handoffs,
-    float visual_voxel_m,
+    const gpu_meshing::ParticleSamplingLattice& lattice,
     WaterMeshAnimation& owned,
     FluidBakeError& error);
 

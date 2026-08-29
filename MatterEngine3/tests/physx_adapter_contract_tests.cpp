@@ -22,10 +22,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -2286,6 +2288,41 @@ WorldSessionFluidCase run_world_session_fluid_case(
                     maximum_x += 1.0f;
                     minimum_z -= 1.0f;
                     maximum_z += 1.0f;
+                    surface_y = 1.0f;
+                    mesh = {};
+                    for (std::uint32_t z = 0u;
+                         z != layout.cell_dims[2]; ++z) {
+                        const float z_center = layout.origin_m.z +
+                            layout.spacing_m.z *
+                                (static_cast<float>(z) + 0.5f);
+                        if (z_center < -0.5f || z_center > 0.5f)
+                            continue;
+                        for (std::uint32_t x = 0u;
+                             x != layout.cell_dims[0]; ++x) {
+                            const float x0 = layout.origin_m.x +
+                                layout.spacing_m.x * static_cast<float>(x);
+                            const float x1 = x0 + layout.spacing_m.x;
+                            const float z0 = layout.origin_m.z +
+                                layout.spacing_m.z * static_cast<float>(z);
+                            const float z1 = z0 + layout.spacing_m.z;
+                            const std::uint32_t base =
+                                static_cast<std::uint32_t>(
+                                    mesh.positions.size() / 3u);
+                            mesh.positions.insert(mesh.positions.end(), {
+                                x0, surface_y, z0, x1, surface_y, z0,
+                                x1, surface_y, z1, x0, surface_y, z1});
+                            mesh.normals.insert(mesh.normals.end(), {
+                                0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f});
+                            mesh.indices.insert(mesh.indices.end(), {
+                                base, base + 1u, base + 2u,
+                                base, base + 2u, base + 3u});
+                        }
+                    }
+                    mesh.material = job.material;
+                    mesh.content_digest =
+                        gpu_meshing::mesh_content_digest(mesh);
+                    return true;
                 }
                 mesh.positions = {
                     minimum_x, surface_y, minimum_z,
@@ -3010,9 +3047,47 @@ void test_world_session_boundary_sidecar_cache_is_transactional_and_local() {
     const WorldSessionFluidCase cold = run_world_session_fluid_case(
         root, options, cold_state);
     auto boundary_files = cached_files_with_extension(cache_root, ".mhwb");
+    const auto animation_files =
+        cached_files_with_extension(cache_root, ".mhwa");
+    const auto handoff_animation = std::find_if(
+        animation_files.begin(), animation_files.end(), [](const auto& path) {
+            return path.parent_path().filename() == "handoffs";
+        });
+    const std::vector<std::filesystem::path> handoff_animation_paths =
+        handoff_animation == animation_files.end()
+        ? std::vector<std::filesystem::path>{}
+        : std::vector<std::filesystem::path>{*handoff_animation};
+    const auto cold_handoff_animation_bytes =
+        snapshot_files(handoff_animation_paths);
     CHECK(cold.accepted && cold.backend_run_calls == 2 &&
-              boundary_files.size() == 2u,
-          "a cold animated network publishes one immutable boundary source for each side of its handoff before Ready");
+              boundary_files.size() == 2u &&
+              animation_files.size() == 3u &&
+              handoff_animation != animation_files.end(),
+          "a cold animated network publishes two section animations, the semantic-path handoff animation, and both immutable boundary sources before Ready");
+    hydrology::WaterMeshAnimationArtifact handoff_animation_artifact{};
+    gpu_meshing::Error handoff_animation_error{};
+    bool exact_handoff_animation_path = false;
+    std::string exact_handoff_animation_path_message =
+        "handoff animation artifact was not loadable";
+    if (handoff_animation != animation_files.end() &&
+        hydrology::load_water_mesh_animation_artifact(
+            *handoff_animation, handoff_animation_artifact,
+            handoff_animation_error)) {
+        std::ostringstream semantic_hex;
+        semantic_hex << std::hex << std::nouppercase << std::setfill('0')
+                     << std::setw(16)
+                     << handoff_animation_artifact.semantic_key;
+        const auto expected = cache_root / "Demo" / "hydrology" /
+            "animations" / "handoffs" /
+            (handoff_animation_artifact.identity + "-" +
+             semantic_hex.str() + ".mhwa");
+        exact_handoff_animation_path = *handoff_animation == expected;
+        exact_handoff_animation_path_message =
+            "expected " + expected.string() + ", got " +
+            handoff_animation->string();
+    }
+    CHECK(exact_handoff_animation_path,
+          exact_handoff_animation_path_message.c_str());
     const auto first_simulation = std::find(
         cold.lifecycle_events.begin(), cold.lifecycle_events.end(),
         "simulate-1");
@@ -3070,8 +3145,10 @@ void test_world_session_boundary_sidecar_cache_is_transactional_and_local() {
     const WorldSessionFluidCase warm = run_world_session_fluid_case(
         root, options, warm_state);
     CHECK(warm.accepted && warm.status.cache_hit &&
-              warm.backend_run_calls == 0,
-          "section cache admission requires and reuses the complete static, v2 animation, and boundary-sidecar set");
+              warm.backend_run_calls == 0 && warm.visual_calls == 1 &&
+              snapshot_files(handoff_animation_paths) ==
+                  cold_handoff_animation_bytes,
+          "warm admission reuses the immutable canonical-cell handoff animation byte-for-byte without sidecar decode or animated remeshing");
 
     std::filesystem::remove(upper_boundary, filesystem_error);
     auto missing_state = std::make_shared<LifecycleBackendState>();

@@ -4,7 +4,9 @@
 #include "hydrology/water_mesh_continuity.h"
 
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -202,6 +204,242 @@ hydrology::WaterMeshAnimationArtifact branched_animation_artifact() {
     return artifact;
 }
 
+gpu_meshing::ParticleSamplingLattice shared_lattice() {
+    gpu_meshing::ParticleSamplingLattice lattice{};
+    gpu_meshing::Error error{};
+    CHECK(gpu_meshing::make_particle_sampling_lattice(
+              {0.0f, 0.0f, 0.0f}, 0.25f, lattice, error),
+          error.message.c_str());
+    return lattice;
+}
+
+hydrology::SpillwayHandoffRecord shared_spillway() {
+    auto handoff = spillway();
+    handoff.lip_origin_m = {0.0f, 1.0f, 0.0f};
+    handoff.width_m = 1.0f;
+    handoff.effective_depth_m = 0.5f;
+    handoff.channel_depth_m = 0.25f;
+    handoff.overlap_m = 2.0f;
+    handoff.upstream_visual_cut_m = -0.5f;
+    handoff.downstream_visual_cut_m = 0.5f;
+    handoff.temporary_dam_exclusion_bounds_m =
+        {{0.75f, 0.8f, -0.5f}, {1.0f, 1.6f, 0.5f}};
+    handoff.semantic_key = hydrology::spillway_handoff_semantic_key(handoff);
+    return handoff;
+}
+
+hydrology::FluidParticleAnimationCapture boundary_capture(
+    bool upstream, const gpu_meshing::Aabb& crop) {
+    hydrology::FluidParticleAnimationCapture capture{};
+    capture.frames_per_second = 30u;
+    capture.phase_offset_frames = 15u;
+    capture.frames.resize(30u);
+    const float near_min_x = crop.min_m.x + 0.01f;
+    const float near_max_x = crop.max_m.x - 0.01f;
+    const float near_min_z = crop.min_m.z + 0.01f;
+    const float near_max_z = crop.max_m.z - 0.01f;
+    for (std::uint32_t frame = 0u; frame != 30u; ++frame) {
+        auto& output = capture.frames[frame];
+        output.simulation_step = (frame + 1u) * 4u;
+        const float phase = static_cast<float>(frame) * 0.001f;
+        output.positions_m = {
+            {upstream ? near_min_x : 0.0f, 0.75f + phase, near_min_z},
+            {upstream ? near_min_x : 0.0f, 0.75f + phase, near_max_z},
+            {upstream ? 0.0f : near_max_x, 1.25f + phase, near_min_z},
+            {upstream ? 0.0f : near_max_x, 1.25f + phase, near_max_z},
+            {0.0f, upstream ? 1.10f + phase : 1.20f + phase, 0.0f},
+            {upstream ? 0.45f : -0.45f,
+             upstream ? 1.30f + phase : 1.40f + phase, 0.0f},
+        };
+        if (upstream)
+            output.positions_m.push_back({0.875f, 1.50f + phase, 0.0f});
+    }
+    return capture;
+}
+
+hydrology::WaterBoundaryAnimationSource boundary_source(bool upstream) {
+    const auto handoff = shared_spillway();
+    const auto lattice = shared_lattice();
+    hydrology::FluidParticleAnimationCapture empty{};
+    empty.frames_per_second = 30u;
+    empty.phase_offset_frames = 15u;
+    empty.frames.resize(30u);
+    for (std::uint32_t frame = 0u; frame != 30u; ++frame)
+        empty.frames[frame].simulation_step = (frame + 1u) * 4u;
+    hydrology::WaterBoundaryAnimationSource metadata{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::build_water_boundary_animation_source(
+              empty, upstream ? "upper" : "lower",
+              upstream ? 1001u : 2002u, handoff, lattice,
+              0.05f, 0.01f, upstream, metadata, error),
+          error.message.c_str());
+    hydrology::WaterBoundaryAnimationSource source{};
+    CHECK(hydrology::build_water_boundary_animation_source(
+              boundary_capture(upstream, metadata.crop_bounds_m),
+              upstream ? "upper" : "lower",
+              upstream ? 1001u : 2002u, handoff, lattice,
+              0.05f, 0.01f, upstream, source, error),
+          error.message.c_str());
+    return source;
+}
+
+bool canonical_plane_mesher(
+    const gpu_meshing::ParticleJob& job, gpu_meshing::MeshResult& mesh,
+    gpu_meshing::Stats& stats, gpu_meshing::Error& error,
+    const gpu_meshing::BuildControl&) {
+    mesh = {};
+    gpu_meshing::GridLayout layout{};
+    if (!gpu_meshing::validate_particle_job(job, layout, error)) return false;
+    const float y = 1.0f;
+    const float top = layout.origin_m.y + layout.spacing_m.y *
+        static_cast<float>(layout.cell_dims[1]);
+    if (y < layout.origin_m.y || y >= top) {
+        mesh.material = job.material;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+        return true;
+    }
+    for (std::uint32_t z = 0u; z != layout.cell_dims[2]; ++z) {
+        for (std::uint32_t x = 0u; x != layout.cell_dims[0]; ++x) {
+            const float x0 = layout.origin_m.x +
+                static_cast<float>(x) * layout.spacing_m.x;
+            const float x1 = x0 + layout.spacing_m.x;
+            const float z0 = layout.origin_m.z +
+                static_cast<float>(z) * layout.spacing_m.z;
+            const float z1 = z0 + layout.spacing_m.z;
+            const std::uint32_t base = static_cast<std::uint32_t>(
+                mesh.positions.size() / 3u);
+            mesh.positions.insert(mesh.positions.end(), {
+                x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1});
+            mesh.normals.insert(mesh.normals.end(), {
+                0,1,0, 0,1,0, 0,1,0, 0,1,0});
+            mesh.indices.insert(mesh.indices.end(), {
+                base, base + 1u, base + 2u,
+                base, base + 2u, base + 3u});
+        }
+    }
+    mesh.material = job.material;
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    stats.particles = job.particle_count;
+    stats.triangles = static_cast<std::uint32_t>(mesh.indices.size() / 3u);
+    error = {};
+    return true;
+}
+
+std::vector<std::string> canonical_triangles(
+    const gpu_meshing::MeshResult& mesh, float tolerance) {
+    std::vector<std::string> triangles;
+    for (std::size_t offset = 0u; offset != mesh.indices.size();
+         offset += 3u) {
+        std::array<std::string, 3> points{};
+        for (std::size_t corner = 0u; corner != 3u; ++corner) {
+            const auto vertex = mesh.indices[offset + corner];
+            std::ostringstream value;
+            value << std::llround(mesh.positions[vertex * 3u + 0u] /
+                                  tolerance) << ':'
+                  << std::llround(mesh.positions[vertex * 3u + 1u] /
+                                  tolerance) << ':'
+                  << std::llround(mesh.positions[vertex * 3u + 2u] /
+                                  tolerance);
+            points[corner] = value.str();
+        }
+        std::sort(points.begin(), points.end());
+        triangles.push_back(points[0] + "|" + points[1] + "|" + points[2]);
+    }
+    std::sort(triangles.begin(), triangles.end());
+    return triangles;
+}
+
+struct SharedFieldFixture {
+    hydrology::WaterBoundaryAnimationSource upstream_source;
+    hydrology::WaterBoundaryAnimationSource downstream_source;
+    hydrology::WaterMeshAnimationArtifact upstream_bulk;
+    hydrology::WaterMeshAnimationArtifact downstream_bulk;
+    hydrology::HandoffAnimationBuildInput input{};
+};
+
+SharedFieldFixture shared_field_fixture() {
+    SharedFieldFixture fixture{};
+    fixture.upstream_source = boundary_source(true);
+    fixture.downstream_source = boundary_source(false);
+    const auto lattice = shared_lattice();
+    gpu_meshing::Aabb bounds{
+        {std::min(fixture.upstream_source.crop_bounds_m.min_m.x,
+                  fixture.downstream_source.crop_bounds_m.min_m.x),
+         std::min(fixture.upstream_source.crop_bounds_m.min_m.y,
+                  fixture.downstream_source.crop_bounds_m.min_m.y),
+         std::min(fixture.upstream_source.crop_bounds_m.min_m.z,
+                  fixture.downstream_source.crop_bounds_m.min_m.z)},
+        {std::max(fixture.upstream_source.crop_bounds_m.max_m.x,
+                  fixture.downstream_source.crop_bounds_m.max_m.x),
+         std::max(fixture.upstream_source.crop_bounds_m.max_m.y,
+                  fixture.downstream_source.crop_bounds_m.max_m.y),
+         std::max(fixture.upstream_source.crop_bounds_m.max_m.z,
+                  fixture.downstream_source.crop_bounds_m.max_m.z)}};
+    gpu_meshing::ParticleJob visual{};
+    visual.bounds_m = bounds;
+    visual.voxel_m = lattice.voxel_m;
+    visual.blend_width_m = 0.01f;
+    visual.iso_value = 0.0f;
+    visual.material = 4u;
+    visual.limits = {512u, 1u << 20u, 1u << 22u, 1u << 23u};
+    visual.sampling_lattice = lattice;
+
+    gpu_meshing::MeshResult full{};
+    gpu_meshing::Stats stats{};
+    gpu_meshing::Error mesh_error{};
+    CHECK(canonical_plane_mesher(visual, full, stats, mesh_error, {}),
+          mesh_error.message.c_str());
+    hydrology::WaterMeshAnimation raw{};
+    raw.frames_per_second = 30u;
+    raw.phase_offset_frames = 15u;
+    raw.duration_seconds = 1.0f;
+    raw.frames.assign(30u, full);
+    hydrology::WaterMeshAnimation upstream_owned{};
+    hydrology::WaterMeshAnimation downstream_owned{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::clip_section_water_mesh_animation(
+              raw, "upper", {shared_spillway()}, lattice,
+              upstream_owned, error), error.message.c_str());
+    CHECK(hydrology::clip_section_water_mesh_animation(
+              raw, "lower", {shared_spillway()}, lattice,
+              downstream_owned, error), error.message.c_str());
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              {"upper", 1011u, 1001u, 0u, lattice.voxel_m, lattice},
+              upstream_owned, fixture.upstream_bulk, mesh_error),
+          mesh_error.message.c_str());
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              {"lower", 2022u, 2002u, 0u, lattice.voxel_m, lattice},
+              downstream_owned, fixture.downstream_bulk, mesh_error),
+          mesh_error.message.c_str());
+    std::vector<std::uint8_t> upstream_bytes;
+    std::vector<std::uint8_t> downstream_bytes;
+    CHECK(hydrology::serialize_water_mesh_animation_artifact(
+              fixture.upstream_bulk, upstream_bytes, mesh_error) &&
+              hydrology::deserialize_water_mesh_animation_artifact(
+                  upstream_bytes, fixture.upstream_bulk, mesh_error),
+          mesh_error.message.c_str());
+    CHECK(hydrology::serialize_water_mesh_animation_artifact(
+              fixture.downstream_bulk, downstream_bytes, mesh_error) &&
+              hydrology::deserialize_water_mesh_animation_artifact(
+                  downstream_bytes, fixture.downstream_bulk, mesh_error),
+          mesh_error.message.c_str());
+    fixture.input.upstream = &fixture.upstream_source;
+    fixture.input.downstream = &fixture.downstream_source;
+    fixture.input.upstream_bulk = &fixture.upstream_bulk;
+    fixture.input.downstream_bulk = &fixture.downstream_bulk;
+    fixture.input.handoff = shared_spillway();
+    fixture.input.lattice = lattice;
+    fixture.input.visual_template = visual;
+    return fixture;
+}
+
+void bind_shared_field_fixture(SharedFieldFixture& fixture) {
+    fixture.input.upstream = &fixture.upstream_source;
+    fixture.input.downstream = &fixture.downstream_source;
+    fixture.input.upstream_bulk = &fixture.upstream_bulk;
+    fixture.input.downstream_bulk = &fixture.downstream_bulk;
+}
+
 const hydrology::PhysxFluidBake::VisualMesher synthetic_visual_mesher =
     [](const gpu_meshing::ParticleJob& job, gpu_meshing::MeshResult& mesh,
        gpu_meshing::Stats& stats, gpu_meshing::Error& error,
@@ -343,6 +581,45 @@ void test_cut_continuity_fails_closed_on_invalid_meshes() {
               metrics, error) &&
               error.code == hydrology::FluidBakeCode::ProductFailure,
           "non-finite water geometry fails closed");
+}
+
+void test_cell_ownership_uses_one_exact_equality_convention() {
+    auto handoff = shared_spillway();
+    handoff.downstream_visual_cut_m = 0.5f;
+    handoff.semantic_key = hydrology::spillway_handoff_semantic_key(handoff);
+    CHECK(hydrology::classify_water_cell_ownership(
+              handoff, {0.5f, 1.0f, 0.0f}) ==
+              hydrology::WaterCellOwnership::Between &&
+              hydrology::classify_water_cell_ownership(
+                  handoff, {std::nextafter(0.5f, 1.0f), 1.0f, 0.0f}) ==
+                  hydrology::WaterCellOwnership::After,
+          "the downstream equality cell belongs to the strip and the next representable cell belongs downstream");
+
+    gpu_meshing::ParticleSamplingLattice lattice{};
+    gpu_meshing::Error lattice_error{};
+    CHECK(gpu_meshing::make_particle_sampling_lattice(
+              {0.125f, 0.0f, 0.0f}, 0.25f, lattice, lattice_error),
+          lattice_error.message.c_str());
+    const auto strip = quad(-0.625f, 0.625f, 1.0f, -0.5f, 0.5f);
+    const auto downstream = quad(0.625f, 1.625f, 1.0f, -0.5f, 0.5f);
+    hydrology::WaterCutContourMetrics metrics{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              strip, downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              lattice.voxel_m / 16.0f, metrics, error),
+          error.message.c_str());
+    CHECK(metrics.symmetric_hausdorff_m == 0.0f &&
+              metrics.minimum_normal_dot == 1.0f &&
+              metrics.unmatched_open_edges == 0u &&
+              metrics.duplicate_coplanar_triangles == 0u,
+          "cell-boundary measurement uses the same downstream equality predicate as ownership clipping");
+    CHECK(!hydrology::measure_water_cell_boundary_continuity(
+              strip, downstream,
+              {lattice, handoff, 0.0f},
+              lattice.voxel_m / 16.0f, metrics, error) &&
+              error.code == hydrology::FluidBakeCode::ProductFailure,
+          "cell-boundary measurement rejects a cut that is not an exact ownership boundary");
 }
 
 void test_stitches_independently_meshed_cut_contours() {
@@ -548,70 +825,310 @@ void test_builds_deterministic_seam_without_dam_curtain() {
           "handoff aggregation is deterministic across repeated builds");
 }
 
-void test_builds_frame_aligned_handoff_animation() {
-    const auto upstream = animation_artifact("upper", true);
-    const auto downstream = animation_artifact("lower", false);
-    hydrology::WaterMeshAnimationArtifact handoff_animation{};
+void test_builds_thirty_shared_field_frames_without_static_geometry() {
+    auto fixture = shared_field_fixture();
+    bind_shared_field_fixture(fixture);
+    struct ObservedJob {
+        std::vector<gpu_meshing::ParticleSample> particles;
+        gpu_meshing::ParticlePhaseBlend phase{};
+    };
+    std::vector<ObservedJob> observed;
+    const hydrology::PhysxFluidBake::VisualMesher observing_mesher =
+        [&](const gpu_meshing::ParticleJob& job,
+            gpu_meshing::MeshResult& mesh, gpu_meshing::Stats& stats,
+            gpu_meshing::Error& error,
+            const gpu_meshing::BuildControl& control) {
+            observed.push_back({
+                std::vector<gpu_meshing::ParticleSample>(
+                    job.particles, job.particles + job.particle_count),
+                job.phase_blend});
+            return canonical_plane_mesher(job, mesh, stats, error, control);
+        };
+    hydrology::WaterMeshAnimationArtifact artifact{};
     hydrology::HandoffAnimationBuildDiagnostics diagnostics{};
     hydrology::FluidBakeError error{};
-    CHECK(hydrology::build_handoff_water_animation_artifact(
-              upstream, downstream, spillway(), 0.5f,
-              handoff_animation, error, &diagnostics),
-          error.message.c_str());
-    CHECK(handoff_animation.identity == "pool-one" &&
-              handoff_animation.frames.size() == 30u &&
-              handoff_animation.frames_per_second == 30u &&
-              handoff_animation.source_primary_payload_digest == 1001u &&
-              handoff_animation.source_secondary_payload_digest == 2002u,
-          "handoff animation preserves frame alignment and both static sources");
-    CHECK(diagnostics.artifact_file_bytes != 0u &&
-              diagnostics.peak_build_cpu_payload_bytes != 0u,
-          "the current handoff records exact file and peak build costs");
-    bool expected_source_blend = false;
-    for (std::size_t frame_index = 0u;
-         frame_index != diagnostics.frame_mesh_ms.size(); ++frame_index) {
-        CHECK(std::isfinite(diagnostics.frame_mesh_ms[frame_index]) &&
-                  diagnostics.frame_mesh_ms[frame_index] >= 0.0,
-              "every handoff animation frame has a finite nonnegative build time");
-        CHECK(diagnostics.upstream_cut[frame_index].first_points != 0u &&
-                  diagnostics.downstream_cut[frame_index].second_points != 0u,
-              "every handoff animation frame retains both cut measurements");
-        expected_source_blend = expected_source_blend ||
-            !hydrology::water_cut_is_assertion_weldable(
-                diagnostics.upstream_cut[frame_index], 0.5f / 16.0f) ||
-            !hydrology::water_cut_is_assertion_weldable(
-                diagnostics.downstream_cut[frame_index], 0.5f / 16.0f);
+    const bool built = hydrology::build_handoff_water_animation_artifact(
+        fixture.input, observing_mesher, artifact, diagnostics, error);
+    CHECK(built, error.message.c_str());
+    if (!built) return;
+    CHECK(artifact.identity == "pool-one" && artifact.frames.size() == 30u &&
+              artifact.frames_per_second == 30u &&
+              artifact.phase_offset_frames == 15u &&
+              artifact.source_primary_payload_digest == 1001u &&
+              artifact.source_secondary_payload_digest == 2002u,
+          "the shared-field strip preserves the one-second synchronized animation contract");
+    CHECK(observed.size() == 30u &&
+              observed[0].phase.primary_weight == 0.0f &&
+              observed[0].phase.secondary_weight == 1.0f &&
+              observed[0].phase.split_index > 0u &&
+              observed[0].phase.split_index < observed[0].particles.size(),
+          "frame zero jointly uses upstream/downstream captures zero and fifteen with the existing cosine phase weights");
+    bool has_upstream_interior = false;
+    bool has_downstream_interior = false;
+    bool has_upstream_opposite_crossing = false;
+    bool has_downstream_opposite_crossing = false;
+    bool has_upstream_dam = false;
+    for (const auto& particle : observed.front().particles) {
+        has_upstream_interior = has_upstream_interior ||
+            std::fabs(particle.position_m.y - 1.10f) < 0.02f ||
+            std::fabs(particle.position_m.y - 1.115f) < 0.02f;
+        has_downstream_interior = has_downstream_interior ||
+            std::fabs(particle.position_m.y - 1.20f) < 0.02f ||
+            std::fabs(particle.position_m.y - 1.215f) < 0.02f;
+        has_upstream_opposite_crossing =
+            has_upstream_opposite_crossing ||
+            (particle.position_m.x > 0.40f && particle.position_m.x < 0.50f);
+        has_downstream_opposite_crossing =
+            has_downstream_opposite_crossing ||
+            (particle.position_m.x < -0.40f && particle.position_m.x > -0.50f);
+        has_upstream_dam = has_upstream_dam ||
+            (particle.position_m.x > 0.75f &&
+             particle.position_m.x < 1.00f);
     }
-    CHECK(diagnostics.source_blend_required == expected_source_blend,
-          "source-blend evidence matches the measured handoff cuts");
+    CHECK(has_upstream_interior && has_downstream_interior &&
+              !has_upstream_opposite_crossing &&
+              !has_downstream_opposite_crossing && !has_upstream_dam,
+          "both interior sources survive while opposite-cut support and upstream dam contributors are absent");
+    CHECK(diagnostics.peak_decoded_boundary_frames == 4u,
+          "one output frame retains only its four cropped phase-source decodes");
+
     gpu_meshing::MeshResult frame{};
     gpu_meshing::Error artifact_error{};
     CHECK(hydrology::decode_water_mesh_animation_frame(
-              handoff_animation, 17u, frame, artifact_error),
+              artifact, 0u, frame, artifact_error),
           artifact_error.message.c_str());
-    float minimum = 1000.0f;
-    float maximum = -1000.0f;
-    for (std::size_t index = 0u; index < frame.positions.size(); index += 3u) {
-        minimum = std::min(minimum, frame.positions[index]);
-        maximum = std::max(maximum, frame.positions[index]);
+    const auto legacy_static_collar = quad(-5.0f, 5.0f, 1.0f);
+    bool contains_legacy_static_vertex = false;
+    for (std::size_t vertex = 0u; vertex != frame.positions.size();
+         vertex += 3u) {
+        contains_legacy_static_vertex = contains_legacy_static_vertex ||
+            std::fabs(std::fabs(frame.positions[vertex]) - 5.0f) < 1.0e-4f ||
+            std::fabs(std::fabs(frame.positions[vertex + 2u]) - 5.0f) <
+                1.0e-4f;
     }
-    CHECK(std::fabs(minimum + 2.5f) <= 0.01f &&
-              std::fabs(maximum - 2.5f) <= 0.01f,
-          "handoff frame bridge terminates on the authored ownership cuts");
+    CHECK(frame.content_digest != legacy_static_collar.content_digest &&
+              !contains_legacy_static_vertex,
+          "no static collar vertex, digest, or legacy zipper geometry enters an animated frame");
 
-    auto mismatched = downstream;
-    mismatched.frames.pop_back();
-    CHECK(!hydrology::build_handoff_water_animation_artifact(
-              upstream, mismatched, spillway(), 0.5f,
-              handoff_animation, error),
-          "a missing adjacent frame prevents handoff animation publication");
+    const auto semantic = hydrology::derive_handoff_animation_semantic_key(
+        fixture.input, fixture.upstream_bulk.payload_digest,
+        fixture.downstream_bulk.payload_digest);
+    CHECK(semantic == artifact.semantic_key &&
+              semantic == hydrology::derive_handoff_animation_semantic_key(
+                  fixture.input, fixture.upstream_bulk.payload_digest,
+                  fixture.downstream_bulk.payload_digest),
+          "identical handoff inputs derive one stable cache identity");
+    auto changed_source = fixture.upstream_source;
+    changed_source.payload_digest++;
+    auto changed_input = fixture.input;
+    changed_input.upstream = &changed_source;
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              changed_input, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest) != semantic,
+          "the upstream boundary payload participates in handoff cache identity");
+    auto changed_downstream_source = fixture.downstream_source;
+    changed_downstream_source.payload_digest++;
+    changed_input = fixture.input;
+    changed_input.downstream = &changed_downstream_source;
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              changed_input, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest) != semantic,
+          "the downstream boundary payload participates in handoff cache identity");
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              fixture.input, fixture.upstream_bulk.payload_digest + 1u,
+              fixture.downstream_bulk.payload_digest) != semantic &&
+              hydrology::derive_handoff_animation_semantic_key(
+              fixture.input, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest + 1u) != semantic,
+          "both owned-bulk payloads participate in handoff cache identity");
+    auto changed_handoff = fixture.input;
+    changed_handoff.handoff.overlap_m += 0.25f;
+    changed_handoff.handoff.semantic_key =
+        hydrology::spillway_handoff_semantic_key(changed_handoff.handoff);
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              changed_handoff, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest) != semantic,
+          "the complete handoff record participates in handoff cache identity");
+    auto changed_lattice = fixture.input;
+    changed_lattice.lattice.origin_m.x +=
+        changed_lattice.lattice.voxel_m;
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              changed_lattice, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest) != semantic,
+          "the canonical lattice participates in handoff cache identity");
+    auto changed_radius_source = fixture.upstream_source;
+    changed_radius_source.particle_radius_m += 0.01f;
+    changed_input = fixture.input;
+    changed_input.upstream = &changed_radius_source;
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              changed_input, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest) != semantic,
+          "the particle radius participates in handoff cache identity");
+    auto changed_visual = fixture.input;
+    changed_visual.visual_template.blend_width_m += 0.01f;
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              changed_visual, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest) != semantic,
+          "the visual blend profile participates in handoff cache identity");
+    changed_visual = fixture.input;
+    changed_visual.visual_template.iso_value = 0.125f;
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              changed_visual, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest) != semantic,
+          "the complete visual field contract participates in handoff cache identity");
+    auto changed_phase_source = fixture.upstream_source;
+    changed_phase_source.phase_offset_frames = 14u;
+    changed_input = fixture.input;
+    changed_input.upstream = &changed_phase_source;
+    CHECK(hydrology::derive_handoff_animation_semantic_key(
+              changed_input, fixture.upstream_bulk.payload_digest,
+              fixture.downstream_bulk.payload_digest) != semantic,
+          "the temporal phase profile participates in handoff cache identity");
+}
 
-    const auto branched = branched_animation_artifact();
-    CHECK(hydrology::build_handoff_water_animation_artifact(
-              upstream, branched, spillway(), 0.5f,
-              handoff_animation, error), error.message.c_str());
-    CHECK(handoff_animation.frames.size() == 30u,
-          "a marching-cubes cut junction is decomposed into deterministic edge-disjoint bridge paths");
+void test_shared_cell_ownership_passes_every_frame_boundary() {
+    auto fixture = shared_field_fixture();
+    bind_shared_field_fixture(fixture);
+    hydrology::WaterMeshAnimation animation{};
+    hydrology::HandoffAnimationBuildDiagnostics diagnostics{};
+    hydrology::FluidBakeError error{};
+    const bool built = hydrology::build_handoff_animation_frames(
+        fixture.input, canonical_plane_mesher, animation,
+        diagnostics, error);
+    CHECK(built, error.message.c_str());
+    if (!built) return;
+    CHECK(animation.frames.size() == 30u,
+          "joint construction produces all thirty replacement frames");
+    float worst_hausdorff = 0.0f;
+    float worst_normal_dot = 1.0f;
+    std::uint32_t worst_open_edges = 0u;
+    std::uint32_t worst_duplicate_triangles = 0u;
+    for (std::size_t frame = 0u; frame != animation.frames.size(); ++frame) {
+        const auto& mesh = animation.frames[frame];
+        const auto& upstream_range = diagnostics.upstream_band[frame];
+        const auto& collar_range = diagnostics.collar[frame];
+        const auto& downstream_range = diagnostics.downstream_band[frame];
+        CHECK(upstream_range.first_index == 0u &&
+                  collar_range.first_index == upstream_range.index_count &&
+                  downstream_range.first_index ==
+                      collar_range.first_index + collar_range.index_count &&
+                  downstream_range.first_index +
+                      downstream_range.index_count == mesh.indices.size(),
+              "upstream/collar/downstream diagnostics cover every replacement index exactly once");
+        for (const auto* metrics : {
+                 &diagnostics.upstream_cut[frame],
+                 &diagnostics.downstream_cut[frame]}) {
+            worst_hausdorff = std::max(
+                worst_hausdorff, metrics->symmetric_hausdorff_m);
+            worst_normal_dot = std::min(
+                worst_normal_dot, metrics->minimum_normal_dot);
+            worst_open_edges = std::max(
+                worst_open_edges, metrics->unmatched_open_edges);
+            worst_duplicate_triangles = std::max(
+                worst_duplicate_triangles,
+                metrics->duplicate_coplanar_triangles);
+            CHECK(metrics->symmetric_hausdorff_m <=
+                      fixture.input.lattice.voxel_m / 16.0f &&
+                      metrics->minimum_normal_dot >= 0.995f &&
+                      metrics->unmatched_open_edges == 0u &&
+                      metrics->duplicate_coplanar_triangles == 0u,
+                  "every frame, including the loop boundary, has an exact shared-cell contour");
+        }
+    }
+    std::ostringstream worst_metrics;
+    worst_metrics << "worst continuity metrics: hausdorff="
+                  << worst_hausdorff << ", normal_dot="
+                  << worst_normal_dot << ", open_edges="
+                  << worst_open_edges << ", duplicates="
+                  << worst_duplicate_triangles;
+    CHECK(worst_hausdorff <= fixture.input.lattice.voxel_m / 16.0f &&
+              worst_normal_dot >= 0.995f && worst_open_edges == 0u &&
+              worst_duplicate_triangles == 0u,
+          worst_metrics.str().c_str());
+}
+
+void test_joint_builder_reapplies_exact_dam_support_exclusion() {
+    auto fixture = shared_field_fixture();
+    fixture.input.handoff.temporary_dam_exclusion_bounds_m =
+        {{-0.02f, 1.08f, -0.02f}, {0.02f, 1.12f, 0.02f}};
+    fixture.input.handoff.semantic_key =
+        hydrology::spillway_handoff_semantic_key(fixture.input.handoff);
+    fixture.upstream_source.handoff_semantic_key =
+        fixture.input.handoff.semantic_key;
+    fixture.downstream_source.handoff_semantic_key =
+        fixture.input.handoff.semantic_key;
+    bind_shared_field_fixture(fixture);
+    bool saw_excluded_upstream_support = false;
+    bool saw_downstream_interior = false;
+    const hydrology::PhysxFluidBake::VisualMesher observing_mesher =
+        [&](const gpu_meshing::ParticleJob& job,
+            gpu_meshing::MeshResult& mesh, gpu_meshing::Stats& stats,
+            gpu_meshing::Error& mesh_error,
+            const gpu_meshing::BuildControl& control) {
+            for (std::uint32_t index = 0u; index != job.particle_count;
+                 ++index) {
+                const auto& position = job.particles[index].position_m;
+                saw_excluded_upstream_support =
+                    saw_excluded_upstream_support ||
+                    (std::fabs(position.x) < 0.03f &&
+                     position.y >= 1.09f && position.y <= 1.13f);
+                saw_downstream_interior = saw_downstream_interior ||
+                    (std::fabs(position.x) < 0.03f &&
+                     position.y >= 1.19f && position.y <= 1.23f);
+            }
+            return canonical_plane_mesher(
+                job, mesh, stats, mesh_error, control);
+        };
+    hydrology::WaterMeshAnimation animation{};
+    hydrology::HandoffAnimationBuildDiagnostics diagnostics{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::build_handoff_animation_frames(
+              fixture.input, observing_mesher, animation,
+              diagnostics, error), error.message.c_str());
+    CHECK(!saw_excluded_upstream_support && saw_downstream_interior,
+          "the joint builder independently removes upstream field support touching the dam while retaining downstream water");
+}
+
+void test_shared_strip_chunking_is_geometry_equivalent() {
+    auto unchunked_fixture = shared_field_fixture();
+    bind_shared_field_fixture(unchunked_fixture);
+    hydrology::WaterMeshAnimation unchunked{};
+    hydrology::HandoffAnimationBuildDiagnostics unchunked_diagnostics{};
+    hydrology::FluidBakeError error{};
+    const bool unchunked_built = hydrology::build_handoff_animation_frames(
+        unchunked_fixture.input, canonical_plane_mesher, unchunked,
+        unchunked_diagnostics, error);
+    CHECK(unchunked_built, error.message.c_str());
+    if (!unchunked_built) return;
+
+    auto chunked_fixture = shared_field_fixture();
+    bind_shared_field_fixture(chunked_fixture);
+    chunked_fixture.input.visual_template.limits.max_grid_vertices = 384u;
+    hydrology::WaterMeshAnimation chunked{};
+    hydrology::HandoffAnimationBuildDiagnostics chunked_diagnostics{};
+    std::uint32_t chunk_mesher_calls = 0u;
+    const hydrology::PhysxFluidBake::VisualMesher chunking_mesher =
+        [&](const gpu_meshing::ParticleJob& job,
+            gpu_meshing::MeshResult& mesh, gpu_meshing::Stats& stats,
+            gpu_meshing::Error& mesh_error,
+            const gpu_meshing::BuildControl& control) {
+            ++chunk_mesher_calls;
+            return canonical_plane_mesher(
+                job, mesh, stats, mesh_error, control);
+        };
+    const bool chunked_built = hydrology::build_handoff_animation_frames(
+        chunked_fixture.input, chunking_mesher, chunked,
+        chunked_diagnostics, error);
+    CHECK(chunked_built, error.message.c_str());
+    if (!chunked_built) return;
+    CHECK(chunked.frames.size() == unchunked.frames.size() &&
+              chunk_mesher_calls > chunked.frames.size(),
+          "a sub-root grid cap really chunks while retaining every handoff frame");
+    for (std::size_t frame = 0u; frame != chunked.frames.size(); ++frame) {
+        CHECK(canonical_triangles(chunked.frames[frame], 1.0e-4f) ==
+                  canonical_triangles(unchunked.frames[frame], 1.0e-4f),
+              "chunked and unchunked shared-field strips have identical canonical topology");
+    }
 }
 
 void test_formats_animation_acceptance_timing_trace() {
@@ -708,11 +1225,15 @@ void test_formats_animation_acceptance_timing_trace() {
 int main() {
     test_measures_section_cut_continuity_without_welding();
     test_cut_continuity_fails_closed_on_invalid_meshes();
+    test_cell_ownership_uses_one_exact_equality_convention();
     test_builds_deterministic_seam_without_dam_curtain();
     test_stitches_independently_meshed_cut_contours();
     test_keeps_water_in_the_removed_dam_footprint();
     test_stitches_split_section_contours_to_one_smoothed_collar();
-    test_builds_frame_aligned_handoff_animation();
+    test_builds_thirty_shared_field_frames_without_static_geometry();
+    test_shared_cell_ownership_passes_every_frame_boundary();
+    test_joint_builder_reapplies_exact_dam_support_exclusion();
+    test_shared_strip_chunking_is_geometry_equivalent();
     test_formats_animation_acceptance_timing_trace();
     return check_summary();
 }

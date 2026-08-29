@@ -167,6 +167,18 @@ void test_common_clock_and_per_slot_upload_decisions() {
     CHECK(playback.select(0.14, 0u, selection, fallback) &&
               selection.upload_required && selection.frame_index == 4u,
           "advancing to the next 30 Hz frame requests one slot-local upload");
+    CHECK(playback.select(29.0 / 30.0, 0u, selection, fallback) &&
+              selection.frame_index == 29u && selection.draws.size() == 3u,
+          "the last loop frame is selected for the complete water network");
+    for (const auto& draw : selection.draws)
+        CHECK(draw.frame_index == 29u,
+              "every section and handoff reaches frame twenty-nine together");
+    CHECK(playback.select(1.0, 0u, selection, fallback) &&
+              selection.frame_index == 0u && selection.draws.size() == 3u,
+          "the shared one-second clock wraps the complete water network to frame zero");
+    for (const auto& draw : selection.draws)
+        CHECK(draw.frame_index == 0u,
+              "every section and handoff wraps to frame zero together");
     CHECK(hydrology::water_mesh_animation_validation_count() ==
               validations_after_activation,
           "steady-state playback uses frame spans proven during transactional activation without re-hashing artifacts");

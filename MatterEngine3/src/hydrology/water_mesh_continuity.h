@@ -22,11 +22,35 @@ struct WaterCutContourMetrics {
     float p95_normal_angle_degrees = 0.0f;
 };
 
+struct WaterCellOwnershipCut {
+    gpu_meshing::ParticleSamplingLattice lattice{};
+    SpillwayHandoffRecord handoff{};
+    float signed_cut_m = 0.0f;
+};
+
+enum class WaterCellOwnership : std::uint8_t {
+    Before,
+    Between,
+    After,
+};
+
+WaterCellOwnership classify_water_cell_ownership(
+    const SpillwayHandoffRecord& handoff,
+    matter::Float3 root_cell_center) noexcept;
+
 bool measure_water_cut_continuity(
     const gpu_meshing::MeshResult& first,
     const gpu_meshing::MeshResult& second,
     const SpillwayHandoffRecord& handoff,
     float signed_cut_m,
+    float edge_match_tolerance_m,
+    WaterCutContourMetrics& metrics,
+    FluidBakeError& error);
+
+bool measure_water_cell_boundary_continuity(
+    const gpu_meshing::MeshResult& first,
+    const gpu_meshing::MeshResult& second,
+    const WaterCellOwnershipCut& cut,
     float edge_match_tolerance_m,
     WaterCutContourMetrics& metrics,
     FluidBakeError& error);

@@ -8,7 +8,6 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -318,6 +317,138 @@ bool append_mesh(const gpu_meshing::MeshResult& source,
                         mesh_point(source, source.indices[triangle + 2u]));
     }
     return true;
+}
+
+bool valid_lattice(
+    const gpu_meshing::ParticleSamplingLattice& lattice) noexcept {
+    return lattice.version == 1u && finite(lattice.origin_m) &&
+           finite(lattice.voxel_m) && lattice.voxel_m > 0.0f;
+}
+
+bool same_lattice(
+    const gpu_meshing::ParticleSamplingLattice& first,
+    const gpu_meshing::ParticleSamplingLattice& second) noexcept {
+    return std::memcmp(&first.origin_m.x, &second.origin_m.x,
+                       sizeof(float)) == 0 &&
+           std::memcmp(&first.origin_m.y, &second.origin_m.y,
+                       sizeof(float)) == 0 &&
+           std::memcmp(&first.origin_m.z, &second.origin_m.z,
+                       sizeof(float)) == 0 &&
+           std::memcmp(&first.voxel_m, &second.voxel_m,
+                       sizeof(float)) == 0 &&
+           first.version == second.version;
+}
+
+matter::Float3 triangle_root_cell_center(
+    const gpu_meshing::MeshResult& mesh, std::size_t triangle,
+    const gpu_meshing::ParticleSamplingLattice& lattice) {
+    matter::Float3 centroid{};
+    for (std::size_t corner = 0u; corner != 3u; ++corner) {
+        const matter::Float3 point = mesh_point(
+            mesh, mesh.indices[triangle + corner]);
+        centroid = add(centroid, scale(point, 1.0f / 3.0f));
+    }
+    const auto center = [&](float value, float origin) {
+        const double cell = std::floor(
+            (static_cast<double>(value) - static_cast<double>(origin)) /
+            static_cast<double>(lattice.voxel_m));
+        return static_cast<float>(
+            static_cast<double>(origin) + (cell + 0.5) *
+                static_cast<double>(lattice.voxel_m));
+    };
+    return {center(centroid.x, lattice.origin_m.x),
+            center(centroid.y, lattice.origin_m.y),
+            center(centroid.z, lattice.origin_m.z)};
+}
+
+bool filter_cell_owned_mesh(
+    const gpu_meshing::MeshResult& source,
+    const SpillwayHandoffRecord& handoff,
+    const gpu_meshing::ParticleSamplingLattice& lattice,
+    WaterCellOwnership ownership,
+    gpu_meshing::MeshResult& output) {
+    output = {};
+    if (!valid_lattice(lattice) || !valid_mesh(source)) return false;
+    output = source;
+    output.indices.clear();
+    output.indices.reserve(source.indices.size());
+    for (std::size_t triangle = 0u; triangle != source.indices.size();
+         triangle += 3u) {
+        if (classify_water_cell_ownership(
+                handoff, triangle_root_cell_center(
+                    source, triangle, lattice)) != ownership)
+            continue;
+        output.indices.insert(
+            output.indices.end(), source.indices.begin() + triangle,
+            source.indices.begin() + triangle + 3u);
+    }
+    output.content_digest = gpu_meshing::mesh_content_digest(output);
+    return true;
+}
+
+bool partition_handoff_strip(
+    gpu_meshing::MeshResult& mesh,
+    const SpillwayHandoffRecord& handoff,
+    HandoffFrameProducts& products) {
+    if (!valid_mesh(mesh)) return false;
+    std::array<std::vector<std::uint32_t>, 3> groups;
+    const float extent = handoff.downstream_visual_cut_m -
+        handoff.upstream_visual_cut_m;
+    const float upstream_end = handoff.upstream_visual_cut_m + extent / 3.0f;
+    const float collar_end = handoff.upstream_visual_cut_m +
+        extent * (2.0f / 3.0f);
+    for (std::size_t triangle = 0u; triangle != mesh.indices.size();
+         triangle += 3u) {
+        matter::Float3 centroid{};
+        for (std::size_t corner = 0u; corner != 3u; ++corner)
+            centroid = add(
+                centroid,
+                scale(mesh_point(mesh, mesh.indices[triangle + corner]),
+                      1.0f / 3.0f));
+        const float distance = signed_distance(handoff, centroid);
+        std::size_t group = 2u;
+        if (distance < upstream_end) group = 0u;
+        else if (distance < collar_end) group = 1u;
+        groups[group].insert(groups[group].end(),
+                             mesh.indices.begin() + triangle,
+                             mesh.indices.begin() + triangle + 3u);
+    }
+    mesh.indices.clear();
+    const auto append_group = [&](const std::vector<std::uint32_t>& group,
+                                  MeshIndexRange& range) {
+        range.first_index = static_cast<std::uint32_t>(mesh.indices.size());
+        range.index_count = static_cast<std::uint32_t>(group.size());
+        mesh.indices.insert(mesh.indices.end(), group.begin(), group.end());
+    };
+    append_group(groups[0], products.upstream_band);
+    append_group(groups[1], products.collar);
+    append_group(groups[2], products.downstream_band);
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    products.replacement_strip = std::move(mesh);
+    return products.upstream_band.first_index == 0u &&
+        products.collar.first_index == products.upstream_band.index_count &&
+        products.downstream_band.first_index ==
+            products.collar.first_index + products.collar.index_count &&
+        products.downstream_band.first_index +
+            products.downstream_band.index_count ==
+                products.replacement_strip.indices.size();
+}
+
+std::string cell_boundary_failure(
+    const char* boundary, std::uint32_t frame_index,
+    const WaterCutContourMetrics& metrics,
+    const std::string& measurement_error) {
+    std::ostringstream message;
+    message << "handoff " << boundary
+            << " cell boundary failed at frame " << frame_index
+            << ": hausdorff=" << metrics.symmetric_hausdorff_m
+            << " normalDot=" << metrics.minimum_normal_dot
+            << " openEdges=" << metrics.unmatched_open_edges
+            << " duplicateTriangles="
+            << metrics.duplicate_coplanar_triangles;
+    if (!measurement_error.empty())
+        message << " (" << measurement_error << ')';
+    return message.str();
 }
 
 struct CutPath {
@@ -1416,204 +1547,432 @@ bool build_handoff_artifact(
     }
 }
 
-bool build_handoff_water_animation_artifact(
-    const WaterMeshAnimationArtifact& upstream,
-    const WaterMeshAnimationArtifact& downstream,
-    const SpillwayHandoffRecord& handoff,
-    float visual_voxel_m,
-    WaterMeshAnimationArtifact& artifact,
-    FluidBakeError& error,
-    HandoffAnimationBuildDiagnostics* diagnostics) {
-    artifact = {};
+std::uint64_t derive_handoff_animation_semantic_key(
+    const HandoffAnimationBuildInput& input,
+    std::uint64_t upstream_animation_payload_digest,
+    std::uint64_t downstream_animation_payload_digest) {
+    if (!input.upstream || !input.downstream || !input.upstream_bulk ||
+        !input.downstream_bulk || input.handoff.semantic_key == 0u ||
+        input.upstream->payload_digest == 0u ||
+        input.downstream->payload_digest == 0u ||
+        upstream_animation_payload_digest == 0u ||
+        downstream_animation_payload_digest == 0u)
+        return 0u;
+    Digest semantic(UINT64_C(0x48414e44414e4934));
+    semantic.u64(2u);
+    semantic.u64(input.handoff.semantic_key);
+    semantic.u64(input.upstream->payload_digest);
+    semantic.u64(input.downstream->payload_digest);
+    semantic.u64(upstream_animation_payload_digest);
+    semantic.u64(downstream_animation_payload_digest);
+    semantic.floating(input.lattice.origin_m.x);
+    semantic.floating(input.lattice.origin_m.y);
+    semantic.floating(input.lattice.origin_m.z);
+    semantic.floating(input.lattice.voxel_m);
+    semantic.u64(input.lattice.version);
+    semantic.floating(input.upstream->particle_radius_m);
+    semantic.floating(input.downstream->particle_radius_m);
+    semantic.floating(input.visual_template.voxel_m);
+    semantic.floating(input.visual_template.blend_width_m);
+    semantic.floating(input.visual_template.iso_value);
+    semantic.u64(input.visual_template.material);
+    semantic.u64(input.upstream->frames_per_second);
+    semantic.u64(input.upstream->phase_offset_frames);
+    semantic.u64(input.upstream->frames.size());
+    semantic.u64(input.upstream_bulk->semantic_key);
+    semantic.u64(input.downstream_bulk->semantic_key);
+    return semantic.finish();
+}
+
+bool build_handoff_animation_frames(
+    const HandoffAnimationBuildInput& input,
+    const PhysxFluidBake::VisualMesher& mesher,
+    WaterMeshAnimation& output,
+    HandoffAnimationBuildDiagnostics& diagnostics,
+    FluidBakeError& error) {
+    output = {};
+    diagnostics = {};
     error = {};
-    if (diagnostics) *diagnostics = {};
     try {
-        if (upstream.identity != handoff.upstream_section_id ||
-            downstream.identity != handoff.downstream_section_id ||
-            handoff.id.empty() || handoff.semantic_key == 0u ||
-            handoff.semantic_key != spillway_handoff_semantic_key(handoff) ||
-            upstream.semantic_key == 0u || downstream.semantic_key == 0u ||
-            upstream.source_primary_payload_digest == 0u ||
-            downstream.source_primary_payload_digest == 0u ||
-            upstream.source_secondary_payload_digest != 0u ||
-            downstream.source_secondary_payload_digest != 0u ||
-            upstream.frames.size() != 30u ||
-            upstream.frames.size() != downstream.frames.size() ||
-            upstream.frames_per_second != downstream.frames_per_second ||
-            upstream.phase_offset_frames != downstream.phase_offset_frames ||
-            upstream.duration_seconds != downstream.duration_seconds ||
-            upstream.material != downstream.material ||
-            std::memcmp(&upstream.lattice, &downstream.lattice,
-                        sizeof(upstream.lattice)) != 0 ||
-            !finite(visual_voxel_m) || visual_voxel_m <= 0.0f ||
-            std::memcmp(&upstream.lattice.voxel_m, &visual_voxel_m,
-                        sizeof(float)) != 0 ||
-            handoff.upstream_visual_cut_m >=
-                handoff.downstream_visual_cut_m)
-            return fail("handoff animation input is invalid", error);
+        if (!mesher || !input.upstream || !input.downstream ||
+            !input.upstream_bulk || !input.downstream_bulk ||
+            !valid_lattice(input.lattice) || input.handoff.id.empty() ||
+            input.handoff.semantic_key == 0u ||
+            input.handoff.semantic_key !=
+                spillway_handoff_semantic_key(input.handoff) ||
+            input.handoff.upstream_visual_cut_m >=
+                input.handoff.downstream_visual_cut_m)
+            return fail("handoff shared-field root metadata is invalid",
+                        error);
+        if (
+            input.upstream->section_id !=
+                input.handoff.upstream_section_id ||
+            input.downstream->section_id !=
+                input.handoff.downstream_section_id ||
+            input.upstream->handoff_semantic_key !=
+                input.handoff.semantic_key ||
+            input.downstream->handoff_semantic_key !=
+                input.handoff.semantic_key ||
+            input.upstream->source_section_payload_digest == 0u ||
+            input.downstream->source_section_payload_digest == 0u ||
+            input.upstream->payload_digest == 0u ||
+            input.downstream->payload_digest == 0u ||
+            input.upstream->frames.size() != 30u ||
+            input.downstream->frames.size() != 30u ||
+            input.upstream->frames_per_second != 30u ||
+            input.downstream->frames_per_second != 30u ||
+            input.upstream->phase_offset_frames != 15u ||
+            input.downstream->phase_offset_frames != 15u ||
+            !same_lattice(input.upstream->lattice, input.lattice) ||
+            !same_lattice(input.downstream->lattice, input.lattice) ||
+            input.upstream->particle_radius_m !=
+                input.downstream->particle_radius_m ||
+            input.upstream->blend_width_m !=
+                input.downstream->blend_width_m)
+            return fail("handoff shared-field boundary sources are invalid",
+                        error);
+        if (input.upstream_bulk->identity !=
+                input.handoff.upstream_section_id ||
+            input.downstream_bulk->identity !=
+                input.handoff.downstream_section_id)
+            return fail("handoff owned bulk identities are invalid", error);
+        if (input.upstream_bulk->source_primary_payload_digest !=
+                input.upstream->source_section_payload_digest ||
+            input.downstream_bulk->source_primary_payload_digest !=
+                input.downstream->source_section_payload_digest ||
+            input.upstream_bulk->source_secondary_payload_digest != 0u ||
+            input.downstream_bulk->source_secondary_payload_digest != 0u)
+            return fail("handoff owned bulk source digests are invalid",
+                        error);
+        if (input.upstream_bulk->payload_digest == 0u ||
+            input.downstream_bulk->payload_digest == 0u ||
+            input.upstream_bulk->frames.size() != 30u ||
+            input.downstream_bulk->frames.size() != 30u)
+            return fail("handoff owned bulk payloads are invalid", error);
+        if (input.upstream_bulk->frames_per_second != 30u ||
+            input.downstream_bulk->frames_per_second != 30u ||
+            input.upstream_bulk->phase_offset_frames != 15u ||
+            input.downstream_bulk->phase_offset_frames != 15u)
+            return fail("handoff owned bulk phase profiles are invalid",
+                        error);
+        if (!same_lattice(input.upstream_bulk->lattice, input.lattice) ||
+            !same_lattice(input.downstream_bulk->lattice, input.lattice))
+            return fail("handoff owned bulk lattices are invalid", error);
+        if (input.visual_template.material != 4u ||
+            input.visual_template.voxel_m != input.lattice.voxel_m ||
+            input.visual_template.blend_width_m !=
+                input.upstream->blend_width_m ||
+            !same_lattice(input.visual_template.sampling_lattice,
+                          input.lattice))
+            return fail("handoff shared-field visual template is invalid",
+                        error);
 
-        WaterMeshAnimation animation{};
-        animation.frames_per_second = upstream.frames_per_second;
-        animation.phase_offset_frames = upstream.phase_offset_frames;
-        animation.duration_seconds = upstream.duration_seconds;
-        animation.frames.reserve(upstream.frames.size());
-
-        const float weld = std::max(1.0e-5f, visual_voxel_m * 1.0e-4f);
-        const float cut_tolerance_m = visual_voxel_m / 16.0f;
-        gpu_meshing::Error decode_error{};
-        for (std::uint32_t frame_index = 0u;
-             frame_index != upstream.frames.size(); ++frame_index) {
-            const auto frame_start = std::chrono::steady_clock::now();
-            gpu_meshing::MeshResult upstream_frame{};
-            gpu_meshing::MeshResult downstream_frame{};
-            if (!decode_water_mesh_animation_frame(
-                    upstream, frame_index, upstream_frame, decode_error) ||
-                !decode_water_mesh_animation_frame(
-                    downstream, frame_index, downstream_frame,
-                    decode_error)) {
-                error = {FluidBakeCode::ProductFailure,
-                         decode_error.message.empty()
-                             ? "handoff animation frame decode failed"
-                             : decode_error.message};
-                return false;
-            }
-            MeshAssembler upstream_owned(weld);
-            MeshAssembler downstream_owned(weld);
-            if (!append_clipped_mesh(
-                    upstream_frame, handoff, false, 0.0f, true,
-                    handoff.upstream_visual_cut_m, upstream_owned) ||
-                !append_clipped_mesh(
-                    downstream_frame, handoff, true,
-                    handoff.downstream_visual_cut_m, false, 0.0f,
-                    downstream_owned))
-                return fail("handoff animation ownership clipping failed",
-                            error);
-            gpu_meshing::MeshResult upstream_piece = upstream_owned.finish();
-            gpu_meshing::MeshResult downstream_piece =
-                downstream_owned.finish();
-            if (!valid_mesh(upstream_piece) || !valid_mesh(downstream_piece))
-                return fail("handoff animation ownership piece is invalid",
-                            error);
-
-            MeshAssembler bridge(weld);
-            std::string diagnostic;
-            if (!append_cut_bridge(
-                    upstream_piece, handoff.upstream_visual_cut_m,
-                    downstream_piece, handoff.downstream_visual_cut_m,
-                    handoff, bridge, diagnostic)) {
-                error = {FluidBakeCode::ProductFailure,
-                         "handoff animation contour bridge failed at frame " +
-                             std::to_string(frame_index) + ": " + diagnostic};
-                return false;
-            }
-            gpu_meshing::MeshResult frame = bridge.finish();
-            if (!valid_mesh(frame))
-                return fail("handoff animation bridge frame is invalid",
-                            error);
-            animation.frames.push_back(std::move(frame));
-            if (diagnostics) {
-                diagnostics->frame_mesh_ms[frame_index] =
-                    std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - frame_start)
-                        .count();
-                FluidBakeError cut_error{};
-                const gpu_meshing::MeshResult& built_frame =
-                    animation.frames.back();
-                const bool upstream_measured = measure_water_cut_continuity(
-                    upstream_frame, built_frame, handoff,
-                    handoff.upstream_visual_cut_m, cut_tolerance_m,
-                    diagnostics->upstream_cut[frame_index], cut_error);
-                cut_error = {};
-                const bool downstream_measured = measure_water_cut_continuity(
-                    built_frame, downstream_frame, handoff,
-                    handoff.downstream_visual_cut_m, cut_tolerance_m,
-                    diagnostics->downstream_cut[frame_index], cut_error);
-                diagnostics->source_blend_required =
-                    diagnostics->source_blend_required ||
-                    !upstream_measured || !downstream_measured ||
-                    !water_cut_is_assertion_weldable(
-                        diagnostics->upstream_cut[frame_index],
-                        cut_tolerance_m) ||
-                    !water_cut_is_assertion_weldable(
-                        diagnostics->downstream_cut[frame_index],
-                        cut_tolerance_m);
-                diagnostics->peak_build_cpu_payload_bytes = std::max(
-                    diagnostics->peak_build_cpu_payload_bytes,
-                    saturating_payload_sum({
-                        animation_mesh_payload_bytes(animation),
-                        mesh_payload_bytes(upstream_frame),
-                        mesh_payload_bytes(downstream_frame)}));
-            }
-        }
-
-        gpu_meshing::Error artifact_error{};
-        Digest semantic(UINT64_C(0x48414e44414e494d));
-        semantic.u64(handoff.semantic_key);
-        semantic.u64(upstream.semantic_key);
-        semantic.u64(downstream.semantic_key);
-        semantic.u64(upstream.source_primary_payload_digest);
-        semantic.u64(downstream.source_primary_payload_digest);
-        semantic.floating(visual_voxel_m);
-        semantic.floating(upstream.lattice.origin_m.x);
-        semantic.floating(upstream.lattice.origin_m.y);
-        semantic.floating(upstream.lattice.origin_m.z);
-        semantic.floating(upstream.lattice.voxel_m);
-        semantic.u64(upstream.lattice.version);
-        semantic.u64(animation.frames_per_second);
-        semantic.u64(animation.phase_offset_frames);
-        semantic.u64(animation.frames.size());
-        const WaterMeshAnimationArtifactMetadata metadata{
-            handoff.id, semantic.finish(),
-            upstream.source_primary_payload_digest,
-            downstream.source_primary_payload_digest, visual_voxel_m,
-            upstream.lattice};
-        if (!pack_water_mesh_animation_artifact(
-                metadata, animation, artifact, artifact_error)) {
-            error = {FluidBakeCode::ProductFailure,
-                     artifact_error.message.empty()
-                         ? "handoff animation packing failed"
-                         : artifact_error.message};
+        float support_radius_m = 0.0f;
+        gpu_meshing::Error mesh_error{};
+        if (!gpu_meshing::particle_field_support_radius_m(
+                input.upstream->particle_radius_m,
+                input.visual_template.blend_width_m,
+                support_radius_m, mesh_error)) {
+            error = {FluidBakeCode::ProductFailure, mesh_error.message};
             return false;
         }
-        if (diagnostics) {
-            std::vector<std::uint8_t> serialized;
-            if (!serialize_water_mesh_animation_artifact(
-                    artifact, serialized, artifact_error)) {
+        output.frames_per_second = 30u;
+        output.phase_offset_frames = 15u;
+        output.duration_seconds = 1.0f;
+        output.frames.reserve(30u);
+        diagnostics.peak_decoded_boundary_frames = 4u;
+        const float continuity_tolerance = input.lattice.voxel_m / 16.0f;
+
+        const auto support_intersects_dam = [support_radius_m](
+            const matter::Aabb& bounds, matter::Float3 position) {
+            const auto separation = [](
+                float value, float minimum, float maximum) {
+                if (value < minimum)
+                    return static_cast<double>(minimum - value);
+                if (value > maximum)
+                    return static_cast<double>(value - maximum);
+                return 0.0;
+            };
+            const double dx = separation(
+                position.x, bounds.minimum.x, bounds.maximum.x);
+            const double dy = separation(
+                position.y, bounds.minimum.y, bounds.maximum.y);
+            const double dz = separation(
+                position.z, bounds.minimum.z, bounds.maximum.z);
+            const double radius = support_radius_m;
+            return dx * dx + dy * dy + dz * dz <= radius * radius;
+        };
+
+        const auto append_source = [&](
+            const std::vector<matter::Float3>& positions,
+            bool upstream_source,
+            std::vector<gpu_meshing::ParticleSample>& particles) {
+            for (const matter::Float3 position : positions) {
+                if (!finite(position)) return false;
+                const float along = signed_distance(input.handoff, position);
+                if (upstream_source) {
+                    if (support_intersects_dam(
+                            input.handoff.temporary_dam_exclusion_bounds_m,
+                            position) ||
+                        along + support_radius_m >
+                            input.handoff.downstream_visual_cut_m)
+                        continue;
+                } else if (along - support_radius_m <
+                           input.handoff.upstream_visual_cut_m) {
+                    continue;
+                }
+                particles.push_back(
+                    {position, input.upstream->particle_radius_m});
+            }
+            return true;
+        };
+
+        for (std::uint32_t frame_index = 0u; frame_index != 30u;
+             ++frame_index) {
+            const auto frame_start = std::chrono::steady_clock::now();
+            const WaterMeshAnimationPhase phase = water_mesh_animation_phase(
+                frame_index, 30u, 15u);
+            std::vector<matter::Float3> upstream_primary;
+            std::vector<matter::Float3> downstream_primary;
+            std::vector<matter::Float3> upstream_secondary;
+            std::vector<matter::Float3> downstream_secondary;
+            if (!decode_water_boundary_frame(
+                    *input.upstream, phase.primary_capture,
+                    upstream_primary, mesh_error) ||
+                !decode_water_boundary_frame(
+                    *input.downstream, phase.primary_capture,
+                    downstream_primary, mesh_error) ||
+                !decode_water_boundary_frame(
+                    *input.upstream, phase.secondary_capture,
+                    upstream_secondary, mesh_error) ||
+                !decode_water_boundary_frame(
+                    *input.downstream, phase.secondary_capture,
+                    downstream_secondary, mesh_error)) {
                 error = {FluidBakeCode::ProductFailure,
-                         artifact_error.message.empty()
-                             ? "handoff animation diagnostics serialization failed"
-                             : artifact_error.message};
-                artifact = {};
-                *diagnostics = {};
+                         "handoff boundary frame decode failed at frame " +
+                             std::to_string(frame_index) + ": " +
+                             mesh_error.message};
+                output = {};
+                diagnostics = {};
                 return false;
             }
-            diagnostics->artifact_file_bytes = serialized.size();
-            diagnostics->peak_build_cpu_payload_bytes = std::max(
-                diagnostics->peak_build_cpu_payload_bytes,
+
+            std::vector<gpu_meshing::ParticleSample> particles;
+            particles.reserve(
+                upstream_primary.size() + downstream_primary.size() +
+                upstream_secondary.size() + downstream_secondary.size());
+            if (!append_source(upstream_primary, true, particles) ||
+                !append_source(downstream_primary, false, particles))
+                return fail("handoff primary boundary frame is invalid",
+                            error);
+            const std::uint32_t phase_split =
+                static_cast<std::uint32_t>(particles.size());
+            if (!append_source(upstream_secondary, true, particles) ||
+                !append_source(downstream_secondary, false, particles))
+                return fail("handoff secondary boundary frame is invalid",
+                            error);
+            if (particles.empty() ||
+                particles.size() > std::numeric_limits<std::uint32_t>::max())
+                return fail("handoff shared field has no bounded particles",
+                            error);
+
+            gpu_meshing::ParticleJob job = input.visual_template;
+            job.bounds_m.min_m = {
+                std::min(input.upstream->crop_bounds_m.min_m.x,
+                         input.downstream->crop_bounds_m.min_m.x),
+                std::min(input.upstream->crop_bounds_m.min_m.y,
+                         input.downstream->crop_bounds_m.min_m.y),
+                std::min(input.upstream->crop_bounds_m.min_m.z,
+                         input.downstream->crop_bounds_m.min_m.z)};
+            job.bounds_m.max_m = {
+                std::max(input.upstream->crop_bounds_m.max_m.x,
+                         input.downstream->crop_bounds_m.max_m.x),
+                std::max(input.upstream->crop_bounds_m.max_m.y,
+                         input.downstream->crop_bounds_m.max_m.y),
+                std::max(input.upstream->crop_bounds_m.max_m.z,
+                         input.downstream->crop_bounds_m.max_m.z)};
+            job.particles = particles.data();
+            job.particle_count = static_cast<std::uint32_t>(particles.size());
+            job.limits.max_particles = std::max(
+                job.limits.max_particles, job.particle_count);
+            job.phase_blend = {phase_split, phase.primary_weight,
+                               phase.secondary_weight};
+            gpu_meshing::MeshResult joint_mesh{};
+            if (!PhysxFluidBake::build_visual_job_chunks(
+                    job, mesher, joint_mesh, mesh_error)) {
+                error = {FluidBakeCode::ProductFailure,
+                         "handoff shared field mesh failed at frame " +
+                             std::to_string(frame_index) + ": " +
+                             mesh_error.message};
+                output = {};
+                diagnostics = {};
+                return false;
+            }
+            gpu_meshing::MeshResult strip{};
+            if (!filter_cell_owned_mesh(
+                    joint_mesh, input.handoff, input.lattice,
+                    WaterCellOwnership::Between, strip) ||
+                !valid_mesh(strip))
+                return fail("handoff shared-field strip is empty or invalid",
+                            error);
+            HandoffFrameProducts products{};
+            if (!partition_handoff_strip(strip, input.handoff, products))
+                return fail("handoff strip index partition failed", error);
+            gpu_meshing::MeshResult upstream_bulk_frame{};
+            gpu_meshing::MeshResult downstream_bulk_frame{};
+            if (!decode_water_mesh_animation_frame(
+                    *input.upstream_bulk, frame_index,
+                    upstream_bulk_frame, mesh_error) ||
+                !decode_water_mesh_animation_frame(
+                    *input.downstream_bulk, frame_index,
+                    downstream_bulk_frame, mesh_error)) {
+                error = {FluidBakeCode::ProductFailure,
+                         "handoff owned bulk decode failed at frame " +
+                             std::to_string(frame_index) + ": " +
+                             mesh_error.message};
+                output = {};
+                diagnostics = {};
+                return false;
+            }
+            FluidBakeError continuity_error{};
+            const WaterCellOwnershipCut upstream_cut{
+                input.lattice, input.handoff,
+                input.handoff.upstream_visual_cut_m};
+            const WaterCellOwnershipCut downstream_cut{
+                input.lattice, input.handoff,
+                input.handoff.downstream_visual_cut_m};
+            const bool upstream_measured =
+                measure_water_cell_boundary_continuity(
+                    upstream_bulk_frame, products.replacement_strip,
+                    upstream_cut, continuity_tolerance,
+                    diagnostics.upstream_cut[frame_index],
+                    continuity_error);
+            if (!upstream_measured || !water_cut_is_assertion_weldable(
+                    diagnostics.upstream_cut[frame_index],
+                    continuity_tolerance)) {
+                error = {FluidBakeCode::ProductFailure,
+                         cell_boundary_failure(
+                             "upstream", frame_index,
+                             diagnostics.upstream_cut[frame_index],
+                             continuity_error.message)};
+                output = {};
+                return false;
+            }
+            continuity_error = {};
+            const bool downstream_measured =
+                measure_water_cell_boundary_continuity(
+                    products.replacement_strip, downstream_bulk_frame,
+                    downstream_cut, continuity_tolerance,
+                    diagnostics.downstream_cut[frame_index],
+                    continuity_error);
+            if (!downstream_measured || !water_cut_is_assertion_weldable(
+                    diagnostics.downstream_cut[frame_index],
+                    continuity_tolerance)) {
+                error = {FluidBakeCode::ProductFailure,
+                         cell_boundary_failure(
+                             "downstream", frame_index,
+                             diagnostics.downstream_cut[frame_index],
+                             continuity_error.message)};
+                output = {};
+                return false;
+            }
+            diagnostics.upstream_band[frame_index] =
+                products.upstream_band;
+            diagnostics.collar[frame_index] = products.collar;
+            diagnostics.downstream_band[frame_index] =
+                products.downstream_band;
+            diagnostics.frame_mesh_ms[frame_index] =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - frame_start).count();
+            const std::uint64_t decoded_position_bytes =
+                static_cast<std::uint64_t>(
+                    upstream_primary.size() + downstream_primary.size() +
+                    upstream_secondary.size() +
+                    downstream_secondary.size()) * sizeof(matter::Float3);
+            diagnostics.peak_build_cpu_payload_bytes = std::max(
+                diagnostics.peak_build_cpu_payload_bytes,
                 saturating_payload_sum({
-                    animation_mesh_payload_bytes(animation),
-                    artifact_heap_payload_bytes(artifact),
-                    diagnostics->artifact_file_bytes}));
+                    animation_mesh_payload_bytes(output),
+                    decoded_position_bytes,
+                    mesh_payload_bytes(joint_mesh),
+                    mesh_payload_bytes(upstream_bulk_frame),
+                    mesh_payload_bytes(downstream_bulk_frame),
+                    mesh_payload_bytes(products.replacement_strip)}));
+            output.frames.push_back(
+                std::move(products.replacement_strip));
         }
-        return true;
+        return output.frames.size() == 30u;
     } catch (const std::exception& exception) {
-        artifact = {};
-        if (diagnostics) *diagnostics = {};
+        output = {};
+        diagnostics = {};
         error = {FluidBakeCode::ProductFailure, exception.what()};
         return false;
     } catch (...) {
-        artifact = {};
-        if (diagnostics) *diagnostics = {};
-        return fail("handoff animation construction raised an unknown exception",
-                    error);
+        output = {};
+        diagnostics = {};
+        return fail("handoff shared-field construction failed", error);
     }
+}
+
+bool build_handoff_water_animation_artifact(
+    const HandoffAnimationBuildInput& input,
+    const PhysxFluidBake::VisualMesher& mesher,
+    WaterMeshAnimationArtifact& artifact,
+    HandoffAnimationBuildDiagnostics& diagnostics,
+    FluidBakeError& error) {
+    artifact = {};
+    diagnostics = {};
+    WaterMeshAnimation animation{};
+    if (!build_handoff_animation_frames(
+            input, mesher, animation, diagnostics, error))
+        return false;
+    const std::uint64_t semantic = derive_handoff_animation_semantic_key(
+        input, input.upstream_bulk->payload_digest,
+        input.downstream_bulk->payload_digest);
+    if (semantic == 0u)
+        return fail("handoff animation semantic identity is invalid", error);
+    gpu_meshing::Error artifact_error{};
+    const WaterMeshAnimationArtifactMetadata metadata{
+        input.handoff.id, semantic,
+        input.upstream->source_section_payload_digest,
+        input.downstream->source_section_payload_digest,
+        input.lattice.voxel_m, input.lattice};
+    if (!pack_water_mesh_animation_artifact(
+            metadata, animation, artifact, artifact_error)) {
+        error = {FluidBakeCode::ProductFailure,
+                 artifact_error.message.empty()
+                     ? "handoff animation packing failed"
+                     : artifact_error.message};
+        artifact = {};
+        diagnostics = {};
+        return false;
+    }
+    std::vector<std::uint8_t> serialized;
+    if (!serialize_water_mesh_animation_artifact(
+            artifact, serialized, artifact_error)) {
+        error = {FluidBakeCode::ProductFailure,
+                 artifact_error.message.empty()
+                     ? "handoff animation diagnostics serialization failed"
+                     : artifact_error.message};
+        artifact = {};
+        diagnostics = {};
+        return false;
+    }
+    diagnostics.artifact_file_bytes = serialized.size();
+    diagnostics.peak_build_cpu_payload_bytes = std::max(
+        diagnostics.peak_build_cpu_payload_bytes,
+        saturating_payload_sum({
+            animation_mesh_payload_bytes(animation),
+            artifact_heap_payload_bytes(artifact),
+            diagnostics.artifact_file_bytes}));
+    return true;
 }
 
 bool clip_section_water_mesh_animation(
     const WaterMeshAnimation& source,
     const std::string& section_id,
     const std::vector<SpillwayHandoffRecord>& handoffs,
-    float visual_voxel_m,
+    const gpu_meshing::ParticleSamplingLattice& lattice,
     WaterMeshAnimation& owned,
     FluidBakeError& error) {
     owned = {};
@@ -1622,14 +1981,12 @@ bool clip_section_water_mesh_animation(
         if (section_id.empty() || source.frames.empty() ||
             source.frames_per_second == 0u ||
             !finite(source.duration_seconds) ||
-            source.duration_seconds <= 0.0f || !finite(visual_voxel_m) ||
-            visual_voxel_m <= 0.0f)
+            source.duration_seconds <= 0.0f || !valid_lattice(lattice))
             return fail("section animation ownership input is invalid", error);
         owned.frames_per_second = source.frames_per_second;
         owned.phase_offset_frames = source.phase_offset_frames;
         owned.duration_seconds = source.duration_seconds;
         owned.frames.reserve(source.frames.size());
-        const float weld = std::max(1.0e-5f, visual_voxel_m * 1.0e-4f);
         for (const auto& source_frame : source.frames) {
             if (!valid_mesh(source_frame))
                 return fail("section animation contains an invalid frame",
@@ -1644,19 +2001,15 @@ bool clip_section_water_mesh_animation(
                     return fail(
                         "section animation ownership handoff identity is invalid",
                         error);
-                MeshAssembler clipped(weld);
-                const bool appended = upstream_owner
-                    ? append_clipped_mesh(
-                          frame, handoff, false, 0.0f, true,
-                          handoff.upstream_visual_cut_m, clipped)
-                    : append_clipped_mesh(
-                          frame, handoff, true,
-                          handoff.downstream_visual_cut_m, false, 0.0f,
-                          clipped);
-                if (!appended)
+                gpu_meshing::MeshResult clipped{};
+                if (!filter_cell_owned_mesh(
+                        frame, handoff, lattice,
+                        upstream_owner ? WaterCellOwnership::Before
+                                       : WaterCellOwnership::After,
+                        clipped))
                     return fail("section animation ownership clipping failed",
                                 error);
-                frame = clipped.finish();
+                frame = std::move(clipped);
                 if (!valid_mesh(frame))
                     return fail(
                         "section animation ownership produced an empty frame",

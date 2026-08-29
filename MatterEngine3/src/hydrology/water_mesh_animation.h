@@ -11,6 +11,9 @@
 
 namespace hydrology {
 
+inline constexpr char kSectionWaterAnimationCacheDomain[] =
+    "water-mesh-animation-v3-canonical-cell-ownership";
+
 struct WaterMeshAnimationPhase {
     std::uint32_t primary_capture = 0;
     std::uint32_t secondary_capture = 0;
