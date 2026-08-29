@@ -7,6 +7,7 @@ extern "C" {
 #include "world_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
 #include "part_bundle.h"
+#include "part_render_policy.h"
 #include "animation/animation_validate.h"
 #include "animation/anim_asset.h"
 #include "animation/anim_bundle.h"
@@ -2157,13 +2158,17 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         }
         // Persist the child instances placed via placeChild() during build().
         std::vector<part_asset::ChildInstance> kids;
+        matter::PartRenderPolicy render_policy;
+        render_policy.ray_traced = state.ray_traced();
         kids.reserve(state.children().size());
+        render_policy.child_overrides.reserve(state.children().size());
         r.child_modules_placed.reserve(state.children().size());
         for (const auto& c : state.children()) {
             part_asset::ChildInstance ci;
             ci.child_resolved_hash = c.hash;
             std::memcpy(ci.transform, c.transform, sizeof ci.transform);
             kids.push_back(ci);
+            render_policy.child_overrides.push_back(c.ray_traced);
             // W5: parallel module-name carry (see BakeResult::child_modules_placed).
             r.child_modules_placed.push_back(c.module);
         }
@@ -2328,7 +2333,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             if (skip_part_write && opts.retain_geometry) {
                 ok = true;
             } else {
-            ok = part_asset::save_v2(path, blas, tlas,
+            ok = matter::save_part_render_policy(path, r.resolved_hash,
+                                                 render_policy) &&
+                 part_asset::save_v2(path, blas, tlas,
                                      kids.empty() ? nullptr : kids.data(), kids.size(),
                                      lods, emitters, r.resolved_hash);
             }
@@ -2345,6 +2352,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                                       diagnostics, &finalized_skin_lods,
                                       &finalized_reference_lods,
                                       &finalized_rigid_segments) &&
+                 matter::save_part_render_policy(part_candidate.string(),
+                                                 r.resolved_hash,
+                                                 render_policy) &&
                  part_asset::save_v2(part_candidate.string(),blas,tlas,kids.empty()?nullptr:kids.data(),kids.size(),lods,emitters,link,r.resolved_hash) &&
                  matter::animation::save_anim_candidate(asset,anim_candidate,diagnostics);
             matter::animation::BundleIdentity identity; identity.resolved_hash=r.resolved_hash; identity.nonce=nonce;
@@ -2397,6 +2407,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 retained->children = kids;
                 retained->lods = lods;
                 retained->emitters = emitters;
+                retained->render_policy = render_policy;
                 // Volumetric-sectors M0-WP3a: the seam boundary record
                 // terrainVolume's mesher deposited on the DslState. Rides the
                 // SAME in-memory hand-off as the geometry, because the two

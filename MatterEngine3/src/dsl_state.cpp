@@ -268,7 +268,8 @@ bool DslState::lookup_child_hash(const std::string& module,
 
 void DslState::placeChild(const std::string& module,
                           const void* params, size_t params_len,
-                          bool instanced, float inline_below_px) {
+                          bool instanced, float inline_below_px,
+                          matter::RayTracingOverride ray_traced) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     uint64_t hash = 0;
     const char* params_ptr = static_cast<const char*>(params);
@@ -292,6 +293,7 @@ void DslState::placeChild(const std::string& module,
     matrix_to_row16(top(), p.transform);
     p.instanced = instanced;
     p.inline_below_px = inline_below_px;
+    p.ray_traced = ray_traced;
     p.module = module;
     children_.push_back(p);
 }

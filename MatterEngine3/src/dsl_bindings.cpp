@@ -484,6 +484,7 @@ static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
     // Parse optional third-argument options object { instanced, inlineBelowPx }.
     bool instanced = false;
     double inline_px = 0.0;
+    matter::RayTracingOverride ray_traced = matter::RayTracingOverride::Inherit;
     if (n > 2 && JS_IsObject(a[2])) {
         JSValue vi = JS_GetPropertyStr(c, a[2], "instanced");
         instanced = JS_ToBool(c, vi) > 0;
@@ -491,6 +492,19 @@ static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
         JSValue vp = JS_GetPropertyStr(c, a[2], "inlineBelowPx");
         if (!JS_IsUndefined(vp) && !JS_IsNull(vp)) JS_ToFloat64(c, &inline_px, vp);
         JS_FreeValue(c, vp);
+        JSValue vr = JS_GetPropertyStr(c, a[2], "rayTraced");
+        if (!JS_IsUndefined(vr)) {
+            if (!JS_IsBool(vr)) {
+                JS_FreeValue(c, vr);
+                JS_FreeCString(c, m);
+                state_of(c)->set_error("placeChild rayTraced must be boolean");
+                return JS_UNDEFINED;
+            }
+            ray_traced = JS_ToBool(c, vr) > 0
+                ? matter::RayTracingOverride::Enabled
+                : matter::RayTracingOverride::Disabled;
+        }
+        JS_FreeValue(c, vr);
         if (instanced && inline_px <= 0.0) inline_px = 64.0;   // engine default
     }
     // G6: optional params (a plain JS object/array) -> canonical JSON bytes folded
@@ -510,22 +524,31 @@ static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
                 std::string normalized = normalize_params_json(s, len);
                 JS_FreeCString(c, s);
                 if (!normalized.empty() && normalized != "{}") {
-                    state_of(c)->placeChild(m, normalized.c_str(), normalized.size(), instanced, (float)inline_px);
+                    state_of(c)->placeChild(m, normalized.c_str(), normalized.size(), instanced, (float)inline_px, ray_traced);
                 } else {
-                    state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
+                    state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px, ray_traced);
                 }
             } else {
-                state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
+                state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px, ray_traced);
             }
         } else {
-            state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
+            state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px, ray_traced);
         }
         JS_FreeValue(c, js);
     } else {
-        state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
+        state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px, ray_traced);
     }
     JS_FreeCString(c, m);
     return JS_UNDEFINED; }
+
+static JSValue j_rayTraced(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    if (n < 1 || !JS_IsBool(a[0])) {
+        state_of(c)->set_error("rayTraced value must be boolean");
+        return JS_UNDEFINED;
+    }
+    state_of(c)->set_ray_traced(JS_ToBool(c, a[0]) > 0);
+    return JS_UNDEFINED;
+}
 
 static JSValue j_beginShape(JSContext* c, JSValueConst, int, JSValueConst* a){
     int32_t mode=0; JS_ToInt32(c,&mode,a[0]); state_of(c)->beginShape(mode); return JS_UNDEFINED; }
@@ -1859,7 +1882,8 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_op",j_op,1); bind("__dsl_smoothing",j_smoothing,1);
     bind("__dsl_raycast",j_raycast,6);
     bind("__dsl_beginModifier",j_beginModifier,0); bind("__dsl_endModifier",j_endModifier,1);
-    bind("__dsl_placeChild",j_placeChild,2);
+    bind("__dsl_rayTraced",j_rayTraced,1);
+    bind("__dsl_placeChild",j_placeChild,3);
     bind("__dsl_beginShape",j_beginShape,1); bind("__dsl_vertex",j_vertex,3);
     bind("__dsl_endShape",j_endShape,0); bind("__dsl_line",j_line,8);
     bind("__dsl_capsule",j_capsule,7); bind("__dsl_cylinder",j_cylinder,7);

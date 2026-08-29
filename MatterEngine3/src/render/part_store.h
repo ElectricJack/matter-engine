@@ -11,6 +11,7 @@
 #include "seam_boundary.h"      // seam::SectorBoundary (stdlib-only by contract)
 #include "animation/animation_asset_store.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
+#include "part_render_policy.h"
 
 #include <cstdint>
 #include <functional>
@@ -46,6 +47,7 @@ struct BakedGeometry {
     std::vector<part_asset::ChildInstance>        children;  // the child table save_v2 wrote
     part_asset::LodLevels                         lods;      // empty for every static bake
     std::vector<part_asset::VolumeEmitter>        emitters;  // the EMIT trailer's contents
+    matter::PartRenderPolicy                      render_policy;
     // Volumetric-sectors M0-WP3a: the seam boundary record terrainVolume's
     // mesher exported for this tile, lifted off DslState by bake_source. Null
     // for every part that meshed no terrain volume (i.e. almost all of them).
@@ -80,6 +82,7 @@ struct ExpandedNode {
     // hide_child_instances render option ("show root only"). Not used by any
     // pre-W4 code path.
     int      depth = 0;
+    bool     ray_traced = true;
 };
 
 // Per-cluster data loaded from a v3 flat artifact.
@@ -136,6 +139,7 @@ struct SurfaceClassCache {
 };
 
 struct LoadedPart {
+    matter::PartRenderPolicy render_policy;
     std::vector<BLASHandle> lod_blas;       // lod_blas[i] -> BLAS for LOD level i
     float                   bound_radius = 0.0f;
     std::vector<float>      thresholds;      // per-LOD screen-size thresholds
@@ -431,6 +435,7 @@ private:
         std::vector<part_asset::ChildInstance>           children;
         part_asset::LodLevels                            lods_in;  // .part stores LOD0 only
         std::vector<part_asset::VolumeEmitter>           emitters;
+        matter::PartRenderPolicy                          render_policy;
         std::optional<part_asset::PartAnimationLink>     animation_link;
         matter::animation::AnimAsset                     loaded_animation;
     };

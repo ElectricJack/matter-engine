@@ -85,6 +85,8 @@ inline constexpr uint32_t kBundleFormatVersion =
 
 // Section tags. Four ASCII bytes, little-endian, so a hex dump reads.
 enum SectionTag : uint32_t {
+    // Authored ray-tracing default plus child-placement overrides.
+    kSectionRenderPolicy = 0x52444E52u,  // "RNDR"
     // Compositional part body -- the old `.part`. Carries the child table, the
     // top-level LOD levels, and the EMIT / CHRT / ANLK trailers.
     kSectionRep0 = 0x30504552u,  // "REP0"

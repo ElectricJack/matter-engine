@@ -5,6 +5,7 @@
 #include "terrain_field.h"
 #include "tileset_spec.h"
 #include "dsl_animation.h"
+#include "matter/render_eligibility.h"
 #include "seam_boundary.h"   // seam::SectorBoundary (dependency-free by contract)
 #include <chrono>
 #include <cstdint>
@@ -388,6 +389,8 @@ public:
         float transform[16];
         bool instanced = false;
         float inline_below_px = 0.0f;
+        matter::RayTracingOverride ray_traced =
+            matter::RayTracingOverride::Inherit;
         // W5 (Part Workbench, static lods): the module name this placement came
         // from, so a caller building a per-level `exclude` mask after bake_source
         // can match placements by module name without re-deriving it. NOT
@@ -450,9 +453,13 @@ public:
     // key (unchanged behavior). Unknown module or undeclared variant -> set_error.
     void placeChild(const std::string& module,
                     const void* params = nullptr, size_t params_len = 0,
-                    bool instanced = false, float inline_below_px = 0.0f);
+                    bool instanced = false, float inline_below_px = 0.0f,
+                    matter::RayTracingOverride ray_traced =
+                        matter::RayTracingOverride::Inherit);
 
     const std::vector<ChildPlacement>& children() const { return children_; }
+    void set_ray_traced(bool value) { ray_traced_ = value; }
+    bool ray_traced() const { return ray_traced_; }
 
     // Seeded RNG cursor. The host installs a seeded Rng (derived from the part's
     // params) before build(); the bound Math.random() draws from it. Deterministic
@@ -548,6 +555,7 @@ private:
     std::map<uint64_t, bool> child_animation_status_;  // committed ANLK status for declared child hashes
     std::set<uint64_t> invalid_child_animation_artifacts_;
     std::vector<ChildPlacement>       children_;        // accumulated placements
+    bool                              ray_traced_ = true;
     std::unique_ptr<tri_emit::TriangleBuildBuffer> tris_buf_;  // direct-triangle session
 
     // Phase 3 POLYGON / extrude state.

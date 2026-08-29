@@ -169,6 +169,7 @@ globalThis.Part = class Part {
   raycast(o,d)           { return __dsl_raycast(o[0],o[1],o[2], d[0],d[1],d[2]); }
   beginModifier()        { __dsl_beginModifier(); }
   endModifier(list)      { __dsl_endModifier(list); }
+  rayTraced(value) { __dsl_rayTraced(value); }
   placeChild(module,params,opts) { __dsl_placeChild(module, params, opts); }
   beginShape(mode)       { __dsl_beginShape(mode|0); }
   vertex(x,y,z)          { __dsl_vertex(x,y,(z===undefined?0:z)); }

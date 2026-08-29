@@ -82,6 +82,10 @@ target_compile_definitions(matter_engine_core PRIVATE
     MATTER_HAVE_SCRIPT_HOST
     MATTER_VULKAN_ONLY
 )
+if(BUILD_TESTING)
+    target_compile_definitions(matter_engine_core PRIVATE
+        MATTER_TEST_CACHE_VALIDATION_HOOK)
+endif()
 if(MATTER_ENABLE_PHYSX)
     target_compile_definitions(matter_engine_core PRIVATE MATTER_ENABLE_PHYSX)
 endif()
@@ -131,6 +135,10 @@ matter_engine_include_directories(matter_engine_headless PUBLIC)
 target_compile_definitions(matter_engine_headless INTERFACE
     MATTER_HAVE_SCRIPT_HOST
 )
+if(BUILD_TESTING)
+    target_compile_definitions(matter_engine_headless INTERFACE
+        MATTER_TEST_CACHE_VALIDATION_HOOK)
+endif()
 target_link_libraries(matter_engine_headless PUBLIC
     matter_memory
     matter_math
@@ -279,6 +287,8 @@ if(BUILD_TESTING)
         MatterEngine3/tests/field_probe.cpp)
     matter_add_engine_cpu_test(script_host_tests
         MatterEngine3/tests/script_host_tests.cpp)
+    matter_add_engine_cpu_test(partstore_tests
+        MatterEngine3/tests/partstore_tests.cpp)
     matter_add_engine_cpu_test(eval_world_tests
         MatterEngine3/tests/eval_world_tests.cpp)
     matter_add_engine_cpu_test(lod_distance_tests

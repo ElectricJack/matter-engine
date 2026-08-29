@@ -189,21 +189,33 @@ static void mesh_to_triangles(const RasterMeshData& mesh, std::vector<Tri>& tria
 // build_expansion, WorldComposer::compose, and the main.cpp TLAS-sizing walk.
 // ---------------------------------------------------------------------------
 
+using PolicyVisitor =
+    std::function<void(const viewer::LoadedPart*, uint64_t, const float[16],
+                       int, bool)>;
+
 static void walk_rec(uint64_t hash, const float parent_rel[16], int depth,
+                     matter::RayTracingOverride incoming_override,
                      const std::function<const viewer::LoadedPart*(uint64_t)>& getter,
-                     const std::function<void(const viewer::LoadedPart*, uint64_t,
-                                              const float[16], int)>& visitor) {
+                     const PolicyVisitor& visitor) {
     if (depth > 8) return;
     const viewer::LoadedPart* lp = getter(hash);
     if (!lp) return;
-    visitor(lp, hash, parent_rel, depth);
-    for (const auto& c : lp->children) {
+    const bool ray_traced = matter::resolve_ray_traced(
+        incoming_override, lp->render_policy.ray_traced);
+    visitor(lp, hash, parent_rel, depth, ray_traced);
+    for (size_t child_index = 0; child_index != lp->children.size(); ++child_index) {
+        const auto& c = lp->children[child_index];
         matter::Mat4f parent{};
         matter::Mat4f child{};
         std::memcpy(parent.m, parent_rel, sizeof parent.m);
         std::memcpy(child.m, c.transform, sizeof child.m);
         const matter::Mat4f rel = viewer::mat4_mul(parent, child);
-        walk_rec(c.child_resolved_hash, rel.m, depth + 1, getter, visitor);
+        const matter::RayTracingOverride child_override =
+            child_index < lp->render_policy.child_overrides.size()
+                ? lp->render_policy.child_overrides[child_index]
+                : matter::RayTracingOverride::Inherit;
+        walk_rec(c.child_resolved_hash, rel.m, depth + 1, child_override,
+                 getter, visitor);
     }
 }
 
@@ -212,7 +224,10 @@ void walk_part_tree(uint64_t root_hash,
         const std::function<void(const LoadedPart*, uint64_t,
                                  const float[16], int)>& visitor) {
     static const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    walk_rec(root_hash, kIdentity, 0, getter, visitor);
+    walk_rec(root_hash, kIdentity, 0, matter::RayTracingOverride::Inherit,
+             getter,
+             [&](const LoadedPart* lp, uint64_t hash, const float rel[16],
+                 int depth, bool) { visitor(lp, hash, rel, depth); });
 }
 
 // ---------------------------------------------------------------------------
@@ -222,13 +237,18 @@ void walk_part_tree(uint64_t root_hash,
 void build_expansion(uint64_t root_hash,
         const std::function<const LoadedPart*(uint64_t)>& getter,
         std::vector<ExpandedNode>& out) {
-    walk_part_tree(root_hash, getter,
-        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int depth) {
+    static const float kIdentity[16] =
+        {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    walk_rec(root_hash, kIdentity, 0, matter::RayTracingOverride::Inherit,
+        getter,
+        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int depth,
+            bool ray_traced) {
             if (lp->lod_mesh_data.empty()) return;
             ExpandedNode n;
             n.part_hash = hash;
             memcpy(n.rel_transform, rel, sizeof n.rel_transform);
             n.depth = depth;
+            n.ray_traced = ray_traced;
             out.push_back(n);
         });
 }
@@ -921,12 +941,17 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
         std::vector<part_asset::ChildInstance> candidate_children;
         part_asset::LodLevels candidate_lods;
         std::vector<part_asset::VolumeEmitter> candidate_emitters;
+        matter::PartRenderPolicy candidate_render_policy;
         std::optional<part_asset::PartAnimationLink> candidate_link;
         if (!part_asset::load_v2(path, part_hash, *candidate_scratch, candidate_tlas,
                                  candidate_children, candidate_lods, candidate_emitters,
                                  candidate_link)) {
             continue;
         }
+        if (!matter::load_part_render_policy(path, part_hash,
+                                             candidate_children.size(),
+                                             candidate_render_policy))
+            continue;
 
         matter::animation::AnimAsset candidate_animation;
         if (candidate_link) {
@@ -952,6 +977,7 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
         out.children = std::move(candidate_children);
         out.lods_in = std::move(candidate_lods);
         out.emitters = std::move(candidate_emitters);
+        out.render_policy = std::move(candidate_render_policy);
         out.animation_link = candidate_link;
         if (candidate_link) out.loaded_animation = std::move(candidate_animation);
         coherent = true;
@@ -1021,6 +1047,7 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
 
     staged.lp.bound_radius = radius;
     staged.lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
+    staged.lp.render_policy = std::move(snapshot.render_policy);
     staged.lp.animation_asset = animation_asset;
     // Bake the ladder into a PRIVATE manager, then adopt it into the shared one
     // in a single bounded step.
@@ -1341,6 +1368,7 @@ bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
     out.children = baked.children;
     out.lods_in = baked.lods;
     out.emitters = baked.emitters;
+    out.render_policy = baked.render_policy;
     // No ANLK: BakedGeometry is retained only on the static save path, so the
     // artifact this stands in for carries no animation link either.
     out.animation_link.reset();
@@ -1479,6 +1507,10 @@ bool staged_parts_equal(const PartStore::StagedPart& a,
     if (!bitwise_equal(x.owned_blas, y.owned_blas))     return differ("owned_blas");
     // ChildInstance is padding-free by static_assert, so a flat memcmp is exact.
     if (!bitwise_equal(x.children, y.children))         return differ("children");
+    if (x.render_policy.ray_traced != y.render_policy.ray_traced)
+        return differ("render_policy.ray_traced");
+    if (x.render_policy.child_overrides != y.render_policy.child_overrides)
+        return differ("render_policy.child_overrides");
     if (!bitwise_equal(x.flat_refs, y.flat_refs))       return differ("flat_refs");
     if (x.animation_asset != y.animation_asset)         return differ("animation_asset");
 
@@ -1595,7 +1627,12 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             std::getenv("MATTER_FLAT_GATE_LOG") != nullptr;
         const bool snap_ok = part_asset::load_static_part_snapshot(
             canonical_part, part_hash, canonical_fingerprint);
-        const bool flat_ok = snap_ok && load_flat(part_hash, selected_root, flat);
+        matter::PartRenderPolicy flat_render_policy;
+        const bool flat_ok = snap_ok && load_flat(part_hash, selected_root, flat) &&
+            matter::load_part_render_policy(canonical_part, part_hash,
+                                            flat.children.size(),
+                                            flat_render_policy);
+        if (flat_ok) flat.render_policy = std::move(flat_render_policy);
         if (flat_gate_log && !flat_ok)
             MATTER_LOGD("flatgate",
                          "%016llx REJECT snapshot=%d load_flat=%d\n",
@@ -1750,6 +1787,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
 
         LoadedPart partitioned;
         partitioned.children = std::move(children);
+        partitioned.render_policy = std::move(snapshot_.render_policy);
         partitioned.animation_asset = animation_asset;
         partitioned.rigid_lod_mesh_data.resize(partition.rigid_segments.size());
         partitioned.rigid_lod_thresholds.reserve(level_count);

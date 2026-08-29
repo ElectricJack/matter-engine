@@ -1,6 +1,7 @@
 // Lightweight PartStore tests — split out from viewer_logic_tests.cpp to avoid
 // the 30GB Meadow-flatten test in the same binary.
 #include "part_bundle.h"   // M4: the part body is the REP0 section
+#include "part_render_policy.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -135,6 +136,90 @@ static bool publish_static_part(const std::filesystem::path& root, uint64_t hash
 
 static bool publish_static_part_and_flat(const std::filesystem::path& root, uint64_t hash) {
     return publish_static_part(root, hash) && publish_flat(root, hash);
+}
+
+static part_asset::ChildInstance child_instance(uint64_t hash) {
+    part_asset::ChildInstance child{};
+    child.child_resolved_hash = hash;
+    child.transform[0] = child.transform[5] = child.transform[10] =
+        child.transform[15] = 1.0f;
+    return child;
+}
+
+static void test_render_policy_legacy_malformed_and_expansion_resolution() {
+    namespace fs = std::filesystem;
+    using matter::RayTracingOverride;
+
+    const fs::path root = fs::path("partstore_render_policy_fixture");
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); }
+    } cleanup{root};
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+
+    constexpr uint64_t legacy_hash = 0x726e64726c656761ull;
+    CHECK(publish_static_part(root, legacy_hash),
+          "render policy: writes legacy fixture without RNDR");
+    matter::PartRenderPolicy legacy_policy;
+    CHECK(matter::load_part_render_policy(
+              (root / part_asset::cache_path_resolved(legacy_hash)).string(),
+              legacy_hash, 3, legacy_policy),
+          "render policy: missing RNDR loads through compatibility defaults");
+    CHECK(legacy_policy.ray_traced,
+          "render policy: legacy part default is ray traced");
+    CHECK(legacy_policy.child_overrides ==
+              std::vector<RayTracingOverride>(3, RayTracingOverride::Inherit),
+          "render policy: legacy child placements all inherit");
+
+    viewer::PartStore legacy_store(root.string());
+    const viewer::LoadedPart* legacy_loaded = legacy_store.get_or_load(legacy_hash);
+    CHECK(legacy_loaded && legacy_loaded->render_policy.ray_traced,
+          "render policy: PartStore retains legacy true default");
+
+    constexpr uint64_t malformed_hash = 0x726e647262616421ull;
+    CHECK(publish_static_part(root, malformed_hash),
+          "render policy: writes malformed-policy geometry fixture");
+    const uint8_t malformed_payload = 0xffu;
+    CHECK(part_bundle::write_section(
+              (root / part_asset::cache_path_resolved(malformed_hash)).string(),
+              malformed_hash, part_bundle::kSectionRenderPolicy,
+              &malformed_payload, sizeof(malformed_payload)),
+          "render policy: writes a present malformed RNDR section");
+    viewer::PartStore malformed_store(root.string());
+    CHECK(malformed_store.get_or_load(malformed_hash) == nullptr,
+          "render policy: coherent PartStore snapshot rejects malformed RNDR");
+
+    constexpr uint64_t root_hash = 1, child_hash = 2, grandchild_hash = 3;
+    viewer::LoadedPart root_part, child_part, grandchild_part;
+    root_part.lod_mesh_data.emplace_back();
+    child_part.lod_mesh_data.emplace_back();
+    grandchild_part.lod_mesh_data.emplace_back();
+    root_part.render_policy.ray_traced = false;
+    root_part.children.push_back(child_instance(child_hash));
+    root_part.render_policy.child_overrides = {RayTracingOverride::Enabled};
+    child_part.render_policy.ray_traced = true;
+    child_part.children.push_back(child_instance(grandchild_hash));
+    child_part.render_policy.child_overrides = {RayTracingOverride::Disabled};
+    grandchild_part.render_policy.ray_traced = true;
+    const auto getter = [&](uint64_t hash) -> const viewer::LoadedPart* {
+        if (hash == root_hash) return &root_part;
+        if (hash == child_hash) return &child_part;
+        if (hash == grandchild_hash) return &grandchild_part;
+        return nullptr;
+    };
+    std::vector<viewer::ExpandedNode> expansion;
+    viewer::build_expansion(root_hash, getter, expansion);
+    CHECK(expansion.size() == 3,
+          "render policy: expansion retains all raster-visible nodes");
+    if (expansion.size() == 3) {
+        CHECK(!expansion[0].ray_traced,
+              "render policy: root resolves its authored false default");
+        CHECK(expansion[1].ray_traced,
+              "render policy: child edge enables only that placement");
+        CHECK(!expansion[2].ray_traced,
+              "render policy: grandchild uses its own disabled edge override");
+    }
 }
 
 // viewer::cluster_lod_select was deleted with the GL path in M0. The assertion
@@ -789,6 +874,7 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
 }
 
 int main() {
+    test_render_policy_legacy_malformed_and_expansion_resolution();
     test_compositional_sector_bounds_survive_to_frustum_culling();
     test_partstore_segmented_loading();
     test_partstore_builds_cached_rigid_segment_subparts();
