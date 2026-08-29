@@ -127,6 +127,7 @@ bool build_water_scene_part(
 void set_water_scene_animation_active(
     viewer::VkSceneInstance& proxy, bool active) noexcept {
     proxy.rt_proxy_only = active;
+    proxy.ray_traced = false;
 }
 
 }  // namespace gpu_meshing

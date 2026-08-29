@@ -261,6 +261,10 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.ensure_part(proxy_part, error) >= 0,
           error.empty() ? "water animation: register static proxy"
                         : error.c_str());
+    matter::VulkanRayTracingSettings rt_settings{};
+    rt_settings.enabled = true;
+    rt_settings.max_distance = 100.0f;
+    renderer.set_ray_tracing_settings(rt_settings);
 
     const std::array<hydrology::PackedWaterAnimationVertex, 3> vertices{{
         {0u, 0u, 0u},
@@ -288,9 +292,9 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
               11u, 2u, capacity, 0u, animation_error),
           animation_error.message.c_str());
     renderer.set_test_device_limits(
-        capacity.packed_vertex_bytes - 1u,
         std::numeric_limits<VkDeviceSize>::max(),
-        std::numeric_limits<VkDeviceSize>::max(), UINT32_MAX, UINT32_MAX);
+        std::numeric_limits<VkDeviceSize>::max(),
+        capacity.packed_vertex_bytes - 1u, UINT32_MAX, UINT32_MAX);
     CHECK(!renderer.publish_water_animation(
               12u, 2u, capacity, 0u, animation_error) &&
               renderer.water_animation_generation() == 11u,
@@ -323,7 +327,7 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
         proxy.part_hash = proxy_part.part_hash;
         proxy.object_to_world = viewer::mat4_identity();
         proxy.instance_id = 0x5741544552ull;
-        proxy.ray_traced = true;
+        proxy.ray_traced = false;
         proxy.rt_proxy_only = true;
         CHECK(renderer.update_instances({proxy}, error),
               error.empty() ? "water animation: upload suppressed proxy"
@@ -340,6 +344,8 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                       return command.instance_count != 0u;
                   }),
               "water animation: RT proxy contributes no static raster draw");
+        const std::uint64_t tlas_builds_before =
+            renderer.rt_tlas_build_count();
         const bool recorded = renderer.prepare_frame(
                 frame, matrices, camera.position, 1.0f, error) &&
             renderer.record_cull_and_render(
@@ -353,10 +359,39 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                             : error.c_str());
         vulkan.wait_idle();
 
+        if (vulkan.ray_tracing_available()) {
+            CHECK(renderer.water_animation_decode_dispatch_count() == 0u,
+                  "water animation: active raster draw performs no RT vertex decode");
+            CHECK(renderer.test_last_rt_blas_build_count() == 0u,
+                  "water animation: active raster draw builds no BLAS");
+            CHECK(renderer.rt_tlas_build_count() == tlas_builds_before,
+                  "water animation: active raster draw inserts no TLAS instance");
+            const auto& rt_records =
+                renderer.test_last_rt_geometry_records();
+            const std::size_t water_rt_records = std::count_if(
+                rt_records.begin(), rt_records.end(),
+                [&proxy_part](const viewer::RtGeometryDebugRecord& record) {
+                    return record.part_hash == proxy_part.part_hash;
+                });
+            CHECK(water_rt_records == 0u,
+                  "water animation: active raster draw publishes no RT proxy record");
+            std::printf(
+                "water animation RT counters: decode=%llu blas=%u "
+                "tlas_before=%llu tlas_after=%llu records=%zu\n",
+                static_cast<unsigned long long>(
+                    renderer.water_animation_decode_dispatch_count()),
+                renderer.test_last_rt_blas_build_count(),
+                static_cast<unsigned long long>(tlas_builds_before),
+                static_cast<unsigned long long>(
+                    renderer.rt_tlas_build_count()),
+                water_rt_records);
+        }
+
         renderer.clear_water_animation(frame.serial + 2u);
         CHECK(renderer.water_animation_generation() == 0u,
               "water animation: fallback clears the dynamic generation first");
         proxy.rt_proxy_only = false;
+        proxy.ray_traced = false;
         CHECK(renderer.update_instances({proxy}, error) &&
                   renderer.dispatch_culling(
                       matrices, camera.position, 1.0f, error) &&
@@ -369,6 +404,8 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                       return command.instance_count != 0u;
                   }),
               "water animation: fallback immediately restores static raster");
+        CHECK(!proxy.ray_traced,
+              "water animation: accepted static fallback remains raster-only");
         renderer.collect_water_animation(frame.serial + 2u);
 
         CHECK(renderer.publish_water_animation(

@@ -58,6 +58,8 @@ int main() {
         read_shader("../src/render/vk_scene_renderer.h");
     const std::string renderer_source =
         read_shader("../src/render/vk_scene_renderer.cpp");
+    const std::string water_animation_header =
+        read_shader("../src/render/water_animation_gpu.h");
     const std::string root_cmake = read_shader("../../CMakeLists.txt");
     const std::string engine_makefile = read_shader("../Makefile");
     assert(raster_vertex.find("MATTER_WATER_ANIMATION_VERTEX_INPUT") !=
@@ -73,6 +75,14 @@ int main() {
                "raster_water.vert|raster.vert|MATTER_WATER_ANIMATION_VERTEX_INPUT") !=
            std::string::npos);
     assert(engine_makefile.find("water_animation_decode.comp.spv") ==
+               std::string::npos);
+    assert(engine_makefile.find("water_animation_rt_decode.comp.spv") ==
+               std::string::npos);
+    assert(renderer_source.find("prepare_water_animation_blas") ==
+               std::string::npos);
+    assert(renderer_header.find("water_animation_current_blas_") ==
+               std::string::npos);
+    assert(water_animation_header.find("WaterAnimationRtDecodeHeader") ==
                std::string::npos);
     assert(engine_makefile.find("raster_water.vert.spv") !=
            std::string::npos);

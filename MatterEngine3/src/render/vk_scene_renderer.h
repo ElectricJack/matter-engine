@@ -576,9 +576,9 @@ struct VkSceneInstance {
     // and identical normals -- a black strip painted over terrain that was
     // already correct (docs/seam-suite-2026-08-13.md, finding 2).
     bool ray_traced = true;
-    // Suppresses only the static raster/cull lane. The immutable part and its
-    // ray_tracing instance remain live as the animated water's BLAS proxy and
-    // as an instantly restorable visual fallback.
+    // Suppresses only the accepted immutable raster proxy while active direct
+    // animation owns visibility. This flag never grants RT participation;
+    // engine-generated water keeps ray_traced false in active and fallback.
     bool rt_proxy_only = false;
 };
 

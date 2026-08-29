@@ -3574,6 +3574,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             authored_instance.part_hash = authored_part->part_hash;
             authored_instance.object_to_world = viewer::mat4_identity();
             authored_instance.instance_id = instance_id;
+            authored_instance.ray_traced = false;
         }
     }
     std::shared_ptr<const viewer::VkScenePart> failed_debug_part;
@@ -3591,6 +3592,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             failed_debug_instance.part_hash = failed_debug_part->part_hash;
             failed_debug_instance.object_to_world = viewer::mat4_identity();
             failed_debug_instance.instance_id = instance_id;
+            failed_debug_instance.ray_traced = false;
         } else {
             failed_debug_part.reset();
         }
@@ -10248,6 +10250,8 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
                                 viewer::mat4_rotation_y(1.17227388f));
                             simpl->gpu_mesher_acceptance_instance.instance_id =
                                 instance_id;
+                            simpl->gpu_mesher_acceptance_instance.ray_traced =
+                                false;
                             MATTER_LOGI(
                                 "gpu-mesher",
                                 "loaded cached acceptance water: %zu vertices, "

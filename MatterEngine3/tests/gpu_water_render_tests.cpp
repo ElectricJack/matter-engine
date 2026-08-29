@@ -89,15 +89,15 @@ void test_converts_to_one_authored_water_part() {
     proxy.instance_id = instance_id;
     proxy.ray_traced = true;
     gpu_meshing::set_water_scene_animation_active(proxy, true);
-    CHECK(proxy.rt_proxy_only && proxy.ray_traced &&
+    CHECK(proxy.rt_proxy_only && !proxy.ray_traced &&
               proxy.part_hash == part->part_hash &&
               proxy.instance_id == instance_id,
-          "healthy animation suppresses only static proxy raster visibility");
+          "healthy animation suppresses only the raster proxy and keeps water out of RT");
     gpu_meshing::set_water_scene_animation_active(proxy, false);
-    CHECK(!proxy.rt_proxy_only && proxy.ray_traced &&
+    CHECK(!proxy.rt_proxy_only && !proxy.ray_traced &&
               proxy.part_hash == part->part_hash &&
               proxy.instance_id == instance_id,
-          "fallback restores raster visibility without changing RT identity");
+          "fallback restores raster visibility while water remains raster-only");
 
     std::shared_ptr<const viewer::VkScenePart> repeated;
     uint64_t repeated_instance = 0;

@@ -15,9 +15,9 @@ bool build_water_scene_part(
     std::uint64_t& instance_id, Error& error,
     viewer::WaterFieldBinding water_field_binding = {});
 
-// Animation changes only the proxy's raster classification. Its stable
-// identity, immutable geometry, water-field binding, and RT participation are
-// deliberately untouched so this operation is exactly reversible on fallback.
+// Animation suppresses only the accepted immutable raster proxy while the
+// direct animated raster owns visibility. Active and fallback water remain
+// raster-only; stable identity, geometry, and field binding stay reversible.
 void set_water_scene_animation_active(
     viewer::VkSceneInstance& proxy, bool active) noexcept;
 
