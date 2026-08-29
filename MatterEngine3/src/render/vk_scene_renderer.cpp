@@ -2041,6 +2041,8 @@ void VkSceneRenderer::destroy_pipeline() {
     visibility_id_color_.reset();
     visibility_id_depth_.reset();
     visibility_id_extent_ = {};
+    opaque_hdr_.reset();
+    opaque_depth_.reset();
     raw_diffuse_.reset();
     raw_specular_.reset();
     raw_specular_aux_.reset();
@@ -2147,6 +2149,18 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipelineLayout(device, composite_pipeline_layout_, nullptr);
     if (composite_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
+    if (water_forward_static_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, water_forward_static_pipeline_, nullptr);
+    if (water_forward_direct_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, water_forward_direct_pipeline_, nullptr);
+    if (water_forward_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, water_forward_pipeline_layout_, nullptr);
+    if (water_forward_descriptor_pool_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device, water_forward_descriptor_pool_, nullptr);
+    if (water_forward_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, water_forward_set_layout_, nullptr);
+    if (water_forward_sampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device, water_forward_sampler_, nullptr);
     if (environment_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, environment_set_layout_, nullptr);
     if (raster_pipeline_ != VK_NULL_HANDLE)
@@ -2183,6 +2197,12 @@ void VkSceneRenderer::destroy_pipeline() {
     raster_pipeline_ = VK_NULL_HANDLE;
     skinned_raster_pipeline_ = VK_NULL_HANDLE;
     water_animation_raster_pipeline_ = VK_NULL_HANDLE;
+    water_forward_static_pipeline_ = VK_NULL_HANDLE;
+    water_forward_direct_pipeline_ = VK_NULL_HANDLE;
+    water_forward_pipeline_layout_ = VK_NULL_HANDLE;
+    water_forward_descriptor_pool_ = VK_NULL_HANDLE;
+    water_forward_set_layout_ = VK_NULL_HANDLE;
+    water_forward_sampler_ = VK_NULL_HANDLE;
     wireframe_raster_pipeline_ = VK_NULL_HANDLE;
     wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
     skin_pipeline_ = VK_NULL_HANDLE;
@@ -2504,7 +2524,9 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     }
     vkDestroyShaderModule(device, shader, nullptr);
 
-    if (!create_raster_pipelines(error) || !create_display_pipeline(error) ||
+    if (!create_raster_pipelines(error) ||
+        !create_water_forward_pipelines(error) ||
+        !create_display_pipeline(error) ||
         !create_overlay_line_pipeline(error) ||
         !create_gi_temporal_pipeline(error) ||
         !create_gi_atrous_pipeline(error))
@@ -3483,6 +3505,208 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     return true;
 }
 
+bool VkSceneRenderer::create_water_forward_pipelines(std::string& error) {
+    const VkDevice device = vulkan_->device();
+
+    const VkDescriptorSetLayoutBinding bindings[] = {
+        descriptor_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_FRAGMENT_BIT),
+        descriptor_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_FRAGMENT_BIT),
+        descriptor_binding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                           VK_SHADER_STAGE_FRAGMENT_BIT)};
+    VkDescriptorSetLayoutCreateInfo set_info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    set_info.bindingCount =
+        static_cast<uint32_t>(sizeof(bindings) / sizeof(bindings[0]));
+    set_info.pBindings = bindings;
+    VkResult result = vkCreateDescriptorSetLayout(
+        device, &set_info, nullptr, &water_forward_set_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorSetLayout(water forward)", result,
+                       error);
+
+    const VkDescriptorSetLayout layouts[] = {
+        set_layouts_[0], set_layouts_[1], water_forward_set_layout_,
+        environment_set_layout_};
+    const VkPushConstantRange raster_push{
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+        sizeof(RasterDebugPushConstants)};
+    VkPipelineLayoutCreateInfo layout_info{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_info.setLayoutCount =
+        static_cast<uint32_t>(sizeof(layouts) / sizeof(layouts[0]));
+    layout_info.pSetLayouts = layouts;
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &raster_push;
+    result = vkCreatePipelineLayout(device, &layout_info, nullptr,
+                                    &water_forward_pipeline_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(water forward)", result,
+                       error);
+
+    VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.maxLod = 0.0f;
+    result = vkCreateSampler(device, &sampler, nullptr,
+                             &water_forward_sampler_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(water forward)", result, error);
+
+    VkShaderModule static_vertex = VK_NULL_HANDLE;
+    VkShaderModule direct_vertex = VK_NULL_HANDLE;
+    VkShaderModule fragment = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "raster.vert.spv", static_vertex,
+                              error) ||
+        !create_shader_module(device, "raster_water.vert.spv", direct_vertex,
+                              error) ||
+        !create_shader_module(device, "water_forward.frag.spv", fragment,
+                              error)) {
+        if (static_vertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, static_vertex, nullptr);
+        if (direct_vertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, direct_vertex, nullptr);
+        if (fragment != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, fragment, nullptr);
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = static_vertex;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment;
+    stages[1].pName = "main";
+
+    const VkVertexInputBindingDescription static_binding{
+        0, sizeof(VkRasterVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    const VkVertexInputAttributeDescription static_attributes[] = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, position))},
+        {1, 0, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, normal))},
+        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, tint))},
+        {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, surface))},
+        {4, 0, VK_FORMAT_R32_UINT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, material_index))},
+        {6, 0, VK_FORMAT_R32G32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, warp_uv))},
+        {7, 0, VK_FORMAT_R32G32_UINT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, warp_tangent))}};
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &static_binding;
+    vertex_input.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(sizeof(static_attributes) /
+                              sizeof(static_attributes[0]));
+    vertex_input.pVertexAttributeDescriptions = static_attributes;
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
+    if (const char* cull_env = std::getenv("MATTER_RASTER_CULL")) {
+        if (std::strcmp(cull_env, "none") == 0)
+            rasterization.cullMode = VK_CULL_MODE_NONE;
+        else if (std::strcmp(cull_env, "front") == 0)
+            rasterization.cullMode = VK_CULL_MODE_FRONT_BIT;
+    }
+    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_TRUE;
+    depth_stencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    VkPipelineColorBlendAttachmentState blend_attachments[4]{};
+    for (auto& blend : blend_attachments) {
+        blend.blendEnable = VK_FALSE;
+        blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                               VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT |
+                               VK_COLOR_COMPONENT_A_BIT;
+    }
+    VkPipelineColorBlendStateCreateInfo color_blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    color_blend.attachmentCount = 4;
+    color_blend.pAttachments = blend_attachments;
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                             VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount =
+        static_cast<uint32_t>(sizeof(dynamic_states) / sizeof(dynamic_states[0]));
+    dynamic.pDynamicStates = dynamic_states;
+    const VkFormat color_formats[] = {
+        VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16_SFLOAT,
+        VK_FORMAT_R8_UNORM, VK_FORMAT_R32G32_UINT};
+    VkPipelineRenderingCreateInfo rendering{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount =
+        static_cast<uint32_t>(sizeof(color_formats) / sizeof(color_formats[0]));
+    rendering.pColorAttachmentFormats = color_formats;
+    rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    VkGraphicsPipelineCreateInfo create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    create.pNext = &rendering;
+    create.stageCount = 2;
+    create.pStages = stages;
+    create.pVertexInputState = &vertex_input;
+    create.pInputAssemblyState = &input_assembly;
+    create.pViewportState = &viewport_state;
+    create.pRasterizationState = &rasterization;
+    create.pMultisampleState = &multisample;
+    create.pDepthStencilState = &depth_stencil;
+    create.pColorBlendState = &color_blend;
+    create.pDynamicState = &dynamic;
+    create.layout = water_forward_pipeline_layout_;
+
+    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
+                                       nullptr,
+                                       &water_forward_static_pipeline_);
+    if (result == VK_SUCCESS) {
+        stages[0].module = direct_vertex;
+        const VkVertexInputBindingDescription direct_binding{
+            0, kWaterAnimationRasterVertexStride,
+            VK_VERTEX_INPUT_RATE_VERTEX};
+        const VkVertexInputAttributeDescription direct_attribute{
+            0, 0, VK_FORMAT_R32G32B32_UINT, 0};
+        vertex_input.pVertexBindingDescriptions = &direct_binding;
+        vertex_input.vertexAttributeDescriptionCount = 1;
+        vertex_input.pVertexAttributeDescriptions = &direct_attribute;
+        result = vkCreateGraphicsPipelines(
+            device, VK_NULL_HANDLE, 1, &create, nullptr,
+            &water_forward_direct_pipeline_);
+    }
+    vkDestroyShaderModule(device, fragment, nullptr);
+    vkDestroyShaderModule(device, direct_vertex, nullptr);
+    vkDestroyShaderModule(device, static_vertex, nullptr);
+    return result == VK_SUCCESS ||
+           fail_vk("vkCreateGraphicsPipelines(water forward)", result,
+                   error);
+}
+
 bool VkSceneRenderer::create_display_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
     const VkDescriptorSetLayoutBinding binding = descriptor_binding(
@@ -3946,6 +4170,28 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         vkCreateDescriptorPool(vulkan_->device(), &pool, nullptr, &next_pool);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateDescriptorPool(cull)", result, error);
+    const VkDescriptorPoolSize water_pool_sizes[] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frame_slot_count * 2u},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
+    VkDescriptorPoolCreateInfo water_pool_info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    water_pool_info.maxSets = frame_slot_count;
+    water_pool_info.poolSizeCount =
+        static_cast<uint32_t>(sizeof(water_pool_sizes) /
+                              sizeof(water_pool_sizes[0]));
+    water_pool_info.pPoolSizes = water_pool_sizes;
+    VkDescriptorPool next_water_pool = VK_NULL_HANDLE;
+    result = vkCreateDescriptorPool(vulkan_->device(), &water_pool_info,
+                                    nullptr, &next_water_pool);
+    if (result != VK_SUCCESS) {
+        vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+        return fail_vk("vkCreateDescriptorPool(water forward)", result,
+                       error);
+    }
+    const auto destroy_candidate_pools = [&] {
+        vkDestroyDescriptorPool(vulkan_->device(), next_water_pool, nullptr);
+        vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+    };
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
     layouts.reserve(frame_slot_count * 18);
@@ -3969,8 +4215,23 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     allocate.pSetLayouts = layouts.data();
     result = vkAllocateDescriptorSets(vulkan_->device(), &allocate, sets.data());
     if (result != VK_SUCCESS) {
-        vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+        destroy_candidate_pools();
         return fail_vk("vkAllocateDescriptorSets(cull)", result, error);
+    }
+    std::vector<VkDescriptorSet> water_sets(frame_slot_count);
+    std::vector<VkDescriptorSetLayout> water_layouts(
+        frame_slot_count, water_forward_set_layout_);
+    VkDescriptorSetAllocateInfo water_allocate{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    water_allocate.descriptorPool = next_water_pool;
+    water_allocate.descriptorSetCount = frame_slot_count;
+    water_allocate.pSetLayouts = water_layouts.data();
+    result = vkAllocateDescriptorSets(vulkan_->device(), &water_allocate,
+                                      water_sets.data());
+    if (result != VK_SUCCESS) {
+        destroy_candidate_pools();
+        return fail_vk("vkAllocateDescriptorSets(water forward)", result,
+                       error);
     }
     uint32_t allocations = 1;
     const auto ensure_candidate_buffer = [&](matter::VkBufferResource& buffer,
@@ -3994,12 +4255,16 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         frame.composite_descriptor_set = sets[index * 18 + 3];
         frame.environment_descriptor_set = sets[index * 18 + 4];
         frame.display_descriptor_set = sets[index * 18 + 5];
+        frame.water_forward_descriptor_set = water_sets[index];
         for (uint32_t i = 0; i < 3; ++i)
             frame.gi_temporal_descriptor_sets[i] = sets[index * 18 + 6 + i];
         for (uint32_t i = 0; i < 9; ++i)
             frame.gi_atrous_descriptor_sets[i] = sets[index * 18 + 9 + i];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
+                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.water_forward_constants,
+                                     sizeof(WaterForwardConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.environment_constants,
                                      sizeof(float) * 40 +
@@ -4091,7 +4356,19 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                 frame.water_field_records,
                 sizeof(WaterFieldGpuRecord) * kWaterFieldBindingSlots,
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
-            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            destroy_candidate_pools();
+            return false;
+        }
+        frame.water_forward_constants_cache.viewport_refraction = {
+            static_cast<float>(raster_extent_.width),
+            static_cast<float>(raster_extent_.height), 24.0f, 0.75f};
+        frame.water_forward_constants_cache.reflection_controls = {
+            24.0f, 2.0f, 0.25f, 80.0f};
+        if (!matter::upload_buffer(
+                *vulkan_, frame.water_forward_constants,
+                &frame.water_forward_constants_cache,
+                sizeof(frame.water_forward_constants_cache), 0u, error)) {
+            destroy_candidate_pools();
             return false;
         }
         // EnvironmentBlock is host-visible by construction, but create_buffer
@@ -4099,17 +4376,18 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // before the initial neutral write; VkBufferResource lifetime owns the
         // matching unmap/reset if a later frame-slot allocation fails.
         if (!matter::map_buffer(frame.environment_constants, error)) {
-            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            destroy_candidate_pools();
             return false;
         }
         update_frame_descriptors(frame);
+        update_water_forward_descriptor(frame);
         if (!write_water_field_descriptors_for_frame(
                 frame, VK_NULL_HANDLE, error)) {
-            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            destroy_candidate_pools();
             return false;
         }
         if (!update_environment_descriptor(frame, error)) {
-            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            destroy_candidate_pools();
             return false;
         }
         if (gpu_timers_supported_) {
@@ -4128,6 +4406,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         vulkan_->wait_idle();
         vkDestroyDescriptorPool(vulkan_->device(), descriptor_pool_, nullptr);
     }
+    if (water_forward_descriptor_pool_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(vulkan_->device(),
+                                water_forward_descriptor_pool_, nullptr);
     for (auto& f : frames_) {
         if (f.ts_pool != VK_NULL_HANDLE) {
             vkDestroyQueryPool(vulkan_->device(), f.ts_pool, nullptr);
@@ -4136,6 +4417,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     }
     frames_ = std::move(next_frames);
     descriptor_pool_ = next_pool;
+    water_forward_descriptor_pool_ = next_water_pool;
     if (vulkan_->ray_tracing_available()) {
         if (rt_descriptor_pool_ != VK_NULL_HANDLE)
             vkDestroyDescriptorPool(vulkan_->device(), rt_descriptor_pool_,
@@ -4248,6 +4530,56 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       frame.part_occluder_class);
     write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
     write_vt_descriptors_for_frame(frame);
+}
+
+void VkSceneRenderer::update_water_forward_descriptor(FrameResources& frame) {
+    if (frame.water_forward_descriptor_set == VK_NULL_HANDLE ||
+        frame.water_forward_constants.buffer == VK_NULL_HANDLE ||
+        water_forward_sampler_ == VK_NULL_HANDLE ||
+        opaque_hdr_.view == VK_NULL_HANDLE ||
+        opaque_depth_.view == VK_NULL_HANDLE)
+        return;
+    const VkDescriptorImageInfo opaque_hdr_info{
+        water_forward_sampler_, opaque_hdr_.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo opaque_depth_info{
+        water_forward_sampler_, opaque_depth_.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorBufferInfo constants_info{
+        frame.water_forward_constants.buffer, 0,
+        sizeof(WaterForwardConstants)};
+    VkWriteDescriptorSet writes[3]{};
+    for (uint32_t index = 0; index != 3; ++index) {
+        writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[index].dstSet = frame.water_forward_descriptor_set;
+        writes[index].dstBinding = index;
+        writes[index].descriptorCount = 1;
+    }
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &opaque_hdr_info;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &opaque_depth_info;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[2].pBufferInfo = &constants_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 3, writes, 0, nullptr);
+}
+
+bool VkSceneRenderer::upload_water_forward_constants(
+    FrameResources& frame, const FrameMatrices& matrices, VkExtent2D extent,
+    std::string& error) {
+    WaterForwardConstants constants{};
+    constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
+    constants.to_sun = {atmosphere_replay_constants_.rt_to_sun.x,
+                        atmosphere_replay_constants_.rt_to_sun.y,
+                        atmosphere_replay_constants_.rt_to_sun.z, 0.0f};
+    constants.viewport_refraction = {static_cast<float>(extent.width),
+                                     static_cast<float>(extent.height),
+                                     24.0f, 0.75f};
+    constants.reflection_controls = {24.0f, 2.0f, 0.25f, 80.0f};
+    frame.water_forward_constants_cache = constants;
+    return matter::upload_buffer(
+        *vulkan_, frame.water_forward_constants, &constants,
+        sizeof(constants), 0u, error);
 }
 
 bool VkSceneRenderer::write_water_field_descriptors_for_frame(
@@ -12049,6 +12381,9 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+    if (!upload_water_forward_constants(selected, matrices, raster_extent_,
+                                        error))
+        return false;
     const VkDescriptorSet water_rt_set =
         frame.frame_slot < rt_descriptor_sets_.size()
             ? rt_descriptor_sets_[frame.frame_slot]
@@ -13704,6 +14039,9 @@ bool VkSceneRenderer::record_cull_and_render(
     }
 
     FrameResources& selected = frames_[frame.frame_slot];
+    if (!upload_water_forward_constants(selected, matrices, raster_extent_,
+                                        error))
+        return false;
     // Resize froxels while this frame slot is known complete and before the
     // composite descriptor below is written. The same frame then binds the
     // candidate integrated view rather than one frame of the retired bundle.
@@ -14154,6 +14492,9 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     if (!upload_frame_constants(selected, frame, camera_eye, pixel_budget,
                                 error))
         return poison(error);
+    if (!upload_water_forward_constants(selected, frame, raster_extent_,
+                                        error))
+        return poison(error);
     active_frame_index_ = 0;
     if (instance_staging_.empty() || max_clusters_per_instance_ == 0)
         return true;
@@ -14289,6 +14630,8 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         material_instance_.image != VK_NULL_HANDLE &&
         reactivity_.image != VK_NULL_HANDLE &&
         hdr_.image != VK_NULL_HANDLE &&
+        opaque_hdr_.image != VK_NULL_HANDLE &&
+        opaque_depth_.image != VK_NULL_HANDLE &&
         visibility_.image != VK_NULL_HANDLE &&
         raw_diffuse_.image != VK_NULL_HANDLE &&
         raw_specular_.image != VK_NULL_HANDLE &&
@@ -14305,6 +14648,13 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         vulkan_->wait_idle();
         if (!dlss_bridge_->free_dlss_resources(error)) return false;
     }
+    const bool reuse_opaque_images =
+        opaque_hdr_.image != VK_NULL_HANDLE &&
+        opaque_depth_.image != VK_NULL_HANDLE &&
+        opaque_hdr_.extent.width == width &&
+        opaque_hdr_.extent.height == height &&
+        opaque_depth_.extent.width == width &&
+        opaque_depth_.extent.height == height;
     matter::VkImageResource albedo;
     matter::VkImageResource normal;
     matter::VkImageResource orm;
@@ -14313,6 +14663,8 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource reactivity;
     matter::VkImageResource depth;
     matter::VkImageResource hdr;
+    matter::VkImageResource opaque_hdr;
+    matter::VkImageResource opaque_depth;
     matter::VkImageResource visibility;
     matter::VkImageResource raw_diffuse;
     matter::VkImageResource raw_specular;
@@ -14335,6 +14687,15 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     const VkImageUsageFlags gbuffer_usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    const VkImageUsageFlags depth_usage =
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+        VK_IMAGE_USAGE_SAMPLED_BIT;
+    const VkImageUsageFlags hdr_usage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    const VkImageUsageFlags opaque_usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     if (!matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
                               VK_FORMAT_R8G8B8A8_UNORM, extent,
                               gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -14367,18 +14728,13 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                               reactivity, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_D32_SFLOAT, extent,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                VK_IMAGE_USAGE_SAMPLED_BIT,
+            depth_usage,
             VK_IMAGE_ASPECT_DEPTH_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             depth, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D,
             VK_FORMAT_R16G16B16A16_SFLOAT, extent,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                VK_IMAGE_USAGE_SAMPLED_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            hdr_usage,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             hdr, error) ||
         !matter::create_image(
@@ -14412,6 +14768,18 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             visibility_usage, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, raw_transmission_aux,
             error)) {
+        return false;
+    }
+    if (!reuse_opaque_images &&
+        (!matter::create_image(
+             *vulkan_, VK_IMAGE_TYPE_2D,
+             VK_FORMAT_R16G16B16A16_SFLOAT, extent, opaque_usage,
+             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+             opaque_hdr, error) ||
+         !matter::create_image(
+             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_D32_SFLOAT, extent,
+             opaque_usage, VK_IMAGE_ASPECT_DEPTH_BIT,
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, opaque_depth, error))) {
         return false;
     }
     const VkImageUsageFlags history_usage =
@@ -14472,6 +14840,10 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     // attachment replaced just below, so its descriptors have to be rewritten.
     visibility_descriptors_valid_ = false;
     hdr_ = std::move(hdr);
+    if (!reuse_opaque_images) {
+        opaque_hdr_ = std::move(opaque_hdr);
+        opaque_depth_ = std::move(opaque_depth);
+    }
     visibility_ = std::move(visibility);
     raw_diffuse_ = std::move(raw_diffuse);
     raw_specular_ = std::move(raw_specular);
@@ -14501,8 +14873,14 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     gi_history_reset_pending_ = true;
     raw_diffuse_extent_ = {raw_width, raw_height};
     visibility_usage_ = visibility_usage;
+    hdr_usage_ = hdr_usage;
+    depth_usage_ = depth_usage;
+    opaque_hdr_usage_ = opaque_usage;
+    opaque_depth_usage_ = opaque_usage;
     raster_extent_ = {width, height};
     raster_attachments_ready_ = false;
+    for (FrameResources& frame : frames_)
+        update_water_forward_descriptor(frame);
 
     return true;
 }
@@ -14558,6 +14936,15 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         return false;
     }
     FrameResources& selected = frames_[active_frame_index_];
+    selected.water_forward_constants_cache.viewport_refraction = {
+        static_cast<float>(width), static_cast<float>(height), 24.0f, 0.75f};
+    selected.water_forward_constants_cache.reflection_controls = {
+        24.0f, 2.0f, 0.25f, 80.0f};
+    if (!matter::upload_buffer(
+            *vulkan_, selected.water_forward_constants,
+            &selected.water_forward_constants_cache,
+            sizeof(selected.water_forward_constants_cache), 0u, error))
+        return false;
     if (!resolve_atmosphere_transaction(selected, 0.0f, error)) return false;
     update_composite_descriptor(selected);
     // Name the fields: production raster records gained per-skin LOD/cluster

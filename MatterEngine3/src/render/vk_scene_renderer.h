@@ -85,6 +85,20 @@ static_assert(offsetof(EnvironmentLightingGpu, sky_display_reserved) == 32);
 static_assert(offsetof(EnvironmentLightingGpu,
                        sky_irradiance_ambient_ratio) == 48);
 
+struct alignas(16) WaterForwardConstants {
+    GpuMat4 clip_to_world;
+    matter::Float4 to_sun;
+    matter::Float4 viewport_refraction;
+    matter::Float4 reflection_controls;
+};
+static_assert(sizeof(WaterForwardConstants) == 112,
+              "water forward constants must match the std140 shader block");
+static_assert(std::is_standard_layout_v<WaterForwardConstants>);
+static_assert(offsetof(WaterForwardConstants, clip_to_world) == 0);
+static_assert(offsetof(WaterForwardConstants, to_sun) == 64);
+static_assert(offsetof(WaterForwardConstants, viewport_refraction) == 80);
+static_assert(offsetof(WaterForwardConstants, reflection_controls) == 96);
+
 struct ResolvedAtmosphereStatus {
     uint64_t generation_serial = 0;
     float resolved_elevation_deg = 0.0f;
@@ -1128,6 +1142,52 @@ public:
     }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     bool part_is_raster_water(uint64_t part_hash) const noexcept;
+    VkPipeline test_water_forward_static_pipeline() const noexcept {
+        return water_forward_static_pipeline_;
+    }
+    VkPipeline test_water_forward_direct_pipeline() const noexcept {
+        return water_forward_direct_pipeline_;
+    }
+    VkPipelineLayout test_water_forward_pipeline_layout() const noexcept {
+        return water_forward_pipeline_layout_;
+    }
+    VkDescriptorSet test_water_forward_descriptor_set(
+        uint32_t frame_slot) const noexcept {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].water_forward_descriptor_set
+                   : VK_NULL_HANDLE;
+    }
+    WaterForwardConstants test_water_forward_constants(
+        uint32_t frame_slot) const noexcept {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].water_forward_constants_cache
+                   : WaterForwardConstants{};
+    }
+    VkFormat test_opaque_hdr_format() const noexcept {
+        return opaque_hdr_.format;
+    }
+    VkFormat test_opaque_depth_format() const noexcept {
+        return opaque_depth_.format;
+    }
+    VkExtent2D test_opaque_extent() const noexcept {
+        return {opaque_hdr_.extent.width, opaque_hdr_.extent.height};
+    }
+    VkImage test_opaque_hdr_image() const noexcept {
+        return opaque_hdr_.image;
+    }
+    VkImage test_opaque_depth_image() const noexcept {
+        return opaque_depth_.image;
+    }
+    VkImageUsageFlags test_hdr_usage() const noexcept { return hdr_usage_; }
+    VkImageUsageFlags test_depth_usage() const noexcept {
+        return depth_usage_;
+    }
+    VkImageUsageFlags test_opaque_hdr_usage() const noexcept {
+        return opaque_hdr_usage_;
+    }
+    VkImageUsageFlags test_opaque_depth_usage() const noexcept {
+        return opaque_depth_usage_;
+    }
     const std::vector<PartCommandRange>&
     test_recorded_visibility_id_ranges() const {
         return recorded_visibility_id_ranges_;
@@ -1945,6 +2005,8 @@ private:
 
     struct FrameResources {
         matter::VkBufferResource frame_constants;
+        matter::VkBufferResource water_forward_constants;
+        WaterForwardConstants water_forward_constants_cache{};
         // Set-1 physical environment state is deliberately per frame slot so
         // a new camera/sun cannot rewrite storage still referenced by a
         // submitted composite, RT, or froxel dispatch.
@@ -2012,6 +2074,7 @@ private:
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet environment_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet water_forward_descriptor_set = VK_NULL_HANDLE;
         VkImageView environment_cloud_views[4]{};
         VkExtent3D environment_cloud_extents[4]{};
         float environment_cloud_state[4]{};
@@ -2139,6 +2202,7 @@ private:
     bool create_environment_layout(std::string& error);
     bool create_environment_resources(std::string& error);
     bool create_raster_pipelines(std::string& error);
+    bool create_water_forward_pipelines(std::string& error);
     bool create_display_pipeline(std::string& error);
     bool create_overlay_line_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
@@ -2186,6 +2250,11 @@ private:
     void probe_skin_raster_draws(
         const std::vector<VkSkinRasterDraw>& draws) const;
     void update_composite_descriptor(FrameResources& frame);
+    void update_water_forward_descriptor(FrameResources& frame);
+    bool upload_water_forward_constants(FrameResources& frame,
+                                        const FrameMatrices& matrices,
+                                        VkExtent2D extent,
+                                        std::string& error);
     bool update_environment_descriptor(FrameResources& frame,
                                        std::string& error,
                                        const matter::VkImageResource* sky = nullptr,
@@ -2407,6 +2476,11 @@ private:
     // Raster-only dynamic water. Its vertices never receive device-address or
     // acceleration-structure usage and therefore cannot enter a BLAS path.
     VkPipeline water_animation_raster_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout water_forward_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout water_forward_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline water_forward_static_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline water_forward_direct_pipeline_ = VK_NULL_HANDLE;
+    VkSampler water_forward_sampler_ = VK_NULL_HANDLE;
     // VK_POLYGON_MODE_LINE twins of the two above, created only when the
     // device enabled fillModeNonSolid. Everything else about them -- shaders,
     // layout, attachments, depth state -- is identical, so the wireframe view
@@ -2439,6 +2513,7 @@ private:
     VkDescriptorPool rt_descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> rt_descriptor_sets_;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
+    VkDescriptorPool water_forward_descriptor_pool_ = VK_NULL_HANDLE;
     bool initialized_ = false;
 
     matter::VkBufferResource clusters_;
@@ -2479,6 +2554,8 @@ private:
     matter::VkImageResource reactivity_;
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
+    matter::VkImageResource opaque_hdr_;
+    matter::VkImageResource opaque_depth_;
     matter::VkImageResource visibility_;
     matter::VkImageResource raw_diffuse_;
     matter::VkImageResource raw_specular_;
@@ -2664,6 +2741,10 @@ private:
     bool gi_candidate_used_reflection_reset_ = false;
     bool last_composite_used_gi_temporal_ = false;
     VkImageUsageFlags visibility_usage_ = 0;
+    VkImageUsageFlags hdr_usage_ = 0;
+    VkImageUsageFlags depth_usage_ = 0;
+    VkImageUsageFlags opaque_hdr_usage_ = 0;
+    VkImageUsageFlags opaque_depth_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
     VkDeviceAddress rt_sbt_address_ = 0;
     VkDeviceAddress rt_sbt_test_raygen_address_ = 0;

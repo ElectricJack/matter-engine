@@ -86,6 +86,20 @@ int main() {
                std::string::npos);
     assert(engine_makefile.find("raster_water.vert.spv") !=
            std::string::npos);
+    const size_t water_forward_inventory = engine_makefile.find(
+        "build/shaders_vk/water_forward.frag.spv");
+    assert(water_forward_inventory != std::string::npos);
+    const size_t water_forward_dependencies = engine_makefile.find(
+        "build/shaders_vk/water_forward.frag.spv:");
+    assert(water_forward_dependencies != std::string::npos);
+    const std::string water_forward_dependency_rule =
+        engine_makefile.substr(water_forward_dependencies, 320);
+    for (const char* dependency : {"shaders_vk/material_common.glsl",
+                                   "shaders_vk/water_surface.glsl",
+                                   "shaders_vk/water_screen_space.glsl",
+                                   "shaders_vk/environment_common.glsl"})
+        assert(water_forward_dependency_rule.find(dependency) !=
+               std::string::npos);
     assert(renderer_header.find("kGpuZoneWaterDecode") != std::string::npos);
     assert(renderer_header.find("kGpuZoneWaterDraw") != std::string::npos);
     assert(renderer_source.find("record.water_decode_zone") !=
@@ -173,9 +187,15 @@ int main() {
            std::string::npos);
     const std::string environment =
         read_shader("../shaders_vk/environment_common.glsl");
-    assert(environment.find("layout(set = 1, binding = 0) uniform sampler2D atmosphere_sky_view") !=
+    assert(environment.find("#ifndef ENVIRONMENT_SET") !=
            std::string::npos);
-    assert(environment.find("layout(set = 1, binding = 6, std140) uniform EnvironmentBlock") !=
+    assert(environment.find("#define ENVIRONMENT_SET 0") !=
+           std::string::npos);
+    assert(environment.find("#define ENVIRONMENT_SET 1") !=
+           std::string::npos);
+    assert(environment.find("layout(set = ENVIRONMENT_SET, binding = 0) uniform sampler2D atmosphere_sky_view") !=
+           std::string::npos);
+    assert(environment.find("layout(set = ENVIRONMENT_SET, binding = 6, std140) uniform EnvironmentBlock") !=
            std::string::npos);
     assert(environment.find("sample_sky_irradiance") != std::string::npos &&
            environment.find("environment.cloud_state.x == 0.0") !=

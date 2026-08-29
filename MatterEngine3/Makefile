@@ -333,6 +333,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/raster_skin.vert.spv \
          build/shaders_vk/raster_water.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
+         build/shaders_vk/water_forward.frag.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv \
          build/shaders_vk/display_transform.frag.spv \
@@ -403,6 +404,10 @@ build/shaders_vk/raster_water.vert.spv: shaders_vk/raster.vert shaders_vk/materi
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_WATER_ANIMATION_VERTEX_INPUT $< -o $@
 
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
+
+build/shaders_vk/water_forward.frag.spv: \
+    shaders_vk/material_common.glsl shaders_vk/water_surface.glsl \
+    shaders_vk/water_screen_space.glsl shaders_vk/environment_common.glsl
 
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \

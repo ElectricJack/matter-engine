@@ -2723,6 +2723,8 @@ void run_rt_lod_payload_contract_tests() {
 void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
+    CHECK(sizeof(viewer::WaterForwardConstants) == 112u,
+          "water forward constants ABI");
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
     matter::VulkanGiSettings scaled_gi{};
@@ -2840,6 +2842,46 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render G-buffer and composite" : error.c_str());
 
+    CHECK(renderer.test_water_forward_static_pipeline() != VK_NULL_HANDLE &&
+              renderer.test_water_forward_direct_pipeline() != VK_NULL_HANDLE &&
+              renderer.test_water_forward_pipeline_layout() != VK_NULL_HANDLE,
+          "static and direct water forward pipelines share a complete ABI");
+    CHECK(renderer.test_water_forward_descriptor_set(0u) != VK_NULL_HANDLE,
+          "water forward descriptor set is allocated per frame slot");
+    CHECK(renderer.test_opaque_hdr_format() ==
+              VK_FORMAT_R16G16B16A16_SFLOAT,
+          "preserved opaque HDR format");
+    CHECK(renderer.test_opaque_depth_format() == VK_FORMAT_D32_SFLOAT,
+          "preserved opaque depth format");
+    CHECK(renderer.test_opaque_extent().width == width &&
+              renderer.test_opaque_extent().height == height,
+          "preserved opaque resources match raster extent");
+    CHECK((renderer.test_hdr_usage() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0u &&
+              (renderer.test_depth_usage() &
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0u,
+          "main HDR and depth support opaque preservation copies");
+    constexpr VkImageUsageFlags required_opaque_usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    CHECK(renderer.test_opaque_hdr_usage() == required_opaque_usage &&
+              renderer.test_opaque_depth_usage() == required_opaque_usage,
+          "preserved opaque resources have only sampled/copy-destination usage");
+    const viewer::WaterForwardConstants forward_constants =
+        renderer.test_water_forward_constants(0u);
+    CHECK(forward_constants.viewport_refraction.x == float(width) &&
+              forward_constants.viewport_refraction.y == float(height) &&
+              forward_constants.viewport_refraction.z == 24.0f &&
+              forward_constants.viewport_refraction.w == 0.75f,
+          "water forward viewport and refraction constants");
+    CHECK(forward_constants.reflection_controls.x == 24.0f &&
+              forward_constants.reflection_controls.y == 2.0f &&
+              forward_constants.reflection_controls.z == 0.25f &&
+              forward_constants.reflection_controls.w == 80.0f,
+          "water forward reflection constants");
+    const VkImage opaque_hdr_at_initial_extent =
+        renderer.test_opaque_hdr_image();
+    const VkImage opaque_depth_at_initial_extent =
+        renderer.test_opaque_depth_image();
+
     const viewer::VkRasterAttachments attachments =
         renderer.raster_attachments();
     CHECK(attachments.albedo.format == VK_FORMAT_R8G8B8A8_UNORM,
@@ -2866,6 +2908,21 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(attachments.extent.width == width &&
               attachments.extent.height == height,
           "raster attachment extent");
+
+    scaled_gi.trace_scale = 0.75f;
+    renderer.set_gi_settings(scaled_gi);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "rebuild only trace-scale raster targets"
+                        : error.c_str());
+    CHECK(renderer.test_opaque_hdr_image() == opaque_hdr_at_initial_extent &&
+              renderer.test_opaque_depth_image() ==
+                  opaque_depth_at_initial_extent,
+          "preserved opaque images survive non-extent target recreation");
+    scaled_gi.trace_scale = 0.5f;
+    renderer.set_gi_settings(scaled_gi);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "restore half-scale raster targets"
+                        : error.c_str());
 
     viewer::VkRasterPixel center{};
     viewer::VkRasterPixel lower_right_inside{};
