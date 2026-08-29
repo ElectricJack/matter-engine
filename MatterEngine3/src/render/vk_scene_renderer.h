@@ -630,6 +630,7 @@ struct VkRasterPixel {
     matter::Float4 normal{};
     matter::Float4 orm{};
     matter::Float3 velocity{};
+    float reactivity = 0.0f;
     // The identity attachment's .x, with gbuffer.frag's impostor bit already
     // MASKED OFF -- the same contract every GPU reader honours (see
     // shaders_vk/impostor_common.glsl). Every existing assertion of the form
@@ -653,6 +654,17 @@ struct VkRasterPixel {
     matter::Float4 raw_transmission{};
     matter::Float4 accumulated_transmission{};
     matter::Float3 transmission_aux{};
+};
+
+struct WaterForwardObservation {
+    uint32_t static_draws = 0u;
+    uint32_t direct_draws = 0u;
+    bool copied_opaque_hdr = false;
+    bool copied_opaque_depth = false;
+    bool wrote_depth = false;
+    bool wrote_velocity = false;
+    bool wrote_reactivity = false;
+    bool wrote_identity = false;
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -1194,6 +1206,9 @@ public:
     }
     uint32_t test_recorded_water_draw_count() const noexcept {
         return recorded_water_draw_count_;
+    }
+    WaterForwardObservation test_water_forward_observation() const noexcept {
+        return last_water_forward_observation_;
     }
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
@@ -2456,6 +2471,7 @@ private:
     RasterPipelineDrawDebug test_last_raster_pipeline_draw_{};
     std::vector<PartCommandRange> recorded_visibility_id_ranges_;
     uint32_t recorded_water_draw_count_ = 0u;
+    WaterForwardObservation last_water_forward_observation_{};
 #endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;
@@ -2623,6 +2639,42 @@ private:
                                    const RasterRecordView& record);
     void record_visibility_id_reduce(VkCommandBuffer command_buffer,
                                      FrameResources& frame);
+    struct WaterForwardRecord {
+        VkExtent2D extent{};
+        matter::VkImageResource* hdr = nullptr;
+        matter::VkImageResource* depth = nullptr;
+        matter::VkImageResource* velocity = nullptr;
+        matter::VkImageResource* reactivity = nullptr;
+        matter::VkImageResource* material_instance = nullptr;
+        matter::VkImageResource* opaque_hdr = nullptr;
+        matter::VkImageResource* opaque_depth = nullptr;
+        VkPipeline static_pipeline = VK_NULL_HANDLE;
+        VkPipeline direct_pipeline = VK_NULL_HANDLE;
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        VkDescriptorSet sets[4]{};
+        VkBuffer static_vertices = VK_NULL_HANDLE;
+        VkBuffer static_indices = VK_NULL_HANDLE;
+        VkBuffer indirect = VK_NULL_HANDLE;
+        uint32_t static_command_count = 0u;
+        const PartCommandRange* ranges = nullptr;
+        uint32_t range_count = 0u;
+        uint32_t max_draw_indirect_count = 0u;
+        VkBuffer direct_vertices = VK_NULL_HANDLE;
+        VkBuffer direct_indices = VK_NULL_HANDLE;
+        const VkWaterAnimationRasterDraw* direct_draws = nullptr;
+        uint32_t direct_draw_count = 0u;
+        uint32_t direct_vertex_count = 0u;
+        uint32_t direct_index_count = 0u;
+        uint32_t draw_transform_slots = 0u;
+        RasterDebugPushConstants debug_push{};
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        WaterForwardObservation* observation = nullptr;
+#endif
+    };
+    void record_water_forward(VkCommandBuffer command_buffer,
+                              const WaterForwardRecord& record);
+    static void record_raster_and_water(VkCommandBuffer command_buffer,
+                                        void* user_data);
     // Assigns atlas slots for `part`, uploads its atlases, and patches the
     // billboard vertices already staged at `vertex_base`. Failure is reported
     // and the part still registers -- with its impostor rungs drawing as

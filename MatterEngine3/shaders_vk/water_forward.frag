@@ -103,4 +103,5 @@ void main() {
         ? in_velocity_valid.xy : vec2(0.0);
     out_reactivity = field_valid ? surface.reactivity : 0.0;
     out_material_instance = uvec2(in_material_index, in_instance_token);
+    gl_FragDepth = gl_FragCoord.z;
 }

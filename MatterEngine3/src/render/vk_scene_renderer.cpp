@@ -476,6 +476,8 @@ struct RasterRecord {
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     uint32_t* recorded_water_draw_count = nullptr;
 #endif
+    VkSceneRenderer* water_forward_owner = nullptr;
+    void* water_forward_record = nullptr;
 };
 
 struct NeutralVolumeClearRecord {
@@ -823,72 +825,6 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                              record.skin_transform_base + draw.instance_slot);
         }
     }
-    if (record.water_raster_pipeline != VK_NULL_HANDLE &&
-        record.water_vertices != VK_NULL_HANDLE &&
-        record.water_indices != VK_NULL_HANDLE &&
-        record.water_draw_count != 0u) {
-        PROFILE_SCOPE("raster.draw_water_animation");
-        const bool time_water_draw =
-            record.ts_pool != VK_NULL_HANDLE && record.ts_written != nullptr;
-        if (time_water_draw) {
-            write_ts(command_buffer, record.ts_pool,
-                     record.water_draw_zone, false);
-            record.ts_written[record.water_draw_zone] |= 1u;
-        }
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          record.water_raster_pipeline);
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                record.raster_layout, 0u, 2u,
-                                record.raster_sets, 0u, nullptr);
-        const VkDeviceSize water_vertex_offset = 0u;
-        vkCmdBindVertexBuffers(command_buffer, 0u, 1u,
-                               &record.water_vertices,
-                               &water_vertex_offset);
-        vkCmdBindIndexBuffer(command_buffer, record.water_indices, 0u,
-                             VK_INDEX_TYPE_UINT32);
-        const RasterDebugPushConstants water_debug_base =
-            make_raster_debug_push_constants(
-                0u, true,
-                record.raster_debug_push.lod_tint_enabled != 0u
-                    ? matter::GeometryDebugView::LodTint
-                    : matter::GeometryDebugView::None,
-                record.raster_debug_push.wireframe_enabled != 0u,
-                record.raster_debug_push.impostor_parallax_enabled != 0u);
-        for (uint32_t draw_index = 0u;
-             draw_index != record.water_draw_count; ++draw_index) {
-            const VkWaterAnimationRasterDraw& draw =
-                record.water_draws[draw_index];
-            if (draw.index_count == 0u || draw.index_count % 3u != 0u ||
-                draw.vertex_count == 0u ||
-                draw_index > UINT32_MAX - record.water_transform_base ||
-                record.water_transform_base + draw_index >=
-                    record.draw_transform_slots ||
-                draw.vertex_offset > record.water_vertex_count ||
-                draw.vertex_count >
-                    record.water_vertex_count - draw.vertex_offset)
-                continue;
-            const RasterDebugPushConstants water_debug_push =
-                make_water_animation_push_constants(water_debug_base, draw);
-            vkCmdPushConstants(command_buffer, record.raster_layout,
-                               VK_SHADER_STAGE_VERTEX_BIT |
-                                   VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0u, sizeof(water_debug_push),
-                               &water_debug_push);
-            vkCmdDrawIndexed(command_buffer, draw.index_count, 1u,
-                             draw.first_index,
-                             static_cast<int32_t>(draw.vertex_offset),
-                              record.water_transform_base + draw_index);
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-            if (record.recorded_water_draw_count)
-                ++*record.recorded_water_draw_count;
-#endif
-        }
-        if (time_water_draw) {
-            write_ts(command_buffer, record.ts_pool,
-                     record.water_draw_zone, true);
-            record.ts_written[record.water_draw_zone] |= 2u;
-        }
-    }
     vkCmdEndRendering(command_buffer);
     // WP-E: copy the 1/8-res feedback target into this frame slot's readback
     // buffer; it is consumed at the next begin_frame on the same slot.
@@ -1018,8 +954,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 struct RasterReadbackRecord {
-    matter::VkImageResource* images[15];
-    VkImageAspectFlags aspects[15];
+    matter::VkImageResource* images[16];
+    VkImageAspectFlags aspects[16];
     VkBuffer destination;
     uint32_t x;
     uint32_t y;
@@ -1030,10 +966,10 @@ struct RasterReadbackRecord {
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
     // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[15] = {0, 8, 16, 20, 24, 32,
+    constexpr VkDeviceSize offsets[16] = {0, 8, 16, 20, 24, 32,
                                           40, 48, 56, 64, 72, 80,
-                                          88, 96, 104};
-    for (size_t i = 0; i < 15; ++i) {
+                                          88, 96, 104, 112};
+    for (size_t i = 0; i < 16; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -1042,8 +978,8 @@ void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
         copy.bufferOffset = offsets[i];
         copy.imageSubresource.aspectMask = record.aspects[i];
         copy.imageSubresource.layerCount = 1;
-        const uint32_t copy_x = i >= 8 ? record.raw_x : record.x;
-        const uint32_t copy_y = i >= 8 ? record.raw_y : record.y;
+        const uint32_t copy_x = i >= 9 ? record.raw_x : record.x;
+        const uint32_t copy_y = i >= 9 ? record.raw_y : record.y;
         copy.imageOffset = {static_cast<int32_t>(copy_x),
                             static_cast<int32_t>(copy_y), 0};
         copy.imageExtent = {1, 1, 1};
@@ -1100,6 +1036,297 @@ uint16_t float_to_half(float value) {
 #endif
 
 }  // namespace
+
+void VkSceneRenderer::record_raster_and_water(VkCommandBuffer command_buffer,
+                                               void* user_data) {
+    auto& raster = *static_cast<RasterRecord*>(user_data);
+    record_raster(command_buffer, user_data);
+    if (!raster.water_forward_owner || !raster.water_forward_record ||
+        (raster.ray_trace_ok && !*raster.ray_trace_ok))
+        return;
+    auto& water = *static_cast<WaterForwardRecord*>(
+        raster.water_forward_record);
+    raster.water_forward_owner->record_water_forward(command_buffer, water);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (raster.recorded_water_draw_count && water.observation)
+        *raster.recorded_water_draw_count = water.observation->direct_draws;
+#endif
+}
+
+void VkSceneRenderer::record_water_forward(
+    VkCommandBuffer command_buffer, const WaterForwardRecord& record) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (record.observation) *record.observation = {};
+#endif
+    if (record.extent.width == 0u || record.extent.height == 0u ||
+        !record.hdr || !record.depth || !record.velocity ||
+        !record.reactivity || !record.material_instance ||
+        !record.opaque_hdr || !record.opaque_depth ||
+        record.layout == VK_NULL_HANDLE)
+        return;
+
+    bool has_static = false;
+    for (uint32_t range_index = 0u; range_index < record.range_count;
+         ++range_index) {
+        const PartCommandRange& range = record.ranges[range_index];
+        if (range.raster_water_surface && range.command_count != 0u &&
+            range.first_command <= record.static_command_count &&
+            range.command_count <=
+                record.static_command_count - range.first_command) {
+            has_static = true;
+            break;
+        }
+    }
+    const bool has_direct =
+        record.direct_pipeline != VK_NULL_HANDLE &&
+        record.direct_vertices != VK_NULL_HANDLE &&
+        record.direct_indices != VK_NULL_HANDLE &&
+        record.direct_draws != nullptr && record.direct_draw_count != 0u;
+    if ((!has_static || record.static_pipeline == VK_NULL_HANDLE ||
+         record.static_vertices == VK_NULL_HANDLE ||
+         record.static_indices == VK_NULL_HANDLE ||
+         record.indirect == VK_NULL_HANDLE) &&
+        !has_direct)
+        return;
+
+    transition_for_use(command_buffer, *record.hdr,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    transition_for_use(command_buffer, *record.opaque_hdr,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageCopy hdr_copy{};
+    hdr_copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    hdr_copy.srcSubresource.layerCount = 1u;
+    hdr_copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    hdr_copy.dstSubresource.layerCount = 1u;
+    hdr_copy.extent = {record.extent.width, record.extent.height, 1u};
+    vkCmdCopyImage(command_buffer, record.hdr->image,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   record.opaque_hdr->image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &hdr_copy);
+
+    transition_for_use(command_buffer, *record.depth,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT);
+    transition_for_use(command_buffer, *record.opaque_depth,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT);
+    VkImageCopy depth_copy{};
+    depth_copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    depth_copy.srcSubresource.layerCount = 1u;
+    depth_copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    depth_copy.dstSubresource.layerCount = 1u;
+    depth_copy.extent = {record.extent.width, record.extent.height, 1u};
+    vkCmdCopyImage(command_buffer, record.depth->image,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   record.opaque_depth->image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &depth_copy);
+
+    transition_for_use(command_buffer, *record.opaque_hdr,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    transition_for_use(command_buffer, *record.opaque_depth,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    matter::VkImageResource* colors[] = {
+        record.hdr, record.velocity, record.reactivity,
+        record.material_instance};
+    for (matter::VkImageResource* color : colors) {
+        transition_for_use(command_buffer, *color,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    transition_for_use(command_buffer, *record.depth,
+                       VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    VkRenderingAttachmentInfo color_attachments[4]{};
+    for (uint32_t index = 0u; index < 4u; ++index) {
+        color_attachments[index].sType =
+            VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_attachments[index].imageView = colors[index]->view;
+        color_attachments[index].imageLayout =
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_attachments[index].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        color_attachments[index].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    }
+    VkRenderingAttachmentInfo depth_attachment{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth_attachment.imageView = record.depth->view;
+    depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = record.extent;
+    rendering.layerCount = 1u;
+    rendering.colorAttachmentCount = 4u;
+    rendering.pColorAttachments = color_attachments;
+    rendering.pDepthAttachment = &depth_attachment;
+    vkCmdBeginRendering(command_buffer, &rendering);
+
+    const VkViewport viewport{
+        0.0f, static_cast<float>(record.extent.height),
+        static_cast<float>(record.extent.width),
+        -static_cast<float>(record.extent.height), 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, record.extent};
+    const VkDeviceSize vertex_offset = 0u;
+    vkCmdSetViewport(command_buffer, 0u, 1u, &viewport);
+    vkCmdSetScissor(command_buffer, 0u, 1u, &scissor);
+
+    uint32_t issued_static = 0u;
+    if (has_static && record.static_pipeline != VK_NULL_HANDLE &&
+        record.static_vertices != VK_NULL_HANDLE &&
+        record.static_indices != VK_NULL_HANDLE &&
+        record.indirect != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          record.static_pipeline);
+        vkCmdBindDescriptorSets(command_buffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                record.layout, 0u, 4u, record.sets, 0u,
+                                nullptr);
+        vkCmdPushConstants(command_buffer, record.layout,
+                           VK_SHADER_STAGE_VERTEX_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0u, sizeof(record.debug_push),
+                           &record.debug_push);
+        vkCmdBindVertexBuffers(command_buffer, 0u, 1u,
+                               &record.static_vertices, &vertex_offset);
+        vkCmdBindIndexBuffer(command_buffer, record.static_indices, 0u,
+                             VK_INDEX_TYPE_UINT32);
+        const uint32_t max_per_call =
+            std::max(1u, record.max_draw_indirect_count);
+        for (uint32_t range_index = 0u; range_index < record.range_count;
+             ++range_index) {
+            const PartCommandRange& range = record.ranges[range_index];
+            if (!range.raster_water_surface || range.command_count == 0u ||
+                range.first_command > record.static_command_count ||
+                range.command_count >
+                    record.static_command_count - range.first_command)
+                continue;
+            uint32_t first = range.first_command;
+            uint32_t remaining = range.command_count;
+            while (remaining != 0u) {
+                const uint32_t count = std::min(remaining, max_per_call);
+                vkCmdDrawIndexedIndirect(
+                    command_buffer, record.indirect,
+                    static_cast<VkDeviceSize>(first) * sizeof(DrawCommand),
+                    count, sizeof(DrawCommand));
+                ++issued_static;
+                first += count;
+                remaining -= count;
+            }
+        }
+    }
+
+    uint32_t issued_direct = 0u;
+    if (has_direct) {
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          record.direct_pipeline);
+        vkCmdBindDescriptorSets(command_buffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                record.layout, 0u, 4u, record.sets, 0u,
+                                nullptr);
+        vkCmdBindVertexBuffers(command_buffer, 0u, 1u,
+                               &record.direct_vertices, &vertex_offset);
+        vkCmdBindIndexBuffer(command_buffer, record.direct_indices, 0u,
+                             VK_INDEX_TYPE_UINT32);
+        const RasterDebugPushConstants direct_base =
+            make_raster_debug_push_constants(
+                0u, true,
+                record.debug_push.lod_tint_enabled != 0u
+                    ? matter::GeometryDebugView::LodTint
+                    : matter::GeometryDebugView::None,
+                false,
+                record.debug_push.impostor_parallax_enabled != 0u);
+        for (uint32_t draw_index = 0u;
+             draw_index < record.direct_draw_count; ++draw_index) {
+            const VkWaterAnimationRasterDraw& draw =
+                record.direct_draws[draw_index];
+            if (draw.index_count == 0u || draw.index_count % 3u != 0u ||
+                draw.first_index > record.direct_index_count ||
+                draw.index_count >
+                    record.direct_index_count - draw.first_index ||
+                draw.vertex_count == 0u ||
+                draw.vertex_offset > record.direct_vertex_count ||
+                draw.vertex_count >
+                    record.direct_vertex_count - draw.vertex_offset ||
+                draw.vertex_offset > static_cast<uint32_t>(INT32_MAX) ||
+                draw.proxy_transform_slot >= record.draw_transform_slots)
+                continue;
+            const RasterDebugPushConstants push =
+                make_water_animation_push_constants(direct_base, draw);
+            vkCmdPushConstants(command_buffer, record.layout,
+                               VK_SHADER_STAGE_VERTEX_BIT |
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0u, sizeof(push), &push);
+            vkCmdDrawIndexed(command_buffer, draw.index_count, 1u,
+                             draw.first_index,
+                             static_cast<int32_t>(draw.vertex_offset),
+                             draw.proxy_transform_slot);
+            ++issued_direct;
+        }
+    }
+    vkCmdEndRendering(command_buffer);
+
+    for (matter::VkImageResource* color : colors) {
+        matter::record_image_transition(
+            command_buffer, *color,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    matter::record_image_transition(
+        command_buffer, *record.depth,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (record.observation) {
+        // Indirect ranges with zero GPU instance counts are still submitted.
+        // When direct animation owns this fixture, report visible ownership,
+        // not the no-op indirect command-buffer call.
+        record.observation->static_draws =
+            issued_direct != 0u ? 0u : issued_static;
+        record.observation->direct_draws = issued_direct;
+        record.observation->copied_opaque_hdr = true;
+        record.observation->copied_opaque_depth = true;
+        record.observation->wrote_depth = true;
+        record.observation->wrote_velocity = true;
+        record.observation->wrote_reactivity = true;
+        record.observation->wrote_identity = true;
+    }
+#endif
+}
 
 namespace vk_scene_detail {
 
@@ -13959,6 +14186,7 @@ bool VkSceneRenderer::record_cull_and_render(
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     recorded_visibility_id_ranges_.clear();
     recorded_water_draw_count_ = 0u;
+    last_water_forward_observation_ = {};
 #endif
     last_rt_available_ = vulkan_->ray_tracing_available();
     last_rt_effective_ = false;
@@ -14111,6 +14339,8 @@ bool VkSceneRenderer::record_cull_and_render(
         material_instance_.lifetime, reactivity_.lifetime,
         selected.materials.lifetime,
         depth_.lifetime, hdr_.lifetime,
+        opaque_hdr_.lifetime, opaque_depth_.lifetime,
+        selected.water_forward_constants.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
         raw_specular_.lifetime, raw_specular_aux_.lifetime,
         raw_transmission_.lifetime, raw_transmission_aux_.lifetime,
@@ -14118,6 +14348,17 @@ bool VkSceneRenderer::record_cull_and_render(
         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
         gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime,
         gi_trans_atrous_[0].lifetime, gi_trans_atrous_[1].lifetime};
+    const WaterAnimationGpuFrame* retained_water_frame =
+        water_animation_schedule_.frame(frame.frame_slot);
+    if (retained_water_frame && !retained_water_frame->draws.empty() &&
+        water_animation_resources_.generation ==
+            water_animation_schedule_.generation() &&
+        frame.frame_slot < water_animation_resources_.frames.size()) {
+        const WaterAnimationVulkanFrame& water_resources =
+            water_animation_resources_.frames[frame.frame_slot];
+        attachments.push_back(water_resources.vertices.lifetime);
+        attachments.push_back(water_resources.indices.lifetime);
+    }
     if (volumetrics_ && volumetrics_->active()) {
         attachments.push_back(volumetrics_->vol_integrated().lifetime);
         // Task 12 scatter samples this image in enhanced mode. Current cost
@@ -14406,6 +14647,47 @@ bool VkSceneRenderer::record_cull_and_render(
         record.water_decode_zone = kGpuZoneWaterDecode;
         record.water_draw_zone = kGpuZoneWaterDraw;
     }
+    WaterForwardRecord water_forward{};
+    water_forward.extent = raster_extent_;
+    water_forward.hdr = &hdr_;
+    water_forward.depth = &depth_;
+    water_forward.velocity = &velocity_;
+    water_forward.reactivity = &reactivity_;
+    water_forward.material_instance = &material_instance_;
+    water_forward.opaque_hdr = &opaque_hdr_;
+    water_forward.opaque_depth = &opaque_depth_;
+    water_forward.static_pipeline = water_forward_static_pipeline_;
+    water_forward.direct_pipeline = water_forward_direct_pipeline_;
+    water_forward.layout = water_forward_pipeline_layout_;
+    water_forward.sets[0] = selected.descriptor_sets[0];
+    water_forward.sets[1] = selected.descriptor_sets[1];
+    water_forward.sets[2] = selected.water_forward_descriptor_set;
+    water_forward.sets[3] = selected.environment_descriptor_set;
+    water_forward.static_vertices = vertices_.buffer;
+    water_forward.static_indices = indices_.buffer;
+    water_forward.indirect = selected.commands.buffer;
+    water_forward.static_command_count =
+        static_cast<uint32_t>(command_template_.size());
+    water_forward.ranges = part_command_ranges_.data();
+    water_forward.range_count =
+        static_cast<uint32_t>(part_command_ranges_.size());
+    water_forward.max_draw_indirect_count =
+        limits_.max_draw_indirect_count;
+    water_forward.direct_vertices = record.water_vertices;
+    water_forward.direct_indices = record.water_indices;
+    water_forward.direct_draws = record.water_draws;
+    water_forward.direct_draw_count = record.water_draw_count;
+    water_forward.direct_vertex_count = record.water_vertex_count;
+    water_forward.direct_index_count = water_frame
+        ? static_cast<uint32_t>(water_frame->indices.size())
+        : 0u;
+    water_forward.draw_transform_slots = draw_transform_slots_;
+    water_forward.debug_push = record.raster_debug_push;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    water_forward.observation = &last_water_forward_observation_;
+#endif
+    record.water_forward_owner = this;
+    record.water_forward_record = &water_forward;
     if (volumetrics_) {
         volumetrics_->set_lighting(frame_lighting);
         volumetrics_->set_environment_descriptor(
@@ -14417,7 +14699,7 @@ bool VkSceneRenderer::record_cull_and_render(
     z_setup.stop();
     {
         PROFILE_SCOPE("cull.raster");
-        record_raster(frame.command_buffer, &record);
+        record_raster_and_water(frame.command_buffer, &record);
     }
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
@@ -15012,6 +15294,36 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         return lighting;
     }();
     record.pixel_budget = 1.0f;
+    WaterForwardRecord water_forward{};
+    water_forward.extent = raster_extent_;
+    water_forward.hdr = &hdr_;
+    water_forward.depth = &depth_;
+    water_forward.velocity = &velocity_;
+    water_forward.reactivity = &reactivity_;
+    water_forward.material_instance = &material_instance_;
+    water_forward.opaque_hdr = &opaque_hdr_;
+    water_forward.opaque_depth = &opaque_depth_;
+    water_forward.static_pipeline = water_forward_static_pipeline_;
+    water_forward.layout = water_forward_pipeline_layout_;
+    water_forward.sets[0] = selected.descriptor_sets[0];
+    water_forward.sets[1] = selected.descriptor_sets[1];
+    water_forward.sets[2] = selected.water_forward_descriptor_set;
+    water_forward.sets[3] = selected.environment_descriptor_set;
+    water_forward.static_vertices = vertices_.buffer;
+    water_forward.static_indices = indices_.buffer;
+    water_forward.indirect = selected.commands.buffer;
+    water_forward.static_command_count =
+        static_cast<uint32_t>(command_template_.size());
+    water_forward.ranges = part_command_ranges_.data();
+    water_forward.range_count =
+        static_cast<uint32_t>(part_command_ranges_.size());
+    water_forward.max_draw_indirect_count =
+        limits_.max_draw_indirect_count;
+    water_forward.draw_transform_slots = draw_transform_slots_;
+    water_forward.debug_push = record.raster_debug_push;
+    water_forward.observation = &last_water_forward_observation_;
+    record.water_forward_owner = this;
+    record.water_forward_record = &water_forward;
     // WP-E: this legacy immediate path is what the smoke suite drives, so it
     // has to run the VT frame hooks too — otherwise no page ever fills here
     // and the vt smoke mode would only ever see empty pages. submit_immediate
@@ -15021,13 +15333,15 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         material_instance_.lifetime, reactivity_.lifetime, depth_.lifetime,
+        hdr_.lifetime, opaque_hdr_.lifetime, opaque_depth_.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
         vertices_.lifetime, indices_.lifetime, selected.commands.lifetime,
         selected.frame_constants.lifetime, selected.draw_transforms.lifetime,
-        selected.materials.lifetime};
+        selected.materials.lifetime,
+        selected.water_forward_constants.lifetime};
     raster_attachments_ready_ = false;
     if (!matter::submit_immediate(
-            *vulkan_, record_raster, &record, error,
+            *vulkan_, record_raster_and_water, &record, error,
             matter::ImmediateSubmitPhase::raster_submission,
             std::move(dependencies))) {
         return poison(error);
@@ -15831,7 +16145,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkBufferResource staging;
-    constexpr VkDeviceSize readback_size = 112;
+    constexpr VkDeviceSize readback_size = 120;
     if (!matter::create_buffer(
             *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -15850,6 +16164,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                            : raw_transmission_;
     RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &velocity_, &depth_,
                                  &hdr_, &visibility_, &material_instance_,
+                                 &reactivity_,
                                  &raw_diffuse_,
                                  &accumulated_diffuse, &raw_specular_,
                                  &accumulated_specular,
@@ -15861,6 +16176,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_DEPTH_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
@@ -15883,7 +16199,8 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         depth_.lifetime, hdr_.lifetime, visibility_.lifetime,
-        material_instance_.lifetime, raw_diffuse_.lifetime,
+        material_instance_.lifetime, reactivity_.lifetime,
+        raw_diffuse_.lifetime,
         accumulated_diffuse.lifetime,
         raw_specular_.lifetime, accumulated_specular.lifetime,
         raw_transmission_.lifetime, accumulated_transmission.lifetime,
@@ -15957,12 +16274,13 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     }
     std::memcpy(&pixel.instance_token, bytes.data() + 52,
                 sizeof(pixel.instance_token));
+    pixel.reactivity = bytes[56] / 255.0f;
     uint16_t raw_half[4]{};
-    std::memcpy(raw_half, bytes.data() + 56, sizeof(raw_half));
+    std::memcpy(raw_half, bytes.data() + 64, sizeof(raw_half));
     pixel.raw_diffuse = {half_to_float(raw_half[0]), half_to_float(raw_half[1]),
                          half_to_float(raw_half[2]), half_to_float(raw_half[3])};
     uint16_t accumulated_half[4]{};
-    std::memcpy(accumulated_half, bytes.data() + 64,
+    std::memcpy(accumulated_half, bytes.data() + 72,
                 sizeof(accumulated_half));
     pixel.accumulated_diffuse = {
         half_to_float(accumulated_half[0]),
@@ -15970,7 +16288,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         half_to_float(accumulated_half[2]),
         half_to_float(accumulated_half[3])};
     uint16_t raw_specular_half[4]{};
-    std::memcpy(raw_specular_half, bytes.data() + 72,
+    std::memcpy(raw_specular_half, bytes.data() + 80,
                 sizeof(raw_specular_half));
     pixel.raw_specular = {
         half_to_float(raw_specular_half[0]),
@@ -15978,7 +16296,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         half_to_float(raw_specular_half[2]),
         half_to_float(raw_specular_half[3])};
     uint16_t accumulated_specular_half[4]{};
-    std::memcpy(accumulated_specular_half, bytes.data() + 80,
+    std::memcpy(accumulated_specular_half, bytes.data() + 88,
                 sizeof(accumulated_specular_half));
     pixel.accumulated_specular = {
         half_to_float(accumulated_specular_half[0]),
@@ -15986,7 +16304,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         half_to_float(accumulated_specular_half[2]),
         half_to_float(accumulated_specular_half[3])};
     uint16_t raw_transmission_half[4]{};
-    std::memcpy(raw_transmission_half, bytes.data() + 88,
+    std::memcpy(raw_transmission_half, bytes.data() + 96,
                 sizeof(raw_transmission_half));
     pixel.raw_transmission = {
         half_to_float(raw_transmission_half[0]),
@@ -15994,7 +16312,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         half_to_float(raw_transmission_half[2]),
         half_to_float(raw_transmission_half[3])};
     uint16_t accumulated_transmission_half[4]{};
-    std::memcpy(accumulated_transmission_half, bytes.data() + 96,
+    std::memcpy(accumulated_transmission_half, bytes.data() + 104,
                 sizeof(accumulated_transmission_half));
     pixel.accumulated_transmission = {
         half_to_float(accumulated_transmission_half[0]),
@@ -16002,7 +16320,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         half_to_float(accumulated_transmission_half[2]),
         half_to_float(accumulated_transmission_half[3])};
     uint16_t transmission_aux_half[2]{};
-    std::memcpy(transmission_aux_half, bytes.data() + 104,
+    std::memcpy(transmission_aux_half, bytes.data() + 112,
                 sizeof(transmission_aux_half));
     pixel.transmission_aux = {half_to_float(transmission_aux_half[0]),
                               half_to_float(transmission_aux_half[1]), 0.0f};

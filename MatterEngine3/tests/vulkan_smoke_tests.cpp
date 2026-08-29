@@ -50,6 +50,52 @@ namespace {
 
 viewer::VkScenePart known_raster_triangle(uint64_t hash,
                                           uint32_t material_index = 7u);
+viewer::VkScenePart water_forward_background_triangle(uint64_t hash,
+                                                       uint32_t material_index);
+bool close3(matter::Float3 actual, matter::Float3 expected, float epsilon);
+
+viewer::PackedWaterField make_water_forward_field_fixture(
+    std::uint64_t digest) {
+    hydrology::GameplayFieldLayout layout{};
+    layout.origin_m = {-2.0f, 0.0f, -3.0f};
+    layout.cell_size_m = 0.5f;
+    layout.width = 8u;
+    layout.depth = 4u;
+    const std::size_t cell_count =
+        static_cast<std::size_t>(layout.width) * layout.depth;
+    const std::vector<hydrology::GameplaySample> gameplay(
+        cell_count, {0.0f, 1.5f, 2.0f, 0.0f, 0.5f, true});
+    const std::vector<hydrology::PresentationSample> presentation(
+        cell_count,
+        {0.0f, 0.0f, 0.90f, 0.95f, 0.85f,
+         hydrology::RiverFeature::Rapid, true});
+    matter::WaterSurfaceDefinition surface{};
+    surface.material_id = 7u;
+    surface.optics.shallow_absorption = {0.03f, 0.015f, 0.008f};
+    surface.optics.deep_absorption = {0.18f, 0.055f, 0.025f};
+    surface.optics.scattering_color = {0.08f, 0.22f, 0.24f};
+    surface.optics.shallow_distance_m = 8.0f;
+    surface.optics.deep_distance_m = 2.5f;
+    surface.optics.scattering_distance_m = 7.0f;
+    surface.optics.anisotropy = 0.35f;
+    surface.optics.ior = 1.333f;
+    surface.wave_bands = {
+        {7.5f, 0.16f, 0.8f, 0.35f},
+        {1.6f, 0.24f, 1.4f, 0.75f},
+        {0.28f, 0.08f, 2.1f, 0.20f},
+    };
+    surface.foam = {0.30f, 2.0f, 2.5f, 0.7f,
+                    0.55f, 1.4f, 0.72f, 0.6f};
+    surface.appearance_hash = UINT64_C(0x7761746572667764);
+    viewer::PackedWaterField packed;
+    viewer::WaterFieldError error;
+    CHECK(viewer::pack_water_field(
+              {layout, &gameplay, &presentation, digest, digest + 1u,
+               &surface},
+              packed, error),
+          error.message.c_str());
+    return packed;
+}
 
 viewer::PackedWaterField make_water_upload_fixture(std::uint64_t digest) {
     hydrology::GameplayFieldLayout layout{};
@@ -533,6 +579,254 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
     }
     CHECK(vulkan.validation_error_count() == 0u,
           "water animation: activation, draw, fallback, and retirement have no validation errors");
+}
+
+void run_water_forward_path(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::string error;
+    CHECK(renderer.init(error),
+          error.empty() ? "water forward: initialize renderer" : error.c_str());
+    if (!error.empty()) return;
+
+    matter::VulkanRayTracingSettings raster_only{};
+    raster_only.enabled = false;
+    renderer.set_ray_tracing_settings(raster_only);
+    matter::VulkanGiSettings gi{};
+    gi.enabled = 0u;
+    renderer.set_gi_settings(gi);
+
+    std::vector<MaterialGpuRecord> materials(8);
+    materials[2].base_roughness[0] = 0.55f;
+    materials[2].base_roughness[1] = 0.18f;
+    materials[2].base_roughness[2] = 0.08f;
+    materials[2].base_roughness[3] = 0.65f;
+    materials[2].metal_opacity_spec_coat[1] = 1.0f;
+    materials[2].scattering_shape[3] = 1.0f;
+    materials[7].base_roughness[0] = 0.06f;
+    materials[7].base_roughness[1] = 0.22f;
+    materials[7].base_roughness[2] = 0.38f;
+    materials[7].base_roughness[3] = 0.20f;
+    materials[7].metal_opacity_spec_coat[1] = 1.0f;
+    materials[7].scattering_shape[3] = 1.0f;
+    materials[7].flags_misc[0] = MATERIAL_WATER_SURFACE;
+    CHECK(renderer.update_materials(materials, 1u, 1u, error),
+          error.empty() ? "water forward: upload materials" : error.c_str());
+
+    const viewer::VkScenePart background =
+        water_forward_background_triangle(0x77666267626b67ull, 2u);
+    CHECK(renderer.ensure_part(background, error) >= 0,
+          error.empty() ? "water forward: register opaque background"
+                        : error.c_str());
+    viewer::VkSceneInstance background_instance{};
+    background_instance.part_hash = background.part_hash;
+    background_instance.object_to_world = viewer::mat4_identity();
+    background_instance.instance_id = 0x6261636bull;
+    background_instance.ray_traced = false;
+    CHECK(renderer.update_instances({background_instance}, error),
+          error.empty() ? "water forward: stage opaque-only baseline"
+                        : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 20.0f;
+    viewer::FrameMatrices matrices{};
+
+    const auto finish_frame = [&](matter::VulkanFrame& frame,
+                                  const char* label) {
+        const bool recorded = renderer.prepare_frame(
+                                  frame, matrices, camera.position, 1.0f,
+                                  error) &&
+            renderer.record_cull_and_render(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        const bool ended = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, ended);
+        renderer.finish_dynamic_frame(frame.serial);
+        CHECK(ended, error.empty() ? label : error.c_str());
+        vulkan.wait_idle();
+        return ended;
+    };
+
+    matter::VulkanFrame baseline_frame{};
+    CHECK(vulkan.begin_frame(baseline_frame, error),
+          error.empty() ? "water forward: begin opaque baseline"
+                        : error.c_str());
+    CHECK(viewer::build_frame_matrices(camera, baseline_frame.extent.width,
+                                       baseline_frame.extent.height, matrices,
+                                       error),
+          error.empty() ? "water forward: build frame matrices"
+                        : error.c_str());
+    if (!finish_frame(baseline_frame,
+                      "water forward: render opaque baseline"))
+        return;
+    const VkExtent2D raster_extent = renderer.test_opaque_extent();
+    const uint32_t center_x = raster_extent.width / 2u;
+    const uint32_t center_y = raster_extent.height / 2u;
+    const uint32_t control_x = raster_extent.width / 8u;
+    const uint32_t control_y = raster_extent.height * 3u / 4u;
+    viewer::VkRasterPixel baseline_center{};
+    viewer::VkRasterPixel baseline_control{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         baseline_center, error) &&
+              renderer.readback_raster_pixel(control_x, control_y,
+                                             baseline_control, error),
+          error.empty() ? "water forward: read opaque controls"
+                        : error.c_str());
+
+    viewer::WaterFieldError field_error{};
+    viewer::WaterFieldBinding field{};
+    CHECK(renderer.publish_water_field(
+              make_water_forward_field_fixture(0x7766u), nullptr, 0u, field,
+              field_error),
+          field_error.message.c_str());
+    viewer::VkScenePart proxy = known_raster_triangle(0x776670726f7879ull, 7u);
+    proxy.water_field_binding = field;
+    proxy.raster_water_surface = true;
+    CHECK(renderer.ensure_part(proxy, error) >= 0,
+          error.empty() ? "water forward: register static water fallback"
+                        : error.c_str());
+    viewer::VkSceneInstance proxy_instance{};
+    proxy_instance.part_hash = proxy.part_hash;
+    proxy_instance.object_to_world = viewer::mat4_identity();
+    proxy_instance.instance_id = 0x7761746572ull;
+    proxy_instance.ray_traced = false;
+    proxy_instance.rt_proxy_only = true;
+    CHECK(renderer.update_instances({background_instance, proxy_instance},
+                                    error),
+          error.empty() ? "water forward: stage active proxy ownership"
+                        : error.c_str());
+
+    const std::array<hydrology::PackedWaterAnimationVertex, 3> vertices{{
+        {0u, 0u, 0u},
+        {65535u, 0u, 0u},
+        {0xffff0000u, 0u, 0u},
+    }};
+    const std::array<std::uint32_t, 3> indices{{0u, 1u, 2u}};
+    viewer::WaterAnimationFrameSelection selection{};
+    selection.frame_index = 0u;
+    selection.upload_required = true;
+    selection.draws.push_back({
+        "forward-water", false, 0u, 7u,
+        {{-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}},
+        {reinterpret_cast<const std::uint8_t*>(vertices.data()),
+         reinterpret_cast<const std::uint8_t*>(indices.data()),
+         vertices.size() * sizeof(vertices[0]),
+         indices.size() * sizeof(indices[0]),
+         static_cast<std::uint32_t>(vertices.size()),
+         static_cast<std::uint32_t>(indices.size())}});
+    const viewer::WaterAnimationGpuCapacity capacity{
+        vertices.size() * sizeof(vertices[0]), vertices.size(),
+        indices.size() * sizeof(indices[0]), 1u};
+    viewer::WaterAnimationGpuError animation_error{};
+    CHECK(renderer.publish_water_animation(71u, 2u, capacity, 0u,
+                                           animation_error),
+          animation_error.message.c_str());
+
+    matter::VulkanFrame active_frame{};
+    CHECK(vulkan.begin_frame(active_frame, error),
+          error.empty() ? "water forward: begin active frame"
+                        : error.c_str());
+    CHECK(renderer.prepare_water_animation_frame(
+              71u, active_frame.frame_slot, selection, {1u},
+              animation_error),
+          animation_error.message.c_str());
+    if (!finish_frame(active_frame,
+                      "water forward: render active direct water"))
+        return;
+    const viewer::WaterForwardObservation active =
+        renderer.test_water_forward_observation();
+    CHECK(active.static_draws == 0u && active.direct_draws == 1u,
+          "water forward: active direct draw exclusively owns water visibility");
+    CHECK(active.copied_opaque_hdr && active.copied_opaque_depth &&
+              active.wrote_depth && active.wrote_velocity &&
+              active.wrote_reactivity && active.wrote_identity,
+          "water forward: active pass preserves opaque inputs and writes every final lane");
+
+    viewer::VkRasterPixel active_center{};
+    viewer::VkRasterPixel active_control{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         active_center, error) &&
+              renderer.readback_raster_pixel(control_x, control_y,
+                                             active_control, error),
+          error.empty() ? "water forward: read active water outputs"
+                        : error.c_str());
+    std::printf(
+        "water forward active: hdr=%.4f/%.4f/%.4f depth=%.5f "
+        "velocity=%.4f/%.4f reactivity=%.4f material=%u token=%u\n",
+        active_center.hdr.x, active_center.hdr.y, active_center.hdr.z,
+        active_center.depth, active_center.velocity.x,
+        active_center.velocity.y, active_center.reactivity,
+        active_center.material_index, active_center.instance_token);
+    const auto finite_hdr = [](const viewer::VkRasterPixel& pixel) {
+        return std::isfinite(pixel.hdr.x) && std::isfinite(pixel.hdr.y) &&
+               std::isfinite(pixel.hdr.z) && std::isfinite(pixel.hdr.w);
+    };
+    const auto hdr_luma = [](const viewer::VkRasterPixel& pixel) {
+        return 0.2126f * pixel.hdr.x + 0.7152f * pixel.hdr.y +
+               0.0722f * pixel.hdr.z;
+    };
+    CHECK(finite_hdr(active_center) && hdr_luma(active_center) > 0.01f,
+          "water forward: composited water HDR is finite and non-black");
+    CHECK(!close3({active_center.hdr.x, active_center.hdr.y,
+                   active_center.hdr.z},
+                  {0.06f, 0.22f, 0.38f}, 1.0e-2f) &&
+              !close3({active_center.hdr.x, active_center.hdr.y,
+                       active_center.hdr.z},
+                      {baseline_center.hdr.x, baseline_center.hdr.y,
+                       baseline_center.hdr.z}, 1.0e-2f),
+          "water forward: optics differ from raw water color and opaque source");
+    CHECK(active_center.depth > baseline_center.depth &&
+              std::isfinite(active_center.velocity.x) &&
+              std::isfinite(active_center.velocity.y) &&
+              active_center.reactivity > 0.0f,
+          "water forward: water wins reversed-Z and writes finite temporal rejection");
+    CHECK(active_center.material_index == 7u &&
+              active_center.instance_token ==
+                  viewer::vulkan_history_token(proxy_instance.instance_id),
+          "water forward: direct water writes unmasked material and proxy identity");
+    CHECK(std::memcmp(&baseline_control.hdr, &active_control.hdr,
+                      sizeof(baseline_control.hdr)) == 0 &&
+              baseline_control.depth == active_control.depth &&
+              baseline_control.material_index == active_control.material_index &&
+              baseline_control.instance_token == active_control.instance_token,
+          "water forward: load-preserving pass leaves neighboring opaque pixels byte-identical");
+
+    renderer.clear_water_animation(active_frame.serial + 2u);
+    proxy_instance.rt_proxy_only = false;
+    CHECK(renderer.update_instances({background_instance, proxy_instance},
+                                    error),
+          error.empty() ? "water forward: restore static fallback"
+                        : error.c_str());
+    matter::VulkanFrame fallback_frame{};
+    CHECK(vulkan.begin_frame(fallback_frame, error),
+          error.empty() ? "water forward: begin static fallback frame"
+                        : error.c_str());
+    if (!finish_frame(fallback_frame,
+                      "water forward: render static fallback water"))
+        return;
+    const viewer::WaterForwardObservation fallback =
+        renderer.test_water_forward_observation();
+    CHECK(fallback.static_draws == 1u && fallback.direct_draws == 0u,
+          "water forward: accepted immutable fallback uses one static range");
+    CHECK(fallback.copied_opaque_hdr && fallback.copied_opaque_depth &&
+              fallback.wrote_depth && fallback.wrote_velocity &&
+              fallback.wrote_reactivity && fallback.wrote_identity,
+          "water forward: static fallback uses the same complete optics pass");
+    viewer::VkRasterPixel fallback_center{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         fallback_center, error) &&
+              fallback_center.material_index == 7u &&
+              fallback_center.instance_token ==
+                  viewer::vulkan_history_token(proxy_instance.instance_id),
+          error.empty() ? "water forward: static fallback writes final identity"
+                        : error.c_str());
+    renderer.collect_water_animation(active_frame.serial + 2u);
+    CHECK(vulkan.validation_error_count() == 0u,
+          "water forward: active and fallback frames have no validation errors");
 }
 
 void run_render_eligibility_acceptance_path(matter::VulkanDevice& vulkan) {
@@ -2631,6 +2925,24 @@ viewer::VkScenePart known_raster_triangle(uint64_t hash,
     // and indices". Callers used to patch this in locally one fixture at a
     // time; supply the triangle's own list here so every fixture is renderable.
     part.indices = {0, 1, 2};
+    return part;
+}
+
+viewer::VkScenePart water_forward_background_triangle(
+    uint64_t hash, uint32_t material_index) {
+    viewer::VkScenePart part = fixed_part(
+        hash, {-4.0f, -4.0f, -3.0f}, {4.0f, 4.0f, -3.0f}, 0u);
+    const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+    const matter::Float4 tint{0.55f, 0.18f, 0.08f, 0.0f};
+    part.vertices = {
+        {{-4.0f, -4.0f, -3.0f}, normal, tint,
+         {0.0f, 0.0f, 1.0f, 1.0f}, material_index, {}},
+        {{4.0f, -4.0f, -3.0f}, normal, tint,
+         {0.0f, 0.0f, 1.0f, 1.0f}, material_index, {}},
+        {{0.0f, 4.0f, -3.0f}, normal, tint,
+         {0.0f, 0.0f, 1.0f, 1.0f}, material_index, {}},
+    };
+    part.indices = {0u, 1u, 2u};
     return part;
 }
 
@@ -12975,6 +13287,16 @@ int main() {
         if (smoke_mode && std::string(smoke_mode) == "water-animation") {
             run_render_eligibility_acceptance_path(*vulkan);
             run_water_animation_activation_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "water-forward") {
+            run_water_forward_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
