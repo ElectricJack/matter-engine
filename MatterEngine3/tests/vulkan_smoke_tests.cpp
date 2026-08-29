@@ -90,7 +90,8 @@ bool make_water_forward_playback_fixture(
     hydrology::WaterMeshAnimationArtifact artifact{};
     gpu_meshing::Error artifact_error{};
     if (!hydrology::pack_water_mesh_animation_artifact(
-            {"forward-water", kSemantic, kPrimary, 0u, 0.2f},
+              {"forward-water", kSemantic, kPrimary, 0u, 0.2f,
+               {{0.0f, 0.0f, 0.0f}, 0.2f, 1u}},
             animation, artifact, artifact_error)) {
         message = artifact_error.message;
         return false;

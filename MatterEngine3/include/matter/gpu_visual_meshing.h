@@ -51,6 +51,12 @@ struct ParticlePhaseBlend {
     float secondary_weight = 0.0f;
 };
 
+struct ParticleSamplingLattice {
+    matter::Float3 origin_m{};
+    float voxel_m = 0.0f;
+    std::uint32_t version = 0;  // 0 legacy/tight; 1 canonical
+};
+
 struct ParticleJob {
     const ParticleSample* particles = nullptr;
     std::uint32_t particle_count = 0;
@@ -62,6 +68,7 @@ struct ParticleJob {
     Limits limits{};
     std::uint64_t generation = 0;
     ParticlePhaseBlend phase_blend{};
+    ParticleSamplingLattice sampling_lattice{};
 };
 
 struct BuildControl {
@@ -81,6 +88,7 @@ struct GridLayout {
     std::uint32_t bins = 0;
     float bin_size_m = 0.0f;
     float query_radius_m = 0.0f;
+    std::array<std::int64_t, 3> cell_min{};
 };
 
 struct MeshResult {
@@ -107,6 +115,14 @@ struct Stats {
 
 bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
                            Error& error);
+
+bool make_particle_sampling_lattice(
+    const matter::Float3& world_anchor_m, float voxel_m,
+    ParticleSamplingLattice& lattice, Error& error);
+
+bool particle_field_support_radius_m(
+    float particle_radius_m, float blend_width_m,
+    float& support_radius_m, Error& error);
 
 std::uint32_t resolved_particle_phase_split(
     const ParticleJob& job) noexcept;

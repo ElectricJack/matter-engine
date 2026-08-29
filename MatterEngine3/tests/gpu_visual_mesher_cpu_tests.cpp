@@ -38,6 +38,97 @@ bool rejects(gpu_meshing::ParticleJob job,
            error.code == expected_code && !error.message.empty();
 }
 
+bool same_float_bits(float left, float right) {
+    return std::memcmp(&left, &right, sizeof(float)) == 0;
+}
+
+void test_world_anchored_lattice_expands_outward_without_drifting() {
+    constexpr matter::Float3 anchor{-31.2f, 7.4f, 11.8f};
+    constexpr float voxel = 0.15f;
+    gpu_meshing::ParticleSamplingLattice lattice{};
+    gpu_meshing::Error error{};
+    CHECK(gpu_meshing::make_particle_sampling_lattice(
+              anchor, voxel, lattice, error),
+          error.message.c_str());
+    CHECK(lattice.origin_m.x == anchor.x &&
+              lattice.origin_m.y == anchor.y &&
+              lattice.origin_m.z == anchor.z &&
+              same_float_bits(lattice.voxel_m, voxel) &&
+              lattice.version == 1u,
+          "a canonical lattice retains the authored world anchor and exact voxel bits");
+
+    gpu_meshing::ParticleSample particles[1];
+    auto job = one_sphere_job(particles);
+    job.bounds_m = {{-31.03f, 7.46f, 11.67f},
+                    {-29.71f, 8.11f, 12.46f}};
+    job.voxel_m = voxel;
+    job.sampling_lattice = lattice;
+    gpu_meshing::GridLayout layout{};
+    CHECK(gpu_meshing::validate_particle_job(job, layout, error),
+          error.message.c_str());
+    const std::array<std::int64_t, 3> expected_min{1, 0, -1};
+    const std::array<std::uint32_t, 3> expected_dims{9u, 5u, 6u};
+    CHECK(layout.cell_min == expected_min &&
+              layout.cell_dims == expected_dims,
+          "non-aligned bounds expand outward to hand-derived canonical integer cells");
+    CHECK(std::fabs(layout.origin_m.x - -31.05f) <= 2.0e-6f &&
+              std::fabs(layout.origin_m.y - 7.4f) <= 2.0e-6f &&
+              std::fabs(layout.origin_m.z - 11.65f) <= 2.0e-6f &&
+              same_float_bits(layout.spacing_m.x, voxel) &&
+              same_float_bits(layout.spacing_m.y, voxel) &&
+              same_float_bits(layout.spacing_m.z, voxel),
+          "canonical layout origin is a lattice face and all axes keep exact requested spacing");
+
+    auto shifted_tight_bounds = job;
+    shifted_tight_bounds.bounds_m = {{-31.04f, 7.41f, 11.66f},
+                                     {-29.72f, 8.14f, 12.49f}};
+    gpu_meshing::GridLayout shifted_layout{};
+    CHECK(gpu_meshing::validate_particle_job(
+              shifted_tight_bounds, shifted_layout, error),
+          error.message.c_str());
+    CHECK(shifted_layout.cell_min == layout.cell_min &&
+              shifted_layout.cell_dims == layout.cell_dims &&
+              shifted_layout.origin_m.x == layout.origin_m.x &&
+              shifted_layout.origin_m.y == layout.origin_m.y &&
+              shifted_layout.origin_m.z == layout.origin_m.z,
+          "small tight-bound changes inside the same faces retain stable canonical cell indices");
+
+    auto conflict = job;
+    conflict.voxel_m = 0.15000002f;
+    CHECK(rejects(conflict, gpu_meshing::ErrorCode::InvalidInput),
+          "a canonical job rejects a voxel that is not bit-equal to its lattice voxel");
+}
+
+void test_canonical_lattice_rejects_support_and_grid_overflow_before_allocation() {
+    float support = 0.0f;
+    gpu_meshing::Error error{};
+    CHECK(gpu_meshing::particle_field_support_radius_m(
+              0.2f, 0.05f, support, error) &&
+              std::fabs(support - 0.7f) <= 1.0e-6f,
+          "the public support query returns the mesher's complete influence radius");
+    CHECK(!gpu_meshing::particle_field_support_radius_m(
+              0.0f, 0.05f, support, error) &&
+              error.code == gpu_meshing::ErrorCode::InvalidInput,
+          "the support query rejects a non-positive particle radius");
+
+    gpu_meshing::ParticleSample particles[1];
+    auto job = one_sphere_job(particles);
+    job.bounds_m = {{0.0f, 0.0f, 0.0f},
+                    {4294967296.0f, 1.0f, 1.0f}};
+    job.voxel_m = 1.0f;
+    job.sampling_lattice = {{0.0f, 0.0f, 0.0f}, 1.0f, 1u};
+    CHECK(rejects(job, gpu_meshing::ErrorCode::Overflow),
+          "canonical dimensions reject uint32 sample-count overflow before allocation");
+
+    job = one_sphere_job(particles);
+    job.bounds_m = {{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    job.voxel_m = std::numeric_limits<float>::denorm_min();
+    job.sampling_lattice = {
+        {0.0f, 0.0f, 0.0f}, job.voxel_m, 1u};
+    CHECK(rejects(job, gpu_meshing::ErrorCode::Overflow),
+          "canonical cell-index overflow is rejected before any grid allocation");
+}
+
 void test_validates_and_derives_particle_grid() {
     gpu_meshing::ParticleSample particles[1];
     const auto job = one_sphere_job(particles);
@@ -323,6 +414,56 @@ void test_gameplay_identity_ignores_visual_job_bounds() {
           "visual and CPU bounds do not spuriously invalidate the gameplay field key");
 }
 
+void test_canonical_lattice_identity_is_visual_only() {
+    gpu_meshing::ParticleSample particles[1];
+    auto job = one_sphere_job(particles);
+    job.sampling_lattice = {{-31.2f, 7.4f, 11.8f}, 0.25f, 1u};
+    hydrology::ProductIdentitySettings settings{};
+    settings.semantic_key = 94u;
+    const hydrology::GameplayFieldLayout gameplay_layout{
+        {-1.0f, 0.0f, -1.0f}, 0.5f, 4u, 4u};
+    const auto keys = hydrology::derive_product_keys(
+        job, hydrology::particle_snapshot_digest(particles, 1u), settings,
+        0.5f, gameplay_layout);
+
+    auto origin_changed = job;
+    origin_changed.sampling_lattice.origin_m.x += 3.0f;
+    const auto origin_keys = hydrology::derive_product_keys(
+        origin_changed,
+        hydrology::particle_snapshot_digest(particles, 1u), settings,
+        0.5f, gameplay_layout);
+    CHECK(keys.visual != origin_keys.visual &&
+              keys.coarse_cpu == origin_keys.coarse_cpu &&
+              keys.gameplay == origin_keys.gameplay &&
+              keys.presentation == origin_keys.presentation,
+          "changing the canonical origin invalidates only the visual product key");
+
+    auto voxel_changed = job;
+    voxel_changed.voxel_m = 0.2f;
+    voxel_changed.sampling_lattice.voxel_m = 0.2f;
+    const auto voxel_keys = hydrology::derive_product_keys(
+        voxel_changed,
+        hydrology::particle_snapshot_digest(particles, 1u), settings,
+        0.5f, gameplay_layout);
+    CHECK(keys.visual != voxel_keys.visual &&
+              keys.coarse_cpu == voxel_keys.coarse_cpu &&
+              keys.gameplay == voxel_keys.gameplay &&
+              keys.presentation == voxel_keys.presentation,
+          "changing the visual lattice voxel leaves collision and gameplay identities reusable");
+
+    auto version_changed = job;
+    version_changed.sampling_lattice.version = 0u;
+    const auto version_keys = hydrology::derive_product_keys(
+        version_changed,
+        hydrology::particle_snapshot_digest(particles, 1u), settings,
+        0.5f, gameplay_layout);
+    CHECK(keys.visual != version_keys.visual &&
+              keys.coarse_cpu == version_keys.coarse_cpu &&
+              keys.gameplay == version_keys.gameplay &&
+              keys.presentation == version_keys.presentation,
+          "changing lattice contract version invalidates only visual identity");
+}
+
 void test_coarse_identity_includes_cpu_mesher_blend_width() {
     gpu_meshing::ParticleSample particles[1];
     const auto job = one_sphere_job(particles);
@@ -430,6 +571,8 @@ void test_v5_cache_keys_require_persisted_presentation_identity() {
 }  // namespace
 
 int main() {
+    test_world_anchored_lattice_expands_outward_without_drifting();
+    test_canonical_lattice_rejects_support_and_grid_overflow_before_allocation();
     test_validates_and_derives_particle_grid();
     test_validation_fails_closed_without_rejecting_supported_edges();
     test_reference_field_matches_matter_surface_oracle();
@@ -438,6 +581,7 @@ int main() {
     test_reference_scan_covers_empty_zero_max_and_overflow();
     test_mesh_digest_is_stable_and_sensitive();
     test_gameplay_identity_ignores_visual_job_bounds();
+    test_canonical_lattice_identity_is_visual_only();
     test_coarse_identity_includes_cpu_mesher_blend_width();
     test_gameplay_sampling_requires_all_bilinear_contributors();
     test_presentation_identity_is_independent_of_visual_identity();

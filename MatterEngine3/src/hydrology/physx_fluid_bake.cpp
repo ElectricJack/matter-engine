@@ -56,9 +56,13 @@ gpu_meshing::ParticleJob tight_visual_job(
     }
     // Match the mesher's finite field-query support, then add one complete
     // voxel so marching cells cannot clip the outer isosurface.
-    const float padding = radius_m * 2.5f +
-                          authored.blend_width_m * 4.0f +
-                          authored.voxel_m;
+    float support_radius_m = 0.0f;
+    gpu_meshing::Error support_error{};
+    if (!gpu_meshing::particle_field_support_radius_m(
+            radius_m, authored.blend_width_m,
+            support_radius_m, support_error))
+        return result;
+    const float padding = support_radius_m + authored.voxel_m;
     result.bounds_m.min_m = {
         std::max(authored.bounds_m.min_m.x, minimum.x - padding),
         std::max(authored.bounds_m.min_m.y, minimum.y - padding),
@@ -88,9 +92,13 @@ gpu_meshing::ParticleJob tight_visual_job(
         maximum.z = std::max(maximum.z, particle.position_m.z);
         maximum_radius = std::max(maximum_radius, particle.radius_m);
     }
-    const float padding = maximum_radius * 2.5f +
-                          authored.blend_width_m * 4.0f +
-                          authored.voxel_m;
+    float support_radius_m = 0.0f;
+    gpu_meshing::Error support_error{};
+    if (!gpu_meshing::particle_field_support_radius_m(
+            maximum_radius, authored.blend_width_m,
+            support_radius_m, support_error))
+        return result;
+    const float padding = support_radius_m + authored.voxel_m;
     result.bounds_m.min_m = {
         std::max(authored.bounds_m.min_m.x, minimum.x - padding),
         std::max(authored.bounds_m.min_m.y, minimum.y - padding),
@@ -498,6 +506,11 @@ bool build_particle_visual_job_chunks_impl(
     };
     const auto grid_coordinate = [&](std::size_t axis,
                                      std::uint32_t cell) {
+        if (root_template.sampling_lattice.version == 1u) {
+            return coordinate(root_template.sampling_lattice.origin_m, axis) +
+                root_template.sampling_lattice.voxel_m *
+                    static_cast<float>(root_layout.cell_min[axis] + cell);
+        }
         return coordinate(root_layout.origin_m, axis) +
                coordinate(root_layout.spacing_m, axis) *
                    static_cast<float>(cell);
@@ -1145,6 +1158,9 @@ bool PhysxFluidBake::build_accepted_artifact(
         gpu_meshing::MeshResult coarse{};
         gpu_meshing::ParticleJob coarse_job = job;
         coarse_job.voxel_m = settings.coarse_voxel_m;
+        // Collision/query extraction has its own coarse lattice. Canonical
+        // sampling metadata belongs only to the visual product identity.
+        coarse_job.sampling_lattice = {};
         const auto cpu_mesh_start = std::chrono::steady_clock::now();
         if (!build_cpu_particle_visual(coarse_job, settings.coarse_voxel_m, coarse,
                                        mesher_error)) {

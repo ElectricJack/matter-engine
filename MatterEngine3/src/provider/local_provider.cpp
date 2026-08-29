@@ -218,6 +218,7 @@ constexpr std::uint64_t kFluidAdapterVersion = 4u;
 // repair change authority-mesh bytes, so v1 artifacts must not be reused.
 constexpr std::uint64_t kFluidMesherContractVersion = 3u;
 constexpr std::uint32_t kNvidiaVendorId = 0x10deu;
+constexpr matter::Float3 kWaterVisualWorldAnchorM{0.0f, 0.0f, 0.0f};
 
 void hash_bytes(std::uint64_t& hash, const void* data, std::size_t size) {
     const auto* bytes = static_cast<const unsigned char*>(data);
@@ -555,9 +556,10 @@ std::uint64_t section_water_animation_semantic_key(
     std::uint64_t section_semantic_key,
     std::uint64_t section_payload_digest,
     const matter::HydrologyMeshAnimationProfile& profile,
-    const std::vector<hydrology::SpillwayHandoffRecord>& ownership) {
+    const std::vector<hydrology::SpillwayHandoffRecord>& ownership,
+    const gpu_meshing::ParticleSamplingLattice& lattice) {
     std::uint64_t hash = UINT64_C(14695981039346656037);
-    hash_string(hash, "water-mesh-animation-v1");
+    hash_string(hash, "water-mesh-animation-v2");
     hash_value(hash, section_semantic_key);
     hash_value(hash, section_payload_digest);
     hash_value(hash, profile.frames_per_second);
@@ -566,6 +568,9 @@ std::uint64_t section_water_animation_semantic_key(
     hash_value(hash, profile.frame_count);
     hash_value(hash, profile.sample_step_stride);
     hash_value(hash, profile.phase_offset_frames);
+    hash_value(hash, lattice.origin_m);
+    hash_value(hash, lattice.voxel_m);
+    hash_value(hash, lattice.version);
     for (const auto& handoff : ownership)
         hash_value(hash, handoff.semantic_key);
     return nonzero_hash(hash);
@@ -1029,6 +1034,14 @@ bool assemble_authored_fluid_section_request(
         request.input.dry_collar_bounds_m.minimum,
         request.input.dry_collar_bounds_m.maximum};
     products.visual_job.voxel_m = quality.visual_voxel_m;
+    gpu_meshing::Error lattice_error{};
+    if (!gpu_meshing::make_particle_sampling_lattice(
+            kWaterVisualWorldAnchorM, quality.visual_voxel_m,
+            products.visual_job.sampling_lattice, lattice_error)) {
+        error = {hydrology::FluidBakeCode::InvalidInput,
+                 lattice_error.message};
+        return false;
+    }
     products.visual_job.blend_width_m = quality.visual_blend_width_m;
     products.visual_job.iso_value = 0.0f;
     products.visual_job.material = 4u;
@@ -1152,6 +1165,7 @@ bool load_water_animation_cache(
     std::uint64_t semantic_key,
     std::uint64_t source_payload_digest,
     const matter::HydrologyMeshAnimationProfile& profile,
+    const gpu_meshing::ParticleSamplingLattice& lattice,
     hydrology::WaterMeshAnimationArtifact& artifact) {
     artifact = {};
     gpu_meshing::Error error{};
@@ -1167,6 +1181,7 @@ bool load_water_animation_cache(
         candidate.frames.size() != profile.frame_count ||
         candidate.phase_offset_frames != profile.phase_offset_frames ||
         candidate.duration_seconds != profile.duration_seconds ||
+        std::memcmp(&candidate.lattice, &lattice, sizeof(lattice)) != 0 ||
         candidate.payload_digest == 0u)
         return false;
     artifact = std::move(candidate);
@@ -1948,13 +1963,16 @@ bool LocalProvider::run_authored_fluid_bake(
         if (static_cache_hit && animation_enabled) {
             animation_semantic_key = section_water_animation_semantic_key(
                 request.semantic_key, candidate.payload_digest,
-                river_network_->fluid.mesh_animation, animation_ownership);
+                river_network_->fluid.mesh_animation, animation_ownership,
+                request.product_settings.visual_job.sampling_lattice);
             animation_path = section_water_animation_path(
                 abs_cache_root_, section.id, animation_semantic_key);
             animation_cache_hit = load_water_animation_cache(
                 animation_path, section.id, animation_semantic_key,
                 candidate.payload_digest,
-                river_network_->fluid.mesh_animation, animation_candidate);
+                river_network_->fluid.mesh_animation,
+                request.product_settings.visual_job.sampling_lattice,
+                animation_candidate);
         }
         const bool cache_hit = static_cache_hit && animation_cache_hit;
         section_timings.cache_hit = cache_hit;
@@ -2156,13 +2174,15 @@ bool LocalProvider::run_authored_fluid_bake(
                     section_water_animation_semantic_key(
                         request.semantic_key, candidate.payload_digest,
                         river_network_->fluid.mesh_animation,
-                        animation_ownership);
+                        animation_ownership,
+                        request.product_settings.visual_job.sampling_lattice);
                 animation_path = section_water_animation_path(
                     abs_cache_root_, section.id, animation_semantic_key);
                 if (!hydrology::pack_water_mesh_animation_artifact(
                         {section.id, animation_semantic_key,
                          candidate.payload_digest, 0u,
-                         request.product_settings.visual_job.voxel_m},
+                         request.product_settings.visual_job.voxel_m,
+                         request.product_settings.visual_job.sampling_lattice},
                         owned_animation, animation_candidate,
                         animation_error)) {
                     section_error = {
@@ -2201,6 +2221,7 @@ bool LocalProvider::run_authored_fluid_bake(
                         animation_path, section.id, animation_semantic_key,
                         candidate.payload_digest,
                         river_network_->fluid.mesh_animation,
+                        request.product_settings.visual_job.sampling_lattice,
                         animation_candidate)) {
                     section_error = {hydrology::FluidBakeCode::ProductFailure,
                                      artifact_error.message};

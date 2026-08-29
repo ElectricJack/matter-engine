@@ -22,6 +22,7 @@ struct WaterMeshAnimationArtifactMetadata {
     std::uint64_t source_primary_payload_digest = 0;
     std::uint64_t source_secondary_payload_digest = 0;
     float visual_voxel_m = 0.0f;
+    gpu_meshing::ParticleSamplingLattice lattice{};
 };
 
 struct WaterMeshAnimationFrameRecord {
@@ -45,6 +46,7 @@ struct WaterMeshAnimationArtifact {
     std::uint32_t phase_offset_frames = 0;
     float duration_seconds = 0.0f;
     float visual_voxel_m = 0.0f;
+    gpu_meshing::ParticleSamplingLattice lattice{};
     std::uint32_t material = 0;
     gpu_meshing::Aabb quantization_bounds_m{};
     std::vector<WaterMeshAnimationFrameRecord> frames;

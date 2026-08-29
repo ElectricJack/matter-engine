@@ -14,6 +14,21 @@ bool finite(matter::Float3 value) noexcept {
     return finite(value.x) && finite(value.y) && finite(value.z);
 }
 
+float coordinate(matter::Float3 value, std::size_t axis) noexcept {
+    return axis == 0u ? value.x : axis == 1u ? value.y : value.z;
+}
+
+void set_coordinate(matter::Float3& value, std::size_t axis,
+                    float coordinate_value) noexcept {
+    if (axis == 0u) value.x = coordinate_value;
+    else if (axis == 1u) value.y = coordinate_value;
+    else value.z = coordinate_value;
+}
+
+bool same_float_bits(float left, float right) noexcept {
+    return std::memcmp(&left, &right, sizeof(float)) == 0;
+}
+
 bool fail(Error& error, ErrorCode code, const char* message) {
     error.code = code;
     error.message = message;
@@ -32,6 +47,42 @@ bool dimension_for_extent(float extent, float voxel, std::uint32_t& cells,
                     "particle grid dimensions overflow uint32");
     }
     cells = static_cast<std::uint32_t>(rounded);
+    return true;
+}
+
+bool lattice_cell_index(double coordinate_m, double anchor_m, double voxel_m,
+                        bool upper, std::int64_t& index, Error& error) {
+    const double relative = (coordinate_m - anchor_m) / voxel_m;
+    const double rounded = upper ? std::ceil(relative) : std::floor(relative);
+    constexpr double kInt64Minimum = -0x1p63;
+    constexpr double kInt64Limit = 0x1p63;
+    if (!std::isfinite(relative) || !std::isfinite(rounded) ||
+        rounded < kInt64Minimum || rounded >= kInt64Limit) {
+        return fail(error, ErrorCode::Overflow,
+                    "particle lattice cell index overflows int64");
+    }
+    index = static_cast<std::int64_t>(rounded);
+    return true;
+}
+
+bool lattice_cell_span(std::int64_t minimum, std::int64_t maximum,
+                       std::uint32_t& cells, Error& error) {
+    constexpr std::int64_t kMaximumCells =
+        static_cast<std::int64_t>(
+            std::numeric_limits<std::uint32_t>::max() - 1u);
+    if (maximum <= minimum)
+        return fail(error, ErrorCode::InvalidInput,
+                    "particle lattice bounds do not contain a cell");
+    if (minimum <= std::numeric_limits<std::int64_t>::max() - kMaximumCells &&
+        maximum > minimum + kMaximumCells) {
+        return fail(error, ErrorCode::Overflow,
+                    "particle lattice dimensions overflow uint32");
+    }
+    const std::int64_t span = maximum - minimum;
+    if (span <= 0 || span > kMaximumCells)
+        return fail(error, ErrorCode::Overflow,
+                    "particle lattice dimensions overflow uint32");
+    cells = static_cast<std::uint32_t>(span);
     return true;
 }
 
@@ -88,6 +139,42 @@ private:
 
 }  // namespace
 
+bool make_particle_sampling_lattice(
+    const matter::Float3& world_anchor_m, float voxel_m,
+    ParticleSamplingLattice& lattice, Error& error) {
+    lattice = {};
+    error = {};
+    if (!finite(world_anchor_m))
+        return fail(error, ErrorCode::InvalidInput,
+                    "particle sampling lattice anchor must be finite");
+    if (!finite(voxel_m) || voxel_m <= 0.0f)
+        return fail(error, ErrorCode::InvalidInput,
+                    "particle sampling lattice voxel must be positive and finite");
+    lattice = {world_anchor_m, voxel_m, 1u};
+    return true;
+}
+
+bool particle_field_support_radius_m(
+    float particle_radius_m, float blend_width_m,
+    float& support_radius_m, Error& error) {
+    support_radius_m = 0.0f;
+    error = {};
+    if (!finite(particle_radius_m) || particle_radius_m <= 0.0f ||
+        !finite(blend_width_m) || blend_width_m < 0.0f) {
+        return fail(error, ErrorCode::InvalidInput,
+                    "particle field support requires a positive radius and nonnegative blend width");
+    }
+    const double support = static_cast<double>(particle_radius_m) * 2.5 +
+                           static_cast<double>(blend_width_m) * 4.0;
+    if (!std::isfinite(support) || support <= 0.0 ||
+        support > static_cast<double>(std::numeric_limits<float>::max())) {
+        return fail(error, ErrorCode::Overflow,
+                    "particle field support radius overflow");
+    }
+    support_radius_m = static_cast<float>(support);
+    return true;
+}
+
 bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
                            Error& error) {
     layout = {};
@@ -138,18 +225,63 @@ bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
                     "particle mesh input exceeds max_particles");
 
     std::array<std::uint32_t, 3> cells{};
-    if (!dimension_for_extent(extent.x, job.voxel_m, cells[0], error) ||
-        !dimension_for_extent(extent.y, job.voxel_m, cells[1], error) ||
-        !dimension_for_extent(extent.z, job.voxel_m, cells[2], error)) {
-        return false;
+    if (job.sampling_lattice.version == 0u) {
+        if (!dimension_for_extent(extent.x, job.voxel_m, cells[0], error) ||
+            !dimension_for_extent(extent.y, job.voxel_m, cells[1], error) ||
+            !dimension_for_extent(extent.z, job.voxel_m, cells[2], error)) {
+            return false;
+        }
+        layout.origin_m = job.bounds_m.min_m;
+        layout.spacing_m = {extent.x / static_cast<float>(cells[0]),
+                            extent.y / static_cast<float>(cells[1]),
+                            extent.z / static_cast<float>(cells[2])};
+    } else if (job.sampling_lattice.version == 1u) {
+        const ParticleSamplingLattice& lattice = job.sampling_lattice;
+        if (!finite(lattice.origin_m) || !finite(lattice.voxel_m) ||
+            lattice.voxel_m <= 0.0f ||
+            !same_float_bits(job.voxel_m, lattice.voxel_m)) {
+            return fail(error, ErrorCode::InvalidInput,
+                        "canonical particle job and lattice metadata conflict");
+        }
+        for (std::size_t axis = 0u; axis != 3u; ++axis) {
+            std::int64_t upper = 0;
+            if (!lattice_cell_index(
+                    static_cast<double>(coordinate(job.bounds_m.min_m, axis)),
+                    static_cast<double>(coordinate(lattice.origin_m, axis)),
+                    static_cast<double>(lattice.voxel_m), false,
+                    layout.cell_min[axis], error) ||
+                !lattice_cell_index(
+                    static_cast<double>(coordinate(job.bounds_m.max_m, axis)),
+                    static_cast<double>(coordinate(lattice.origin_m, axis)),
+                    static_cast<double>(lattice.voxel_m), true, upper, error) ||
+                !lattice_cell_span(layout.cell_min[axis], upper,
+                                   cells[axis], error)) {
+                return false;
+            }
+            const double snapped =
+                static_cast<double>(coordinate(lattice.origin_m, axis)) +
+                static_cast<double>(layout.cell_min[axis]) *
+                    static_cast<double>(lattice.voxel_m);
+            if (!std::isfinite(snapped) ||
+                snapped < -static_cast<double>(
+                              std::numeric_limits<float>::max()) ||
+                snapped > static_cast<double>(
+                              std::numeric_limits<float>::max())) {
+                return fail(error, ErrorCode::Overflow,
+                            "particle lattice origin overflows float");
+            }
+            set_coordinate(layout.origin_m, axis,
+                           static_cast<float>(snapped));
+        }
+        layout.spacing_m = {
+            lattice.voxel_m, lattice.voxel_m, lattice.voxel_m};
+    } else {
+        return fail(error, ErrorCode::InvalidInput,
+                    "particle sampling lattice version is unsupported");
     }
-    layout.origin_m = job.bounds_m.min_m;
     layout.cell_dims = cells;
     for (std::size_t axis = 0; axis != 3; ++axis)
         layout.sample_dims[axis] = cells[axis] + 1u;
-    layout.spacing_m = {extent.x / static_cast<float>(cells[0]),
-                        extent.y / static_cast<float>(cells[1]),
-                        extent.z / static_cast<float>(cells[2])};
     if (!checked_product(layout.sample_dims, layout.grid_vertices) ||
         !checked_product(layout.cell_dims, layout.grid_cells)) {
         return fail(error, ErrorCode::Overflow,
@@ -177,33 +309,30 @@ bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
     }
     if (job.particle_count == 0) return true;
 
-    const double query_radius =
-        static_cast<double>(max_radius) * 2.5 +
-        static_cast<double>(job.blend_width_m) * 4.0;
-    if (!std::isfinite(query_radius) || query_radius <= 0.0 ||
-        query_radius > std::numeric_limits<float>::max()) {
-        return fail(error, ErrorCode::Overflow,
-                    "particle field query radius overflow");
-    }
-    layout.query_radius_m = static_cast<float>(query_radius);
+    if (!particle_field_support_radius_m(
+            max_radius, job.blend_width_m, layout.query_radius_m, error))
+        return false;
     layout.bin_size_m = layout.query_radius_m;
     layout.bin_origin_m = {
-        job.bounds_m.min_m.x - layout.query_radius_m,
-        job.bounds_m.min_m.y - layout.query_radius_m,
-        job.bounds_m.min_m.z - layout.query_radius_m,
+        layout.origin_m.x - layout.query_radius_m,
+        layout.origin_m.y - layout.query_radius_m,
+        layout.origin_m.z - layout.query_radius_m,
     };
     if (!finite(layout.bin_origin_m))
         return fail(error, ErrorCode::Overflow,
                     "particle bin origin overflow");
 
-    const float expanded[] = {
-        extent.x + 2.0f * layout.query_radius_m,
-        extent.y + 2.0f * layout.query_radius_m,
-        extent.z + 2.0f * layout.query_radius_m,
+    const double expanded[] = {
+        static_cast<double>(layout.spacing_m.x) * layout.cell_dims[0] +
+            2.0 * layout.query_radius_m,
+        static_cast<double>(layout.spacing_m.y) * layout.cell_dims[1] +
+            2.0 * layout.query_radius_m,
+        static_cast<double>(layout.spacing_m.z) * layout.cell_dims[2] +
+            2.0 * layout.query_radius_m,
     };
     for (std::size_t axis = 0; axis != 3; ++axis) {
         const double count = std::ceil(
-            static_cast<double>(expanded[axis]) / layout.bin_size_m);
+            expanded[axis] / layout.bin_size_m);
         if (!std::isfinite(count) || count < 1.0 ||
             count > std::numeric_limits<std::uint32_t>::max()) {
             return fail(error, ErrorCode::Overflow,
@@ -238,7 +367,11 @@ float evaluate_particle_field_reference(const ParticleSample* particles,
     float max_radius = 0.0f;
     for (std::uint32_t index = 0; index != particle_count; ++index)
         max_radius = std::max(max_radius, particles[index].radius_m);
-    const float query_radius = max_radius * 2.5f + blend_width_m * 4.0f;
+    float query_radius = 0.0f;
+    Error support_error{};
+    if (!particle_field_support_radius_m(
+            max_radius, blend_width_m, query_radius, support_error))
+        return std::numeric_limits<float>::infinity();
     const float query_radius_squared = query_radius * query_radius;
 
     float minimum = std::numeric_limits<float>::infinity();
@@ -296,7 +429,11 @@ float evaluate_particle_field_reference(
         if (particle_weight(index) == 0.0f) continue;
         max_radius = std::max(max_radius, particles[index].radius_m);
     }
-    const float query_radius = max_radius * 2.5f + blend_width_m * 4.0f;
+    float query_radius = 0.0f;
+    Error support_error{};
+    if (!particle_field_support_radius_m(
+            max_radius, blend_width_m, query_radius, support_error))
+        return std::numeric_limits<float>::infinity();
     const float query_radius_squared = query_radius * query_radius;
 
     float minimum = std::numeric_limits<float>::infinity();

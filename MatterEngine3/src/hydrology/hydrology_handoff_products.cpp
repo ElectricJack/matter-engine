@@ -1443,7 +1443,11 @@ bool build_handoff_water_animation_artifact(
             upstream.phase_offset_frames != downstream.phase_offset_frames ||
             upstream.duration_seconds != downstream.duration_seconds ||
             upstream.material != downstream.material ||
+            std::memcmp(&upstream.lattice, &downstream.lattice,
+                        sizeof(upstream.lattice)) != 0 ||
             !finite(visual_voxel_m) || visual_voxel_m <= 0.0f ||
+            std::memcmp(&upstream.lattice.voxel_m, &visual_voxel_m,
+                        sizeof(float)) != 0 ||
             handoff.upstream_visual_cut_m >=
                 handoff.downstream_visual_cut_m)
             return fail("handoff animation input is invalid", error);
@@ -1550,13 +1554,19 @@ bool build_handoff_water_animation_artifact(
         semantic.u64(upstream.source_primary_payload_digest);
         semantic.u64(downstream.source_primary_payload_digest);
         semantic.floating(visual_voxel_m);
+        semantic.floating(upstream.lattice.origin_m.x);
+        semantic.floating(upstream.lattice.origin_m.y);
+        semantic.floating(upstream.lattice.origin_m.z);
+        semantic.floating(upstream.lattice.voxel_m);
+        semantic.u64(upstream.lattice.version);
         semantic.u64(animation.frames_per_second);
         semantic.u64(animation.phase_offset_frames);
         semantic.u64(animation.frames.size());
         const WaterMeshAnimationArtifactMetadata metadata{
             handoff.id, semantic.finish(),
             upstream.source_primary_payload_digest,
-            downstream.source_primary_payload_digest, visual_voxel_m};
+            downstream.source_primary_payload_digest, visual_voxel_m,
+            upstream.lattice};
         if (!pack_water_mesh_animation_artifact(
                 metadata, animation, artifact, artifact_error)) {
             error = {FluidBakeCode::ProductFailure,

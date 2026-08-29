@@ -6,6 +6,7 @@
 #include "hydrology/physx_collision_input.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/spillway_handoff.h"
+#include "hydrology/water_mesh_animation.h"
 #if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
 #include "matter/engine_context.h"
 #endif
@@ -245,6 +246,60 @@ void test_section_request_assembly_selects_local_inputs() {
           "lower collision excludes the upper-section-only boulder");
     CHECK(!lies_on_dry_collar_plane(lower_request),
           "downstream collision also has no dry-collar boundary wall");
+
+    CHECK(upper_request.product_settings.visual_job.sampling_lattice.version ==
+              1u &&
+              upper_request.product_settings.visual_job.sampling_lattice
+                      .origin_m.x == 0.0f &&
+              upper_request.product_settings.visual_job.sampling_lattice
+                      .origin_m.y == 0.0f &&
+              upper_request.product_settings.visual_job.sampling_lattice
+                      .origin_m.z == 0.0f &&
+              upper_request.product_settings.visual_job.sampling_lattice
+                      .voxel_m ==
+                  upper_request.product_settings.visual_job.voxel_m &&
+              std::memcmp(
+                  &upper_request.product_settings.visual_job.sampling_lattice,
+                  &lower_request.product_settings.visual_job.sampling_lattice,
+                  sizeof(gpu_meshing::ParticleSamplingLattice)) == 0,
+          "every section receives byte-identical network/world lattice metadata before particles exist");
+
+    auto downstream_edited_network = network;
+    downstream_edited_network.sections[1].terminal_pool->fill_level_m += 0.5f;
+    viewer::FluidBakeRequest unchanged_upstream{};
+    CHECK(viewer::assemble_authored_fluid_section_request(
+              downstream_edited_network, geometry,
+              downstream_edited_network.sections[0], {}, colliders, context,
+              cache_root, unchanged_upstream, error),
+          error.message.c_str());
+    const gpu_meshing::ParticleSample identity_particle{
+        {20.0f, 8.0f, 0.0f},
+        upper_request.product_settings.particle_radius_m};
+    const auto upstream_job = hydrology::PhysxFluidBake::resolved_visual_job(
+        {{identity_particle.position_m, {}, 1u}},
+        identity_particle.radius_m,
+        upper_request.product_settings.visual_job);
+    const auto unchanged_upstream_job =
+        hydrology::PhysxFluidBake::resolved_visual_job(
+            {{identity_particle.position_m, {}, 1u}},
+            identity_particle.radius_m,
+            unchanged_upstream.product_settings.visual_job);
+    const auto upstream_keys = hydrology::derive_product_keys(
+        upstream_job, 0x1234u, upper_request.product_settings.identity,
+        upper_request.product_settings.coarse_voxel_m,
+        upper_request.product_settings.gameplay_layout);
+    const auto unchanged_upstream_keys = hydrology::derive_product_keys(
+        unchanged_upstream_job, 0x1234u,
+        unchanged_upstream.product_settings.identity,
+        unchanged_upstream.product_settings.coarse_voxel_m,
+        unchanged_upstream.product_settings.gameplay_layout);
+    CHECK(std::memcmp(
+              &upper_request.product_settings.visual_job.sampling_lattice,
+              &unchanged_upstream.product_settings.visual_job.sampling_lattice,
+              sizeof(gpu_meshing::ParticleSamplingLattice)) == 0 &&
+              upper_request.semantic_key == unchanged_upstream.semantic_key &&
+              upstream_keys.visual == unchanged_upstream_keys.visual,
+          "editing only downstream geometry preserves the upstream lattice and visual product key");
 
     auto second_handoff = handoff;
     second_handoff.id = "tributary";
@@ -1018,6 +1073,8 @@ void test_terminal_finite_failure_builds_visual_only_debug_water() {
     settings.visual_job.bounds_m = {
         {-1.0f, -1.0f, -1.0f}, {11.0f, 11.0f, 11.0f}};
     settings.visual_job.voxel_m = 0.2f;
+    settings.visual_job.sampling_lattice = {
+        {-31.2f, 7.4f, 11.8f}, 0.2f, 1u};
     settings.visual_job.blend_width_m = 0.05f;
     settings.visual_job.limits = {32u, 4096u, 65536u, 65536u};
     std::uint32_t visual_calls = 0u;
@@ -1028,6 +1085,9 @@ void test_terminal_finite_failure_builds_visual_only_debug_water() {
         ++visual_calls;
         CHECK(job.material == 4u && job.particle_count > 0u &&
                   job.particle_count <= output.particles.size() &&
+                  std::memcmp(&job.sampling_lattice,
+                              &settings.visual_job.sampling_lattice,
+                              sizeof(job.sampling_lattice)) == 0 &&
                   job.bounds_m.min_m.x > settings.visual_job.bounds_m.min_m.x &&
                   job.bounds_m.max_m.x < settings.visual_job.bounds_m.max_m.x,
               "failed debug water reuses the material-4 particle visual job");
@@ -1056,6 +1116,7 @@ void test_terminal_finite_failure_builds_visual_only_debug_water() {
     // diagnostic path must split and retry that same finite snapshot instead
     // of silently dropping the requested failed-water view.
     settings.visual_job.voxel_m = 1.0f;
+    settings.visual_job.sampling_lattice.voxel_m = 1.0f;
     settings.visual_job.limits.max_grid_vertices = 65536u;
     std::uint32_t runtime_limit_calls = 0u;
     auto runtime_limited_mesher = [&](const gpu_meshing::ParticleJob& job,
@@ -1104,6 +1165,7 @@ void test_terminal_finite_failure_builds_visual_only_debug_water() {
     settings.visual_job.bounds_m = {
         {-2.0f, -2.0f, -2.0f}, {4.0f, 2.0f, 2.0f}};
     settings.visual_job.voxel_m = 0.1f;
+    settings.visual_job.sampling_lattice.voxel_m = 0.1f;
     settings.visual_job.blend_width_m = 0.05f;
     settings.visual_job.limits = {64u, 65536u, 65536u, 65536u};
     std::vector<float> successful_particle_x;
@@ -1262,6 +1324,8 @@ void test_accepted_snapshot_builds_all_products_or_publishes_nothing() {
     settings.coarse_voxel_m = 0.5f;
     settings.visual_job.bounds_m = {{-1.0f, -1.0f, -1.0f}, {2.0f, 3.0f, 2.0f}};
     settings.visual_job.voxel_m = 0.25f;
+    settings.visual_job.sampling_lattice = {
+        {-31.2f, 7.4f, 11.8f}, 0.25f, 1u};
     settings.visual_job.blend_width_m = 0.1f;
     settings.visual_job.iso_value = 0.0f;
     settings.visual_job.limits = {16u, 4096u, 65536u, 65536u};
@@ -1273,6 +1337,9 @@ void test_accepted_snapshot_builds_all_products_or_publishes_nothing() {
                       gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
                       gpu_meshing::Error&, const gpu_meshing::BuildControl&) {
         saw_water_job = job.material == 4u && job.particle_count == 2u &&
+                        std::memcmp(&job.sampling_lattice,
+                                    &settings.visual_job.sampling_lattice,
+                                    sizeof(job.sampling_lattice)) == 0 &&
                         job.particles[0].radius_m == 0.65f &&
                         job.particles[1].position_m.x == 0.75f;
         mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
@@ -1427,6 +1494,7 @@ void test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss() 
     root.particle_count = static_cast<std::uint32_t>(particles.size());
     root.bounds_m = {{-2.0f, -2.0f, -2.0f}, {4.0f, 2.0f, 2.0f}};
     root.voxel_m = 0.1f;
+    root.sampling_lattice = {{-31.2f, 7.4f, 11.8f}, 0.1f, 1u};
     root.blend_width_m = 0.05f;
     root.material = 4u;
     root.phase_blend = {8u, 0.4f, 0.6f};
@@ -1434,19 +1502,19 @@ void test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss() 
 
     std::uint32_t calls = 0u;
     bool phase_order_preserved = true;
-    bool empty_authored_margin_removed = true;
+    bool lattice_preserved = true;
     auto mesher = [&](const gpu_meshing::ParticleJob& job,
                       gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
                       gpu_meshing::Error&,
                       const gpu_meshing::BuildControl&) {
         ++calls;
-        empty_authored_margin_removed &=
-            job.bounds_m.min_m.x > root.bounds_m.min_m.x &&
-            job.bounds_m.max_m.x < root.bounds_m.max_m.x;
         phase_order_preserved &=
             std::fabs(job.phase_blend.primary_weight - 0.4f) < 1.0e-6f &&
             std::fabs(job.phase_blend.secondary_weight - 0.6f) < 1.0e-6f &&
             job.phase_blend.split_index <= job.particle_count;
+        lattice_preserved &=
+            std::memcmp(&job.sampling_lattice, &root.sampling_lattice,
+                        sizeof(job.sampling_lattice)) == 0;
         for (std::uint32_t index = 0u;
              index != job.phase_blend.split_index; ++index)
             phase_order_preserved &=
@@ -1472,10 +1540,45 @@ void test_dual_phase_animation_visual_chunks_capacity_without_resolution_loss() 
     gpu_meshing::Error error{};
     CHECK(hydrology::PhysxFluidBake::build_visual_job_chunks(
               root, mesher, mesh, error), error.message.c_str());
-    CHECK(calls >= 2u && phase_order_preserved &&
-              empty_authored_margin_removed &&
+    CHECK(calls >= 2u && phase_order_preserved && lattice_preserved &&
               mesh.material == 4u && !mesh.indices.empty(),
           "dual-phase animation keeps authored voxel resolution by chunking the over-cap grid");
+
+    hydrology::FluidParticleAnimationCapture capture{};
+    capture.frames_per_second = 30u;
+    capture.phase_offset_frames = 15u;
+    capture.frames.resize(30u);
+    for (std::uint32_t frame = 0u; frame != 30u; ++frame)
+        capture.frames[frame].positions_m.push_back(
+            {0.1f * static_cast<float>(frame), 0.0f, 0.0f});
+    bool animation_lattice_preserved = true;
+    hydrology::WaterMeshAnimation animation{};
+    CHECK(hydrology::build_water_mesh_animation(
+              capture, 0.65f, root,
+              [&](const gpu_meshing::ParticleJob& job,
+                  gpu_meshing::MeshResult& frame_mesh,
+                  gpu_meshing::Stats&, gpu_meshing::Error&) {
+                  animation_lattice_preserved &=
+                      std::memcmp(&job.sampling_lattice,
+                                  &root.sampling_lattice,
+                                  sizeof(job.sampling_lattice)) == 0;
+                  frame_mesh.positions = {
+                      0.0f, 0.0f, 0.0f,
+                      0.1f, 0.0f, 0.0f,
+                      0.0f, 0.1f, 0.0f};
+                  frame_mesh.normals = {
+                      0.0f, 0.0f, 1.0f,
+                      0.0f, 0.0f, 1.0f,
+                      0.0f, 0.0f, 1.0f};
+                  frame_mesh.indices = {0u, 1u, 2u};
+                  frame_mesh.material = job.material;
+                  frame_mesh.content_digest =
+                      gpu_meshing::mesh_content_digest(frame_mesh);
+                  return true;
+              },
+              animation, error) && animation_lattice_preserved &&
+              animation.frames.size() == 30u,
+          "unchunked section animation jobs inherit byte-identical lattice metadata");
 }
 
 void test_product_keys_follow_the_settings_the_extractors_consume() {
@@ -1818,19 +1921,30 @@ WorldSessionFluidCase run_world_session_fluid_case(
             },
             [&](const gpu_meshing::ParticleJob& job,
                 gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
-                gpu_meshing::Error&,
+                gpu_meshing::Error& mesh_error,
                 const gpu_meshing::BuildControl&) {
                 ++result.visual_calls;
                 result.visual_thread = std::this_thread::get_id();
                 result.backend_released_before_visual =
                     backend_state->release_calls.load() > 0;
                 if (!options.visual_succeeds) return false;
+                gpu_meshing::GridLayout layout{};
+                if (!gpu_meshing::validate_particle_job(
+                        job, layout, mesh_error))
+                    return false;
+                const matter::Float3 grid_max{
+                    layout.origin_m.x + layout.spacing_m.x *
+                        static_cast<float>(layout.cell_dims[0]),
+                    layout.origin_m.y + layout.spacing_m.y *
+                        static_cast<float>(layout.cell_dims[1]),
+                    layout.origin_m.z + layout.spacing_m.z *
+                        static_cast<float>(layout.cell_dims[2])};
                 const float surface_y = 0.0f;
                 mesh.positions = {
-                    job.bounds_m.min_m.x, surface_y, job.bounds_m.min_m.z,
-                    job.bounds_m.max_m.x, surface_y, job.bounds_m.min_m.z,
-                    job.bounds_m.max_m.x, surface_y, job.bounds_m.max_m.z,
-                    job.bounds_m.min_m.x, surface_y, job.bounds_m.max_m.z};
+                    layout.origin_m.x, surface_y, layout.origin_m.z,
+                    grid_max.x, surface_y, layout.origin_m.z,
+                    grid_max.x, surface_y, grid_max.z,
+                    layout.origin_m.x, surface_y, grid_max.z};
                 mesh.normals = {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
                                 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
                 mesh.indices = {0u, 1u, 2u, 0u, 2u, 3u};

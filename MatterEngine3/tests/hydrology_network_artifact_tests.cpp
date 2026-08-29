@@ -138,7 +138,8 @@ hydrology::WaterMeshAnimationArtifact animation_fixture(
     CHECK(hydrology::pack_water_mesh_animation_artifact(
               {reference.id, reference.semantic_key,
                reference.source_primary_payload_digest,
-               reference.source_secondary_payload_digest, 0.2f},
+               reference.source_secondary_payload_digest, 0.2f,
+               {{0.0f, 0.0f, 0.0f}, 0.2f, 1u}},
               animation, artifact, error), error.message.c_str());
     return artifact;
 }

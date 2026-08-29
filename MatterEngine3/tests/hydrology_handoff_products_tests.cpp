@@ -154,7 +154,8 @@ hydrology::WaterMeshAnimationArtifact animation_artifact(
     gpu_meshing::Error error{};
     CHECK(hydrology::pack_water_mesh_animation_artifact(
               {id, upstream ? 1011u : 2022u,
-               upstream ? 1001u : 2002u, 0u, 0.5f},
+               upstream ? 1001u : 2002u, 0u, 0.5f,
+               {{0.0f, 0.0f, 0.0f}, 0.5f, 1u}},
               animation, artifact, error), error.message.c_str());
     return artifact;
 }
@@ -195,7 +196,8 @@ hydrology::WaterMeshAnimationArtifact branched_animation_artifact() {
     hydrology::WaterMeshAnimationArtifact artifact{};
     gpu_meshing::Error error{};
     CHECK(hydrology::pack_water_mesh_animation_artifact(
-              {"lower", 2022u, 2002u, 0u, 0.5f},
+              {"lower", 2022u, 2002u, 0u, 0.5f,
+               {{0.0f, 0.0f, 0.0f}, 0.5f, 1u}},
               animation, artifact, error), error.message.c_str());
     return artifact;
 }

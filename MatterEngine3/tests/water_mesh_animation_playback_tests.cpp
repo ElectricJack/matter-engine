@@ -33,7 +33,8 @@ hydrology::WaterMeshAnimationArtifact make_artifact(
     hydrology::WaterMeshAnimationArtifact artifact{};
     gpu_meshing::Error error{};
     CHECK(hydrology::pack_water_mesh_animation_artifact(
-              {id, semantic, primary, secondary, 0.2f},
+              {id, semantic, primary, secondary, 0.2f,
+               {{0.0f, 0.0f, 0.0f}, 0.2f, 1u}},
               animation, artifact, error), error.message.c_str());
     return artifact;
 }

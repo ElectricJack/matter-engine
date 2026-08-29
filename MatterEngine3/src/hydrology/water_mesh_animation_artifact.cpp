@@ -11,8 +11,8 @@
 namespace hydrology {
 namespace {
 
-constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'W', 'A', 'N', '1'};
-constexpr std::uint32_t kVersion = 1u;
+constexpr std::uint8_t kMagic[8] = {'M', 'H', 'Y', 'D', 'W', 'A', 'N', '2'};
+constexpr std::uint32_t kVersion = 2u;
 constexpr std::size_t kHeaderBytes = 32u;
 constexpr std::uint64_t kMaxFileBytes = 1ull << 30u;
 constexpr std::uint64_t kMaxPayloadBytes = kMaxFileBytes - kHeaderBytes;
@@ -48,6 +48,15 @@ bool finite_bounds(const gpu_meshing::Aabb& bounds) noexcept {
            bounds.max_m.x >= bounds.min_m.x &&
            bounds.max_m.y >= bounds.min_m.y &&
            bounds.max_m.z >= bounds.min_m.z;
+}
+
+bool valid_lattice(
+    const gpu_meshing::ParticleSamplingLattice& lattice,
+    float visual_voxel_m) noexcept {
+    return finite(lattice.origin_m) && std::isfinite(lattice.voxel_m) &&
+           lattice.voxel_m > 0.0f && lattice.version <= 1u &&
+           std::memcmp(&lattice.voxel_m, &visual_voxel_m,
+                       sizeof(float)) == 0;
 }
 
 float component(matter::Float3 value, std::uint32_t axis) noexcept {
@@ -418,6 +427,7 @@ bool validate_artifact(const WaterMeshAnimationArtifact& artifact,
         artifact.duration_seconds != 1.0f ||
         !std::isfinite(artifact.visual_voxel_m) ||
         artifact.visual_voxel_m <= 0.0f ||
+        !valid_lattice(artifact.lattice, artifact.visual_voxel_m) ||
         artifact.frames.size() != kFrameCount ||
         !finite_bounds(artifact.quantization_bounds_m)) {
         return artifact_fail(error,
@@ -617,6 +627,7 @@ bool pack_water_mesh_animation_artifact(
         metadata.source_primary_payload_digest == 0u ||
         !std::isfinite(metadata.visual_voxel_m) ||
         metadata.visual_voxel_m <= 0.0f ||
+        !valid_lattice(metadata.lattice, metadata.visual_voxel_m) ||
         animation.frames_per_second != kFramesPerSecond ||
         animation.phase_offset_frames != kPhaseOffsetFrames ||
         animation.duration_seconds != 1.0f ||
@@ -697,6 +708,7 @@ bool pack_water_mesh_animation_artifact(
     candidate.phase_offset_frames = animation.phase_offset_frames;
     candidate.duration_seconds = animation.duration_seconds;
     candidate.visual_voxel_m = metadata.visual_voxel_m;
+    candidate.lattice = metadata.lattice;
     candidate.material = material;
     candidate.quantization_bounds_m = shared_bounds;
     candidate.frames.reserve(kFrameCount);
@@ -814,6 +826,11 @@ bool serialize_water_mesh_animation_artifact(
         payload.u32(artifact.material) &&
         payload.floating(artifact.duration_seconds) &&
         payload.floating(artifact.visual_voxel_m) &&
+        payload.floating(artifact.lattice.origin_m.x) &&
+        payload.floating(artifact.lattice.origin_m.y) &&
+        payload.floating(artifact.lattice.origin_m.z) &&
+        payload.floating(artifact.lattice.voxel_m) &&
+        payload.u32(artifact.lattice.version) &&
         write_bounds(payload, artifact.quantization_bounds_m) &&
         payload.u64(directory_bytes);
     for (const WaterMeshAnimationFrameRecord& frame : artifact.frames) {
@@ -892,6 +909,11 @@ bool deserialize_water_mesh_animation_artifact(
         !reader.u32(candidate.material) ||
         !reader.floating(candidate.duration_seconds) ||
         !reader.floating(candidate.visual_voxel_m) ||
+        !reader.floating(candidate.lattice.origin_m.x) ||
+        !reader.floating(candidate.lattice.origin_m.y) ||
+        !reader.floating(candidate.lattice.origin_m.z) ||
+        !reader.floating(candidate.lattice.voxel_m) ||
+        !reader.u32(candidate.lattice.version) ||
         !read_bounds(reader, candidate.quantization_bounds_m) ||
         !reader.u64(directory_bytes) || frame_count != kFrameCount ||
         directory_bytes != kFrameRecordBytes * frame_count ||

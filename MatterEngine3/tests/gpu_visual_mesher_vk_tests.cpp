@@ -63,14 +63,17 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
                          const std::vector<gpu_meshing::ParticleSample>& samples,
                          gpu_meshing::Aabb bounds, float blend,
                          const char* label,
-                         gpu_meshing::ParticlePhaseBlend phase_blend = {}) {
+                         gpu_meshing::ParticlePhaseBlend phase_blend = {},
+                         gpu_meshing::ParticleSamplingLattice lattice = {}) {
     gpu_meshing::ParticleJob job{};
     job.particles = samples.data();
     job.particle_count = static_cast<uint32_t>(samples.size());
     job.bounds_m = bounds;
     job.voxel_m = 0.25f;
+    if (lattice.version != 0u) job.voxel_m = lattice.voxel_m;
     job.blend_width_m = blend;
     job.phase_blend = phase_blend;
+    job.sampling_lattice = lattice;
     job.limits = {64u, 1u << 20u, 1u << 20u, 1u << 20u};
 
     std::vector<float> first;
@@ -93,6 +96,21 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
     if (second_ok)
         GPU_CHECK(first == second,
                   "repeated GPU scalar readbacks are byte-identical");
+    if (second_ok) {
+        GPU_CHECK(
+            repeated_layout.cell_min == layout.cell_min &&
+                repeated_layout.origin_m.x == layout.origin_m.x &&
+                repeated_layout.origin_m.y == layout.origin_m.y &&
+                repeated_layout.origin_m.z == layout.origin_m.z &&
+                repeated_layout.spacing_m.x == layout.spacing_m.x &&
+                repeated_layout.spacing_m.y == layout.spacing_m.y &&
+                repeated_layout.spacing_m.z == layout.spacing_m.z &&
+                repeated_layout.sample_dims == layout.sample_dims &&
+                repeated_layout.cell_dims == layout.cell_dims &&
+                repeated_layout.grid_vertices == layout.grid_vertices &&
+                repeated_layout.grid_cells == layout.grid_cells,
+            "repeated GPU field dispatch returns an identical CPU lattice layout");
+    }
 
     std::vector<Particle> surface_particles(samples.size());
     float max_radius = 0.0f;
@@ -110,10 +128,18 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
             for (uint32_t x = 0; x < layout.sample_dims[0]; ++x) {
                 const uint32_t index = x + layout.sample_dims[0] *
                     (y + layout.sample_dims[1] * z);
-                const matter::Float3 point{
-                    layout.origin_m.x + layout.spacing_m.x * x,
-                    layout.origin_m.y + layout.spacing_m.y * y,
-                    layout.origin_m.z + layout.spacing_m.z * z};
+                const matter::Float3 point = lattice.version == 1u
+                    ? matter::Float3{
+                          lattice.origin_m.x + lattice.voxel_m *
+                              static_cast<float>(layout.cell_min[0] + x),
+                          lattice.origin_m.y + lattice.voxel_m *
+                              static_cast<float>(layout.cell_min[1] + y),
+                          lattice.origin_m.z + lattice.voxel_m *
+                              static_cast<float>(layout.cell_min[2] + z)}
+                    : matter::Float3{
+                          layout.origin_m.x + layout.spacing_m.x * x,
+                          layout.origin_m.y + layout.spacing_m.y * y,
+                          layout.origin_m.z + layout.spacing_m.z * z};
                 const float reference =
                     gpu_meshing::evaluate_particle_field_reference(
                         samples.data(), static_cast<uint32_t>(samples.size()),
@@ -308,6 +334,14 @@ int run_gpu_visual_mesher_vk_tests(matter::VulkanDevice& vulkan) {
          {{-1.5f, -1.1f, -0.7f}, 0.45f}},
         {{-3.0f, -2.0f, -1.5f}, {-0.5f, 0.0f, 0.5f}}, 0.18f,
         "translated blended-sphere GPU field dispatch succeeds");
+    check_field_fixture(
+        mesher,
+        {{{-30.75f, 7.85f, 11.95f}, 0.45f},
+         {{-30.10f, 7.95f, 12.20f}, 0.35f}},
+        {{-31.03f, 7.46f, 11.67f}, {-29.71f, 8.11f, 12.46f}},
+        0.12f,
+        "translated canonical-lattice GPU field samples match the world-anchored CPU reference",
+        {}, {{-31.2f, 7.4f, 11.8f}, 0.15f, 1u});
     check_field_fixture(
         mesher,
         {{{-0.35f, 0.0f, 0.0f}, 0.5f},

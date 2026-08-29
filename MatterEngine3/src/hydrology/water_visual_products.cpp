@@ -253,6 +253,9 @@ ProductKeys derive_product_keys(
     visual.point(job.bounds_m.min_m);
     visual.point(job.bounds_m.max_m);
     visual.floating(job.voxel_m);
+    visual.point(job.sampling_lattice.origin_m);
+    visual.floating(job.sampling_lattice.voxel_m);
+    visual.u32(job.sampling_lattice.version);
     visual.floating(job.blend_width_m);
     visual.floating(job.iso_value);
     visual.u32(settings.field_contract_version);

@@ -33,7 +33,10 @@ hydrology::WaterMeshAnimation animation_fixture() {
 }
 
 hydrology::WaterMeshAnimationArtifactMetadata metadata_fixture() {
-    return {"upper-main", 0xabcdu, 0x1111u, 0u, 0.2f};
+    hydrology::WaterMeshAnimationArtifactMetadata metadata{
+        "upper-main", 0xabcdu, 0x1111u, 0u, 0.2f};
+    metadata.lattice = {{-31.2f, 7.4f, 11.8f}, 0.2f, 1u};
+    return metadata;
 }
 
 void test_pack_round_trip_and_frame_spans() {
@@ -44,7 +47,7 @@ void test_pack_round_trip_and_frame_spans() {
               metadata_fixture(), animation, artifact, error),
           error.message.c_str());
     CHECK(sizeof(hydrology::PackedWaterAnimationVertex) == 12u,
-          "the v1 packed vertex ABI remains twelve bytes");
+          "the v2 packed vertex ABI remains twelve bytes");
     CHECK(artifact.frames.size() == 30u && artifact.material == 4u &&
               artifact.frame_payload.size() == 30u * (3u * 12u + 3u * 4u),
           "thirty frames retain compact vertices and uint32 indices only");
@@ -60,10 +63,15 @@ void test_pack_round_trip_and_frame_spans() {
     CHECK(loaded.identity == artifact.identity &&
               loaded.frames_per_second == 30u &&
               loaded.phase_offset_frames == 15u &&
+              loaded.lattice.origin_m.x == -31.2f &&
+              loaded.lattice.origin_m.y == 7.4f &&
+              loaded.lattice.origin_m.z == 11.8f &&
+              loaded.lattice.voxel_m == 0.2f &&
+              loaded.lattice.version == 1u &&
               loaded.frames == artifact.frames &&
               loaded.frame_payload == artifact.frame_payload &&
               loaded.payload_digest != 0u,
-          "serialize/deserialize preserves directory, payload, and digest");
+          "v2 serialize/deserialize preserves lattice, directory, payload, and digest");
 
     hydrology::WaterMeshAnimationFrameSpan span{};
     CHECK(hydrology::water_mesh_animation_frame_span(
@@ -107,6 +115,53 @@ void test_pack_round_trip_and_frame_spans() {
           "packed frames preserve exact uint32 topology");
 }
 
+void test_lattice_metadata_changes_animation_payload_identity() {
+    const auto animation = animation_fixture();
+    gpu_meshing::Error error{};
+    hydrology::WaterMeshAnimationArtifact baseline{};
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              metadata_fixture(), animation, baseline, error),
+          error.message.c_str());
+    std::vector<std::uint8_t> baseline_bytes;
+    CHECK(hydrology::serialize_water_mesh_animation_artifact(
+              baseline, baseline_bytes, error),
+          error.message.c_str());
+
+    auto origin_metadata = metadata_fixture();
+    origin_metadata.lattice.origin_m.x += 4.0f;
+    hydrology::WaterMeshAnimationArtifact origin_changed{};
+    std::vector<std::uint8_t> origin_bytes;
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              origin_metadata, animation, origin_changed, error) &&
+              hydrology::serialize_water_mesh_animation_artifact(
+                  origin_changed, origin_bytes, error) &&
+              origin_bytes != baseline_bytes,
+          "changing the lattice origin changes the v2 animation payload identity");
+
+    auto voxel_metadata = metadata_fixture();
+    voxel_metadata.visual_voxel_m = 0.25f;
+    voxel_metadata.lattice.voxel_m = 0.25f;
+    hydrology::WaterMeshAnimationArtifact voxel_changed{};
+    std::vector<std::uint8_t> voxel_bytes;
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              voxel_metadata, animation, voxel_changed, error) &&
+              hydrology::serialize_water_mesh_animation_artifact(
+                  voxel_changed, voxel_bytes, error) &&
+              voxel_bytes != baseline_bytes,
+          "changing the lattice voxel changes the v2 animation payload identity");
+
+    auto version_metadata = metadata_fixture();
+    version_metadata.lattice.version = 0u;
+    hydrology::WaterMeshAnimationArtifact version_changed{};
+    std::vector<std::uint8_t> version_bytes;
+    CHECK(hydrology::pack_water_mesh_animation_artifact(
+              version_metadata, animation, version_changed, error) &&
+              hydrology::serialize_water_mesh_animation_artifact(
+                  version_changed, version_bytes, error) &&
+              version_bytes != baseline_bytes,
+          "changing the persisted lattice contract version changes animation payload identity");
+}
+
 void test_corruption_and_invalid_meshes_fail_closed() {
     auto animation = animation_fixture();
     hydrology::WaterMeshAnimationArtifact artifact{};
@@ -126,10 +181,18 @@ void test_corruption_and_invalid_meshes_fail_closed() {
               corrupt, loaded, error),
           "bad animation magic is rejected");
     corrupt = bytes;
-    corrupt[8] = 2u;
+    corrupt[8] = 3u;
     CHECK(!hydrology::deserialize_water_mesh_animation_artifact(
               corrupt, loaded, error),
           "unknown animation version is rejected");
+    corrupt = bytes;
+    corrupt[7] = '1';
+    corrupt[8] = 1u;
+    corrupt[9] = corrupt[10] = corrupt[11] = 0u;
+    CHECK(!hydrology::deserialize_water_mesh_animation_artifact(
+              corrupt, loaded, error) &&
+              loaded.identity.empty() && loaded.frames.empty(),
+          "legacy MHYDWAN1 bytes miss safely as stale instead of being decoded as v2");
     corrupt = bytes;
     corrupt.pop_back();
     CHECK(!hydrology::deserialize_water_mesh_animation_artifact(
@@ -240,6 +303,7 @@ void test_immutable_save_never_replaces_different_content() {
 
 int main() {
     test_pack_round_trip_and_frame_spans();
+    test_lattice_metadata_changes_animation_payload_identity();
     test_corruption_and_invalid_meshes_fail_closed();
     test_immutable_save_never_replaces_different_content();
     return check_summary();
