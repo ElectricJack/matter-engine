@@ -86,6 +86,7 @@ public:
 
     bool select(double network_seconds,
                 std::uint32_t frame_slot,
+                std::uint32_t render_material_index,
                 WaterAnimationFrameSelection& selection,
                 WaterAnimationFallback& fallback) noexcept;
 

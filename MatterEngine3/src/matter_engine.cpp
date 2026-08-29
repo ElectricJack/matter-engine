@@ -716,6 +716,7 @@ struct WorldSession::Impl {
         std::shared_ptr<const viewer::VkScenePart> part;
         viewer::VkSceneInstance instance{};
         viewer::PackedWaterField water_field{};
+        std::uint32_t water_material_id = 0u;
         hydrology::HydrologyNetworkArtifact animation_manifest{};
         std::filesystem::path animation_cache_root;
     };
@@ -3610,6 +3611,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             render->part = std::move(authored_part);
             render->instance = authored_instance;
             render->water_field = std::move(packed_water_field);
+            render->water_material_id = water_material_id;
             render->animation_manifest = network_result.manifest;
             render->animation_cache_root = cfg.cache_root;
             publication_candidate->render = std::move(render);
@@ -12268,6 +12270,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             prepared = impl_->vk_water_animation_playback.select(
                 static_cast<double>(water_animation_time_seconds),
                 frame.frame_slot,
+                authored_fluid_binding->water_material_id,
                 impl_->vk_water_animation_selection, fallback);
             if (!prepared)
                 animation_frame_error = fallback.message.empty()

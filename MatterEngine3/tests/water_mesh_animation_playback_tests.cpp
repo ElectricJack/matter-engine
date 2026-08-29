@@ -102,22 +102,28 @@ void test_common_clock_and_per_slot_upload_decisions() {
     auto selection = playback.make_selection();
     const std::uint64_t validations_after_activation =
         hydrology::water_mesh_animation_validation_count();
-    CHECK(playback.select(0.10, 0u, selection, fallback) &&
+    constexpr std::uint32_t kAuthoredWaterMaterial = 19u;
+    CHECK(playback.select(0.10, 0u, kAuthoredWaterMaterial, selection,
+                          fallback) &&
               selection.frame_index == 3u && selection.upload_required &&
               selection.draws.size() == 3u,
           "the first frame-slot use selects one frame for every product");
     for (const auto& draw : selection.draws)
-        CHECK(draw.frame_index == selection.frame_index,
-              "sections and handoffs share the selected frame");
+        CHECK(draw.frame_index == selection.frame_index &&
+                  draw.material_index == kAuthoredWaterMaterial,
+              "sections and handoffs share the selected frame and the authored runtime water material");
     const auto draw_capacity = selection.draws.capacity();
-    CHECK(playback.select(0.11, 0u, selection, fallback) &&
+    CHECK(playback.select(0.11, 0u, kAuthoredWaterMaterial, selection,
+                          fallback) &&
               !selection.upload_required &&
               selection.draws.capacity() == draw_capacity,
           "paused or same-interval playback performs no upload or allocation");
-    CHECK(playback.select(0.11, 1u, selection, fallback) &&
+    CHECK(playback.select(0.11, 1u, kAuthoredWaterMaterial, selection,
+                          fallback) &&
               selection.upload_required,
           "a newly acquired Vulkan frame slot uploads its current frame once");
-    CHECK(playback.select(0.14, 0u, selection, fallback) &&
+    CHECK(playback.select(0.14, 0u, kAuthoredWaterMaterial, selection,
+                          fallback) &&
               selection.upload_required && selection.frame_index == 4u,
           "advancing to the next 30 Hz frame requests one slot-local upload");
     CHECK(hydrology::water_mesh_animation_validation_count() ==

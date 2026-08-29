@@ -101,6 +101,7 @@ WaterMeshAnimationPlayback::make_selection() const {
 bool WaterMeshAnimationPlayback::select(
     double network_seconds,
     std::uint32_t frame_slot,
+    std::uint32_t render_material_index,
     WaterAnimationFrameSelection& selection,
     WaterAnimationFallback& fallback) noexcept {
     fallback = {};
@@ -124,7 +125,7 @@ bool WaterMeshAnimationPlayback::select(
             asset.frame_spans[frame_index];
         selection.draws[index] = {
             asset.artifact->identity, asset.handoff, frame_index,
-            asset.artifact->material,
+            render_material_index,
             asset.artifact->quantization_bounds_m, span};
     }
     selection.frame_index = frame_index;
