@@ -97,7 +97,8 @@ int main() {
     for (const char* dependency : {"shaders_vk/material_common.glsl",
                                    "shaders_vk/water_surface.glsl",
                                    "shaders_vk/water_screen_space.glsl",
-                                   "shaders_vk/environment_common.glsl"})
+                                   "shaders_vk/environment_common.glsl",
+                                   "shaders_vk/cloud_shadow_common.glsl"})
         assert(water_forward_dependency_rule.find(dependency) !=
                std::string::npos);
     assert(renderer_header.find("kGpuZoneWaterDecode") != std::string::npos);

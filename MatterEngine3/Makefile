@@ -407,7 +407,8 @@ build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
 
 build/shaders_vk/water_forward.frag.spv: \
     shaders_vk/material_common.glsl shaders_vk/water_surface.glsl \
-    shaders_vk/water_screen_space.glsl shaders_vk/environment_common.glsl
+    shaders_vk/water_screen_space.glsl shaders_vk/environment_common.glsl \
+    shaders_vk/cloud_shadow_common.glsl
 
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \

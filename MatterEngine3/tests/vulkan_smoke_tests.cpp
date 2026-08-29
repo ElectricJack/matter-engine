@@ -2923,6 +2923,10 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "restore half-scale raster targets"
                         : error.c_str());
+    CHECK(renderer.test_opaque_hdr_image() == opaque_hdr_at_initial_extent &&
+              renderer.test_opaque_depth_image() ==
+                  opaque_depth_at_initial_extent,
+          "preserved opaque images survive trace-scale round trip");
 
     viewer::VkRasterPixel center{};
     viewer::VkRasterPixel lower_right_inside{};
