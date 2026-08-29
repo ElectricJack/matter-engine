@@ -1235,6 +1235,14 @@ void VkSceneRenderer::record_water_forward(
     }
 
     uint32_t issued_direct = 0u;
+    const bool time_direct = has_direct &&
+        record.timing_pool != VK_NULL_HANDLE &&
+        record.timing_written != nullptr;
+    if (time_direct) {
+        write_ts(command_buffer, record.timing_pool,
+                 kGpuZoneWaterDirectDraw, false);
+        record.timing_written[kGpuZoneWaterDirectDraw] |= 1u;
+    }
     if (has_direct) {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           record.direct_pipeline);
@@ -1281,6 +1289,11 @@ void VkSceneRenderer::record_water_forward(
                              draw.proxy_transform_slot);
             ++issued_direct;
         }
+    }
+    if (time_direct) {
+        write_ts(command_buffer, record.timing_pool,
+                 kGpuZoneWaterDirectDraw, true);
+        record.timing_written[kGpuZoneWaterDirectDraw] |= 2u;
     }
     vkCmdEndRendering(command_buffer);
 

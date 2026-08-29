@@ -734,6 +734,10 @@ struct WorldSession::Impl {
     std::uint64_t vk_water_animation_generation = 0u;
     std::uint64_t vk_water_animation_next_generation = 1u;
     bool vk_water_animation_active = false;
+    float vk_water_animation_publish_ms = 0.0f;
+    std::uint64_t vk_water_animation_compressed_cpu_bytes = 0u;
+    std::uint64_t vk_water_animation_peak_activation_cpu_bytes = 0u;
+    std::uint64_t vk_water_animation_gpu_bytes_per_slot = 0u;
     std::atomic<float> water_animation_time_seconds{0.0f};
     viewer::VulkanInstanceCache vk_instance_cache;
     viewer::TemporalState vk_temporal;
@@ -12090,6 +12094,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->vk_water_animation_proxy_indices.clear();
             impl_->vk_water_animation_generation = 0u;
             impl_->vk_water_animation_active = false;
+            impl_->vk_water_animation_publish_ms = 0.0f;
+            impl_->vk_water_animation_compressed_cpu_bytes = 0u;
+            impl_->vk_water_animation_peak_activation_cpu_bytes = 0u;
+            impl_->vk_water_animation_gpu_bytes_per_slot = 0u;
             if (reason && reason[0] != '\0')
                 MATTER_LOGW(
                     "hydrology",
@@ -12128,6 +12136,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             std::string animation_error;
             if (animation_authored) {
                 try {
+                    const auto animation_publish_start =
+                        std::chrono::steady_clock::now();
                     std::filesystem::path animation_cache_root =
                         authored_fluid_binding->animation_cache_root;
                     if (const char* force_failure = std::getenv(
@@ -12175,6 +12185,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                 ? "Vulkan animation resource publication failed"
                                 : gpu_error.message;
                         } else {
+                            const std::uint64_t compressed_cpu_bytes =
+                                candidate_playback.compressed_bytes();
+                            const std::uint64_t peak_activation_cpu_bytes =
+                                candidate_playback
+                                    .peak_activation_cpu_bytes();
+                            const std::uint64_t gpu_bytes_per_slot =
+                                capacity.gpu_bytes_per_slot();
                             impl_->vk_water_animation_playback =
                                 std::move(candidate_playback);
                             impl_->vk_water_animation_selection =
@@ -12185,6 +12202,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                             impl_->vk_water_animation_next_generation =
                                 generation + 1u;
                             impl_->vk_water_animation_active = true;
+                            impl_->vk_water_animation_publish_ms =
+                                static_cast<float>(std::chrono::duration<
+                                    double, std::milli>(
+                                        std::chrono::steady_clock::now() -
+                                        animation_publish_start)
+                                                       .count());
+                            impl_->vk_water_animation_compressed_cpu_bytes =
+                                compressed_cpu_bytes;
+                            impl_->vk_water_animation_peak_activation_cpu_bytes =
+                                peak_activation_cpu_bytes;
+                            impl_->vk_water_animation_gpu_bytes_per_slot =
+                                gpu_bytes_per_slot;
                             animation_activated = true;
                             MATTER_LOGI(
                                 "hydrology",
@@ -12832,10 +12861,21 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_water_forward_ms =
         impl_->vk_scene->gpu_zone_ms(
             viewer::VkSceneRenderer::kGpuZoneWaterDraw);
+    impl_->stats.gpu_water_direct_draw_ms =
+        impl_->vk_scene->gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw);
     impl_->stats.water_forward_width = impl_->vk_scene->raster_width();
     impl_->stats.water_forward_height = impl_->vk_scene->raster_height();
     impl_->stats.water_forward_image_bytes =
         impl_->vk_scene->water_forward_image_bytes();
+    impl_->stats.water_animation_publish_ms =
+        impl_->vk_water_animation_publish_ms;
+    impl_->stats.water_animation_compressed_cpu_bytes =
+        impl_->vk_water_animation_compressed_cpu_bytes;
+    impl_->stats.water_animation_peak_activation_cpu_bytes =
+        impl_->vk_water_animation_peak_activation_cpu_bytes;
+    impl_->stats.water_animation_gpu_bytes_per_slot =
+        impl_->vk_water_animation_gpu_bytes_per_slot;
     impl_->stats.water_animation_uploads =
         impl_->vk_scene->water_animation_upload_count();
     impl_->stats.water_animation_decode_dispatches =

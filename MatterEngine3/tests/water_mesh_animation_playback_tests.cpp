@@ -43,6 +43,42 @@ struct Fixture {
     hydrology::HydrologyNetworkArtifact manifest{};
 };
 
+std::uint64_t artifact_heap_bytes(
+    const hydrology::WaterMeshAnimationArtifact& artifact) {
+    return static_cast<std::uint64_t>(artifact.identity.size()) +
+        static_cast<std::uint64_t>(artifact.frames.size()) *
+            sizeof(hydrology::WaterMeshAnimationFrameRecord) +
+        static_cast<std::uint64_t>(artifact.frame_payload.size());
+}
+
+std::pair<std::uint64_t, std::uint64_t> expected_activation_bytes(
+    const Fixture& fixture) {
+    std::uint64_t complete_file_bytes = 0u;
+    std::uint64_t retained_artifact_heap_bytes = 0u;
+    std::uint64_t activation_high_water_bytes = 0u;
+    const auto include = [&](
+        const hydrology::HydrologyWaterAnimationReference& reference) {
+        const auto path = fixture.root / reference.relative_path;
+        const std::uint64_t file_bytes =
+            static_cast<std::uint64_t>(std::filesystem::file_size(path));
+        hydrology::WaterMeshAnimationArtifact artifact{};
+        gpu_meshing::Error error{};
+        CHECK(hydrology::load_water_mesh_animation_artifact(
+                  path, artifact, error), error.message.c_str());
+        const std::uint64_t decoded_heap_bytes = artifact_heap_bytes(artifact);
+        activation_high_water_bytes = std::max(
+            activation_high_water_bytes,
+            retained_artifact_heap_bytes + file_bytes + decoded_heap_bytes);
+        retained_artifact_heap_bytes += decoded_heap_bytes;
+        complete_file_bytes += file_bytes;
+    };
+    for (const auto& reference : fixture.manifest.section_animations)
+        include(reference);
+    for (const auto& reference : fixture.manifest.handoff_animations)
+        include(reference);
+    return {complete_file_bytes, activation_high_water_bytes};
+}
+
 Fixture write_fixture() {
     const auto stamp =
         std::chrono::steady_clock::now().time_since_epoch().count();
@@ -88,6 +124,12 @@ void test_common_clock_and_per_slot_upload_decisions() {
               fixture.manifest, fixture.root, kAuthoredWaterMaterial,
               3u, 700ull * 1024ull * 1024ull, playback, fallback),
           fallback.message.c_str());
+    const auto expected_memory = expected_activation_bytes(fixture);
+    CHECK(playback.compressed_bytes() == expected_memory.first &&
+              playback.peak_activation_cpu_bytes() == expected_memory.second &&
+              playback.peak_activation_cpu_bytes() !=
+                  playback.compressed_bytes(),
+          "activation distinguishes retained complete-file bytes from its decoded/file-buffer high-water");
     const viewer::WaterAnimationPlaybackCapacity capacity =
         playback.maximum_frame_capacity();
     CHECK(capacity.packed_vertex_bytes == 3u * 3u * 12u &&

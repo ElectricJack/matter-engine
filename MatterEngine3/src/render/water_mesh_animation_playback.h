@@ -77,6 +77,9 @@ public:
     std::uint64_t compressed_bytes() const noexcept {
         return compressed_bytes_;
     }
+    std::uint64_t peak_activation_cpu_bytes() const noexcept {
+        return peak_activation_cpu_bytes_;
+    }
     std::size_t asset_count() const noexcept { return assets_.size(); }
     WaterAnimationPlaybackCapacity maximum_frame_capacity() const noexcept {
         return capacity_;
@@ -114,6 +117,7 @@ private:
     std::vector<Asset> assets_;
     std::vector<std::int32_t> last_uploaded_frame_;
     std::uint64_t compressed_bytes_ = 0u;
+    std::uint64_t peak_activation_cpu_bytes_ = 0u;
     std::uint32_t render_material_index_ = UINT32_MAX;
     WaterAnimationPlaybackCapacity capacity_{};
 };

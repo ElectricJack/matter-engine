@@ -366,9 +366,17 @@ struct FrameStats {
     // and bytes describe the two persistent screen-optics copies at the
     // internal raster extent; bytes are logical texel payload, not heap use.
     float gpu_water_forward_ms = 0;
+    // Nested inside gpu_water_forward_ms: only eligible animated direct draws.
+    // Static-only/no-water frames leave the GPU timestamp pair unwritten and
+    // report zero.
+    float gpu_water_direct_draw_ms = 0;
     uint32_t water_forward_width = 0;
     uint32_t water_forward_height = 0;
     uint64_t water_forward_image_bytes = 0;
+    float water_animation_publish_ms = 0;
+    uint64_t water_animation_compressed_cpu_bytes = 0;
+    uint64_t water_animation_peak_activation_cpu_bytes = 0;
+    uint64_t water_animation_gpu_bytes_per_slot = 0;
     uint64_t water_animation_uploads = 0;
     uint64_t water_animation_decode_dispatches = 0;
     uint64_t water_animation_steady_state_allocations = 0;
@@ -396,12 +404,22 @@ inline void append_water_forward_perf_json(std::ostream& output,
                                            const FrameStats& stats) {
     output << ",\"gpu_water_forward_ms\":"
            << stats.gpu_water_forward_ms
+           << ",\"gpu_water_direct_draw_ms\":"
+           << stats.gpu_water_direct_draw_ms
            << ",\"water_forward_width\":"
            << stats.water_forward_width
            << ",\"water_forward_height\":"
            << stats.water_forward_height
            << ",\"water_forward_image_bytes\":"
-           << stats.water_forward_image_bytes;
+           << stats.water_forward_image_bytes
+           << ",\"water_animation_publish_ms\":"
+           << stats.water_animation_publish_ms
+           << ",\"water_animation_compressed_cpu_bytes\":"
+           << stats.water_animation_compressed_cpu_bytes
+           << ",\"water_animation_peak_activation_cpu_bytes\":"
+           << stats.water_animation_peak_activation_cpu_bytes
+           << ",\"water_animation_gpu_bytes_per_slot\":"
+           << stats.water_animation_gpu_bytes_per_slot;
 }
 
 class WorldSession {

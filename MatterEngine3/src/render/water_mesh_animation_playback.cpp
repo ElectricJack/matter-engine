@@ -81,6 +81,23 @@ bool cache_validated_frame_spans(
     return true;
 }
 
+bool artifact_heap_bytes(
+    const hydrology::WaterMeshAnimationArtifact& artifact,
+    std::uint64_t& bytes) noexcept {
+    const std::uint64_t identity_bytes = artifact.identity.size();
+    const std::uint64_t record_bytes =
+        static_cast<std::uint64_t>(artifact.frames.size()) *
+        sizeof(hydrology::WaterMeshAnimationFrameRecord);
+    const std::uint64_t payload_bytes = artifact.frame_payload.size();
+    if (identity_bytes > UINT64_MAX - record_bytes ||
+        identity_bytes + record_bytes > UINT64_MAX - payload_bytes) {
+        bytes = 0u;
+        return false;
+    }
+    bytes = identity_bytes + record_bytes + payload_bytes;
+    return true;
+}
+
 }  // namespace
 
 std::uint32_t water_animation_frame(double network_seconds) noexcept {
@@ -204,6 +221,7 @@ bool activate_water_mesh_animation_playback(
                       fallback);
     candidate.assets_.reserve(asset_count);
     candidate.last_uploaded_frame_.assign(vulkan_frame_slots, -1);
+    std::uint64_t retained_artifact_heap_bytes = 0u;
     const auto load = [&](
         const hydrology::HydrologyWaterAnimationReference& reference,
         bool handoff) {
@@ -247,6 +265,26 @@ bool activate_water_mesh_animation_playback(
             return reject(WaterAnimationFallbackReason::CorruptArtifact,
                           "water animation frame directory is invalid",
                           fallback);
+        std::uint64_t decoded_artifact_heap_bytes = 0u;
+        if (!artifact_heap_bytes(*mutable_artifact,
+                                 decoded_artifact_heap_bytes) ||
+            retained_artifact_heap_bytes > UINT64_MAX - bytes ||
+            retained_artifact_heap_bytes + bytes >
+                UINT64_MAX - decoded_artifact_heap_bytes)
+            return reject(WaterAnimationFallbackReason::CorruptArtifact,
+                          "water animation activation memory overflows",
+                          fallback);
+        candidate.peak_activation_cpu_bytes_ = std::max(
+            candidate.peak_activation_cpu_bytes_,
+            retained_artifact_heap_bytes +
+                static_cast<std::uint64_t>(bytes) +
+                decoded_artifact_heap_bytes);
+        if (retained_artifact_heap_bytes >
+            UINT64_MAX - decoded_artifact_heap_bytes)
+            return reject(WaterAnimationFallbackReason::CorruptArtifact,
+                          "water animation retained memory overflows",
+                          fallback);
+        retained_artifact_heap_bytes += decoded_artifact_heap_bytes;
         candidate.compressed_bytes_ += bytes;
         candidate.assets_.push_back({
             reference,

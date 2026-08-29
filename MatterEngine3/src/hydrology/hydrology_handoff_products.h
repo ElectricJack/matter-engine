@@ -6,7 +6,9 @@
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/spillway_handoff.h"
 #include "hydrology/water_mesh_animation_artifact.h"
+#include "hydrology/water_mesh_continuity.h"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 
@@ -53,12 +55,36 @@ struct HydrologySectionTimings {
     bool animation_cache_hit = false;
 };
 
+struct HandoffAnimationBuildDiagnostics {
+    std::array<double, 30> frame_mesh_ms{};
+    std::array<WaterCutContourMetrics, 30> upstream_cut{};
+    std::array<WaterCutContourMetrics, 30> downstream_cut{};
+    std::uint64_t artifact_file_bytes = 0;
+    std::uint64_t peak_build_cpu_payload_bytes = 0;
+    bool source_blend_required = false;
+};
+
+struct HydrologyHandoffTimings {
+    std::string id;
+    bool static_cache_hit = false;
+    bool animation_cache_hit = false;
+    std::array<double, 30> animation_frame_ms{};
+    std::uint64_t animation_file_bytes = 0;
+    std::uint64_t boundary_source_bytes = 0;
+    std::uint64_t peak_build_cpu_payload_bytes = 0;
+    std::array<WaterCutContourMetrics, 30> upstream_cut{};
+    std::array<WaterCutContourMetrics, 30> downstream_cut{};
+    bool source_blend_required = false;
+};
+
 struct HydrologyNetworkTimings {
     std::vector<HydrologySectionTimings> sections;
+    std::vector<HydrologyHandoffTimings> handoffs;
     double handoff_mesh_ms = 0.0;
     double handoff_animation_mesh_ms = 0.0;
     double serialize_ms = 0.0;
     double total_wall_ms = 0.0;
+    std::uint64_t peak_build_cpu_payload_bytes = 0;
 };
 
 struct HydrologyNetworkBakeResult {
@@ -97,7 +123,8 @@ bool build_handoff_water_animation_artifact(
     const SpillwayHandoffRecord& handoff,
     float visual_voxel_m,
     WaterMeshAnimationArtifact& artifact,
-    FluidBakeError& error);
+    FluidBakeError& error,
+    HandoffAnimationBuildDiagnostics* diagnostics = nullptr);
 
 bool clip_section_water_mesh_animation(
     const WaterMeshAnimation& source,

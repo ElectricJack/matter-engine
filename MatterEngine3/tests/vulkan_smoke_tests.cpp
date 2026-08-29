@@ -768,6 +768,10 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
               baseline_frame.frame_slot,
               viewer::VkSceneRenderer::kGpuZoneWaterDraw) == 0u,
           "water forward: a frame without eligible water leaves the forward timing zone unwritten");
+    CHECK(renderer.test_gpu_zone_written(
+              baseline_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) == 0u,
+          "water forward: a frame without animated water leaves the direct timing zone unwritten");
     const uint32_t center_x = raster_extent.width / 2u;
     const uint32_t center_y = raster_extent.height / 2u;
     const uint32_t control_x = raster_extent.width / 8u;
@@ -895,6 +899,10 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
               active_frame.frame_slot,
               viewer::VkSceneRenderer::kGpuZoneWaterDraw) == 3u,
           "water forward: preservation and forward draw write one complete timestamp pair");
+    CHECK(renderer.test_gpu_zone_written(
+              active_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) == 3u,
+          "water forward: animated direct draws write their nested timestamp pair");
     CHECK(active.static_draws == 0u && active.direct_draws == 1u,
           "water forward: active direct draw exclusively owns water visibility");
     CHECK(active.copied_opaque_hdr && active.copied_opaque_depth &&
@@ -968,6 +976,13 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
         renderer.test_water_forward_observation();
     CHECK(fallback.static_draws == 1u && fallback.direct_draws == 0u,
           "water forward: accepted immutable fallback uses one static range");
+    CHECK(renderer.gpu_zone_last_ms(
+              viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) > 0.0f,
+          "water forward: the completed animated frame exposes a nonzero direct-draw measurement");
+    CHECK(renderer.test_gpu_zone_written(
+              fallback_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) == 0u,
+          "water forward: static-only water leaves the direct timing pair unwritten");
     CHECK(fallback.copied_opaque_hdr && fallback.copied_opaque_depth &&
               fallback.wrote_depth && fallback.wrote_velocity &&
               fallback.wrote_reactivity && fallback.wrote_identity,
@@ -981,6 +996,24 @@ void run_water_forward_path(matter::VulkanDevice& vulkan) {
                   viewer::vulkan_history_token(proxy_instance.instance_id),
           error.empty() ? "water forward: static fallback writes final identity"
                         : error.c_str());
+    bool static_timing_frames_ok = true;
+    for (std::uint32_t resolve_index = 0u;
+         resolve_index != active_frame.frame_slot_count + 1u;
+         ++resolve_index) {
+        matter::VulkanFrame static_timing_frame{};
+        if (!vulkan.begin_frame(static_timing_frame, error) ||
+            !finish_frame(static_timing_frame,
+                          "water forward: resolve static-only timing")) {
+            static_timing_frames_ok = false;
+            break;
+        }
+    }
+    CHECK(static_timing_frames_ok &&
+              renderer.gpu_zone_last_ms(
+                  viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) == 0.0f,
+          error.empty()
+              ? "water forward: every rotating frame slot resolves static-only direct-draw time to zero"
+              : error.c_str());
     renderer.collect_water_animation(active_frame.serial + 2u);
     std::filesystem::remove_all(playback_fixture.root);
     CHECK(vulkan.validation_error_count() == 0u,
@@ -1129,8 +1162,9 @@ void test_atmosphere_timing_contract() {
           "atmosphere timings append five exact GPU zones");
     CHECK(Renderer::kGpuZoneWaterDecode == 17 &&
               Renderer::kGpuZoneWaterDraw == 18 &&
-              Renderer::kGpuZoneCount == 19,
-          "water animation timings append decode and draw GPU zones");
+              Renderer::kGpuZoneWaterDirectDraw == 19 &&
+              Renderer::kGpuZoneCount == 20,
+          "water animation timings append direct draw without renumbering existing GPU zones");
 
     std::array<uint32_t, 3> boundaries{};
     viewer::VolumetricPassBoundary boundary =
@@ -1147,6 +1181,11 @@ void test_atmosphere_timing_contract() {
 void test_water_forward_perf_evidence_contract() {
     matter::FrameStats stats{};
     stats.gpu_water_forward_ms = 1.25f;
+    stats.gpu_water_direct_draw_ms = 0.375f;
+    stats.water_animation_publish_ms = 8.5f;
+    stats.water_animation_compressed_cpu_bytes = 123456789u;
+    stats.water_animation_peak_activation_cpu_bytes = 234567890u;
+    stats.water_animation_gpu_bytes_per_slot = 345678901u;
     stats.water_forward_width = 320u;
     stats.water_forward_height = 180u;
     stats.water_forward_image_bytes = 691200u;
@@ -1154,10 +1193,15 @@ void test_water_forward_perf_evidence_contract() {
     matter::append_water_forward_perf_json(json, stats);
     CHECK(json.str() ==
               ",\"gpu_water_forward_ms\":1.25"
+              ",\"gpu_water_direct_draw_ms\":0.375"
               ",\"water_forward_width\":320"
               ",\"water_forward_height\":180"
-              ",\"water_forward_image_bytes\":691200",
-          "water forward: perf JSON publishes timing, exact dimensions, and logical preservation bytes");
+              ",\"water_forward_image_bytes\":691200"
+              ",\"water_animation_publish_ms\":8.5"
+              ",\"water_animation_compressed_cpu_bytes\":123456789"
+              ",\"water_animation_peak_activation_cpu_bytes\":234567890"
+              ",\"water_animation_gpu_bytes_per_slot\":345678901",
+          "water forward: perf JSON publishes full/direct timing and distinct runtime memory lanes");
     CHECK(viewer::vk_scene_detail::water_forward_image_bytes_for_extent(
               320u, 180u) == 691200u &&
               viewer::vk_scene_detail::water_forward_image_bytes_for_extent(

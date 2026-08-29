@@ -550,16 +550,38 @@ void test_builds_frame_aligned_handoff_animation() {
     const auto upstream = animation_artifact("upper", true);
     const auto downstream = animation_artifact("lower", false);
     hydrology::WaterMeshAnimationArtifact handoff_animation{};
+    hydrology::HandoffAnimationBuildDiagnostics diagnostics{};
     hydrology::FluidBakeError error{};
     CHECK(hydrology::build_handoff_water_animation_artifact(
               upstream, downstream, spillway(), 0.5f,
-              handoff_animation, error), error.message.c_str());
+              handoff_animation, error, &diagnostics),
+          error.message.c_str());
     CHECK(handoff_animation.identity == "pool-one" &&
               handoff_animation.frames.size() == 30u &&
               handoff_animation.frames_per_second == 30u &&
               handoff_animation.source_primary_payload_digest == 1001u &&
               handoff_animation.source_secondary_payload_digest == 2002u,
           "handoff animation preserves frame alignment and both static sources");
+    CHECK(diagnostics.artifact_file_bytes != 0u &&
+              diagnostics.peak_build_cpu_payload_bytes != 0u,
+          "the current handoff records exact file and peak build costs");
+    bool expected_source_blend = false;
+    for (std::size_t frame_index = 0u;
+         frame_index != diagnostics.frame_mesh_ms.size(); ++frame_index) {
+        CHECK(std::isfinite(diagnostics.frame_mesh_ms[frame_index]) &&
+                  diagnostics.frame_mesh_ms[frame_index] >= 0.0,
+              "every handoff animation frame has a finite nonnegative build time");
+        CHECK(diagnostics.upstream_cut[frame_index].first_points != 0u &&
+                  diagnostics.downstream_cut[frame_index].second_points != 0u,
+              "every handoff animation frame retains both cut measurements");
+        expected_source_blend = expected_source_blend ||
+            !hydrology::water_cut_is_assertion_weldable(
+                diagnostics.upstream_cut[frame_index], 0.5f / 16.0f) ||
+            !hydrology::water_cut_is_assertion_weldable(
+                diagnostics.downstream_cut[frame_index], 0.5f / 16.0f);
+    }
+    CHECK(diagnostics.source_blend_required == expected_source_blend,
+          "source-blend evidence matches the measured handoff cuts");
     gpu_meshing::MeshResult frame{};
     gpu_meshing::Error artifact_error{};
     CHECK(hydrology::decode_water_mesh_animation_frame(
@@ -615,6 +637,25 @@ void test_formats_animation_acceptance_timing_trace() {
     timing.animation_frame_triangle_counts = {50u, 55u};
     result.timings.sections.push_back(std::move(timing));
     result.timings.handoff_animation_mesh_ms = 2.5;
+    hydrology::HydrologyHandoffTimings handoff_timing{};
+    handoff_timing.id = "pool-one";
+    handoff_timing.static_cache_hit = true;
+    handoff_timing.animation_cache_hit = false;
+    handoff_timing.animation_file_bytes = 987654321u;
+    handoff_timing.boundary_source_bytes = 13579u;
+    handoff_timing.peak_build_cpu_payload_bytes = 24680u;
+    handoff_timing.source_blend_required = true;
+    for (std::size_t frame = 0u;
+         frame != handoff_timing.animation_frame_ms.size(); ++frame) {
+        handoff_timing.animation_frame_ms[frame] =
+            static_cast<double>(frame) * 0.125;
+        handoff_timing.upstream_cut[frame].symmetric_hausdorff_m =
+            3.8f + static_cast<float>(frame) * 0.01f;
+        handoff_timing.downstream_cut[frame].symmetric_hausdorff_m =
+            2.7f + static_cast<float>(frame) * 0.01f;
+    }
+    result.timings.handoffs.push_back(std::move(handoff_timing));
+    result.timings.peak_build_cpu_payload_bytes = 1122334455u;
 
     const std::string json =
         hydrology::hydrology_network_timing_trace_json(result);
@@ -637,6 +678,27 @@ void test_formats_animation_acceptance_timing_trace() {
               json.find("\"handoffAnimationMeshMs\":2.500") !=
                   std::string::npos,
           "timing trace exposes immutable animation identity and handoff cost");
+    CHECK(json.find("\"handoffs\": {\n    \"pool-one\":{") !=
+                  std::string::npos &&
+              json.find("\"staticCacheHit\":true") != std::string::npos &&
+              json.find("\"animationCacheHit\":false") != std::string::npos &&
+              json.find("\"animationFrameMs\":[0.000,0.125") !=
+                  std::string::npos &&
+              json.find("3.625]") != std::string::npos,
+          "timing trace keys one handoff and emits exactly thirty finite frame timings");
+    CHECK(json.find("\"animationFileBytes\":987654321") !=
+                  std::string::npos &&
+              json.find("\"boundarySourceBytes\":13579") !=
+                  std::string::npos &&
+              json.find("\"peakBuildCpuPayloadBytes\":24680") !=
+                  std::string::npos &&
+              json.find("\"networkPeakBuildCpuPayloadBytes\":1122334455") !=
+                  std::string::npos,
+          "timing trace keeps complete-file, transient boundary, handoff peak, and network peak bytes distinct");
+    CHECK(json.find("\"sourceBlendRequired\":true") != std::string::npos &&
+              json.find("\"upstreamCut\":[{") != std::string::npos &&
+              json.find("\"downstreamCut\":[{") != std::string::npos,
+          "timing trace retains failed Stage 0 cut and source-blend evidence");
 }
 
 }  // namespace

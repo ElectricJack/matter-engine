@@ -1604,7 +1604,8 @@ public:
     static constexpr uint32_t kGpuZoneVolIntegrate  = 16;
     static constexpr uint32_t kGpuZoneWaterDecode   = 17;
     static constexpr uint32_t kGpuZoneWaterDraw     = 18;
-    static constexpr uint32_t kGpuZoneCount         = 19;
+    static constexpr uint32_t kGpuZoneWaterDirectDraw = 19;
+    static constexpr uint32_t kGpuZoneCount         = 20;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;

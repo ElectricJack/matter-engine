@@ -2401,6 +2401,12 @@ bool LocalProvider::run_authored_fluid_bake(
             return completed;
     };
     hydrology::HydrologyHandoffArtifact handoff_artifact{};
+    hydrology::HydrologyHandoffTimings handoff_timings{};
+    handoff_timings.id = handoff.id;
+    // Handoff products do not yet have an independent cache. Keep these
+    // per-id flags explicit instead of inheriting the adjacent section hits.
+    handoff_timings.static_cache_hit = false;
+    handoff_timings.animation_cache_hit = false;
     const auto handoff_mesh_start = std::chrono::steady_clock::now();
     if (!hydrology::build_handoff_artifact(
             *upstream, *downstream, handoff, handoff_settings,
@@ -2414,6 +2420,7 @@ bool LocalProvider::run_authored_fluid_bake(
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - handoff_mesh_start).count();
     hydrology::WaterMeshAnimationArtifact handoff_animation{};
+    hydrology::HandoffAnimationBuildDiagnostics handoff_diagnostics{};
     std::filesystem::path handoff_animation_path;
     if (river_network_->fluid.mesh_animation.enabled) {
         const auto upstream_animation = std::find_if(
@@ -2441,7 +2448,7 @@ bool LocalProvider::run_authored_fluid_bake(
         if (!hydrology::build_handoff_water_animation_artifact(
                 *upstream_animation, *downstream_animation, handoff,
                 handoff_settings.visual_job.voxel_m,
-                handoff_animation, fluid_error)) {
+                handoff_animation, fluid_error, &handoff_diagnostics)) {
             status.state = matter::HydrologyState::Invalid;
             status.failure_reason = fluid_error.message;
             return false;
@@ -2449,6 +2456,19 @@ bool LocalProvider::run_authored_fluid_bake(
         network_result.timings.handoff_animation_mesh_ms =
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - animation_start).count();
+        handoff_timings.animation_frame_ms =
+            handoff_diagnostics.frame_mesh_ms;
+        handoff_timings.animation_file_bytes =
+            handoff_diagnostics.artifact_file_bytes;
+        handoff_timings.peak_build_cpu_payload_bytes =
+            handoff_diagnostics.peak_build_cpu_payload_bytes;
+        handoff_timings.upstream_cut = handoff_diagnostics.upstream_cut;
+        handoff_timings.downstream_cut = handoff_diagnostics.downstream_cut;
+        handoff_timings.source_blend_required =
+            handoff_diagnostics.source_blend_required;
+        network_result.timings.peak_build_cpu_payload_bytes = std::max(
+            network_result.timings.peak_build_cpu_payload_bytes,
+            handoff_timings.peak_build_cpu_payload_bytes);
         handoff_animation_path =
             std::filesystem::path(abs_cache_root_) / "hydrology" /
             "animations" / "handoffs" /
@@ -2505,6 +2525,7 @@ bool LocalProvider::run_authored_fluid_bake(
         network_result.handoff_animations.push_back(
             std::move(reopened_animation));
     }
+    network_result.timings.handoffs.push_back(std::move(handoff_timings));
     if (!finalize_manifest(network_result)) {
         status.state = fluid_error.code == hydrology::FluidBakeCode::Cancelled
             ? matter::HydrologyState::Stale

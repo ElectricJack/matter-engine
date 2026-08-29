@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +34,58 @@ namespace {
 constexpr float kGeometryEpsilon = 1.0e-5f;
 
 bool finite(float value) { return std::isfinite(value); }
+
+std::uint64_t mesh_payload_bytes(
+    const gpu_meshing::MeshResult& mesh) noexcept {
+    constexpr std::uint64_t kFloatBytes = sizeof(float);
+    constexpr std::uint64_t kIndexBytes = sizeof(std::uint32_t);
+    const std::uint64_t position_bytes =
+        static_cast<std::uint64_t>(mesh.positions.size()) * kFloatBytes;
+    const std::uint64_t normal_bytes =
+        static_cast<std::uint64_t>(mesh.normals.size()) * kFloatBytes;
+    const std::uint64_t index_bytes =
+        static_cast<std::uint64_t>(mesh.indices.size()) * kIndexBytes;
+    if (position_bytes > UINT64_MAX - normal_bytes ||
+        position_bytes + normal_bytes > UINT64_MAX - index_bytes)
+        return UINT64_MAX;
+    return position_bytes + normal_bytes + index_bytes;
+}
+
+std::uint64_t animation_mesh_payload_bytes(
+    const WaterMeshAnimation& animation) noexcept {
+    std::uint64_t total = 0u;
+    for (const auto& frame : animation.frames) {
+        const std::uint64_t bytes = mesh_payload_bytes(frame);
+        if (bytes == UINT64_MAX || total > UINT64_MAX - bytes)
+            return UINT64_MAX;
+        total += bytes;
+    }
+    return total;
+}
+
+std::uint64_t artifact_heap_payload_bytes(
+    const WaterMeshAnimationArtifact& artifact) noexcept {
+    const std::uint64_t identity = artifact.identity.size();
+    const std::uint64_t records =
+        static_cast<std::uint64_t>(artifact.frames.size()) *
+        sizeof(WaterMeshAnimationFrameRecord);
+    const std::uint64_t payload = artifact.frame_payload.size();
+    if (identity > UINT64_MAX - records ||
+        identity + records > UINT64_MAX - payload)
+        return UINT64_MAX;
+    return identity + records + payload;
+}
+
+std::uint64_t saturating_payload_sum(
+    std::initializer_list<std::uint64_t> values) noexcept {
+    std::uint64_t total = 0u;
+    for (const std::uint64_t value : values) {
+        if (value == UINT64_MAX || total > UINT64_MAX - value)
+            return UINT64_MAX;
+        total += value;
+    }
+    return total;
+}
 
 bool finite(matter::Float3 value) {
     return finite(value.x) && finite(value.y) && finite(value.z);
@@ -1369,9 +1422,11 @@ bool build_handoff_water_animation_artifact(
     const SpillwayHandoffRecord& handoff,
     float visual_voxel_m,
     WaterMeshAnimationArtifact& artifact,
-    FluidBakeError& error) {
+    FluidBakeError& error,
+    HandoffAnimationBuildDiagnostics* diagnostics) {
     artifact = {};
     error = {};
+    if (diagnostics) *diagnostics = {};
     try {
         if (upstream.identity != handoff.upstream_section_id ||
             downstream.identity != handoff.downstream_section_id ||
@@ -1382,7 +1437,7 @@ bool build_handoff_water_animation_artifact(
             downstream.source_primary_payload_digest == 0u ||
             upstream.source_secondary_payload_digest != 0u ||
             downstream.source_secondary_payload_digest != 0u ||
-            upstream.frames.empty() ||
+            upstream.frames.size() != 30u ||
             upstream.frames.size() != downstream.frames.size() ||
             upstream.frames_per_second != downstream.frames_per_second ||
             upstream.phase_offset_frames != downstream.phase_offset_frames ||
@@ -1398,21 +1453,24 @@ bool build_handoff_water_animation_artifact(
         animation.phase_offset_frames = upstream.phase_offset_frames;
         animation.duration_seconds = upstream.duration_seconds;
         animation.frames.reserve(upstream.frames.size());
-        gpu_meshing::Error artifact_error{};
+
         const float weld = std::max(1.0e-5f, visual_voxel_m * 1.0e-4f);
+        const float cut_tolerance_m = visual_voxel_m / 16.0f;
+        gpu_meshing::Error decode_error{};
         for (std::uint32_t frame_index = 0u;
              frame_index != upstream.frames.size(); ++frame_index) {
+            const auto frame_start = std::chrono::steady_clock::now();
             gpu_meshing::MeshResult upstream_frame{};
             gpu_meshing::MeshResult downstream_frame{};
             if (!decode_water_mesh_animation_frame(
-                    upstream, frame_index, upstream_frame, artifact_error) ||
+                    upstream, frame_index, upstream_frame, decode_error) ||
                 !decode_water_mesh_animation_frame(
                     downstream, frame_index, downstream_frame,
-                    artifact_error)) {
+                    decode_error)) {
                 error = {FluidBakeCode::ProductFailure,
-                         artifact_error.message.empty()
+                         decode_error.message.empty()
                              ? "handoff animation frame decode failed"
-                             : artifact_error.message};
+                             : decode_error.message};
                 return false;
             }
             MeshAssembler upstream_owned(weld);
@@ -1449,8 +1507,42 @@ bool build_handoff_water_animation_artifact(
                 return fail("handoff animation bridge frame is invalid",
                             error);
             animation.frames.push_back(std::move(frame));
+            if (diagnostics) {
+                diagnostics->frame_mesh_ms[frame_index] =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - frame_start)
+                        .count();
+                FluidBakeError cut_error{};
+                const gpu_meshing::MeshResult& built_frame =
+                    animation.frames.back();
+                const bool upstream_measured = measure_water_cut_continuity(
+                    upstream_frame, built_frame, handoff,
+                    handoff.upstream_visual_cut_m, cut_tolerance_m,
+                    diagnostics->upstream_cut[frame_index], cut_error);
+                cut_error = {};
+                const bool downstream_measured = measure_water_cut_continuity(
+                    built_frame, downstream_frame, handoff,
+                    handoff.downstream_visual_cut_m, cut_tolerance_m,
+                    diagnostics->downstream_cut[frame_index], cut_error);
+                diagnostics->source_blend_required =
+                    diagnostics->source_blend_required ||
+                    !upstream_measured || !downstream_measured ||
+                    !water_cut_is_assertion_weldable(
+                        diagnostics->upstream_cut[frame_index],
+                        cut_tolerance_m) ||
+                    !water_cut_is_assertion_weldable(
+                        diagnostics->downstream_cut[frame_index],
+                        cut_tolerance_m);
+                diagnostics->peak_build_cpu_payload_bytes = std::max(
+                    diagnostics->peak_build_cpu_payload_bytes,
+                    saturating_payload_sum({
+                        animation_mesh_payload_bytes(animation),
+                        mesh_payload_bytes(upstream_frame),
+                        mesh_payload_bytes(downstream_frame)}));
+            }
         }
 
+        gpu_meshing::Error artifact_error{};
         Digest semantic(UINT64_C(0x48414e44414e494d));
         semantic.u64(handoff.semantic_key);
         semantic.u64(upstream.semantic_key);
@@ -1473,13 +1565,35 @@ bool build_handoff_water_animation_artifact(
                          : artifact_error.message};
             return false;
         }
+        if (diagnostics) {
+            std::vector<std::uint8_t> serialized;
+            if (!serialize_water_mesh_animation_artifact(
+                    artifact, serialized, artifact_error)) {
+                error = {FluidBakeCode::ProductFailure,
+                         artifact_error.message.empty()
+                             ? "handoff animation diagnostics serialization failed"
+                             : artifact_error.message};
+                artifact = {};
+                *diagnostics = {};
+                return false;
+            }
+            diagnostics->artifact_file_bytes = serialized.size();
+            diagnostics->peak_build_cpu_payload_bytes = std::max(
+                diagnostics->peak_build_cpu_payload_bytes,
+                saturating_payload_sum({
+                    animation_mesh_payload_bytes(animation),
+                    artifact_heap_payload_bytes(artifact),
+                    diagnostics->artifact_file_bytes}));
+        }
         return true;
     } catch (const std::exception& exception) {
         artifact = {};
+        if (diagnostics) *diagnostics = {};
         error = {FluidBakeCode::ProductFailure, exception.what()};
         return false;
     } catch (...) {
         artifact = {};
+        if (diagnostics) *diagnostics = {};
         return fail("handoff animation construction raised an unknown exception",
                     error);
     }
@@ -1783,6 +1897,51 @@ std::string hydrology_network_timing_trace_json(
         }
         stream << ']';
     };
+    const auto write_frame_ms = [](std::ostringstream& stream,
+                                   const std::array<double, 30>& values) {
+        stream << '[';
+        for (std::size_t index = 0u; index != values.size(); ++index) {
+            if (index != 0u) stream << ',';
+            const double value = values[index];
+            stream << (std::isfinite(value) && value >= 0.0 ? value : 0.0);
+        }
+        stream << ']';
+    };
+    const auto write_cut_array = [](std::ostringstream& stream,
+                                    const std::array<WaterCutContourMetrics,
+                                                     30>& values) {
+        const auto finite_or_zero = [](float value) {
+            return std::isfinite(value) ? value : 0.0f;
+        };
+        stream << '[';
+        for (std::size_t index = 0u; index != values.size(); ++index) {
+            if (index != 0u) stream << ',';
+            const auto& value = values[index];
+            stream << "{\"firstPoints\":" << value.first_points
+                   << ",\"secondPoints\":" << value.second_points
+                   << ",\"unmatchedOpenEdges\":"
+                   << value.unmatched_open_edges
+                   << ",\"duplicateCoplanarTriangles\":"
+                   << value.duplicate_coplanar_triangles
+                   << ",\"symmetricHausdorffM\":"
+                   << finite_or_zero(value.symmetric_hausdorff_m)
+                   << ",\"rmsDistanceM\":"
+                   << finite_or_zero(value.rms_distance_m)
+                   << ",\"firstHeightQuantilesM\":["
+                   << finite_or_zero(value.first_height_quantiles_m[0]) << ','
+                   << finite_or_zero(value.first_height_quantiles_m[1]) << ','
+                   << finite_or_zero(value.first_height_quantiles_m[2])
+                   << "],\"secondHeightQuantilesM\":["
+                   << finite_or_zero(value.second_height_quantiles_m[0]) << ','
+                   << finite_or_zero(value.second_height_quantiles_m[1]) << ','
+                   << finite_or_zero(value.second_height_quantiles_m[2])
+                   << "],\"minimumNormalDot\":"
+                   << finite_or_zero(value.minimum_normal_dot)
+                   << ",\"p95NormalAngleDegrees\":"
+                   << finite_or_zero(value.p95_normal_angle_degrees) << '}';
+        }
+        stream << ']';
+    };
 
     std::ostringstream stream;
     stream << std::fixed << std::setprecision(3)
@@ -1838,7 +1997,37 @@ std::string hydrology_network_timing_trace_json(
                << (index + 1u == result.timings.sections.size()
                        ? "\n" : ",\n");
     }
-    stream << "  ],\n  \"handoffMeshMs\":"
+    stream << "  ],\n  \"handoffs\": {";
+    if (!result.timings.handoffs.empty()) stream << '\n';
+    for (std::size_t index = 0u;
+         index != result.timings.handoffs.size(); ++index) {
+        const auto& timing = result.timings.handoffs[index];
+        stream << "    " << std::quoted(timing.id) << ":{"
+               << "\"staticCacheHit\":" << std::boolalpha
+               << timing.static_cache_hit
+               << ",\"animationCacheHit\":"
+               << timing.animation_cache_hit
+               << ",\"animationFrameMs\":";
+        write_frame_ms(stream, timing.animation_frame_ms);
+        stream << ",\"animationFileBytes\":"
+               << timing.animation_file_bytes
+               << ",\"boundarySourceBytes\":"
+               << timing.boundary_source_bytes
+               << ",\"peakBuildCpuPayloadBytes\":"
+               << timing.peak_build_cpu_payload_bytes
+               << ",\"sourceBlendRequired\":"
+               << timing.source_blend_required
+               << ",\"upstreamCut\":";
+        write_cut_array(stream, timing.upstream_cut);
+        stream << ",\"downstreamCut\":";
+        write_cut_array(stream, timing.downstream_cut);
+        stream << '}'
+               << (index + 1u == result.timings.handoffs.size()
+                       ? "\n" : ",\n");
+    }
+    stream << "  },\n  \"networkPeakBuildCpuPayloadBytes\":"
+           << result.timings.peak_build_cpu_payload_bytes
+           << ",\n  \"handoffMeshMs\":"
            << result.timings.handoff_mesh_ms
            << ",\n  \"handoffAnimationMeshMs\":"
            << result.timings.handoff_animation_mesh_ms
