@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-29
 **Implementation base:** `fdd53b85c1c11d21d21d515c5fbe7cda0997f085`
-with source fixes `cbc09b71` and `24015965`; the acceptance tooling and this
-evidence are in this finding's containing commit
+with source fixes `cbc09b71`, `24015965`, and `6c7e6597`; acceptance tooling
+is in `b4ca1b2c` with alias protection in `d4d1856e`, and this evidence is in
+this finding's containing commit
 **Verdict:** **NOT ACCEPTED** — automated implementation gates pass, but the
 waterfall/plunge and section-handoff visual criteria do not.
 
@@ -21,9 +22,10 @@ checkpoint was created.
 
 ## Automated evidence
 
-- Strict comparator/runner tests: **13/13 passed** in 0.209 s. The suite
-  rejects a wrong world, a wrong shadow-sample tag, and a runner that can
-  reuse a pre-existing performance file.
+- Strict comparator/runner tests: **16/16 passed** in 0.257 s. The suite
+  rejects a wrong world, a wrong shadow-sample tag, a runner that can reuse a
+  pre-existing performance file, and identical or nested baseline/candidate
+  trees before the runner creates or deletes any artifact.
 - Complete native MSVC build: **passed**.
 - CPU-labeled suite: **59/59 passed** in 200.46 s.
 - RTX Vulkan smoke modes `water-forward`, `water-animation`, and default:
@@ -82,9 +84,14 @@ the material mismatch and skipped refraction, depth optics, animated normals,
 foam, and reflection.
 
 The retained integration fix sends the authored runtime water material through
-`AuthoredFluidRenderBinding` into every synchronized animation draw, while the
-artifact/decode material remains unchanged as bake provenance. A regression
-fixture explicitly uses artifact material 4 and authored material 19. The
+`AuthoredFluidRenderBinding` into playback activation, making the presentation
+material immutable for every synchronized animation draw while the
+artifact/decode material remains unchanged as bake provenance. A production-
+path Vulkan regression serializes and loads an artifact with material 4,
+verifies the field rejects a draw selected with provenance material 4, then
+uses authored material 19 through the real playback selection and forward
+render path. Readback changes from material 4/reactivity 0 to material
+19/reactivity 0.8745 while decoded provenance remains 4. The
 forward shader also applies a tested, bounded whitewater radiance lobe driven
 only by the existing Task 2 foam coverage; it does not change the accepted
 foam driver or thresholds.
@@ -92,12 +99,14 @@ foam driver or thresholds.
 An explicit draw-ordinal diagnostic then isolated the remaining visual defect:
 
 - Local ephemeral `build/qa/raster-water-forward-2026-08-29/diagnostic/identity-waterfall.png`:
-  the entire visible cascade is one section draw. The faceting is **not**
-  caused by overlapping section/handoff draws.
+  the entire visible cascade is owned by one section draw. The mask reveals
+  no competing draw at those visible samples, but it cannot exclude hidden
+  geometry behind the depth-tested winner.
 - Local ephemeral `build/qa/raster-water-forward-2026-08-29/diagnostic/identity-handoff.png`:
   upstream section, collar, and downstream section are three contiguous,
-  non-overlapping ownership bands. The visible transition coincides with
-  independently meshed collar cuts.
+  visible ownership bands. The visible transition coincides with independently
+  meshed collar cuts. Depth-tested ownership colors do not establish whether
+  hidden geometry overlaps behind those winning samples.
 
 The remaining work is mesh-side: improve/smooth the animated cascade surface
 and make section/collar boundary positions and shading normals continuous
@@ -122,6 +131,8 @@ Integration regressions/fixes discovered by the real RiverFloatLab run:
 - `MatterEngine3/src/matter_engine.cpp`
 - `MatterEngine3/src/render/water_mesh_animation_playback.{h,cpp}`
 - `MatterEngine3/tests/water_mesh_animation_playback_tests.cpp`
+- `MatterEngine3/tests/vulkan_smoke_tests.cpp`
+- `cmake/MatterViewer.cmake`
 - `MatterEngine3/src/render/water_surface_reference.{h,cpp}`
 - `MatterEngine3/shaders_vk/water_surface.glsl`
 - `MatterEngine3/shaders_vk/water_forward.frag`
