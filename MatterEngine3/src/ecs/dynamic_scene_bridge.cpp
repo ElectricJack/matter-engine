@@ -77,7 +77,12 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
         const bool rigid_only = rigid && rigid->asset && !has_skin && !asset_has_skin;
         const Mat4f previous = previous_for(id, wt.matrix);
         if (part.visible && !rigid_only && part.part_hash != 0) {
-            desired.push_back({root_key(id), part.part_hash, wt.matrix, previous, part.casts_shadow});
+            render::DynamicInstanceInput input{
+                root_key(id), part.part_hash, wt.matrix, previous,
+                part.casts_shadow};
+            input.policy_part_hash = part.part_hash;
+            input.ray_tracing_override = part.ray_traced;
+            desired.push_back(input);
         }
     });
 
@@ -90,6 +95,10 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
         const Mat4f previous = previous_for(id, wt.matrix);
         render::AnimationRigidExpansion expansion{root_key(id), wt.matrix, previous,
                                                    render_frame_serial, binding};
+        if (part) {
+            expansion.policy_part_hash = part->part_hash;
+            expansion.ray_tracing_override = part->ray_traced;
+        }
         if (!rigid_bridge_.expand(expansion, desired) && binding.asset && sink.on_error) {
             sink.on_error(id, PartInstanceError{PartInstanceErrorCode::PartUnavailable,
                                                 binding.asset->identity});

@@ -47,6 +47,8 @@ void test_rigid_and_socket_expand_in_serialized_order() {
     matter::render::AnimationRigidAsset asset{0x111, 2, &bindings, &rig, {0x111}};
     matter::render::AnimationRigidBinding binding{handle(), &asset, 2, true};
     matter::render::AnimationRigidExpansion input{{42, 5, 0}, matrix(10.0f), matrix(8.0f), 9, binding};
+    input.policy_part_hash = 0x999;
+    input.ray_tracing_override = matter::RayTracingOverride::Disabled;
     std::vector<matter::render::DynamicInstanceInput> out;
     matter::render::AnimationRigidBridge bridge(&snapshots);
     CHECK(bridge.expand(input, out), "rigid bridge accepts complete immutable asset");
@@ -60,6 +62,13 @@ void test_rigid_and_socket_expand_in_serialized_order() {
               "attachment follows rigid serialized order");
         CHECK(out[1].object_to_world.m[3] == 15.0f && out[1].previous_object_to_world.m[3] == 12.0f,
               "socket local composes after its joint");
+        CHECK(out[0].policy_part_hash == 0x999 &&
+                  out[1].policy_part_hash == 0x999 &&
+                  out[0].ray_tracing_override ==
+                      matter::RayTracingOverride::Disabled &&
+                  out[1].ray_tracing_override ==
+                      matter::RayTracingOverride::Disabled,
+              "every generated rigid segment and attachment keeps the source entity policy");
     }
 }
 

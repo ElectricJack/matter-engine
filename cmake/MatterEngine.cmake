@@ -336,6 +336,17 @@ if(BUILD_TESTING)
         MatterEngine3/tests/river_float_system_tests.cpp)
     matter_add_engine_cpu_test(scene_registry_tests
         MatterEngine3/tests/scene_registry_tests.cpp)
+    matter_add_engine_cpu_test(entity_recipe_tests
+        MatterEngine3/tests/entity_recipe_tests.cpp)
+    matter_add_engine_cpu_test(dynamic_instance_slots_tests
+        MatterEngine3/tests/dynamic_instance_slots_tests.cpp
+        MatterEngine3/src/render/dynamic_instance_slots.cpp)
+    matter_add_engine_cpu_test(dynamic_scene_bridge_tests
+        MatterEngine3/tests/dynamic_scene_bridge_tests.cpp
+        MatterEngine3/src/ecs/dynamic_scene_bridge.cpp
+        MatterEngine3/src/render/dynamic_instance_slots.cpp)
+    matter_add_engine_cpu_test(animation_rigid_bridge_tests
+        MatterEngine3/tests/animation_rigid_bridge_tests.cpp)
     matter_add_engine_cpu_test(gpu_visual_mesher_cpu_tests
         MatterEngine3/tests/gpu_visual_mesher_cpu_tests.cpp)
     matter_add_engine_cpu_test(water_mesh_animation_capture_tests

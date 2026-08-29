@@ -2702,6 +2702,9 @@ private:
     // Scratch for the skin transform tail; see skin_transform_base_.
     std::vector<GpuDrawTransform> skin_transform_staging_;
     std::vector<uint32_t> dynamic_instance_part_slots_;
+    // Final engine-resolved policy, parallel to the stable dynamic slots.
+    // VkSceneRenderer never interprets authored overrides or part defaults.
+    std::vector<uint8_t> dynamic_instance_ray_traced_;
     uint32_t dynamic_instance_count_ = 0;
     uint64_t dynamic_submit_serial_ = 0;
     uint64_t dynamic_completed_serial_ = 0;

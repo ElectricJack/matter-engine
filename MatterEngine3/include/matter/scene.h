@@ -1,5 +1,7 @@
 #pragma once
 
+#include "matter/render_eligibility.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -9,7 +11,12 @@ namespace matter::scene {
 // Generation makes renderer identity fail closed when an editor recycles a
 // user-visible entity id while an old GPU slot is still retiring.
 struct SceneEntityId { uint64_t value = 0; uint32_t generation = 0; };
-struct PartInstance { uint64_t part_hash = 0; bool visible = true; bool casts_shadow = true; };
+struct PartInstance {
+    uint64_t part_hash = 0;
+    bool visible = true;
+    bool casts_shadow = true;
+    RayTracingOverride ray_traced = RayTracingOverride::Inherit;
+};
 enum class PartInstanceErrorCode : uint8_t { None, MissingPart, PartUnavailable, RendererCapacity };
 struct PartInstanceError { PartInstanceErrorCode code = PartInstanceErrorCode::None; uint64_t part_hash = 0; };
 

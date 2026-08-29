@@ -12107,21 +12107,23 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                 // never visited.
                 max_clusters_per_instance_ =
                     std::max(max_clusters_per_instance_, inst.cluster_count);
-                const uint32_t slot = dynamic_instance_part_slots_[i];
-                RtInstance rt{};
-                if (slot < parts_.size())
-                    rt.part_hash = parts_[slot].hash;
-                for (int r = 0; r < 4; ++r)
-                    for (int c = 0; c < 4; ++c)
-                        rt.transform[r * 4 + c] =
-                            inst.object_to_world.elements[c * 4 + r];
-                // `i` is the dynamic instance slot the skin lane keys on
-                // (see the compaction loop's candidate.instance_slot), so the
-                // tracer can resolve the same animation-bounds union it does.
-                rt.animation_instance_slot = static_cast<uint32_t>(i);
-                rt.animation_instance_generation =
-                    inst.animation_instance_generation;
-                rt_instances_.push_back(rt);
+                if (dynamic_instance_ray_traced_[i] != 0u) {
+                    const uint32_t slot = dynamic_instance_part_slots_[i];
+                    RtInstance rt{};
+                    if (slot < parts_.size())
+                        rt.part_hash = parts_[slot].hash;
+                    for (int r = 0; r < 4; ++r)
+                        for (int c = 0; c < 4; ++c)
+                            rt.transform[r * 4 + c] =
+                                inst.object_to_world.elements[c * 4 + r];
+                    // `i` is the dynamic instance slot the skin lane keys on
+                    // (see the compaction loop's candidate.instance_slot), so the
+                    // tracer can resolve the same animation-bounds union it does.
+                    rt.animation_instance_slot = static_cast<uint32_t>(i);
+                    rt.animation_instance_generation =
+                        inst.animation_instance_generation;
+                    rt_instances_.push_back(rt);
+                }
             }
         }
         if (dynamic_dirty_) {
@@ -15746,6 +15748,7 @@ bool VkSceneRenderer::update_dynamic_instances(
         if (change.slot_index >= dynamic_instance_staging_.size()) {
             dynamic_instance_staging_.resize(change.slot_index + 1, GpuInstance{});
             dynamic_instance_part_slots_.resize(change.slot_index + 1, UINT32_MAX);
+            dynamic_instance_ray_traced_.resize(change.slot_index + 1, 0u);
         }
         switch (change.kind) {
             case matter::render::DynamicSlotChangeKind::Bind: {
@@ -15769,6 +15772,8 @@ bool VkSceneRenderer::update_dynamic_instances(
                 instance.water_generation = part.water_generation;
                 dynamic_instance_staging_[change.slot_index] = instance;
                 dynamic_instance_part_slots_[change.slot_index] = instance.part_slot;
+                dynamic_instance_ray_traced_[change.slot_index] =
+                    change.ray_traced ? 1u : 0u;
                 dynamic_dirty_ = true;
                 break;
             }
@@ -15786,6 +15791,8 @@ bool VkSceneRenderer::update_dynamic_instances(
                 instance.previous_object_to_world = pack_glsl_mat4(change.previous_object_to_world);
                 instance.object_to_world = pack_glsl_mat4(change.object_to_world);
                 instance.history_valid = 1;
+                dynamic_instance_ray_traced_[change.slot_index] =
+                    change.ray_traced ? 1u : 0u;
                 dynamic_dirty_ = true;
                 break;
             }
@@ -15794,6 +15801,7 @@ bool VkSceneRenderer::update_dynamic_instances(
                                                   change.slot_generation);
                 dynamic_instance_staging_[change.slot_index] = GpuInstance{};
                 dynamic_instance_part_slots_[change.slot_index] = UINT32_MAX;
+                dynamic_instance_ray_traced_[change.slot_index] = 0u;
                 dynamic_dirty_ = true;
                 break;
             }

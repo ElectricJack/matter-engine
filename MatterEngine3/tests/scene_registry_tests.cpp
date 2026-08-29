@@ -417,6 +417,23 @@ static void test_part_instance_offsets() {
     CHECK(field_set_bool(&pi, *field_of("PartInstance", "casts_shadow"), false),
           "casts_shadow set failed");
     CHECK(pi.casts_shadow == false, "casts_shadow offset/type drift");
+
+    const FieldDescriptor* ray_traced = field_of("PartInstance", "ray_traced");
+    CHECK(ray_traced != nullptr && ray_traced->type == FieldType::Enum &&
+              ray_traced->enum_count == 3,
+          "ray_traced is a reflected three-option enum");
+    if (ray_traced) {
+        CHECK(std::string(ray_traced->enum_labels[0]) == "Inherit" &&
+                  std::string(ray_traced->enum_labels[1]) == "Raster only" &&
+                  std::string(ray_traced->enum_labels[2]) == "Ray traced",
+              "ray_traced presents the approved editor labels");
+        CHECK(field_set_int(
+                  &pi, *ray_traced,
+                  static_cast<int32_t>(RayTracingOverride::Disabled)),
+              "ray_traced enum writes through its descriptor");
+        CHECK(pi.ray_traced == RayTracingOverride::Disabled,
+              "ray_traced descriptor targets the PartInstance enum storage");
+    }
 }
 
 static void test_read_only_fields_reject_writes() {

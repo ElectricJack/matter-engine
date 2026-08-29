@@ -105,9 +105,14 @@ bool AnimationRigidBridge::expand(const AnimationRigidExpansion& input,
         const Mat4f offset = local_matrix(segment.bind_offset);
         const Mat4f current = multiply(multiply(input.entity_world, pose.model_pose[segment.joint]), offset);
         const Mat4f previous = multiply(multiply(input.previous_entity_world, pose.previous_model_pose[segment.joint]), offset);
-        out.push_back({{input.entity.entity_id, input.entity.entity_generation,
-                        static_cast<uint32_t>(index + 1)}, asset->rigid_part_hashes[index], current, previous,
-                       binding.casts_shadow});
+        DynamicInstanceInput record{
+            {input.entity.entity_id, input.entity.entity_generation,
+             static_cast<uint32_t>(index + 1)},
+            asset->rigid_part_hashes[index], current, previous,
+            binding.casts_shadow};
+        record.policy_part_hash = input.policy_part_hash;
+        record.ray_tracing_override = input.ray_tracing_override;
+        out.push_back(record);
     }
     const uint32_t attachment_base = static_cast<uint32_t>(bindings.rigid_segments.size() + 1);
     for (size_t index = 0; index < bindings.attachments.size(); ++index) {
@@ -125,9 +130,13 @@ bool AnimationRigidBridge::expand(const AnimationRigidExpansion& input,
         const Mat4f local = local_matrix(attachment.local);
         const Mat4f current = multiply(multiply(multiply(input.entity_world, pose.model_pose[joint]), socket_local), local);
         const Mat4f previous = multiply(multiply(multiply(input.previous_entity_world, pose.previous_model_pose[joint]), socket_local), local);
-        out.push_back({{input.entity.entity_id, input.entity.entity_generation,
-                        static_cast<uint32_t>(attachment_base + index)}, attachment.child_hash,
-                       current, previous, binding.casts_shadow});
+        DynamicInstanceInput record{
+            {input.entity.entity_id, input.entity.entity_generation,
+             static_cast<uint32_t>(attachment_base + index)},
+            attachment.child_hash, current, previous, binding.casts_shadow};
+        record.policy_part_hash = input.policy_part_hash;
+        record.ray_tracing_override = input.ray_tracing_override;
+        out.push_back(record);
     }
     return true;
 }

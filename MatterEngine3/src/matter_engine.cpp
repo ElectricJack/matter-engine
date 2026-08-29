@@ -12018,12 +12018,15 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                 sizeof(root_transform.m));
                     std::memcpy(relative.m, node.rel_transform,
                                 sizeof(relative.m));
-                    expanded.push_back(
-                        {node.part_hash,
-                         viewer::mat4_mul(root_transform, relative),
-                         viewer::temporal_instance_id(
-                             source.stable_id, node.part_hash,
-                             static_cast<uint32_t>(node_index + 1))});
+                    viewer::VkSceneInstance instance;
+                    instance.part_hash = node.part_hash;
+                    instance.object_to_world =
+                        viewer::mat4_mul(root_transform, relative);
+                    instance.instance_id = viewer::temporal_instance_id(
+                        source.stable_id, node.part_hash,
+                        static_cast<uint32_t>(node_index + 1));
+                    instance.ray_traced = node.ray_traced;
+                    expanded.push_back(instance);
                 }
             } else {
                 bool drawable = false;
@@ -12037,6 +12040,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                         source.stable_id, source.part_hash, 0);
                     std::memcpy(instance.object_to_world.m, source.transform,
                                 sizeof(instance.object_to_world.m));
+                    instance.ray_traced = matter::resolve_ray_traced(
+                        matter::RayTracingOverride::Inherit,
+                        root->render_policy.ray_traced);
                     expanded.push_back(instance);
                 }
             }
@@ -12407,6 +12413,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                             drawable, err))
                         continue;
                     if (!drawable) continue;
+                }
+                if (c.kind == render::DynamicSlotChangeKind::Bind ||
+                    c.kind == render::DynamicSlotChangeKind::Transform) {
+                    const uint64_t policy_part_hash = c.policy_part_hash != 0
+                        ? c.policy_part_hash
+                        : c.part_hash;
+                    const viewer::LoadedPart* policy_part =
+                        impl_->store->get_or_load(policy_part_hash);
+                    if (!policy_part) continue;
+                    c.ray_traced = matter::resolve_ray_traced(
+                        c.ray_tracing_override,
+                        policy_part->render_policy.ray_traced);
                 }
                 valid.push_back(std::move(c));
             }

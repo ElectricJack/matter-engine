@@ -217,6 +217,55 @@ static void test_part_instance_render_flags_are_instantiated() {
           "PartInstance visibility and shadow flags survive recipe instantiation");
 }
 
+static void test_part_instance_ray_traced_boolean_maps_to_override() {
+    flecs::world world = make_world();
+    std::vector<RawEntityRecipe> recipes = {
+        {"inherit", "Inherit", "",
+         R"({"PartInstance":{"part":"props/crate"}})"},
+        {"disabled", "Disabled", "",
+         R"({"PartInstance":{"part":"props/crate","rayTraced":false}})"},
+        {"enabled", "Enabled", "",
+         R"({"PartInstance":{"part":"props/crate","rayTraced":true}})"},
+    };
+    PartResolver resolver = make_resolver({{"props/crate", 0x55ULL}});
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(bootstrap_transactional(
+              world, recipes, generation, resolver, error),
+          "rayTraced boolean fixture bootstraps");
+
+    bool saw_inherit = false;
+    bool saw_disabled = false;
+    bool saw_enabled = false;
+    world.each([&](flecs::entity entity, const SceneEntityId&,
+                   const PartInstance& part) {
+        const char* name = entity.name();
+        if (!name) return;
+        if (std::string(name) == "Inherit")
+            saw_inherit = part.ray_traced == RayTracingOverride::Inherit;
+        if (std::string(name) == "Disabled")
+            saw_disabled = part.ray_traced == RayTracingOverride::Disabled;
+        if (std::string(name) == "Enabled")
+            saw_enabled = part.ray_traced == RayTracingOverride::Enabled;
+    });
+    CHECK(saw_inherit && saw_disabled && saw_enabled,
+          "omitted/false/true rayTraced maps to Inherit/Disabled/Enabled");
+}
+
+static void test_part_instance_ray_traced_rejects_non_boolean() {
+    RawEntityRecipe raw;
+    raw.authored_id = "invalid-policy";
+    raw.components_json =
+        R"({"PartInstance":{"part":"props/crate","rayTraced":"false"}})";
+    PartResolver resolver = make_resolver({{"props/crate", 0x55ULL}});
+    EntityRecipe out;
+    RecipeError error;
+    CHECK(!validate(raw, out, error, resolver),
+          "rayTraced accepts JSON booleans only");
+    CHECK(error.field_path == "PartInstance.rayTraced",
+          "invalid rayTraced reports its authored field path");
+}
+
 // ---------------------------------------------------------------------------
 // Transactional bootstrap.
 // ---------------------------------------------------------------------------
@@ -397,6 +446,8 @@ int main() {
     test_part_dependency_recorded_without_placement();
     test_part_instance_without_part_field_has_zero_hash();
     test_part_instance_render_flags_are_instantiated();
+    test_part_instance_ray_traced_boolean_maps_to_override();
+    test_part_instance_ray_traced_rejects_non_boolean();
 
     test_bootstrap_transactional_success();
     test_failed_reload_retains_prior_generation_and_entities();

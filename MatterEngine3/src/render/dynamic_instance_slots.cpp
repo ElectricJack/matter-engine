@@ -36,7 +36,9 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
         bool part_changed = (s.part_hash != input.part_hash);
         bool transform_changed = !mat_equal(s.object_to_world, input.object_to_world) ||
                                   !mat_equal(s.previous_object_to_world, previous) ||
-                                  s.casts_shadow != input.casts_shadow;
+                                  s.casts_shadow != input.casts_shadow ||
+                                  s.policy_part_hash != input.policy_part_hash ||
+                                  s.ray_tracing_override != input.ray_tracing_override;
 
         if (!part_changed && !transform_changed) {
             return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
@@ -46,12 +48,15 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
         s.object_to_world = input.object_to_world;
         s.previous_object_to_world = previous;
         s.casts_shadow = input.casts_shadow;
+        s.policy_part_hash = input.policy_part_hash;
+        s.ray_tracing_override = input.ray_tracing_override;
 
         DynamicSlotChangeKind kind = part_changed ? DynamicSlotChangeKind::Bind
                                                    : DynamicSlotChangeKind::Transform;
         changes_.push_back(DynamicSlotChange{kind, idx, s.generation, s.part_hash, s.object_to_world,
                                               s.previous_object_to_world, s.casts_shadow, s.key,
-                                              {s.key.entity_id, s.key.entity_generation}});
+                                              {s.key.entity_id, s.key.entity_generation},
+                                              s.policy_part_hash, s.ray_tracing_override});
         return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
     }
 
@@ -70,13 +75,16 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
     s.object_to_world = input.object_to_world;
     s.previous_object_to_world = previous;
     s.casts_shadow = input.casts_shadow;
+    s.policy_part_hash = input.policy_part_hash;
+    s.ray_tracing_override = input.ray_tracing_override;
 
     key_to_slot_[input.key] = idx;
     ++active_count_;
 
     changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Bind, idx, s.generation, s.part_hash,
                                           s.object_to_world, s.previous_object_to_world, s.casts_shadow,
-                                          s.key, {s.key.entity_id, s.key.entity_generation}});
+                                          s.key, {s.key.entity_id, s.key.entity_generation},
+                                          s.policy_part_hash, s.ray_tracing_override});
     return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
 }
 
@@ -101,7 +109,8 @@ SlotResult DynamicInstanceSlots::remove(DynamicSlotHandle handle) {
 
     changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Remove, handle.index, removed_generation, s.part_hash,
                                           s.object_to_world, s.previous_object_to_world, s.casts_shadow,
-                                          s.key, {s.key.entity_id, s.key.entity_generation}});
+                                          s.key, {s.key.entity_id, s.key.entity_generation},
+                                          s.policy_part_hash, s.ray_tracing_override, false});
     pending_free_.push_back(handle.index);
     return SlotResult::Ok;
 }

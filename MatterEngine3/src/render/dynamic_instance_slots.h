@@ -56,6 +56,9 @@ struct DynamicInstanceInput {
     // Ordinary callers may leave it zero; it then defaults to current.
     Mat4f previous_object_to_world{};
     bool casts_shadow = true;
+    uint64_t policy_part_hash = 0;
+    matter::RayTracingOverride ray_tracing_override =
+        matter::RayTracingOverride::Inherit;
 };
 
 struct DynamicSlotHandle {
@@ -66,7 +69,7 @@ struct DynamicSlotHandle {
 
 enum class DynamicSlotChangeKind : uint8_t {
     Bind,       // new part or part changed
-    Transform,  // only transform/shadow changed
+    Transform,  // transform, shadow, or resolved-policy inputs changed
     Remove      // slot freed
 };
 
@@ -80,6 +83,12 @@ struct DynamicSlotChange {
     bool casts_shadow = true;
     DynamicInstanceKey key{};
     matter::scene::SceneEntityId entity_id;
+    uint64_t policy_part_hash = 0;
+    matter::RayTracingOverride ray_tracing_override =
+        matter::RayTracingOverride::Inherit;
+    // Resolved upstream before this reaches VkSceneRenderer. The renderer
+    // consumes only this final decision and owns no authoring policy.
+    bool ray_traced = true;
 };
 
 enum class SlotResult : uint8_t {
@@ -129,6 +138,9 @@ private:
         Mat4f object_to_world{};
         Mat4f previous_object_to_world{};
         bool casts_shadow = true;
+        uint64_t policy_part_hash = 0;
+        matter::RayTracingOverride ray_tracing_override =
+            matter::RayTracingOverride::Inherit;
     };
 
     std::vector<Slot> slots_;

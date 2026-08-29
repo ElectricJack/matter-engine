@@ -45,6 +45,9 @@ struct AnimationRigidExpansion {
     // latest() here would silently turn an old pose into current geometry.
     uint64_t frame_serial = 0;
     AnimationRigidBinding binding{};
+    uint64_t policy_part_hash = 0;
+    matter::RayTracingOverride ray_tracing_override =
+        matter::RayTracingOverride::Inherit;
 };
 
 class AnimationRigidBridge {

@@ -89,6 +89,7 @@ constexpr FieldDescriptor fd_uint_range(const char* name, uint32_t offset,
 }
 
 const char* const s_rigid_body_type_labels[] = {"Static", "Kinematic", "Dynamic"};
+const char* const s_ray_traced_labels[] = {"Inherit", "Raster only", "Ray traced"};
 
 }  // namespace
 
@@ -163,6 +164,8 @@ static const FieldDescriptor s_part_instance_fields[] = {
             sizeof(uint64_t), FieldReadOnly),
     fd("visible", FieldType::Bool, ME_FIELD_OFF(PartInstance, visible)),
     fd("casts_shadow", FieldType::Bool, ME_FIELD_OFF(PartInstance, casts_shadow)),
+    fd_enum("ray_traced", ME_FIELD_OFF(PartInstance, ray_traced),
+            sizeof(RayTracingOverride), s_ray_traced_labels, 3),
 };
 
 static const FieldDescriptor* const s_sector_streaming_fields = nullptr;
@@ -203,7 +206,7 @@ static const ComponentDescriptor s_descriptors[] = {
      sizeof(physics::BoxCollider), alignof(physics::BoxCollider)},
     {ComponentKind::ConvexHullCollider, "ConvexHullCollider", s_convex_hull_fields, 5, false,
      sizeof(physics::ConvexHullCollider), alignof(physics::ConvexHullCollider)},
-    {ComponentKind::PartInstance, "PartInstance", s_part_instance_fields, 3, false,
+    {ComponentKind::PartInstance, "PartInstance", s_part_instance_fields, 4, false,
      sizeof(PartInstance), alignof(PartInstance)},
     {ComponentKind::SectorStreaming, "SectorStreaming", s_sector_streaming_fields, 0, false,
      sizeof(streaming::SectorStreaming), alignof(streaming::SectorStreaming)},
@@ -715,6 +718,15 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
                 }
                 resolved_part_hash = hash;
             }
+            if (contains_field(comp_json, "rayTraced")) {
+                bool ray_traced = false;
+                if (!extract_bool_field(comp_json, "rayTraced", ray_traced)) {
+                    err.message = "invalid PartInstance rayTraced value";
+                    err.authored_id = raw.authored_id;
+                    err.field_path = "PartInstance.rayTraced";
+                    return false;
+                }
+            }
         }
         if (desc->kind == ComponentKind::RiverFloatBody) {
             RiverFloatBody body{};
@@ -952,6 +964,12 @@ bool instantiate(flecs::world& world,
                     part_json, "visible", pi.visible);
                 (void)extract_bool_field(
                     part_json, "casts_shadow", pi.casts_shadow);
+                bool ray_traced = false;
+                if (extract_bool_field(part_json, "rayTraced", ray_traced)) {
+                    pi.ray_traced = ray_traced
+                        ? RayTracingOverride::Enabled
+                        : RayTracingOverride::Disabled;
+                }
                 e.set<PartInstance>(pi);
                 break;
             }
@@ -1045,10 +1063,16 @@ SceneModule::SceneModule(flecs::world& world) {
         .member("value", &SceneEntityId::value)
         .member("generation", &SceneEntityId::generation);
 
+    world.component<RayTracingOverride>()
+        .constant("Inherit", RayTracingOverride::Inherit)
+        .constant("Disabled", RayTracingOverride::Disabled)
+        .constant("Enabled", RayTracingOverride::Enabled);
+
     world.component<PartInstance>()
         .member("part_hash", &PartInstance::part_hash)
         .member("visible", &PartInstance::visible)
-        .member("casts_shadow", &PartInstance::casts_shadow);
+        .member("casts_shadow", &PartInstance::casts_shadow)
+        .member("ray_traced", &PartInstance::ray_traced);
 
     world.component<PartInstanceErrorCode>()
         .constant("None", PartInstanceErrorCode::None)
