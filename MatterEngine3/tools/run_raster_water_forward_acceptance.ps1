@@ -41,6 +41,11 @@ $captureTemplate = (Resolve-Path (Join-Path $repoRoot 'MatterEngine3/tools/raste
 $comparator = (Resolve-Path (Join-Path $repoRoot 'MatterEngine3/tools/raster_water_forward_acceptance.py')).Path
 $baseline = (Resolve-Path $BaselineDir).Path
 $candidate = Resolve-OutputPath $OutputDir
+Invoke-Checked -Description 'Raster-water acceptance path separation' -Command {
+    & py -3 $comparator validate-paths `
+        --baseline $baseline `
+        --candidate $candidate
+}
 $screenshots = Join-Path $candidate 'screenshots'
 $captureRun = Join-Path $candidate 'capture'
 $expandedTimeline = Join-Path $candidate 'raster-water-forward-acceptance.timeline'

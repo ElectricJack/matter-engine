@@ -166,6 +166,46 @@ class RasterWaterForwardAcceptanceTests(unittest.TestCase):
         self.assertLess(runner.index(remove), runner.index(launch))
         self.assertGreater(runner.index(validate), runner.index(launch))
 
+    def test_same_metrics_directory_cannot_self_compare(self):
+        for samples in (1, 10, 16):
+            metrics = self._candidate_metrics()
+            metrics.update({"world": "RiverFloatLab", "rt_samples": samples})
+            (self.baseline / f"shadow-{samples:02d}.json").write_text(
+                json.dumps(metrics), encoding="utf-8")
+        summary = acceptance.compare_acceptance(
+            self.baseline, self.baseline, self.screenshots)
+        self.assertFalse(summary["passed"])
+        self.assertEqual(
+            summary["failures"],
+            [f"baseline and candidate directories must be distinct: "
+             f"{self.baseline.resolve()}"])
+
+    def test_nested_metrics_directory_trees_are_rejected(self):
+        nested = self.baseline / "candidate"
+        for baseline, candidate in (
+                (self.baseline, nested), (nested, self.baseline)):
+            with self.subTest(baseline=baseline, candidate=candidate):
+                summary = acceptance.compare_acceptance(
+                    baseline, candidate, self.screenshots)
+                self.assertFalse(summary["passed"])
+                self.assertEqual(
+                    summary["failures"],
+                    ["baseline and candidate directory trees must be disjoint: "
+                     f"{Path(baseline).resolve()} <> "
+                     f"{Path(candidate).resolve()}"])
+
+    def test_native_runner_validates_path_trees_before_any_write(self):
+        runner = (
+            Path(__file__).resolve().parents[1]
+            / "run_raster_water_forward_acceptance.ps1"
+        ).read_text(encoding="utf-8")
+        guard = "& py -3 $comparator validate-paths"
+        create = "New-Item -ItemType Directory -Force"
+        remove = "Remove-Item -LiteralPath $perfOutput -Force"
+        self.assertIn(guard, runner)
+        self.assertLess(runner.index(guard), runner.index(create))
+        self.assertLess(runner.index(guard), runner.index(remove))
+
     def test_missing_screenshot_fails(self):
         missing = self.screenshots / "waterfall-side.png"
         missing.unlink()

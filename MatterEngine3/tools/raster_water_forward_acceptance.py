@@ -42,6 +42,19 @@ def _format_number(value):
     return format(value, ".12g")
 
 
+def _path_separation_failure(baseline_dir, candidate_dir):
+    baseline_dir = Path(baseline_dir).resolve()
+    candidate_dir = Path(candidate_dir).resolve()
+    if baseline_dir == candidate_dir:
+        return ("baseline and candidate directories must be distinct: "
+                f"{baseline_dir}")
+    if (candidate_dir.is_relative_to(baseline_dir) or
+            baseline_dir.is_relative_to(candidate_dir)):
+        return ("baseline and candidate directory trees must be disjoint: "
+                f"{baseline_dir} <> {candidate_dir}")
+    return None
+
+
 def _load_json(path, label, failures):
     if not path.is_file():
         failures.append(f"missing metrics file: {path}")
@@ -92,6 +105,10 @@ def compare_acceptance(baseline_dir, candidate_dir, screenshots_dir):
         "screenshots": {},
         "failures": failures,
     }
+    path_failure = _path_separation_failure(baseline_dir, candidate_dir)
+    if path_failure is not None:
+        failures.append(path_failure)
+        return summary
 
     for tag in SHADOW_TAGS:
         label = f"shadow-{tag}"
@@ -217,6 +234,10 @@ def parse_args(argv):
     compare.add_argument("--baseline", required=True)
     compare.add_argument("--candidate", required=True)
     compare.add_argument("--screenshots", required=True)
+    validate = commands.add_parser(
+        "validate-paths", help="reject aliased acceptance artifact trees")
+    validate.add_argument("--baseline", required=True)
+    validate.add_argument("--candidate", required=True)
     return parser.parse_args(argv)
 
 
@@ -225,6 +246,16 @@ def main(argv=None):
     if args.command == "compare":
         summary = compare_acceptance(
             args.baseline, args.candidate, args.screenshots)
+        print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+        return 0 if summary["passed"] else 1
+    if args.command == "validate-paths":
+        failure = _path_separation_failure(args.baseline, args.candidate)
+        summary = {
+            "passed": failure is None,
+            "baseline_dir": str(Path(args.baseline).resolve()),
+            "candidate_dir": str(Path(args.candidate).resolve()),
+            "failures": [] if failure is None else [failure],
+        }
         print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
         return 0 if summary["passed"] else 1
     raise AssertionError(f"unhandled command: {args.command}")
