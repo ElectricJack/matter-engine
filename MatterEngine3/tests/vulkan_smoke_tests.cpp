@@ -136,11 +136,15 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
     viewer::VkScenePart first_part = known_raster_triangle(0x701u, 7u);
     viewer::VkScenePart second_part = known_raster_triangle(0x702u, 7u);
     first_part.water_field_binding = replacement;
+    first_part.raster_water_surface = true;
     second_part.water_field_binding = second;
     CHECK(renderer.ensure_part(first_part, error) >= 0 &&
               renderer.ensure_part(second_part, error) >= 0,
           error.empty() ? "water field: register two bound river parts"
                         : error.c_str());
+    CHECK(renderer.part_is_raster_water(first_part.part_hash) &&
+              !renderer.part_is_raster_water(second_part.part_hash),
+          "water field: registered ranges retain exact water classification");
     const matter::Mat4f identity = viewer::mat4_identity();
     CHECK(renderer.update_instances(
               {{first_part.part_hash, identity, 0x711u},
@@ -212,6 +216,10 @@ void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
         renderer.record_cull_and_render(frame, matrices, camera.position, 1.0f,
                                         error) &&
         renderer.record_composite_to_swapchain(frame, error);
+    const auto& opaque_ranges = renderer.test_recorded_draw_ranges();
+    CHECK(recorded && opaque_ranges.size() == 1u &&
+              !opaque_ranges[0].raster_water_surface,
+          "water field: opaque recording keeps one ordinary range and zero water ranges");
     const bool ended = recorded && vulkan.end_frame(frame, error);
     renderer.finish_ray_tracing_frame(frame.serial, ended);
     vulkan.wait_idle();
@@ -258,6 +266,7 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
     viewer::VkScenePart proxy_part =
         known_raster_triangle(0x5741544552414e49ull, 7u);
     proxy_part.water_field_binding = field;
+    proxy_part.raster_water_surface = true;
     CHECK(renderer.ensure_part(proxy_part, error) >= 0,
           error.empty() ? "water animation: register static proxy"
                         : error.c_str());
@@ -265,6 +274,16 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
     rt_settings.enabled = true;
     rt_settings.max_distance = 100.0f;
     renderer.set_ray_tracing_settings(rt_settings);
+
+    viewer::VkSceneInstance proxy{};
+    proxy.part_hash = proxy_part.part_hash;
+    proxy.object_to_world = viewer::mat4_identity();
+    proxy.instance_id = 0x5741544552ull;
+    proxy.ray_traced = false;
+    proxy.rt_proxy_only = false;
+    CHECK(renderer.update_instances({proxy}, error),
+          error.empty() ? "water animation: stage accepted static fallback"
+                        : error.c_str());
 
     const std::array<hydrology::PackedWaterAnimationVertex, 3> vertices{{
         {0u, 0u, 0u},
@@ -315,6 +334,19 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "water animation: build frame matrices"
                         : error.c_str());
 
+    std::vector<viewer::DrawCommand> commands;
+    CHECK(renderer.dispatch_culling(
+              matrices, camera.position, 1.0f, error) &&
+              renderer.readback_commands(commands, error),
+          error.empty() ? "water animation: inspect accepted static fallback"
+                        : error.c_str());
+    std::uint32_t static_fallback_instances = 0u;
+    for (const viewer::DrawCommand& command : commands)
+        static_fallback_instances += command.instance_count;
+    CHECK(renderer.part_is_raster_water(proxy_part.part_hash) &&
+              static_fallback_instances == 1u && !proxy.ray_traced,
+          "water animation: accepted proxy owns one forward-eligible static range");
+
     matter::VulkanFrame frame{};
     CHECK(vulkan.begin_frame(frame, error),
           error.empty() ? "water animation: begin animated frame"
@@ -323,16 +355,10 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
         CHECK(renderer.prepare_water_animation_frame(
                   11u, frame.frame_slot, selection, {0u}, animation_error),
               animation_error.message.c_str());
-        viewer::VkSceneInstance proxy{};
-        proxy.part_hash = proxy_part.part_hash;
-        proxy.object_to_world = viewer::mat4_identity();
-        proxy.instance_id = 0x5741544552ull;
-        proxy.ray_traced = false;
         proxy.rt_proxy_only = true;
         CHECK(renderer.update_instances({proxy}, error),
               error.empty() ? "water animation: upload suppressed proxy"
                             : error.c_str());
-        std::vector<viewer::DrawCommand> commands;
         CHECK(renderer.dispatch_culling(
                   matrices, camera.position, 1.0f, error) &&
                   renderer.readback_commands(commands, error),
@@ -344,6 +370,8 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                       return command.instance_count != 0u;
                   }),
               "water animation: RT proxy contributes no static raster draw");
+        CHECK(!proxy.ray_traced && selection.draws.size() == 1u,
+              "water animation: active direct owns one draw and stays raster-only");
         const std::uint64_t tlas_builds_before =
             renderer.rt_tlas_build_count();
         const bool recorded = renderer.prepare_frame(
@@ -357,6 +385,8 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
         CHECK(ended,
               error.empty() ? "water animation: record direct animated draw"
                             : error.c_str());
+        CHECK(renderer.test_recorded_draw_ranges().empty(),
+              "water animation: classified static water is absent from opaque recording");
         vulkan.wait_idle();
 
         if (vulkan.ray_tracing_available()) {
@@ -432,6 +462,18 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                   11u, frame.frame_slot, selection, {0u}, animation_error) &&
                   renderer.water_animation_generation() == 12u,
               "water animation: stale preparation cannot mutate a live generation");
+        CHECK(renderer.dispatch_culling(
+                  matrices, camera.position, 1.0f, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? "water animation: inspect rejected direct fallback"
+                            : error.c_str());
+        std::uint32_t rejected_fallback_instances = 0u;
+        for (const viewer::DrawCommand& command : commands)
+            rejected_fallback_instances += command.instance_count;
+        CHECK(rejected_fallback_instances == 1u &&
+                  renderer.part_is_raster_water(proxy_part.part_hash) &&
+                  !proxy.ray_traced,
+              "water animation: rejected direct restores one raster-only static water range");
         renderer.clear_water_animation(frame.serial + 4u);
         renderer.collect_water_animation(frame.serial + 4u);
     }

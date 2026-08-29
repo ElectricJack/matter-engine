@@ -74,6 +74,7 @@ bool build_water_scene_part(
     candidate->part_hash = stable_identity(
         artifact_digest, 0x5741544552504152ull, material_id);
     candidate->water_field_binding = water_field_binding;
+    candidate->raster_water_surface = true;
     candidate->vertices.reserve(mesh.positions.size() / 3u);
     candidate->indices = mesh.indices;
     matter::Float3 minimum{

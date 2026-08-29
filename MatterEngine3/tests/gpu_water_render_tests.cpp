@@ -57,6 +57,10 @@ void test_converts_to_one_authored_water_part() {
     CHECK(part->water_field_binding.slot == field_binding.slot &&
               part->water_field_binding.generation == field_binding.generation,
           "water conversion preserves its explicit immutable field binding");
+    CHECK(part->raster_water_surface,
+          "water conversion classifies the immutable proxy for forward raster");
+    CHECK(!viewer::VkScenePart{}.raster_water_surface,
+          "ordinary scene parts remain opaque by default");
     CHECK(part->vertices.size() == 3u && part->indices == mesh.indices,
           "water conversion retains exact indexed topology");
     for (size_t i = 0; i < part->vertices.size(); ++i) {
@@ -88,6 +92,9 @@ void test_converts_to_one_authored_water_part() {
     proxy.part_hash = part->part_hash;
     proxy.instance_id = instance_id;
     proxy.ray_traced = true;
+    gpu_meshing::set_water_scene_animation_active(proxy, false);
+    CHECK(!proxy.rt_proxy_only && !proxy.ray_traced,
+          "accepted proxy without a direct frame remains the raster-only fallback");
     gpu_meshing::set_water_scene_animation_active(proxy, true);
     CHECK(proxy.rt_proxy_only && !proxy.ray_traced &&
               proxy.part_hash == part->part_hash &&

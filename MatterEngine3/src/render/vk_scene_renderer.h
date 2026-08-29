@@ -471,6 +471,7 @@ struct VkScenePart {
     // field from their material id. Appended after the legacy aggregate tail
     // so existing positional fixtures continue to omit it safely.
     WaterFieldBinding water_field_binding{};
+    bool raster_water_surface = false;
 };
 
 // Demand-driven VT: one wanted-but-unregistered (part, rung), surfaced by the
@@ -835,6 +836,7 @@ struct PartCommandRange {
     uint32_t first_command = 0;
     uint32_t command_count = 0;
     uint32_t part_slot = 0;
+    bool raster_water_surface = false;
 };
 
 class VkSceneRenderer {
@@ -1125,6 +1127,7 @@ public:
                    : live_eye;
     }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    bool part_is_raster_water(uint64_t part_hash) const noexcept;
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
         return test_last_rt_geometry_records_;
@@ -1754,6 +1757,7 @@ private:
         // Indexed by CHART RUNG, not LOD index — see kVkMaxChartRung.
         std::array<uint64_t, kVkMaxChartRung> vt_last_wanted{};
         std::array<uint64_t, kVkMaxChartRung> vt_last_requested{};
+        bool raster_water_surface = false;
     };
 
     struct DeviceLimits {
@@ -2525,6 +2529,8 @@ private:
         VkBuffer index_buffer;
         VkBuffer indirect_buffer;
         uint32_t static_command_count;
+        const PartCommandRange* draw_ranges;
+        uint32_t draw_range_count;
         uint32_t max_draw_indirect_count;
     };
     void record_visibility_id_pass(VkCommandBuffer command_buffer,

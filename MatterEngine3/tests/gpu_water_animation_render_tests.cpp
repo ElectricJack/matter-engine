@@ -1,5 +1,6 @@
 #include "check.h"
 
+#include "render/vk_scene_renderer.h"
 #include "render/water_animation_gpu.h"
 
 #include <array>
@@ -195,6 +196,32 @@ void test_generation_checked_fence_retirement() {
           "completed fence collection releases retired animation resources");
 }
 
+void test_active_and_rejected_direct_frames() {
+    const std::vector<hydrology::PackedWaterAnimationVertex> vertices{
+        packed_vertex(0u, 0u, 0u, 0, 0),
+        packed_vertex(65535u, 0u, 0u, 0, 0),
+        packed_vertex(0u, 65535u, 0u, 0, 0)};
+    const std::vector<std::uint32_t> indices{0u, 1u, 2u};
+    auto selected = selection(2u, vertices, indices);
+    viewer::WaterAnimationGpuSchedule schedule;
+    viewer::WaterAnimationGpuError error{};
+    const viewer::WaterAnimationGpuCapacity capacity{
+        static_cast<std::uint64_t>(vertices.size() * sizeof(vertices[0])),
+        static_cast<std::uint64_t>(vertices.size()),
+        static_cast<std::uint64_t>(indices.size() * sizeof(indices[0])), 1u};
+    CHECK(schedule.publish(71u, 1u, capacity, 0u, error),
+          error.message.c_str());
+
+    CHECK(schedule.prepare(71u, 0u, selected, {9u}, error) &&
+              schedule.frame(0u) && schedule.frame(0u)->draws.size() == 1u,
+          "accepted direct frame owns exactly one animated draw");
+
+    CHECK(!schedule.prepare(70u, 0u, selected, {9u}, error),
+          "stale direct frame is rejected");
+    CHECK(!viewer::VkScenePart{}.raster_water_surface,
+          "ordinary opaque parts do not enter the water range partition");
+}
+
 }  // namespace
 
 int main() {
@@ -204,5 +231,6 @@ int main() {
     test_per_slot_upload_draw_and_barrier_contract();
     test_multiple_draws_pack_indices_at_element_offsets();
     test_generation_checked_fence_retirement();
+    test_active_and_rejected_direct_frames();
     return check_summary();
 }

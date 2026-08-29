@@ -696,6 +696,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         const uint32_t max_per_call =
             std::max(1u, record.max_draw_indirect_count);
         uint32_t run_first = 0, run_count = 0, run_part = 0;
+        bool run_raster_water = false;
         uint32_t issued = 0;
         const auto flush_run = [&]() {
             uint32_t first = run_first;
@@ -714,7 +715,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                     // recorded_draw_ranges_ has no engine consumer; the smoke
                     // suite is the only reader.
                     record.recorded_draw_ranges->push_back(
-                        {first, count, run_part});
+                        {first, count, run_part, run_raster_water});
                 }
                 first += count;
                 remaining -= count;
@@ -723,6 +724,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         };
         for (uint32_t i = 0; i < record.draw_range_count; ++i) {
             const PartCommandRange& range = record.draw_ranges[i];
+            if (range.raster_water_surface) continue;
             if (range.first_command > record.static_command_count ||
                 range.command_count >
                     record.static_command_count - range.first_command)
@@ -740,6 +742,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             run_first = range.first_command;
             run_count = range.command_count;
             run_part = range.part_slot;
+            run_raster_water = range.raster_water_surface;
         }
         if (run_count != 0) flush_run();
         // The merge ratio, measurable directly against raster.draw_ranges.
@@ -6316,19 +6319,26 @@ void VkSceneRenderer::record_visibility_id_pass(
                            &vertex_offset);
     vkCmdBindIndexBuffer(command_buffer, record.index_buffer, 0,
                          VK_INDEX_TYPE_UINT32);
-    // One multi-draw over the whole command range. The gbuffer pass coalesces
-    // into runs because it has to respect maxDrawIndirectCount per call and
-    // record its ranges for the smoke suite; this pass has neither obligation,
-    // so it issues the simplest thing the cap allows.
+    // Keep forward-classified water out of the opaque occluder pass. Preserve
+    // the shared indirect command layout: the later forward pass consumes the
+    // same ranges without any command compaction or reindexing.
     const uint32_t max_per_call = std::max(1u, record.max_draw_indirect_count);
-    for (uint32_t first = 0; first < record.static_command_count;
-         first += max_per_call) {
-        const uint32_t count =
-            std::min(max_per_call, record.static_command_count - first);
-        vkCmdDrawIndexedIndirect(
-            command_buffer, record.indirect_buffer,
-            static_cast<VkDeviceSize>(first) * sizeof(DrawCommand), count,
-            sizeof(DrawCommand));
+    for (uint32_t i = 0; i < record.draw_range_count; ++i) {
+        const PartCommandRange& range = record.draw_ranges[i];
+        if (range.raster_water_surface ||
+            range.first_command > record.static_command_count ||
+            range.command_count >
+                record.static_command_count - range.first_command)
+            continue;
+        const uint32_t range_end = range.first_command + range.command_count;
+        for (uint32_t first = range.first_command; first < range_end;
+             first += max_per_call) {
+            const uint32_t count = std::min(max_per_call, range_end - first);
+            vkCmdDrawIndexedIndirect(
+                command_buffer, record.indirect_buffer,
+                static_cast<VkDeviceSize>(first) * sizeof(DrawCommand), count,
+                sizeof(DrawCommand));
+        }
     }
     vkCmdEndRendering(command_buffer);
 
@@ -8150,6 +8160,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     record.hash = part.part_hash;
     record.water_binding_slot = part.water_field_binding.slot;
     record.water_generation = part.water_field_binding.generation;
+    record.raster_water_surface = part.raster_water_surface;
     record.cluster_start = cluster_base;
     record.cluster_count = static_cast<uint32_t>(part.clusters.size());
     record.vertex_start = vertex_base;   // kept for Task 4 vertexOffset
@@ -8388,6 +8399,16 @@ bool VkSceneRenderer::set_part_water_field_binding(
     instance_snapshot_valid_ = false;
     return true;
 }
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+bool VkSceneRenderer::part_is_raster_water(uint64_t part_hash) const noexcept {
+    const auto found = slot_of_.find(part_hash);
+    return found != slot_of_.end() && found->second >= 0 &&
+           static_cast<size_t>(found->second) < parts_.size() &&
+           parts_[static_cast<size_t>(found->second)].live &&
+           parts_[static_cast<size_t>(found->second)].raster_water_surface;
+}
+#endif
 
 void VkSceneRenderer::refresh_part_slot_index() const {
     // Power-of-two, at least 2x occupancy, so linear probing stays short.
@@ -11044,7 +11065,8 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
             continue;
         next_part_ranges.push_back(
             {part.cluster_start * kVkMaxLod,
-             part.cluster_count * kVkMaxLod, slot});
+             part.cluster_count * kVkMaxLod, slot,
+             part.raster_water_surface});
     }
     raster_draw_command_count_ = 0;
     uint32_t command_first_instance = 0;
@@ -11209,7 +11231,8 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
             continue;
         next_part_ranges.push_back(
             {part.cluster_start * kVkMaxLod,
-             part.cluster_count * kVkMaxLod, slot});
+             part.cluster_count * kVkMaxLod, slot,
+             part.raster_water_surface});
     }
     part_command_ranges_ = std::move(next_part_ranges);
     ++command_generation_;
@@ -13830,6 +13853,8 @@ bool VkSceneRenderer::record_cull_and_render(
                 // filtered, which is the one thing this design exists to avoid.
                 selected.vis_commands.buffer,
                 uploaded_command_count_,
+                part_command_ranges_.data(),
+                static_cast<uint32_t>(part_command_ranges_.size()),
                 limits_.max_draw_indirect_count};
             record_visibility_id_pass(frame.command_buffer, id_view);
             record_visibility_id_reduce(frame.command_buffer, selected);
