@@ -20,6 +20,36 @@ bool near(float actual, float expected, float tolerance) {
     return std::fabs(actual - expected) <= tolerance;
 }
 
+bool same_output(const physics::CharacterMoveOutput& left,
+                 const physics::CharacterMoveOutput& right) {
+    return left.position.x == right.position.x && left.position.y == right.position.y &&
+           left.position.z == right.position.z && left.velocity.x == right.velocity.x &&
+           left.velocity.y == right.velocity.y && left.velocity.z == right.velocity.z &&
+           left.ground_normal.x == right.ground_normal.x &&
+           left.ground_normal.y == right.ground_normal.y &&
+           left.ground_normal.z == right.ground_normal.z && left.grounded == right.grounded;
+}
+
+bool same_transform(const ecs::LocalTransform& left,
+                    const ecs::LocalTransform& right) {
+    return left.translation.x == right.translation.x && left.translation.y == right.translation.y &&
+           left.translation.z == right.translation.z && left.rotation.x == right.rotation.x &&
+           left.rotation.y == right.rotation.y && left.rotation.z == right.rotation.z &&
+           left.rotation.w == right.rotation.w && left.scale.x == right.scale.x &&
+           left.scale.y == right.scale.y && left.scale.z == right.scale.z;
+}
+
+bool same_float(float left, float right) {
+    return left == right || (std::isnan(left) && std::isnan(right)) ||
+           (std::isinf(left) && std::isinf(right) && std::signbit(left) == std::signbit(right));
+}
+
+void set_component(Float3& value, int component, float replacement) {
+    if (component == 0) value.x = replacement;
+    else if (component == 1) value.y = replacement;
+    else value.z = replacement;
+}
+
 void tick(ecs_runtime::Runtime& runtime, int count,
           float seconds = 1.0f / 60.0f) {
     TickDesc desc{};
@@ -156,23 +186,76 @@ void test_every_invalid_mover_input_preserves_output() {
     auto& world = runtime.world();
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
+    const physics::CharacterMoveOutput sentinel{{4, 5, 6}, {7, 8, 9}, {10, 11, 12}, true};
     auto rejected = [&](physics::CharacterMoveInput input, const char* message) {
-        physics::CharacterMoveOutput output{{4, 5, 6}, {7, 8, 9}, {0, 0, 1}, true};
+        physics::CharacterMoveOutput output = sentinel;
         CHECK(!physics::physics_move_character(world, input, output) &&
-                  output.position.x == 4.0f && output.velocity.z == 9.0f &&
-                  output.grounded,
-              message);
+                  same_output(output, sentinel), message);
     };
-    auto input = mover_input({0, 1, 0}); input.position.x = nan; rejected(input, "NaN position rejects transactionally");
-    input = mover_input({0, 1, 0}); input.velocity.y = inf; rejected(input, "Inf velocity rejects transactionally");
-    input = mover_input({0, 1, 0}); input.desired_horizontal_velocity.z = nan; rejected(input, "NaN desired velocity rejects transactionally");
-    input = mover_input({0, 1, 0}); input.gravity.x = inf; rejected(input, "Inf gravity rejects transactionally");
-    input = mover_input({0, 1, 0}); input.radius = 0.0f; rejected(input, "nonpositive radius rejects transactionally");
+    for (float invalid : {nan, inf}) {
+        for (int component = 0; component != 3; ++component) {
+            auto input = mover_input({0, 1, 0}); set_component(input.position, component, invalid); rejected(input, "nonfinite position rejects transactionally");
+            input = mover_input({0, 1, 0}); set_component(input.velocity, component, invalid); rejected(input, "nonfinite velocity rejects transactionally");
+            input = mover_input({0, 1, 0}); set_component(input.desired_horizontal_velocity, component, invalid); rejected(input, "nonfinite desired velocity rejects transactionally");
+            input = mover_input({0, 1, 0}); set_component(input.gravity, component, invalid); rejected(input, "nonfinite gravity rejects transactionally");
+        }
+        auto input = mover_input({0, 1, 0}); input.radius = invalid; rejected(input, "nonfinite radius rejects transactionally");
+        input = mover_input({0, 1, 0}); input.half_segment = invalid; rejected(input, "nonfinite half segment rejects transactionally");
+        input = mover_input({0, 1, 0}); input.dt = invalid; rejected(input, "nonfinite dt rejects transactionally");
+        input = mover_input({0, 1, 0}); input.max_slope_cos = invalid; rejected(input, "nonfinite slope cosine rejects transactionally");
+        input = mover_input({0, 1, 0}); input.step_height = invalid; rejected(input, "nonfinite step height rejects transactionally");
+    }
+    auto input = mover_input({0, 1, 0}); input.radius = 0.0f; rejected(input, "nonpositive radius rejects transactionally");
     input = mover_input({0, 1, 0}); input.half_segment = -0.1f; rejected(input, "negative half segment rejects transactionally");
     input = mover_input({0, 1, 0}); input.dt = 0.0f; rejected(input, "nonpositive dt rejects transactionally");
     input = mover_input({0, 1, 0}); input.max_slope_cos = -0.1f; rejected(input, "negative slope cosine rejects transactionally");
     input = mover_input({0, 1, 0}); input.max_slope_cos = 1.1f; rejected(input, "large slope cosine rejects transactionally");
     input = mover_input({0, 1, 0}); input.step_height = -0.1f; rejected(input, "negative step height rejects transactionally");
+}
+
+void test_nonfinite_controller_configuration_preserves_ecs_state() {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    for (float invalid : {nan, inf}) {
+        for (int field = 0; field != 9; ++field) {
+            ecs_runtime::Runtime runtime;
+            auto& world = runtime.world();
+            const ecs::LocalTransform expected{{1, 3, 5}, {0, 0, 0, 1}, {1, 1, 1}};
+            const flecs::entity player = spawn(world, expected.translation);
+            player.set<ecs::LocalTransform>(expected);
+            character::CharacterController controller{};
+            controller.velocity = {7, 8, 9}; controller.grounded = true;
+            controller.fixed_ticks = 11; controller.jumps_consumed = 12; controller.jumps_started = 13;
+            if (field == 0) controller.radius = invalid;
+            else if (field == 1) controller.height = invalid;
+            else if (field == 2) controller.move_speed = invalid;
+            else if (field == 3) controller.max_slope_cos = invalid;
+            else if (field == 4) controller.step_up_height = invalid;
+            else if (field == 5) controller.jump_speed = invalid;
+            else set_component(controller.velocity, field - 6, invalid);
+            const character::CharacterController expected_controller = controller;
+            player.set<character::CharacterController>(controller);
+            player.set<character::MoveIntent>({{1, 0, 0}, true, true});
+            tick(runtime, 1);
+            const auto after = player.get<character::CharacterController>();
+            CHECK(same_transform(player.get<ecs::LocalTransform>(), expected) &&
+                      same_float(after.radius, expected_controller.radius) &&
+                      same_float(after.height, expected_controller.height) &&
+                      same_float(after.move_speed, expected_controller.move_speed) &&
+                      same_float(after.max_slope_cos, expected_controller.max_slope_cos) &&
+                      same_float(after.step_up_height, expected_controller.step_up_height) &&
+                      same_float(after.jump_speed, expected_controller.jump_speed) &&
+                      same_float(after.velocity.x, expected_controller.velocity.x) &&
+                      same_float(after.velocity.y, expected_controller.velocity.y) &&
+                      same_float(after.velocity.z, expected_controller.velocity.z) &&
+                      after.grounded == expected_controller.grounded &&
+                      after.fixed_ticks == expected_controller.fixed_ticks &&
+                      after.jumps_consumed == expected_controller.jumps_consumed &&
+                      after.jumps_started == expected_controller.jumps_started &&
+                      player.get<character::MoveIntent>().jump,
+                  "nonfinite controller scalar preserves transform, state, and jump latch");
+        }
+    }
 }
 
 void test_grounded_walking_normalizes_and_sprints() {
@@ -555,6 +638,7 @@ int main() {
     test_runtime_character_settles_on_installed_terrain();
     test_configuration_and_mover_rejections_are_transactional();
     test_every_invalid_mover_input_preserves_output();
+    test_nonfinite_controller_configuration_preserves_ecs_state();
     test_grounded_walking_normalizes_and_sprints();
     test_large_finite_xz_intent_normalizes_without_overflow();
     test_jump_latch_is_fixed_step_owned();
