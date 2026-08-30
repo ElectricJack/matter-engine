@@ -1,5 +1,7 @@
 #pragma once
 
+// MatterEngine3/include/matter/vt_budgets.h
+//
 // Chart-VT residency budgets — the env-consolidation pilot (property-system
 // design S8 / S10 "Phase 2"). Six MATTER_VT_* vars that used to be read through
 // a copy-pasted env_u32 helper into function-local statics at
@@ -25,6 +27,21 @@
 // env source, not editable), rather than RequiresReload, which would promise a
 // reload that does not in fact re-run init. The other four are re-read by
 // VtResidency::begin_frame every frame, so editing them is genuinely live.
+//
+// USING IT. There is no instance to own or pass around: read through
+// vt_residency_budgets() / vt_enrich_settings(), which return process-wide
+// mutable singletons (function-local statics). An engine-standalone caller
+// (headless test, tool, drive.py run) that never binds a props::Registry must
+// call ensure_vt_residency_env_applied() / ensure_vt_enrich_env_applied()
+// before the first read for the MATTER_VT_* overrides to land; the editor
+// instead binds the same structs into its Registry, whose own env pass writes
+// the same values from the same environment.
+//
+// NO SYNCHRONIZATION. Both singletons are plain mutable globals — no lock, no
+// atomics. Writers (the env pass at startup, the editor's Tunables panel) and
+// readers (VtResidency::begin_frame, the demand pass, the enricher's per-batch
+// push constants) are unguarded, so an edit takes effect on whichever frame
+// reads it next.
 
 #include "matter/props.h"
 
@@ -130,6 +147,13 @@ inline VtResidencyBudgets& vt_residency_budgets() {
     return s;
 }
 
+// The schema for VtResidencyBudgets: per-field name, UI label, range, units and
+// the MATTER_VT_* environment variable each field answers to. Built once into a
+// function-local static, so the returned reference is stable for the process and
+// is the same object both the editor's registry binding and props::apply_env
+// consume. Fields marked .read_only() are the ones VtResidency::init consumes
+// once at renderer creation — they are shown (with their env source) rather than
+// edited, because editing them would promise a change nothing re-reads.
 inline const props::Group& vt_residency_budgets_group() {
     using props::prop;
     static const auto def = props::group<VtResidencyBudgets>(
@@ -202,11 +226,17 @@ inline const props::Group& vt_residency_budgets_group() {
     return def.group();
 }
 
+// The enrichment counterpart of vt_residency_budgets() above: one process-wide
+// mutable instance, same lifetime, same absence of synchronization.
 inline VtEnrichSettings& vt_enrich_settings() {
     static VtEnrichSettings s;
     return s;
 }
 
+// The schema for VtEnrichSettings, in the same shape as
+// vt_residency_budgets_group() above but under its own "vt.enrich" path — see
+// the struct comment for why the two are kept apart rather than folded into one
+// group.
 inline const props::Group& vt_enrich_settings_group() {
     using props::prop;
     static const auto def = props::group<VtEnrichSettings>(

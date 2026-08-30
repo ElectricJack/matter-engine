@@ -1,9 +1,34 @@
+// MatterEngine3/src/render/indexed_part_geometry.cpp
+//
+// The exact-bit vertex weld behind build_indexed_part_geometry, plus the
+// content signature. See indexed_part_geometry.h for what the arrays mean and
+// who consumes them.
+//
+// How the weld works: every triangle corner is flattened into a POD VertexKey
+// holding all of its attributes, and the key is looked up in an unordered_map
+// keyed by the raw bytes of that struct (FNV-1a hash, memcmp equality). First
+// occurrence appends a vertex; later occurrences reuse its index. Because the
+// comparison is over raw bytes, the key struct must have NO PADDING — the
+// static_assert on its size is what enforces that, and it will fire if a field
+// is added or reordered into a padded layout. Padding here would not corrupt
+// anything visibly; it would just make the weld non-deterministic run to run,
+// which is far worse, because the animation binding bake welds the same mesh
+// and expects the same vertex order.
+//
+// The style is deliberate: this file is kept compact rather than reformatted.
+// Add comments above lines, do not reflow the code.
+
 #include "indexed_part_geometry.h"
 
 #include <cstring>
 #include <unordered_map>
 
 namespace {
+// One triangle corner as comparable bytes: position, normal, the (material,
+// ao) pair that goes to `texcoords`, the surface UV, AO again as its own
+// channel, the RGBA tint and the integer material id. 11 floats + 4 bytes +
+// 4 bytes = 52, exactly, which is what the assert below pins so the memcmp
+// comparison never reads padding.
 struct VertexKey { float px,py,pz,nx,ny,nz,tc0,tc1,su,sv,ao; unsigned char rgba[4]; uint32_t material_id; };
 static_assert(sizeof(VertexKey) == 52, "deterministic exact-bit weld key");
 struct VertexKeyHash { size_t operator()(const VertexKey& key) const { const auto* b=reinterpret_cast<const unsigned char*>(&key); size_t h=1469598103934665603ull; for(size_t i=0;i<sizeof(key);++i){h^=b[i];h*=1099511628211ull;} return h; } };
@@ -16,6 +41,10 @@ template<class T> void hash_vector(uint64_t& h,const std::vector<T>& v) { const 
 }
 
 namespace viewer {
+// Weld `tri_count` triangles into an indexed stream; see the header for the
+// contract, the null-triex defaults and the `texcoords` surprise. Reserves for
+// an assumed ~2x vertex-to-triangle ratio, which is only a hint — the arrays
+// grow if the mesh welds worse than that.
 IndexedPartGeometry build_indexed_part_geometry(const Tri* tris,const TriEx* triex,int tri_count,float default_mat_id) {
     IndexedPartGeometry out; if(!tris||tri_count<=0)return out; const int estimate=tri_count*2;
     out.vertices.reserve(estimate*3);out.normals.reserve(estimate*3);out.colors.reserve(estimate*4);out.texcoords.reserve(estimate*2);out.surface_uvs.reserve(estimate*2);out.material_ids.reserve(estimate);out.baked_ao.reserve(estimate);out.indices.reserve(tri_count*3);
@@ -23,5 +52,11 @@ IndexedPartGeometry build_indexed_part_geometry(const Tri* tris,const TriEx* tri
     for(int i=0;i<tri_count;++i) { const Tri& t=tris[i];const float3 positions[3]={t.vertex0,t.vertex1,t.vertex2};float3 normals[3];if(triex){normals[0]=triex[i].N0;normals[1]=triex[i].N1;normals[2]=triex[i].N2;}else{const float3 normal=normalize(cross(t.vertex1-t.vertex0,t.vertex2-t.vertex0));normals[0]=normals[1]=normals[2]=normal;}const float ao[3]={triex?triex[i].ao0:1.0f,triex?triex[i].ao1:1.0f,triex?triex[i].ao2:1.0f};const float material=triex?static_cast<float>(triex[i].materialId):default_mat_id;const float2 uv[3]={triex?triex[i].uv0:make_float2(0.0f),triex?triex[i].uv1:make_float2(0.0f),triex?triex[i].uv2:make_float2(0.0f)};const uint32_t material_id=triex?static_cast<uint32_t>(triex[i].materialId):(default_mat_id>=0?static_cast<uint32_t>(default_mat_id+.5f):UINT32_MAX);unsigned char rgba[4]={255,255,255,0};if(triex){rgba[0]=to_u8(triex[i].tint.x);rgba[1]=to_u8(triex[i].tint.y);rgba[2]=to_u8(triex[i].tint.z);rgba[3]=to_u8(triex[i].tint.w);}for(int c=0;c<3;++c){VertexKey key{};key.px=positions[c].x;key.py=positions[c].y;key.pz=positions[c].z;key.nx=normals[c].x;key.ny=normals[c].y;key.nz=normals[c].z;key.tc0=material;key.tc1=ao[c];key.su=uv[c].x;key.sv=uv[c].y;key.ao=ao[c];std::memcpy(key.rgba,rgba,4);key.material_id=material_id;auto [entry,inserted]=weld.try_emplace(key,static_cast<uint32_t>(out.material_ids.size()));if(inserted)append(out,key);out.indices.push_back(entry->second);}}
     out.vertex_count=static_cast<int>(out.material_ids.size()); return out;
 }
+// FNV-1a over a format tag ('IDG1'), the lod ordinal, vertex_count and the
+// bytes of every array in the struct (each length-prefixed, so a shift between
+// arrays cannot alias). Returns 1 instead of 0 so the value is always a usable
+// non-zero id. Bumping the tag invalidates every stored signature at once,
+// which is the intended move if the covered set ever changes — note it does not
+// currently include warp_uvs / warp_frames.
 uint64_t indexed_part_geometry_signature(const IndexedPartGeometry& geometry,uint32_t lod_ordinal) { uint64_t h=1469598103934665603ull;const uint32_t tag=0x49444731u;hash_scalar(h,tag);hash_scalar(h,lod_ordinal);hash_scalar(h,geometry.vertex_count);hash_vector(h,geometry.vertices);hash_vector(h,geometry.normals);hash_vector(h,geometry.colors);hash_vector(h,geometry.texcoords);hash_vector(h,geometry.surface_uvs);hash_vector(h,geometry.material_ids);hash_vector(h,geometry.baked_ao);hash_vector(h,geometry.indices);return h?h:1ull; }
 } // namespace viewer

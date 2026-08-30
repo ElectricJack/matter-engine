@@ -34,10 +34,33 @@
 // matter_math.h's Mat4 comment for the full derivation -- it applies
 // unchanged here since this is the identical memory layout.
 
+// CONSUMERS: libs/MatterSurfaceLib's particle.h, fat_primitive.h and
+// surface.h expose these types across their C/C++ boundary — fat_primitive.c
+// and surface.c consume them as real C, csg_lowering.cpp and the cell/cluster
+// C++ sources as C++. Code that is C++ on both ends should prefer
+// matter_math.h's mm:: types and cross over with its to_c()/from_c(), which
+// are the only sanctioned conversions.
+//
+// GOTCHA — DEFAULTS DIFFER FROM THE mm:: TYPES. These are plain C structs
+// with no default member initializers, so `MtVec3 v;` is uninitialized
+// (mm::Vec3 zero-initializes), and `MtMat4 m = {0};` is the ZERO matrix
+// (mm::Mat4{} is IDENTITY). Do not carry an assumption about the default
+// across the boundary in either direction.
+//
+// `make -C libs/MathLib/tests c-smoke` compiles this header with
+// `gcc -std=c99` via matter_math_c_smoke.c. That target — not the g++-built
+// mathlib_tests binary, which would happily accept C++-only syntax leaking in
+// here — is what actually enforces the "valid C" claim above.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+// Field order x/y/z/w matches mm::Vec2/Vec3/Vec4 member for member;
+// matter_math.h static_asserts both the size and every member offset, so a
+// reordering here breaks that build rather than silently corrupting data.
+// As with the mm:: types, no unit and no coordinate frame is implied — the
+// consuming header defines what the numbers mean.
 typedef struct {
     float x, y;
 } MtVec2;
@@ -51,6 +74,8 @@ typedef struct {
 } MtVec4;
 
 // Row-major float[16]; see the file comment above for the layout convention.
+// Note that `MtMat4 m = {0};` yields the ZERO matrix, not the identity —
+// mm::Mat4{} on the C++ side defaults the other way.
 typedef struct {
     float m[16];
 } MtMat4;

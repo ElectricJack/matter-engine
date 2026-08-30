@@ -950,6 +950,28 @@ static void test_indexed_weld() {
     // First corner of tri 1 is 'b' = (1,0,0).
     CHECK(soup.vertices[9] == 1.0f && soup.vertices[10] == 0.0f,
           "expand_indexed: triangle order preserved");
+
+    // Warp channels survive the unweld. They are filled by a later pass than
+    // build_raster_mesh_data, so they are attached by hand here — exactly the
+    // shape a terrain-sector rung carries. Dropping them used to make a
+    // round-tripped sector silently fall back to world-XZ ground addressing.
+    auto warped = m;
+    warped.warp_uvs.assign(static_cast<size_t>(warped.vertex_count) * 2, 0.0f);
+    warped.warp_frames.assign(static_cast<size_t>(warped.vertex_count) * 2, 0u);
+    for (int v = 0; v < warped.vertex_count; ++v) {
+        warped.warp_uvs[static_cast<size_t>(v) * 2] = static_cast<float>(v);
+        warped.warp_frames[static_cast<size_t>(v) * 2 + 1] =
+            static_cast<uint32_t>(100 + v);
+    }
+    auto warped_soup = viewer::expand_indexed(warped);
+    CHECK(warped_soup.warp_uvs.size() == 12 &&
+              warped_soup.warp_frames.size() == 12,
+          "expand_indexed: warp channels are 2 per soup vertex");
+    // Soup vertex 3 is the first corner of tri 1, i.e. input vertex m.indices[3].
+    const uint32_t src = m.indices[3];
+    CHECK(warped_soup.warp_uvs[6] == static_cast<float>(src) &&
+              warped_soup.warp_frames[7] == 100u + src,
+          "expand_indexed: warp values follow their source vertex");
 }
 
 static void test_sector_lod_floor_cull() {
@@ -1067,6 +1089,9 @@ static void test_provider_regen_stale_v2_flat() {
 //  (e) a bundled v2 canonical part is not misidentified as a legacy flat and
 //      still produces one exact-bounds synthetic cluster,
 //  (f) the compositional path publishes one exact-bounds synthetic cluster.
+//
+// The fixture writes the canonical `.part` beside every flat it saves, because
+// a flat is only admitted as an acceleration of one (8d4291df).
 static void test_partstore_cluster_loading() {
     printf("=== test_partstore_cluster_loading ===\n");
 

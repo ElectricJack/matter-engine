@@ -1,5 +1,7 @@
 #pragma once
 
+// MatterEngine3/include/matter/stream_settings.h
+//
 // Sector-streaming RUNTIME settings — the MATTER_STREAM_* vars that are
 // consumed once per PROCESS rather than once per world connect, consolidated
 // the same way matter/vt_budgets.h consolidated the VT residency budgets.
@@ -49,6 +51,12 @@ struct StreamRuntimeSettings {
     bool prebuild = true;
 };
 
+// The one process-wide instance. Not per world and not per session: the pool it
+// describes is spawned once and outlives world reloads. Call
+// `ensure_stream_runtime_env_applied()` before the first read — after that
+// single-threaded env pass nothing writes this struct, which is exactly what
+// makes the concurrent reads from the bake executors safe (see the header note
+// on `prebuild`).
 inline StreamRuntimeSettings& stream_runtime_settings() {
     static StreamRuntimeSettings s;
     return s;

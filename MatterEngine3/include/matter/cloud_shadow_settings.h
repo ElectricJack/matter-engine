@@ -1,5 +1,40 @@
 #pragma once
 
+// MatterEngine3/include/matter/cloud_shadow_settings.h
+//
+// Cloud-shadow volume configuration and the pure math that turns it into a
+// per-frame shadow volume. Header-only: everything here is `inline`, touches
+// no Vulkan, allocates nothing and keeps no global state, so the renderer,
+// the property editor and the headless suites all share one implementation
+// (MatterEngine3/tests/cloud_shadow_tests.cpp,
+// MatterEngine3/tests/volumetric_quality_tests.cpp).
+//
+// How it fits:
+//   * `matter/volumetric_quality.h` holds the froxel-grid half of the same
+//     settings block and only DECLARES `enhanced_cloud_lighting`,
+//     `apply_volumetric_quality_preset` and
+//     `identify_volumetric_quality_preset`; their definitions live at the
+//     bottom of THIS header. Include cloud_shadow_settings.h — not just
+//     volumetric_quality.h — wherever you call them.
+//   * MatterEngine3/src/render/vk_cloud_shadows.cpp owns the GPU side. It
+//     calls `resolve_cloud_shadow_levels` for the image dimensions,
+//     `make_cloud_shadow_frame` once per level per frame, and
+//     `cloud_shadow_requires_full_invalidation` to choose between a full
+//     regeneration and an incremental refresh.
+//   * MatterEditor/src/property_editor.cpp drives the same structs from the
+//     property system.
+//
+// Conventions and gotchas:
+//   * Distances are METRES. Light/sun vectors are world-space directions.
+//     "UVW" is the normalized [0,1]^3 space of a shadow volume.
+//   * The `*_resolution` / `*_depth_slices` fields are quality INDICES, not
+//     pixel counts — see CloudShadowSettings below.
+//   * Every function here is deliberately defensive: a non-finite or
+//     non-positive input yields a documented default or an invalid frame
+//     (`CloudShadowFrame::valid == false`) rather than letting a NaN reach
+//     the shadow volume. Callers must check `.valid`.
+//   * The two cascade levels are always ordered {near, far}; index 0 is near.
+
 #include "matter/math_types.h"
 #include "matter/volumetric_quality.h"
 
@@ -10,33 +45,72 @@
 
 namespace matter {
 
+// User-facing cloud-shadow tunables, as authored by the property system.
+//
+// The four resolution/slice fields are quality INDICES into the small tables
+// in resolve_cloud_shadow_levels (0 = low, 1 = medium, 2 = high); anything
+// outside 0..2 falls back to 1. Coverage is a world-space edge length in
+// metres; non-finite or non-positive falls back to the default below.
+//
+// VkCloudShadows sanitizes two fields again on its own side: a non-finite or
+// negative `filter_scale` becomes 1, and `update_fraction` is clamped into
+// [0.0625, 1].
+//
+// `identify_volumetric_quality_preset` compares this struct FIELD BY FIELD,
+// so a new field has to be added to both that comparison and every arm of
+// `apply_volumetric_quality_preset` or the UI will report Custom forever.
 struct CloudShadowSettings {
     bool enabled = true;
-    int32_t near_resolution = 1;
-    int32_t near_depth_slices = 1;
-    float near_coverage_m = 1800.0f;
-    int32_t far_resolution = 1;
-    int32_t far_depth_slices = 1;
-    float far_coverage_m = 4000.0f;
-    float filter_scale = 1.0f;
-    float update_fraction = 0.25f;
+    int32_t near_resolution = 1;     // index 0/1/2 -> 128/256/512 texels (XY)
+    int32_t near_depth_slices = 1;   // index 0/1/2 -> 16/32/48 slices
+    float near_coverage_m = 1800.0f; // metres spanned by the near volume
+    int32_t far_resolution = 1;      // index 0/1/2 -> 64/128/256 texels (XY)
+    int32_t far_depth_slices = 1;    // index 0/1/2 -> 16/24/32 slices
+    float far_coverage_m = 4000.0f;  // metres spanned by the far volume
+    float filter_scale = 1.0f;       // spatial filter width multiplier
+    float update_fraction = 0.25f;   // share of the volume refreshed per frame
 };
 
+// One resolved cascade level: the concrete voxel dimensions and the world
+// extent they cover. Produced by resolve_cloud_shadow_levels, consumed by
+// make_cloud_shadow_frame and by VkCloudShadows when it allocates images.
+// `width == height` by construction. `coverage_m` is the same edge length
+// along XY and along depth, so the depth voxel is coverage_m / depth and is
+// generally NOT cubic with the XY voxel.
+// A zeroed desc (any dimension 0) means "not resolved" and is rejected by
+// make_cloud_shadow_frame.
 struct CloudShadowLevelDesc {
-    uint32_t width = 0, height = 0, depth = 0;
-    float coverage_m = 0.0f;
+    uint32_t width = 0, height = 0, depth = 0;  // voxels
+    float coverage_m = 0.0f;                    // metres per volume edge
 };
 
+// The per-level, per-frame placement of a shadow volume: an orthonormal basis
+// whose third axis is the incoming light direction, centred on a
+// voxel-snapped point near the camera.
+//
+// Both matrices are `Mat4f` from matter/math_types.h — row-major storage,
+// column-vector algebra — so the translation terms live in m[3], m[7], m[11].
+// `world_to_uvw` maps world metres into [0,1]^3 with the snapped centre at
+// 0.5; `uvw_to_world` is its inverse.
+//
+// A default-constructed frame is invalid. `valid == false` means the inputs
+// were degenerate and nothing may be sampled from this frame; the GPU side
+// checks it before using the volume.
 struct CloudShadowFrame {
-    Mat4f world_to_uvw{};
-    Mat4f uvw_to_world{};
-    Float3 snapped_center{};
-    Float3 incoming_light_axis{};
-    float voxel_xy_m = 0.0f;
-    float voxel_depth_m = 0.0f;
-    bool valid = false;
+    Mat4f world_to_uvw{};          // world metres -> [0,1]^3 volume space
+    Mat4f uvw_to_world{};          // inverse of world_to_uvw
+    Float3 snapped_center{};       // world metres, quantized to whole voxels
+    Float3 incoming_light_axis{};  // unit; == -sun_direction, the volume's z
+    float voxel_xy_m = 0.0f;       // metres per voxel across the light
+    float voxel_depth_m = 0.0f;    // metres per voxel along the light
+    bool valid = false;            // false = degenerate input, do not sample
 };
 
+// Small finite-checked vector helpers, kept local so this header stays
+// dependency-free (no MathLib, no raylib). They exist mainly so every entry
+// point below can reject NaN/Inf before it can reach a shadow volume.
+// `cloud_shadow_normalize` returns false for a degenerate or non-finite
+// input, in which case `value` holds no usable result.
 namespace detail {
 
 inline bool cloud_shadow_finite(float value) { return std::isfinite(value); }
@@ -71,6 +145,11 @@ inline bool cloud_shadow_frame_is_valid(const CloudShadowFrame& frame) {
 
 } // namespace detail
 
+// Maps the quality indices in `settings` onto concrete voxel dimensions.
+// Returns {near, far} in that fixed order. Cannot fail: an out-of-range index
+// falls back to the medium entry and a non-finite or non-positive coverage
+// falls back to the CloudShadowSettings default, so the result is always
+// usable. Ignores `settings.enabled`.
 inline std::array<CloudShadowLevelDesc, 2> resolve_cloud_shadow_levels(
     const CloudShadowSettings& settings) {
     constexpr uint32_t near_resolution[] = {128, 256, 512};
@@ -92,6 +171,11 @@ inline std::array<CloudShadowLevelDesc, 2> resolve_cloud_shadow_levels(
               far_depth[far_depth_index], far_coverage}}};
 }
 
+// Approximate device memory for both levels, in bytes; 0 when disabled.
+// Assumes three R16_SFLOAT volumes per level (VkCloudShadows allocates a
+// density volume plus its cumulative pair), i.e. 3 x 2 bytes per voxel. It is
+// a budget/HUD estimate, not what the allocator actually reserves — real
+// allocations carry alignment and view overhead.
 inline uint64_t estimate_cloud_shadow_bytes(const CloudShadowSettings& settings) {
     if (!settings.enabled) return 0;
     const auto levels = resolve_cloud_shadow_levels(settings);
@@ -102,6 +186,20 @@ inline uint64_t estimate_cloud_shadow_bytes(const CloudShadowSettings& settings)
     return voxels * 3ull * 2ull;
 }
 
+// Builds the shadow-volume basis for one cascade level.
+//
+// The volume's third axis is `-sun_direction` (stored as
+// `incoming_light_axis`); the other two are an arbitrary but stable
+// perpendicular pair, with a fallback axis chosen when the light is within
+// ~8 degrees of world up. `camera_world` is in metres.
+//
+// The centre is snapped to whole voxels along all three axes so the volume
+// translates in texel steps as the camera moves — that is what keeps the
+// contents reusable between frames.
+//
+// Returns a frame with `valid == false` for a zero-sized level, a non-finite
+// input or a degenerate basis. ALWAYS check `.valid`; a false result is a
+// normal outcome, not an error to report.
 inline CloudShadowFrame make_cloud_shadow_frame(
     const CloudShadowLevelDesc& level, const Float3& camera_world, const Float3& sun_direction) {
     CloudShadowFrame frame{};
@@ -164,6 +262,14 @@ inline CloudShadowFrame make_cloud_shadow_frame(
     return frame;
 }
 
+// True when the previous frame's volume contents cannot be reused and must be
+// regenerated from scratch. That happens when either frame is invalid, when
+// the sun moved more than 2 degrees, when the voxel size or the coverage
+// changed, or when the snapped centre slid past a guard band of 8% of the
+// coverage along any axis.
+//
+// `sun_angle_delta_deg` is in DEGREES since the previous frame. Any
+// non-finite input returns true — the conservative answer is always "rebuild".
 inline bool cloud_shadow_requires_full_invalidation(
     const CloudShadowFrame& previous, const CloudShadowFrame& next, float sun_angle_delta_deg) {
     if (!detail::cloud_shadow_frame_is_valid(previous) || !detail::cloud_shadow_frame_is_valid(next) ||
@@ -195,12 +301,25 @@ inline bool cloud_shadow_requires_full_invalidation(
            std::fabs(detail::cloud_shadow_dot(delta, z)) > guard_band_m;
 }
 
+// ---------------------------------------------------------------------------
+// Definitions of the three functions declared in matter/volumetric_quality.h
+// ---------------------------------------------------------------------------
+
+// True when any of the expensive cloud-lighting terms is switched on. This is
+// the flag `estimate_froxel_bytes` takes to account for the extra per-froxel
+// storage those terms need.
 inline bool enhanced_cloud_lighting(const VulkanVolumetricsSettings& volumetrics,
                                     const CloudShadowSettings& shadows) {
     return volumetrics.local_sun_march_steps > 0 || volumetrics.multiple_scattering_orders > 1 ||
            volumetrics.powder_strength > 0.0f || shadows.enabled;
 }
 
+// Overwrites both settings structs with the named preset's values. `Custom`
+// is deliberately a no-op — it means "keep whatever is already set".
+//
+// The set of fields written here must stay identical to the set compared in
+// identify_volumetric_quality_preset below, or the round trip
+// apply -> identify stops recognising its own output.
 inline void apply_volumetric_quality_preset(VolumetricQualityPreset preset,
                                             VulkanVolumetricsSettings& volumetrics,
                                             CloudShadowSettings& shadows) {
@@ -251,6 +370,13 @@ inline void apply_volumetric_quality_preset(VolumetricQualityPreset preset,
     }
 }
 
+// Reverse lookup: the first preset whose applied values match the current
+// settings exactly, else `Custom`. Floats are compared with ==, which is
+// sound here only because the values can have come from nowhere but
+// apply_volumetric_quality_preset or the UI's discrete widgets.
+//
+// Implemented by applying every preset to a scratch copy, so it is O(presets)
+// struct copies — fine per UI frame, not something to call per render frame.
 inline VolumetricQualityPreset identify_volumetric_quality_preset(
     const VulkanVolumetricsSettings& volumetrics, const CloudShadowSettings& shadows) {
     for (const auto preset : {VolumetricQualityPreset::CurrentCost, VolumetricQualityPreset::Improved,

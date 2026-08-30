@@ -512,17 +512,74 @@ int main() {
            renderer.find("volumetrics_->invalidate_history()") !=
                std::string::npos);
     const std::string atmosphere_host = read_shader("../src/render/vk_atmosphere.cpp");
-    assert(atmosphere_host.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") !=
-           std::string::npos);
+    assert(!atmosphere_host.empty());
     // Review regressions: sky-view must be visible to every Task 7 consumer,
     // and the environment UBO must be mapped before its neutral std140 bytes
     // are initialized. These source contracts complement the real raster
     // readback because neither property is uniquely observable in one pixel.
+    //
+    // 2026-08-20: ray tracing is an OPTIONAL device feature and
+    // VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR is ILLEGAL in a barrier
+    // stage mask on a device that did not enable it
+    // (VUID-VkImageMemoryBarrier2-dstStageMask-07946, ten of them per frame in
+    // the vt-enrich-nort smoke mode). The "readable by every shader stage"
+    // transitions therefore fold the stage in through
+    // matter::ray_tracing_shader_stage(ray_tracing_available()), which yields 0
+    // on an RT-less device -- so the bit is no longer named literally here and
+    // these assertions pin the SAME property through that helper instead. What
+    // must still hold: the RT stage is derived from the live device query, and
+    // the sky-view SHADER_READ_ONLY transition's DESTINATION stage mask still
+    // carries it alongside COMPUTE and FRAGMENT. Dropping ray tracing from that
+    // mask, or hard-wiring the helper's argument, still fails.
+    assert(atmosphere_host.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") ==
+           std::string::npos);
+    const size_t rt_stage_binding =
+        atmosphere_host.find("VkPipelineStageFlags2 ray_tracing_stage =");
+    assert(rt_stage_binding != std::string::npos);
+    const std::string rt_stage_tail = atmosphere_host.substr(rt_stage_binding, 200);
+    assert(rt_stage_tail.find("matter::ray_tracing_shader_stage(") !=
+               std::string::npos &&
+           rt_stage_tail.find("ray_tracing_available()") != std::string::npos);
     const size_t sky_transition = atmosphere_host.find(
         "record_image_transition(command_buffer, sky_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL");
-    assert(sky_transition != std::string::npos);
+    assert(sky_transition != std::string::npos &&
+           rt_stage_binding < sky_transition);
     const std::string sky_tail = atmosphere_host.substr(sky_transition, 520);
-    assert(sky_tail.find("sampled_shader_stages_") != std::string::npos);
+    const size_t sky_destination_mask = sky_tail.find(
+        "VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |");
+    assert(sky_destination_mask != std::string::npos);
+    // The gated ray-tracing stage has to be OR'd into that same destination
+    // mask, i.e. before the destination access mask closes the argument list.
+    const size_t sky_ray_tracing =
+        sky_tail.find("ray_tracing_stage", sky_destination_mask);
+    const size_t sky_destination_access =
+        sky_tail.find("VK_ACCESS_2_SHADER_SAMPLED_READ_BIT", sky_destination_mask);
+    assert(sky_ray_tracing != std::string::npos &&
+           sky_destination_access != std::string::npos &&
+           sky_ray_tracing < sky_destination_access);
+    // The same gating covers the cloud-shadow volumes, which are transitioned
+    // "readable by every shader stage" for the same reason.
+    const std::string cloud_shadow_host =
+        read_shader("../src/render/vk_cloud_shadows.cpp");
+    assert(!cloud_shadow_host.empty());
+    assert(cloud_shadow_host.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") ==
+               std::string::npos &&
+           cloud_shadow_host.find("matter::ray_tracing_shader_stage(") !=
+               std::string::npos &&
+           cloud_shadow_host.find("ray_tracing_available()") != std::string::npos);
+    // The helper itself must stay conditional: a version that always returns
+    // the bit would re-introduce the very validation error it exists to avoid.
+    const std::string vk_resources_header =
+        read_shader("../src/render/vk_resources.h");
+    const size_t rt_stage_helper =
+        vk_resources_header.find("ray_tracing_shader_stage(");
+    assert(rt_stage_helper != std::string::npos);
+    const std::string rt_stage_helper_tail =
+        vk_resources_header.substr(rt_stage_helper, 260);
+    assert(rt_stage_helper_tail.find("ray_tracing_available") != std::string::npos &&
+           rt_stage_helper_tail.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") !=
+               std::string::npos &&
+           rt_stage_helper_tail.find("VkPipelineStageFlags2{0}") != std::string::npos);
     assert(renderer.find("matter::map_buffer(frame.environment_constants, error)") !=
            std::string::npos &&
            renderer.find("environment_constants.mapped == nullptr") ==

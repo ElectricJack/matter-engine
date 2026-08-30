@@ -93,6 +93,11 @@ if(BUILD_TESTING)
     matter_apply_project_defaults(matter_spatial_tests)
     add_test(NAME matter_spatial_tests COMMAND matter_spatial_tests)
 
+    add_executable(matter_bvh_tests libs/SpatialQueryLib/tests/bvh_tests.cpp)
+    target_link_libraries(matter_bvh_tests PRIVATE matter_spatial)
+    matter_apply_project_defaults(matter_bvh_tests)
+    add_test(NAME matter_bvh_tests COMMAND matter_bvh_tests)
+
     add_executable(matter_profile_tests libs/ProfileLib/tests/profile_tests.cpp)
     target_link_libraries(matter_profile_tests PRIVATE matter_profile)
     matter_apply_project_defaults(matter_profile_tests)
@@ -120,6 +125,7 @@ if(BUILD_TESTING)
         matter_math_tests
         matter_math_c_smoke
         matter_spatial_tests
+        matter_bvh_tests
         matter_profile_tests
         matter_particle_flow_tests
         matter_mesh_charting_tests
@@ -131,6 +137,7 @@ if(BUILD_TESTING)
         matter_math_tests
         matter_math_c_smoke
         matter_spatial_tests
+        matter_bvh_tests
         matter_profile_tests
         matter_particle_flow_tests
         matter_mesh_charting_tests

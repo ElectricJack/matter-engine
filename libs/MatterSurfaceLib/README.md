@@ -1,305 +1,98 @@
-# GPU Ray Tracing Example
+# MatterSurfaceLib
 
-A cross-platform C++ ray tracing application using Raylib with BVH (Bounding Volume Hierarchy) acceleration structures. Features modular BLAS/TLAS system with GPU-accelerated ray tracing.
+The engine's meshing / surfacing backend and its GPU acceleration-structure
+managers. It is a **library**, not an application: consumers add
+`-I../MatterSurfaceLib/include` and compile the `.c`/`.cpp` they need straight
+out of `src/` (CLAUDE.md, "Code Sharing Between Projects"). Nothing here is
+copied or symlinked into a consumer.
 
-## Features
-
-- **Cross-Platform Build System**: Supports Linux, macOS, and Windows (via WSL)
-- **GPU Ray Tracing**: Hardware-accelerated ray tracing using OpenGL compute shaders
-- **BVH Acceleration**: Optimized Bottom-Level (BLAS) and Top-Level (TLAS) acceleration structures
-- **Modular Architecture**: Separate managers for BLAS, TLAS, and visualization
-- **Performance Profiling**: Built-in timing and statistics
-- **Platform Isolation**: Build artifacts separated by platform to prevent conflicts
-
-## Requirements
-
-### Windows
-- **Option 1 (Recommended)**: MinGW-w64 via MSYS2
-  - Install MSYS2 from https://www.msys2.org/
-  - Run: `pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-make`
-  - Add `C:\msys64\mingw64\bin` to Windows PATH
-- **Option 2**: Windows Subsystem for Linux (WSL2) with Ubuntu
-  - GCC/G++ compiler: `sudo apt install build-essential g++`
-  - Development libraries: `sudo apt install libgl1-mesa-dev libx11-dev`
-- **Option 3**: Visual Studio with vcpkg (advanced users)
-
-### Linux
-- GCC/G++ compiler
-- OpenGL development libraries
-- X11 development libraries
-
-### macOS
-- Xcode command line tools
-- OpenGL framework (included with macOS)
-
-## Quick Start
-
-### Windows
-
-1. **With MinGW-w64 installed (Recommended)**:
-   ```cmd
-   # Build using Windows batch file
-   build.bat
-   
-   # Or use bash script (if available)
-   bash build.sh
-   ```
-
-2. **Using WSL (Alternative)**:
-   ```bash
-   # Build the project
-   ./build.sh
-   
-   # Run the application
-   ./run.sh
-   ```
-
-3. **Using PowerShell/Command Prompt (Legacy)**:
-   ```cmd
-   # Run with PowerShell
-   .\run.ps1
-   
-   # Or run with Command Prompt
-   .\run.bat
-   ```
-
-### Linux/macOS
-
-```bash
-# Build the project
-./build.sh
-
-# Run the application
-./run.sh
-```
-
-## Performance & Native Windows Builds
-
-### Performance Comparison
-
-| Build Method | Performance | GPU Access | Setup | Recommended Use |
-|--------------|-------------|-------------|-------|-----------------|
-| WSL Build    | 70-90%      | Indirect    | Easy  | Development     |
-| Native Windows | 100%      | Direct      | Medium| Production      |
-| Cross-Compile | 95-100%    | Direct      | Medium| Distribution    |
-
-**WSL Performance Impact:**
-- Graphics calls go through translation layer (10-30% overhead)
-- GPU access is indirect through Windows host
-- File I/O has some cross-boundary overhead
-- Still suitable for development and testing
-
-**Native Windows Benefits:**
-- Direct GPU driver access
-- No translation layer overhead
-- Better debugging tools
-- Access to Windows-specific GPU features
-
-### Building Native Windows .exe
-
-For maximum performance, build a native Windows executable:
-
-#### Option 1: Cross-Compile from Linux/WSL
-
-```bash
-# Install MinGW cross-compiler (if not already installed)
-sudo apt update && sudo apt install -y mingw-w64 mingw-w64-tools
-
-# Build native Windows .exe using cross-compilation
-./build.sh --cross-compile
-
-# Or use make directly
-TARGET=windows-native make
-
-# Result: ./gpu_raytrace.exe (2.4MB)
-```
-
-#### Option 2: Default Windows Build (MinGW)
-
-```bash
-# MinGW is now the default on Windows - builds native .exe
-./build.sh
-
-# Or use make directly  
-make
-
-# Result: ./gpu_raytrace.exe
-```
-
-#### Option 3: Alternative Windows Toolchain
-
-```bash
-# Use alternative Windows compiler (MSVC, regular gcc, etc.)
-./build.sh --no-mingw
-
-# Or use make directly
-make NO_MINGW=1
-
-# Result: ./gpu_raytrace.exe
-```
-
-**Status**: ✅ **All Options Working**
-- **Cross-compile**: Creates native Windows PE executable from Linux/WSL
-- **Default Windows**: Uses MinGW toolchain by default for native .exe builds
-- **Alternative Windows**: Uses system alternative compiler (MSVC, etc.)
-- All automatically handle Windows API compatibility and library linking
-
-## Cross-Platform Build System
-
-The build system automatically detects your platform and creates isolated build directories:
-
-```
-build/
-├── linux/          # Linux builds
-├── macos/          # macOS builds  
-└── windows/        # Windows builds
-```
-
-### Platform Status
-
-Check the build status for all platforms:
-
-```bash
-./platform-status.sh
-```
-
-Example output:
-```
-=== GPURayTraceExample Platform Status ===
-
-Current platform: linux
-
-Build Status:
-linux     : ✓ Built (1.4M, 2025-06-27 13:42) [Raylib: ✓] [Preprocessor: ✓] ← Current
-macos     : ✗ Not built [Raylib: ✗] [Preprocessor: ✗]
-windows   : ✗ Not built [Raylib: ✗] [Preprocessor: ✗]
-
-Symlink: ./gpu_raytrace -> ./build/linux/gpu_raytrace
-Shaders: ✓ Processed
-```
-
-### Build Scripts and Targets
-
-#### Build Script Options
-
-```bash
-./build.sh                    # Build for current platform (MinGW default on Windows)
-./build.sh --no-mingw        # Build on Windows using alternative toolchain
-./build.sh --cross-compile   # Cross-compile from Linux/WSL to Windows
-./build.sh --help            # Show help and all options
-```
-
-#### Makefile Targets
-
-```bash
-make                          # Build for current platform (MinGW default on Windows)
-make NO_MINGW=1               # Use alternative toolchain on Windows
-TARGET=windows-native make    # Cross-compile to Windows from Linux/WSL
-make platform                 # Show platform information
-make clean                    # Clean current platform
-make clean-all                # Clean all platforms
-make rebuild-raylib           # Force rebuild raylib for current platform
-make shaders                  # Process shaders only
-```
-
-## Architecture
-
-### BLAS Manager
-- Manages Bottom-Level Acceleration Structures
-- Handles triangle data and BVH construction
-- Provides GPU texture generation for ray tracing
-- Implements mesh deduplication and caching
-
-### TLAS Manager  
-- Manages Top-Level Acceleration Structures
-- Handles instance transforms and materials
-- Provides scene building utilities
-- Matrix stack for hierarchical transforms
-
-### BVH Visualizer
-- Debug visualization of acceleration structures
-- Wireframe rendering of bounding boxes
-- Color-coded depth visualization
-- Triangle and node inspection tools
-
-## GPU Ray Tracing Pipeline
-
-1. **BLAS Construction**: Build BVH for each unique mesh
-2. **TLAS Construction**: Build top-level BVH for scene instances
-3. **GPU Upload**: Transfer acceleration structures to GPU textures
-4. **Shader Binding**: Bind textures and uniforms to ray tracing shader
-5. **Ray Tracing**: GPU compute shader traverses BVH structures
+> This README used to be a verbatim copy of `Prototypes/GPURayTraceExample`'s,
+> describing a standalone raylib/GL ray-tracing app with `build.bat`,
+> `run.ps1`, `platform-status.sh` and an "ObjectAllocator (copied from
+> ObjectAllocatorLib)" dependency. That app (`main.cpp` +
+> `bvh_visualizer.{cpp,hpp}`) was deleted outright in Phase 5a along with the
+> whole GL renderer path, and nothing was ever copied from MemoryLib. The
+> `build.sh` / `run.sh` / `run*.ps1` / `platform-status.sh` scripts still
+> sitting in this directory are leftovers from that app and drive nothing.
 
 ## Dependencies
 
-The project automatically manages dependencies:
+SpatialQueryLib (`precomp.h`, `tri.h`, the BVH), MemoryLib (`mem_pool`),
+MathLib, and raylib **headers** (POD `Mesh`/`Texture2D`/`Shader` types). It is
+below MatterEngine3 in the one-way chain
+MatterEditor → MatterEngine3 → MatterSurfaceLib → SpatialQueryLib → MemoryLib.
 
-- **Raylib**: Graphics library (built from source)
-- **ObjectAllocator**: Memory management (copied from ObjectAllocatorLib)
-- **Shader Preprocessor**: GLSL include processing
+## What it provides
 
-## Troubleshooting
+Surfacing and meshing
 
-### Windows/WSL Issues
+- `surface.c` / `surface.h` — marching-cubes + CSG isosurface extraction
+- `marching_cubes_algorithm`, `oriented_cube_algorithm`, `meshing_algorithm` —
+  the pluggable mesher backends (`mc_tables.h` is a single-TU table header;
+  see the note in it before including it a second time)
+- `cluster` / `cell` / `cell_visitor` / `lattice` / `occupancy` — the spatial
+  cell/cluster meshing layer and its dirty-cell rebuild
+- `mesh_simplifier`, `mesh_indexed`, `mesh_transform`, `mesh_smooth`,
+  `mesh_build_utils`, `mesh_worker_pool` — post-mesh processing
+- `mesh_retopo` — autoremesher-backed retopology, compiled only under
+  `MATTER_HAVE_AUTOREMESHER`
+- `particle_culling`, `vertex_ao`, `fat_primitive`, `voxel_imposter`
+- `part_asset`, `material_registry`
 
-**"cannot connect to X server" error:**
-- Install VcXsrv or Xming on Windows
-- Or use Windows 11 with WSLg support
-- Or run with `DISPLAY=:0.0` environment variable
+GPU acceleration structures
 
-**Build failures:**
-- Ensure WSL2 is installed and updated
-- Install required packages: `sudo apt update && sudo apt install build-essential g++`
+- `blas_manager`, `tlas_manager` — these own `Texture2D`/`Shader` and are the
+  GL upload path, distinct from the pure structures in SpatialQueryLib
+  (`bvh.cpp`, `bvh_analyzer.cpp`), which is where the BVH build itself lives
 
-### Performance
+## Shaders (the reason this Makefile still exists)
 
-**Low frame rates:**
-- Ensure GPU drivers are up to date
-- Check that hardware acceleration is enabled
-- Monitor GPU usage with system tools
+`make` here does **not** build a binary. The default goal is `all: shaders`,
+which runs `src/shader_preprocessor.cpp` to expand the `#include`s in
+`shaders/raytrace_tlas_blas.fs` into the **committed**
+`shaders/raytrace_tlas_blas_processed.fs`. MatterEngine3's embedded-shaders
+step reads that file directly out of this directory
+(`MSL_SHADER_DIR` in `MatterEngine3/Makefile`).
 
-**Memory issues:**
-- Large scenes may require more RAM
-- Consider reducing triangle counts for testing
-- Monitor memory usage with built-in profiling
+Because the processed shader is committed, `clean` deliberately does not
+delete it — removing it breaks every downstream build until a toolchain that
+can rebuild the preprocessor is available. Regenerate deliberately with:
 
-## Development
-
-### Adding New Shapes
-
-1. Implement triangle generation in `BLASFactory` namespace
-2. Register with BLAS manager using `register_*` functions
-3. Add to scene using TLAS manager's `draw()` method
-
-### Custom Materials
-
-Materials are identified by 32-bit IDs passed to the `draw()` method. Implement material handling in your ray tracing shaders.
-
-### Shader Modification
-
-Ray tracing shaders are in `shaders/` directory:
-- `raytrace_tlas_blas.fs`: Main ray tracing fragment shader
-- `bvh_tlas_common.glsl`: Common BVH traversal functions
-
-After modifying shaders, run `make shaders` to reprocess includes.
-
-## Performance Statistics
-
-The application provides detailed performance metrics:
-
-```
-=== BLAS Manager Statistics ===
-Unique BLAS count: 3
-Total triangles: 974
-Total nodes: 1934
-Hash buckets: 3 used, max chain length: 1
-
-=== TLAS Manager Statistics ===
-Draw records: 2/50
-Matrix stack depth: 1
-Built TLAS: 2 instances, 3 nodes
+```bash
+make -C libs/MatterSurfaceLib regen-shaders   # review the diff before committing
+make -C libs/MatterSurfaceLib platform        # print the platform-detection state
 ```
 
-## License
+Everything else in the Makefile (LDFLAGS/LDLIBS, the raylib build plumbing,
+the `TARGET=windows-native` / `NO_MINGW` / `WSL_LINUX` switches) is inert
+leftover from the deleted app; only `$(PREPROCESSOR)`'s `CXXFLAGS`/`BUILD_DIR`
+are still live.
 
-This project is part of the MatterEngine2 framework. See the main project LICENSE for details.
+## Tests
+
+`tests/Makefile` has one target per suite; run them individually:
+
+```bash
+make -C libs/MatterSurfaceLib/tests run-simp     # mesh_simplifier
+make -C libs/MatterSurfaceLib/tests run-blas     # blas_manager refcounting
+make -C libs/MatterSurfaceLib/tests run-cell     # cell bounds
+make -C libs/MatterSurfaceLib/tests run-cont     # mesh continuity
+make -C libs/MatterSurfaceLib/tests run-reg      # material_registry
+make -C libs/MatterSurfaceLib/tests run-tint     # blas tinting
+make -C libs/MatterSurfaceLib/tests run-cull     # particle_culling
+make -C libs/MatterSurfaceLib/tests run-ao       # vertex_ao
+make -C libs/MatterSurfaceLib/tests run-par      # parallel meshing
+make -C libs/MatterSurfaceLib/tests run-cube     # oriented_cube_algorithm
+make -C libs/MatterSurfaceLib/tests run-part     # part_asset round-trip
+make -C libs/MatterSurfaceLib/tests run-vox      # voxel_imposter
+make -C libs/MatterSurfaceLib/tests run-midx     # mesh_indexed
+make -C libs/MatterSurfaceLib/tests run-mtx      # mesh_transform
+make -C libs/MatterSurfaceLib/tests run-retopo   # mesh_retopo (needs autoremesher)
+make -C libs/MatterSurfaceLib/tests run-smooth   # mesh_smooth
+make -C libs/MatterSurfaceLib/tests run          # minimal_cell_test
+```
+
+`tests/cell_tests.cpp` and `tests/simple_cell_tests.cpp` are not wired to any
+target; `tests/simp_perf_probe.cpp` is a hand-run benchmark, not a suite.
+
+`build-all.sh` builds this project with `WSL_LINUX=1`.

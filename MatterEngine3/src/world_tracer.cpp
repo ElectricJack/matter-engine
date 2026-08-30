@@ -1,5 +1,33 @@
 // world_tracer.cpp — GL-free CPU tracer over the placed world (raycast query API).
 // See world_tracer.h for public API.
+//
+// File layout, top to bottom:
+//   1. anonymous namespace — matrix/ray math helpers (invert4x4, xform_point,
+//      xform_vec, aabb_hit) and the internal record types (BLASSlice,
+//      LoadedTracePart, IBVHNode, ExpandedInst);
+//   2. WorldTracer::Impl — the whole mutable state of a built tracer, plus part
+//      loading, instance expansion, BVH build and traversal;
+//   3. the thin public methods, which mostly forward into Impl.
+//
+// Lifecycle. All state lives in `impl_`, and build() REPLACES it wholesale —
+// the part cache, the expanded instance table and the BVH are rebuilt from
+// scratch on every build, and the previous decode results are dropped with the
+// old Impl. Nothing is incremental.
+//
+// Two levels of acceleration, do not confuse them: each part's own triangle BVH
+// comes prebuilt out of the artifact (load_v2) or is borrowed from the caller's
+// resident BLASManager, and this file adds a second, instance-level BVH over the
+// world AABBs of the placed instances.
+//
+// Ownership. Geometry is either OWNED (disk path: a private BLASManager per
+// part) or BORROWED (resident path: raw pointers into the caller's manager).
+// The borrowed case is the sharp one — see the ResidentSource contract in
+// world_tracer.h. Within a build, part records are held by unique_ptr in a map
+// and NormalMats in a deque, so pointers to them stay valid as both grow.
+//
+// Threading. build() is the only mutator; after it returns, trace()/occluded()
+// keep every piece of traversal state on the stack, so concurrent queries on a
+// built tracer are fine while a concurrent build() is not.
 #include "world_tracer.h"
 
 #include "part_asset_v2.h"        // load_v2, cache_path_flat, cache_path_resolved, ChildInstance, LodLevels
@@ -13,6 +41,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -109,11 +138,26 @@ static bool aabb_hit(const float bmin[3], const float bmax[3],
 // Per-hash loaded geometry
 // ---------------------------------------------------------------------------
 
+// One traceable BLAS entry of a part. A borrowed, non-owning view: `entry` may
+// point either into the LoadedTracePart's own BLASManager (disk path) or into
+// the CALLER's manager (resident path), and this struct never distinguishes the
+// two — lifetime is the enclosing LoadedTracePart's problem, and in the resident
+// case the caller's (see ResidentSource in world_tracer.h).
+// A part usually contributes several slices: load_part selects the entries of
+// the COARSEST LOD level, not the full-detail mesh.
 struct BLASSlice {
     // Pointer into the owning BLASManager's entry list.
     const BLASManager::BLASEntry* entry = nullptr;
 };
 
+// One entry of the per-build part cache (Impl::parts_, keyed by resolved hash).
+// A part is loaded at most once per build no matter how many times it is placed,
+// and a FAILED load is cached too — the record is inserted with ok=false so the
+// same missing artifact is not re-attempted for every instance.
+// `local_mn`/`local_mx` are in PART-LOCAL space and are computed by finish_part
+// from the triangles actually selected into `slices`, so they bound what will be
+// traced rather than what the file contains. A part that loads with no triangles
+// is a valid degenerate: inverted (empty) bounds, ok=true.
 struct LoadedTracePart {
     // Owning managers — kept alive for the tracer's lifetime. BOTH NULL when
     // the part came from the resident source: the slices then point into the
@@ -137,6 +181,13 @@ struct LoadedTracePart {
 // Instance BVH node (int32 children, leaf when count > 0)
 // ---------------------------------------------------------------------------
 
+// A node of the tracer's own INSTANCE-level BVH, over the world AABBs of the
+// expanded instances (the header explains why MSL's TLAS could not be reused:
+// its instance index and node links are too narrow for meadow scale).
+// Indexing, and the indirection matters: `left`/`right` index Impl::ibvh_, while
+// `first`/`count` index Impl::ibvh_order_ — a permutation array — and only that
+// array's entries index Impl::expanded_. Bounds are world-space. Built by
+// median split with leaves of at most 4 instances.
 struct IBVHNode {
     float bmin[3], bmax[3];
     int left  = 0;   // index of left child  (internal only)
@@ -149,6 +200,14 @@ struct IBVHNode {
 // Expanded instance record
 // ---------------------------------------------------------------------------
 
+// One placed leaf: a loaded part plus where it sits in the world. The
+// compositional fallback expands a .part's children into further ExpandedInsts,
+// so this table is the POST-expansion instance list the public
+// expanded_instance() API exposes and the instance BVH is built over.
+// All three pointers/arrays are borrowed or precomputed at expansion time:
+// `part` points into Impl::parts_ (stable — unique_ptr values in a map), `nm`
+// into Impl::nm_pool_ (a deque, so growth never invalidates it), and `inv` is
+// always a usable matrix — invert4x4 writes identity if inversion fails.
 struct ExpandedInst {
     const LoadedTracePart* part = nullptr;
     uint64_t part_hash = 0;          // hash of the part (for expanded_instance())
@@ -166,6 +225,17 @@ struct ExpandedInst {
 
 namespace world_tracer {
 
+// Everything a built tracer knows. Constructed fresh by every WorldTracer::build
+// call, so it is also the unit of invalidation: dropping the old Impl drops the
+// part cache, the instance table, the NormalMat pool and the BVH together.
+//
+// Build order is load-bearing — expand_instance() fills parts_/nm_pool_/
+// expanded_ and grows the world bounds, then build_ibvh() runs over the finished
+// expanded_ (it indexes it by value position), and only then is built_ set.
+// Queries must not run against a partially built Impl.
+//
+// After build() returns, nothing here mutates: trace() and its helpers are const
+// and hold all traversal state on the stack.
 struct WorldTracer::Impl {
     // Part cache (by resolved hash)
     std::unordered_map<uint64_t, std::unique_ptr<LoadedTracePart>> parts_;
@@ -184,8 +254,6 @@ struct WorldTracer::Impl {
     ResidentSource resident_source_;
     size_t resident_hits_ = 0;
     size_t disk_loads_ = 0;
-    // part_hash → first expanded instance index (for O(1) lookup by hash)
-    std::unordered_map<uint64_t, size_t> hash_to_first_;
 
     // ---- Loading ----
 
@@ -210,11 +278,44 @@ struct WorldTracer::Impl {
             }
         }
         ltp->ok = true;
+        // Same env switch as the [tracer.build] line in matter_engine.cpp: one
+        // line per distinct part hash, naming the geometry that was actually
+        // selected into `slices`. The selection is the coarsest ladder rung,
+        // so "the tracer sees a different mesh than the screen does" is the
+        // normal state and this is how you see which mesh that is.
+        if (std::getenv("MATTER_TRACER_PROFILE")) {
+            size_t tris = 0;
+            for (const BLASSlice& s : ltp->slices)
+                if (s.entry) tris += s.entry->triangles.size();
+            std::fprintf(stderr,
+                "[tracer.part] %016llx slices=%zu tris=%zu flat=%d children=%zu "
+                "bounds=(%.2f %.2f %.2f)..(%.2f %.2f %.2f)\n",
+                (unsigned long long)hash, ltp->slices.size(), tris,
+                (int)ltp->loaded_flat, ltp->children.size(),
+                ltp->local_mn[0], ltp->local_mn[1], ltp->local_mn[2],
+                ltp->local_mx[0], ltp->local_mx[1], ltp->local_mx[2]);
+        }
         LoadedTracePart* raw = ltp.get();
         parts_.emplace(hash, std::move(ltp));
         return raw;
     }
 
+    // Get (or load, once) the geometry for one resolved part hash. Returns null
+    // for a part that cannot be loaded, and caches that failure so later
+    // placements of the same hash cost nothing and do NOT re-report through
+    // `err` — only the first attempt writes a message.
+    //
+    // Source order: the resident callback first (counts into resident_hits_,
+    // borrows the caller's entries, allocates nothing); otherwise disk
+    // (disk_loads_), which decodes the artifact into a private BLASManager plus
+    // a TLASManager(65536) owned by the record — genuinely expensive, and the
+    // reason ResidentSource exists. On the disk path the scratch dir is checked
+    // before cache_root, and the flat artifact before the compositional .part.
+    //
+    // LOD choice: it traces the COARSEST level's entries (lods.back()) and falls
+    // back to every entry only when that selection is empty. So a raycast query
+    // hits a coarser surface than the renderer draws — expect small
+    // disagreements against on-screen geometry rather than exact agreement.
     LoadedTracePart* load_part(const std::string& cache_root,
                                uint64_t hash, std::string& err) {
         auto it = parts_.find(hash);
@@ -317,10 +418,33 @@ struct WorldTracer::Impl {
 
     // ---- Instance expansion (recursive, depth-capped) ----
 
+    // Recursion cap for compositional child expansion. A part nested deeper
+    // than this is dropped (with a diagnostic — see expand_instance).
+    static constexpr int kMaxExpandDepth = 8;
+
+    // Place one part at `world_xf` (row-major), appending to expanded_ and
+    // growing the world bounds. Children are expanded recursively only when the
+    // part came from a COMPOSITIONAL source; a flat artifact already carries the
+    // merged subtree, so its (empty) child table is not walked. A part that has
+    // both its own slices and children emits both.
+    //
+    // Past kMaxExpandDepth the subtree is dropped, but it REPORTS: `err` is set so the
+    // caller's warn-and-continue path names the hash that was cut off. A part
+    // that fails to load or carries no triangles still contributes nothing
+    // silently. Errors from children are printed and cleared here, so a partial
+    // world is the normal outcome rather than a build failure.
     void expand_instance(const std::string& cache_root,
                          uint64_t hash, const float* world_xf,
                          int depth, std::string& err) {
-        if (depth > 8) return;
+        if (depth > kMaxExpandDepth) {
+            char buf[128];
+            std::snprintf(buf, sizeof buf,
+                          "expansion depth cap %d exceeded; subtree under part "
+                          "0x%llx dropped",
+                          kMaxExpandDepth, (unsigned long long)hash);
+            err = buf;
+            return;
+        }
 
         LoadedTracePart* part = load_part(cache_root, hash, err);
         if (!part) return;
@@ -394,6 +518,16 @@ struct WorldTracer::Impl {
 
     // ---- Instance BVH construction (median-split, leaf ≤ 4) ----
 
+    // Build the instance BVH over indices[first, first+count) and return the new
+    // node's index into ibvh_. PERMUTES `indices` in place (that array becomes
+    // ibvh_order_, which leaf ranges then index into) and appends to ibvh_, so
+    // an IBVHNode reference must never be held across the recursive calls — the
+    // vector can reallocate underneath it, which is why the code re-indexes
+    // ibvh_[node_idx] after recursing.
+    //
+    // Split policy: midpoint of the widest centroid axis, degenerate splits
+    // falling back to a half-and-half cut; leaves at count <= 4. No SAH, and no
+    // spatial ordering guarantee for traversal.
     int build_ibvh(std::vector<int>& indices, int first, int count) {
         int node_idx = (int)ibvh_.size();
         ibvh_.push_back(IBVHNode{});
@@ -457,6 +591,21 @@ struct WorldTracer::Impl {
 
     // ---- Ray vs one instance ----
 
+    // Intersect one placed instance, walking every slice of its part. `best_t`
+    // is in/out: it comes in as the current closest world-space hit distance and
+    // is only lowered. Returns true iff this instance improved it, in which case
+    // best_normal (world space, already flipped to face the ray origin) and
+    // best_mat have been overwritten too; on false all three outputs are
+    // untouched.
+    //
+    // The ray is transformed into part-local space WITHOUT renormalizing the
+    // direction — that is deliberate, and it is what keeps `t` measured in the
+    // caller's world units so distances stay comparable across instances with
+    // different scales. It also means the local direction is not unit length,
+    // which the BVH tolerates.
+    //
+    // best_mat is the registry index, or -1 when the entry carries no per-tri
+    // extras.
     bool intersect_instance(const ExpandedInst& ei,
                             const float worldO[3], const float worldD[3],
                             float& best_t,
@@ -537,6 +686,15 @@ struct WorldTracer::Impl {
 
     // ---- Recursive instance BVH traversal ----
 
+    // Depth-first traversal of the instance BVH, narrowing best_t as it goes and
+    // recording the winning instance in best_inst (an index into expanded_, left
+    // untouched on a miss). `order` is ibvh_order_: leaf ranges index it, and it
+    // indexes expanded_.
+    //
+    // Children are visited in fixed left-then-right order, NOT front-to-back
+    // along the ray, so pruning depends entirely on best_t shrinking as hits are
+    // found. `rD_world` is the componentwise reciprocal of the world direction,
+    // computed once by the caller with a large sentinel for near-zero components.
     void traverse_ibvh(int node_idx,
                        const std::vector<int>& order,
                        const float worldO[3], const float worldD[3],
@@ -610,12 +768,6 @@ bool WorldTracer::build(const std::string& cache_root,
             MATTER_LOGW("tracer", "world_tracer: warning: %s\n", err.c_str());
             err.clear();
         }
-    }
-
-    // Build hash → first expanded index map for O(1) lookups.
-    im.hash_to_first_.reserve(im.expanded_.size());
-    for (size_t i = 0; i < im.expanded_.size(); ++i) {
-        im.hash_to_first_.emplace(im.expanded_[i].part_hash, i);
     }
 
     // Handle empty case
@@ -692,18 +844,6 @@ bool WorldTracer::occluded(const float origin[3], const float dir[3],
     return did_hit && hit.t > 1e-4f && hit.t < max_t;
 }
 
-void WorldTracer::world_bounds(float mn[3], float mx[3]) const {
-    if (!impl_ || !impl_->built_) {
-        mn[0]=mn[1]=mn[2]=-0.5f; mx[0]=mx[1]=mx[2]=0.5f; return;
-    }
-    mn[0]=impl_->world_mn_[0]; mn[1]=impl_->world_mn_[1]; mn[2]=impl_->world_mn_[2];
-    mx[0]=impl_->world_mx_[0]; mx[1]=impl_->world_mx_[1]; mx[2]=impl_->world_mx_[2];
-}
-
-size_t WorldTracer::instance_count() const {
-    return impl_ ? impl_->expanded_.size() : 0;
-}
-
 size_t WorldTracer::expanded_instance_count() const {
     return impl_ ? impl_->expanded_.size() : 0;
 }
@@ -712,17 +852,6 @@ bool WorldTracer::expanded_instance(size_t idx, uint64_t& part_hash,
                                     float transform[16]) const {
     if (!impl_ || idx >= impl_->expanded_.size()) return false;
     const ExpandedInst& ei = impl_->expanded_[idx];
-    part_hash = ei.part_hash;
-    std::memcpy(transform, ei.transform, 64);
-    return true;
-}
-
-bool WorldTracer::expanded_instance_by_hash(uint64_t hash, uint64_t& part_hash,
-                                            float transform[16]) const {
-    if (!impl_) return false;
-    auto it = impl_->hash_to_first_.find(hash);
-    if (it == impl_->hash_to_first_.end()) return false;
-    const ExpandedInst& ei = impl_->expanded_[it->second];
     part_hash = ei.part_hash;
     std::memcpy(transform, ei.transform, 64);
     return true;

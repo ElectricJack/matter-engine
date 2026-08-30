@@ -1,5 +1,12 @@
 #pragma once
 
+// MatterEditor/src/gizmo.h
+//
+// Drawn over the 3D viewport by the editor's UI pass, once per frame, after
+// ImGuizmo::BeginFrame(). All state that survives a frame is the one enum in
+// GizmoState — the handle's position comes from the selection and the
+// FieldCommands getters every frame, never from a cache here.
+//
 // Task 10 — Transform gizmo: renders an ImGuizmo translate/rotate/scale
 // handle over the viewport for the primary selected ECS entity and writes
 // manipulated values back through FieldCommands (LocalTransform.translation
@@ -13,8 +20,12 @@
 
 namespace viewer {
 
+// Which handle the gizmo shows. Maps 1:1 onto ImGuizmo::TRANSLATE / ROTATE /
+// SCALE; the mapping lives in gizmo.cpp so ImGuizmo.h stays out of this header.
 enum class GizmoOperation { Translate, Rotate, Scale };
 
+// The gizmo's entire persistent state. Owned by the editor's Ui and changed
+// only by the toolbar buttons and update_gizmo_hotkeys().
 struct GizmoState {
     GizmoOperation operation = GizmoOperation::Translate;
 };
@@ -31,6 +42,28 @@ struct GizmoState {
 //   - the primary selection is a BakedRoot (gizmo only edits ECS entities)
 //
 // Must be called inside the ImGui frame, after ImGuizmo::BeginFrame().
+//
+// Also returns false when the primary entity has no readable
+// LocalTransform.translation/rotation (a missing scale defaults to 1,1,1).
+//
+// Hierarchy: the handle is placed at the entity's WORLD transform —
+// LocalTransform composed with the parent matrix from
+// FieldCommands::get_parent_world_matrix — and the manipulated result is
+// carried back through that parent's inverse, so only LOCAL values are ever
+// written. With that closure unset (or a singular parent matrix) the entity is
+// treated as parentless.
+//
+// A drag writes back only the field its operation edits: translate writes
+// LocalTransform.translation, rotate writes .rotation, scale writes .scale.
+// The other two are left exactly as authored.
+//
+// Multi-selection: a TRANSLATE drag fans the primary's WORLD-space translation
+// delta out to every other selected entity, converted into that entity's own
+// parent space and added to its LocalTransform.translation. Rotate and scale
+// affect the primary only.
+//
+// The viewport_* arguments are the 3D view's rect in ImGui display
+// coordinates, matching what ImGuizmo::SetRect expects.
 bool draw_gizmo(GizmoState& state, const SelectionSet& selection,
                 const FieldCommands& fields, const matter::CameraDesc& camera,
                 matter::scene::SimulationMode mode, float viewport_x,

@@ -7,6 +7,35 @@
 // this in via the macros. (The library archive may still be built; the point of
 // the switch is that call sites emit no references to it.)
 
+// libs/ProfileLib/src/profile.cpp
+//
+// Threading model of the single `Registry`, which is the thing to get right
+// before touching anything here. Three disjoint groups of state:
+//
+//  1. Written from ANY thread, always through relaxed atomics, never under a
+//     lock: `zone_ns[]`, `counter_val[]`, `zone_parent[]`, `zone_lane[]`,
+//     `lane_threads[]`, `enabled_flag`. Relaxed is sufficient because nothing
+//     here orders anything else — a nanosecond landing in frame N or N+1 is an
+//     accepted ambiguity, not a race to be fixed.
+//  2. Guarded by an explicit mutex: the name tables (`register_mutex`,
+//     `counter_register_mutex`) and the FrameRecord ring (`ring_mutex`), so an
+//     editor panel or an issue-report dump can read the history from another
+//     thread while frames keep landing.
+//  3. RENDER-THREAD ONLY, plain non-atomic members with no lock at all:
+//     `ring_head`, `ring_count`, `frame_counter`, `last_mark_ns`,
+//     `have_last_mark`, the `pending_*` scene tags, and every `log_*` field.
+//     They are safe solely because `frame_mark` and `set_frame_counts` are
+//     called from one thread. `frame_index()` reads `frame_counter` from
+//     wherever it is called, which is a benign unsynchronized read of a value
+//     that only ever increases.
+//
+// Per-thread state lives in two `thread_local`s (`t_lane`, `t_open_zone`, plus
+// `t_lane_counted`) rather than in the registry, which is what keeps scope
+// nesting on the render thread from ever tangling with a bake worker's.
+//
+// The registry is heap-allocated on first use and deliberately never freed: a
+// PROFILE_SCOPE can close during static destruction, and a destroyed registry
+// would be a use-after-free.
 #include "profile.h"
 
 #include <algorithm>
@@ -92,12 +121,28 @@ struct Registry {
     uint64_t log_frames_over_33ms = 0;
 };
 
+// Print interval for the MATTER_PROFILE_LOG reporter. Deliberately coarse: the
+// whole point of aggregating is that per-frame or per-item logging measurably
+// changes what is being measured (docs/sector-bake-time-findings-2026-07-30).
 constexpr int64_t kLogIntervalNs = 2000000000;  // 2 s
 
 // Periodic aggregate stderr report (MATTER_PROFILE_LOG). Accumulates the just-
 // swept record and, once per interval, prints per-zone ms/frame + %, per-frame
 // wall stats (avg/min/max + jitter), and counters, then resets. Called at the
 // tail of frame_mark on the render thread; no I/O on any other path.
+// Render-thread only (called at the tail of frame_mark) and a no-op unless
+// MATTER_PROFILE_LOG was set at startup.
+//
+// Reading the output:
+//   - Everything is per-frame AVERAGE over the interval, except `max` and
+//     `over33`, which are the whole point — see the spike note on the fields.
+//   - The 33 ms over-budget threshold is hard-coded, not derived from any
+//     configured budget.
+//   - Zone rows averaging under 5 us/frame are dropped, so a cheap-but-hot zone
+//     can be invisible here while still showing in the trace.
+//   - The first call only latches the timestamp and returns, so nothing prints
+//     until one full interval after the first marked frame.
+// Counters are printed as events per frame, not totals.
 void log_accumulate_and_maybe_print(Registry& r, const FrameRecord& record,
                                     uint64_t t_ns) {
     if (!r.log_enabled) return;
@@ -154,6 +199,13 @@ void log_accumulate_and_maybe_print(Registry& r, const FrameRecord& record,
     r.log_last_ns = t_ns;
 }
 
+// The one registry, created on first use by a function-local static (so
+// initialization is thread-safe) and intentionally leaked — see the file
+// header. Both environment variables are parsed HERE and therefore exactly
+// once per process, so setenv after any profile call has no effect.
+//
+// The enable test is "not the character '0'", so MATTER_PROFILE=false, =off or
+// =no all read as ENABLED. Only an explicit 0 turns it off.
 Registry& reg() {
     static Registry* r = [] {
         Registry* fresh = new Registry();
@@ -185,6 +237,14 @@ void set_enabled(bool on) {
     reg().enabled_flag.store(on, std::memory_order_relaxed);
 }
 
+// Intern a zone name. Always takes the mutex and always linear-scans the
+// existing names, so this is O(zones) under a global lock on every call — the
+// PROFILE_* macros cache the result in a function-local static precisely so it
+// runs once per call site.
+//
+// Two silent behaviors to know about: names are truncated to 63 characters, and
+// once the table is full every further name returns the LAST slot, merging all
+// of them into one zone rather than failing or growing.
 int register_zone(const char* name) {
     if (name == nullptr) name = "?";
     Registry& r = reg();
@@ -214,6 +274,11 @@ int zone_count() { return reg().count.load(std::memory_order_acquire); }
 thread_local int t_lane = kLaneRender;
 thread_local bool t_lane_counted = false;
 
+// Tag the calling thread's lane. Out-of-range values fall back to the render
+// lane rather than being rejected. The thread-count bump happens on the FIRST
+// call only: re-tagging a thread later changes where its future zones are filed
+// but leaves the counts as they were, and nothing ever decrements them when a
+// thread exits.
 void set_thread_lane(int lane) {
     if (lane < 0 || lane >= kLaneCount) lane = kLaneRender;
     t_lane = lane;
@@ -234,6 +299,12 @@ int lane_thread_count(int lane) {
     return reg().lane_threads[lane].load(std::memory_order_relaxed);
 }
 
+// Hot path: two relaxed atomic ops and nothing else — no lock, no allocation,
+// no formatting, no I/O. Note the lane CAS runs on EVERY deposit, not only the
+// first; it is a relaxed compare_exchange that fails cheaply once the lane is
+// set. Deliberately unconditional on `enabled()`, because `Scope` already
+// gates on that and direct depositors (GPU readback, worker jobs) want their
+// samples recorded whenever they have them.
 void add_ns(int zone, uint64_t ns) {
     if (zone < 0 || zone >= kMaxZones) return;
     Registry& r = reg();
@@ -251,6 +322,11 @@ void add_ns(int zone, uint64_t ns) {
 // bake-worker nesting never cross.
 thread_local int t_open_zone = -1;
 
+// Push `zone` onto this thread's (one-deep, by cursor) open-scope tracking and
+// return the zone it displaced, which the caller must hand back to
+// `scope_exit`. The `previous != zone` guard keeps a directly recursive scope
+// from becoming its own parent — the accumulated TIME still double-counts
+// across recursion levels, only the tree shape is protected.
 int scope_enter(int zone) {
     const int previous = t_open_zone;
     if (zone >= 0 && zone < kMaxZones && previous != zone) {
@@ -309,6 +385,18 @@ void set_frame_counts(uint64_t instances, uint64_t clusters, uint64_t parts,
     r.pending_commands = commands;
 }
 
+// Close the frame. Two things worth knowing beyond the header's description:
+//
+//  - The sweep runs even when the profiler is DISABLED. That is the point: a
+//    disable/enable toggle must not carry a stale partial sum into the first
+//    live frame. So frame_index and wall_ns keep advancing while disabled, and
+//    the records are simply all-zero for their zones.
+//  - It reads `zone_count()` once, up front. A zone registered by another
+//    thread mid-sweep is not swept this frame; its accumulator survives and is
+//    swept next frame. Nothing is lost, it is just attributed one frame late.
+//
+// Single-caller by contract: `ring_head`, `frame_counter`, `last_mark_ns` and
+// every `log_*` field are written here without a lock.
 void frame_mark() {
     Registry& r = reg();
     const uint64_t t = now_ns();
@@ -360,6 +448,17 @@ int copy_recent(FrameRecord* out, int max) {
     return n;
 }
 
+// Snapshot the ring under the lock, then compute outside it — the copy is
+// deliberate so a panel refresh does not hold the ring mutex across a sort.
+// Allocates two vectors and sorts one, so this is O(n log n) over up to
+// kFrameHistory samples: a refresh call, not a per-frame one.
+//
+// `p99_ms` is nearest-rank on the sorted samples, which over a few hundred
+// frames means "roughly the worst few" rather than a true 99th percentile.
+// `smoothness` compares that tail against the median, so it reads 1.0 for a
+// perfectly even frame time and falls off as hitches appear — an average frame
+// time alone cannot see a hitch, which is the whole reason it exists.
+// Returns the all-zero default (samples == 0) for an empty ring.
 FrameStats frame_stats(double budget_ms) {
     FrameStats stats;
     Registry& r = reg();
@@ -420,6 +519,23 @@ int zone_trace_tid(int zone) {
 }
 }  // namespace
 
+// Write the resident history as Chrome-trace / Perfetto JSON. Callable from any
+// thread while frames continue: the history comes from `copy_recent`, which
+// takes the ring lock, so the snapshot is consistent.
+//
+// Costs a ~0.7 MB temporary (kFrameHistory whole FrameRecords) plus the file
+// write, so it belongs on exit or at issue-report time, never in a frame.
+//
+// Sharp edges:
+//   - Zone and counter names are printf'd straight into JSON string literals
+//     with NO escaping. A zone name containing a quote or a backslash produces
+//     a file chrome://tracing will refuse to load. Keep zone names to plain
+//     identifiers and dots.
+//   - Zones within a frame are laid end to end from the frame start per lane,
+//     which is a composition view, not a real timeline — the accumulators carry
+//     durations only, not start stamps.
+//   - Returns false only when the file cannot be opened. An empty or
+//     never-enabled history still writes a valid, empty trace.
 bool dump_chrome_trace(const char* path) {
     if (path == nullptr) return false;
     std::FILE* f = std::fopen(path, "wb");

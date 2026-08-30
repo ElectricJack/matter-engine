@@ -35,6 +35,10 @@ struct ScopedDispatch {
     ScopedDispatch& operator=(const ScopedDispatch&) = delete;
 };
 
+// True if `b` is anywhere on THIS thread's dispatch_stack(), i.e. the
+// calling code is running (possibly indirectly, via a nested emit) inside
+// that subscription's own callback. This is the self-wait test
+// SubscriptionSet::unsubscribe_all_and_wait() uses before blocking.
 bool is_dispatching_on_this_thread(const SubscriptionBlock* b);
 
 // Thread-local handler-emitted-event nesting depth (S I.6: all-build

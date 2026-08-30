@@ -90,28 +90,33 @@
 // height with the trunk missing entirely: the reported "tall trees shrink at
 // the impostor switch". Cutting cell resolution was not free; it cost that.
 //
-// The cutout half is fixed at runtime (kImpostorAlphaCutout, 0.25). The cell is
-// now restored and doubled outright, because the reason it was sized for ~10 px
-// no longer holds: impostors are being pulled deliberately CLOSER (the mesh
-// rung cap, MATTER_IMPOSTOR_DISTANCE), so they are drawn much larger than the
-// handover this atlas was budgeted for.
+// The cutout half is fixed at runtime (kImpostorAlphaCutout, 0.25). The cell
+// was first restored to 32 px and has since become a SETTING (see "CELL
+// RESOLUTION IS A SETTING" below) defaulting to 128, because the reason it was
+// sized for ~10 px no longer holds: impostors are being pulled deliberately
+// CLOSER (the mesh rung cap, MATTER_IMPOSTOR_DISTANCE), so they are drawn much
+// larger than the handover this atlas was budgeted for.
 //
-//                v1               rings            now
-//   cells        4x4 of 32x32     8x8 of 16x16     8x8 of 32x32
-//   views        16               48               48
-//   layer        128 x 128        128 x 128        256 x 256
-//   bytes        128 KiB          128 KiB          512 KiB
+//                v1               rings            restored     now (default)
+//   cells        4x4 of 32x32     8x8 of 16x16     8x8 of 32x32  8x8 of 128x128
+//   views        16               48               48            48
+//   layer        128 x 128        128 x 128        256 x 256     1024 x 1024
+//   bytes        128 KiB          128 KiB          512 KiB       8 MiB
 //
-// So 4x the v1 budget for 3x the views at the ORIGINAL cell resolution. That is
-// a real cost and it is deliberate: the atlas already cost more bytes than the
-// mesh it replaces (see the note above), and it is a per-PART fixed cost
-// amortised over every instance drawn, so it pays in a scatter world — which is
-// exactly where impostors are worth having at all.
+// ("bytes" is both layers, shade + tint, for ONE part's atlas.)
+//
+// So 64x the v1 budget for 3x the views at 4x the original cell resolution.
+// That is a real cost and it is deliberate: the atlas already cost more bytes
+// than the mesh it replaces (see the note above), and it is a per-PART fixed
+// cost amortised over every instance drawn, so it pays in a scatter world —
+// which is exactly where impostors are worth having at all. The GPU-side total
+// (one preallocated array over kImpostorMaxSlots) is tabulated below; turn
+// MATTER_IMPOSTOR_CELL_PX down if that number does not fit.
 //
 // Azimuth count is deliberately UNCHANGED at 16: it is the binding constraint
 // for ROTATION (see VIEWS above), and spending atlas on elevation or cells
 // never fixes an azimuth artefact. 16 cells of the 64 remain unused; the next
-// feature wanting atlas space should take those before touching kCellPx.
+// feature wanting atlas space should take those before touching cell_px().
 //
 // ---------------------------------------------------------------------------
 // WHAT IS IN THE ATLAS
@@ -218,11 +223,15 @@ constexpr uint32_t kSuperSample = 4;                  // per axis, per texel
 //      geometry, not just its texels.
 constexpr uint32_t kDefaultCellPx = 128;
 
-// Power of two in [16, 256]. Power-of-two keeps layer_px (cell * 8) a power of
-// two, which is what every GPU wants for a sampled image; the ceiling is the
-// 4 GiB atlas above, which is already past useful.
+// Power of two in [kMinCellPx, kMaxCellPx]. Power-of-two keeps layer_px
+// (cell * 8) a power of two, which is what every GPU wants for a sampled image;
+// the ceiling is the 4 GiB atlas above, which is already past useful. The floor
+// is named because guard_band() below is only well-formed above 2 * kGuardTexels
+// and a static_assert pins that against this bound rather than a literal.
+constexpr long kMinCellPx = 16;
+constexpr long kMaxCellPx = 256;
 constexpr bool valid_cell_px(long v) {
-    return v >= 16 && v <= 256 && (v & (v - 1)) == 0;
+    return v >= kMinCellPx && v <= kMaxCellPx && (v & (v - 1)) == 0;
 }
 
 // Read per call and cached in NO static, the same discipline (and for the same
@@ -288,10 +297,13 @@ constexpr uint32_t view_index(uint32_t azimuth, uint32_t elevation) {
 
 static_assert(kGridDim * kGridDim >= kViews, "view grid too small");
 static_assert(valid_cell_px(kDefaultCellPx), "default cell size is out of range");
-// The margin derivation is only >= 1 texel while the band's denominator stays
-// positive and the cell is large enough to spend 2 texels an edge on. Both
-// hold across the whole valid range; this pins the bottom of it.
-static_assert(16 > 2 * 2, "guard band derivation degenerates at this cell size");
+// guard_band() is c / (c - 2 * kGuardTexels), whose margin works out to exactly
+// kGuardTexels at every c -- but only while the denominator stays positive, so
+// the smallest cell the setting accepts has to be strictly larger than the two
+// guard edges it spends. This pins that against the real constants; a future
+// edit to either kMinCellPx or kGuardTexels now trips it.
+static_assert(static_cast<float>(kMinCellPx) > 2.0f * kGuardTexels,
+              "guard band derivation degenerates at the smallest valid cell size");
 
 // Eligibility floor: the terminal mesh rung must carry at least this many
 // triangles for a 2-triangle billboard to be worth its atlas. See the header
@@ -308,6 +320,10 @@ struct ClusterImpostor {
     std::vector<uint8_t> atlas;           // atlas_bytes(): layer 0 then layer 1
 };
 
+// Every eligible cluster's impostor for ONE part -- the unit save/load moves
+// as a single bundle section. A part whose clusters all fall under
+// kMinTerminalTris produces an empty PartImpostor, which is written as nothing
+// at all (save returns false) and read back as LoadFailure::Absent.
 struct PartImpostor {
     std::vector<ClusterImpostor> clusters;
     bool empty() const { return clusters.empty(); }
@@ -365,6 +381,11 @@ uint64_t depicts_hash_finish(uint64_t h);
 // content-addressed discipline as cache_path_lods / cache_path_hints.
 std::string cache_path_impostor(uint64_t resolved_hash);
 
+// Serializes `in` into the part bundle's IMPO section at `path`, stamped with
+// (part_hash, depicts_hash) for load() to validate against. Returns false
+// without writing when there is nothing to write (no clusters) or when a
+// cluster's atlas is not exactly atlas_bytes() long -- i.e. was baked at a
+// different cell resolution than the one in force now.
 bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
           const PartImpostor& in);
 
@@ -376,7 +397,11 @@ bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
 enum class LoadFailure : uint8_t {
     None = 0,
     Absent,       // no sidecar (a part with no eligible cluster: not an error)
-    Open,         // present but unreadable
+    Open,         // the bundle's directory LISTS an impostor section but the
+                  // container would not verify -- bit rot in this section or in
+                  // another one, since a bundle parses all-or-nothing. Distinct
+                  // from Absent on purpose: one is routine, this is a damaged
+                  // cache. See load()'s note for how the two are told apart.
     Header,       // bad magic
     Version,      // written by a different impostor format
     Identity,     // part hash mismatch (sidecar belongs to another part)

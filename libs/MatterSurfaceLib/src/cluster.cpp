@@ -1,3 +1,33 @@
+// libs/MatterSurfaceLib/src/cluster.cpp
+//
+// A Cluster owns one rigid body of "matter": a flat array of StaticParticles in
+// cluster-LOCAL space, a uniform grid of Cells built lazily over them, and the
+// pipeline that turns dirty cells into meshes, BLASes and TLAS instances.
+//
+// Structure
+// - `particles_` is append-only during authoring; a particle's index is its
+//   identity and is what Cells store in `material_particle_indices`.
+// - `cells_` owns every Cell; `cell_spatial_hash_` is a lookup index into it,
+//   keyed by cell CENTRE, and holds raw `Cell*` borrowed from `cells_`. Cells
+//   are created on demand and never removed, so those pointers stay valid for
+//   the cluster's lifetime.
+// - `no_mesh_cells_` is the set of packed integer coordinates known to be
+//   fully interior: those cells are cleared instead of meshed.
+// - `carve_particles_` are subtractive (smooth CSG); they are distributed to
+//   cells with the same halo test as additive particles so the carved field
+//   stays continuous across cell boundaries.
+//
+// Threading
+// - `mesh_pool_` is a persistent MeshWorkerPool, sized to hardware
+//   concurrency - 1 at construction so the main thread stays responsive, with
+//   one `SurfaceScratch` per worker. Only the middle phase of
+//   `rebuild_dirty_cells` runs on it; everything else -- particle gathering,
+//   BLAS release, mesh commit, TLAS rebuild -- is main-thread work.
+// - Cluster itself has no locking and is not safe to mutate concurrently.
+//
+// Coordinates and units: positions are cluster-local metres. `position_` /
+// `rotation_` place the cluster in the world; `local_to_world` applies them.
+// `add_to_tlas` bakes that same placement into every instance transform.
 #include "../include/cluster.h"
 #include "../include/cell.h"
 #include "../include/tlas_manager.hpp"
@@ -75,11 +105,6 @@ mm::Vec3 Cluster::local_to_world(const mm::Vec3& local_pos) const {
     return mm::add(position_, rotated);
 }
 
-mm::Vec3 Cluster::world_to_local(const mm::Vec3& world_pos) const {
-    mm::Vec3 relative = mm::sub(world_pos, position_);
-    return mm::rotate(relative, mm::quat_invert(rotation_));
-}
-
 uint32_t Cluster::add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id) {
     uint32_t particle_id = next_particle_id_++;
     
@@ -110,55 +135,15 @@ uint32_t Cluster::add_particle(const mm::Vec3& local_position, float radius, uin
     return particle_id;
 }
 
-bool Cluster::remove_particle(uint32_t particle_id) {
-    if (particle_id >= particles_.size()) {
-        return false;
-    }
-    
-    // Mark cells dirty around the particle being removed
-    const StaticParticle& particle = particles_[particle_id];
-    mark_cells_dirty_around_particle(particle.position, particle.radius);
-    
-    // Remove particle using swap-and-pop for efficiency
-    if (particle_id != particles_.size() - 1) {
-        particles_[particle_id] = particles_.back();
-        
-        // Update all cells that reference the moved particle
-        for (auto& cell : cells_) {
-            for (auto& material_entry : cell->material_particle_indices) {
-                auto& indices = material_entry.second;
-                for (auto& idx : indices) {
-                    if (idx == particles_.size() - 1) {
-                        idx = particle_id;
-                    }
-                }
-            }
-        }
-    }
-    
-    particles_.pop_back();
-    
-    printf("Removed particle %u from cluster %u\n", particle_id, cluster_id_);
-    return true;
-}
-
-bool Cluster::update_particle_position(uint32_t particle_id, const mm::Vec3& new_local_position) {
-    if (particle_id >= particles_.size()) {
-        return false;
-    }
-    
-    StaticParticle& particle = particles_[particle_id];
-    
-    // Mark cells dirty around old and new positions
-    mark_cells_dirty_around_particle(particle.position, particle.radius);
-    mark_cells_dirty_around_particle(new_local_position, particle.radius);
-    
-    // Update position
-    particle.position = new_local_position;
-    
-    return true;
-}
-
+// Mark every cell within a particle's influence as needing a rebuild. Despite
+// the name it also CREATES those cells if they don't exist yet -- this is the
+// only thing that grows the cell grid, so a particle added outside the current
+// extent immediately extends it.
+//
+// The influence radius is a conservative 2x the particle radius (the smooth-min
+// blend reaches beyond the particle's own surface), and the loop walks the
+// whole integer cell box that covers it, so cost grows cubically with radius /
+// cell size.
 void Cluster::mark_cells_dirty_around_particle(const mm::Vec3& local_position, float radius) {
     // Calculate the range of cell coordinates that might be affected
     float influence_radius = radius * 2.0f; // Conservative estimate
@@ -199,6 +184,16 @@ mm::Vec3 Cluster::get_cell_coordinates(const mm::Vec3& local_position) const {
     };
 }
 
+// Look a cell up by its integer coordinates, creating it if absent. Never
+// returns null in practice: allocation failure would throw rather than return.
+//
+// The lookup is a spatial-hash point query at the cell's exact centre with a
+// tolerance of 10% of a cell, which relies on every cell in the hash having
+// been inserted at that same derived centre -- keep this in step with
+// Cell::calculate_bounds' corner convention.
+//
+// Cells are only ever added here; nothing removes them, so `cells_` and the
+// hash grow monotonically over a cluster's lifetime.
 Cell* Cluster::find_or_create_cell(const mm::Vec3& cell_coords) {
     float cell_size = smallest_cell_size_;
 
@@ -228,29 +223,33 @@ Cell* Cluster::find_or_create_cell(const mm::Vec3& cell_coords) {
     return cell_ptr;
 }
 
-void Cluster::set_no_mesh_cells(const std::vector<mm::Vec3>& coords) {
-    no_mesh_cells_.clear();
-    no_mesh_cells_.reserve(coords.size());
-    for (const mm::Vec3& c : coords) {
-        no_mesh_cells_.insert(pack_slot(SlotCoord{
-            (int)lroundf(c.x), (int)lroundf(c.y), (int)lroundf(c.z)}));
-    }
-}
-
-void Cluster::set_mesh_worker_count(int n) {
-    if (mesh_pool_) mesh_pool_->resize(n);
-}
-
-int Cluster::get_mesh_worker_count() const {
-    return mesh_pool_ ? mesh_pool_->size() : 0;
-}
-
-void Cluster::set_ao_baker(const Occupancy* occ, AoGrid grid, AoParams params) {
-    ao_occ_ = occ;
-    ao_grid_ = grid;
-    ao_params_ = params;
-}
-
+// Re-mesh every dirty cell. Main thread; blocks until the whole batch is done.
+//
+// Three phases, in order, with the parallel one sandwiched between two serial
+// ones so that all GL/BLAS/TLAS mutation stays on this thread:
+//   1. PRE (serial)   -- pick one uniform resolution for the batch, build
+//                        transient spatial hashes over the additive and carve
+//                        particles, then per dirty cell: re-bucket its
+//                        particles, release the previous build's BLAS, clear
+//                        the dirty flag, bump `mesh_version`, and queue a
+//                        CellJob carrying that cell's carve subset.
+//   2. MESH (parallel)-- MeshWorkerPool builds each job's CellMeshResult with
+//                        its own SurfaceScratch; `particles_` is read-only.
+//   3. DRAIN (serial) -- in fixed job order so results are deterministic: bake
+//                        per-vertex AO if an occupancy grid is set, then commit
+//                        each result (upload + BLAS registration).
+// Finally, if anything changed at all -- including cells that were only
+// CLEARED -- the TLAS is torn down and rebuilt in full.
+//
+// The transient hashes exist to avoid an O(dirty x total particles) scan and
+// are destroyed before the parallel phase. The per-cell query buffer is sized
+// to the worst case (every particle in one box), so a candidate set is never
+// truncated. Interior cells listed in `no_mesh_cells_` are cleared rather than
+// meshed.
+//
+// One uniform resolution is deliberate: marching-cubes grids only stay
+// watertight between same-resolution neighbours, so the globally finest detail
+// wins for every cell in the batch.
 void Cluster::rebuild_dirty_cells() {
     // One resolution for every meshed cell: derived from the globally finest
     // detail so neighboring marching-cubes grids align and stay watertight.
@@ -298,9 +297,17 @@ void Cluster::rebuild_dirty_cells() {
         }
     }
 
-    // Scratch buffer for sh_query_box results (reused per cell).
-    const int kMaxQueryResults = 4096;
-    std::vector<void*> query_buf(kMaxQueryResults);
+    // Scratch buffer for sh_query_box results (reused per cell). Sized to the
+    // WORST CASE -- every particle (or every carve particle) landing in one
+    // cell's query box -- because sh_query_box bails at `maxResults` in
+    // grid-scan order and returns an arbitrary subset with no way to tell that
+    // it truncated. Each particle is inserted into the hash exactly once, so
+    // this bound is exact. It also keeps the hashed path's result identical to
+    // the scan-everything fallback below, which is the semantics the rest of
+    // this function assumes. One allocation per rebuild, not per cell.
+    const int kMaxQueryResults =
+        (int)std::max(particles_.size(), carve_particles_.size());
+    std::vector<void*> query_buf((size_t)std::max(kMaxQueryResults, 1));
 
     // PHASE 1 - PRE (serial, main thread): per dirty non-interior cell, gather
     // particle indices + carve subset, release the old BLAS, and queue a CellJob.
@@ -445,6 +452,9 @@ void Cluster::rebuild_dirty_cells() {
            processed, jobs.size(), committed_groups, ms, mesh_pool_->size());
 }
 
+// Smallest positive `detail_size` over every particle, falling back to
+// `base_detail_size_`. This is the single resolution the whole batch meshes at
+// (see rebuild_dirty_cells). O(particles), rescanned on every rebuild.
 float Cluster::compute_finest_detail() const {
     float finest = base_detail_size_;
     for (const auto& p : particles_) {
@@ -454,6 +464,14 @@ float Cluster::compute_finest_detail() const {
     return finest;
 }
 
+// Cells whose bounds overlap the given cluster-local AABB. The broad phase is
+// a radius query around the region's bounding sphere -- so it over-fetches for
+// elongated regions -- refined by an exact box overlap test.
+//
+// The broad-phase result buffer is sized to the cell count, so the query
+// cannot truncate (sh_query_radius bails at `maxResults` in grid-scan order
+// and gives no way to detect that it did). Returned pointers are borrowed from
+// `cells_` and stay valid as long as the cluster does.
 std::vector<Cell*> Cluster::get_cells_in_region(const mm::Vec3& min_bound, const mm::Vec3& max_bound) {
     std::vector<Cell*> result;
 
@@ -470,11 +488,15 @@ std::vector<Cell*> Cluster::get_cells_in_region(const mm::Vec3& min_bound, const
     };
     float search_radius = mm::length(region_size) * 0.5f;
     
-    void* query_results[1000];
-    int found_count = sh_query_radius(cell_spatial_hash_, 
+    // Every cell is inserted into the hash exactly once, so cells_.size() is an
+    // exact upper bound on what the broad phase can return.
+    if (cells_.empty()) return result;
+    std::vector<void*> query_results(cells_.size());
+    int found_count = sh_query_radius(cell_spatial_hash_,
                                      region_center.x, region_center.y, region_center.z,
-                                     search_radius, query_results, 1000);
-    
+                                     search_radius, query_results.data(),
+                                     (int)query_results.size());
+
     for (int i = 0; i < found_count; ++i) {
         Cell* cell = static_cast<Cell*>(query_results[i]);
         
@@ -493,31 +515,20 @@ void Cluster::accept(CellVisitor& visitor) const {
     visitor.visit_cluster(*this);
 }
 
-void Cluster::visit_cells(CellRenderVisitor& visitor) const {
-    // Create transform matrix for cluster world position
-    mm::Mat4 cluster_transform = mm::translation(position_);
-    
-    uint32_t cells_with_meshes = 0;
-    for (const auto& cell : cells_) {
-        if (cell->has_meshes) {
-            cells_with_meshes++;
-            cell->accept_transformed(visitor, cluster_transform);
-        }
-    }
-    
-    // static int debug_counter = 0;
-    // if (debug_counter++ % 60 == 0) { // Print every 60 frames
-    //     printf("Cluster render: %u/%zu cells have meshes\n", cells_with_meshes, cells_.size());
-    // }
-}
-
-void Cluster::visit_all_cells(CellVisitor& visitor) const {
-    for (const auto& cell : cells_) {
-        cell->accept(visitor);
-    }
-}
-
+// Emit one TLAS instance per (cell, merge group) BLAS. `const` on the Cluster,
+// but it mutates the shared TLASManager: it sets that manager's current
+// transform and appends draw records, so it expects to be called right after
+// `tlas_manager_.clear()` and before `tlas_manager_.build()`.
+//
+// The instance transform is the full cluster placement -- rotate by `rotation_`
+// then translate by `position_`, the same composition `local_to_world()` applies
+// to a point -- so ray-traced geometry lines up with the rasterised geometry
+// even for a rotated cluster. There is no scale in a Cluster transform.
 void Cluster::add_to_tlas() const {
+    // Cluster placement is per-cluster, not per-cell, so build it once.
+    const mm::Mat4 cluster_xform =
+        mm::from_trs(position_, rotation_, mm::Vec3{1.0f, 1.0f, 1.0f});
+
     // Add all cell meshes to the TLAS for ray tracing
     for (const auto& cell : cells_) {
         if (cell->has_meshes) {
@@ -528,11 +539,7 @@ void Cluster::add_to_tlas() const {
                 BLASHandle blas_handle = blas_entry.second;
 
                 if (blas_handle > 0) {
-                    // TODO: Apply cluster transform (position + rotation)
-                    // For now, just add at identity transform
-                    tlas_manager_.load_identity();
-                    tlas_manager_.translate(position_.x, position_.y, position_.z);
-                    //tlas_manager.rotate_quaternion(rotation_);
+                    tlas_manager_.load_matrix(cluster_xform);
                     // The value packed as the instance material is a merge-group id,
                     // used only as a fallback because every real triangle carries its
                     // own per-triangle materialId.
@@ -555,49 +562,4 @@ uint32_t Cluster::get_dirty_cell_count() const {
         }
     }
     return count;
-}
-
-void Cluster::force_rebuild_all_cells() {
-    printf("Cluster %u: Force rebuilding all cells\n", cluster_id_);
-
-    // Clear all existing cells
-    clear_all_cells();
-
-    // Every cell mesh is regenerated below, so wipe the BLAS manager to reclaim
-    // entries from the previous build (they otherwise leak: cell destructors run
-    // without a manager handle, and re-meshing yields fresh content hashes that
-    // dedup can't match).
-    blas_manager_.clear();
-
-    // Mark all particles as needing new cell assignment
-    for (const auto& particle : particles_) {
-        mark_cells_dirty_around_particle(particle.position, particle.radius);
-    }
-    
-    // Rebuild all dirty cells
-    rebuild_dirty_cells();
-}
-
-void Cluster::clear_particles() {
-    particles_.clear();
-    next_particle_id_ = 0;
-}
-
-void Cluster::clear_all_cells() {
-    printf("Cluster %u: Clearing all %zu cells\n", cluster_id_, cells_.size());
-    
-    // Clear cells vector (this will call destructors and free mesh memory)
-    cells_.clear();
-    
-    // Clear spatial hash
-    if (cell_spatial_hash_) {
-        // The spatial hash entries will be cleared when cells are destroyed
-        // But we need to reset the spatial hash structure
-        sh_destroy(cell_spatial_hash_);
-        cell_spatial_hash_ = sh_create(smallest_cell_size_, 1000);
-        
-        if (!cell_spatial_hash_) {
-            printf("Warning: Failed to recreate spatial hash for cluster %u after clearing cells\n", cluster_id_);
-        }
-    }
 }

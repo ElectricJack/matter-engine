@@ -1,3 +1,39 @@
+// libs/MatterSurfaceLib/src/material_registry.c
+//
+// The engine's material table. This is the single definition site for
+// materials: the CPU consumes it for meshing decisions (merge group, mesher
+// choice, transparency) and the GPU consumes the packed forms below for
+// shading. See include/material_registry.h for the MaterialDef layout and the
+// schema version.
+//
+// Layout of the id space
+// - [0, MaterialRegistryStaticCount())  frozen builtins, `g_materials` below.
+//   A material id IS an index into that array, so entries may be appended but
+//   never reordered or removed -- baked content stores these ids.
+// - [static, static + dynamic)          per-world materials appended by
+//   MaterialRegistryDefineDynamic (the script `defineMaterial`), cleared by
+//   MaterialRegistryResetDynamic on world (re)connect. Ids are deterministic
+//   for a given script because definitions are appended in evaluation order.
+// - Anything else, including a negative id, resolves to `g_default`.
+// - MATERIAL_MAX_TOTAL caps builtins + dynamic together.
+//
+// Merge groups vs materials: the GROUP_* enum below is the "one optical class"
+// key. Several materials (all the stones, for instance) share a group so their
+// particles blend into one surface; the group id, not the material id, is what
+// Cell buckets particles by.
+//
+// Runtime overrides: `g_slot_overrides` / `g_macro_overrides` are parallel to
+// the material ids and let the viewer bind a tileset slot without touching the
+// const table. -1 means "no override, use the table value". Both are consulted
+// only by the packing functions at the bottom. Only the DETAIL array has a
+// setter today (MaterialRegistrySetGroundTilesetSlot); see g_macro_overrides.
+//
+// Threading and lifetime: plain file-scope state with no locking. Define
+// dynamic materials and set overrides during world load, before the render and
+// bake threads start reading the table.
+//
+// This file is C (compiled as C, included from C++ through the header's
+// extern "C" guard), so it uses only C89-compatible constructs.
 #include "material_registry.h"
 #include <stddef.h>
 #include <string.h>
@@ -19,7 +55,8 @@ enum {
 // Schema v4: groundMacroSlot is inserted right after groundTilesetSlot with a
 // fixed -1 (no macro layer) default baked into the macro body — every static
 // registry entry gets the default without touching each call site's argument
-// list. The viewer overrides it at runtime via MaterialRegistrySetGroundMacroSlot().
+// list. There is no runtime setter for it (see g_macro_overrides below); a
+// non-default macro slot has to come in on a dynamic material's MaterialDef.
 #define MATERIAL_DEF(R,G,B,ROUGH,METAL,EMIT,TRANSLUCENT,IOR,FLAT,GROUP,MESHER,SLOT, \
                      TRANSMIT,ER,EG,EB,AR,AG,AB,ADIST,THICK,SUBSURFACE,SR,SG,SB,SDIST,ANISO,FLAGS) \
     {{R,G,B}, ROUGH, METAL, EMIT, TRANSLUCENT, IOR, FLAT, GROUP, MESHER, SLOT, -1, \
@@ -32,6 +69,11 @@ enum {
      1.0f, TRANSMIT, {ER,EG,EB}, {AR,AG,AB}, ADIST, THICK, SUBSURFACE, {SR,SG,SB}, \
      SDIST, ANISO, COAT, COATROUGH, 1.0f, {1.0f,1.0f,1.0f}, 0.0f, 1.0f, FLAGS}
 
+// The frozen builtin table. Index == material id; the leading comment on each
+// row is that id and is load-bearing for anyone reading baked content. APPEND
+// ONLY -- reordering or deleting a row silently remaps every stored id.
+// Argument order is fixed by the MATERIAL_DEF / MATERIAL_DEF_ADVANCED macros
+// above, which also supply the schema fields not listed per row.
 static const MaterialDef g_materials[] = {
     /* 0 */ MATERIAL_DEF(0.8f,0.2f,0.2f, 0.2f,0.6f,0.1f,0.0f,1.0f,1,GROUP_RED,0,-1, 0.0f,0.8f,0.2f,0.2f, 0,0,0,0,0, 0,0,0,0,0,0, MATERIAL_SURFACE_NONE),
     /* 1 */ MATERIAL_DEF(0.2f,0.3f,0.8f, 0.7f,0.1f,0.0f,0.0f,1.0f,0,GROUP_BLUE,0,-1, 0.0f,0,0,0, 0,0,0,0,0, 0,0,0,0,0,0, MATERIAL_SURFACE_NONE),
@@ -84,6 +126,12 @@ static int g_slot_overrides[ME_MAX_SLOT_OVERRIDES] = {
 // Runtime macro-slot overrides (parallel to g_materials), mirroring
 // g_slot_overrides above. Schema v4 / Phase 3: -1 = no override; the value in
 // g_materials[i].groundMacroSlot wins (itself -1 by default for every entry).
+//
+// NOTE: nothing writes this array. The setter that did
+// (MaterialRegistrySetGroundMacroSlot) was deleted as uncalled in e7c19aae, and
+// MaterialRegistryResetDynamic only puts entries back to -1. It is kept as the
+// -1 identity so the pack path below keeps its shape and so restoring a setter
+// is a one-function change; until then the table value always wins.
 #define ME_MAX_MACRO_OVERRIDES 64
 static int g_macro_overrides[ME_MAX_MACRO_OVERRIDES] = {
     -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1,
@@ -113,6 +161,11 @@ int MaterialRegistryDynamicCount(void) { return g_dynamic_count; }
 
 uint32_t MaterialRegistrySchemaVersion(void) { return MATERIAL_SCHEMA_VERSION; }
 
+// Resolve a material id. NEVER returns null: an out-of-range or negative id
+// yields the neutral `g_default`, so callers cannot distinguish "no such
+// material" from "material 0.6 grey" -- validate ids before this if that
+// matters. The returned pointer aliases the table and stays valid until
+// MaterialRegistryResetDynamic (for dynamic ids) or forever (for builtins).
 const MaterialDef* MaterialRegistryGet(int materialId) {
     if (materialId < 0) return &g_default;
     if (materialId < g_count) return &g_materials[materialId];
@@ -178,6 +231,12 @@ const char* MaterialRegistryNameOf(int materialId) {
     return g_dynamic_names[slot];
 }
 
+// Append a per-world material and return its id (>= 0). On failure returns one
+// of the negative MATERIAL_DEFINE_ERR_* codes: INVALID for a null/empty/
+// over-long name or null def, CONFLICT when `name` already exists with
+// different bytes, FULL when MATERIAL_MAX_TOTAL is reached. Re-defining a name
+// with byte-identical contents is idempotent and returns the same id, which is
+// what lets several modules import one shared-lib material.
 int MaterialRegistryDefineDynamic(const MaterialDef* def, const char* name) {
     size_t len;
     int existing;
@@ -230,16 +289,14 @@ int MaterialIsTransparent(int materialId) {
     return MaterialRegistryGet(materialId)->translucency > 0.0f ? 1 : 0;
 }
 
+// Bind a material to a viewer tileset detail slot at runtime, overriding the
+// static table. `slot` of -1 clears the override. Out-of-range ids (>=
+// ME_MAX_SLOT_OVERRIDES) and out-of-range slots are ignored SILENTLY -- there
+// is no error return, so a typo here shows up as an untextured surface.
 void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot) {
     if (materialId < 0 || materialId >= ME_MAX_SLOT_OVERRIDES) return;
     if (slot < -1 || slot >= MATERIAL_MAX_DETAIL_SLOTS) return;
     g_slot_overrides[materialId] = slot;
-}
-
-void MaterialRegistrySetGroundMacroSlot(int materialId, int slot) {
-    if (materialId < 0 || materialId >= ME_MAX_MACRO_OVERRIDES) return;
-    if (slot < -1 || slot >= MATERIAL_MAX_DETAIL_SLOTS) return;
-    g_macro_overrides[materialId] = slot;
 }
 
 void MaterialRegistryPackForGPU(float* out) {
@@ -265,6 +322,12 @@ void MaterialRegistryPackForGPU(float* out) {
     }
 }
 
+// Pack the whole table into the Vulkan/ray-tracing record layout. `out` must
+// have room for MaterialRegistryCount() records -- builtins AND dynamic
+// entries -- and is fully overwritten. This is the path that carries the full
+// PBR schema (transmission, absorption, scattering, clearcoat, surface flags,
+// and both tileset slots); the GL path below is the older 12-float subset.
+// Call it again after any defineMaterial or slot override, and re-upload.
 void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out) {
     const int total = MaterialRegistryCount();
     for (int i = 0; i < total; ++i) {

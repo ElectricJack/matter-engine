@@ -1,3 +1,12 @@
+// MatterEngine3/src/render/vk_gi_math.cpp
+//
+// Implementation of the CPU-side GI sampling/BRDF mirrors declared in
+// vk_gi_math.h. Every function here is pure, allocation-free and noexcept, and
+// every one has a GLSL twin in MatterEngine3/shaders_vk/ that must be edited
+// in the same commit — the constants below (the PCG multipliers, the golden-
+// ratio-ish seed mixers, the alpha floor) are part of that shared contract,
+// not local tuning.
+
 #include "vk_gi_math.h"
 
 #include <algorithm>
@@ -5,6 +14,10 @@
 
 namespace viewer {
 
+// The standard PCG output-mixing hash: LCG step, xorshift by a data-dependent
+// amount, multiply, final xorshift. Full 32-bit avalanche, so consecutive
+// inputs produce uncorrelated outputs — which is what lets the seed below be
+// a cheap XOR mix.
 uint32_t vulkan_gi_pcg_hash(uint32_t value) noexcept {
     const uint32_t state = value * 747796405u + 2891336453u;
     const uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) *
@@ -21,6 +34,10 @@ uint32_t vulkan_gi_seed(uint32_t pixel_x, uint32_t pixel_y,
     return vulkan_gi_pcg_hash(seed);
 }
 
+// Launch pixel centre -> normalized launch UV -> source texel index (clamped
+// to the last texel, since launch_u can reach exactly 1.0 in floating point)
+// -> that texel's centre UV. The double round-trip is deliberate: it makes the
+// result identical for every launch pixel that lands in the same source texel.
 VulkanGiUv vulkan_gi_source_uv(uint32_t raw_x, uint32_t raw_y,
                                uint32_t raw_width, uint32_t raw_height,
                                uint32_t source_width,
@@ -45,6 +62,15 @@ VulkanGiUv vulkan_gi_source_uv(uint32_t raw_x, uint32_t raw_y,
                 static_cast<float>(source_height)};
 }
 
+// Malley's method: sample the unit disc uniformly (r = sqrt(u1), phi = 2*pi*u2)
+// and project it up onto the hemisphere, which gives a cosine-weighted
+// direction. The tangent frame is built from whichever cardinal axis is least
+// parallel to the normal, so it is stable but arbitrary — fine, because the
+// distribution is rotationally symmetric about the normal.
+//
+// The returned pdf is recomputed from the final direction (cos/pi) rather than
+// taken from the sampling parameters, so it stays consistent with the
+// renormalized direction.
 VulkanCosineSample vulkan_cosine_sample(matter::Float3 normal, float u1,
                                         float u2) noexcept {
     const auto normalize = [](matter::Float3 v) {
@@ -91,6 +117,11 @@ matter::Float3 vulkan_schlick_fresnel(matter::Float3 f0,
             f0.z + (1.0f - f0.z) * factor};
 }
 
+// D(h) * dot(N,H) / (4 * dot(V,H)) — the GGX normal distribution times the
+// half-vector-to-reflected-direction Jacobian. Two guards keep it finite on
+// degenerate inputs: dot(V,H) is floored at 1e-6 (grazing) and alpha at
+// 0.0004, i.e. roughness ~0.02, so a perfectly smooth surface yields a large
+// but finite pdf instead of infinity.
 float vulkan_ggx_reflection_pdf(float normal_half_cosine,
                                 float view_half_cosine,
                                 float roughness) noexcept {

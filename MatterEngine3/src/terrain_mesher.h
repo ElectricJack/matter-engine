@@ -2,6 +2,54 @@
 // terrain_mesher.h — naive surface-nets sector mesher for infinite-world terrain.
 // Pure CPU module: depends only on terrain_field.h. No JS, no GL.
 // Used by Task 5 (terrainVolume verb) and Tasks 9-10 (WorldSector bake).
+//
+// WHAT THIS IS. Given a terrain density field (`terrain_field::FieldRuntime`)
+// and the integer coordinates of one sector tile, produce that tile's triangle
+// soup, split into one `MaterialBucket` per terrain material, plus an optional
+// sparse boundary record for the runtime seam welder. Nothing else: no
+// materials beyond the field's own 0..3 material ids, no textures, no GPU
+// upload, no neighbour lookups.
+//
+// WHERE IT SITS. The field program is authored in the DSL and compiled by
+// `terrain_field.h`; this header turns it into geometry; `seam_boundary.h`
+// carries what the cross-level welder needs; `dsl_bindings.cpp`'s
+// `terrainVolume` verb is the script-side entry, and `matter_engine.cpp`'s
+// publish path is what rebases the resulting positions onto a part transform.
+//
+// TWO ENTRY POINTS, TWO CONVENTIONS -- the single most common way to get this
+// wrong:
+//   `mesh_sector`        COLUMN tile. Positions are sector-LOCAL in x/z and
+//                        WORLD-ABSOLUTE in y. Takes `y_min`/`y_max`.
+//   `mesh_sector_tiled`  CUBE tile (M2). Positions are tile-local in ALL THREE
+//                        axes; the tile itself is the Y extent, so there is no
+//                        y range argument and the caller must add
+//                        `ty * sector_size` back on the publish transform.
+//
+// UNITS AND CONVENTIONS. Everything is metres. `sector_size` is one tile edge
+// in metres; `rung` is the power-of-two voxel ladder about a 2 m base
+// (positive = finer, negative = coarser, see `mesh_sector`). Normals are
+// unit-length outward surface normals derived from the density gradient
+// (density is positive inside solid, so the gradient is negated). Tile indices
+// `tx`/`ty`/`tz` are signed and multiply `sector_size`.
+//
+// THREADING AND STATE. Both functions are free functions holding no global or
+// static mutable state: every lattice, map and vector they use is a local, and
+// the `FieldRuntime` is only read from. Two tiles can therefore be meshed
+// concurrently from bake worker threads against one shared field, provided
+// nothing else is mutating that field. Cost is dominated by field evaluations,
+// which is why the column path's `y_min` is a streamed world's cost dial.
+//
+// DETERMINISM IS A CONTRACT, NOT A NICETY. Tile geometry is cached and keyed by
+// tile identity, and the column path's output -- mesh bytes AND boundary record
+// -- is pinned bitwise over six configurations in
+// `MatterEngine3/tests/terrain_mesher_tests.cpp`. Any change to a float
+// expression on that path, however algebraically equivalent, is a change to
+// cached content. The bitwise-equality argument that makes two adjacent tiles
+// meet exactly is derived in full in terrain_mesher.cpp; read it before
+// touching how a lattice coordinate is computed.
+//
+// FAILURE. Both return false with `err` set on degenerate configuration only.
+// An all-air or all-solid tile is a normal success with an empty mesh.
 
 #include "seam_boundary.h"
 #include "terrain_field.h"
@@ -21,6 +69,10 @@ struct MaterialBucket {
     std::vector<float> normals;    // 9 floats per triangle (gradient normals)
 };
 
+// One tile's finished geometry: a flat triangle soup partitioned by material,
+// with no index buffer and no vertex sharing (each triangle carries its own
+// three positions and normals). Buckets appear in first-use order, not sorted
+// by material id, and a material with no triangles has no bucket at all.
 struct SectorMesh {
     std::vector<MaterialBucket> buckets;
     size_t triangle_count() const {

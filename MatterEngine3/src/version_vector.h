@@ -32,6 +32,13 @@
 // the only correct behaviour: two bakes that are not bit-identical must not
 // share a cache identity (the `.gtex` precedent, tileset_gtex.h).
 //
+// Record WHY, as the stacked `n -> n+1` entries under each component below
+// do. Those entries are the only surviving record of what a value meant, so
+// ADD to them; never replace one. Two branches bumping the same component in
+// parallel both pick the same next value and collide at merge — resolve it by
+// taking the value the trunk actually holds and stacking your entry on top of
+// the other branch's, not by keeping one history and dropping the other.
+//
 // WHAT IS *NOT* A KEY. A few file headers record a version as informational
 // provenance (`GTexHeader::engine_bake_version`, and the diagnostic printf in
 // local_provider.cpp). Those are RECORDS, not keys — they are written so a
@@ -170,6 +177,10 @@ inline constexpr uint32_t kStageFormat = 0u;
 // The digest of the whole vector. Pure, constexpr, and the only consumer of
 // `components`.
 // -----------------------------------------------------------------------------
+// A constant that exists in `components` but is missing from the kComponents
+// list below contributes NOTHING to any key: it compiles, it reads like a
+// version, and it can never invalidate an artifact. Declaring a component and
+// listing it here are one change, not two.
 constexpr uint64_t digest() {
     // SplitMix64 avalanche over each component in a fixed order. Any single
     // component changing changes the digest; the mixer makes near-miss

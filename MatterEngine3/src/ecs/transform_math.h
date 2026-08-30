@@ -1,3 +1,14 @@
+// MatterEngine3/src/ecs/transform_math.h
+//
+// The one place a `matter::ecs::LocalTransform` becomes a matrix. Header-only
+// and dependency-light on purpose: transform_system.cpp includes it inside the
+// propagation hot loop, and the ECS tests include it to check the composition
+// directly.
+//
+// Not a general math library — for everyday vector/matrix work use
+// libs/MathLib (`mm::`). This exists because `Mat4f` (matter/math_types.h) is
+// the POD interchange type `ecs::WorldTransform` stores.
+
 #pragma once
 
 #include "matter/ecs.h"
@@ -6,6 +17,16 @@
 
 namespace matter::ecs {
 
+// Composes the transform as M = T * R * S, ROW-MAJOR: `m[3]`, `m[7]` and
+// `m[11]` are the X/Y/Z translation in metres, and each column of the upper 3x3
+// is pre-scaled by the matching `scale` component (so scale is applied in the
+// entity's own frame, before rotation). `m[12..14]` stay 0 and `m[15]` is 1.
+//
+// The rotation is normalized here rather than being assumed unit, and the
+// intermediate math is done in double to keep the normalization honest for
+// long-lived accumulated quaternions. A non-finite or zero-length rotation
+// falls back to IDENTITY rather than failing — the caller gets an unrotated but
+// correctly translated and scaled matrix, never a NaN one.
 inline Mat4f trs_matrix(const LocalTransform& transform) {
     double x = transform.rotation.x;
     double y = transform.rotation.y;

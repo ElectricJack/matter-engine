@@ -1,6 +1,46 @@
+// MatterEngine3/src/ecs/scene_registry.cpp
+//
+// Two things live here, both serving the editable ("dynamic") scene:
+//
+// 1. THE COMPONENT SCHEMA. `s_descriptors` names every ECS component the
+//    inspector may show, and each entry points at a static array of
+//    FieldDescriptors carrying the member's byte offset, type, range and enum
+//    labels. Every offset comes from `offsetof` on the real struct (via the
+//    ME_FIELD_OFF / ME_COLLIDER_PROP_OFF macros), so a renamed or reordered
+//    member is a compile error rather than silent drift. The field_get_*/
+//    field_set_* accessors below read and write through those offsets, which is
+//    what lets the editor edit an arbitrary component without a per-component
+//    UI. `to_props_desc` converts a descriptor into the property system's
+//    `matter::props::Desc` where a props helper is wanted.
+//
+// 2. THE RECIPE PIPELINE. `validate` -> `validate_batch` -> `normalize` ->
+//    `instantiate` -> `bootstrap_transactional` turn the authored
+//    `RawEntityRecipe`s produced by the world-definition loader into live flecs
+//    entities. `bootstrap_transactional` is the one callers should use: it
+//    validates the entire batch BEFORE mutating anything, so a bad reload
+//    leaves the previous scene and generation counter untouched.
+//
+// JSON HANDLING. `components_json` is scanned by the hand-rolled
+// `extract_top_keys` / `extract_*_field` helpers further down, not by a real
+// parser — the world-definition loader already validated syntax, and these only
+// need to pull out top-level keys and scalar values. Legacy component helpers
+// leave defaults for absent or wrongly-shaped fields; CharacterController and
+// RiverFloatBody instead enforce their strict field and ownership contracts.
+// Do not reuse the legacy helpers on untrusted or unvalidated JSON.
+//
+// IDENTITY. `hash_authored_id` is FNV-1a over the authored id string with the
+// high bit cleared; the high bit is reserved for session-created ids. The
+// resulting `SceneEntityId::value` is stable across reloads while
+// `SceneEntityId::generation` identifies one incarnation, so a recycled id
+// cannot be mistaken for a GPU slot still retiring.
+//
+// THREADING. App-thread affine, like everything behind `matter/scene.h`. These
+// functions mutate a flecs world directly and take no locks.
+
 #include "scene_registry.h"
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/character.h"
 #include "matter/streaming.h"
 #include "matter/river_runtime.h"
 #include "river_float_system.h"
@@ -17,8 +57,9 @@
 
 // Minimal JSON field extraction — operates on the canonical components_json
 // string from RawEntityRecipe. Full JSON parsing is NOT needed here; the
-// world_definition_loader already validated syntax. We only need to match
-// top-level component keys and their field values for type/range checking.
+// world_definition_loader already validated syntax. Legacy components use the
+// tolerant extraction helpers; character and river-float recipes additionally
+// perform their component-specific type, range and ownership validation.
 #include <sstream>
 
 namespace matter::scene {
@@ -245,6 +286,8 @@ static_assert(alignof(RiverFloatBody) <= kMaxComponentStructAlign,
 static_assert(sizeof(character::CharacterController) <= kMaxComponentStructSize);
 static_assert(alignof(character::CharacterController) <= kMaxComponentStructAlign);
 
+// Linear scan by exact name over the component table; null when the name is not
+// a component the schema knows about. `name` must not be null.
 const ComponentDescriptor* find_component(const char* name) {
     for (uint32_t i = 0; i < s_descriptor_count; ++i) {
         if (std::strcmp(s_descriptors[i].name, name) == 0)
@@ -449,6 +492,9 @@ bool to_props_desc(const FieldDescriptor& f, matter::props::Desc& out) {
 // given `{"PartInstance": {"part": "props/crate"}}` and key "PartInstance",
 // returns `{"part": "props/crate"}`. Returns "" if the key/value is not an
 // object.
+// NOTE: matches the FIRST occurrence of the quoted key anywhere in `json`,
+// including inside a nested object or a string value — safe here only because
+// the loader emits a flat one-level-per-component object.
 static std::string extract_component_value_json(const std::string& json,
                                                  const std::string& component_key) {
     size_t pos = json.find("\"" + component_key + "\"");
@@ -509,6 +555,38 @@ static bool extract_float_array(const std::string& json, const std::string& fiel
         out[i] = std::strtof(json.c_str() + pos, &end);
         if (end == json.c_str() + pos) return false;
         pos = end - json.c_str();
+    }
+    return true;
+}
+
+// Variable-length sibling of extract_float_array, for arrays whose length is
+// authored rather than fixed by the schema (today: ConvexHullCollider's point
+// cloud). Reads up to `max` floats and stops at the closing ']', reporting how
+// many landed in `count`. Returns false when the field is missing or is not an
+// array; a well-formed but over-long array fills `max` and is reported as
+// truncated by `count == max` -- the caller decides whether that is an error.
+static bool extract_float_array_upto(const std::string& json,
+                                     const std::string& field,
+                                     float* out, size_t max, size_t& count) {
+    count = 0;
+    size_t pos = json.find("\"" + field + "\"");
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    if (pos >= json.size() || json[pos] != '[') return false;
+    ++pos;
+    while (count < max) {
+        while (pos < json.size() &&
+               (json[pos] == ' ' || json[pos] == '\t' || json[pos] == ',' ||
+                json[pos] == '\n' || json[pos] == '\r')) ++pos;
+        if (pos >= json.size() || json[pos] == ']') break;
+        char* end = nullptr;
+        out[count] = std::strtof(json.c_str() + pos, &end);
+        if (end == json.c_str() + pos) break;   // not a number: stop cleanly
+        pos = end - json.c_str();
+        ++count;
     }
     return true;
 }
@@ -614,6 +692,11 @@ static bool is_collider_kind(ComponentKind k) {
            k == ComponentKind::ConvexHullCollider;
 }
 
+// Returns the top-level keys of a JSON object, in document order, skipping over
+// each key's value (object, array, string, or bare token) so nested keys are
+// never reported. Returns an empty vector when `json` contains no '{' at all.
+// This is the only place the recipe pipeline learns which components a recipe
+// declares.
 static std::vector<std::string> extract_top_keys(const std::string& json) {
     std::vector<std::string> keys;
     size_t i = 0;
@@ -831,6 +914,16 @@ static bool validate_character_recipe(const RawEntityRecipe& raw,
     return true;
 }
 
+// Checks one recipe and, on success, fills `out` with the validated copy plus
+// the resolved `part_hash`. What it actually enforces: a non-empty authored_id,
+// that every top-level component key names a known component, that at most one
+// of them is a collider, and that a PartInstance's authored "part" module name
+// resolves through `resolve_part`. CharacterController and RiverFloatBody
+// additionally enforce their component-specific field and ownership contracts.
+//
+// Returns false with `err` describing the first problem (message, authored_id
+// and, where known, the offending field_path); `out` is then meaningless.
+// `resolve_part` may be null, in which case any recipe naming a part fails.
 bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
              const PartResolver& resolve_part) {
     if (raw.authored_id.empty()) {
@@ -912,6 +1005,11 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
 // validate_batch — validates a set of recipes including cross-references.
 // ---------------------------------------------------------------------------
 
+// Per-recipe `validate` plus the three cross-recipe checks that only make sense
+// on a whole batch: duplicate authored ids, a parent_authored_id naming a
+// recipe that is not in the batch, and parent cycles. Clears and refills `out`;
+// on failure `out` is left holding the prefix that validated, so callers must
+// discard it (normalize() does).
 bool validate_batch(const std::vector<RawEntityRecipe>& recipes,
                     std::vector<EntityRecipe>& out,
                     RecipeError& err,
@@ -970,6 +1068,18 @@ bool validate_batch(const std::vector<RawEntityRecipe>& recipes,
 // instantiate — creates Flecs entities from validated recipes.
 // ---------------------------------------------------------------------------
 
+// Creates one flecs entity per recipe, sets its SceneEntityId, name and
+// components from `components_json`, then wires the ChildOf edges in a second
+// pass (so a parent may appear after its child in the array).
+//
+// MUTATES THE WORLD AS IT GOES: a mid-batch failure — a hash collision, an
+// unknown component, or an exhausted generation counter — leaves the entities
+// created so far in the world. Callers that need all-or-nothing must go through
+// `bootstrap_transactional`, which validates the whole batch first.
+//
+// Every entity gets a default `ecs::LocalTransform` before the JSON is applied,
+// so a recipe without one still has a transform. `gen` is incremented once, at
+// the end, on success only; the new generation is stamped on every entity.
 bool instantiate(flecs::world& world,
                  const EntityRecipe* recipes, uint32_t count,
                  SceneGeneration& gen, RecipeError& err) {
@@ -1090,6 +1200,8 @@ bool instantiate(flecs::world& world,
                 if (extract_float_field(sj, "density", f)) sc.properties.density = f;
                 if (extract_float_field(sj, "friction", f)) sc.properties.friction = f;
                 if (extract_float_field(sj, "restitution", f)) sc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(sj, "sensor", b)) sc.properties.sensor = b;
                 e.set<physics::SphereCollider>(sc);
                 break;
             }
@@ -1103,6 +1215,8 @@ bool instantiate(flecs::world& world,
                 if (extract_float_field(cj, "density", f)) cc.properties.density = f;
                 if (extract_float_field(cj, "friction", f)) cc.properties.friction = f;
                 if (extract_float_field(cj, "restitution", f)) cc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(cj, "sensor", b)) cc.properties.sensor = b;
                 e.set<physics::CapsuleCollider>(cc);
                 break;
             }
@@ -1111,16 +1225,44 @@ bool instantiate(flecs::world& world,
                 physics::BoxCollider bc{};
                 extract_float_array(bj, "center", &bc.center.x, 3);
                 extract_float_array(bj, "halfExtents", &bc.half_extents.x, 3);
+                float rot[4];
+                if (extract_float_array(bj, "rotation", rot, 4))
+                    bc.rotation = {rot[0], rot[1], rot[2], rot[3]};
                 float f;
                 if (extract_float_field(bj, "density", f)) bc.properties.density = f;
                 if (extract_float_field(bj, "friction", f)) bc.properties.friction = f;
                 if (extract_float_field(bj, "restitution", f)) bc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(bj, "sensor", b)) bc.properties.sensor = b;
                 e.set<physics::BoxCollider>(bc);
                 break;
             }
-            case ComponentKind::ConvexHullCollider:
-                e.set<physics::ConvexHullCollider>({});
+            case ComponentKind::ConvexHullCollider: {
+                std::string hj = extract_component_value_json(recipe.components_json, key);
+                physics::ConvexHullCollider hc{};
+                // `points` is a flat [x,y,z, x,y,z, ...] run, not an array of
+                // triples, matching how every other Float3 in this file is
+                // authored. The component's budget is a fixed 32 points, so a
+                // longer array is truncated rather than overflowing; the solver
+                // then hulls whatever arrived (or reports HullBuildFailed).
+                float pts[32 * 3];
+                size_t got = 0;
+                if (extract_float_array_upto(hj, "points", pts,
+                                             sizeof(pts) / sizeof(pts[0]), got)) {
+                    const size_t n = got / 3;   // ignore a trailing partial triple
+                    for (size_t i = 0; i < n; ++i)
+                        hc.points[i] = {pts[i * 3 + 0], pts[i * 3 + 1], pts[i * 3 + 2]};
+                    hc.point_count = static_cast<uint32_t>(n);
+                }
+                float f;
+                if (extract_float_field(hj, "density", f)) hc.properties.density = f;
+                if (extract_float_field(hj, "friction", f)) hc.properties.friction = f;
+                if (extract_float_field(hj, "restitution", f)) hc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(hj, "sensor", b)) hc.properties.sensor = b;
+                e.set<physics::ConvexHullCollider>(hc);
                 break;
+            }
             case ComponentKind::PartInstance: {
                 PartInstance pi{};
                 pi.part_hash = recipe.part_hash;
@@ -1233,6 +1375,9 @@ bool bootstrap_transactional(flecs::world& world,
 // SceneModule — Flecs module registration with reflection metadata.
 // ---------------------------------------------------------------------------
 
+// Registers the scene components with flecs reflection so the inspector, the
+// JSON serializers and the script bindings can walk them by name. Import once
+// per world; it registers types only and creates no systems or entities.
 SceneModule::SceneModule(flecs::world& world) {
     world.module<SceneModule>();
 

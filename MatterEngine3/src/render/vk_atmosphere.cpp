@@ -1,3 +1,32 @@
+// MatterEngine3/src/render/vk_atmosphere.cpp
+//
+// Implementation of the physical atmosphere LUT generator declared in
+// vk_atmosphere.h.
+//
+// The dispatch chain is strictly ordered, because each pass samples the
+// previous one's output: transmittance -> multiscatter -> sky view ->
+// irradiance. `record_dispatches` inserts the GENERAL <-> SHADER_READ_ONLY
+// transitions between them, so the images are left in
+// SHADER_READ_ONLY_OPTIMAL and are immediately bindable by graphics, compute
+// and ray-tracing stages afterwards. The first two passes are skipped when
+// only the observer or sun moved (`coefficients_dirty` false), since they
+// depend on the medium coefficients alone.
+//
+// Push constants are a fixed 48-byte block shared by all four pipelines, with
+// a `static_assert` pinning the size against the GLSL declaration.
+//
+// Two generation paths exist and they are not equivalent:
+//  - `record()` writes the live images from inside the caller's frame command
+//    buffer and commits its state immediately.
+//  - `build_candidate()` generates into separate images through its own
+//    blocking immediate submit, leaving the live set untouched until
+//    `commit_candidate()`. This is the path vk_scene_renderer.cpp uses. Note
+//    that it reaches its result by temporarily moving the candidate images
+//    into the live members and rewriting the shared descriptor sets, then
+//    restoring both -- including on the failure paths.
+//
+// The LUTs are R16G16B16A16_SFLOAT, so both readbacks decode half floats by
+// hand (`half_to_float`) rather than relying on a conversion library.
 #include "vk_atmosphere.h"
 
 #include <algorithm>
@@ -38,6 +67,9 @@ bool normalize(matter::Float3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
+// IEEE 754 binary16 -> binary32, including subnormals, infinities and NaN.
+// Needed because the LUTs are R16G16B16A16_SFLOAT and both readback paths
+// receive raw texel bytes.
 float half_to_float(uint16_t value) {
     const uint32_t sign = static_cast<uint32_t>(value & 0x8000u) << 16;
     uint32_t exponent = (value >> 10) & 0x1fu;
@@ -95,11 +127,6 @@ VkDescriptorSetLayoutBinding binding(uint32_t index, VkDescriptorType type) {
 bool VkAtmosphere::init(matter::VulkanDevice& vulkan, std::string& error) {
     destroy();
     vulkan_ = &vulkan;
-    sampled_shader_stages_ = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    if (vulkan.ray_tracing_available())
-        sampled_shader_stages_ |=
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
     if (!create_images(vulkan, error) || !initialize_emergency(vulkan, error) ||
         !create_pipelines(vulkan, error)) {
         destroy();
@@ -169,15 +196,23 @@ bool VkAtmosphere::create_candidate_images(Candidate& candidate,
     return created;
 }
 
+// Clears the fallback LUT set once, through a blocking immediate submit, and
+// leaves all four in SHADER_READ_ONLY_OPTIMAL. Index 0 is the transmittance
+// image and is cleared to opaque white (full transmission); the rest are
+// cleared to transparent black. These images are never regenerated, so this
+// is the only thing that ever writes them.
 bool VkAtmosphere::initialize_emergency(matter::VulkanDevice& vulkan,
                                         std::string& error) {
     struct ClearRequest {
         std::array<matter::VkImageResource*, 4> images;
-        VkPipelineStageFlags2 sampled_shader_stages;
+        // Folded into the SHADER_READ_ONLY transition below; see
+        // matter::ray_tracing_shader_stage.
+        VkPipelineStageFlags2 ray_tracing_stage;
     };
     ClearRequest request{{&emergency_transmittance_, &emergency_multiscatter_,
                           &emergency_sky_view_, &emergency_irradiance_sh_},
-                         sampled_shader_stages_};
+                         matter::ray_tracing_shader_stage(
+                             vulkan.ray_tracing_available())};
     const auto clear = [](VkCommandBuffer command_buffer, void* data) {
         auto& request = *static_cast<ClearRequest*>(data);
         for (uint32_t index = 0; index < request.images.size(); ++index) {
@@ -196,8 +231,9 @@ bool VkAtmosphere::initialize_emergency(matter::VulkanDevice& vulkan,
                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
             matter::record_image_transition(command_buffer, image,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                request.sampled_shader_stages,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                    request.ray_tracing_stage,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         }
     };
@@ -367,6 +403,9 @@ bool VkAtmosphere::coefficient_change_pending() const {
     return !has_committed_settings_ || !same_settings(requested_settings_, committed_settings_);
 }
 
+// View staleness test: any altitude move beyond the shared threshold, or a
+// sun direction whose dot with the committed one has dropped below 0.999999
+// (about 0.08 degrees). Always true before the first commit.
 bool VkAtmosphere::view_change_pending(float camera_world_y,
                                        const matter::Float3& to_sun) const {
     if (!has_committed_settings_) return true;
@@ -375,6 +414,15 @@ bool VkAtmosphere::view_change_pending(float camera_world_y,
            dot(to_sun, committed_to_sun_) < 0.999999f;
 }
 
+// Records the whole LUT chain into `command_buffer`, reading the CURRENT
+// `requested_settings_` for its push constants -- `build_candidate` relies on
+// that by swapping the request in around this call. When `coefficients_dirty`
+// is false the transmittance and multiscatter passes are skipped and only the
+// view-dependent sky-view and irradiance passes run.
+//
+// Barriers are part of the contract: every image is transitioned to GENERAL
+// before its dispatch and back to SHADER_READ_ONLY_OPTIMAL after it, with
+// destination stages covering compute, fragment and ray tracing.
 bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
                                      bool coefficients_dirty, float camera_world_y,
                                      const matter::Float3& to_sun,
@@ -383,6 +431,12 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
         error = "VkAtmosphere::record requires a command buffer";
         return false;
     }
+    // "and ray tracing" in the comment above is conditional: naming the
+    // ray-tracing stage on a device without the feature is a validation
+    // error, so it is folded in only when the device actually has it.
+    const VkPipelineStageFlags2 ray_tracing_stage =
+        matter::ray_tracing_shader_stage(vulkan_ &&
+                                         vulkan_->ray_tracing_available());
     struct PushConstants {
         float settings0[4]; // rayleigh, mie, anisotropy, ground albedo
         float settings1[4]; // sea level, ozone, observer world y, pad
@@ -408,7 +462,8 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
     bind_dispatch(transmittance_pass_, kTransmittanceWidth / 8, kTransmittanceHeight / 8);
     matter::record_image_transition(command_buffer, transmittance_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-        sampled_shader_stages_,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
     matter::record_image_transition(command_buffer, multiscatter_, VK_IMAGE_LAYOUT_GENERAL,
@@ -428,7 +483,8 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
     bind_dispatch(sky_view_pass_, (kSkyViewWidth + 7) / 8, (kSkyViewHeight + 7) / 8);
     matter::record_image_transition(command_buffer, sky_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-        sampled_shader_stages_,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
     matter::record_image_transition(command_buffer, irradiance_sh_, VK_IMAGE_LAYOUT_GENERAL,
@@ -438,7 +494,8 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
     bind_dispatch(irradiance_pass_, 3, 3);
     matter::record_image_transition(command_buffer, irradiance_sh_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-        sampled_shader_stages_,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            ray_tracing_stage,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     return true;
 }
@@ -453,8 +510,10 @@ bool VkAtmosphere::record(VkCommandBuffer command_buffer, float camera_world_y,
     const bool coefficients_dirty = coefficient_change_pending();
     const bool view_dirty = coefficients_dirty || view_change_pending(camera_world_y, to_sun);
     if (!view_dirty) return true;
-    // The physical set is only selected after all four images' copies and
-    // post-copy barriers have been recorded successfully.
+    // The physical set is only selected after all four images' compute
+    // dispatches and their post-dispatch layout transitions have been recorded
+    // successfully. (No copies are involved -- every LUT is written in place by
+    // its own dispatch.)
     if (!record_dispatches(command_buffer, coefficients_dirty, camera_world_y, to_sun, error)) return false;
     committed_settings_ = requested_settings_;
     committed_camera_world_y_ = camera_world_y;
@@ -466,6 +525,10 @@ bool VkAtmosphere::record(VkCommandBuffer command_buffer, float camera_world_y,
     return true;
 }
 
+// Copies the whole 3x3 irradiance image to a host-visible buffer and decodes
+// it into 9 SH coefficients. Blocking: it allocates a staging buffer and
+// waits on an immediate submit. Any non-finite texel fails the readback, which
+// is what keeps a NaN LUT from ever being committed.
 bool VkAtmosphere::readback_irradiance(
     matter::VkImageResource& image,
     std::array<matter::Float3, 9>& output, std::string& error) {
@@ -481,8 +544,12 @@ bool VkAtmosphere::readback_irradiance(
     struct Request {
         matter::VkImageResource* image;
         VkBuffer buffer;
-        VkPipelineStageFlags2 sampled_shader_stages;
-    } request{&image, readback.buffer, sampled_shader_stages_};
+        // Folded into the SHADER_READ_ONLY transition below; see
+        // matter::ray_tracing_shader_stage.
+        VkPipelineStageFlags2 ray_tracing_stage;
+    } request{&image, readback.buffer,
+              matter::ray_tracing_shader_stage(
+                  vulkan_ && vulkan_->ray_tracing_available())};
     const auto copy = [](VkCommandBuffer command_buffer, void* opaque) {
         auto& value = *static_cast<Request*>(opaque);
         matter::record_image_transition(
@@ -503,7 +570,9 @@ bool VkAtmosphere::readback_irradiance(
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             VK_ACCESS_2_TRANSFER_READ_BIT,
-            value.sampled_shader_stages,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                value.ray_tracing_stage,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     };
@@ -548,6 +617,12 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
         return false;
     }
 
+    // The generation machinery only knows how to write the live members and
+    // the shared descriptor sets, so the candidate images are swapped in here
+    // and the committed set parked in `saved`. Every exit path below --
+    // success, dispatch failure, readback failure, injected failure -- must
+    // swap them back and rewrite the descriptors, which is why the restore
+    // sits after the validation instead of inside an early return.
     RetiredLuts saved{std::move(transmittance_), std::move(multiscatter_),
                       std::move(sky_view_), std::move(irradiance_sh_)};
     transmittance_ = std::move(candidate.transmittance);
@@ -633,6 +708,9 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
         valid = false;
         error = "atmosphere candidate direct bases are invalid";
     }
+    // The serial a successful commit will take. It is stored on the candidate
+    // rather than bumped here, so a discarded candidate consumes no serial and
+    // `generation_serial()` only ever advances on an actual commit.
     candidate.state.generation_serial = generation_serial_ + 1;
 
     candidate.transmittance = std::move(transmittance_);
@@ -662,6 +740,11 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
     return valid;
 }
 
+// Atomic swap-in of a validated candidate: retire the live images against the
+// caller's frame slot, adopt the candidate's, publish its CPU-side state, then
+// point the compute descriptor sets at the new images. An invalid candidate is
+// ignored, and the moved-from candidate is marked invalid so a caller cannot
+// commit it twice.
 void VkAtmosphere::commit_candidate(Candidate&& candidate,
                                     uint32_t protected_frame_slot) {
     if (!candidate.valid) return;
@@ -809,8 +892,6 @@ void VkAtmosphere::destroy() {
     irradiance_sh_.reset(); sky_view_.reset(); multiscatter_.reset(); transmittance_.reset();
     retired_luts_.clear();
     vulkan_ = nullptr;
-    sampled_shader_stages_ = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     initialized_ = false;
     has_committed_settings_ = false;
     physical_selected_ = false;

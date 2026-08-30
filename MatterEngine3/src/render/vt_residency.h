@@ -764,6 +764,37 @@ struct VtFeedbackRequest {
 // ---------------------------------------------------------------------------
 // The GPU-facing residency runtime.
 // ---------------------------------------------------------------------------
+// Owns every GPU resource the VT system has: the kVtChannelCount pool images
+// and their samplers, the device-local indirection SSBO plus its per-frame
+// staging ring, the host-visible per-variant record buffer, the feedback image
+// and its readback ring, and the installed VtPageFiller / VtPageEnricher.
+//
+// LIFECYCLE. Constructed empty; init(device, error) allocates everything and
+// is idempotent (no-op once ready). It fails closed — on error nothing is
+// partially bound and available() stays false, and the renderer then runs with
+// no VT at all rather than half of one. shutdown() releases the resources;
+// the object is non-copyable and non-movable (deleted copy ops).
+//
+// PER-FRAME CALL ORDER, all of it required and order-dependent:
+//   begin_frame(frame_index, frame_slot)   // consumes readback slot, collects
+//                                          // the graveyards, refreshes budgets
+//   ensure_feedback(raster_w, raster_h, error)
+//   record_feedback_clear(cmd)             // before the G-buffer pass
+//   record_frame(cmd, error)               // before the G-buffer pass
+//   ... G-buffer pass ...
+//   record_feedback_readback(cmd)          // after the G-buffer pass
+// `frame_slot` must name a readback slot whose previous submission has already
+// completed — the caller's frame fence is what guarantees that.
+//
+// THREADING. There is no internal locking anywhere in this class. Everything
+// — registration, release, the per-frame calls — runs on the thread that
+// records the frame.
+//
+// The correctness contracts that are easy to break live in the file header
+// above: GPU-timeline recycling (nothing freed is reusable until its retire
+// serial matures) and tail-gated activation (slot_active() must gate every
+// routing of a draw through the VT path). Read both before touching release,
+// eviction or fill mapping.
 class VtResidency {
   public:
     struct Stats {
@@ -1008,6 +1039,11 @@ class VtResidency {
     bool context_storage_owned_for_test(uint32_t transport_slot) const;
 
   private:
+    // One pool channel (or the feedback image): a layered 2D image plus the
+    // memory backing it. `layout` MIRRORS the image's current Vulkan layout —
+    // record_frame reads it to decide which transitions to emit, so anything
+    // that transitions the image must update it. `edge` is the layer's square
+    // edge in texels (kVtPoolLayerEdgeTexels for pool channels).
     struct PoolImage {
         VkImage image = VK_NULL_HANDLE;
         VkImageView view = VK_NULL_HANDLE;
@@ -1019,6 +1055,21 @@ class VtResidency {
         VkDeviceSize tracked_alloc_size = 0;
     };
 
+    // One registered VT layer: the CPU truth for a (variant, rung) — or, since
+    // M6, for the set of (hash, rung) aliases that share one parameterisation.
+    // Indexed by variant slot in variants_; the transported slot the draw side
+    // carries is (index + 1), because 0 means "no VT".
+    //
+    // It owns COPIES of everything the filler will read (the chart atlas plus
+    // every mesh/tape stream VtPartContext points at) and `context` is
+    // repointed at those copies, which is what makes VtPartContext's "borrowed
+    // storage outlives every queued fill" guarantee true. Those copies are
+    // what MATTER_VT_MESH_BUDGET_MB budgets, and mesh_bytes records this
+    // layer's share of it.
+    //
+    // Teardown is refcounted (alias_refs) and fence-deferred: the mesh copies
+    // die immediately at release, but the slot, its table block and its page
+    // slots age in the graveyard for kVtRetireHorizonFrames first.
     struct VariantRung {
         uint64_t variant_hash = 0;
         uint32_t rung = 0;

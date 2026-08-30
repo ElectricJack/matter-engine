@@ -9,6 +9,34 @@
 // - solve issues with the order of header files once (here)
 // do not include headers in header files (ever).
 
+// ---------------------------------------------------------------------------
+// libs/SpatialQueryLib/include/precomp.h — what this is, in MatterEngine2
+// ---------------------------------------------------------------------------
+//
+// Despite the name and the template preamble above, this is NOT used as a
+// compiler precompiled header here. It is an ordinary header pulled in by
+// `tri.h` (and therefore by `bvh.h` and by the ~15 engine translation units
+// that name a `Tri`), so treat everything it defines as leaking repo-wide.
+//
+// What it provides:
+//   - `ALIGN(x)` — the portable alignment attribute used by `Tri`, `BVHRay`,
+//     `BVH` and `TLAS`.
+//   - `MALLOC64`/`FREE64` — 64-byte-aligned alloc/free. Note `MALLOC64(0)`
+//     returns null rather than a valid empty allocation, and on POSIX the
+//     backing `aligned_alloc` requires the size to be a multiple of 64, which
+//     is why callers round `n * sizeof(TriEx)` (96 bytes each) up before
+//     allocating. Buffers from MALLOC64 must be released with FREE64.
+//   - The `float2`/`float3`/`float4` POD vector types and their operators.
+//
+// Relationship to MathLib: `libs/MathLib` (`mm::Vec3`, `mm::Mat4`, ...) is the
+// engine's canonical everyday math library. The types here are the separate,
+// older SIMD/BVH interchange format — they exist because the BVH node and ray
+// layouts depend on their exact sizes. Do not "unify" them; convert at the
+// boundary instead.
+//
+// These types carry no coordinate-space meaning of their own. Whatever space a
+// caller stores in a `float3` is the caller's convention.
+
 // C++ headers
 #include <chrono>
 #include <fstream>
@@ -70,14 +98,28 @@ typedef unsigned int uint;
 typedef unsigned short ushort;
 
 // These vector views intentionally use anonymous structs so named components
-// and indexed storage share the exact OpenCL-compatible bytes. MSVC diagnoses
+// and indexed storage share bytes. MSVC diagnoses
 // that ABI extension as C4201; keep the exception local to these declarations.
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable: 4201)
 #endif
 
-// vector type placeholders, carefully matching OpenCL's layout and alignment
+// The vector types below are PODs with no default member initialisers: a bare
+// `float3 v;` is uninitialised. They are also deliberately trivial (no user
+// destructor, no virtuals) because `Tri`, `BVHNode`, `BVHRay` and `TLASNode`
+// all place them inside anonymous unions alongside `__m128`; giving any of
+// them a non-trivial member would break those unions.
+//
+// Note the asymmetry: int2/uint2/float2 are MATTER_ALIGN(8) and float4 is MATTER_ALIGN(16),
+// but `float3` carries NO alignment attribute and is exactly 12 bytes. That is
+// load-bearing, not an oversight — `BVHNode` and `TLASNode` rely on a
+// `float3` leaving the fourth 4-byte slot of a 16-byte union free for a packed
+// integer. Adding MATTER_ALIGN(16) to float3 would silently corrupt both layouts.
+// OpenCL-STYLE vector types. int2/uint2/float2/float4 do match OpenCL's layout
+// and alignment; `float3` deliberately does NOT — OpenCL's cl_float3 is a
+// 16-byte, 16-byte-aligned type, and this one is 12 bytes with no alignment
+// attribute, exactly so the BVH/TLAS node unions can reuse the fourth slot.
 struct MATTER_ALIGN( 8 ) int2
 {
 	int2() = default;
@@ -105,6 +147,13 @@ struct MATTER_ALIGN( 8 ) float2
 	float& operator [] ( const int n ) { return cell[n]; }
 };
 
+// 12 bytes, unaligned, no constructors — see the note above the vector types.
+// Construct with `make_float3(...)` or brace-init (`{x, y, z}`); the
+// `cell[3]` overlay is how the BVH builder indexes by split axis.
+//
+// `operator[]` is non-const only, so it is unavailable on a `const float3&`.
+// `TLAS::BuildRecursive` in `src/bvh.cpp` works around this with an explicit
+// per-axis branch rather than an index.
 struct float3
 {
 	union { struct { float x, y, z; }; float cell[3]; };
@@ -127,6 +176,14 @@ struct MATTER_ALIGN( 16 ) float4
 #endif
 
 // math functions
+//
+// `fminf`/`fmaxf` here are two-argument float overloads that sit alongside the
+// `<math.h>` functions of the same name pulled in above; the `float3` overloads
+// further down resolve to them componentwise. They are not NaN-propagating the
+// way the C library versions are — `a < b ? a : b` returns `b` whenever either
+// operand is NaN. The BVH bounds maths relies on plain ordered comparisons, so
+// feeding NaN vertices into a build produces silently wrong AABBs rather than
+// a detectable result.
 inline float fminf( float a, float b ) { return a < b ? a : b; }
 inline float fmaxf( float a, float b ) { return a > b ? a : b; }
 inline float rsqrtf( float x ) { return 1.0f / sqrtf( x ); }
@@ -165,4 +222,10 @@ inline float3 normalize( const float3& v ) { float invLen = rsqrtf( dot( v, v ) 
 inline float3 cross( const float3& a, const float3& b ) { return make_float3( a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x ); }
 
 // header for SSE intrinsics
+//
+// Deliberately last: nothing above needs `__m128`, but every consumer of this
+// header does (`bvh.h`'s unions, `tri.h`'s `Tri`). Because it is at the bottom,
+// including precomp.h is sufficient to name `__m128` — do not add a second
+// include of it, and do not move this line up without checking the macro
+// blocks above still see what they need.
 #include <immintrin.h>

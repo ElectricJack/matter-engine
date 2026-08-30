@@ -353,6 +353,56 @@ void test_twilight_uses_evaluated_sh_without_a_constant_floor() {
           "-12 degree ambient path injects no constant floor when evaluated SH input is black");
 }
 
+// VulkanLightingOverrides (the untouched live layer) and
+// AtmosphereLightingSources (the assembled resolve input) each carry defaults
+// for the same six dials. They must agree, or an untouched session and an
+// edited one resolve from different starting points.
+void test_lighting_override_and_source_defaults_agree() {
+    const matter::VulkanLightingOverrides overrides{};
+    const matter::AtmosphereLightingSources sources{};
+    CHECK(overrides.sun_multiplier == sources.sun_multiplier &&
+              overrides.sky_multiplier == sources.sky_multiplier &&
+              overrides.sky_irradiance_multiplier ==
+                  sources.sky_irradiance_multiplier &&
+              overrides.day_ambient_multiplier ==
+                  sources.day_ambient_multiplier &&
+              overrides.twilight_ambient_multiplier ==
+                  sources.twilight_ambient_multiplier &&
+              overrides.sunset_direct_ratio == sources.sunset_direct_ratio &&
+              overrides.sun_elevation_deg == sources.elevation_deg,
+          "live-override and resolve-source lighting defaults are identical");
+    CHECK(overrides.sun_azimuth_deg == matter::kSunAzimuthDefaultDeg &&
+              overrides.sun_elevation_deg == matter::kSunElevationDefaultDeg,
+          "default sun aim comes from matter/sun_angles.h");
+}
+
+// atmosphere_lighting_smoothstep is a public header function, so an out-of-file
+// caller can hand it degenerate edges. It must stay total: the pre-guard
+// version divided by (b - a) and let the resulting NaN through std::clamp and
+// on into the renderer's uniforms.
+void test_smoothstep_is_total_on_degenerate_edges() {
+    CHECK(nearly_equal(matter::atmosphere_lighting_smoothstep(0.0f, 1.0f, 0.5f),
+                       0.5f),
+          "well-formed smoothstep edges are unchanged");
+    CHECK(matter::atmosphere_lighting_smoothstep(0.0f, 1.0f, -1.0f) == 0.0f &&
+              matter::atmosphere_lighting_smoothstep(0.0f, 1.0f, 2.0f) == 1.0f,
+          "smoothstep clamps outside its edges");
+    CHECK(matter::atmosphere_lighting_smoothstep(3.0f, 3.0f, 2.9f) == 0.0f &&
+              matter::atmosphere_lighting_smoothstep(3.0f, 3.0f, 3.0f) == 1.0f &&
+              matter::atmosphere_lighting_smoothstep(3.0f, 3.0f, 3.1f) == 1.0f,
+          "equal edges become a hard step rather than a division by zero");
+    CHECK(matter::atmosphere_lighting_smoothstep(5.0f, 1.0f, 0.0f) == 0.0f &&
+              matter::atmosphere_lighting_smoothstep(5.0f, 1.0f, 9.0f) == 1.0f,
+          "reversed edges become a hard step at the lower argument");
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    CHECK(std::isfinite(matter::atmosphere_lighting_smoothstep(0.0f, 1.0f, nan)) &&
+              std::isfinite(matter::atmosphere_lighting_smoothstep(nan, 1.0f, 0.5f)) &&
+              std::isfinite(matter::atmosphere_lighting_smoothstep(0.0f, nan, 0.5f)) &&
+              std::isfinite(matter::atmosphere_lighting_smoothstep(-inf, inf, 0.5f)),
+          "no non-finite argument produces a non-finite smoothstep result");
+}
+
 void test_atmosphere_history_decisions_are_narrow() {
     const auto full = matter::atmosphere_history_decision(
         matter::kAtmosphereChangeNone, true);
@@ -404,6 +454,8 @@ int main() {
     test_atmosphere_lighting_resolution_is_componentwise_and_independent();
     test_direct_world_noon_normalization_rejects_invalid_luminance();
     test_twilight_uses_evaluated_sh_without_a_constant_floor();
+    test_lighting_override_and_source_defaults_agree();
+    test_smoothstep_is_total_on_degenerate_edges();
     test_atmosphere_history_decisions_are_narrow();
     return check_summary();
 }

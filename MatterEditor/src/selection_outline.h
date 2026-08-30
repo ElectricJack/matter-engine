@@ -1,4 +1,25 @@
 #pragma once
+
+// MatterEditor/src/selection_outline.h
+//
+// The editor's wireframe overlays: the selection boxes, and the frozen-cull
+// frustum debug sketch. Two different transports, and the call ordering below
+// is not interchangeable —
+//
+//  - `submit_selection_overlay_lines` stages world-space lines for the ENGINE
+//    to draw depth-tested during the render pass, so it goes BEFORE
+//    `WorldSession::render()`. The session clears its overlay buffer after
+//    each render, so this must be resubmitted every frame it should be
+//    visible.
+//  - `draw_frozen_cull_frustum` paints straight onto ImGui's foreground draw
+//    list, so it goes between ImGui::NewFrame and ImGui::Render and always
+//    sits on top. `draw_selection_outlines` shares that call slot but its body
+//    is EMPTY — it draws nothing at all today (see its declaration below).
+//
+// Geometry comes from selection_bounds.h, which the viewport pick raycast also
+// uses, so the drawn box and the clickable box are the same box. UI thread
+// only; implementation in selection_outline.cpp.
+
 #include "matter/camera.h"
 #include "selection_set.h"
 
@@ -14,6 +35,12 @@ void submit_selection_overlay_lines(const SelectionSet& selection,
 
 // Legacy ImGui path kept for the frozen-cull frustum and any future 2D-only
 // overlays. Call AFTER ImGui::NewFrame() and BEFORE ImGui::Render().
+//
+// The body is currently EMPTY — it voids every argument and returns. Selection
+// boxes are drawn by submit_selection_overlay_lines above, and the frozen-cull
+// frustum has its own entry point below; this remains only as the hook for a
+// future 2D-only overlay. main.cpp still calls it each frame, which costs
+// nothing.
 void draw_selection_outlines(const SelectionSet& selection,
                              const matter::CameraDesc& camera,
                              int fb_width, int fb_height,

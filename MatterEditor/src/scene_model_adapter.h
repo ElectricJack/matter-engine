@@ -33,6 +33,16 @@ namespace viewer {
 
 class EditorModel;
 
+// Owns nothing. It holds references to the app-scoped EditorModel and to
+// main.cpp's session slot, so it must not outlive either. Constructed once and
+// reused across world switches: `build()` may be called repeatedly, each time
+// against a different session hub, and each call re-primes `last_sequence_`
+// from the snapshot it takes.
+//
+// The subscriptions it creates are NOT stored here — they are pushed into the
+// caller's vector and destroyed by SessionBinding::quiesce_bridge before the
+// old hub dies, which is what guarantees no callback can fire into a torn-down
+// session. App thread only; the reference members make it non-assignable.
 class SceneModelAdapter {
 public:
     // `session_slot` is main.cpp's owning session pointer; it is re-pointed in
@@ -53,6 +63,9 @@ private:
 
     EditorModel& model_;
     std::unique_ptr<matter::WorldSession>& session_;
+    // Last scene-delta sequence applied to the model. Reset to 0 by a snapshot
+    // taken with no session bound. A delivered event whose sequence is not
+    // exactly this + 1 is discarded and triggers one full re-snapshot.
     uint64_t last_sequence_ = 0;
 };
 

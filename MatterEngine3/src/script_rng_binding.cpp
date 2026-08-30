@@ -1,3 +1,23 @@
+// MatterEngine3/src/script_rng_binding.cpp
+//
+// The engine-side half of the deterministic script RNG; script_rng_binding.h
+// carries the contract. Three small pieces: SplitMix32 seed expansion, the
+// xoshiro128** step, and a scanner that lifts an integer seed out of a params
+// JSON blob.
+//
+// WHY IT IS SPELLED OUT rather than taken from <random>. The identical
+// generator exists in JavaScript in shared-lib/rng.js, and a part baked by the
+// C++ host must draw the SAME numbers as the same part reasoned about in
+// script -- so every operation below is explicit 32-bit unsigned arithmetic
+// that both languages reproduce exactly. Do not "improve" a constant, a shift,
+// or the order of the state updates: any change silently rebakes every seeded
+// part in the repo differently, and the artifacts are content-addressed, so
+// the divergence shows up as a cache full of parts nobody can reproduce.
+//
+// No QuickJS include here on purpose -- installing `random()` as the
+// Math.random thunk is the script host's job, and keeping this file
+// dependency-free is what lets the generator be unit-tested and, in principle,
+// re-derived in any language.
 #include "script_rng_binding.h"
 #include <cctype>
 #include <cstdlib>
@@ -6,6 +26,11 @@ namespace script_rng {
 
 static uint32_t rotl(uint32_t x, int k){ return (x << k) | (x >> (32 - k)); }
 
+// SplitMix32: expand one 32-bit seed into the four state words xoshiro128**
+// needs. Run unconditionally, seed 0 included -- the golden-ratio increment is
+// added BEFORE the first mix, so even an all-zero seed produces a non-zero
+// state, which xoshiro requires (an all-zero state is a fixed point that emits
+// zeros forever).
 ScriptRng::ScriptRng(uint32_t seed) {
     uint32_t z = seed;
     for (int i = 0; i < 4; ++i) {
@@ -17,6 +42,9 @@ ScriptRng::ScriptRng(uint32_t seed) {
     }
 }
 
+// One xoshiro128** step. The scrambled output is computed from the state
+// BEFORE it advances; that ordering is part of the algorithm, not an
+// optimisation, and part of the shared-lib/rng.js parity contract.
 uint32_t ScriptRng::next_u32() {
     uint32_t result = rotl(s[1] * 5u, 7) * 9u;
     uint32_t t = s[1] << 9;
@@ -25,6 +53,9 @@ uint32_t ScriptRng::next_u32() {
     return result;
 }
 
+// [0, 1), with 2^-32 granularity. The divisor is 2^32 and not 2^32 - 1, which
+// is exactly what keeps 1.0 out of the range; JS does the same division, so
+// the two agree bit-for-bit on the resulting double.
 double ScriptRng::random() { return next_u32() / 4294967296.0; }
 
 uint32_t seed_from_params_json(const std::string& j, const std::string& key) {

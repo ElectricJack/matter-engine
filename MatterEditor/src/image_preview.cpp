@@ -1,3 +1,21 @@
+// MatterEditor/src/image_preview.cpp
+//
+// ImagePreviewCache implementation. See image_preview.h for why the images are
+// linear-tiled and why destruction is deferred; this file is the Vulkan
+// mechanics: a host-visible linear VkImage per preview, filled by a mapped
+// row-by-row memcpy (the driver's rowPitch is NOT width*4), moved from
+// PREINITIALIZED to SHADER_READ_ONLY_OPTIMAL by one barrier, then registered
+// with the ImGui Vulkan backend as a descriptor set.
+//
+// Cost: create() is SYNCHRONOUS — it submits that one barrier and blocks on a
+// fence before returning. This is fine for the handful of textures the issue
+// reporter makes (one frozen frame, one thumbnail per shot) and would be quite
+// wrong as a per-frame upload path. collect() additionally calls wait_idle(),
+// but only on a frame that actually retires something.
+//
+// All of it is main/render-thread only, and every entry point except the
+// destructor requires the VulkanDevice to still be alive.
+
 #include "image_preview.h"
 
 #include <algorithm>
@@ -91,6 +109,16 @@ bool ImagePreviewCache::ensure_pool_and_sampler(std::string& error) {
     return true;
 }
 
+// Upload one RGBA8 image and return its ImTextureID (a VkDescriptorSet).
+//
+// Validates the buffer size and the device's linear-tiling support up front,
+// then allocates image + memory + view + descriptor set and blocks on a fence
+// for the layout transition. Every failure path frees the partial entry and
+// returns nullptr with `error` set — a failed preview is cosmetic and must
+// never abort the capture that asked for it.
+//
+// The returned handle stays owned by the cache: hand it back to destroy(),
+// never free it yourself, and do not use it after shutdown().
 void* ImagePreviewCache::create(const std::vector<uint8_t>& rgba,
                                 uint32_t width, uint32_t height,
                                 std::string& error) {
@@ -253,6 +281,9 @@ namespace {
 constexpr int kDeferFrames = 2;
 } // namespace
 
+// Queue a texture for deferred release. A null handle, a handle from another
+// cache, or a second destroy() of the same handle are all silent no-ops — the
+// lookup simply finds nothing. Nothing is freed here; see collect().
 void ImagePreviewCache::destroy(void* handle) {
     if (!handle || !vulkan_) return;
     const auto set = static_cast<VkDescriptorSet>(handle);
@@ -271,6 +302,10 @@ void ImagePreviewCache::destroy_all() {
     // the life of the editor. shutdown() releases them.
 }
 
+// Age the deferred queue by one frame and free whatever has come due. Because
+// the countdown is driven from here, this must be called EXACTLY once per
+// frame, before any drawing — calling it twice retires textures a frame early,
+// which is the use-after-free the deferral exists to prevent.
 void ImagePreviewCache::collect() {
     if (!vulkan_ || pending_.empty()) return;
     bool any_due = false;

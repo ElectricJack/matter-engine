@@ -25,6 +25,13 @@
 
 namespace bake_trace {
 
+// A named scalar attached to the span that was open when it was recorded --
+// triangle counts, byte counts, cache hits, whatever a phase wants to report
+// beside its duration. `name` is stored by pointer, so it must outlive the
+// Collector (a constant or a literal, never a temporary), and it carries the
+// units: `value` is a bare double with no unit of its own. Counters are
+// appended, never merged, so counting twice under the same name leaves two
+// entries on the span.
 struct Counter {
     const char* name;
     double value;
@@ -46,6 +53,24 @@ struct Span {
     std::vector<Span> children;
 };
 
+// Owns one bake run's span tree.
+//
+// Lifetime: created by whoever drives the bake (the Bake Lab harness, a test, or
+// the bake entry point), lives for the run, and is usually published to deep
+// call sites with set_current(). It holds a std::mutex, so it is neither
+// copyable nor movable -- hold it by value or by pointer, never copy it out as a
+// result; use snapshot() for that.
+//
+// Threading: one writer thread (begin / count / end / reset) and any number of
+// readers (snapshot). All of them take mutex_, so a reader never sees a
+// half-written tree. The single-writer rule is a contract, not an assertion --
+// two writer threads would not corrupt memory, but open_ is one shared stack, so
+// their spans would interleave into a meaningless tree.
+//
+// Call order: begin/end must nest and balance. An unbalanced end() is a silent
+// no-op, and a missing end() leaves that span open forever (end_ms stays
+// kOpenEndMs) with every later span nesting inside it. Prefer the RAII `Scope`
+// below to calling begin/end by hand.
 class Collector {
 public:
     Collector();

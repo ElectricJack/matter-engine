@@ -846,14 +846,12 @@ void test_physical_atmosphere_editor_source_contract() {
     const std::string atmosphere_source = read("../src/render/vk_atmosphere.cpp");
     const std::string volumetrics_source = read("../src/render/vk_volumetrics.h");
     const std::string volumetrics_impl_source = read("../src/render/vk_volumetrics.cpp");
-    const std::string shots_source = read("../tools/atmosphere_cloud_shots.sh");
     CHECK(!props_source.empty() && !editor_source.empty() && !reset_source.empty() &&
               !main_source.empty() && !ui_source.empty() && !issue_source.empty() &&
               !session_source.empty() && !renderer_source.empty() &&
               !renderer_impl_source.empty() &&
               !atmosphere_source.empty() && !volumetrics_source.empty() &&
-              !volumetrics_impl_source.empty() &&
-              !shots_source.empty(),
+              !volumetrics_impl_source.empty(),
           "physical atmosphere: editor sources are available from the test cwd");
     for (const char* token : {"\"render.atmosphere\", \"Atmosphere\"",
                               "\"render.volumetrics\", \"Volumetrics\"",
@@ -935,15 +933,15 @@ void test_physical_atmosphere_editor_source_contract() {
           "physical atmosphere: the immediate LUT candidate publishes a GPU query result");
     CHECK(renderer_impl_source.find("z == kGpuZoneAtmosphere") != std::string::npos,
           "physical atmosphere: frame timestamp readback cannot overwrite the module atmosphere lane");
-    for (const char* token : {"FINAL_STAGE_DIR", "expect_property", "ffmpeg",
-                              "verify_final_capture", "promote_final_evidence",
-                              "FINAL_EXPECT_BYTES_PER_VOXEL",
-                              "final_canonical_enhanced_cloud_lighting",
-                              "final_verify_froxel_pair",
-                              "FINAL_PREVIOUS_PAIR_GENERATION",
-                              "scan_final_log"})
-        CHECK(shots_source.find(token) != std::string::npos,
-              "physical atmosphere: final acceptance validates and promotes staged evidence");
+    // The staged-evidence acceptance script this used to pin
+    // (MatterEngine3/tools/atmosphere_cloud_shots.sh, asserted to contain
+    // FINAL_STAGE_DIR / verify_final_capture / promote_final_evidence / ...)
+    // was deleted on purpose in ac1c04dc ("Remove helper script that's not
+    // needed any longer"). Reading a file that no longer exists returned an
+    // empty string, which failed the availability CHECK above and then every
+    // token CHECK below it -- 11 failures with one cause. The shipped
+    // atmosphere/cloud surface is still pinned by the source contracts above;
+    // there is nothing left to assert about the retired script.
 }
 
 const auto& atmosphere_lighting_controls_schema() {

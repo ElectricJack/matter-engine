@@ -1,3 +1,36 @@
+// MatterEngine3/src/ecs/ecs_runtime.cpp
+//
+// The ECS runtime: module registration plus the tick loop that drives it.
+//
+// Two distinct jobs live here.
+//
+// 1. MODULE REGISTRATION (CoreModule, PhysicsModule, StreamingModule). Each
+//    constructor registers component reflection (so components are inspectable
+//    and serializable) and, more importantly, wires the PHASE GRAPH — the
+//    depends_on chain that decides system order. The full fixed-step chain is:
+//
+//      PreUpdate -> FixedPreUpdate -> FixedUpdate -> PrePhysics
+//        -> PhysicsReconcile -> PhysicsPush -> Physics -> PhysicsPull
+//        -> PostPhysics -> PostPhysicsHierarchy -> FixedPostUpdate
+//        -> FrameUpdate -> StreamingUpdate
+//
+//    The physics phases are spliced INTO the core chain by PhysicsModule
+//    (it re-declares ecs::Physics as depending on PhysicsPush and
+//    ecs::PostPhysics as depending on PhysicsPull), which is why importing
+//    PhysicsModule after CoreModule is required rather than incidental.
+//
+// 2. Runtime — owns the flecs world and the three native subsystems hanging off
+//    it (PhysicsContext, streaming Coordinator, AnimationSystems), publishing
+//    each into the world as a *ContextRef singleton so systems can find it.
+//
+// Threading: everything except enqueue_world_state() is single-threaded on the
+// tick thread. enqueue_world_state() takes a mutex and may be called from any
+// thread; the queue is drained at the top of tick().
+//
+// Time: tick() runs a classic accumulator. Frame deltas are clamped to 0.25 s,
+// fixed steps run until the accumulator is drained or max_fixed_steps is hit,
+// and any whole steps still banked past that point are DISCARDED and reported as
+// dropped_steps — the spiral-of-death guard.
 #include "ecs_runtime.h"
 #include "physics_context.h"
 #include "river_float_system.h"
@@ -29,6 +62,13 @@ namespace matter::ecs {
 
 void register_transform_systems(flecs::world& world);
 
+// Registers the core transform/world-state components and the fixed+frame phase
+// graph, then installs the transform systems and the singleton state components.
+// Runs once, from Runtime's constructor, via world.import<CoreModule>().
+//
+// The set_scope dance around the body puts the registered entities in the
+// module's parent scope rather than under the module itself, so component names
+// stay unprefixed.
 CoreModule::CoreModule(flecs::world& world) {
     const flecs::entity module = world.module<CoreModule>();
     const flecs::entity previous_scope = world.set_scope(module.parent().id());
@@ -115,6 +155,10 @@ CoreModule::CoreModule(flecs::world& world) {
 
 namespace matter::physics {
 
+// Registers the physics component surface and splices the four physics phases
+// into the core chain (see the phase diagram at the top of this file). Must be
+// imported AFTER CoreModule: it declares dependencies on ecs::PrePhysics and
+// re-parents ecs::Physics / ecs::PostPhysics around its own phases.
 PhysicsModule::PhysicsModule(flecs::world& world) {
     const flecs::entity module = world.module<PhysicsModule>();
     const flecs::entity previous_scope = world.set_scope(module.parent().id());
@@ -293,6 +337,8 @@ float explicit_flecs_frame_delta(double contributed_delta) {
     return std::copysign(0.0f, -1.0f);
 }
 
+// RAII pairing of world.frame_begin/frame_end so an early return out of tick()
+// cannot leave the flecs frame open. Non-copyable, stack-only.
 class FrameScope {
 public:
     FrameScope(flecs::world& world, float delta) : world_(world) {
@@ -318,6 +364,11 @@ int compare_entity_ids(
     return (first > second) - (first < second);
 }
 
+// Build one pipeline over the systems tagged with PipelineTag: phase-ordered by
+// the DependsOn cascade, skipping anything disabled directly or by inheritance,
+// and — the part that matters for reproducibility — ordered WITHIN a phase by
+// raw entity id rather than registration order, so a run's system order does not
+// depend on which translation unit registered first.
 template <typename PipelineTag>
 flecs::entity build_pipeline(flecs::world& world) {
     return world.pipeline()
@@ -332,6 +383,12 @@ flecs::entity build_pipeline(flecs::world& world) {
         .build();
 }
 
+// Floating-point papercut guard. The accumulator is a double but the fixed delta
+// arrives as a float, so repeated subtraction can leave it a fraction of a float
+// ULP short of the next step boundary — visibly dropping a step every few
+// seconds at some rates. If the shortfall is within half a downward float ULP of
+// the boundary, snap up to it. Never moves an accumulator that is already past
+// the boundary.
 void snap_half_ulp_shortfall_to_fixed_boundary(
     double& accumulator,
     float fixed_delta_input,
@@ -351,6 +408,16 @@ void snap_half_ulp_shortfall_to_fixed_boundary(
 
 } // namespace
 
+// Construction order is a dependency chain, not a preference: modules first
+// (they register the components and phases everything else refers to), then the
+// native subsystems, each published into the world as a *ContextRef singleton so
+// systems can reach it, then the two pipelines built over whatever systems the
+// modules registered. PhysicsContext is constructed from the PhysicsSettings
+// singleton PhysicsModule just installed.
+//
+// The destructor unwinds this deliberately: it NULLS each ContextRef before
+// destroying the object behind it, because flecs observers stay registered until
+// world finalization and will fire OnRemove callbacks that look the context up.
 Runtime::Runtime() {
     world_.import<ecs::CoreModule>();
     world_.import<physics::PhysicsModule>();
@@ -426,6 +493,12 @@ const animation::AnimationSystems& Runtime::animation_systems() const noexcept {
     return *animation_systems_;
 }
 
+// Bind (or, with nullptr, unbind) the animation service that owns animator
+// handles. Not a cheap setter: switching services STRIPS every
+// AnimationRigidBinding and AnimationSkinnedBinding component in the world
+// first, because animator handles are service-local and a replacement service
+// could otherwise reuse a slot/generation pair and inherit the old service's
+// render components. A no-op when the service is already bound.
 void Runtime::attach_animation_service(AnimationService* service) noexcept {
     if (bound_animation_service_ == service) return;
     // Animator handles are service-local.  Even if a replacement service
@@ -495,6 +568,12 @@ void Runtime::detach_animation_skinned_binding(flecs::entity entity) {
         entity.remove<render::AnimationSkinnedBinding>();
 }
 
+// Per-tick liveness audit: removes any AnimationRigidBinding whose declaration
+// or animator no longer validates — no bound service, a null/rebuilt asset, an
+// asset generation that moved under the binding, or an animator handle the
+// service no longer honours. Removal happens after the query rather than inside
+// it, so the world is not mutated mid-iteration. The skinned variant below
+// applies the same rule plus a LOD-range check.
 void Runtime::reconcile_animation_rigid_binding_lifecycle() {
     std::vector<flecs::entity> stale;
     world_.each([this, &stale](flecs::entity entity,
@@ -536,6 +615,14 @@ void Runtime::enqueue_world_state(WorldStateCommand command) {
     world_state_commands_.push_back(command);
 }
 
+// Apply queued world-state transitions at the top of a tick. The queue is
+// swapped out under the mutex and then processed unlocked, so a producer thread
+// is never blocked on ECS work.
+//
+// A Ready command bumps content_generation and, if it carries entity recipes,
+// bootstraps them transactionally — all-or-nothing, with a failure reported to
+// stderr and the status still advanced to Ready. A command with no resolver gets
+// a stub that resolves every module name to hash 0.
 void Runtime::drain_world_state_commands() {
     std::vector<WorldStateCommand> commands;
     {
@@ -579,6 +666,23 @@ void Runtime::drain_world_state_commands() {
     world_.set<ecs::WorldRuntimeState>(state);
 }
 
+// One frame. Validates the descriptor (a non-finite/negative frame delta, a
+// non-positive fixed delta, or max_fixed_steps == 0 returns invalid without
+// touching any state), then, inside one flecs frame:
+//   - drains world-state commands and audits animation bindings;
+//   - runs the fixed pipeline zero or more times off the accumulator;
+//   - publishes interpolation alpha and the presentation delta to the animation
+//     systems;
+//   - runs the frame pipeline once.
+//
+// The frame delta is clamped to kMaxFrameContributionSeconds (0.25 s) before it
+// is banked, so a long stall costs at most a quarter second of simulation.
+// Whole steps still banked after max_fixed_steps are discarded and counted in
+// dropped_steps — simulation time falls behind wall time rather than spiralling.
+//
+// desc.advance_fixed == false freezes simulation without invalidating the tick:
+// the accumulator is neither fed nor spent, so a paused editor resumes at the
+// exact sub-step phase it froze at, while the frame pipeline still runs.
 TickResult Runtime::tick(const TickDesc& desc) {
     const double frame_delta = desc.frame_delta_seconds;
     const double fixed_delta = desc.fixed_delta_seconds;

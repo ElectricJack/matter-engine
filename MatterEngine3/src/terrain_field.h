@@ -3,6 +3,59 @@
 // Pure CPU module: no JS, no GL, no engine subsystem dependencies.
 // Used by Tasks 4, 5, 7, 9 (world evaluator, mesher, etc.).
 
+//
+// ---------------------------------------------------------------------------
+// What is in here
+// ---------------------------------------------------------------------------
+// THREE programs share ONE instruction set and ONE register machine:
+//
+//   FieldProgram / FieldRuntime   the world's terrain field. Answers
+//                                 height(x, z), density(x, y, z), moisture,
+//                                 relief, slope, curvature, biome, material.
+//                                 Parsed from the canonical text a World's
+//                                 field() method records.
+//   SurfaceProgram (Surfaces mode) / SurfaceRuntime
+//                                 the surfaces() CLASSIFIER tape: per-sample
+//                                 weights over declared materials, plus the P3
+//                                 appearance lanes. Has a GPU twin.
+//   SurfaceProgram (Habitat mode) / SurfaceRuntime
+//                                 the habitat() tape: per-sample ecology
+//                                 channels, read at scatter-candidate rate
+//                                 during a bake. CPU only.
+//
+// THE REGISTER MACHINE. A program is a flat list of ops. Op i writes register
+// i, and every operand is a BACKWARD reference (parse rejects forward refs), so
+// a single forward pass evaluates everything and no register is read before it
+// is written. That one rule is why the evaluators can use an UNINITIALISED
+// stack array as their register file, why the column cache can split a program
+// at the y-dependence boundary, and why the caps below are simply array sizes.
+// Do not add a forward-referencing op kind without revisiting all three.
+//
+// TEXT IS THE COMPATIBILITY SURFACE. The canonical one-op-per-line text is
+// what gets hashed (FNV-1a 64) and what a bake identity folds in; the structs
+// here are internal layout and may change freely. An edited program therefore
+// invalidates exactly the artifacts that depend on it.
+//
+// DETERMINISM AND THE GPU TWIN. The noise core in terrain_field.cpp is
+// bit-exact integer hashing on purpose: shaders_vk/vt_surface_tape.glsl
+// evaluates the same surfaces tape on the GPU and must agree with the CPU
+// path. Three constants are mirrored outside this file and the compiler cannot
+// check them -- kMaxSurfaceOps against the shader's VT_TAPE_MAX_OPS,
+// kMaxSurfaceMaterials against the compositor's per-vertex weight packing, and
+// the appearance clamp ranges against the shader's VT_APP_* defines. Each
+// carries its own note below; raising one means touching the shader AND
+// rebuilding SPIR-V.
+//
+// COST MODEL, because nothing here looks expensive. Every FieldRuntime query
+// is a full program evaluation: height_at is 1, slope_at is 4 (finite
+// differences over height), curvature_at is 5, biome_at up to 3, material_at
+// up to 8. A tape that reads `height` and `fieldSlope` therefore pays five
+// field evaluations per sample, which is what HeightLattice exists to
+// amortize.
+//
+// THREADING. Both runtimes are immutable after construction and every method
+// is const, so any number of threads may share one -- and bake workers do.
+// The single exception is SurfaceRuntime's warn-once latch; see its note.
 #include <string>
 #include <cstdint>
 #include <memory>
@@ -28,6 +81,18 @@ constexpr int kMaxSurfaceOps = 96;
 // ---------------------------------------------------------------------------
 // Op — single instruction in the field program.
 // ---------------------------------------------------------------------------
+// One instruction, and the union of BOTH programs' instruction sets -- which
+// is why some kinds below are annotated as belonging to only one of them.
+// Keeping a single struct is deliberate: the arithmetic ops must behave
+// identically in a field and in a tape, and two structs would be two places to
+// get that wrong.
+//
+// Op i writes register i. `a`/`b`/`c` name earlier registers (-1 = unused) and
+// are always BACKWARD references; `f0..f3` and `seed` are the op's literals,
+// with their meaning fixed per kind (the parser's comments in
+// terrain_field.cpp name them per op). Which of the two parsers may EMIT a
+// given kind is not enforced by the type -- it is enforced by the parsers, and
+// the evaluators return 0 for a kind that should not have reached them.
 struct Op {
     enum Kind {
         Const, Noise2, Ridge2, Warp2,
@@ -57,6 +122,10 @@ struct Op {
     int a = -1, b = -1, c = -1;        // register operands (-1 = unused)
     float f0 = 0, f1 = 0, f2 = 0, f3 = 0; // literals: value/freq/gain/lac/edges
     uint32_t seed = 0;
+    // OVERLOADED, and the one field here that does not read as what it is: on
+    // the noise/ridge ops it is the OCTAVE COUNT, but on Op::Input it is a
+    // SurfaceInput CODE. The two never coexist on one op, which is why they
+    // share a slot, but a reader scanning for `oct` will find both.
     int oct = 0;
     // Optional [wseed wfreq wamp] domain-warp tail on the 3D noise ops. The
     // struct layout is internal (canonical TEXT is the compatibility surface);
@@ -69,6 +138,24 @@ struct Op {
 // ---------------------------------------------------------------------------
 // FieldProgram — parsed, immutable field program.
 // ---------------------------------------------------------------------------
+// A parsed terrain field: the ops, the registers the output directives name,
+// and the derived facts parse computed about them. IMMUTABLE once
+// `parse` returns true -- everything downstream treats it as a value and
+// FieldRuntime holds one by copy.
+//
+// A field is a function of world (x, y, z) and NOTHING else: no part-local
+// frame, no per-instance state, no time. That is what lets any thread evaluate
+// it anywhere and get the same answer, and it is why `input` here admits only
+// wx/wy/wz where the surfaces tape admits a dozen names.
+//
+// Parse enforces two contracts the rest of the engine relies on and neither is
+// re-checked later:
+//   * the height, moisture and relief registers must be y-INDEPENDENT, since
+//     height_at/moisture_at/relief_at take no y and would otherwise silently
+//     return a slice at whatever y the evaluator happened to pass;
+//   * height is the SURFACE of the density, not a sample of it, which is what
+//     lets the mesher bound its Y slab.
+// A program that violates either fails to parse rather than misbehaving.
 struct FieldProgram {
     // Parse a canonical text program (one op per line, directives at end).
     // Returns false and sets err on any violation.
@@ -117,6 +204,20 @@ private:
 // ---------------------------------------------------------------------------
 // FieldRuntime — evaluator bound to a compiled FieldProgram.
 // ---------------------------------------------------------------------------
+// The evaluator. Holds a FieldProgram BY VALUE (constructed from a moved-in
+// program), so a runtime is self-contained and outlives whatever parsed it.
+//
+// IMMUTABLE AND FREELY SHARED. Every method is const and the object has no
+// mutable state; register files live on the caller's stack or in a
+// caller-owned ColumnCache. Any number of threads may evaluate one runtime
+// concurrently, which is exactly what the bake worker pool does.
+//
+// NOTHING HERE IS CHEAP. Each query below is one or more complete evaluations
+// of the program -- height_at 1, slope_at 4, curvature_at 5, biome_at up to 3,
+// material_at up to 8 -- and a typical program's dominant term is a
+// multi-octave fbm. There is no memoisation: two calls at the same (x, z) do
+// the work twice. Hoist, use eval_column for a vertical run, and use
+// HeightLattice for a dense horizontal one.
 class FieldRuntime {
 public:
     explicit FieldRuntime(FieldProgram p);
@@ -339,6 +440,23 @@ constexpr int kMaxHabitatOps = 1024;
 // diagnostic is weakened by the other's existence.
 enum class TapeMode { Surfaces, Habitat };
 
+// A parsed TAPE -- either a surfaces() classifier or a habitat() channel
+// program, selected by the TapeMode passed to parse. One struct for both,
+// because the op set, the register machine and every arithmetic rule are
+// identical; only the output directives differ, and only the mode-specific
+// fields (`materials` + the appearance registers, versus `channel_regs`) are
+// populated. Reading the wrong set for the mode yields empty, not garbage.
+//
+// IMMUTABLE once parse returns true. Beyond the ops it carries two derived
+// facts that let callers avoid work: `uses_world_inputs()` (does this tape
+// need a world context at all) and `input_mask()` (which per-sample inputs any
+// op actually reads, so the runtime can skip the field queries nothing
+// consumes -- each of those is a full field-program evaluation).
+//
+// Register refs in the canonical text are SOURCE ordinals, not op indices:
+// identical `const` lines are deduplicated at parse time and refs remapped, so
+// the op cap applies to the DEDUPLICATED count and `ops.size()` is generally
+// smaller than the number of lines.
 struct SurfaceProgram {
     // Parse canonical text: op lines (const/noise2/ridge2/noise2w/ridge2w/
     // noise3/ridge3/noise3w/ridge3w/curv/add/sub/mul/min/max/clamp/blend/
@@ -488,6 +606,27 @@ struct SurfaceWorldContext {
     const HeightLattice* height_lattice = nullptr;
 };
 
+// The tape evaluator. Holds a SurfaceProgram by value; construct one per
+// program and share it.
+//
+// THREADING. Const methods, no scratch members -- every register file is a
+// stack array in the calling frame -- so bake workers share one instance
+// freely and that is the intended use. The ONE exception is `misuse_noted_`,
+// the warn-once latch behind note_world_input_misuse(): a plain bool with no
+// synchronization, so under concurrent use the diagnostic may be reported more
+// than once. That is its whole failure mode.
+//
+// FOUR entry points read the SAME registers through one evaluation path
+// (eval_regs), which is what keeps them from ever disagreeing about what a
+// register holds:
+//   weights_at        per-sample material weights (Surfaces mode)
+//   appearance_at     the P3 appearance lanes, clamped (Surfaces mode)
+//   channels_at       ecology channels at a world (x, z) (Habitat mode)
+//   classify_vertices weights_at over a whole vertex stream, quantized to u8
+//
+// COST. One call is one full evaluation of every op, plus whatever field
+// queries the input mask admits -- and those are field-program evaluations in
+// their own right (see FieldRuntime). classify_vertices pays that per VERTEX.
 class SurfaceRuntime {
 public:
     explicit SurfaceRuntime(SurfaceProgram p);

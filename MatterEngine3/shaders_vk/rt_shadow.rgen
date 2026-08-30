@@ -95,6 +95,17 @@ layout(location = 0) rayPayloadEXT VisibilityPayload payload;
 // declares the water field resources used by the lighting/refraction path).
 const uint WATER_SURFACE_MATERIAL_FLAG = 1u << 4u;
 
+// World position reconstructed from the GBuffer depth at an arbitrary pixel,
+// using the same clip->world unprojection main() applies to the shading pixel.
+// Used to derive the flat-facet GEOMETRIC normal from neighbouring depths.
+vec3 world_from_depth(ivec2 p, ivec2 extent) {
+    float d = texelFetch(depth_texture, p, 0).x;
+    vec2 puv = (vec2(p) + vec2(0.5)) / vec2(extent);
+    vec4 wh = constants.clip_to_world *
+              vec4(puv.x * 2.0 - 1.0, 1.0 - puv.y * 2.0, d, 1.0);
+    return wh.xyz / wh.w;
+}
+
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
     ivec2 extent = ivec2(gl_LaunchSizeEXT.xy);
@@ -144,7 +155,33 @@ void main() {
     // grows with distance (coarser LOD = larger triangles = more sag).
     // Reversed-Z: depth ≈ 1 near, ≈ 0 far, so 1/depth ∝ linear distance.
     float depth_scale = clamp(0.002 / max(depth, 1e-4), ray_start, 0.5);
-    world += normal * depth_scale;
+    // Lift along the GEOMETRIC (flat-facet) normal, not the shading normal in
+    // normal_texture. The shading normal carries the terrain field-gradient /
+    // tileset detail (issues eb0b1070, 98c8c21e): on coarse 2:1 rungs it tilts
+    // 30-60 deg off the flat TLAS triangle, so lifting along it buys only
+    // depth_scale*cos(theta) of perpendicular clearance -- or, when it inverts
+    // past the facet, moves the origin BELOW the flat plane. Either way the sun
+    // ray re-hits the triangle it started on and the whole coarse face reads as
+    // zero sun visibility (the black facets on open snow). tileset_bake_ao.comp
+    // makes the same geometric-normal choice for the same reason. rt_shadow has
+    // no per-triangle geometry, so reconstruct the facet normal from the
+    // GBuffer depth of the four screen neighbours, picking the nearer neighbour
+    // on each axis so the stencil never reaches across a silhouette. Fall back
+    // to the shading normal where the reconstruction is degenerate.
+    vec3 wc = world;
+    vec3 wr = world_from_depth(min(pixel + ivec2(1, 0), extent - 1), extent);
+    vec3 wl = world_from_depth(max(pixel - ivec2(1, 0), ivec2(0)), extent);
+    vec3 wd = world_from_depth(min(pixel + ivec2(0, 1), extent - 1), extent);
+    vec3 wu = world_from_depth(max(pixel - ivec2(0, 1), ivec2(0)), extent);
+    vec3 dxr = wr - wc, dxl = wc - wl;
+    vec3 dyd = wd - wc, dyu = wc - wu;
+    vec3 ddx = dot(dxr, dxr) < dot(dxl, dxl) ? dxr : dxl;
+    vec3 ddy = dot(dyd, dyd) < dot(dyu, dyu) ? dyd : dyu;
+    vec3 geo_n = cross(ddx, ddy);
+    float geo_len_sq = dot(geo_n, geo_n);
+    geo_n = geo_len_sq > 1e-12 ? geo_n * inversesqrt(geo_len_sq) : normal;
+    if (dot(geo_n, normal) < 0.0) geo_n = -geo_n; // outward-facing
+    world += geo_n * depth_scale;
     // Every use of identity.x from here down is a MATERIAL INDEX and must have
     // the impostor bit masked off. It cannot be set on this path (the early
     // return above took it), so the mask is defence against a future edit that

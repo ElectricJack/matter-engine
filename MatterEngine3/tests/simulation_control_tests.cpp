@@ -200,7 +200,7 @@ static void test_pause_play_preserves_original_snapshot() {
     checkpoint.controller_state = {1,2,3};
     CHECK(control.set_animator_checkpoints({checkpoint}), "original animation checkpoint");
     CHECK(control.play(world, error), "initial Play captures snapshot");
-    const auto generation = control.snapshot().generation;
+    const auto original_id = control.snapshot().entities.at(0).id;
     CHECK(!control.play(world, error) && !error.empty(), "Play while playing fails");
     CHECK(!control.step(error) && !error.empty(), "Step while playing fails");
     e.set<ecs::LocalTransform>({{99,0,0},{},{1,1,1}});
@@ -213,10 +213,12 @@ static void test_pause_play_preserves_original_snapshot() {
     CHECK(control.play(world, error), "Pause resumes through Play transport");
     CHECK(control.mode() == SimulationMode::Play && control.should_advance_fixed(), "resume enters Play");
     CHECK(!control.consume_pending_step(), "resume clears queued step");
-    CHECK(control.snapshot().generation == generation && control.snapshot().entities.size() == 1 &&
+    CHECK(control.has_snapshot() && control.snapshot().entities.size() == 1 &&
+          control.snapshot().entities[0].id.value == original_id.value &&
+          control.snapshot().entities[0].id.generation == original_id.generation &&
           control.snapshot().entities[0].transform.translation.x == 5 &&
           control.snapshot().animator_checkpoints[0].asset_identity == 42,
-          "resume retains original snapshot values count generation and animation");
+          "resume retains original snapshot values count identity and animation");
     CHECK(control.stop(world, error), "Stop restores original Edit state");
     CHECK(world.count<SceneEntityId>() == 1, "Stop discards resume-time entity");
     world.each([&](const SceneEntityId&, const ecs::LocalTransform& t) { CHECK(t.translation.x == 5, "Stop uses original transform"); });

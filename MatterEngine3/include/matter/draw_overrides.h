@@ -1,5 +1,7 @@
 #pragma once
 
+// MatterEngine3/include/matter/draw_overrides.h
+//
 // Per-module draw overrides — a VIEW-TIME FILTER over what the renderer
 // submits, never a change to a baked artifact.
 //
@@ -48,6 +50,12 @@
 
 namespace matter {
 
+// One module's override entry, exactly as authored. A default-constructed
+// value is the neutral one (see draw_override_is_default), which is why the
+// table below can stay sparse. `lod_bias` is clamped into
+// [kDrawOverrideMinLodBias, kDrawOverrideMaxLodBias] and `max_draw_distance`
+// into [0, kDrawOverrideMaxDistance] on the READ side
+// (read_draw_override_group), not by this struct.
 struct ModuleDrawOverride {
     bool  hide = false;
     float max_draw_distance = 0.0f;  // metres; 0 = unlimited
@@ -103,6 +111,8 @@ public:
     const ModuleDrawOverride* find(const std::string& module) const;
     bool empty() const { return by_module_.empty(); }
     size_t size() const { return by_module_.size(); }
+    // Name-sorted (it is a std::map), so the panel's rows and the saved
+    // property file come out in a deterministic order.
     const std::map<std::string, ModuleDrawOverride>& entries() const {
         return by_module_;
     }
@@ -145,6 +155,9 @@ public:
     // --- queries -----------------------------------------------------------
     // Exact fast path: false when nothing is hidden, without touching the memo.
     bool any_hidden() const { return any_hidden_; }
+    // Hidden test for one part, memoised per hash (hidden_memo_ is mutable
+    // for exactly this reason). Prefer any_hidden() when you only need to
+    // know whether anything is hidden at all.
     bool hidden(uint64_t part_hash) const;
 
     // Per-part GPU lane, sorted by hash. Empty whenever no module asks for a

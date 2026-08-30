@@ -1,4 +1,43 @@
 #pragma once
+// MatterEngine3/src/dsl_state.h
+//
+// The C++ side of the part-authoring DSL. Every geometry verb a part script
+// calls (`sphere`, `beginShape`/`vertex`/`endShape`, `extrude`, `line`,
+// `placeChild`, `beginRig`, `terrainVolume`, `emitVolume`, ...) is a thin
+// QuickJS binding over a method on `DslState`. The JS side holds no engine
+// state at all, so this object *is* the authored part until the bake host
+// lifts the results out of it.
+//
+// How it fits
+//   - script_host.cpp owns the instance (a plain stack local per part
+//     evaluation), installs the bake inputs before running the script
+//     (`set_rng`, `set_child_hashes`, `set_world`, `set_budget`,
+//     `enable_tileset`, `set_pf_registry`), and afterwards reads back
+//     `buffer()` (the SDF brush ops), `triangle_buffer()` (direct triangles),
+//     `children()`, `emitters()`, `modifier_regions()`, the canonical
+//     animation build and `sector_boundary()`.
+//   - The SDF ops go on to the surfacing/mesher path; the triangle buffer is
+//     registered as one BLAS; child placements become the part's instance
+//     records.
+//   - Methods that touch `tri_emit::TriangleBuildBuffer` are defined in
+//     dsl_triangle.cpp rather than dsl_state.cpp, because triangle_emit.hpp
+//     drags in MSL's precomp.h whose `float3` collides with the other TU's
+//     types. That is why the session-polymorphic verbs (`sphere`, `box`,
+//     `extrude`, the modifier-region pair) sit beside voxel-only twins
+//     (`emit_voxel_sphere`, `emit_voxel_box`, `emit_voxel_segment`) that the
+//     dispatch calls into.
+//
+// Conventions
+//   - Coordinates are part-local. The matrix-stack top is captured onto each
+//     brush/triangle AT EMIT, so a later `translate`/`popMatrix` never moves
+//     geometry that was already emitted.
+//   - The cursors (material, tint, smoothing, joinType, session spacing) work
+//     the same way: sampled at emit, never applied retroactively.
+//   - `mm::Mat4` is row-major (matter_math.h); `applyMatrix` takes row-major
+//     floats. Rotations are in radians.
+//   - Only `Vector4` (the tint cursor) is still a raylib type here; everything
+//     else moved to MathLib in Phase 3.
+
 #include "raylib.h"   // Vector4 (tint cursor; not migrated -- see matter_math.h scope note)
 #include "matter_math.h"  // mm::Vec3, mm::Mat4 (Phase 3: DSL transform stack + BuildOp)
 #include "dsl_rng.h"
@@ -31,11 +70,21 @@ struct WorldBinding {
     // ecology that quietly reads all-zero channels would place nothing and look
     // like a scatter bug.
     const terrain_field::SurfaceRuntime* habitat = nullptr;
+    // World-space metres: the streamed sector's edge length, and the vertical
+    // bounds of the volume the terrain mesher is allowed to walk.
     float sector_size = 16.0f;
     float y_min       = -64.0f;
     float y_max       = 192.0f;
 };
 
+// Which authoring session is currently open. Sessions are mutually exclusive
+// and sequential within a part; opening one while another is open is an error.
+// The value also selects what the solid verbs do (see `sphere`/`box` below):
+//   None      - mesh mode: a solid emits a triangulated primitive directly.
+//   Voxels    - inside beginVoxels/endVoxels: a solid becomes an SDF brush in
+//               the BuildBuffer, combined by its CsgOp.
+//   Triangles - inside a beginShape/endShape pair: only vertex() is legal;
+//               a solid verb is an error.
 enum class Session { None, Voxels, Triangles };  // Lattice is a later sub-project.
 
 // Wall-stitch style at interior polyline vertices (the joinType cursor). Mirrors
@@ -139,6 +188,35 @@ struct RigDebugState {
     float radius = 1.0f;
 };
 
+// The authoring state for one part bake.
+//
+// Lifetime and call order
+//   Constructed by the bake host, fed its inputs, mutated by the script's
+//   verbs, then read once and destroyed. It is not reused between parts and
+//   nothing in it is intended to outlive the bake: the ParticleFlowLib
+//   registry it keeps alive via `set_pf_registry` dies with it, so sim and
+//   recorder ids minted during the bake cannot escape. The transform stack is
+//   seeded with identity in the constructor and is never empty.
+//
+// Error model
+//   Fail-closed, first error wins. Every misuse (unbalanced stack, nested
+//   shape, a CSG op with no brush, an unresolvable placeChild) calls
+//   `set_error` and returns without emitting. Later verbs keep running -- the
+//   host treats a set `has_error()` as a failed bake rather than unwinding --
+//   so the first message is the diagnostic one and the rest is noise. There
+//   is no exception path out of this class.
+//
+// Threading
+//   Plain single-threaded state; it holds no mutex and takes no lock. One
+//   instance belongs to one bake on one thread.
+//
+// Lazy emission gotcha
+//   A POLYGON `beginShape(3)` does NOT emit at `endShape()`. The contour set
+//   is RETAINED so a consumer verb (`extrude`) can claim it; if nothing does,
+//   it flat-fills at the next flush point (a new beginShape, a session change,
+//   or the host's explicit `flush_retained_profile()` at build end). Forget
+//   the flush and the last authored profile silently never appears.
+//
 // C++-owned authoring state. JS bindings mutate this; JS holds no engine state.
 class DslState {
 public:

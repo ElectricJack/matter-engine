@@ -1,8 +1,34 @@
+// libs/MatterSurfaceLib/src/mesh_build_utils.cpp
+//
+// Small helpers shared by the meshing algorithms and by Cell's commit path.
+// Two functions, both CPU-only and safe on worker threads:
+//
+// - convert_mesh_to_triangles: raylib Mesh -> BVH `Tri` array, the form
+//   BLASManager::register_triangles and the ray tracer want. Optionally emits a
+//   parallel `TriEx` array carrying the three per-vertex shading normals.
+// - unload_cpu_mesh: free a mesh's heap arrays with NO GL call. Read its
+//   comment before reaching for raylib's UnloadMesh anywhere off the main
+//   thread.
+//
+// raylib note: `Mesh` here is a POD vertex-array container only. The renderer
+// is Vulkan-only; raylib survives as headers for types like this one.
 #include "mesh_build_utils.h"
 #include "mesh_memory.h"
 #include <cmath>
 #include <cstdio>
 
+// Handles both indexed and non-indexed meshes (`mesh.indices` null means
+// vertices are consumed three at a time). Triangles with an out-of-range index,
+// a non-finite vertex, or a non-finite centroid are SKIPPED with a warning, so
+// the returned vector may be shorter than `mesh.triangleCount` -- the two
+// outputs stay parallel with each other, but not with the source mesh's
+// triangle numbering.
+//
+// `out_triex` may be null (positions only). When it is non-null but the mesh
+// carries no normals, each triangle gets its face normal replicated to all
+// three vertices (flat shading). materialId and tint are left default-
+// initialised and must be tagged by the caller.
+//
 // Helper function to convert Raylib Mesh to triangles for BLAS registration
 std::vector<Tri> convert_mesh_to_triangles(const Mesh& mesh, std::vector<TriEx>* out_triex) {
     std::vector<Tri> triangles;

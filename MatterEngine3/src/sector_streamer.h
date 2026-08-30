@@ -1,4 +1,42 @@
 #pragma once
+// MatterEngine3/src/sector_streamer.h
+//
+// The terrain streaming SELECTOR's public surface: what a tile is called, what
+// variant it is wanted in, and the class that decides both. Implementation and
+// the per-pass reasoning are in sector_streamer.cpp.
+//
+// Contents, in file order:
+//   1. `Ring` -- one (radius, rung) row of an authored radial table.
+//   2. VARIANT PACKING -- pack_variant / variant_scatter / variant_terrain_lod
+//      / variant_level. The int that crosses this boundary is opaque to the
+//      coordinator and is decoded only here and where a bake request is built.
+//   3. THE NESTED TILE KEY -- nested_key / nested_unkey plus the 20-bit
+//      coordinate bound and `sector_coord_fits`, which matter_engine.cpp
+//      asserts a world's authored reach against at load.
+//   4. `Config` -- every authored knob, plus the flags the constructor may
+//      overrule.
+//   5. `SectorRequest` / `Eviction` -- the two records that cross the boundary.
+//   6. `SectorStreamer` itself.
+//
+// Nothing here allocates a GPU resource, touches a file, or starts a thread;
+// the streamer is bookkeeping and the coordinator
+// (streaming/sector_streaming_coordinator.h) does the work.
+//
+// Conventions
+// -----------
+//   * All radii, sizes and hysteresis are world METRES.
+//   * A "rung" on the public boundary is an opaque identity. With the terrain
+//     ladder on it is a PACKED VARIANT; a bare legacy value below 16 decodes
+//     as terrain LOD 5 / level 0, so consumers may unpack unconditionally.
+//   * -1 uniformly means "none": not desired, nothing resident, nothing in
+//     flight.
+//   * FINER IS LARGER for a terrain LOD (5 = native voxel); COARSER IS LARGER
+//     for a nesting level (level = 5 - terrain_lod, tile size = S_0 << level).
+//     The two run in opposite directions and are one value; read the packing
+//     section before touching either.
+//   * Tile indices are `int64_t` and routinely negative -- three of the four
+//     quadrants around any origin are -- so sign extension in the key is a
+//     common path, not an edge case.
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
@@ -6,6 +44,16 @@
 
 namespace matter_stream {
 
+// One row of a radial table: everything closer than `radius` metres from the
+// anchor gets `rung`. Both tables in Config are vectors of these and both are
+// INNERMOST FIRST, so a lookup is a linear walk outwards that stops at the
+// first covering row.
+//
+// `rung` means different things per table, which is the one trap here:
+//   Config::rings          -- a scatter tier (vegetation density grade).
+//   Config::terrain_bands  -- a terrain LOD (5 = native voxel, 0 = coarsest),
+//                             and under nesting that same row is reinterpreted
+//                             as the annulus where level (5 - rung) tiles live.
 struct Ring { float radius; int rung; };
 
 // ---------------------------------------------------------------------------
@@ -164,6 +212,17 @@ inline void nested_unkey(uint64_t k, int& level, int64_t& tx, int64_t& ty,
     tz = sext20(k);
 }
 
+// Everything the streamer is authored with. Built from the world definition
+// (make_streaming_profile in matter_engine.cpp) and passed BY VALUE to the
+// constructor, which then rewrites it: nesting forces the terrain ladder on,
+// an empty band table is filled with the default profile, and a band table
+// that resolves no level ladder forces both nesting and volumetric sectors
+// back OFF. So the Config a caller passed in is not the Config in force --
+// read SectorStreamer::config() for what was actually resolved.
+//
+// Units: `sector_size`, every `Ring::radius`, `hysteresis`, `y_min` and
+// `y_max` are world METRES. `max_inflight` is a count of concurrent bakes and
+// `fail_cooldown_updates` is a number of update() calls, not a duration.
 struct Config {
     float sector_size = 16.0f;
     // Innermost first. A sector's desired rung = the rung of the first ring
@@ -179,8 +238,13 @@ struct Config {
     // sector additionally gets a terrain LOD from `terrain_bands` (innermost
     // first, radius -> LOD; empty = the design-doc default profile scaled by
     // sector_size: 3S->5, 5S->4, 8S->3, 14S->2, 24S->1, 40S->0), the desired
-    // map is balanced so cardinal neighbors differ by at most one level, and
-    // the packed variant carries the four-bit coarser-neighbor edge mask.
+    // map is balanced so cardinal neighbors differ by at most one level.
+    //
+    // The packed variant carries the scatter tier and this tile's OWN terrain
+    // LOD, neither of which depends on a neighbour: bits 7-10 are reserved and
+    // nothing is written there. There is no edge mask -- see "THE EDGE MASK IS
+    // GONE FROM THIS ENCODING" above. Cross-level seams are built at runtime by
+    // the engine-side welder instead (seam_weld.h).
     bool terrain_lod_enabled = false;
     std::vector<Ring> terrain_bands;   // radius -> terrain LOD when enabled
 
@@ -296,6 +360,44 @@ void resolve_terrain_defaults(Config& cfg);
 struct SectorRequest { int64_t tx, ty, tz; int rung; };
 struct Eviction      { int64_t tx, ty, tz; int rung; };
 
+// The selector itself: one anchor position per tick in, a stream of tile bake
+// requests and evictions out.
+//
+// OWNERSHIP AND LIFETIME. Constructed with a resolved Config (see above) and
+// owned for the world's lifetime by
+// streaming/sector_streaming_coordinator.h. It owns nothing but its own
+// bookkeeping map -- no GPU resources, no file handles, no threads -- so
+// destroying it is free and forgets any in-flight bake rather than cancelling
+// it.
+//
+// THREADING. Single-threaded. Nothing here takes a lock, and update() rewrites
+// the sector map in place, so every method (const accessors included) must be
+// called from the coordinator's own thread.
+//
+// CALL ORDER, once per tick:
+//
+//     update(anchor)                       // recompute the desired map
+//     while (next_request(&r)) ...         // launch bakes, up to max_inflight
+//     on_published(...) / on_failed(...)   // as results land
+//     take_evictions()                     // unpublish what update() retired
+//
+// Nothing enforces it. Skipping update() simply re-serves the stale desired
+// map; skipping take_evictions() lets the eviction queue grow.
+//
+// INVARIANTS the class maintains between calls:
+//   * a tile is in at most one of {desired, resident, in flight} per field,
+//     each recorded as a rung or -1;
+//   * `inflight_count()` never exceeds Config::max_inflight, because
+//     next_request() is the only thing that raises it;
+//   * publish-then-evict: an upgrade queues the OLD rung for eviction only
+//     once the new one has been accepted, so a tile is never absent;
+//   * under nesting, a superseded tile is held resident until every desired
+//     tile over its footprint is resident (the transition-group rule), so a
+//     split or merge in progress never opens a hole.
+//
+// WHAT IT DELIBERATELY DOES NOT KNOW: what a bake is, what a seam is, what is
+// on screen. Requests are (tx, ty, tz, rung) tuples and residency means "the
+// coordinator told me it published", nothing more.
 class SectorStreamer {
 public:
     explicit SectorStreamer(Config cfg);
@@ -414,7 +516,13 @@ private:
     };
     std::unordered_map<uint64_t, SectorState, KeyHash> sectors_;
 
+    // Queued unpublishes, appended by update()/on_published()/clear() and
+    // drained by take_evictions() (or the peek/commit pair). Nothing prunes it
+    // but a drain, so a caller that never drains grows it without bound.
     std::vector<Eviction> evictions_;
+    // Count of entries with inflight_rung >= 0; the only thing compared
+    // against Config::max_inflight. Kept as a running total rather than
+    // recounted, so every path that clears an inflight_rung must decrement it.
     int inflight_ = 0;
     float last_anchor_x_ = 0.0f;
     // READ ONLY UNDER `volumetric_sectors` (M3-WP2; stored and unread in M1).

@@ -3700,6 +3700,43 @@ static void test_impostor_sidecar_failability() {
                   fail == impostor::LoadFailure::Header,
               "a foreign atlas is rejected as Header");
     }
+    // Bit rot in the CONTAINER, as opposed to in the atlas payload the cases
+    // above republish through write_section (which recomputes the section
+    // checksum and so always hands back a valid bundle). Flipping a byte in the
+    // file itself leaves the bundle's directory hash intact -- the directory
+    // covers only the directory -- while breaking the section's content hash,
+    // so parse() rejects the whole container. That is the one shape that must
+    // report Open rather than Absent: the bundle claims an atlas and cannot
+    // produce it, which is a damaged cache and not a part without one.
+    {
+        const std::string rotted = path + ".rotted";
+        std::error_code rot_ec;
+        fs::remove(rotted, rot_ec);
+        fs::copy_file(path, rotted, rot_ec);
+        CHECK(!rot_ec, "rotted fixture copied");
+        if (!rot_ec) {
+            std::fstream f(rotted, std::ios::binary | std::ios::in | std::ios::out);
+            CHECK(f.good(), "rotted fixture opened for patching");
+            // Last byte of the file is deep inside the final section's payload,
+            // well past the 40-byte header and the directory.
+            f.seekg(0, std::ios::end);
+            const std::streamoff last =
+                static_cast<std::streamoff>(f.tellg()) - std::streamoff(1);
+            f.seekg(last, std::ios::beg);
+            char b = 0;
+            f.read(&b, 1);
+            b = static_cast<char>(b ^ 0x5A);
+            f.clear();
+            f.seekp(last, std::ios::beg);
+            f.write(&b, 1);
+            f.close();
+
+            CHECK(!impostor::load(rotted, part_hash, depicts, out, &fail, &reason) &&
+                      fail == impostor::LoadFailure::Open,
+                  "a bundle that lists an atlas it cannot produce reports Open");
+            CHECK(out.clusters.empty(), "a rejected load leaves nothing behind");
+        }
+    }
     printf("PASSED\n");
 }
 

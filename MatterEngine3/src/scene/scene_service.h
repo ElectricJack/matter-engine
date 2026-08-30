@@ -43,6 +43,8 @@ public:
     // Duplicate `src`: a new scene entity with the same name, the same parent,
     // and copies of every SceneRecord component present on the source.
     // EntityNotFound when `src` does not resolve.
+    // The source's CHILDREN are not duplicated — the copy is a sibling, not a
+    // subtree clone.
     SceneEditResult duplicate(SceneEntityId src);
 
     // Delete `target` and (via Flecs' ChildOf ownership) its whole subtree.
@@ -68,6 +70,9 @@ public:
 
     // Resolve a SceneEntityId to its live Flecs entity (invalid if absent).
     // Public so E5c command handlers / tests can locate entities.
+    // Linear: it scans every live scene entity with no early exit, and every
+    // method above performs at least one such scan. Cheap per edit, not
+    // something to call in a per-frame loop over many ids.
     flecs::entity find_entity(SceneEntityId id) const;
 
 private:

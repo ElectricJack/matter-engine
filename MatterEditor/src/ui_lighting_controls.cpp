@@ -1,7 +1,27 @@
+// MatterEditor/src/ui_lighting_controls.cpp
+//
+// The world-scope reset seams: dropping every Scope::World property group's
+// backing struct in ViewerStats back to its compiled default (property-system
+// design S4, layer 1). Called at the world reload and world switch boundaries
+// by main.cpp, so that EditorProps::on_world_connected captures the INCOMING
+// world's authored values as layer 2 with no residue from the outgoing one.
+//
+// WHY ITS OWN TRANSLATION UNIT. This is not a panel and there is no ImGui here
+// on purpose: MatterEditor/Makefile compiles this file directly into
+// build/windows/vulkan_smoke_tests.exe, which cannot link ui.cpp. Adding an
+// ImGui or panel dependency here breaks that build, not this one — keep it to
+// plain struct assignment.
+//
+// Also note that MatterEngine3/tests/property_editor_tests.cpp asserts on this
+// file's SOURCE TEXT (it greps for the individual `stats.<field> = ...{};`
+// lines to prove no lighting lane was forgotten). Adding a lane means adding
+// the literal assignment here, not a loop or a helper that hides it.
 #include "ui.h"
 
 namespace viewer {
 
+// Lighting-only reset, used where the atmosphere presentation lanes must go
+// back to their defaults without touching fog / POM / VT.
 void reset_lighting_controls(ViewerStats& stats) {
     // Whole-struct reset is intentional: it restores all four atmosphere
     // presentation lanes atomically with their backwards-compatible defaults.
@@ -30,6 +50,10 @@ void reset_world_scope_controls(ViewerStats& stats) {
     stats.fog = matter::FogSettings{};
 }
 
+// The two seam wrappers. They are deliberately named for the seam rather than
+// the action, so main.cpp's call sites read as "what happened" — and so the
+// switch case can decline the reset: a FAILED world switch leaves the current
+// world's live edits alone, because that world is still the one on screen.
 void prepare_world_reload(ViewerStats& stats) {
     reset_world_scope_controls(stats);
 }

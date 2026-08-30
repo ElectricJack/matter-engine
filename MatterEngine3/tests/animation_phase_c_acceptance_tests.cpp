@@ -33,6 +33,26 @@ std::string read_text(const fs::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+// Object lookup is a SEARCH PATH, not one directory: a scene owns its own
+// objects/ over the shared project tier (ebd226d6, "one folder per scene").
+// AnimatedRigGallery.js moved into scenes/AnimatedRigGallery/objects/ then,
+// while Crate.js stayed in the shared tier, so reading both from
+// projects/world_demo/objects returned an EMPTY gallery source.
+// Must be captured BEFORE the caller chdir()s into the bake sandbox: these are
+// resolved relative to the test working directory.
+std::vector<fs::path> object_search_path() {
+    return {fs::absolute("../../projects/world_demo/scenes/AnimatedRigGallery/objects"),
+            fs::absolute("../../projects/world_demo/objects")};
+}
+
+std::string read_object_source(const std::vector<fs::path>& dirs, const char* module) {
+    for (const fs::path& dir : dirs) {
+        std::string source = read_text(dir / module);
+        if (!source.empty()) return source;
+    }
+    return {};
+}
+
 uint64_t mix(uint64_t value, uint64_t word) {
     return (value ^ word) * 1099511628211ull;
 }
@@ -92,9 +112,15 @@ void check_reloaded_gallery_limits(const GalleryBundle& gallery) {
 
     CHECK(gallery.runtime.definition.targets.size() <= 8,
           "C4 reloaded gallery stays within the explicit eight-target acceptance limit");
-    CHECK(gallery.runtime.definition.binding &&
+    const bool has_evaluation = gallery.runtime.definition.binding &&
+                                gallery.runtime.definition.binding->evaluation;
+    CHECK(has_evaluation &&
               gallery.runtime.definition.binding->evaluation->nodes.size() <= 32,
           "C4 reloaded gallery stays within the explicit 32-node graph acceptance limit");
+    // Every check below dereferences the binding. Returning here reports the
+    // missing binding as a failed check; falling through segfaults, and a
+    // segfault takes the buffered FAIL lines that name the real cause with it.
+    if (!has_evaluation) return;
     const auto& evaluation = *gallery.runtime.definition.binding->evaluation;
     const auto blend = std::find_if(evaluation.nodes.begin(), evaluation.nodes.end(),
                                     [](const RuntimeGraphNode& node) {
@@ -129,7 +155,7 @@ void check_reloaded_gallery_limits(const GalleryBundle& gallery) {
 }
 
 GalleryBundle bake_and_reload_gallery() {
-    const fs::path objects = fs::absolute("../../projects/world_demo/objects");
+    const std::vector<fs::path> objects = object_search_path();
     const fs::path shared_lib = fs::absolute("../shared-lib");
     const fs::path sandbox = fs::temp_directory_path() / "me3_c4_animation_acceptance";
     std::error_code error;
@@ -148,12 +174,12 @@ GalleryBundle bake_and_reload_gallery() {
     // ScriptHost combines this with cache_path_resolved(). Keeping both paths
     // relative avoids the Windows separator conversion in path composition.
     options.parts_dir = ".";
-    const script_host::BakeResult crate = host.bake_source(read_text(objects / "Crate.js"), "{}", options);
+    const script_host::BakeResult crate = host.bake_source(read_object_source(objects, "Crate.js"), "{}", options);
     if (!crate.error.ok) std::printf("C4 crate bake error: %s\n", crate.error.message.c_str());
     CHECK(crate.error.ok, "C4 bakes AnimatedRigGallery's real Crate dependency");
     const uint64_t child_hashes[] = {crate.resolved_hash};
     const std::string child_modules[] = {"Crate"};
-    const script_host::BakeResult gallery = host.bake_source(read_text(objects / "AnimatedRigGallery.js"), "{}", options,
+    const script_host::BakeResult gallery = host.bake_source(read_object_source(objects, "AnimatedRigGallery.js"), "{}", options,
                                                               child_hashes, 1, child_modules);
     if (!gallery.error.ok) std::printf("C4 gallery bake error: %s\n", gallery.error.message.c_str());
     CHECK(gallery.error.ok && !gallery.written_anim_path.empty() && !gallery.written_commit_path.empty(),
@@ -463,9 +489,16 @@ void exercise_pose_lods(const GalleryBundle& gallery) {
 }  // namespace
 
 int main() {
+    // Unbuffered: this suite runs a real bake and can die on a null binding
+    // deref. A crash discards a block-buffered stdout, so the run reports only
+    // an exit status and none of the FAIL lines that explain it.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     const GalleryBundle gallery = bake_and_reload_gallery();
     CHECK(gallery.asset.resolved_hash != 0, "C4 gallery bundle has a stable identity");
-    if (gallery.asset.resolved_hash == 0 || gallery.binding.lods.empty()) return check_summary();
+    if (gallery.asset.resolved_hash == 0 || gallery.binding.lods.empty() ||
+        !gallery.runtime.definition.binding) {
+        return check_summary();
+    }
     const RunResult sixty = run_fixed_pattern(gallery, {0.125f});
     const RunResult mixed = run_fixed_pattern(gallery, {0.0625f, 0.0625f});
     CHECK(sixty.fixed_pose_checksums == mixed.fixed_pose_checksums,

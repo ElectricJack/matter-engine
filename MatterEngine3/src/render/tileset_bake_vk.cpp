@@ -12,6 +12,26 @@
 //
 // This is a viewer-only translation unit (compiled into WIN_ME3_CPP under
 // -DMATTER_VULKAN_ONLY); the headless kernel library never sees it.
+//
+// THREADING AND COST. bake_tileset_vk runs on the Vulkan device thread and
+// blocks until the readback completes (matter::submit_immediate plus five
+// readback_buffer calls). It allocates one bake-only BLAS per BLASManager
+// entry, a TLAS, five full-atlas device images and their host-visible readback
+// buffers — all of it single-use and thrown away when the function returns.
+//
+// OWNERSHIP AND CLEANUP. Every buffer / image / acceleration structure is a
+// matter::Vk*Resource value that owns its own lifetime handle, and those
+// handles are also pushed into the `deps` vector so the submit keeps them alive
+// until the GPU is done. Consequently an early `return false` anywhere in the
+// first two thirds of the function needs no explicit cleanup. The ONLY
+// manually-managed objects are the descriptor set layouts, pipeline layouts,
+// pipelines and descriptor pools, which is why `destroy_pipeline_objs` exists
+// and is called on every path once they may exist.
+//
+// FAILURE MODEL. Fail-closed and never throwing to the caller: every failure
+// returns false with a human-readable `err`, and the whole body is wrapped in a
+// std::bad_alloc catch that reports the pose hash (a bake at high
+// texels_per_meter allocates hundreds of megabytes of host buffers).
 
 // Keep windows.h (pulled in by vulkan_win32.h and by raylib.h, reached here via
 // blas_manager.hpp) from declaring GDI/USER symbols that collide with raylib.
@@ -66,6 +86,15 @@ namespace {
 // Height range + ray origin — copied verbatim from tileset_bake_gpu.cpp so the
 // Vulkan bake's ray_y / height_min / height_max match the GL bake exactly.
 // ---------------------------------------------------------------------------
+// World-space Y range of everything the bake can hit, in metres: the base
+// heightfield samples, plus each settled instance's own extent (centre +/- half
+// its scale). `max_instance_top` tracks a taller bound (centre + 2x scale) used
+// only to place the ortho ray origin above the tallest prop.
+//
+// hmin/hmax are padded outward by 5 cm and become the .gtex height channel's
+// encode range, so they must match what the shader was pushed. A degenerate
+// input (no heights, no instances) collapses to [0, 1] rather than staying
+// inverted.
 void compute_height_range(const SettledTorus& st, float& hmin, float& hmax,
                           float& max_instance_top) {
     hmin = 1e30f; hmax = -1e30f;
@@ -89,6 +118,11 @@ void compute_height_range(const SettledTorus& st, float& hmin, float& hmax,
     hmin -= 0.05f;
 }
 
+// Debug-only sidecar dump (`--dump-png`): writes one PNG per channel next to
+// the .gtex, named `<base>-albedo/normal/orm/height/horizona/horizonb.png`.
+// Height is squashed 16 -> 8 bits for viewing only, so these files are for
+// eyeballing, never for round-tripping. The two horizon images are skipped when
+// the quarter-res buffers are empty. Returns false on the first write failure.
 bool dump_pngs(const std::string& base, int W, int H,
                const std::vector<uint8_t>& a, const std::vector<uint8_t>& n,
                const std::vector<uint8_t>& o, const std::vector<uint16_t>& h,
@@ -145,6 +179,10 @@ struct AoPush {
 };
 
 // A bake-only BLAS: single-use vertex/index buffers + acceleration structure.
+// One entry's worth: host-visible vertex/index buffers (deliberately
+// unindexed — index i simply names vertex i, three per triangle), the
+// acceleration structure built from them, and its scratch. Created and
+// destroyed within a single bake_tileset_vk call.
 struct BakeBlas {
     matter::VkBufferResource vertices;   // vec3 positions, 3 per triangle
     matter::VkBufferResource indices;    // uint32, 0..3N-1
@@ -155,6 +193,12 @@ struct BakeBlas {
 };
 
 // Everything the immediate-submit record callback needs, in stable storage.
+// Everything record_bake needs, in storage that outlives the recording. The
+// build-info vectors matter: Vulkan's build structs hold POINTERS into
+// blas_geoms / blas_ranges, so those vectors must not be resized after the
+// infos are filled. bake_tileset_vk keeps this as a stack local and passes its
+// address as the submit's user_data, which is safe because submit_immediate
+// records and submits before returning.
 struct RecordContext {
     PFN_vkCmdBuildAccelerationStructuresKHR cmd_build = nullptr;
     // BLAS builds (pointers into the vectors below stay valid for the submit).
@@ -187,6 +231,12 @@ struct RecordContext {
     uint32_t width = 0, height = 0;
 };
 
+// The immediate-submit callback: records the entire bake into one command
+// buffer — batched BLAS builds, the TLAS build, the layout transitions, both
+// compute dispatches, and the image-to-buffer copies with a final
+// transfer->host barrier so the readbacks see complete data. `user_data` is the
+// RecordContext the caller filled. Runs on the submitting thread during
+// matter::submit_immediate; it only records, it never waits.
 void record_bake(VkCommandBuffer cmd, void* user_data) {
     auto& c = *static_cast<RecordContext*>(user_data);
 
@@ -281,6 +331,8 @@ void record_bake(VkCommandBuffer cmd, void* user_data) {
     vkCmdPipelineBarrier2(cmd, &hdep);
 }
 
+// Format "<op> failed (VkResult N)" into `err` and return false, so a failing
+// Vulkan call can be reported in one line at the call site.
 bool vkfail(const char* op, VkResult r, std::string& err) {
     err = std::string(op) + " failed (VkResult " +
           std::to_string(static_cast<int>(r)) + ")";
@@ -292,6 +344,26 @@ bool vkfail(const char* op, VkResult r, std::string& err) {
 // ---------------------------------------------------------------------------
 // Orchestrator.
 // ---------------------------------------------------------------------------
+// Bake one tileset's .gtex atlas. Returns true when the file on disk is current
+// — INCLUDING the case where nothing was baked because the cache already held a
+// matching content hash (step 1), which is the common path.
+//
+// The numbered steps below are the whole pipeline: cache check, ray-tracing
+// capability gate, CPU BLAS/TLAS assembly, geometry lift into SSBOs and AS
+// inputs, TLAS instances, acceleration-structure creation, the material table,
+// the output images and readbacks, two compute pipelines (primary and AO), the
+// single immediate submit, readback and repack, the CPU horizon scan, and
+// save_gtex.
+//
+// Two subtleties worth knowing before editing:
+//   - TLAS instances are built BEFORE the acceleration structures exist, so
+//     `instanceCustomIndex` carries the BLAS index until step 7 patches the
+//     real device addresses in. Do not reuse that field for anything else.
+//   - A draw record whose BLAS handle is not in the lift map is skipped
+//     silently — assemble_torus_bvh can refuse an entry — so the instance count
+//     may be smaller than the draw-record count.
+//
+// Fail-closed: any problem returns false with `err` set and writes no file.
 bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
                      uint64_t script_source_hash,
                      const std::string& out_gtex_path, const BakeInputs& inputs,

@@ -7,6 +7,29 @@
 // Removal frees the entity's slot for reuse only after the GPU frame that
 // retired it has been confirmed complete via finish_frame(), so in-flight
 // GPU work never reads a slot that has already been reassigned.
+//
+// Who owns one
+// ------------
+// matter::scene::DynamicSceneBridge (MatterEngine3/src/ecs/dynamic_scene_bridge.h)
+// holds exactly one, sized at construction. Per frame it calls upsert() for
+// every desired record (including the pieces expanded by the animation
+// bridges), remove() for entities that disappeared, drain() to hand the change
+// list to the renderer, and finish_frame() once the GPU serial it is told about
+// has completed.
+//
+// Considerations
+// --------------
+//  - No internal synchronization whatsoever. One owner thread.
+//  - Capacity is fixed at construction and never grows. Running out is a
+//    normal, reported outcome (SlotResult::CapacityExhausted), not an error the
+//    table handles for you — the scene bridge surfaces it through its
+//    BridgeErrorSink.
+//  - Slot indices are stable for as long as the entity keeps its slot, which is
+//    what lets the renderer address instances by index across frames.
+//  - Changes accumulate without bound until drain(); a caller that stops
+//    draining leaks memory rather than dropping changes.
+//  - Transforms are object-to-world, world metres, Mat4f row-major storage with
+//    column-vector algebra (matter/math_types.h).
 #pragma once
 
 #include <cstdint>
@@ -47,6 +70,9 @@ struct DynamicInstanceKeyHash {
     }
 };
 
+// One desired record for this frame: which entity binding, which part, and
+// where. Passed to upsert(), which decides on its own whether that is an
+// insert, a Bind change, a Transform change, or nothing at all.
 struct DynamicInstanceInput {
     DynamicInstanceKey key{};
     uint64_t part_hash = 0;
@@ -61,6 +87,11 @@ struct DynamicInstanceInput {
         matter::RayTracingOverride::Inherit;
 };
 
+// A slot reference that can detect its own staleness. `index` is the stable
+// slot number; `generation` is the slot's occupancy counter at the time the
+// handle was issued and is bumped by remove(), so a handle to a freed or
+// recycled slot is rejected (SlotResult::StaleGeneration) instead of silently
+// operating on the new occupant. index == UINT32_MAX means "no slot".
 struct DynamicSlotHandle {
     uint32_t index = UINT32_MAX;
     uint32_t generation = 0;
@@ -73,6 +104,13 @@ enum class DynamicSlotChangeKind : uint8_t {
     Remove      // slot freed
 };
 
+// A value-copied record of one slot transition, queued for the renderer.
+// Everything is snapshotted at the moment the change was emitted, so a later
+// upsert on the same slot cannot retroactively alter an already-queued change.
+//
+// For a Remove, `slot_generation` is the generation being RETIRED — the slot's
+// own counter has already advanced past it — which is what lets the renderer
+// match the removal against the instance it actually has resident.
 struct DynamicSlotChange {
     DynamicSlotChangeKind kind = DynamicSlotChangeKind::Bind;
     uint32_t slot_index = UINT32_MAX;
@@ -91,6 +129,13 @@ struct DynamicSlotChange {
     bool ray_traced = true;
 };
 
+// Outcome of upsert()/remove(). None of these are exceptional conditions:
+//   Ok                 the operation applied.
+//   StaleGeneration    the handle names a freed or already-recycled slot; the
+//                      usual cause is a double remove. Nothing was changed.
+//   CapacityExhausted  no free slot remains, so this entity simply has no
+//                      renderer slot this frame. The caller decides how to
+//                      report it.
 enum class SlotResult : uint8_t {
     Ok,
     StaleGeneration,
@@ -98,6 +143,17 @@ enum class SlotResult : uint8_t {
 };
 
 // Stable-index slot table for CPU-side dynamic instance bookkeeping.
+//
+// Owns a fixed array of slots plus a key -> slot index map, a free list, a
+// deferred-free list, and the pending change queue. Not thread-safe and not
+// intended to be shared; one owner drives the whole per-frame sequence
+// (upsert/remove ... drain ... finish_frame).
+//
+// The invariant that makes it safe to hand slot indices to the GPU: a removed
+// slot's index is not returned to the free list by remove(), only by a later
+// finish_frame() whose completed serial has caught up with the slot's retire
+// serial. Skipping finish_frame() therefore leaks capacity but never corrupts
+// an in-flight frame.
 class DynamicInstanceSlots {
 public:
     explicit DynamicInstanceSlots(uint32_t capacity);
@@ -118,9 +174,16 @@ public:
 
     // Call once per frame with the last completed GPU serial.
     // Slots retired before completed_serial become available for reuse.
+    //
+    // Also advances the table's own retire stamp to completed_serial + 1, so a
+    // slot removed after this call cannot be recycled until a strictly later
+    // serial is reported complete. Serials are opaque and must be
+    // monotonically non-decreasing.
     void finish_frame(uint64_t completed_serial);
 
     // Drain accumulated changes since last drain(). Clears internal buffer.
+    // Moves the buffer out, so it is cheap; but it is the ONLY thing that
+    // empties the queue — a caller that skips a frame grows it without bound.
     std::vector<DynamicSlotChange> drain();
 
     // Query
@@ -128,11 +191,15 @@ public:
     uint32_t capacity() const;
 
 private:
+    // One entry of the fixed slot array. A slot is in exactly one of three
+    // states: free (alive false, pending_free false, index sitting in
+    // free_indices_), live (alive true), or retired-but-not-yet-reusable
+    // (alive false, pending_free true, index sitting in pending_free_).
     struct Slot {
         bool alive = false;
         bool pending_free = false;
-        uint32_t generation = 0;
-        uint64_t retire_serial = 0;
+        uint32_t generation = 0;     // bumped by remove(); stales live handles
+        uint64_t retire_serial = 0;  // serial at removal; reusable once completed >= this
         DynamicInstanceKey key{};
         uint64_t part_hash = 0;
         Mat4f object_to_world{};

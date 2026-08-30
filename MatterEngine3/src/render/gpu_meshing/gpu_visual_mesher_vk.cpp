@@ -18,7 +18,9 @@
 
 namespace gpu_meshing {
 
-extern "C" char triTable[256][16];
+// Use the same immutable table as the CPU mesher; it no longer exports a
+// mutable C symbol from surface.c.
+#include "mc_tables.h"
 
 namespace {
 

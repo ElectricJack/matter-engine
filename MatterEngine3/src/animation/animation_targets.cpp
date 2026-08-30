@@ -1,3 +1,22 @@
+// MatterEngine3/src/animation/animation_targets.cpp
+//
+// Implementation of the IK/aim target layer declared in
+// `animation_targets.h` - see that header for the chain, unit and space
+// conventions.
+//
+// The anonymous namespace holds this file's own quaternion/vector math. It
+// overlaps with the helpers in `animation_systems.cpp` on purpose: several of
+// these carry comments recording defects that were found in exactly one copy
+// (the Hamilton-product y term, the missing Shepperd branches), so read those
+// comments before assuming two similarly named helpers are interchangeable.
+// `model_rotation` here does NOT orthonormalize; use `matrix_rotation` in
+// animation_systems.cpp for a matrix that may carry scale.
+//
+// Failure convention throughout: every entry point returns false and leaves
+// its output untouched on non-finite input, a chain that is not exactly three
+// joints, an out-of-range weight, or a mismatched pose array length. A false
+// return is a "skip this target" signal to the caller, not a fatal error.
+
 #include "animation/animation_targets.h"
 
 #include "animation/animation_math.h"
@@ -56,12 +75,21 @@ Quaternion slerp(Quaternion a, Quaternion b, float t) {
             a.w*x + b.w*y};
 }
 
+// Frame-rate-independent smoothing factor for a half-life expressed in
+// SECONDS: after `half_life` seconds the remaining error is halved, whatever
+// the step size. A half-life of 0 means snap (returns 1).
+//
+// Returns -1 as an error sentinel for a negative or non-finite half-life or
+// delta - callers must check for it before using the result, since -1 is a
+// perfectly usable-looking lerp factor.
 float alpha(double dt, float half_life) {
     if (!finite(half_life) || half_life < 0 || dt < 0 || !std::isfinite(dt)) return -1;
     if (half_life == 0) return 1.0f;
     return clamp01(1.0f - std::exp2(static_cast<float>(-dt) / half_life));
 }
 
+// Inverse of a rotation, i.e. the conjugate - normalizing first so a
+// denormalized input still yields a true inverse rather than a scaled one.
 Quaternion inverse(Quaternion q) {
     q = normalize(q);
     return {-q.x, -q.y, -q.z, q.w};

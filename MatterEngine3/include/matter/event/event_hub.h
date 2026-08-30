@@ -54,6 +54,11 @@ using Callback = std::function<void(const E&)>;
 // ---------------------------------------------------------------------
 // Registry (S I.8): "who listens, in what order."
 // ---------------------------------------------------------------------
+// One row of registry_snapshot(): a copy, not a live view. Everything here
+// is a value snapshot taken under the per-event-type lock, so it is safe
+// to hold and print after the fact -- except `file`, which is the
+// call-site string literal captured at subscribe time and is valid for the
+// life of the process.
 struct SubscriberInfo {
     std::string name;
     phase ph = phase::Default;
@@ -164,6 +169,30 @@ inline std::function<void(const SubscriptionBlock*)> g_dispatch_barrier_probe{};
 
 }  // namespace detail
 
+// The event hub: one per owner (the engine facade owns the engine-wide
+// one). Holds a per-event-type subscriber registry, one lazily-created
+// Channel per lane, and the trace ring.
+//
+// Threading:
+//   - emit<E>() is safe from any thread. Immediate subscribers run inline
+//     on the emitting thread; queued subscribers get one copied envelope
+//     per distinct lane.
+//   - claim_lane(), pump() and pump_one() are the lane owner's; pumping a
+//     lane from a thread other than the one that claimed it hits the
+//     underlying Channel's single-consumer guard.
+//   - Subscribing and unsubscribing are safe from any thread, including
+//     from inside a handler (they take effect after the current dispatch,
+//     which walks a snapshot).
+//
+// Lifetime: non-copyable, non-movable. Subscription handles hold only a
+// shared control block, so destroying a handle after the hub is a safe
+// no-op, and vice versa. close() is the explicit teardown (invalidate
+// everything, then wait for in-flight callbacks); the destructor calls it
+// as a safety net. After close(), emit() is a silent no-op.
+//
+// Lane queues are bounded (4096) and DropOldest: an overflowing lane
+// discards its oldest undelivered envelopes rather than growing without
+// limit, and the loss is visible only through lane_counters().
 class Hub {
 public:
     // trace_capacity: ring buffer size (S I.8 default 16k).
@@ -360,6 +389,10 @@ public:
     // pumping from a non-owner thread debug-aborts (S I.6), mirroring
     // Channel<T>'s own single-consumer guard.
     // -------------------------------------------------------------
+    // Returns the number of envelopes dispatched. Delivers at least one
+    // when the lane is non-empty even if ms_budget is 0 (progress
+    // guarantee); the budget only gates further iterations, and a single
+    // slow handler can overrun it.
     int pump(lane ln, double ms_budget);
 
     // Owner thread only (claim_lane first): deliver AT MOST ONE queued
@@ -372,6 +405,10 @@ public:
     int pump_one(lane ln);
 
     // Registers the calling thread as lane `ln`'s owner.
+    // Also creates the lane's queue if it does not exist yet. Call it
+    // before the first pump()/pump_one() of that lane. The owner entry is
+    // overwritten by whichever thread claimed most recently -- there is no
+    // "already claimed" rejection here.
     void claim_lane(lane ln);
 
     // Invalidates every handle, cancels queued delivery, waits for
@@ -384,6 +421,10 @@ public:
     // -------------------------------------------------------------
     // Observability (S I.8).
     // -------------------------------------------------------------
+    // Deep copy of the whole registry, taken under the per-type locks:
+    // allocating and O(subscribers), so this is an inspector/diagnostic
+    // call, not something to do per frame. Subscribers within an entry are
+    // in dispatch order.
     std::vector<RegistrySnapshotEntry> registry_snapshot() const;
 
     // Per-lane drop/reject counters for every lane channel this hub has
@@ -393,6 +434,9 @@ public:
 
     void set_trace_enabled(bool on) { trace_enabled_.store(on, std::memory_order_relaxed); }
     bool trace_enabled() const { return trace_enabled_.load(std::memory_order_relaxed); }
+    // Copies the entire trace ring (up to trace_capacity records, each
+    // with its own subscriber vector) under trace_mu_. Cheap-looking and
+    // expensive: for the default 16k capacity this is a large allocation.
     std::vector<TraceRecord> trace_snapshot() const;
 
 private:
@@ -441,6 +485,16 @@ private:
     void push_trace_record_locked(TraceRecord rec);
     void check_lane_owner(lane ln);
 
+    // Mutex map:
+    //   types_mu_ guards the types_ map itself (keyed by the event
+    //             struct's mt_event_type_id()); each TypeState's own `mu`
+    //             guards that type's subscriber vector, so emit only holds
+    //             the per-type lock while copying the snapshot.
+    //   lanes_mu_ guards both lane_channels_ and lane_owners_ (both keyed
+    //             by lane::id); the Channel objects are internally locked.
+    //   trace_mu_ guards trace_ring_ and trace_capacity_.
+    // sequence_ is the monotonic envelope sequence stamped at enqueue,
+    // giving queued deliveries a total order independent of lane.
     mutable std::mutex types_mu_;
     std::unordered_map<const void*, std::unique_ptr<detail::TypeState>> types_;
 

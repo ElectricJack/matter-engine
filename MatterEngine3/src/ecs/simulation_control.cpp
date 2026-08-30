@@ -1,5 +1,34 @@
 // simulation_control.cpp — Phase 4 Task 11: Play/Pause/Step/Stop with
 // scene snapshot/restore.
+//
+// MatterEngine3/src/ecs/simulation_control.cpp
+//
+// The editor's play-mode state machine. `SimulationMode` (matter/scene.h) has
+// three states and the transitions are strictly gated — each entry point
+// returns false with an `error` string rather than coercing the mode:
+//
+//   Edit  --play()-->  Play  --pause()-->  Pause  --step()--> (one fixed step)
+//    ^                  |                    |
+//    +----- stop() -----+------ stop() ------+
+//
+// WHAT PLAY/STOP PRESERVE. `play()` snapshots every entity carrying a
+// `SceneEntityId` and an `ecs::LocalTransform`: its identity, parent, name,
+// transform and a WHITELIST of components (PartInstance, RigidBody,
+// PhysicsVelocity, all four colliders, CharacterController, RiverFloatBody and
+// RiverFloatState — see EntitySnapshot).
+// Anything outside that list is not captured and
+// therefore does not survive a Stop. `stop()` destroys every live
+// SceneEntityId entity and rebuilds the scene from the snapshot, so entities
+// created during Play disappear and entities deleted during Play come back.
+//
+// ANIMATION. When an `AnimationService` is attached, Play also captures runtime
+// animator checkpoints through it and Stop validates then restores them. Stop
+// is all-or-nothing on purpose: validation runs before anything is destroyed,
+// so a stale animation asset cannot half-restore the world. Checkpoints are
+// budgeted at 64 KiB total; exceeding that fails the capture rather than
+// truncating.
+//
+// THREADING. App-thread affine — every method mutates the flecs world directly.
 
 #include "ecs/simulation_control.h"
 #include "matter/animation.h"
@@ -35,6 +64,8 @@ bool SimulationControl::pause(std::string& error) {
     return true;
 }
 
+// Requests exactly one fixed step while paused. Does not run the step itself —
+// it only latches a flag the caller drains with `consume_pending_step()`.
 bool SimulationControl::step(std::string& error) {
     if (mode_ != SimulationMode::Pause) {
         error = "step() requires Pause mode";
@@ -71,6 +102,11 @@ bool SimulationControl::consume_pending_step() {
     return false;
 }
 
+// Replaces the caller-maintained animator checkpoint set. Rejects the whole
+// vector — leaving the previous set intact — if any checkpoint has an invalid
+// instance, reports itself unbounded, or if the serialized total would exceed
+// the 64 KiB budget. Used by callers with no AnimationService attached; when
+// one is attached, `capture_snapshot` supersedes this set from the service.
 bool SimulationControl::set_animator_checkpoints(
     std::vector<animation::AnimatorCheckpoint> checkpoints) {
     size_t bytes = 0;
@@ -84,6 +120,11 @@ bool SimulationControl::set_animator_checkpoints(
     return true;
 }
 
+// Snapshots the whitelisted state of every SceneEntityId entity that also has a
+// LocalTransform — an entity without one is silently skipped and will not be
+// restored by stop(). Animation checkpoints are captured first and re-checked
+// against the 64 KiB budget; a failure there aborts before any entity is walked
+// and leaves `snapshot_.valid` false.
 bool SimulationControl::capture_snapshot(flecs::world& world) {
     snapshot_.entities.clear();
     snapshot_.valid = false;
@@ -128,6 +169,10 @@ bool SimulationControl::capture_snapshot(flecs::world& world) {
         if (const auto* cc = e.try_get<physics::CapsuleCollider>()) {
             snap.capsule_collider = *cc;
             snap.has_capsule_collider = true;
+        }
+        if (const auto* hc = e.try_get<physics::ConvexHullCollider>()) {
+            snap.convex_hull_collider = *hc;
+            snap.has_convex_hull_collider = true;
         }
         if (const auto* body = e.try_get<RiverFloatBody>()) {
             snap.river_float_body = *body;
@@ -179,6 +224,8 @@ bool SimulationControl::restore_snapshot(flecs::world& world) {
         if (snap.has_river_float_body) e.set<RiverFloatBody>(snap.river_float_body);
         if (snap.has_river_float_state)
             e.set<river_float::RiverFloatState>(snap.river_float_state);
+        if (snap.has_convex_hull_collider)
+            e.set<physics::ConvexHullCollider>(snap.convex_hull_collider);
         if (snap.has_character_controller) {
             e.set<character::CharacterController>(snap.character_controller);
             e.set<character::MoveIntent>({});

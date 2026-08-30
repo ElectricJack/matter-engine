@@ -1,4 +1,24 @@
 #pragma once
+
+// MatterEngine3/include/matter/events.h
+//
+// The engine's outbound progress/error record. A WorldSession queues these
+// during bake and streaming; the host drains them one at a time with
+// `WorldSession::poll_event` (matter/world_session.h) and drives its HUD,
+// console and logs from them. The channel is one-way — nothing here is a
+// command into the engine.
+//
+// Reading the stream:
+//   * `Event` is append-only BY CONTRACT. New fields go at the end with
+//     neutral defaults so an older consumer keeps compiling and simply
+//     ignores them; never reorder or repurpose an existing field. The
+//     per-field comments below record which phase added what.
+//   * Only some fields are meaningful for a given EventType — the field
+//     comments say which.
+//   * Progress counters are advisory: `total == 0` means indeterminate, and
+//     `total` may GROW mid-sequence, so a progress bar has to tolerate a
+//     percentage that goes backwards.
+
 #include <string>
 
 namespace matter {
@@ -19,6 +39,9 @@ enum class EventType { BakeStarted, BakePartDone, BakeFinished, BakeError,
 // Structured bake-error classification (Phase B). None on non-error events.
 enum class BakeErrorCode { None, Cancelled, OutOfMemory, ScriptError, GpuError, IoError, Internal };
 
+// One queued engine event. Freely copyable; the strings are owned by the
+// event. A default-constructed Event is a BakeStarted with every optional
+// field neutral, which is what makes the append-only rule safe.
 struct Event {
     EventType type = EventType::BakeStarted;
     std::string module;        // BakePartDone/BakeError: part module name (may be empty)
