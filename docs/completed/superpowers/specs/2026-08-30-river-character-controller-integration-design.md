@@ -1,6 +1,6 @@
 # RiverFloatLab character-controller integration
 
-Date: 2026-08-30. Status: runtime, scene, and editor walking integration implemented and reviewed through `7d263808`; real RiverFloatLab acceptance remains pending.
+Date: 2026-08-30. Status: completed implementation record; all four tasks individually reviewed through `a8166d78`, with [bounded RiverFloatLab acceptance](../../../findings/river-character-controller-integration-acceptance-2026-08-30.md). This is not acceptance of a full river playtest or the unfinished water optics.
 
 ## Goal and decision
 
@@ -103,7 +103,7 @@ The collision region remains `river-gameplay`, min `[-64,-64,-64]`, max `[384,12
 
 ## Verification and evidence
 
-No tests or editor runs are claimed by this design. Execution requires:
+Executed commands, captures, tolerances, and limitations are retained in the [acceptance record](../../../findings/river-character-controller-integration-acceptance-2026-08-30.md). The implementation was required to satisfy:
 
 1. Native MSVC tests for Runtime module registration/idempotency; mover flat rest/no drift, walking/normalization/sprint, 30-degree climb, 60-degree slide, walls, tile seams, falling outside finite terrain, replaced terrain generations, static filtering, invalid values/ownership/thread/step timing, two independent characters, and zero/one/multiple-step jump consumption.
 2. Registry/bootstrap/editor mutation tests and snapshots covering missing/present/deleted controllers, MoveIntent reset, preserved river runtime state, and Pause -> Play retaining the original snapshot. A transport test drives the production tick-description helper with fast wall time and slow motion and proves exactly one paused fixed step.

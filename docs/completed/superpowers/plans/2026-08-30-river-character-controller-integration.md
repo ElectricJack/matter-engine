@@ -10,10 +10,12 @@
 
 **Spec:** [RiverFloatLab character-controller integration](../specs/2026-08-30-river-character-controller-integration-design.md).
 
-**Progress (2026-08-30):** Tasks 1-3 are implemented and independently reviewed
-through `7d263808`. Native fixed-step, terrain, scene/snapshot, editor-helper,
-physics, and graph checks pass. Task 4 RiverFloatLab authored-player and
-screenshot acceptance is next; this is not yet playable-river acceptance.
+**Completed record (2026-08-30):** All four tasks are implemented and individually
+reviewed through `a8166d78`. Two native RiverFloatLab processes passed the
+fixed-step/grounding/jump/Pause/Stop proof with zero measured deterministic
+drift. See the [acceptance evidence](../../../findings/river-character-controller-integration-acceptance-2026-08-30.md).
+This is the bounded bank-path integration, not full playable-river acceptance.
+The instructions below are retained implementation history, not active work.
 
 ## Global Constraints
 
@@ -388,7 +390,7 @@ git commit -m 'feat(editor): add authored character walking and FIFO diagnostics
 
 **Produces:** One authored player, Node scene invariants, a reproducible isolated acceptance runner, machine-checked logs/current captures, and a concise findings record linked from the roadmap.
 
-- [ ] **4.1 Add the failing Node player invariant.** Extend the existing test's loaded `buildRiverFloatLabDefinition` result. Assert exactly one id `river-player`, name `River Player`, root/no parent, identity rotation, unit scale, and the exact controller defaults below. Assert absence of authored MoveIntent, RigidBody, PhysicsVelocity, all physics colliders, RiverFloatBody, PartInstance, and SectorStreaming. Retain the existing 24-dynamic-body, boulder, reference crate/raft, shared river, and exact collision-union assertions. Run:
+- [x] **4.1 Add the failing Node player invariant.** Extend the existing test's loaded `buildRiverFloatLabDefinition` result. Assert exactly one id `river-player`, name `River Player`, root/no parent, identity rotation, unit scale, and the exact controller defaults below. Assert absence of authored MoveIntent, RigidBody, PhysicsVelocity, all physics colliders, RiverFloatBody, PartInstance, and SectorStreaming. Retain the existing 24-dynamic-body, boulder, reference crate/raft, shared river, and exact collision-union assertions. Run:
 
 ```powershell
 node --experimental-default-type=module projects/world_demo/tests/river_float_lab_scene_tests.mjs
@@ -396,7 +398,7 @@ node --experimental-default-type=module projects/world_demo/tests/river_float_la
 
 Expected red: player lookup/count assertion fails; existing river assertions remain intact.
 
-- [ ] **4.2 Add only the player recipe.** Append it after the existing body/boulder recipes in `buildRiverFloatLabDefinition`; do not alter body placement indexing or random variation:
+- [x] **4.2 Add only the player recipe.** Append it after the existing body/boulder recipes in `buildRiverFloatLabDefinition`; do not alter body placement indexing or random variation:
 
 ```js
 entities.push({
@@ -418,7 +420,7 @@ entities.push({
 
 This is an elevated authored drop spawn, not an assumed ground height. The acceptance run must prove grounding. Do not compensate for a failure with an invisible platform, collision union expansion, render ray, or analytical floor.
 
-- [ ] **4.3 Test the evidence checker before creating the runner.** The Python checker reads `character_status ` JSON lines and current PNG/`.done` artifacts. Unit tests provide a complete small synthetic valid trace and reject: missing/duplicate labels, nonfinite coordinates, wrong scene identity, unexpected fixed counts, double-consumed jump, airborne press counted as a launch, paused drift, overwritten Stop snapshot, cross-run deterministic drift > 0.001 m, missing/stale captures, timeout/error markers, and PhysX-disabled/fallback output. Use `unittest`; no third-party dependency is needed.
+- [x] **4.3 Test the evidence checker before creating the runner.** The Python checker reads `character_status ` JSON lines and current PNG/`.done` artifacts. Unit tests provide a complete small synthetic valid trace and reject: missing/duplicate labels, nonfinite coordinates, wrong scene identity, unexpected fixed counts, double-consumed jump, airborne press counted as a launch, paused drift, overwritten Stop snapshot, cross-run deterministic drift > 0.001 m, missing/stale captures, timeout/error markers, and PhysX-disabled/fallback output. Use `unittest`; no third-party dependency is needed.
 
 ```powershell
 & $controllerToolchain.Python -m unittest discover -s MatterEngine3/tools/tests -p character_controller_acceptance_tests.py
@@ -426,13 +428,13 @@ This is an elevated authored drop spawn, not an assumed ground height. The accep
 
 Expected red: checker rejects the valid trace or accepts a malformed trace until implemented. Then implement parsing/validation with explicit missing-field errors and strict finite numeric checks. Do not accept a screenshot-only pass.
 
-- [ ] **4.4 Implement isolated runner and provenance checks.** Parameters: mandatory `-OutputDir`, optional `-TimeoutSeconds` default 4200. Require a new or empty output directory; canonicalize it and never recursively delete it. Resolve the SDK root from the verified build's `MATTER_PHYSX_ROOT:PATH` cache entry when the environment variable is absent; if both exist, require canonical equality. Pass that root explicitly to `tools/build-windows.ps1 -EnablePhysx -PhysxRoot <resolved-root> -PreflightOnly`. Refuse to proceed unless CMakeCache has exactly `MATTER_ENABLE_PHYSX:BOOL=ON`, the source MSVC editor exists, and the pinned DLL exists at `<resolved-root>/physx/bin/win.x86_64.vc143.mt/release/PhysXGpu_64.dll`. Do not change global environment settings to satisfy this prerequisite.
+- [x] **4.4 Implement isolated runner and provenance checks.** Parameters: mandatory `-OutputDir`, optional `-TimeoutSeconds` default 4200. Require a new or empty output directory; canonicalize it and never recursively delete it. Resolve the SDK root from the verified build's `MATTER_PHYSX_ROOT:PATH` cache entry when the environment variable is absent; if both exist, require canonical equality. Pass that root explicitly to `tools/build-windows.ps1 -EnablePhysx -PhysxRoot <resolved-root> -PreflightOnly`. Refuse to proceed unless CMakeCache has exactly `MATTER_ENABLE_PHYSX:BOOL=ON`, the source MSVC editor exists, and the pinned DLL exists at `<resolved-root>/physx/bin/win.x86_64.vc143.mt/release/PhysXGpu_64.dll`. Do not change global environment settings to satisfy this prerequisite.
 
 Create a new fixture tree under OutputDir with `projects/world_demo`, `MatterEngine3/shared-lib`, `MatterEngine3/tools`, `MatterEditor`, and `bin`. Copy the project including its existing `.cache` read-only as input; no hardlinks or junctions. Copy engine shared-lib, `drive.py`, the newly built editor and adjacent runtime DLLs into the fixture. Copy the pinned PhysX GPU DLL into fixture/bin even if another search path contains a copy; compare SHA256 with the pinned source and record both. Use the copied drive.py so its editor working directory, preferences, command file, and cache writes stay in the fixture; pass the copied binary via `--editor`. The copied project wins executable-relative world discovery. Record source/copy editor hashes, DLL hashes, HEAD, dirty-file list, source script hashes, and CMake feature check in provenance JSON.
 
 Child runs inherit native SDK/runtime PATH and OS TMP/TEMP, but clear unrelated inherited `MATTER_*` overrides; then set only the documented acceptance options (RiverFloatLab, command file, 1280x720, Vulkan validation, and normal rendering). Save/restore any caller environment changes in `finally`. Use the existing drive.py timeout/exit/current-shot checks; the runner must not kill unrelated editor processes. Do not reuse the waterfall agent's fixture or copy a live cache while it is being written.
 
-- [ ] **4.5 Generate two identical deterministic timelines.** Each fresh process begins in Edit. In PowerShell, generate each repeated fixed segment as literal `step` then `wait_frames 1` lines. Use absolute, unique shot paths. The sequence is:
+- [x] **4.5 Generate two identical deterministic timelines.** Each fresh process begins in Edit. In PowerShell, generate each repeated fixed segment as literal `step` then `wait_frames 1` lines. Use absolute, unique shot paths. The sequence is:
 
 | Segment | Commands and required observation |
 | --- | --- |
@@ -452,7 +454,7 @@ Run the checker after both processes exit. Compare `grounded`, `walk`, `sprint`,
 
 If the chosen authored bank spawn or path fails the grounding/progress predicates, inspect installed-collision status and captures, select a supported authored bank location within the unchanged union, update the explicit recipe/Node invariant/timeline expectations, and repeat the same tests. This is a test-driven authored placement correction, not permission to weaken predicates or fabricate support.
 
-- [ ] **4.6 Run the smallest complete native/Node/tooling gate, then the editor.**
+- [x] **4.6 Run the smallest complete native/Node/tooling gate, then the editor.**
 
 ```powershell
 ./tools/build-windows.ps1 -Config RelWithDebInfo -EnablePhysx -Target matter_character_integration_tests
@@ -466,9 +468,9 @@ node --experimental-default-type=module projects/world_demo/tests/river_hydrolog
 
 The output path must be unused; if it already contains evidence, choose the next numeric suffix and record the exact path rather than deleting prior evidence. No later non-PhysX configuration is allowed before this runtime acceptance.
 
-- [ ] **4.7 Inspect evidence and complete the findings record.** Open current grounded/walk/jump/landed/stopped/river screenshots; verify camera height/contact, no disappearing ground, no penetration/teleport, and unchanged visible river-body behavior. Pair this with status, static-filter/body-noninterference tests, terrain/session tests, and preserved float snapshot tests. Report that whole-river traversal, buoyancy endurance, swimming, and craft riding are not proven by these captures. If any required check fails, leave the roadmap incomplete and retain the failure artifacts.
+- [x] **4.7 Inspect evidence and complete the findings record.** Open current grounded/walk/jump/landed/stopped/river screenshots; verify camera height/contact, no disappearing ground, no penetration/teleport, and unchanged visible river-body behavior. Pair this with status, static-filter/body-noninterference tests, terrain/session tests, and preserved float snapshot tests. Report that whole-river traversal, buoyancy endurance, swimming, and craft riding are not proven by these captures. If any required check fails, leave the roadmap incomplete and retain the failure artifacts.
 
-- [ ] **4.8 Final review and surgical commit checkpoint.** Record every actual command/result, editor/DLL hashes, feature check, per-run log/capture paths, measured status deltas, source commit provenance, and limitations in the findings document. Review the full diff against the spec, then update only the relevant controller roadmap item with its evidence link. Stage only the authored-player hunk, its Node tests, new runner/checker/tests/findings, and the reviewed roadmap hunk. Inspect staged diff and ensure no waterfall/other agent changes are included. Proposed checkpoint: `test(character): validate RiverFloatLab controller integration`.
+- [x] **4.8 Final review and surgical commit checkpoint.** Record every actual command/result, editor/DLL hashes, feature check, per-run log/capture paths, measured status deltas, source commit provenance, and limitations in the findings document. Review the full diff against the spec, then update only the relevant controller roadmap item with its evidence link. Stage only the authored-player hunk, its Node tests, new runner/checker/tests/findings, and the reviewed roadmap hunk. Inspect staged diff and ensure no waterfall/other agent changes are included. Proposed checkpoint: `test(character): validate RiverFloatLab controller integration`.
 
 ```powershell
 git add -- MatterEngine3/tools/run_character_controller_acceptance.ps1 MatterEngine3/tools/character_controller_acceptance.py MatterEngine3/tools/tests/character_controller_acceptance_tests.py docs/findings/river-character-controller-integration-acceptance-2026-08-30.md
@@ -480,11 +482,11 @@ git commit -m 'test(character): validate RiverFloatLab controller integration'
 
 ## Final self-review gate
 
-- [ ] M0/M2/M3/M4 provenance is cited; old M1/streamed terrain code and floor fallbacks are absent.
-- [ ] Runtime owns registration; root/unit-scale ghost owns transform; static queries cannot take raft ownership.
-- [ ] Strict authoring/editor validation, all component dispatch paths, original snapshots, river runtime fields, and intent reset are tested.
-- [ ] Jump and fixed-tick diagnostics have defined meanings, are observable through typed FIFO commands, and are not substituted by screenshots.
-- [ ] Pause resume and true one-tick Step regressions are green through the same helpers used by main.
-- [ ] Every build-wrapper command includes `-EnablePhysx`; final binary/DLL/features are verified; native focused tests, Node tests, checker tests, and two fresh-process captures pass.
-- [ ] Existing working caches, UI state, waterfall changes, and unrelated staged work are preserved; acceptance writes only its new fixture/output tree.
-- [ ] The findings and roadmap make no claims about swimming, platforms, pushing, advanced stairs, or full-river traversal.
+- [x] M0/M2/M3/M4 provenance is cited; old M1/streamed terrain code and floor fallbacks are absent.
+- [x] Runtime owns registration; root/unit-scale ghost owns transform; static queries cannot take raft ownership.
+- [x] Strict authoring/editor validation, all component dispatch paths, original snapshots, river runtime fields, and intent reset are tested.
+- [x] Jump and fixed-tick diagnostics have defined meanings, are observable through typed FIFO commands, and are not substituted by screenshots.
+- [x] Pause resume and true one-tick Step regressions are green through the same helpers used by main.
+- [x] Every build-wrapper command includes `-EnablePhysx`; final binary/DLL/features are verified; native focused tests, Node tests, checker tests, and two fresh-process captures pass.
+- [x] Existing working caches, UI state, waterfall changes, and unrelated staged work are preserved; acceptance writes only its new fixture/output tree.
+- [x] The findings and roadmap make no claims about swimming, platforms, pushing, advanced stairs, or full-river traversal.

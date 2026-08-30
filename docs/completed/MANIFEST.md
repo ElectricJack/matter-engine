@@ -1,10 +1,12 @@
 # Completed-document manifest
 
-Generated from the 2026-08-28 implementation-gap audit. Paths below are
+Started from the 2026-08-28 implementation-gap audit and updated as milestones finish. Paths below are
 repository-relative.
 
 | Original path | Current path | Disposition |
 |---|---|---|
+| `docs/superpowers/plans/2026-08-30-river-character-controller-integration.md` | `docs/completed/superpowers/plans/2026-08-30-river-character-controller-integration.md` | Four tasks implemented and individually reviewed through `a8166d78`; two-process RiverFloatLab bank-path acceptance, current captures, and explicit non-goals recorded. Full river playtest and water visual gates remain on the roadmap. |
+| `docs/superpowers/specs/2026-08-30-river-character-controller-integration-design.md` | `docs/completed/superpowers/specs/2026-08-30-river-character-controller-integration-design.md` | Bounded controller Runtime/scene/editor/river integration accepted; no swimming, moving-platform, craft-control, full-traversal, or waterfall-optics acceptance claim. |
 | `docs/habitat-tape-sketch-2026-08-08.md` | `docs/completed/habitat-tape-sketch-2026-08-08.md` | Despite “No code changed by this note,” current tree implements `habitat(h)`, `channel`, `channels_at`, `__habitatAt`, fused `__planCandidates`, and extensive tests (`dsl_bindings.cpp:1180-1494`; `surface_field_tests.cpp:802-939`). |
 | `docs/streammountain-refactor-implementation-2026-08-09.md` | `docs/completed/streammountain-refactor-implementation-2026-08-09.md` | Current shared library/content reflects the implementation record and follow-up commits. |
 | `docs/streammountain-refactor-plan-2026-08-09.md` | `docs/completed/streammountain-refactor-plan-2026-08-09.md` | WP1/WP2/readability and fused habitat planning landed; optional all-native work remained measurement-gated. |

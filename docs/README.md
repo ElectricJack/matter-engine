@@ -14,8 +14,6 @@ requirements.
 
 ## Active engine designs
 
-- **[River character integration](superpowers/specs/2026-08-30-river-character-controller-integration-design.md)**
-  — fixed-step walking and editor controls are implemented; real-world proof is in progress.
 - **[Water-animation memory admission](superpowers/specs/2026-08-30-water-animation-memory-gates-design.md)**
   — remaining shared publication/cache/playback limits, independent of waterfall visuals.
 - **[LOD/VT redesign](lod-vt-redesign-2026-08-04.md)** — incomplete
@@ -48,6 +46,10 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 - [Water-field interpolation at mesh edges](findings/water-field-fringe-interpolation-2026-08-30.md)
   records the bounded wet-neighbor fix and its remaining visual limits.
+- [River character integration acceptance](findings/river-character-controller-integration-acceptance-2026-08-30.md)
+  records the two-process bank-path proof; its [design](completed/superpowers/specs/2026-08-30-river-character-controller-integration-design.md)
+  and [implementation plan](completed/superpowers/plans/2026-08-30-river-character-controller-integration.md)
+  are completed records, not remaining roadmap work.
 
 `findings/` contains acceptance records and root-cause reports. Other current
 measurement notes remain at the top of `docs/`, including LOD/VT,

@@ -41,20 +41,17 @@ Stage 1 animated-section continuity is accepted. Task 11 waterfall refinement
 was rejected and its experimental implementation removed; waterfall/plunge
 appearance and overall raster-water acceptance remain open. See the
 [bounded rejection evidence](docs/findings/waterfall-refinement-rejection-2026-08-30.md).
-Controller integration proceeds against the accepted coarse river.
+The controller's bounded RiverFloatLab bank-path integration is
+[accepted](docs/findings/river-character-controller-integration-acceptance-2026-08-30.md)
+against the coarse river. Whole-river traversal and craft riding are not yet
+proven; swimming is outside this slice.
 
-1. Character-controller integration is accepted for the bounded RiverFloatLab
-   bank path: two fresh MSVC/PhysX processes proved fixed-step movement,
-   installed-terrain grounding, jump/Pause/Stop behavior, and current visual
-   continuity. See the
-   [acceptance evidence](docs/findings/river-character-controller-integration-acceptance-2026-08-30.md);
-   whole-river traversal, swimming, and craft riding remain unproven.
-2. Build the first focused rapids playtest around the controller-driven player
+1. Build the first focused rapids playtest around the controller-driven player
    and controllable floating craft.
-3. Close remaining longer-river and waterfall/plunge visual quality with a
+2. Close remaining longer-river and waterfall/plunge visual quality with a
    newly approved bounded approach, preserving accepted spillway continuity,
    pools, and the shared animation clock.
-4. Run a clean MSVC/PhysX cold bake and cache-hit acceptance with character
+3. Run a clean MSVC/PhysX cold bake and cache-hit acceptance with character
    movement, terrain collision, buoyancy, animated playback, the standard
    river cameras, and retained screenshots/timings.
 
