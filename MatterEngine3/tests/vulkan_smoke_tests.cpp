@@ -583,8 +583,12 @@ void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
                             : error.c_str());
         CHECK(renderer.test_recorded_draw_ranges().empty(),
               "water animation: classified static water is absent from opaque recording");
-        CHECK(renderer.test_recorded_water_draw_count() == 1u,
+        const std::uint32_t raster_direct_draws =
+            renderer.test_recorded_water_draw_count();
+        CHECK(raster_direct_draws == 1u,
               "water animation: command recording issues exactly one direct indexed draw");
+        std::printf("water animation raster direct draws: %u\n",
+                    raster_direct_draws);
         vulkan.wait_idle();
 
         if (vulkan.ray_tracing_available()) {
@@ -1563,6 +1567,24 @@ void test_atmosphere_acceptance_fifo_parser_and_present_sequencer() {
               third.completed_waits[0].count == 3u &&
               third.completed_waits[0].frame_serial == 3u,
           "wait_frames completes on the third successful present only");
+}
+
+void test_screenshot_completion_marker_is_nonempty() {
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("matter-screenshot-marker-" + std::to_string(stamp));
+    const auto marker = root / "capture.png.done";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    CHECK(!ec, "create screenshot completion marker fixture");
+    CHECK(viewer::write_screenshot_completion_marker(marker.string()),
+          "write screenshot completion marker");
+    CHECK(std::filesystem::is_regular_file(marker),
+          "screenshot completion marker exists");
+    CHECK(std::filesystem::file_size(marker, ec) > 0u && !ec,
+          "screenshot completion marker is nonempty");
+    std::filesystem::remove_all(root, ec);
 }
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
@@ -13670,6 +13692,7 @@ int main() {
     test_atmosphere_timing_contract();
     test_water_forward_perf_evidence_contract();
     test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
+    test_screenshot_completion_marker_is_nonempty();
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     const bool animation_skin_only = startup_smoke_mode &&
         (std::string(startup_smoke_mode) == "animation-skin" ||

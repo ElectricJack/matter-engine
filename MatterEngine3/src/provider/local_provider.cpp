@@ -2584,6 +2584,18 @@ bool LocalProvider::run_authored_fluid_bake(
                 animation_candidate.semantic_key;
             section_timings.animation_payload_digest =
                 animation_candidate.payload_digest;
+            section_timings.boundary_source_semantic_keys.reserve(
+                boundary_expectations.size());
+            for (const auto& expected : boundary_expectations) {
+                section_timings.boundary_source_semantic_keys.push_back(
+                    expected.semantic_key);
+            }
+            section_timings.boundary_source_payload_digests.reserve(
+                boundary_candidates.size());
+            for (const auto& source : boundary_candidates) {
+                section_timings.boundary_source_payload_digests.push_back(
+                    source.payload_digest);
+            }
             section_timings.animation_frame_vertex_counts.reserve(
                 animation_candidate.frames.size());
             section_timings.animation_frame_triangle_counts.reserve(
@@ -2798,6 +2810,21 @@ bool LocalProvider::run_authored_fluid_bake(
         status.failure_reason = fluid_error.message;
         return false;
     }
+    handoff_timings.semantic_key = handoff_artifact.semantic_key;
+    handoff_timings.payload_digest = handoff_artifact.payload_digest;
+    hydrology::FluidBakeError field_measurement_error{};
+    if (!hydrology::measure_handoff_field_continuity(
+            network_result.products, handoff,
+            handoff_timings.upstream_field,
+            handoff_timings.downstream_field, field_measurement_error)) {
+        // Observational acceptance telemetry must not change provider
+        // admission for synthetic or legacy fixtures without wet cut samples.
+        // The Stage 1 comparator rejects the resulting zero-sample record for
+        // the native RiverFloatLab bake.
+        MATTER_LOGW("hydrology",
+                    "handoff field telemetry unavailable: %s\n",
+                    field_measurement_error.message.c_str());
+    }
     network_result.timings.handoff_mesh_ms =
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - handoff_mesh_start).count();
@@ -2948,6 +2975,10 @@ bool LocalProvider::run_authored_fluid_bake(
                 std::chrono::steady_clock::now() - animation_start).count();
         handoff_timings.animation_frame_ms =
             handoff_diagnostics.frame_mesh_ms;
+        handoff_timings.animation_semantic_key =
+            handoff_animation.semantic_key;
+        handoff_timings.animation_payload_digest =
+            handoff_animation.payload_digest;
         handoff_timings.animation_file_bytes =
             handoff_diagnostics.artifact_file_bytes;
         handoff_timings.peak_build_cpu_payload_bytes =
@@ -2956,6 +2987,21 @@ bool LocalProvider::run_authored_fluid_bake(
         handoff_timings.downstream_cut = handoff_diagnostics.downstream_cut;
         handoff_timings.source_blend_required =
             handoff_diagnostics.source_blend_required;
+        handoff_timings.excluded_dam_contributors =
+            handoff_diagnostics.dam_support_survivors;
+        handoff_timings.loop_frame_29_to_0_synchronized =
+            upstream_source->frames.size() == 30u &&
+            downstream_source->frames.size() == 30u &&
+            upstream_source->frames_per_second == 30u &&
+            downstream_source->frames_per_second == 30u &&
+            upstream_source->phase_offset_frames == 15u &&
+            downstream_source->phase_offset_frames == 15u &&
+            upstream_animation->frames.size() == 30u &&
+            downstream_animation->frames.size() == 30u &&
+            handoff_animation.frames.size() == 30u &&
+            handoff_animation.frames_per_second == 30u &&
+            handoff_animation.phase_offset_frames == 15u &&
+            handoff_animation.duration_seconds == 1.0f;
         network_result.timings.peak_build_cpu_payload_bytes = std::max(
             network_result.timings.peak_build_cpu_payload_bytes,
             handoff_timings.peak_build_cpu_payload_bytes);
@@ -3021,6 +3067,11 @@ bool LocalProvider::run_authored_fluid_bake(
             status.failure_reason = fluid_error.message;
             return false;
         }
+        // Packing has no persisted payload digest until serialization has
+        // produced and reopened the immutable file. Report the admitted
+        // artifact's digest so cold and warm traces name identical bytes.
+        handoff_timings.animation_payload_digest =
+            reopened_animation.payload_digest;
         network_result.handoff_animations.push_back(
             std::move(reopened_animation));
     }

@@ -1381,6 +1381,126 @@ std::uint64_t hydrology_presentation_field_digest(
     }
 }
 
+bool measure_handoff_field_continuity(
+    const HydrologyNetworkProducts& products,
+    const SpillwayHandoffRecord& handoff,
+    HandoffFieldContinuityMetrics& upstream_cut,
+    HandoffFieldContinuityMetrics& downstream_cut,
+    FluidBakeError& error) {
+    upstream_cut = {};
+    downstream_cut = {};
+    error = {};
+    if (!valid_layout(products.gameplay_layout) ||
+        products.gameplay_field.size() !=
+            static_cast<std::size_t>(products.gameplay_layout.width) *
+                products.gameplay_layout.depth ||
+        products.presentation_field.size() != products.gameplay_field.size() ||
+        handoff.upstream_visual_cut_m >= handoff.downstream_visual_cut_m ||
+        !finite(handoff.lip_origin_m) || !finite(handoff.tangent) ||
+        !finite(handoff.lateral) || !finite(handoff.width_m) ||
+        handoff.width_m <= 0.0f)
+        return fail("handoff field continuity input is invalid", error);
+
+    const auto measure_cut = [&](float cut,
+                                 HandoffFieldContinuityMetrics& metrics) {
+        metrics = {};
+        metrics.minimum_normal_dot = 1.0f;
+        metrics.feature_labels_deterministic = true;
+        const float epsilon = std::min(
+            products.gameplay_layout.cell_size_m * 0.005f, 0.004f);
+        std::uint32_t feature_samples = 0u;
+        for (int lateral_index = -4; lateral_index <= 4; ++lateral_index) {
+            const float lateral_m = handoff.width_m *
+                static_cast<float>(lateral_index) / 10.0f;
+            const matter::Float3 centre = add(
+                add(handoff.lip_origin_m, scale(handoff.tangent, cut)),
+                scale(handoff.lateral, lateral_m));
+            const matter::Float3 before_point =
+                add(centre, scale(handoff.tangent, -epsilon));
+            const matter::Float3 after_point =
+                add(centre, scale(handoff.tangent, epsilon));
+            GameplaySample before_gameplay{};
+            GameplaySample after_gameplay{};
+            PresentationSample before_presentation{};
+            PresentationSample after_presentation{};
+            const bool paired = sample_fluid_gameplay_field(
+                    products.gameplay_layout, products.gameplay_field,
+                    before_point.x, before_point.z, before_gameplay) &&
+                sample_fluid_gameplay_field(
+                    products.gameplay_layout, products.gameplay_field,
+                    after_point.x, after_point.z, after_gameplay) &&
+                sample_river_presentation_field(
+                    products.gameplay_layout, products.presentation_field,
+                    before_point.x, before_point.z, before_presentation) &&
+                sample_river_presentation_field(
+                    products.gameplay_layout, products.presentation_field,
+                    after_point.x, after_point.z, after_presentation);
+            if (paired) {
+                const auto normal = [](const PresentationSample& sample) {
+                    const float y = std::sqrt(std::max(
+                        0.0f, 1.0f - sample.normal_x * sample.normal_x -
+                            sample.normal_z * sample.normal_z));
+                    return matter::Float3{sample.normal_x, y,
+                                          sample.normal_z};
+                };
+                metrics.sample_pairs++;
+                metrics.maximum_height_delta_m = std::max(
+                    metrics.maximum_height_delta_m,
+                    std::fabs(after_gameplay.height_m -
+                              before_gameplay.height_m));
+                metrics.minimum_normal_dot = std::min(
+                    metrics.minimum_normal_dot,
+                    std::clamp(dot(normal(before_presentation),
+                                   normal(after_presentation)),
+                               -1.0f, 1.0f));
+                metrics.maximum_turbulence_delta = std::max(
+                    metrics.maximum_turbulence_delta,
+                    std::fabs(after_presentation.turbulence -
+                              before_presentation.turbulence));
+                metrics.maximum_aeration_delta = std::max(
+                    metrics.maximum_aeration_delta,
+                    std::fabs(after_presentation.aeration -
+                              before_presentation.aeration));
+                metrics.maximum_foam_delta = std::max(
+                    metrics.maximum_foam_delta,
+                    std::fabs(after_presentation.foam_potential -
+                              before_presentation.foam_potential));
+            }
+
+            PresentationSample feature_first{};
+            PresentationSample feature_second{};
+            const bool first_valid = sample_river_presentation_field(
+                products.gameplay_layout, products.presentation_field,
+                centre.x, centre.z, feature_first);
+            const bool second_valid = sample_river_presentation_field(
+                products.gameplay_layout, products.presentation_field,
+                centre.x, centre.z, feature_second);
+            if (first_valid || second_valid) {
+                ++feature_samples;
+                metrics.feature_labels_deterministic =
+                    metrics.feature_labels_deterministic && first_valid &&
+                    second_valid && feature_first.feature == feature_second.feature;
+            }
+        }
+        return metrics.sample_pairs > 0u && feature_samples > 0u &&
+            finite(metrics.maximum_height_delta_m) &&
+            finite(metrics.minimum_normal_dot) &&
+            finite(metrics.maximum_turbulence_delta) &&
+            finite(metrics.maximum_aeration_delta) &&
+            finite(metrics.maximum_foam_delta) &&
+            metrics.feature_labels_deterministic;
+    };
+
+    if (!measure_cut(handoff.upstream_visual_cut_m, upstream_cut) ||
+        !measure_cut(handoff.downstream_visual_cut_m, downstream_cut)) {
+        upstream_cut = {};
+        downstream_cut = {};
+        return fail("handoff field continuity has no finite wet cut samples",
+                    error);
+    }
+    return true;
+}
+
 bool build_handoff_artifact(
     const HydrologyArtifact& upstream,
     const HydrologyArtifact& downstream,
@@ -1818,6 +1938,20 @@ bool build_handoff_animation_frames(
             source_blend.source[1].secondary_count =
                 static_cast<std::uint32_t>(particles.size()) -
                 source_blend.source[1].secondary_begin;
+            const auto count_dam_survivors = [&](std::uint32_t begin,
+                                                 std::uint32_t count) {
+                for (std::uint32_t index = 0u; index != count; ++index) {
+                    if (support_intersects_dam(
+                            input.handoff.temporary_dam_exclusion_bounds_m,
+                            particles[begin + index].position_m)) {
+                        ++diagnostics.dam_support_survivors;
+                    }
+                }
+            };
+            count_dam_survivors(source_blend.source[0].primary_begin,
+                                source_blend.source[0].primary_count);
+            count_dam_survivors(source_blend.source[0].secondary_begin,
+                                source_blend.source[0].secondary_count);
             if (particles.empty() ||
                 particles.size() > std::numeric_limits<std::uint32_t>::max())
                 return reject(
@@ -2306,6 +2440,15 @@ std::string hydrology_network_timing_trace_json(
         }
         stream << ']';
     };
+    const auto write_hex_array = [&](std::ostringstream& stream,
+                                     const std::vector<std::uint64_t>& values) {
+        stream << '[';
+        for (std::size_t index = 0u; index != values.size(); ++index) {
+            if (index != 0u) stream << ',';
+            stream << std::quoted(hex64(values[index]));
+        }
+        stream << ']';
+    };
     const auto write_frame_ms = [](std::ostringstream& stream,
                                    const std::array<double, 30>& values) {
         stream << '[';
@@ -2350,6 +2493,25 @@ std::string hydrology_network_timing_trace_json(
                    << finite_or_zero(value.p95_normal_angle_degrees) << '}';
         }
         stream << ']';
+    };
+    const auto write_field = [](std::ostringstream& stream,
+                                const HandoffFieldContinuityMetrics& value) {
+        const auto finite_or_zero = [](float metric) {
+            return std::isfinite(metric) ? metric : 0.0f;
+        };
+        stream << "{\"samplePairs\":" << value.sample_pairs
+               << ",\"maximumHeightDeltaM\":"
+               << finite_or_zero(value.maximum_height_delta_m)
+               << ",\"minimumNormalDot\":"
+               << finite_or_zero(value.minimum_normal_dot)
+               << ",\"maximumTurbulenceDelta\":"
+               << finite_or_zero(value.maximum_turbulence_delta)
+               << ",\"maximumAerationDelta\":"
+               << finite_or_zero(value.maximum_aeration_delta)
+               << ",\"maximumFoamDelta\":"
+               << finite_or_zero(value.maximum_foam_delta)
+               << ",\"featureLabelsDeterministic\":" << std::boolalpha
+               << value.feature_labels_deterministic << '}';
     };
 
     std::ostringstream stream;
@@ -2402,6 +2564,10 @@ std::string hydrology_network_timing_trace_json(
         write_u32_array(stream, timing.animation_frame_vertex_counts);
         stream << ",\"animationFrameTriangleCounts\":";
         write_u32_array(stream, timing.animation_frame_triangle_counts);
+        stream << ",\"boundarySourceSemanticKeys\":";
+        write_hex_array(stream, timing.boundary_source_semantic_keys);
+        stream << ",\"boundarySourcePayloadDigests\":";
+        write_hex_array(stream, timing.boundary_source_payload_digests);
         stream << '}'
                << (index + 1u == result.timings.sections.size()
                        ? "\n" : ",\n");
@@ -2412,7 +2578,15 @@ std::string hydrology_network_timing_trace_json(
          index != result.timings.handoffs.size(); ++index) {
         const auto& timing = result.timings.handoffs[index];
         stream << "    " << std::quoted(timing.id) << ":{"
-               << "\"staticCacheHit\":" << std::boolalpha
+               << "\"semanticKey\":"
+               << std::quoted(hex64(timing.semantic_key))
+               << ",\"payloadDigest\":"
+               << std::quoted(hex64(timing.payload_digest))
+               << ",\"animationSemanticKey\":"
+               << std::quoted(hex64(timing.animation_semantic_key))
+               << ",\"animationPayloadDigest\":"
+               << std::quoted(hex64(timing.animation_payload_digest))
+               << ",\"staticCacheHit\":" << std::boolalpha
                << timing.static_cache_hit
                << ",\"animationCacheHit\":"
                << timing.animation_cache_hit
@@ -2430,6 +2604,14 @@ std::string hydrology_network_timing_trace_json(
         write_cut_array(stream, timing.upstream_cut);
         stream << ",\"downstreamCut\":";
         write_cut_array(stream, timing.downstream_cut);
+        stream << ",\"upstreamField\":";
+        write_field(stream, timing.upstream_field);
+        stream << ",\"downstreamField\":";
+        write_field(stream, timing.downstream_field);
+        stream << ",\"excludedDamContributors\":"
+               << timing.excluded_dam_contributors
+               << ",\"loopFrame29To0Synchronized\":" << std::boolalpha
+               << timing.loop_frame_29_to_0_synchronized;
         stream << '}'
                << (index + 1u == result.timings.handoffs.size()
                        ? "\n" : ",\n");

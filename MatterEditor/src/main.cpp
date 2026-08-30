@@ -4910,13 +4910,22 @@ int main() {
                                  capture_path.c_str());
                     fatal_error = true;
                 } else {
-                    screenshot_failures = 0;
-                    std::printf("screenshot written to %s\n",
-                                capture_path.c_str());
+                    bool completion_written = true;
                     if (capture_path == shot_path || fifo_immediate_capture) {
                         const std::string done = capture_path + ".done";
-                        if (FILE* file = std::fopen(done.c_str(), "w"))
-                            std::fclose(file);
+                        completion_written =
+                            viewer::write_screenshot_completion_marker(done);
+                    }
+                    if (!completion_written) {
+                        MATTER_LOGE(
+                            "screenshot",
+                            "screenshot completion marker FAILED %s.done\n",
+                            capture_path.c_str());
+                        fatal_error = true;
+                    } else {
+                        screenshot_failures = 0;
+                        std::printf("screenshot written to %s\n",
+                                    capture_path.c_str());
                     }
                     if (capture_path == screenshot_path) quit_requested = true;
                 }

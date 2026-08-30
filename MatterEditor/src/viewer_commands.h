@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <deque>
 #include <limits>
@@ -43,6 +44,18 @@
 #endif
 
 namespace viewer {
+
+inline bool write_screenshot_completion_marker(const std::string& path) {
+    FILE* file = std::fopen(path.c_str(), "w");
+    if (!file) return false;
+    static constexpr char kMarker[] = "captured\n";
+    const bool wrote =
+        std::fwrite(kMarker, 1u, sizeof(kMarker) - 1u, file) ==
+        sizeof(kMarker) - 1u;
+    const bool closed = std::fclose(file) == 0;
+    if (!wrote || !closed) std::remove(path.c_str());
+    return wrote && closed;
+}
 
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------

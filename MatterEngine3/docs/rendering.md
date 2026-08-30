@@ -287,7 +287,8 @@ Commands (one per line) include `set <group.path.field> <value>`,
 `wait_frames <positive-uint32>`, `shot_now <absolute-png-path>`, `reload`, and
 `quit`. `wait_frames` reports only successful presents. `shot_now` captures the
 next successful present without the legacy `shot` command's three-frame settle;
-both screenshot commands touch `<path>.done` only after the PNG is complete.
+both screenshot commands write a nonempty `<path>.done` completion marker only
+after the PNG is complete.
 Native RT is never silently substituted: an unsupported request reports
 `render_path: native_rt unavailable` and fails.
 

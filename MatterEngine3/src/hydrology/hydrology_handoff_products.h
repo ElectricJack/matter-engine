@@ -52,7 +52,19 @@ struct HydrologySectionTimings {
     std::vector<std::uint32_t> animation_capture_particle_counts;
     std::vector<std::uint32_t> animation_frame_vertex_counts;
     std::vector<std::uint32_t> animation_frame_triangle_counts;
+    std::vector<std::uint64_t> boundary_source_semantic_keys;
+    std::vector<std::uint64_t> boundary_source_payload_digests;
     bool animation_cache_hit = false;
+};
+
+struct HandoffFieldContinuityMetrics {
+    std::uint32_t sample_pairs = 0;
+    float maximum_height_delta_m = 0.0f;
+    float minimum_normal_dot = 1.0f;
+    float maximum_turbulence_delta = 0.0f;
+    float maximum_aeration_delta = 0.0f;
+    float maximum_foam_delta = 0.0f;
+    bool feature_labels_deterministic = false;
 };
 
 struct MeshIndexRange {
@@ -87,11 +99,16 @@ struct HandoffAnimationBuildDiagnostics {
     std::uint64_t artifact_file_bytes = 0;
     std::uint64_t peak_build_cpu_payload_bytes = 0;
     std::uint32_t peak_decoded_boundary_frames = 0;
+    std::uint32_t dam_support_survivors = 0;
     bool source_blend_required = false;
 };
 
 struct HydrologyHandoffTimings {
     std::string id;
+    std::uint64_t semantic_key = 0;
+    std::uint64_t payload_digest = 0;
+    std::uint64_t animation_semantic_key = 0;
+    std::uint64_t animation_payload_digest = 0;
     bool static_cache_hit = false;
     bool animation_cache_hit = false;
     std::array<double, 30> animation_frame_ms{};
@@ -100,6 +117,10 @@ struct HydrologyHandoffTimings {
     std::uint64_t peak_build_cpu_payload_bytes = 0;
     std::array<WaterCutContourMetrics, 30> upstream_cut{};
     std::array<WaterCutContourMetrics, 30> downstream_cut{};
+    HandoffFieldContinuityMetrics upstream_field{};
+    HandoffFieldContinuityMetrics downstream_field{};
+    std::uint32_t excluded_dam_contributors = 0;
+    bool loop_frame_29_to_0_synchronized = false;
     bool source_blend_required = false;
 };
 
@@ -141,6 +162,13 @@ bool build_handoff_artifact(
     const PhysxFluidBake::VisualMesher& visual_mesher,
     HydrologyHandoffArtifact& artifact,
     HydrologyNetworkProducts& products,
+    FluidBakeError& error);
+
+bool measure_handoff_field_continuity(
+    const HydrologyNetworkProducts& products,
+    const SpillwayHandoffRecord& handoff,
+    HandoffFieldContinuityMetrics& upstream_cut,
+    HandoffFieldContinuityMetrics& downstream_cut,
     FluidBakeError& error);
 
 bool build_handoff_water_animation_artifact(

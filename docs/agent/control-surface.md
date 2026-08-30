@@ -17,7 +17,9 @@ argv-based CLI. Every startup and runtime behavior is driven by:
 Output is `stdout`/`stderr` text (one line per event/ack/error — see the verb
 table in §b for exact wording) plus PNG sidecars: the FIFO `shot` and
 `shot_now` verbs also write `<path>.done` once the PNG is on disk, so a
-script can poll for the sidecar instead of racing the file write.
+script can poll for the sidecar instead of racing the file write. The marker
+contains `captured` plus a newline; a missing or empty marker is not a
+successful capture.
 (`MATTER_SCREENSHOT`/`MATTER_REPLAY_OUT` captures do NOT write a sidecar —
 those runs quit after writing, so poll for process exit instead.)
 
@@ -431,7 +433,7 @@ authoritative). All go to stdout unless noted.
 | shot_now queued | `shot_now: queued %s` | `shot_now` was accepted and queued in `FifoPresentSequencer`; the actual write comes later (see "screenshot written to" below). |
 | screenshot written | `screenshot written to %s` | Either `shot` or `shot_now`'s PNG was actually written to disk — the reliable "this shot happened" line for either verb (`shot_now: queued` only means it was accepted, not that it completed). |
 | bake ready | `viewer: bake ready` | The world bake finished and the viewer is actually drawing — the line every scripted harness polls the log for before sending commands (§a). |
-| `.done` sidecar | *(no log line)* | Not a printed marker — a **filesystem artifact**: `<path>.done` is created (empty file) immediately after "screenshot written to `<path>`" for both `shot` and `shot_now`. Poll for the file, not a log line, when racing the write from outside the process (this is what `drive.py` does). |
+| `.done` sidecar | *(no log line)* | Not a printed marker — a **filesystem artifact**: `<path>.done` is written with `captured` plus a newline after the PNG completes for both `shot` and `shot_now`. Missing or empty means incomplete. Poll for the file, not a log line, when racing the write from outside the process (this is what `drive.py` does). |
 | issue capture timeout | `issue: capture timeout, abandoned` | The `issue capture` deadman fired — the `AwaitingCapture` readback never resolved within 30s and was abandoned; the block released anyway. |
 | issue capture failed | `issue: capture failed (%s)` | An `issue capture` readback resolved but the shot itself failed (`ensure_report_dir` or the PNG write) — `%s` is `issue_state.status`. The block still released; the draft note/shots are unaffected. |
 | issue captured | `issue: captured %s` | An `issue capture` readback resolved and the shot was written to `%s` — printed alongside (after) the unprefixed `issue shot written to %s` line the interactive F10 path also prints. |

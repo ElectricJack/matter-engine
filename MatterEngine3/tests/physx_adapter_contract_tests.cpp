@@ -3151,6 +3151,7 @@ void test_world_session_boundary_sidecar_cache_is_transactional_and_local() {
     const auto root = std::filesystem::temp_directory_path() /
                       "matter-live-fluid-boundary-cache-contract";
     const auto cache_root = root / ".cache";
+    const auto cold_trace_root = root / "cold-trace";
     std::error_code filesystem_error;
     std::filesystem::remove_all(root, filesystem_error);
 
@@ -3158,8 +3159,34 @@ void test_world_session_boundary_sidecar_cache_is_transactional_and_local() {
     options.two_sections = true;
     options.mesh_animation = true;
     auto cold_state = std::make_shared<LifecycleBackendState>();
+#ifdef _WIN32
+    CHECK(_putenv_s("MATTER_HYDROLOGY_TRACE_DIR",
+                    cold_trace_root.string().c_str()) == 0,
+          "the boundary-sidecar fixture enables cold timing telemetry");
+#else
+    CHECK(setenv("MATTER_HYDROLOGY_TRACE_DIR",
+                 cold_trace_root.string().c_str(), 1) == 0,
+          "the boundary-sidecar fixture enables cold timing telemetry");
+#endif
     const WorldSessionFluidCase cold = run_world_session_fluid_case(
         root, options, cold_state);
+#ifdef _WIN32
+    CHECK(_putenv_s("MATTER_HYDROLOGY_TRACE_DIR", "") == 0,
+          "the boundary-sidecar fixture clears cold timing telemetry");
+#else
+    CHECK(unsetenv("MATTER_HYDROLOGY_TRACE_DIR") == 0,
+          "the boundary-sidecar fixture clears cold timing telemetry");
+#endif
+    std::vector<std::uint8_t> cold_timing_bytes;
+    const bool loaded_cold_timing = read_package_file(
+        cold_trace_root / "timings.json", cold_timing_bytes);
+    const std::string cold_timing_text(
+        cold_timing_bytes.begin(), cold_timing_bytes.end());
+    CHECK(loaded_cold_timing &&
+              cold_timing_text.find(
+                  "\"animationPayloadDigest\":\"0000000000000000\"") ==
+                  std::string::npos,
+          "cold timing telemetry reports the reopened immutable animation payload digest rather than a pre-serialization zero");
     auto boundary_files = cached_files_with_extension(cache_root, ".mhwb");
     const auto animation_files =
         cached_files_with_extension(cache_root, ".mhwa");

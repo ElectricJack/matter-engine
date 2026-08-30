@@ -1243,6 +1243,8 @@ void test_builds_deterministic_seam_without_dam_curtain() {
               lip.height_m < downstream_owned.height_m &&
               slow_surface.turbulence < lip_surface.turbulence &&
               lip_surface.turbulence < downstream_surface.turbulence &&
+              slow_surface.aeration < lip_surface.aeration &&
+              lip_surface.aeration < downstream_surface.aeration &&
               slow_surface.foam_potential < lip_surface.foam_potential &&
               lip_surface.foam_potential < downstream_surface.foam_potential &&
               std::isfinite(normal_y(slow_surface)) &&
@@ -1282,6 +1284,34 @@ void test_builds_deterministic_seam_without_dam_curtain() {
               repeat_products.presentation_field ==
                   products.presentation_field,
           "handoff aggregation is deterministic across repeated builds");
+}
+
+void test_measures_bounded_field_continuity_at_both_visual_cuts() {
+    const auto upstream = section_artifact(true);
+    const auto downstream = section_artifact(false);
+    const auto handoff = spillway();
+    hydrology::HydrologyHandoffArtifact artifact{};
+    hydrology::HydrologyNetworkProducts products{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::build_handoff_artifact(
+              upstream, downstream, handoff, settings(),
+              synthetic_visual_mesher, artifact, products, error),
+          error.message.c_str());
+    hydrology::HandoffFieldContinuityMetrics upstream_cut{};
+    hydrology::HandoffFieldContinuityMetrics downstream_cut{};
+    CHECK(hydrology::measure_handoff_field_continuity(
+              products, handoff, upstream_cut, downstream_cut, error),
+          error.message.c_str());
+    for (const auto* metrics : {&upstream_cut, &downstream_cut}) {
+        CHECK(metrics->sample_pairs > 0u &&
+                  metrics->maximum_height_delta_m <= 0.009375f &&
+                  metrics->minimum_normal_dot >= 0.995f &&
+                  metrics->maximum_turbulence_delta <= 0.01f &&
+                  metrics->maximum_aeration_delta <= 0.01f &&
+                  metrics->maximum_foam_delta <= 0.01f &&
+                  metrics->feature_labels_deterministic,
+              "height, normal, turbulence, aeration, foam, and feature labels remain continuous at a visual cut");
+    }
 }
 
 void test_builds_thirty_shared_field_frames_without_static_geometry() {
@@ -1584,7 +1614,9 @@ void test_joint_builder_reapplies_exact_dam_support_exclusion() {
     CHECK(hydrology::build_handoff_animation_frames(
               fixture.input, observing_mesher, animation,
               diagnostics, error), error.message.c_str());
-    CHECK(!saw_excluded_upstream_support && saw_downstream_interior,
+    CHECK(!saw_excluded_upstream_support &&
+              diagnostics.dam_support_survivors == 0u &&
+              saw_downstream_interior,
           "the joint builder independently removes upstream field support touching the dam while retaining downstream water");
 }
 
@@ -1664,6 +1696,7 @@ void test_late_empty_workset_failure_clears_every_partial_product() {
         diagnostics.artifact_file_bytes == 0u &&
         diagnostics.peak_build_cpu_payload_bytes == 0u &&
         diagnostics.peak_decoded_boundary_frames == 0u &&
+        diagnostics.dam_support_survivors == 0u &&
         !diagnostics.source_blend_required;
     for (std::size_t frame = 0u;
          frame != diagnostics.frame_mesh_ms.size(); ++frame) {
@@ -1749,6 +1782,8 @@ void test_formats_animation_acceptance_timing_trace() {
     timing.animation_capture_particle_counts = {300u, 310u};
     timing.animation_frame_vertex_counts = {100u, 110u};
     timing.animation_frame_triangle_counts = {50u, 55u};
+    timing.boundary_source_semantic_keys = {0x90abu};
+    timing.boundary_source_payload_digests = {0xcdefu};
     result.timings.sections.push_back(std::move(timing));
     result.timings.handoff_animation_mesh_ms = 2.5;
     hydrology::HydrologyHandoffTimings handoff_timing{};
@@ -1759,6 +1794,16 @@ void test_formats_animation_acceptance_timing_trace() {
     handoff_timing.boundary_source_bytes = 13579u;
     handoff_timing.peak_build_cpu_payload_bytes = 24680u;
     handoff_timing.source_blend_required = true;
+    handoff_timing.semantic_key = 0x1111u;
+    handoff_timing.payload_digest = 0x2222u;
+    handoff_timing.animation_semantic_key = 0x3333u;
+    handoff_timing.animation_payload_digest = 0x4444u;
+    handoff_timing.loop_frame_29_to_0_synchronized = true;
+    handoff_timing.excluded_dam_contributors = 0u;
+    handoff_timing.upstream_field = {
+        8u, 0.004f, 0.999f, 0.002f, 0.003f, 0.004f, true};
+    handoff_timing.downstream_field = {
+        9u, 0.005f, 0.998f, 0.003f, 0.004f, 0.005f, true};
     for (std::size_t frame = 0u;
          frame != handoff_timing.animation_frame_ms.size(); ++frame) {
         handoff_timing.animation_frame_ms[frame] =
@@ -1785,6 +1830,11 @@ void test_formats_animation_acceptance_timing_trace() {
               json.find("\"animationFrameVertexCounts\":[100,110]") != std::string::npos &&
               json.find("\"animationFrameTriangleCounts\":[50,55]") != std::string::npos,
           "timing trace exposes the retained capture and every mesh frame");
+    CHECK(json.find("\"boundarySourceSemanticKeys\":[\"00000000000090ab\"]") !=
+                  std::string::npos &&
+              json.find("\"boundarySourcePayloadDigests\":[\"000000000000cdef\"]") !=
+                  std::string::npos,
+          "timing trace exposes immutable boundary sidecar identities");
     CHECK(json.find("\"animationSemanticKey\":\"0000000000001234\"") !=
                   std::string::npos &&
               json.find("\"animationPayloadDigest\":\"0000000000005678\"") !=
@@ -1813,6 +1863,28 @@ void test_formats_animation_acceptance_timing_trace() {
               json.find("\"upstreamCut\":[{") != std::string::npos &&
               json.find("\"downstreamCut\":[{") != std::string::npos,
           "timing trace retains failed Stage 0 cut and source-blend evidence");
+    CHECK(json.find("\"semanticKey\":\"0000000000001111\"") !=
+                  std::string::npos &&
+              json.find("\"payloadDigest\":\"0000000000002222\"") !=
+                  std::string::npos &&
+              json.find("\"animationSemanticKey\":\"0000000000003333\"") !=
+                  std::string::npos &&
+              json.find("\"animationPayloadDigest\":\"0000000000004444\"") !=
+                  std::string::npos &&
+              json.find("\"loopFrame29To0Synchronized\":true") !=
+                  std::string::npos &&
+              json.find("\"excludedDamContributors\":0") !=
+                  std::string::npos,
+          "timing trace exposes cache-local handoff identity and loop/dam gates");
+    CHECK(json.find("\"upstreamField\":{\"samplePairs\":8") !=
+                  std::string::npos &&
+              json.find("\"maximumAerationDelta\":0.003") !=
+                  std::string::npos &&
+              json.find("\"downstreamField\":{\"samplePairs\":9") !=
+                  std::string::npos &&
+              json.find("\"featureLabelsDeterministic\":true") !=
+                  std::string::npos,
+          "timing trace exposes bounded field and feature continuity at both cuts");
 }
 
 }  // namespace
@@ -1822,6 +1894,7 @@ int main() {
     test_cut_continuity_fails_closed_on_invalid_meshes();
     test_cell_ownership_uses_one_exact_equality_convention();
     test_builds_deterministic_seam_without_dam_curtain();
+    test_measures_bounded_field_continuity_at_both_visual_cuts();
     test_stitches_independently_meshed_cut_contours();
     test_keeps_water_in_the_removed_dam_footprint();
     test_stitches_split_section_contours_to_one_smoothed_collar();

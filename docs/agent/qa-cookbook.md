@@ -312,6 +312,29 @@ the sibling `capture/` and `run-*/` directories. Visual acceptance still
 requires opening all five PNGs at native size and checking the criteria in
 `docs/findings/raster-water-forward-optics-acceptance-2026-08-29.md`.
 
+## 14. Animated-water section-handoff acceptance
+
+Build the PhysX-enabled MSVC editor, then give the Stage 1 runner a new or
+empty output directory:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor `
+    -EnablePhysx -PhysxRoot $physxRoot -CudaRoot $cudaRoot
+& MatterEngine3/tools/run_water_mesh_continuity_acceptance.ps1 `
+    -Stage Stage1 `
+    -OutputDir build/qa/water-mesh-continuity-2026-08-29/stage1
+```
+
+The runner isolates its RiverFloatLab project and cache, performs a cold bake,
+an unchanged warm bake, and a fixture-only downstream edit, then runs the
+native Vulkan gates and the strict Stage 1 comparator. It retains hydrology
+traces, a JSON summary, and 20 `section-handoff` PNG/`.done` pairs: frames
+`0,7,15,22,29` in normal, geometry-normal, foam-driver, and identity views.
+Passing the comparator is necessary but not sufficient: inspect every retained
+PNG at native size and record the visual verdict in
+`docs/findings/animated-water-section-continuity-acceptance-2026-08-29.md`.
+Task 10 remains blocked unless that finding says `handoffVisualGate: pass`.
+
 ---
 
 ## Traps
