@@ -159,6 +159,12 @@ function(matter_add_vulkan_shader_pipeline)
 
     get_filename_component(embedded_header_directory
         "${MATTER_SHADER_EMBEDDED_HEADER}" DIRECTORY)
+    # A full inventory of absolute paths can exceed CMD's 8191-character
+    # limit in a long/spaced checkout. Keep the command bounded; generating
+    # this list only updates its timestamp when the inventory actually changes.
+    set(spirv_input_list "${CMAKE_CURRENT_BINARY_DIR}/${MATTER_SHADER_PREFIX}_spirv_inputs.txt")
+    string(REPLACE ";" "\n" spirv_input_list_content "${spirv_outputs}")
+    file(GENERATE OUTPUT "${spirv_input_list}" CONTENT "${spirv_input_list_content}\n")
     add_custom_command(
         OUTPUT "${MATTER_SHADER_EMBEDDED_HEADER}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${embedded_header_directory}"
@@ -166,8 +172,8 @@ function(matter_add_vulkan_shader_pipeline)
             ${MATTER_SHADER_PYTHON_ARGUMENTS}
             "${MATTER_SHADER_EMBED_SCRIPT}"
             "${MATTER_SHADER_EMBEDDED_HEADER}"
-            ${spirv_outputs}
-        DEPENDS ${spirv_outputs} "${MATTER_SHADER_EMBED_SCRIPT}"
+            --input-list "${spirv_input_list}"
+        DEPENDS ${spirv_outputs} "${spirv_input_list}" "${MATTER_SHADER_EMBED_SCRIPT}"
         COMMENT "Embedding Vulkan SPIR-V"
         COMMAND_EXPAND_LISTS
         VERBATIM

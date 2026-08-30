@@ -77,11 +77,26 @@ def render(inputs: list[Path]) -> str:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
-        print(f"usage: {argv[0]} OUTPUT INPUT.spv [INPUT.spv ...]", file=sys.stderr)
+        print(
+            f"usage: {argv[0]} OUTPUT INPUT.spv [INPUT.spv ...]\n"
+            f"       {argv[0]} OUTPUT --input-list INPUTS.txt",
+            file=sys.stderr,
+        )
         return 2
     output = Path(argv[1])
     try:
-        content = render([Path(value) for value in argv[2:]])
+        if argv[2] == "--input-list":
+            if len(argv) != 4:
+                raise ValueError("--input-list requires exactly one list file")
+            # CMake passes a file instead of expanding every absolute shader
+            # path into CMD's 8191-character command line. Keep paths intact,
+            # including spaces and Unicode, and accept native CRLF/BOM lists.
+            inputs = Path(argv[3]).read_text(encoding="utf-8-sig").splitlines()
+            if not inputs or any(not value.strip() for value in inputs):
+                raise ValueError("input list must contain nonempty paths without blank entries")
+        else:
+            inputs = argv[2:]
+        content = render([Path(value) for value in inputs])
     except (OSError, ValueError) as exc:
         print(f"embed_spirv.py: error: {exc}", file=sys.stderr)
         return 1

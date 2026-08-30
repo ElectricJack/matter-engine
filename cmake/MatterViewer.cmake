@@ -345,4 +345,9 @@ if(BUILD_TESTING)
             -File "${CMAKE_SOURCE_DIR}/cmake/tests/shader_rebuild_test.ps1"
     )
     set_tests_properties(shader_rebuild_tests PROPERTIES LABELS shader)
+
+    add_test(NAME shader_input_list_tests
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/tests/test_embed_spirv.py")
+    set_tests_properties(shader_input_list_tests PROPERTIES LABELS shader)
 endif()

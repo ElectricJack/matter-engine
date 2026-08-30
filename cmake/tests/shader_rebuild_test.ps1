@@ -37,7 +37,7 @@ function Get-LastWriteTicks {
 
 $testRoot = Join-Path $repositoryRoot 'MatterEditor\build\cmake\shader-rebuild-test'
 $sourceDir = Join-Path $testRoot 'source'
-$buildDir = Join-Path $testRoot 'build'
+$buildDir = Join-Path $testRoot 'native shader build with spaces and a long output directory'
 if (Test-Path -LiteralPath $testRoot) {
     Remove-Item -LiteralPath $testRoot -Recurse -Force
 }
@@ -69,6 +69,26 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot 'MatterEngine3\shaders_vk\tran
     -Destination $unrelatedShaderPath
 Set-Utf8NoBomContent -Path $unrelatedInput -Value 'unrelated-object-sentinel'
 
+# The real editor has 59 shader outputs. With long/spaced checkout paths their
+# expanded argv crossed cmd.exe's 8191-character limit: Ninja reported success
+# while embedded_spirv.h was absent. Keep the fixture itself above that limit
+# and verify the generated header's complete inventory, not just the exit code.
+$shaderNames = @('dependent_a.comp', 'dependent_b.comp', 'unrelated.comp')
+for ($shaderIndex = 0; $shaderIndex -lt 56; ++$shaderIndex) {
+    $shaderName = 'inventory_padding_shader_{0:D2}.comp' -f $shaderIndex
+    $shaderNames += $shaderName
+    Copy-Item -LiteralPath $unrelatedShaderPath -Destination (Join-Path $sourceDir $shaderName)
+}
+Set-Utf8NoBomContent -Path (Join-Path $sourceDir 'shader_inventory.txt') `
+    -Value (($shaderNames -join "`n") + "`n")
+$legacyInputArguments = ($shaderNames | ForEach-Object {
+    '"' + (Join-Path $buildDir "shaders\$_.spv") + '"'
+}) -join ' '
+if ($legacyInputArguments.Length -le 8191) {
+    throw "Long-path regression fixture is too short: $($legacyInputArguments.Length) characters"
+}
+Write-Host "Legacy expanded shader inputs exceed CMD limit: $($legacyInputArguments.Length) characters"
+
 $cmakeLists = @'
 cmake_minimum_required(VERSION 3.25)
 project(matter_shader_rebuild_fixture LANGUAGES NONE)
@@ -79,6 +99,7 @@ matter_resolve_windows_python(
     OUT_ARGUMENTS python_arguments
     OUT_VERSION python_version)
 
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/shader_inventory.txt" fixture_shaders)
 matter_add_vulkan_shader_pipeline(
     PREFIX fixture
     SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -88,7 +109,7 @@ matter_add_vulkan_shader_pipeline(
     PYTHON_EXECUTABLE "${MATTER_PYTHON_EXECUTABLE}"
     PYTHON_ARGUMENTS ${python_arguments}
     EMBED_SCRIPT "${MATTER_REPOSITORY_ROOT}/MatterEngine3/tools/embed_spirv.py"
-    SHADERS dependent_a.comp dependent_b.comp unrelated.comp
+    SHADERS ${fixture_shaders}
 )
 
 add_custom_command(
@@ -136,6 +157,23 @@ foreach ($requiredPath in @($dependentASpirv, $dependentBSpirv, $unrelatedSpirv,
         $headerPath, $unrelatedObject)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Expected shader fixture output was not created: $requiredPath"
+    }
+}
+
+$headerText = Get-Content -LiteralPath $headerPath -Raw -Encoding UTF8
+$lookupRows = @([regex]::Matches($headerText, 'if \(name == "'))
+if ($lookupRows.Count -ne $shaderNames.Count) {
+    throw "Expected $($shaderNames.Count) embedded lookups, found $($lookupRows.Count)"
+}
+foreach ($shaderName in $shaderNames) {
+    $spirvPath = Join-Path $buildDir "shaders\$shaderName.spv"
+    if (-not (Test-Path -LiteralPath $spirvPath -PathType Leaf)) {
+        throw "Expected inventory shader output was not created: $spirvPath"
+    }
+    $escapedName = ([System.Text.Encoding]::UTF8.GetBytes("$shaderName.spv") |
+        ForEach-Object { '\x{0:x2}' -f $_ }) -join ''
+    if (-not $headerText.Contains('if (name == "' + $escapedName + '")')) {
+        throw "Generated header omitted expected shader lookup: $shaderName.spv"
     }
 }
 
