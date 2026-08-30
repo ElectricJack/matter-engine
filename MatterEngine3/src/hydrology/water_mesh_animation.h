@@ -12,7 +12,7 @@
 namespace hydrology {
 
 inline constexpr char kSectionWaterAnimationCacheDomain[] =
-    "water-mesh-animation-v3-canonical-cell-ownership";
+    "water-mesh-animation-v4-retained-boundary-support";
 
 struct WaterMeshAnimationPhase {
     std::uint32_t primary_capture = 0;

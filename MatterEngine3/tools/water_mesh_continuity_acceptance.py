@@ -2,10 +2,13 @@
 """Strict Stage 1 animated-water section continuity acceptance."""
 
 import argparse
+from collections import deque
 import json
 import math
 import sys
 from pathlib import Path
+
+from PIL import Image, UnidentifiedImageError
 
 
 FRAMES = (0, 7, 15, 22, 29)
@@ -20,6 +23,14 @@ ZERO_NATIVE_METRICS = (
     "waterTlasInstances",
     "waterRtRecords",
 )
+
+IDENTITY_OWNER_COLORS = (
+    (97, 138, 139),   # upstream/cyan
+    (120, 143, 120),  # handoff/green
+    (64, 76, 108),    # downstream/blue
+)
+IDENTITY_COLOR_RADIUS_SQUARED = 18 * 18
+MINIMUM_DOMINANT_OWNER_FRACTION = 0.5
 
 
 def _number(value):
@@ -227,10 +238,14 @@ def _validate_cold(cold, failures, worst):
         "positive-number")
     if handoff.get("loopFrame29To0Synchronized") is not True:
         failures.append("cold handoff frame 29/0 is not synchronized")
-    if handoff.get("excludedDamContributors") != 0:
+    retained_dam_support = handoff.get(
+        "retainedTemporaryDamSupportContributors")
+    if (not isinstance(retained_dam_support, int) or
+            isinstance(retained_dam_support, bool) or
+            retained_dam_support < 0):
         failures.append(
-            "cold handoff retained an excluded dam contributor: "
-            f"{handoff.get('excludedDamContributors')!r}")
+            "cold handoff retained temporary-dam support count must be a "
+            f"nonnegative integer, got {retained_dam_support!r}")
     if handoff.get("sourceBlendRequired") is not True:
         failures.append("cold handoff sourceBlendRequired must be true")
     for key in ("animationFileBytes", "boundarySourceBytes",
@@ -338,6 +353,84 @@ def _validate_native(native, failures):
         failures.append(f"native rasterDirectDraws must be positive, got {draws!r}")
 
 
+def _screen_water_owner_coverage(path):
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+    width, height = image.size
+    pixels = image.tobytes()
+    owners = bytearray(width * height)
+    totals = [0, 0, 0]
+    for index in range(width * height):
+        offset = index * 3
+        red, green, blue = pixels[offset:offset + 3]
+        distances = []
+        for owner_red, owner_green, owner_blue in IDENTITY_OWNER_COLORS:
+            delta_red = red - owner_red
+            delta_green = green - owner_green
+            delta_blue = blue - owner_blue
+            distances.append(delta_red * delta_red +
+                             delta_green * delta_green +
+                             delta_blue * delta_blue)
+        owner = min(range(3), key=distances.__getitem__)
+        if distances[owner] <= IDENTITY_COLOR_RADIUS_SQUARED:
+            owners[index] = owner + 1
+            totals[owner] += 1
+
+    minimum_pixels = max(12, (width * height) // 1000)
+    if any(total < minimum_pixels for total in totals):
+        return {
+            "passed": False,
+            "size": [width, height],
+            "ownerPixels": totals,
+            "dominantOwnerPixels": [0, 0, 0],
+            "dominantOwnerFractions": [0.0, 0.0, 0.0],
+            "reason": "identity view does not contain all three water owners",
+        }
+
+    visited = bytearray(width * height)
+    dominant = [0, 0, 0]
+    for start in range(width * height):
+        if owners[start] == 0 or visited[start]:
+            continue
+        component = [0, 0, 0]
+        pending = deque([start])
+        visited[start] = 1
+        while pending:
+            current = pending.popleft()
+            component[owners[current] - 1] += 1
+            x = current % width
+            y = current // width
+            for dy in (-1, 0, 1):
+                next_y = y + dy
+                if next_y < 0 or next_y >= height:
+                    continue
+                for dx in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    next_x = x + dx
+                    if next_x < 0 or next_x >= width:
+                        continue
+                    neighbor = next_y * width + next_x
+                    if owners[neighbor] != 0 and not visited[neighbor]:
+                        visited[neighbor] = 1
+                        pending.append(neighbor)
+        if sum(component) > sum(dominant):
+            dominant = component
+
+    fractions = [dominant[index] / totals[index] for index in range(3)]
+    passed = all(fraction >= MINIMUM_DOMINANT_OWNER_FRACTION
+                 for fraction in fractions)
+    return {
+        "passed": passed,
+        "size": [width, height],
+        "ownerPixels": totals,
+        "dominantOwnerPixels": dominant,
+        "dominantOwnerFractions": fractions,
+        "reason": (None if passed else
+                   "background band separates water owners"),
+    }
+
+
 def _validate_screenshots(screenshots_dir, failures):
     root = Path(screenshots_dir).resolve()
     evidence = {}
@@ -361,6 +454,16 @@ def _validate_screenshots(screenshots_dir, failures):
                 failures.append(f"missing screenshot sidecar: {sidecar}")
             elif sidecar.stat().st_size == 0:
                 failures.append(f"empty screenshot sidecar: {sidecar}")
+            if view == "identity" and path.is_file() and path.stat().st_size:
+                try:
+                    coverage = _screen_water_owner_coverage(path)
+                except (OSError, UnidentifiedImageError, ValueError) as exc:
+                    coverage = {"passed": False,
+                                "reason": f"invalid identity PNG: {exc}"}
+                evidence[key]["waterOwnerCoverage"] = coverage
+                if not coverage["passed"]:
+                    failures.append(
+                        f"{key} {coverage['reason']}: {path}")
     return evidence
 
 

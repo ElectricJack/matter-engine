@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image, ImageDraw
+
 from MatterEngine3.tools import water_mesh_continuity_acceptance as acceptance
 
 
@@ -117,7 +119,7 @@ class WaterMeshContinuityAcceptanceTests(unittest.TestCase):
                     "peakBuildCpuPayloadBytes": 4096,
                     "sourceBlendRequired": True,
                     "loopFrame29To0Synchronized": True,
-                    "excludedDamContributors": 0,
+                    "retainedTemporaryDamSupportContributors": 12,
                     "upstreamCut": self._cut_metrics(),
                     "downstreamCut": self._cut_metrics(),
                     "upstreamField": self._field_metrics(),
@@ -149,7 +151,12 @@ class WaterMeshContinuityAcceptanceTests(unittest.TestCase):
                 path = (self.screenshots / f"frame-{frame:02d}-{view}" /
                         "section-handoff.png")
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b"synthetic-png")
+                image = Image.new("RGB", (24, 12), (152, 122, 111))
+                draw = ImageDraw.Draw(image)
+                draw.rectangle((0, 0, 7, 11), fill=(97, 138, 139))
+                draw.rectangle((8, 0, 15, 11), fill=(120, 143, 120))
+                draw.rectangle((16, 0, 23, 11), fill=(64, 76, 108))
+                image.save(path)
                 Path(str(path) + ".done").write_text(
                     "captured\n", encoding="utf-8")
 
@@ -185,7 +192,10 @@ class WaterMeshContinuityAcceptanceTests(unittest.TestCase):
                 path = (screenshots / f"frame-{frame:02d}-{view}" /
                         "section-handoff.png")
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b"synthetic-png")
+                source = (self.screenshots /
+                          f"frame-{frame:02d}-{view}" /
+                          "section-handoff.png")
+                path.write_bytes(source.read_bytes())
                 Path(str(path) + ".done").write_text(
                     "captured\n", encoding="utf-8")
         summary_path = root / "stage1-summary.json"
@@ -286,10 +296,19 @@ class WaterMeshContinuityAcceptanceTests(unittest.TestCase):
         self.assertIn("upstream animation payload", "\n".join(
             self._compare()["failures"]))
 
-    def test_dam_support_survivor_fails(self):
-        self.cold["handoffs"]["pool-one"]["excludedDamContributors"] = 1
+    def test_negative_retained_dam_support_count_fails_closed(self):
+        self.cold["handoffs"]["pool-one"][
+            "retainedTemporaryDamSupportContributors"] = -1
         self._write_all()
-        self.assertIn("dam contributor", "\n".join(self._compare()["failures"]))
+        self.assertIn("retained temporary-dam support", "\n".join(
+            self._compare()["failures"]))
+
+    def test_boolean_retained_dam_support_count_fails_closed(self):
+        self.cold["handoffs"]["pool-one"][
+            "retainedTemporaryDamSupportContributors"] = True
+        self._write_all()
+        self.assertIn("retained temporary-dam support", "\n".join(
+            self._compare()["failures"]))
 
     def test_nonzero_water_rt_counter_fails(self):
         self.native["waterRtRecords"] = 1
@@ -308,6 +327,18 @@ class WaterMeshContinuityAcceptanceTests(unittest.TestCase):
             "section-handoff.png") + ".done")
         sidecar.write_bytes(b"")
         self.assertIn("empty screenshot sidecar", "\n".join(
+            self._compare()["failures"]))
+
+    def test_identity_background_band_between_water_owners_fails(self):
+        path = (self.screenshots / "frame-15-identity" /
+                "section-handoff.png")
+        image = Image.new("RGB", (24, 12), (152, 122, 111))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 6, 11), fill=(97, 138, 139))
+        draw.rectangle((10, 0, 15, 11), fill=(120, 143, 120))
+        draw.rectangle((16, 0, 23, 11), fill=(64, 76, 108))
+        image.save(path)
+        self.assertIn("background band separates water owners", "\n".join(
             self._compare()["failures"]))
 
     def test_invalid_json_fails_closed(self):

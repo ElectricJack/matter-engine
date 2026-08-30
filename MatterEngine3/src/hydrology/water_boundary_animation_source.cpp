@@ -373,24 +373,6 @@ bool derive_crop_bounds(
     return snap_bounds_to_lattice(unsnapped, lattice, crop_bounds);
 }
 
-bool support_intersects(const matter::Aabb& bounds,
-                        matter::Float3 position,
-                        float support_radius_m) noexcept {
-    const auto separation = [](float value, float minimum, float maximum) {
-        if (value < minimum) return static_cast<double>(minimum - value);
-        if (value > maximum) return static_cast<double>(value - maximum);
-        return 0.0;
-    };
-    const double dx = separation(position.x, bounds.minimum.x,
-                                 bounds.maximum.x);
-    const double dy = separation(position.y, bounds.minimum.y,
-                                 bounds.maximum.y);
-    const double dz = separation(position.z, bounds.minimum.z,
-                                 bounds.maximum.z);
-    const double radius = support_radius_m;
-    return dx * dx + dy * dy + dz * dz <= radius * radius;
-}
-
 bool valid_matter_bounds(const matter::Aabb& bounds) noexcept {
     return finite(bounds.minimum) && finite(bounds.maximum) &&
            bounds.maximum.x >= bounds.minimum.x &&
@@ -705,11 +687,6 @@ bool build_water_boundary_animation_source(
                     return artifact_fail(
                         error, "water boundary capture position is non-finite");
                 if (!water_boundary_source_contains(candidate, position))
-                    continue;
-                if (upstream_endpoint &&
-                    support_intersects(
-                        handoff.temporary_dam_exclusion_bounds_m, position,
-                        support_radius_m))
                     continue;
                 positions.push_back(position);
             }

@@ -256,7 +256,7 @@ hydrology::FluidParticleAnimationCapture crop_capture(
     return capture;
 }
 
-void test_snapped_crop_support_halo_half_open_and_dam_exclusion() {
+void test_snapped_crop_keeps_dense_wet_support_across_temporary_dam() {
     const auto handoff = handoff_fixture();
     const auto lattice = lattice_fixture();
     float support = 0.0f;
@@ -290,10 +290,23 @@ void test_snapped_crop_support_halo_half_open_and_dam_exclusion() {
         matter::Float3{11.0f, 22.0f,
                        std::nextafter(maximum_face.z, minimum_face.z)},
     };
-    const auto capture = crop_capture(
-        {support_touch, dam_support_touch, dam_expanded_corner_only,
-         snapped_minimum, snapped_maximum, unrelated, maximum_inside[0],
-         maximum_inside[1], maximum_inside[2]});
+    std::vector<matter::Float3> dense_dam_cross_section;
+    for (std::uint32_t along = 0u; along != 5u; ++along) {
+        for (std::uint32_t across = 0u; across != 5u; ++across) {
+            dense_dam_cross_section.push_back({
+                9.6f + static_cast<float>(along) * 0.2f,
+                20.0f,
+                29.6f + static_cast<float>(across) * 0.2f});
+        }
+    }
+    std::vector<matter::Float3> capture_positions{
+        support_touch, dam_support_touch, dam_expanded_corner_only,
+        snapped_minimum, snapped_maximum, unrelated, maximum_inside[0],
+        maximum_inside[1], maximum_inside[2]};
+    capture_positions.insert(capture_positions.end(),
+                             dense_dam_cross_section.begin(),
+                             dense_dam_cross_section.end());
+    const auto capture = crop_capture(capture_positions);
 
     hydrology::WaterBoundaryAnimationSource downstream{};
     CHECK(hydrology::build_water_boundary_animation_source(
@@ -312,8 +325,8 @@ void test_snapped_crop_support_halo_half_open_and_dam_exclusion() {
               !hydrology::water_boundary_source_contains(downstream,
                                                           unrelated),
           "one public half-open snapped-crop predicate owns minimum faces, excludes maximum faces, and covers support contributors");
-    CHECK(downstream.frames[0].particle_count == 7u,
-          "downstream extraction uses the same half-open crop and keeps dam-adjacent support");
+    CHECK(downstream.frames[0].particle_count == 32u,
+          "downstream extraction uses the same half-open crop and keeps the dense dam-crossing wet section");
     std::vector<std::uint8_t> downstream_bytes;
     hydrology::WaterBoundaryAnimationSource reopened{};
     CHECK(hydrology::serialize_water_boundary_animation_source(
@@ -367,22 +380,44 @@ void test_snapped_crop_support_halo_half_open_and_dam_exclusion() {
               capture, "upper", 0x222u, handoff, lattice, 0.5f, 0.1f,
               true, upstream, error),
           error.message.c_str());
-    CHECK(upstream.frames[0].particle_count == 6u,
-          "upstream extraction excludes every intersecting support sphere without dropping an expanded-box corner that cannot reach the dam");
-    std::vector<matter::Float3> upstream_positions;
-    CHECK(hydrology::decode_water_boundary_frame(
-              upstream, 0u, upstream_positions, error),
-          error.message.c_str());
-    CHECK(std::none_of(upstream_positions.begin(), upstream_positions.end(),
-                       [&](matter::Float3 value) {
-                           return same_point(value, dam_support_touch,
-                                             upstream.lattice.voxel_m / 16.0f);
-                       }),
-          "no excluded upstream dam particle survives quantization in any decoded frame");
-    for (std::uint32_t frame = 1u; frame != kFrameCount; ++frame)
-        CHECK(upstream.frames[frame].particle_count ==
-                  upstream.frames[0].particle_count,
-              "dam-support exclusion applies consistently to every capture frame");
+    bool every_frame_retains_dense_cross_section = true;
+    bool every_frame_retains_tangent_support = true;
+    for (std::uint32_t frame = 0u; frame != kFrameCount; ++frame) {
+        std::vector<matter::Float3> upstream_positions;
+        if (!hydrology::decode_water_boundary_frame(
+                upstream, frame, upstream_positions, error)) {
+            every_frame_retains_dense_cross_section = false;
+            every_frame_retains_tangent_support = false;
+            continue;
+        }
+        every_frame_retains_tangent_support =
+            every_frame_retains_tangent_support &&
+            std::any_of(upstream_positions.begin(), upstream_positions.end(),
+                        [&](matter::Float3 value) {
+                            return same_point(
+                                value, dam_support_touch,
+                                upstream.lattice.voxel_m / 16.0f);
+                        });
+        every_frame_retains_dense_cross_section =
+            every_frame_retains_dense_cross_section &&
+            upstream_positions.size() == 32u &&
+            std::all_of(
+                dense_dam_cross_section.begin(),
+                dense_dam_cross_section.end(),
+                [&](matter::Float3 expected) {
+                    return std::any_of(
+                        upstream_positions.begin(), upstream_positions.end(),
+                        [&](matter::Float3 decoded) {
+                            return same_point(
+                                decoded, expected,
+                                upstream.lattice.voxel_m / 16.0f);
+                        });
+                });
+    }
+    CHECK(every_frame_retains_tangent_support,
+          "accepted upstream support tangent to the former dam survives every quantized frame");
+    CHECK(every_frame_retains_dense_cross_section,
+          "all particles in the dense wet cross-section, including centers inside and supports straddling the former dam, survive every frame");
 }
 
 void test_partial_corrupt_overflow_and_lattice_mismatch_fail_closed() {
@@ -511,7 +546,7 @@ void test_immutable_save_is_idempotent_and_never_replaces() {
 
 int main() {
     test_deterministic_round_trip_and_requested_frame_decode();
-    test_snapped_crop_support_halo_half_open_and_dam_exclusion();
+    test_snapped_crop_keeps_dense_wet_support_across_temporary_dam();
     test_partial_corrupt_overflow_and_lattice_mismatch_fail_closed();
     test_immutable_save_is_idempotent_and_never_replaces();
     return check_summary();

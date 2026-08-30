@@ -604,7 +604,7 @@ std::uint64_t boundary_source_semantic_key(
     const gpu_meshing::ParticleSamplingLattice& lattice,
     const gpu_meshing::Aabb& crop_bounds_m) {
     std::uint64_t hash = UINT64_C(14695981039346656037);
-    hash_string(hash, "water-boundary-animation-source-v1");
+    hash_string(hash, "water-boundary-animation-source-v2-retained-dam-support");
     hash_value(hash, section_semantic_key);
     hash_value(hash, section_payload_digest);
     hash_value(hash, handoff.semantic_key);
@@ -2987,8 +2987,9 @@ bool LocalProvider::run_authored_fluid_bake(
         handoff_timings.downstream_cut = handoff_diagnostics.downstream_cut;
         handoff_timings.source_blend_required =
             handoff_diagnostics.source_blend_required;
-        handoff_timings.excluded_dam_contributors =
-            handoff_diagnostics.dam_support_survivors;
+        handoff_timings.retained_temporary_dam_support_contributors =
+            handoff_diagnostics.
+                retained_temporary_dam_support_contributors;
         handoff_timings.loop_frame_29_to_0_synchronized =
             upstream_source->frames.size() == 30u &&
             downstream_source->frames.size() == 30u &&

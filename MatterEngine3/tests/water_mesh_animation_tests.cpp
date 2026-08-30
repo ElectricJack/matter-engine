@@ -139,7 +139,7 @@ void test_frame_failure_publishes_nothing_and_names_the_frame() {
 
 void test_canonical_cell_ownership_bumps_the_section_cache_domain() {
     CHECK(std::string(hydrology::kSectionWaterAnimationCacheDomain) ==
-              "water-mesh-animation-v3-canonical-cell-ownership" &&
+              "water-mesh-animation-v4-retained-boundary-support" &&
               std::string(hydrology::kSectionWaterAnimationCacheDomain) !=
                   "water-mesh-animation-v2",
           "canonical root-cell clipping cannot admit legacy plane-clipped section animations");

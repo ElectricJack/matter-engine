@@ -1,22 +1,21 @@
 # Animated-water section continuity acceptance — 2026-08-29
 
-Status: **Stage 1 executable gates pass; visual gate fails.**
+Status: **Stage 1 executable and visual gates pass.**
 
-`handoffVisualGate: fail`
+`handoffVisualGate: pass`
 
-Task 10 and the rest of Stage 2 remain blocked. The retained run proves the
-new handoff geometry, fields, cache locality, loop metadata, memory accounting,
-and raster-only render contract. The corrected captures prove that all three
-animated/direct raster owners are presented, but also expose a persistent
-coverage opening between the cyan upstream owner and green handoff strip.
+Task 10 is unblocked. The accepted repair treats the temporary dam as
+simulation collision only. Every finite captured particle inside the canonical
+boundary crop remains authoritative visual-field input, even when its support
+touches the former dam.
 
-## Result
+## Accepted result
 
-The previous blocked visual baseline had a `3.871 m` section gap. The final
-Stage 1 comparator passes against the unchanged `0.15 / 16 = 0.009375 m`
-quantization gate:
+The strict comparator reports `passed=true` with no failures in
+[stage1-summary.json](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/wmc9a/stage1-summary.json).
+The unchanged Task 8 gates retain these worst values:
 
-| Metric | Worst retained value | Gate |
+| Metric | Worst accepted value | Gate |
 |---|---:|---:|
 | Symmetric Hausdorff | `0.009 m` | `<= 0.009375 m` |
 | RMS boundary distance | `0.001 m` | diagnostic |
@@ -29,154 +28,126 @@ quantization gate:
 | Aeration delta | `0.0` | `<= 0.01` |
 | Foam delta | `0.0` | `<= 0.01` |
 
-Both cuts contain all 30 frames, `loopFrame29To0Synchronized=true`, feature
-labels are deterministic, and `excludedDamContributors=0`.
-
-The executable summary is
-[stage1-summary.json](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/stage1-summary.json).
-
-## Reproducibility boundary
-
-This run exercised the current integration worktree, not base `496d913c` plus
-this Task 9 patch in isolation. The runner copied pre-existing accepted but
-unstaged RiverFloatLab authoring and provider changes, including the revised
-fill-sensor width/surface behavior and removal of the authored visual-particle
-cap. Those hunks remain deliberately unstaged under Task 9's dirty-worktree
-constraint. The retained evidence is valid for this integration state, but its
-cache identities and timings are not expected to be byte-for-byte reproducible
-from the Task 9 commit alone until those prerequisite accepted changes land.
+Both cuts contain all 30 frames, feature labels are deterministic, and
+`loopFrame29To0Synchronized=true`. The cold handoff retained `1,959,842`
+temporary-dam-support contributor uses across its 30 frame builds; that number
+is diagnostic, not an exclusion target.
 
 ## Cold, unchanged-warm, and downstream-edit locality
 
-All three real editor runs reached `Ready`:
+All accepted editor runs reached `Ready` with zero bake errors:
 
-| Run | Wall time | Upper | Lower | Dependent handoff |
+| Run | Hydrology wall time | Upper | Lower | Dependent handoff |
 |---|---:|---|---|---|
-| Cold | `460305.262 ms` | static/animation miss, `simulateMs=66132.690` | static/animation miss, `simulateMs=48658.416` | static/animation miss |
-| Unchanged warm | `16016.080 ms` | static/animation hit, `simulateMs=0` | static/animation hit, `simulateMs=0` | static/animation hit |
-| Fixture-only downstream edit | `276322.582 ms` | static/animation hit, `simulateMs=0` | static/animation miss, `simulateMs=53047.726` | static/animation miss |
+| Cold | `473708.216 ms` | static/animation miss, `simulateMs=66053.340` | static/animation miss, `simulateMs=48528.491` | static/animation miss |
+| Unchanged warm retry | `16263.146 ms` | static/animation hit, `simulateMs=0` | static/animation hit, `simulateMs=0` | static/animation hit |
+| Fixture-only downstream edit | `290221.896 ms` | static/animation hit, `simulateMs=0` | static/animation miss, `simulateMs=52885.626` | static/animation miss |
 
-The upper animation key/digest remained
-`9c480bb9e8e7e092 / cdd133de173671bd`, and its boundary-source key/digest
-remained `f46d62ad5b3911b3 / 71d4db5265daed64` across all three runs. The edit
-changed only the lower endpoint and dependent handoff identities:
+The cold and unchanged-warm keys/digests are byte-identical and nonzero:
 
-- lower animation: `23a15a9008c3a255 / adfe5be62ebfcabd` to
-  `22cc311102b7da8c / 8148c3e91e812b94`;
-- lower boundary source: `ccf998244cb9fa59 / 24d27bbae93d5507` to
-  `3c15a53db64bac78 / ca4ae26bb57bd399`;
-- handoff static: `ca0483313cfce7e5 / 6cf73d69ffa7f315` to
-  `f8b4d0ca4e5104b4 / 95154fd2c21b0455`;
-- handoff animation: `401b8a647adcb3c9 / 939e1efba67710b2` to
-  `4237588692f5dda7 / 4c63ad227e1541de`.
+- upper animation `74aa703a7f084480 / 5b50d1e476422ce8` and boundary source
+  `405091341bfb62b7 / a752ae3f2eeee52c`;
+- lower animation `da1da916192c49db / 219ff1ff50a1a924` and boundary source
+  `8b044112e9ff5619 / 66e66a47c117c81d`;
+- handoff static `284de73798b064dd / 34abf7d8a518c489` and animation
+  `363089902f6f8765 / 305e6792c879e9a3`.
+
+The edit leaves the upper identities unchanged while changing only the lower
+animation to `3d184cedb48ee6d0 / af311bd7c03c5aa9`, lower boundary source to
+`4b4109fb96b0c3de / fd5e91b8ee60bd91`, handoff static to
+`44d495f0149278ee / fbb662f88f4b7add`, and handoff animation to
+`c9c0b95d7b97bee7 / cb70401835f42039`.
 
 The immutable traces are
-[cold](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/cold/trace/timings.json),
-[unchanged warm](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/cache/trace/timings.json), and
-[downstream edit](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/edit/trace/timings.json).
+[cold](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/wmc9a/cold/trace/timings.json),
+[unchanged warm](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/wmc9a/cache-retry/trace/timings.json), and
+[downstream edit](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/wmc9a/edit/trace/timings.json).
+The original automatic warm launch was manually interrupted during delayed
+startup output and is excluded; `cache-retry` is the clean successful replay.
 
-## Build time and residency
+The boundary-source domain is now
+`water-boundary-animation-source-v2-retained-dam-support`, the handoff
+animation semantic revision is `4`, and dependent section animations use
+`water-mesh-animation-v4-retained-boundary-support`. The previous `final5`
+identities therefore cannot address the repaired products. A first repaired
+run must resimulate accepted sections because the v1 sidecar physically omitted
+the dam-touching particles and the cache does not persist a separate complete
+30-frame raw capture. The unchanged repaired replay then hits every product,
+as the evidence above shows.
 
-The cold handoff's 30 GPU animation-frame build times, in milliseconds, were:
+## Memory and raster-only rendering
 
-```text
-3330.050, 3432.138, 3641.168, 3387.861, 3350.088,
-3527.426, 3449.125, 3433.386, 3397.544, 3389.042,
-3265.937, 3350.497, 3685.116, 3693.048, 3601.621,
-3388.532, 3849.324, 3337.952, 3552.060, 3369.278,
-3280.297, 3394.453, 3468.239, 3396.475, 3278.204,
-3463.364, 3630.340, 3286.665, 3388.968, 3496.439
-```
-
-Minimum/mean/maximum were `3265.937 / 3450.488 / 3849.324 ms`. The immutable
-handoff animation is `13,842,344` bytes, retained boundary sources are
-`5,386,050` bytes, and both peak handoff and network build CPU payload are
-`54,521,896` bytes. The editor activated three animated raster draws at
-approximately `639.1 MiB` compressed and `21.4 MiB` per GPU slot.
-
-## Raster-only native gates
+The cold handoff animation is `21,491,312` bytes, retained boundary sources are
+`11,265,642` bytes, and peak handoff/network build CPU payload is
+`76,136,896` bytes. The editor activated three disjoint raster draws at about
+`651.3 MiB` compressed with a `21.8 MiB` active GPU slot. During the cold build
+the process working set rose while frame products accumulated and fell from
+about `2.30 GiB` to `1.51 GiB` as the queue drained.
 
 All four native modes (`gpu-mesher`, `water-forward`, `water-animation`, and
-default) reported `ALL PASS` and zero Vulkan validation errors. The native
-water-animation telemetry reports:
+default) passed with zero Vulkan validation errors. The parsed
+[native gates](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/wmc9a/native/native-gates.json)
+are:
 
 ```text
-water animation raster direct draws: 1
-water animation RT counters: decode=0 blas=0 tlas_before=0 tlas_after=0 records=0
+rasterDirectDraws=1
+waterDecodeDispatches=0
+waterBlasBuilds=0
+waterTlasInstances=0
+waterRtRecords=0
+validationErrors=0
 ```
 
-The parsed gate is
-[native-gates.json](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/native/native-gates.json),
-with the complete mode logs in its containing directory.
+## Required 20 phase captures and strict visual verdict
 
-## Required 20 phase captures
+Every native `1280x720` PNG and nonempty `.done` sidecar was inspected at
+frames `0,7,15,22,29` in normal, geometry-normal, foam-driver, and owner-
+identity views. No phase contains the old terrain/background band at either
+ownership cut. Normal views show a continuous water sheet; geometry-normal
+shows a coherent folded spillway ridge rather than a dry opening; foam-driver
+coverage is not separated; and frames `29 -> 0` remain visually synchronized.
 
-Every PNG and `.done` pair is nonempty and was inspected. Normal,
-geometry-normal, foam-driver, and identity views use the same corrected
-`section-handoff` camera at every retained phase. The identity captures prove
-disjoint cyan upstream, green handoff-strip, and blue downstream ownership.
-They also show a large missing band between the cyan and green owners at every
-phase. The same opening is visible in normal and geometry-normal views, while
-the foam-driver view has no water coverage across that band. Real temporal
-surface and turbulence variation remains visible in the upper section.
+The deterministic screen-space gate classifies the cyan upstream, green
+handoff, and blue downstream owners and requires one 8-connected component to
+contain at least half of every owner. The accepted dominant fractions are:
 
-| Frame | Normal | Geometry normal | Foam driver | Identity |
-|---:|---|---|---|---|
-| 0 | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-00-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-00-geometry-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-00-foam-driver/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-00-identity/section-handoff.png) |
-| 7 | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-07-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-07-geometry-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-07-foam-driver/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-07-identity/section-handoff.png) |
-| 15 | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-15-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-15-geometry-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-15-foam-driver/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-15-identity/section-handoff.png) |
-| 22 | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-22-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-22-geometry-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-22-foam-driver/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-22-identity/section-handoff.png) |
-| 29 | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-29-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-29-geometry-normal/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-29-foam-driver/section-handoff.png) | [image](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/screenshots/frame-29-identity/section-handoff.png) |
+| Frame | Cyan | Green | Blue |
+|---:|---:|---:|---:|
+| 0 | `1.0` | `1.0` | `1.0` |
+| 7 | `1.0` | `1.0` | `1.0` |
+| 15 | `1.0` | `1.0` | `1.0` |
+| 22 | `1.0` | `1.0` | `1.0` |
+| 29 | `1.0` | `1.0` | `0.999284` |
 
-## Visual-gate RCA and blocker
+The complete capture tree is
+[screenshots](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/wmc9a/screenshots).
+Retaining authoritative particles reveals a real energetic splash/fold at the
+former dam. It is visible physical evidence, not a synthetic bridge or a
+reason to restore broad AABB field erasure. A future splash-classification
+change would require physical/provenance evidence of its own.
 
-The first 20-image run produced a false-negative diagnostic: all identity
-captures appeared cyan because the acceptance timeline issued its FIFO `cam`
-command immediately after the early `bake.finished` event. On the next frame,
-the editor consumed the queued bake-finished state and restored the authored
-world camera, overwriting the commanded pose. The retained failed probe is
-[identity-far.png](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final4/camera-probe/identity-far.png).
+## Retained prior failure and RCA
 
-A regression now requires one rendered frame after `bake.finished` before the
-FIFO camera command. No renderer production code changed. The synchronized
-probe
-[identity-synchronized.png](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final4/camera-probe/identity-synchronized.png)
-and all 20 corrected captures prove that the camera spans three distinct direct
-draw owners.
+The old `final5` failure evidence remains under
+[final5](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5).
+Its frame-0 identity capture classified owner pixels
+`[224611,44638,53142]`, but the dominant component contained only
+`[224611,9,0]`; the new deterministic gate rejects it as
+`background band separates water owners`.
 
-The first `final5` recapture also exposed an older control-surface contract
-mismatch: the editor intentionally touched a zero-byte `.done` sentinel while
-Task 9 requires every completion sidecar to be nonempty. The runner rejected it
-without overwriting it. The original PNG, empty marker, timeline, and log remain
-under
-[completion-marker-failure](C:/Users/webde/.codex/worktrees/af80/matter-engine-cpp/build/qa/water-mesh-continuity-2026-08-29/stage1/final5/completion-marker-failure/).
-The engine now writes `captured\n` at capture completion; the retained 20
-sidecars are each 10 bytes and the strict comparator confirms all pairs.
+That failure came from testing the `0.725 m` visual support sphere against the
+world AABB of a rotated `0.5 m` temporary wall. The upstream boundary sidecar
+and handoff builder both repeated the same deletion, producing a shared dry
+notch whose remaining contours still agreed. The repair removes both filters,
+keeps bounded outer/canonical ownership cuts, and proves the partitioned
+upper + handoff + lower field-derived coverage against an unpartitioned
+reference. No static legacy collar, synthetic bridge geometry, or shader hide
+participates in the accepted animated raster presentation.
 
-That corrected framing exposes the actual Stage 1 blocker: the cyan upstream
-owner terminates before the green strip, leaving an open,
-background-visible band at the upstream cut. The green strip meets the blue
-downstream owner without a visible separation. The upstream gap persists in
-frames `0,7,15,22,29` across normal,
-geometry-normal, foam-driver, and identity diagnostics. The executable
-boundary metrics pass because they compare the recorded handoff-cut products;
-they do not prove visible coverage between the handoff strip and the separately
-drawn upstream surface.
+## Reproducibility boundary
 
-The retained RCA traces that common missing coverage to the current temporary
-dam filter. With `particleRadius=0.13 m` and `visualBlendWidth=0.10 m`, the
-visual field support radius is `0.725 m`. Both the upstream boundary sidecar
-and handoff builder erase contributors whenever that support intersects the
-temporary dam's axis-aligned bounds. Those bounds conservatively enclose a
-rotated `0.5 m` wall, so the filter removes a much wider dam-shaped region from
-both products. Their remaining contours agree and pass the cut comparator,
-while their shared scalar-field hole remains visible. The corrective work must
-preserve accepted upstream water support and replace blanket AABB/support
-erasure with a targeted solid-interior or contributor-provenance rule.
-
-Stage 2 must not start until the upstream cut's raster ownership/coverage is
-fixed and a fresh 20-image run shows:
-
-- distinct upper/strip/lower ownership with no missing band;
-- no coverage opening, bridge triangle, or normal/foam jump at either cut;
-- synchronous frame 29 to frame 0 presentation across all three draws.
+This run exercised the current integration worktree, including accepted but
+unrelated RiverFloatLab authoring/provider work that remains deliberately
+unstaged under the dirty-worktree constraint. Its evidence is valid for that
+integration state; cache identities and timings are not promised to reproduce
+byte-for-byte from the Task 9a commit alone until those prerequisites land.

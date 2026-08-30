@@ -1702,7 +1702,7 @@ std::uint64_t derive_handoff_animation_semantic_key(
         downstream_animation_payload_digest == 0u)
         return 0u;
     Digest semantic(UINT64_C(0x48414e44414e4934));
-    semantic.u64(3u);
+    semantic.u64(4u);
     semantic.u64(input.handoff.semantic_key);
     semantic.u64(input.upstream->payload_digest);
     semantic.u64(input.downstream->payload_digest);
@@ -1864,10 +1864,7 @@ bool build_handoff_animation_frames(
                 if (!finite(position)) return false;
                 const float along = signed_distance(input.handoff, position);
                 if (upstream_source) {
-                    if (support_intersects_dam(
-                            input.handoff.temporary_dam_exclusion_bounds_m,
-                            position) ||
-                        along + support_radius_m >
+                    if (along + support_radius_m >
                             input.handoff.downstream_visual_cut_m)
                         continue;
                 } else if (along - support_radius_m <
@@ -1938,20 +1935,25 @@ bool build_handoff_animation_frames(
             source_blend.source[1].secondary_count =
                 static_cast<std::uint32_t>(particles.size()) -
                 source_blend.source[1].secondary_begin;
-            const auto count_dam_survivors = [&](std::uint32_t begin,
-                                                 std::uint32_t count) {
+            const auto count_retained_dam_support = [
+                &particles, &input, &diagnostics,
+                &support_intersects_dam](
+                    std::uint32_t begin, std::uint32_t count) {
                 for (std::uint32_t index = 0u; index != count; ++index) {
                     if (support_intersects_dam(
                             input.handoff.temporary_dam_exclusion_bounds_m,
                             particles[begin + index].position_m)) {
-                        ++diagnostics.dam_support_survivors;
+                        ++diagnostics.
+                            retained_temporary_dam_support_contributors;
                     }
                 }
             };
-            count_dam_survivors(source_blend.source[0].primary_begin,
-                                source_blend.source[0].primary_count);
-            count_dam_survivors(source_blend.source[0].secondary_begin,
-                                source_blend.source[0].secondary_count);
+            count_retained_dam_support(
+                source_blend.source[0].primary_begin,
+                source_blend.source[0].primary_count);
+            count_retained_dam_support(
+                source_blend.source[0].secondary_begin,
+                source_blend.source[0].secondary_count);
             if (particles.empty() ||
                 particles.size() > std::numeric_limits<std::uint32_t>::max())
                 return reject(
@@ -2608,8 +2610,8 @@ std::string hydrology_network_timing_trace_json(
         write_field(stream, timing.upstream_field);
         stream << ",\"downstreamField\":";
         write_field(stream, timing.downstream_field);
-        stream << ",\"excludedDamContributors\":"
-               << timing.excluded_dam_contributors
+        stream << ",\"retainedTemporaryDamSupportContributors\":"
+               << timing.retained_temporary_dam_support_contributors
                << ",\"loopFrame29To0Synchronized\":" << std::boolalpha
                << timing.loop_frame_29_to_0_synchronized;
         stream << '}'

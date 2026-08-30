@@ -99,7 +99,7 @@ struct HandoffAnimationBuildDiagnostics {
     std::uint64_t artifact_file_bytes = 0;
     std::uint64_t peak_build_cpu_payload_bytes = 0;
     std::uint32_t peak_decoded_boundary_frames = 0;
-    std::uint32_t dam_support_survivors = 0;
+    std::uint32_t retained_temporary_dam_support_contributors = 0;
     bool source_blend_required = false;
 };
 
@@ -119,7 +119,7 @@ struct HydrologyHandoffTimings {
     std::array<WaterCutContourMetrics, 30> downstream_cut{};
     HandoffFieldContinuityMetrics upstream_field{};
     HandoffFieldContinuityMetrics downstream_field{};
-    std::uint32_t excluded_dam_contributors = 0;
+    std::uint32_t retained_temporary_dam_support_contributors = 0;
     bool loop_frame_29_to_0_synchronized = false;
     bool source_blend_required = false;
 };
