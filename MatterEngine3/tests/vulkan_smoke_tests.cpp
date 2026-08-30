@@ -13780,6 +13780,20 @@ int main() {
         CHECK(vulkan->multi_draw_indirect_enabled(),
               "multiDrawIndirect is enabled on the logical device");
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        if (smoke_mode && std::string(smoke_mode) == "waterfall-mesher") {
+            const char* report =
+                std::getenv("MATTER_WATERFALL_QUALITY_REPORT");
+            g_failures += run_gpu_visual_mesher_waterfall_quality(
+                *vulkan, report ? std::filesystem::path(report)
+                                : std::filesystem::path{});
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "gpu-mesher") {
             g_failures += run_gpu_visual_mesher_pure_vk_tests();
             g_failures += run_gpu_visual_mesher_vk_tests(*vulkan);

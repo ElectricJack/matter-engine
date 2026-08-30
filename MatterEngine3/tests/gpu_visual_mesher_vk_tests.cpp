@@ -10,9 +10,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numeric>
+#include <queue>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -1036,5 +1041,1024 @@ int run_gpu_visual_mesher_acceptance(matter::VulkanDevice& vulkan) {
         gpu_repeat_ms, job.voxel_m, second_stats.triangles, cpu_visual_ms,
         kCpuVisualComparisonVoxelM, cpu_visual.indices.size() / 3u,
         gpu_repeat_ms > 0.0 ? cpu_visual_ms / gpu_repeat_ms : 0.0);
+    return failures;
+}
+
+namespace {
+
+constexpr std::uint32_t kWaterfallCameraWidth = 1280u;
+constexpr std::uint32_t kWaterfallCameraHeight = 720u;
+constexpr float kWaterfallVerticalFov = 0.78539816339f;
+constexpr double kWaterfallWorldBoundToleranceM = 0.001;
+constexpr double kWaterfallWorldNumericalMarginM = 0.00001;
+constexpr std::uint64_t kMeasuredRiverFloatNetworkBytes = 670161186ull;
+constexpr std::uint64_t kMeasuredUpperSectionBytes = 349956449ull;
+constexpr matter::Float3 kWaterfallSprayCenter{112.95f, 54.4f, 5.85f};
+
+struct WaterfallQualityCandidate {
+    const char* id = nullptr;
+    float voxel_m = 0.0f;
+    float radius_m = 0.0f;
+    float blend_m = 0.0f;
+};
+
+struct WaterfallTopology {
+    std::uint32_t connected_components = 0u;
+    std::uint32_t intentional_spray_components = 0u;
+    std::uint32_t open_edges = 0u;
+    std::uint32_t holes = 0u;
+    double normal_variation_degrees = 0.0;
+};
+
+struct WaterfallQualityRow {
+    WaterfallQualityCandidate candidate{};
+    gpu_meshing::MeshResult mesh{};
+    gpu_meshing::Stats stats{};
+    WaterfallTopology topology{};
+    std::vector<std::uint8_t> silhouette;
+    double silhouette_hausdorff_pixels = 0.0;
+    double silhouette_hausdorff_m = 0.0;
+    double off_sheet_coverage_fraction = 0.0;
+    std::uint64_t projected_complete_animation_file_bytes = 0u;
+};
+
+matter::Float3 waterfall_add(matter::Float3 a, matter::Float3 b) {
+    return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+matter::Float3 waterfall_sub(matter::Float3 a, matter::Float3 b) {
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+matter::Float3 waterfall_scale(matter::Float3 value, float scale) {
+    return {value.x * scale, value.y * scale, value.z * scale};
+}
+
+float waterfall_dot(matter::Float3 a, matter::Float3 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+matter::Float3 waterfall_cross(matter::Float3 a, matter::Float3 b) {
+    return {a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x};
+}
+
+matter::Float3 waterfall_normalize(matter::Float3 value) {
+    const float length = std::sqrt(waterfall_dot(value, value));
+    return length > 1.0e-8f ? waterfall_scale(value, 1.0f / length)
+                            : matter::Float3{};
+}
+
+std::vector<gpu_meshing::ParticleSample> waterfall_fixture_particles(
+    float radius_m) {
+    std::vector<gpu_meshing::ParticleSample> particles;
+    constexpr std::uint32_t kFallSamples = 61u;
+    constexpr int kHalfWidthSamples = 10;
+    particles.reserve(kFallSamples * (2 * kHalfWidthSamples + 1) + 8u);
+    constexpr float kPi = 3.14159265358979323846f;
+    for (std::uint32_t fall = 0u; fall != kFallSamples; ++fall) {
+        const float t = static_cast<float>(fall) /
+                        static_cast<float>(kFallSamples - 1u);
+        const matter::Float3 center{
+            110.0f + 0.55f * std::sin(1.35f * kPi * t),
+            61.0f - 12.0f * t,
+            5.0f + 0.35f * std::sin(2.0f * kPi * t)};
+        for (int across = -kHalfWidthSamples;
+             across <= kHalfWidthSamples; ++across) {
+            const float offset = 0.20f * static_cast<float>(across);
+            particles.push_back({
+                {center.x + offset,
+                 center.y + 0.025f * std::sin(0.7f * across + 4.0f * t),
+                 center.z + 0.035f * std::sin(0.45f * across + 7.0f * t)},
+                radius_m});
+        }
+    }
+
+    // One deliberately disconnected spray bead gives the topology gate a
+    // real intentional secondary component to preserve across all rows.
+    for (std::uint32_t corner = 0u; corner != 8u; ++corner) {
+        particles.push_back({
+            {kWaterfallSprayCenter.x +
+                 ((corner & 1u) ? 0.055f : -0.055f),
+             kWaterfallSprayCenter.y +
+                 ((corner & 2u) ? 0.055f : -0.055f),
+             kWaterfallSprayCenter.z +
+                 ((corner & 4u) ? 0.055f : -0.055f)},
+            radius_m});
+    }
+    return particles;
+}
+
+gpu_meshing::ParticleJob waterfall_fixture_job(
+    const std::vector<gpu_meshing::ParticleSample>& particles,
+    const WaterfallQualityCandidate& candidate,
+    gpu_meshing::Error& error) {
+    gpu_meshing::ParticleJob job{};
+    job.particles = particles.data();
+    job.particle_count = static_cast<std::uint32_t>(particles.size());
+    job.bounds_m = {{106.9f, 48.55f, 4.25f},
+                    {113.45f, 61.45f, 6.35f}};
+    job.voxel_m = candidate.voxel_m;
+    job.blend_width_m = candidate.blend_m;
+    job.iso_value = 0.0f;
+    job.material = 4u;
+    job.limits = {4096u, 4u << 20u, 16u << 20u, 16u << 20u};
+    job.generation = 0x776174657266616cull;
+    gpu_meshing::make_particle_sampling_lattice(
+        {0.0f, 0.0f, 0.0f}, candidate.voxel_m,
+        job.sampling_lattice, error);
+    return job;
+}
+
+struct WaterfallDisjointSet {
+    explicit WaterfallDisjointSet(std::size_t count) : parent(count) {
+        std::iota(parent.begin(), parent.end(), 0u);
+    }
+    std::size_t find(std::size_t value) {
+        while (parent[value] != value) {
+            parent[value] = parent[parent[value]];
+            value = parent[value];
+        }
+        return value;
+    }
+    void unite(std::size_t a, std::size_t b) {
+        a = find(a);
+        b = find(b);
+        if (a != b) parent[std::max(a, b)] = std::min(a, b);
+    }
+    std::vector<std::size_t> parent;
+};
+
+WaterfallTopology waterfall_topology(
+    const gpu_meshing::MeshResult& mesh) {
+    WaterfallTopology result{};
+    using Key = std::array<std::int64_t, 3>;
+    // Adjacent GPU marching-cubes cells independently interpolate their
+    // shared edge. Their float positions may differ by a few 1e-4 m. Search
+    // neighbouring 1 mm buckets by distance so a bin boundary cannot turn
+    // packing roundoff into a topology hole.
+    constexpr double kWeldToleranceM = 0.001;
+    constexpr double kWeldScale = 1.0 / kWeldToleranceM;
+    std::map<Key, std::vector<std::uint32_t>> buckets;
+    std::vector<matter::Float3> representatives;
+    std::vector<std::uint32_t> welded(mesh.positions.size() / 3u);
+    std::vector<std::vector<matter::Float3>> normals;
+    for (std::size_t vertex = 0u; vertex != welded.size(); ++vertex) {
+        const matter::Float3 position{
+            mesh.positions[vertex * 3u + 0u],
+            mesh.positions[vertex * 3u + 1u],
+            mesh.positions[vertex * 3u + 2u]};
+        const Key key{
+            static_cast<std::int64_t>(std::llround(
+                position.x * kWeldScale)),
+            static_cast<std::int64_t>(std::llround(
+                position.y * kWeldScale)),
+            static_cast<std::int64_t>(std::llround(
+                position.z * kWeldScale))};
+        std::uint32_t matched = std::numeric_limits<std::uint32_t>::max();
+        double matched_distance_squared =
+            kWeldToleranceM * kWeldToleranceM;
+        for (std::int64_t dz = -1; dz <= 1; ++dz) {
+            for (std::int64_t dy = -1; dy <= 1; ++dy) {
+                for (std::int64_t dx = -1; dx <= 1; ++dx) {
+                    const auto bucket = buckets.find(
+                        {key[0] + dx, key[1] + dy, key[2] + dz});
+                    if (bucket == buckets.end()) continue;
+                    for (std::uint32_t candidate : bucket->second) {
+                        const matter::Float3 delta = waterfall_sub(
+                            position, representatives[candidate]);
+                        const double distance_squared =
+                            waterfall_dot(delta, delta);
+                        if (distance_squared <= matched_distance_squared) {
+                            matched_distance_squared = distance_squared;
+                            matched = candidate;
+                        }
+                    }
+                }
+            }
+        }
+        if (matched == std::numeric_limits<std::uint32_t>::max()) {
+            matched = static_cast<std::uint32_t>(representatives.size());
+            representatives.push_back(position);
+            normals.emplace_back();
+            buckets[key].push_back(matched);
+        }
+        welded[vertex] = matched;
+        normals[matched].push_back({mesh.normals[vertex * 3u + 0u],
+                                    mesh.normals[vertex * 3u + 1u],
+                                    mesh.normals[vertex * 3u + 2u]});
+    }
+    WaterfallDisjointSet components(representatives.size());
+    using Edge = std::array<std::uint32_t, 2>;
+    std::map<Edge, std::uint32_t> edge_incidence;
+    std::vector<bool> used(representatives.size(), false);
+    for (std::size_t triangle = 0u;
+         triangle != mesh.indices.size() / 3u; ++triangle) {
+        std::array<std::uint32_t, 3> v{};
+        for (std::size_t corner = 0u; corner != 3u; ++corner) {
+            v[corner] = welded[mesh.indices[triangle * 3u + corner]];
+            used[v[corner]] = true;
+        }
+        components.unite(v[0], v[1]);
+        components.unite(v[1], v[2]);
+        components.unite(v[2], v[0]);
+        for (std::size_t edge = 0u; edge != 3u; ++edge) {
+            std::uint32_t a = v[edge];
+            std::uint32_t b = v[(edge + 1u) % 3u];
+            if (a == b) continue;
+            if (a > b) std::swap(a, b);
+            ++edge_incidence[{a, b}];
+        }
+    }
+    std::map<std::size_t, std::size_t> component_sizes;
+    std::map<std::size_t, matter::Float3> component_position_sums;
+    for (std::size_t vertex = 0u; vertex != used.size(); ++vertex) {
+        if (!used[vertex]) continue;
+        const std::size_t root = components.find(vertex);
+        ++component_sizes[root];
+        component_position_sums[root] = waterfall_add(
+            component_position_sums[root], representatives[vertex]);
+    }
+    result.connected_components =
+        static_cast<std::uint32_t>(component_sizes.size());
+    constexpr double kSprayCentroidRadiusM = 0.5;
+    for (const auto& [root, count] : component_sizes) {
+        const matter::Float3 centroid = waterfall_scale(
+            component_position_sums[root], 1.0f / static_cast<float>(count));
+        const matter::Float3 delta = waterfall_sub(
+            centroid, kWaterfallSprayCenter);
+        if (waterfall_dot(delta, delta) <=
+            kSprayCentroidRadiusM * kSprayCentroidRadiusM) {
+            ++result.intentional_spray_components;
+        }
+    }
+
+    std::vector<std::vector<std::uint32_t>> boundary(representatives.size());
+    for (const auto& [edge, incidence] : edge_incidence) {
+        if (incidence != 1u) continue;
+        ++result.open_edges;
+        boundary[edge[0]].push_back(edge[1]);
+        boundary[edge[1]].push_back(edge[0]);
+    }
+    std::vector<bool> visited(representatives.size(), false);
+    for (std::size_t start = 0u; start != boundary.size(); ++start) {
+        if (boundary[start].empty() || visited[start]) continue;
+        ++result.holes;
+        std::queue<std::uint32_t> pending;
+        pending.push(static_cast<std::uint32_t>(start));
+        visited[start] = true;
+        while (!pending.empty()) {
+            const std::uint32_t current = pending.front();
+            pending.pop();
+            for (std::uint32_t next : boundary[current]) {
+                if (visited[next]) continue;
+                visited[next] = true;
+                pending.push(next);
+            }
+        }
+    }
+
+    std::vector<matter::Float3> mean_normals;
+    mean_normals.reserve(normals.size());
+    for (const auto& group : normals) {
+        matter::Float3 mean{};
+        for (matter::Float3 normal : group)
+            mean = waterfall_add(mean, waterfall_normalize(normal));
+        mean_normals.push_back(waterfall_normalize(mean));
+    }
+    std::vector<double> deviations;
+    deviations.reserve(edge_incidence.size());
+    for (const auto& [edge, incidence] : edge_incidence) {
+        if (incidence < 1u) continue;
+        const double dot = std::clamp<double>(
+            waterfall_dot(mean_normals[edge[0]], mean_normals[edge[1]]),
+            -1.0, 1.0);
+        deviations.push_back(std::acos(dot) * 57.2957795130823208768);
+    }
+    if (!deviations.empty()) {
+        std::sort(deviations.begin(), deviations.end());
+        const std::size_t index = static_cast<std::size_t>(
+            std::floor(0.95 * static_cast<double>(deviations.size() - 1u)));
+        result.normal_variation_degrees = deviations[index];
+    }
+    return result;
+}
+
+struct WaterfallProjectedPoint {
+    double x = 0.0;
+    double y = 0.0;
+    bool valid = false;
+};
+
+WaterfallProjectedPoint waterfall_project(matter::Float3 point) {
+    constexpr matter::Float3 camera{119.0f, 72.0f, 2.0f};
+    constexpr matter::Float3 target{110.0f, 49.0f, 5.0f};
+    constexpr matter::Float3 world_up{0.0f, 1.0f, 0.0f};
+    const matter::Float3 forward = waterfall_normalize(
+        waterfall_sub(target, camera));
+    const matter::Float3 right = waterfall_normalize(
+        waterfall_cross(forward, world_up));
+    const matter::Float3 up = waterfall_cross(right, forward);
+    const matter::Float3 relative = waterfall_sub(point, camera);
+    const double depth = waterfall_dot(relative, forward);
+    if (depth <= 0.1) return {};
+    const double tan_half = std::tan(0.5 * kWaterfallVerticalFov);
+    const double aspect = static_cast<double>(kWaterfallCameraWidth) /
+                          static_cast<double>(kWaterfallCameraHeight);
+    const double ndc_x = waterfall_dot(relative, right) /
+                         (depth * tan_half * aspect);
+    const double ndc_y = waterfall_dot(relative, up) /
+                         (depth * tan_half);
+    return {(ndc_x * 0.5 + 0.5) * kWaterfallCameraWidth,
+            (0.5 - ndc_y * 0.5) * kWaterfallCameraHeight, true};
+}
+
+double waterfall_edge(double ax, double ay, double bx, double by,
+                      double px, double py) {
+    return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+}
+
+std::vector<std::uint8_t> waterfall_silhouette(
+    const gpu_meshing::MeshResult& mesh) {
+    std::vector<std::uint8_t> mask(
+        static_cast<std::size_t>(kWaterfallCameraWidth) *
+        kWaterfallCameraHeight, 0u);
+    std::vector<WaterfallProjectedPoint> projected(mesh.positions.size() / 3u);
+    for (std::size_t vertex = 0u; vertex != projected.size(); ++vertex) {
+        projected[vertex] = waterfall_project(
+            {mesh.positions[vertex * 3u + 0u],
+             mesh.positions[vertex * 3u + 1u],
+             mesh.positions[vertex * 3u + 2u]});
+    }
+    for (std::size_t triangle = 0u;
+         triangle != mesh.indices.size() / 3u; ++triangle) {
+        const auto& a = projected[mesh.indices[triangle * 3u + 0u]];
+        const auto& b = projected[mesh.indices[triangle * 3u + 1u]];
+        const auto& c = projected[mesh.indices[triangle * 3u + 2u]];
+        if (!a.valid || !b.valid || !c.valid) continue;
+        const int min_x = std::max(0, static_cast<int>(
+            std::floor(std::min({a.x, b.x, c.x}))));
+        const int max_x = std::min(
+            static_cast<int>(kWaterfallCameraWidth) - 1,
+            static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
+        const int min_y = std::max(0, static_cast<int>(
+            std::floor(std::min({a.y, b.y, c.y}))));
+        const int max_y = std::min(
+            static_cast<int>(kWaterfallCameraHeight) - 1,
+            static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}))));
+        const double area = waterfall_edge(a.x, a.y, b.x, b.y, c.x, c.y);
+        if (std::fabs(area) <= 1.0e-10) continue;
+        for (int y = min_y; y <= max_y; ++y) {
+            for (int x = min_x; x <= max_x; ++x) {
+                const double px = x + 0.5;
+                const double py = y + 0.5;
+                const double ab = waterfall_edge(a.x, a.y, b.x, b.y, px, py);
+                const double bc = waterfall_edge(b.x, b.y, c.x, c.y, px, py);
+                const double ca = waterfall_edge(c.x, c.y, a.x, a.y, px, py);
+                const bool nonnegative = ab >= 0.0 && bc >= 0.0 && ca >= 0.0;
+                const bool nonpositive = ab <= 0.0 && bc <= 0.0 && ca <= 0.0;
+                if (nonnegative || nonpositive)
+                    mask[static_cast<std::size_t>(y) *
+                             kWaterfallCameraWidth + x] = 1u;
+            }
+        }
+    }
+    return mask;
+}
+
+using WaterfallPixel = std::array<int, 2>;
+
+std::vector<WaterfallPixel> waterfall_outline(
+    const std::vector<std::uint8_t>& mask) {
+    std::vector<WaterfallPixel> outline;
+    for (std::uint32_t y = 0u; y != kWaterfallCameraHeight; ++y) {
+        for (std::uint32_t x = 0u; x != kWaterfallCameraWidth; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y) * kWaterfallCameraWidth + x;
+            if (!mask[index]) continue;
+            const bool boundary =
+                x == 0u || y == 0u || x + 1u == kWaterfallCameraWidth ||
+                y + 1u == kWaterfallCameraHeight ||
+                !mask[index - 1u] || !mask[index + 1u] ||
+                !mask[index - kWaterfallCameraWidth] ||
+                !mask[index + kWaterfallCameraWidth];
+            if (boundary)
+                outline.push_back(
+                    {static_cast<int>(x), static_cast<int>(y)});
+        }
+    }
+    return outline;
+}
+
+double waterfall_directed_hausdorff(
+    const std::vector<WaterfallPixel>& first,
+    const std::vector<WaterfallPixel>& second) {
+    if (first.empty() || second.empty())
+        return std::numeric_limits<double>::infinity();
+    std::int64_t maximum_squared = 0;
+    for (const auto& point : first) {
+        std::int64_t nearest_squared =
+            std::numeric_limits<std::int64_t>::max();
+        for (const auto& other : second) {
+            const std::int64_t dx = point[0] - other[0];
+            const std::int64_t dy = point[1] - other[1];
+            nearest_squared = std::min(
+                nearest_squared, dx * dx + dy * dy);
+        }
+        maximum_squared = std::max(maximum_squared, nearest_squared);
+    }
+    return std::sqrt(static_cast<double>(maximum_squared));
+}
+
+double waterfall_silhouette_hausdorff_pixels(
+    const std::vector<std::uint8_t>& first,
+    const std::vector<std::uint8_t>& second) {
+    const auto first_outline = waterfall_outline(first);
+    const auto second_outline = waterfall_outline(second);
+    return std::max(waterfall_directed_hausdorff(first_outline, second_outline),
+                    waterfall_directed_hausdorff(second_outline, first_outline));
+}
+
+struct WaterfallTriangle {
+    matter::Float3 a{};
+    matter::Float3 b{};
+    matter::Float3 c{};
+    matter::Float3 minimum{};
+    matter::Float3 maximum{};
+    matter::Float3 centroid{};
+};
+
+struct WaterfallBvhNode {
+    matter::Float3 minimum{};
+    matter::Float3 maximum{};
+    std::uint32_t begin = 0u;
+    std::uint32_t count = 0u;
+    std::uint32_t left = 0u;
+    std::uint32_t right = 0u;
+};
+
+matter::Float3 waterfall_min(matter::Float3 a, matter::Float3 b) {
+    return {std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z)};
+}
+
+matter::Float3 waterfall_max(matter::Float3 a, matter::Float3 b) {
+    return {std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z)};
+}
+
+struct WaterfallTriangleBvh {
+    explicit WaterfallTriangleBvh(const gpu_meshing::MeshResult& mesh) {
+        triangles.reserve(mesh.indices.size() / 3u);
+        for (std::size_t triangle = 0u;
+             triangle != mesh.indices.size() / 3u; ++triangle) {
+            std::array<matter::Float3, 3> positions{};
+            for (std::size_t corner = 0u; corner != 3u; ++corner) {
+                const std::uint32_t index =
+                    mesh.indices[triangle * 3u + corner];
+                positions[corner] = {
+                    mesh.positions[index * 3u + 0u],
+                    mesh.positions[index * 3u + 1u],
+                    mesh.positions[index * 3u + 2u]};
+            }
+            WaterfallTriangle value{};
+            value.a = positions[0];
+            value.b = positions[1];
+            value.c = positions[2];
+            value.minimum = waterfall_min(
+                positions[0], waterfall_min(positions[1], positions[2]));
+            value.maximum = waterfall_max(
+                positions[0], waterfall_max(positions[1], positions[2]));
+            value.centroid = waterfall_scale(
+                waterfall_add(
+                    waterfall_add(positions[0], positions[1]), positions[2]),
+                1.0f / 3.0f);
+            triangles.push_back(value);
+        }
+        order.resize(triangles.size());
+        std::iota(order.begin(), order.end(), 0u);
+        if (!order.empty()) build(0u, static_cast<std::uint32_t>(order.size()));
+    }
+
+    std::uint32_t build(std::uint32_t begin, std::uint32_t count) {
+        WaterfallBvhNode node{};
+        node.begin = begin;
+        node.count = count;
+        node.minimum = {std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::infinity()};
+        node.maximum = {-std::numeric_limits<float>::infinity(),
+                        -std::numeric_limits<float>::infinity(),
+                        -std::numeric_limits<float>::infinity()};
+        matter::Float3 centroid_min = node.minimum;
+        matter::Float3 centroid_max = node.maximum;
+        for (std::uint32_t offset = 0u; offset != count; ++offset) {
+            const auto& triangle = triangles[order[begin + offset]];
+            node.minimum = waterfall_min(node.minimum, triangle.minimum);
+            node.maximum = waterfall_max(node.maximum, triangle.maximum);
+            centroid_min = waterfall_min(centroid_min, triangle.centroid);
+            centroid_max = waterfall_max(centroid_max, triangle.centroid);
+        }
+        const std::uint32_t node_index =
+            static_cast<std::uint32_t>(nodes.size());
+        nodes.push_back(node);
+        constexpr std::uint32_t kLeafTriangles = 12u;
+        if (count <= kLeafTriangles) return node_index;
+        const matter::Float3 span = waterfall_sub(centroid_max, centroid_min);
+        const int axis = span.x >= span.y && span.x >= span.z
+            ? 0 : (span.y >= span.z ? 1 : 2);
+        const auto coordinate = [axis](const matter::Float3& value) {
+            return axis == 0 ? value.x : (axis == 1 ? value.y : value.z);
+        };
+        const std::uint32_t middle = begin + count / 2u;
+        std::nth_element(
+            order.begin() + begin, order.begin() + middle,
+            order.begin() + begin + count,
+            [&](std::uint32_t a, std::uint32_t b) {
+                const float first = coordinate(triangles[a].centroid);
+                const float second = coordinate(triangles[b].centroid);
+                return first == second ? a < b : first < second;
+            });
+        nodes[node_index].count = 0u;
+        nodes[node_index].left = build(begin, middle - begin);
+        nodes[node_index].right = build(middle, begin + count - middle);
+        return node_index;
+    }
+
+    std::vector<WaterfallTriangle> triangles;
+    std::vector<std::uint32_t> order;
+    std::vector<WaterfallBvhNode> nodes;
+};
+
+double waterfall_point_aabb_distance_squared(
+    matter::Float3 point, matter::Float3 minimum, matter::Float3 maximum) {
+    const auto axis_distance = [](float value, float low, float high) {
+        return value < low ? static_cast<double>(low - value)
+                           : (value > high
+                                  ? static_cast<double>(value - high)
+                                  : 0.0);
+    };
+    const double dx = axis_distance(point.x, minimum.x, maximum.x);
+    const double dy = axis_distance(point.y, minimum.y, maximum.y);
+    const double dz = axis_distance(point.z, minimum.z, maximum.z);
+    return dx * dx + dy * dy + dz * dz;
+}
+
+double waterfall_point_triangle_distance_squared(
+    matter::Float3 point, const WaterfallTriangle& triangle) {
+    const matter::Float3 ab = waterfall_sub(triangle.b, triangle.a);
+    const matter::Float3 ac = waterfall_sub(triangle.c, triangle.a);
+    const matter::Float3 ap = waterfall_sub(point, triangle.a);
+    const double d1 = waterfall_dot(ab, ap);
+    const double d2 = waterfall_dot(ac, ap);
+    if (d1 <= 0.0 && d2 <= 0.0) return waterfall_dot(ap, ap);
+    const matter::Float3 bp = waterfall_sub(point, triangle.b);
+    const double d3 = waterfall_dot(ab, bp);
+    const double d4 = waterfall_dot(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) return waterfall_dot(bp, bp);
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+        const double v = d1 / (d1 - d3);
+        const matter::Float3 nearest = waterfall_add(
+            triangle.a, waterfall_scale(ab, static_cast<float>(v)));
+        const matter::Float3 delta = waterfall_sub(point, nearest);
+        return waterfall_dot(delta, delta);
+    }
+    const matter::Float3 cp = waterfall_sub(point, triangle.c);
+    const double d5 = waterfall_dot(ab, cp);
+    const double d6 = waterfall_dot(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) return waterfall_dot(cp, cp);
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+        const double w = d2 / (d2 - d6);
+        const matter::Float3 nearest = waterfall_add(
+            triangle.a, waterfall_scale(ac, static_cast<float>(w)));
+        const matter::Float3 delta = waterfall_sub(point, nearest);
+        return waterfall_dot(delta, delta);
+    }
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+        const matter::Float3 bc = waterfall_sub(triangle.c, triangle.b);
+        const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        const matter::Float3 nearest = waterfall_add(
+            triangle.b, waterfall_scale(bc, static_cast<float>(w)));
+        const matter::Float3 delta = waterfall_sub(point, nearest);
+        return waterfall_dot(delta, delta);
+    }
+    const double inverse = 1.0 / (va + vb + vc);
+    const double v = vb * inverse;
+    const double w = vc * inverse;
+    const matter::Float3 nearest = waterfall_add(
+        triangle.a,
+        waterfall_add(waterfall_scale(ab, static_cast<float>(v)),
+                      waterfall_scale(ac, static_cast<float>(w))));
+    const matter::Float3 delta = waterfall_sub(point, nearest);
+    return waterfall_dot(delta, delta);
+}
+
+double waterfall_nearest_triangle_distance_squared(
+    matter::Float3 point, const WaterfallTriangleBvh& bvh,
+    std::uint32_t node_index, double best) {
+    const auto& node = bvh.nodes[node_index];
+    if (waterfall_point_aabb_distance_squared(
+            point, node.minimum, node.maximum) >= best) {
+        return best;
+    }
+    if (node.count != 0u) {
+        for (std::uint32_t offset = 0u; offset != node.count; ++offset) {
+            best = std::min(best, waterfall_point_triangle_distance_squared(
+                point, bvh.triangles[bvh.order[node.begin + offset]]));
+        }
+        return best;
+    }
+    const auto& left = bvh.nodes[node.left];
+    const auto& right = bvh.nodes[node.right];
+    const double left_distance = waterfall_point_aabb_distance_squared(
+        point, left.minimum, left.maximum);
+    const double right_distance = waterfall_point_aabb_distance_squared(
+        point, right.minimum, right.maximum);
+    const std::uint32_t first =
+        left_distance <= right_distance ? node.left : node.right;
+    const std::uint32_t second =
+        left_distance <= right_distance ? node.right : node.left;
+    best = waterfall_nearest_triangle_distance_squared(
+        point, bvh, first, best);
+    return waterfall_nearest_triangle_distance_squared(
+        point, bvh, second, best);
+}
+
+double waterfall_nearest_triangle_distance(
+    matter::Float3 point, const WaterfallTriangleBvh& bvh) {
+    return std::sqrt(waterfall_nearest_triangle_distance_squared(
+        point, bvh, 0u, std::numeric_limits<double>::infinity()));
+}
+
+struct WaterfallHausdorffPatch {
+    std::array<matter::Float3, 3> vertices{};
+    double upper_bound_m = 0.0;
+};
+
+struct WaterfallHausdorffPatchLess {
+    bool operator()(const WaterfallHausdorffPatch& a,
+                    const WaterfallHausdorffPatch& b) const noexcept {
+        return a.upper_bound_m < b.upper_bound_m;
+    }
+};
+
+WaterfallHausdorffPatch waterfall_hausdorff_patch(
+    const std::array<matter::Float3, 3>& vertices,
+    const WaterfallTriangleBvh& destination,
+    double& lower_bound_m) {
+    const matter::Float3 centroid = waterfall_scale(
+        waterfall_add(waterfall_add(vertices[0], vertices[1]), vertices[2]),
+        1.0f / 3.0f);
+    const double center_distance =
+        waterfall_nearest_triangle_distance(centroid, destination);
+    lower_bound_m = std::max(lower_bound_m, center_distance);
+    double radius = 0.0;
+    for (matter::Float3 vertex : vertices) {
+        const matter::Float3 delta = waterfall_sub(vertex, centroid);
+        radius = std::max(
+            radius,
+            std::sqrt(static_cast<double>(waterfall_dot(delta, delta))));
+    }
+    // Distance to a closed set is 1-Lipschitz. Every point in the flat
+    // triangle lies within `radius` of its centroid, therefore this is a
+    // conservative bound for the entire patch, not a sampled lower bound.
+    return {vertices, center_distance + radius + 1.0e-6};
+}
+
+std::array<std::array<matter::Float3, 3>, 4>
+waterfall_split_hausdorff_patch(const WaterfallHausdorffPatch& patch) {
+    const auto midpoint = [](matter::Float3 a, matter::Float3 b) {
+        return waterfall_scale(waterfall_add(a, b), 0.5f);
+    };
+    const matter::Float3 ab = midpoint(
+        patch.vertices[0], patch.vertices[1]);
+    const matter::Float3 bc = midpoint(
+        patch.vertices[1], patch.vertices[2]);
+    const matter::Float3 ca = midpoint(
+        patch.vertices[2], patch.vertices[0]);
+    return {{{patch.vertices[0], ab, ca},
+             {ab, patch.vertices[1], bc},
+             {ca, bc, patch.vertices[2]},
+             {ab, bc, ca}}};
+}
+
+double waterfall_directed_world_hausdorff(
+    const gpu_meshing::MeshResult& source,
+    const WaterfallTriangleBvh& destination) {
+    if (destination.nodes.empty())
+        return std::numeric_limits<double>::infinity();
+    double lower_bound_m = 0.0;
+    for (std::size_t vertex = 0u;
+         vertex != source.positions.size() / 3u; ++vertex) {
+        lower_bound_m = std::max(
+            lower_bound_m, waterfall_nearest_triangle_distance(
+                {source.positions[vertex * 3u + 0u],
+                 source.positions[vertex * 3u + 1u],
+                 source.positions[vertex * 3u + 2u]},
+                destination));
+    }
+    std::priority_queue<
+        WaterfallHausdorffPatch,
+        std::vector<WaterfallHausdorffPatch>,
+        WaterfallHausdorffPatchLess> pending;
+    for (std::size_t triangle = 0u;
+         triangle != source.indices.size() / 3u; ++triangle) {
+        std::array<matter::Float3, 3> vertices{};
+        for (std::size_t corner = 0u; corner != 3u; ++corner) {
+            const std::uint32_t index =
+                source.indices[triangle * 3u + corner];
+            vertices[corner] = {
+                 source.positions[index * 3u + 0u],
+                 source.positions[index * 3u + 1u],
+                 source.positions[index * 3u + 2u]};
+        }
+        pending.push(waterfall_hausdorff_patch(
+            vertices, destination, lower_bound_m));
+    }
+    while (!pending.empty()) {
+        const WaterfallHausdorffPatch patch = pending.top();
+        if (patch.upper_bound_m <=
+            lower_bound_m + kWaterfallWorldBoundToleranceM) {
+            return patch.upper_bound_m + kWaterfallWorldNumericalMarginM;
+        }
+        pending.pop();
+        for (const auto& child : waterfall_split_hausdorff_patch(patch)) {
+            pending.push(waterfall_hausdorff_patch(
+                child, destination, lower_bound_m));
+        }
+    }
+    return lower_bound_m + kWaterfallWorldNumericalMarginM;
+}
+
+double waterfall_world_geometry_hausdorff(
+    const gpu_meshing::MeshResult& first,
+    const gpu_meshing::MeshResult& second) {
+    if (&first == &second) return 0.0;
+    const WaterfallTriangleBvh first_bvh(first);
+    const WaterfallTriangleBvh second_bvh(second);
+    return std::max(waterfall_directed_world_hausdorff(first, second_bvh),
+                    waterfall_directed_world_hausdorff(second, first_bvh));
+}
+
+double waterfall_off_sheet_coverage(
+    const std::vector<std::uint8_t>& candidate,
+    const std::vector<std::uint8_t>& oracle) {
+    std::uint64_t outside = 0u;
+    std::uint64_t oracle_coverage = 0u;
+    for (std::size_t index = 0u; index != oracle.size(); ++index) {
+        if (oracle[index]) ++oracle_coverage;
+        if (candidate[index] && !oracle[index]) ++outside;
+    }
+    return oracle_coverage == 0u
+        ? std::numeric_limits<double>::infinity()
+        : static_cast<double>(outside) /
+              static_cast<double>(oracle_coverage);
+}
+
+std::uint64_t waterfall_projected_animation_file_bytes(
+    const gpu_meshing::MeshResult& mesh) {
+    constexpr std::uint64_t kHeaderBytes = 32u;
+    constexpr std::uint64_t kIdentityBytes = 27u;
+    constexpr std::uint64_t kMetadataAfterIdentityBytes =
+        24u + 16u + 8u + 16u + 4u + 24u + 8u;
+    constexpr std::uint64_t kFrameDirectoryBytes = 30u * 56u;
+    constexpr std::uint64_t kPayloadSizeFieldBytes = 8u;
+    const std::uint64_t vertex_count = mesh.positions.size() / 3u;
+    const std::uint64_t index_count = mesh.indices.size();
+    const std::uint64_t frame_payload_bytes =
+        vertex_count * 12u + index_count * 4u;
+    return kHeaderBytes + 4u + kIdentityBytes +
+           kMetadataAfterIdentityBytes + kFrameDirectoryBytes +
+           kPayloadSizeFieldBytes + 30u * frame_payload_bytes;
+}
+
+bool waterfall_write_report(
+    const std::filesystem::path& path,
+    const std::vector<WaterfallQualityRow>& rows,
+    std::uint32_t validation_errors) {
+    if (path.empty() || rows.size() != 5u) return false;
+    std::error_code filesystem_error;
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(
+            path.parent_path(), filesystem_error);
+        if (filesystem_error) return false;
+    }
+    const auto current = std::find_if(
+        rows.begin(), rows.end(), [](const WaterfallQualityRow& row) {
+            return std::string(row.candidate.id) == "v150-r013-b010";
+        });
+    if (current == rows.end() ||
+        current->projected_complete_animation_file_bytes >
+            kMeasuredRiverFloatNetworkBytes ||
+        current->projected_complete_animation_file_bytes >
+            kMeasuredUpperSectionBytes) {
+        return false;
+    }
+    const std::uint64_t network_other =
+        kMeasuredRiverFloatNetworkBytes -
+        current->projected_complete_animation_file_bytes;
+    const std::uint64_t section_other =
+        kMeasuredUpperSectionBytes -
+        current->projected_complete_animation_file_bytes;
+
+    std::ostringstream json;
+    json << std::setprecision(9) << std::fixed;
+    json << "{\n"
+         << "  \"schemaVersion\": 1,\n"
+         << "  \"fixture\": {\"fallDistanceM\": 12.0, "
+            "\"sheetDiameterM\": 0.26, \"frameCount\": 30, "
+         << "\"cameraWidthPixels\": " << kWaterfallCameraWidth << ", "
+         << "\"cameraHeightPixels\": " << kWaterfallCameraHeight << ", "
+         << "\"worldHausdorffBoundToleranceM\": "
+         << kWaterfallWorldBoundToleranceM << ", "
+         << "\"worldHausdorffNumericalMarginM\": "
+         << kWaterfallWorldNumericalMarginM << "},\n"
+         << "  \"oracleRowId\": \"v075-r013-b010\",\n"
+         << "  \"measuredRiverFloatLabNetworkBytes\": "
+         << kMeasuredRiverFloatNetworkBytes << ",\n"
+         << "  \"measuredContainingSectionFileBytes\": "
+         << kMeasuredUpperSectionBytes << ",\n"
+         << "  \"networkOtherCompleteFileBytes\": " << network_other
+         << ",\n"
+         << "  \"containingSectionOtherCompleteFileBytes\": "
+         << section_other << ",\n"
+         << "  \"validationErrors\": " << validation_errors << ",\n"
+         << "  \"rows\": [\n";
+    for (std::size_t index = 0u; index != rows.size(); ++index) {
+        const auto& row = rows[index];
+        const double gpu_ms = row.stats.bin_ms + row.stats.field_ms +
+                              row.stats.classify_ms + row.stats.emit_ms;
+        json << "    {\"id\": \"" << row.candidate.id << "\", "
+             << "\"voxelM\": " << row.candidate.voxel_m << ", "
+             << "\"radiusM\": " << row.candidate.radius_m << ", "
+             << "\"blendWidthM\": " << row.candidate.blend_m << ", "
+             << "\"vertices\": " << row.mesh.positions.size() / 3u << ", "
+             << "\"triangles\": " << row.mesh.indices.size() / 3u << ", "
+             << "\"connectedComponents\": "
+             << row.topology.connected_components << ", "
+             << "\"intentionalSprayComponents\": "
+             << row.topology.intentional_spray_components << ", "
+             << "\"openEdges\": " << row.topology.open_edges << ", "
+             << "\"holes\": " << row.topology.holes << ", "
+             << "\"silhouetteHausdorffM\": "
+             << row.silhouette_hausdorff_m << ", "
+             << "\"silhouetteHausdorffPixels\": "
+             << row.silhouette_hausdorff_pixels << ", "
+             << "\"normalVariationDegrees\": "
+             << row.topology.normal_variation_degrees << ", "
+             << "\"offSheetCoverageFraction\": "
+             << row.off_sheet_coverage_fraction << ", "
+             << "\"projectedCompleteAnimationFileBytes\": "
+             << row.projected_complete_animation_file_bytes << ", "
+             << "\"gpuMeshMs\": " << gpu_ms << ", "
+             << "\"meshDigest\": \"" << std::hex << std::setw(16)
+             << std::setfill('0') << row.mesh.content_digest << std::dec
+             << std::setfill(' ') << "\"}";
+        json << (index + 1u == rows.size() ? "\n" : ",\n");
+    }
+    json << "  ]\n}\n";
+
+    const std::filesystem::path temporary = path.string() + ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) return false;
+        output << json.str();
+        if (!output) return false;
+    }
+    std::filesystem::remove(path, filesystem_error);
+    filesystem_error.clear();
+    std::filesystem::rename(temporary, path, filesystem_error);
+    if (filesystem_error) {
+        std::filesystem::remove(temporary, filesystem_error);
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+int run_gpu_visual_mesher_waterfall_quality(
+    matter::VulkanDevice& vulkan, const std::filesystem::path& report) {
+    failures = 0;
+    GPU_CHECK(!report.empty(),
+              "waterfall-mesher requires MATTER_WATERFALL_QUALITY_REPORT");
+    if (report.empty()) return failures;
+    constexpr std::array<WaterfallQualityCandidate, 5> kCandidates{{
+        {"v150-r013-b010", 0.15f, 0.13f, 0.10f},
+        {"v100-r013-b010", 0.10f, 0.13f, 0.10f},
+        {"v075-r013-b010", 0.075f, 0.13f, 0.10f},
+        {"v150-r014-b010", 0.15f, 0.14f, 0.10f},
+        {"v150-r013-b012", 0.15f, 0.13f, 0.12f},
+    }};
+    gpu_meshing::GpuVisualMesher mesher(vulkan);
+
+    // One unreported finest-grid dispatch removes pipeline first-use and
+    // grows reusable allocations to the matrix high-water mark before any
+    // per-row GPU timing is recorded.
+    {
+        auto warm_particles = waterfall_fixture_particles(0.13f);
+        gpu_meshing::Error warm_error{};
+        auto warm_job = waterfall_fixture_job(
+            warm_particles, kCandidates[2], warm_error);
+        gpu_meshing::MeshResult warm_mesh{};
+        gpu_meshing::Stats warm_stats{};
+        GPU_CHECK(warm_error.code == gpu_meshing::ErrorCode::None &&
+                      mesher.build_particle_visual(
+                          warm_job, warm_mesh, warm_stats, warm_error),
+                  warm_error.message.empty()
+                      ? "warm waterfall GPU measurement pipeline"
+                      : warm_error.message.c_str());
+        if (failures != 0) return failures;
+    }
+
+    std::vector<WaterfallQualityRow> rows;
+    rows.reserve(kCandidates.size());
+    for (const auto& candidate : kCandidates) {
+        auto particles = waterfall_fixture_particles(candidate.radius_m);
+        gpu_meshing::Error error{};
+        const auto job = waterfall_fixture_job(particles, candidate, error);
+        WaterfallQualityRow row{};
+        row.candidate = candidate;
+        const bool built = error.code == gpu_meshing::ErrorCode::None &&
+            mesher.build_particle_visual(job, row.mesh, row.stats, error);
+        GPU_CHECK(built,
+                  error.message.empty()
+                      ? "build waterfall quality candidate"
+                      : error.message.c_str());
+        if (!built) return failures;
+        GPU_CHECK(!row.mesh.positions.empty() && !row.mesh.indices.empty(),
+                  "waterfall quality candidate emits geometry");
+        row.topology = waterfall_topology(row.mesh);
+        GPU_CHECK(row.topology.open_edges == 0u && row.topology.holes == 0u,
+                  "closed waterfall fixture has no topology holes");
+        GPU_CHECK(row.topology.connected_components == 2u &&
+                      row.topology.intentional_spray_components == 1u,
+                  "waterfall fixture preserves one intentional spray bead");
+        GPU_CHECK(std::isfinite(row.topology.normal_variation_degrees) &&
+                      row.topology.normal_variation_degrees > 0.0,
+                  "waterfall topology reports finite nonzero normal variation");
+        row.silhouette = waterfall_silhouette(row.mesh);
+        GPU_CHECK(std::any_of(row.silhouette.begin(), row.silhouette.end(),
+                              [](std::uint8_t value) { return value != 0u; }),
+                  "waterfall quality candidate projects into retained camera");
+        row.projected_complete_animation_file_bytes =
+            waterfall_projected_animation_file_bytes(row.mesh);
+        rows.push_back(std::move(row));
+    }
+    if (failures != 0) return failures;
+
+    const auto oracle = std::find_if(
+        rows.begin(), rows.end(), [](const WaterfallQualityRow& row) {
+            return std::string(row.candidate.id) == "v075-r013-b010";
+        });
+    GPU_CHECK(oracle != rows.end(), "waterfall quality matrix has 0.075 oracle");
+    if (oracle == rows.end()) return failures;
+    for (auto& row : rows) {
+        row.silhouette_hausdorff_pixels =
+            waterfall_silhouette_hausdorff_pixels(
+                row.silhouette, oracle->silhouette);
+        row.silhouette_hausdorff_m = waterfall_world_geometry_hausdorff(
+            row.mesh, oracle->mesh);
+        row.off_sheet_coverage_fraction =
+            waterfall_off_sheet_coverage(row.silhouette, oracle->silhouette);
+        const double gpu_ms = row.stats.bin_ms + row.stats.field_ms +
+                              row.stats.classify_ms + row.stats.emit_ms;
+        std::printf(
+            "waterfall-quality %s: vertices=%zu triangles=%zu components=%u "
+            "open=%u holes=%u silhouette=%.6f m/%.3f px normal=%.3f deg "
+            "coverage=%.6f file=%llu gpu=%.3f ms digest=%016llx\n",
+            row.candidate.id, row.mesh.positions.size() / 3u,
+            row.mesh.indices.size() / 3u,
+            row.topology.connected_components, row.topology.open_edges,
+            row.topology.holes, row.silhouette_hausdorff_m,
+            row.silhouette_hausdorff_pixels,
+            row.topology.normal_variation_degrees,
+            row.off_sheet_coverage_fraction,
+            static_cast<unsigned long long>(
+                row.projected_complete_animation_file_bytes),
+            gpu_ms,
+            static_cast<unsigned long long>(row.mesh.content_digest));
+    }
+    const auto current = std::find_if(
+        rows.begin(), rows.end(), [](const WaterfallQualityRow& row) {
+            return std::string(row.candidate.id) == "v150-r013-b010";
+        });
+    GPU_CHECK(current != rows.end(), "waterfall matrix has current 0.15 row");
+    if (current != rows.end()) {
+        GPU_CHECK(current->silhouette_hausdorff_m > 0.0 &&
+                      current->silhouette_hausdorff_pixels > 0.0 &&
+                      current->mesh.content_digest !=
+                          oracle->mesh.content_digest,
+                  "0.15 fixture metrics distinguish it from 0.075 oracle");
+        GPU_CHECK(oracle->silhouette_hausdorff_m == 0.0 &&
+                      oracle->silhouette_hausdorff_pixels == 0.0 &&
+                      oracle->off_sheet_coverage_fraction == 0.0,
+                  "oracle self-comparison is exactly zero");
+    }
+    GPU_CHECK(waterfall_write_report(
+                  report, rows, vulkan.validation_error_count()),
+              "write waterfall visual quality JSON report");
     return failures;
 }
