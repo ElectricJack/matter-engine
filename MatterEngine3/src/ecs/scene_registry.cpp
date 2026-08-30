@@ -815,7 +815,14 @@ static bool validate_character_recipe(const RawEntityRecipe& raw,
     std::string field;
     if (!parse_character(extract_component_value_json(raw.components_json, "CharacterController"), controller, field)) return fail(field);
     if (!raw.parent_authored_id.empty()) return fail("parent");
-    if (!character_unit_scale(extract_component_value_json(raw.components_json, "LocalTransform"))) return fail("LocalTransform.scale");
+    const std::string transform_json = extract_component_value_json(raw.components_json, "LocalTransform");
+    if (!character_unit_scale(transform_json)) return fail("LocalTransform.scale");
+    // Match instantiation's float conversion, including default/partial values:
+    // a finite authored JSON number may overflow the stored controller position.
+    Float3 translation{};
+    (void)extract_float_array(transform_json, "translation", &translation.x, 3);
+    if (!std::isfinite(translation.x) || !std::isfinite(translation.y) ||
+        !std::isfinite(translation.z)) return fail("LocalTransform.translation");
     for (const auto& key : keys) {
         const auto* desc = find_component(key.c_str());
         if (!desc || is_collider_kind(desc->kind) || desc->kind == ComponentKind::RigidBody ||

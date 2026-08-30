@@ -971,12 +971,65 @@ static void test_character_instantiation_preflights_before_mutation() {
     }
 }
 
+static void test_character_position_preflight_preserves_prior_scene() {
+    // JSON doubles can be finite yet overflow the float storage used by the
+    // instantiator. Catch every position axis at both mutation entry points.
+    for (const char* position : {"[1e39,0,0]", "[0,-1e39,0]", "[0,0,1e39]",
+                                 "[nan,0,0]", "[0,inf,0]", "[0,0,-inf]"}) {
+        for (bool direct : {false, true}) {
+            flecs::world world;
+            world.import<ecs::CoreModule>();
+            world.import<physics::PhysicsModule>();
+            world.import<character::CharacterModule>();
+            world.import<SceneModule>();
+            SceneGeneration generation;
+            RecipeError error;
+            CHECK(bootstrap_transactional(world, {{"prior", "Prior", "", R"({"LocalTransform":{"translation":[7,8,9]}})"}},
+                                          generation, nullptr, error), "position preflight prior scene");
+            flecs::entity prior;
+            world.each([&](flecs::entity e, const SceneEntityId&) { prior = e; });
+            const auto original_generation = generation.value;
+            const RawEntityRecipe invalid{"invalid-position", "", "",
+                std::string("{\"CharacterController\":{},\"LocalTransform\":{\"translation\":") + position + "}}"};
+            EntityRecipe normalized;
+            CHECK(!validate(invalid, normalized, error), "nonfinite resulting controller position rejected");
+            CHECK(error.authored_id == "invalid-position" && error.field_path == "LocalTransform.translation" && !error.message.empty(),
+                  "position validation reports translation-specific error");
+            error = {};
+            bool result;
+            if (direct) {
+                const EntityRecipe batch[] = {{"before-invalid", "", "", "{}"},
+                    {invalid.authored_id, invalid.display_name, invalid.parent_authored_id, invalid.components_json}};
+                result = instantiate(world, batch, 2, generation, error);
+            } else {
+                result = bootstrap_transactional(world, {{"before-invalid", "", "", "{}"}, invalid}, generation, nullptr, error);
+            }
+            CHECK(!result, "position rejected before bootstrap or direct instantiation");
+            CHECK(error.authored_id == "invalid-position" && error.field_path == "LocalTransform.translation",
+                  "mutation entry point preserves translation-specific error");
+            CHECK(generation.value == original_generation && prior.is_alive() && world.count<SceneEntityId>() == 1,
+                  "invalid position retains prior generation and prevents partial batch creation");
+            if (prior.is_alive()) {
+                const auto t = prior.get<ecs::LocalTransform>();
+                CHECK(t.translation.x == 7 && t.translation.y == 8 && t.translation.z == 9,
+                      "invalid position leaves prior transform unchanged");
+            }
+        }
+    }
+    RawEntityRecipe finite{"finite-position", "", "",
+        R"({"CharacterController":{},"LocalTransform":{"translation":[1e20,-1e20,0]}})"};
+    EntityRecipe normalized;
+    RecipeError error;
+    CHECK(validate(finite, normalized, error), "finite float position remains valid without arbitrary bounds");
+}
+
 int main() {
     CHECK(hash_authored_id("") == 0x4bf29ce484222325ULL, "authored hash retains FNV offset with high bit cleared");
     CHECK(hash_authored_id("hello") == 0x2430d84680aabd0bULL, "authored hash retains FNV-1a byte semantics and high-bit mask");
     test_character_authoring();
     test_character_validation_is_strict_and_transactional();
     test_character_instantiation_preflights_before_mutation();
+    test_character_position_preflight_preserves_prior_scene();
     test_scene_module_registers_scene_entity_id();
     test_scene_module_registers_part_instance();
     test_scene_module_registers_part_instance_error();
