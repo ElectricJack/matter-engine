@@ -1,5 +1,14 @@
 # Animated Water Section Continuity Implementation Plan
 
+**Execution status — 2026-08-30:** Stage 1 continuity is accepted and the
+committed Task10/10a measurement harness remains. Task11 scalar-lock and
+conforming-fairing architectures were rejected by real frame-0 evidence and
+all experimental implementation/wiring was removed. Waterfall refinement is
+open pending a new design; the Task11 steps below are historical, not an
+instruction to resume tuning. Controller integration proceeds against the
+accepted coarse river. Overall raster-water appearance is not yet accepted.
+See [rejection evidence](../../findings/waterfall-refinement-rejection-2026-08-30.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the static-collar/zipper animation handoff with a per-frame, common-lattice replacement strip, then refine only the waterfall region enough to pass the blocked raster-water visual gates without changing the `0.20 m` simulation particle spacing or exceeding the animation memory contracts.
@@ -990,6 +999,10 @@ struct ParticleLongitudinalFieldBlend {
 ---
 
 ### Task 11: Build the bounded waterfall replacement with locked scalar boundaries
+
+**Rejected / open:** Do not execute this architecture. Scalar locking and the
+later conforming-fairing amendment both failed real frame-0 gates; a new
+bounded design is required before waterfall refinement resumes.
 
 **Prerequisite:** Task 10 must select a passing candidate. Use its exact reported voxel/radius/blend row in the retained finding. Do not silently substitute a finer row. `particleSpacing` remains `0.20 m` in every case.
 

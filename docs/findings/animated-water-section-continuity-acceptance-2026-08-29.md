@@ -4,7 +4,13 @@ Status: **Stage 1 executable and visual gates pass.**
 
 `handoffVisualGate: pass`
 
-Task 10 is unblocked. The accepted repair treats the temporary dam as
+Task 10/10a measurement tooling is retained. Task 11 waterfall refinement was
+rejected on 2026-08-30 and its experimental implementation removed; see
+[the decisive failures](waterfall-refinement-rejection-2026-08-30.md).
+Stage 1 remains accepted, while waterfall quality and overall raster-water
+acceptance remain open. Controller integration proceeds next.
+
+The accepted repair treats the temporary dam as
 simulation collision only. Every finite captured particle inside the canonical
 boundary crop remains authoritative visual-field input, even when its support
 touches the former dam.

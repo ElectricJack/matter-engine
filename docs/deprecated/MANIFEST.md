@@ -5,6 +5,7 @@ documentation-lifecycle decision. Paths below are repository-relative.
 
 | Original path | Current path | Successor or retirement reason |
 |---|---|---|
+| `docs/superpowers/specs/2026-08-30-waterfall-conforming-subdivision-amendment.md` | `docs/deprecated/superpowers/specs/2026-08-30-waterfall-conforming-subdivision-amendment.md` | Rejected by real Task11 frame-0 material-improvement gates; experimental implementation removed. Waterfall quality remains open; Stage1 continuity remains accepted. |
 | `docs/superpowers/backlog.md` | `docs/deprecated/superpowers/backlog.md` | Replaced by the prioritized root `ROADMAP.md`; retained candidates are grouped there as deferred decisions. |
 | `docs/superpowers/plans/2026-06-14-cell-granular-interior-culling.md` | `docs/deprecated/superpowers/plans/2026-06-14-cell-granular-interior-culling.md` | Implemented historically, then replaced by the explicit per-cell `no_mesh` cell-skip design/plan (#4/#31); current selection is in `cluster.cpp:231-235,317`. |
 | `docs/superpowers/plans/2026-06-14-lattice-particle-stress-scene.md` | `docs/deprecated/superpowers/plans/2026-06-14-lattice-particle-stress-scene.md` | Per-particle tint survived, but the plan's standalone legacy-GL stress scene consumer was retired with that viewer; modern Vulkan/editor validation supersedes it. |
