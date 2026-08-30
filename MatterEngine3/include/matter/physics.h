@@ -169,6 +169,25 @@ struct PhysicsRayHit {
     float fraction = 0.0f;
 };
 
+struct CharacterMoveInput {
+    Float3 position{}, velocity{}, desired_horizontal_velocity{};
+    Float3 gravity{0.0f, -9.81f, 0.0f};
+    float radius = 0.4f;
+    float half_segment = 0.5f;
+    float dt = 1.0f / 60.0f;
+    float max_slope_cos = 0.70710678f;
+    float step_height = 0.45f;
+    uint64_t category_mask = UINT64_MAX;
+};
+
+struct CharacterMoveOutput {
+    Float3 position{}, velocity{}, ground_normal{0.0f, 1.0f, 0.0f};
+    bool grounded = false;
+};
+
+bool physics_move_character(
+    flecs::world&, const CharacterMoveInput&, CharacterMoveOutput&);
+
 struct PhysicsModule {
     explicit PhysicsModule(flecs::world&);
 };

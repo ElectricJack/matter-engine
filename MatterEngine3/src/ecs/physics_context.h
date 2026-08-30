@@ -197,6 +197,9 @@ public:
         float radius,
         uint64_t category_mask);
 
+    bool move_character(
+        const CharacterMoveInput& input, CharacterMoveOutput& output);
+
     uint32_t last_step_substeps() const noexcept;
     const std::vector<PhysicsSystemStage>& fixed_step_trace() const noexcept;
     const std::vector<PhysicsCommandTraceEntry>&

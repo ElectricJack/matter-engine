@@ -328,6 +328,10 @@ if(BUILD_TESTING)
         MatterEngine3/tests/props_tests.cpp)
     matter_add_engine_cpu_test(physics_tests
         MatterEngine3/tests/physics_tests.cpp)
+    matter_add_engine_cpu_test(ecs_tests
+        MatterEngine3/tests/ecs_tests.cpp)
+    matter_add_engine_cpu_test(character_controller_tests
+        MatterEngine3/tests/character_controller_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_physics_tests
         MatterEngine3/tests/terrain_collision_physics_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_session_tests
@@ -411,6 +415,20 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/water_forward_reference.cpp)
     matter_add_engine_cpu_test(shader_source_tests
         MatterEngine3/tests/shader_source_tests.cpp)
+
+    add_custom_target(matter_character_integration_tests)
+    add_dependencies(matter_character_integration_tests
+        character_controller_tests
+        ecs_tests
+        physics_tests
+        terrain_collision_definition_tests
+        terrain_collision_artifact_tests
+        terrain_collision_physics_tests
+        terrain_collision_session_tests
+        river_float_system_tests
+        scene_registry_tests
+        entity_recipe_tests
+        viewer_logic_tests)
 
     get_property(matter_engine_cpu_targets GLOBAL PROPERTY MATTER_ENGINE_CPU_TARGETS)
     add_custom_target(matter_engine_cpu_tests)

@@ -10,6 +10,7 @@
 #include "render/animation_skin_bridge.h"
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
+#include "matter/character.h"
 #include "matter/streaming.h"
 #include "matter/log.h"
 
@@ -353,6 +354,7 @@ void snap_half_ulp_shortfall_to_fixed_boundary(
 Runtime::Runtime() {
     world_.import<ecs::CoreModule>();
     world_.import<physics::PhysicsModule>();
+    world_.import<character::CharacterModule>();
     world_.import<streaming::StreamingModule>();
     physics_ = std::make_unique<physics::detail::PhysicsContext>(
         world_.get<physics::PhysicsSettings>());

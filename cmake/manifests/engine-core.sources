@@ -93,6 +93,7 @@ MatterEngine3/src/provider/local_provider.cpp|all
 MatterEngine3/src/provider/resolvers.cpp|all
 MatterEngine3/src/ecs/scene_registry.cpp|all
 MatterEngine3/src/ecs/ecs_runtime.cpp|all
+MatterEngine3/src/ecs/character_systems.cpp|all
 MatterEngine3/src/ecs/simulation_control.cpp|all
 MatterEngine3/src/ecs/physics_context.cpp|all
 MatterEngine3/src/ecs/physics_shapes.cpp|all

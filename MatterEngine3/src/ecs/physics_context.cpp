@@ -2,6 +2,7 @@
 #include "physics_shapes.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -260,6 +261,73 @@ bool normalize(Quaternion& value) {
     value.w *= inverse_length;
     return std::isfinite(value.x) && std::isfinite(value.y) &&
            std::isfinite(value.z) && std::isfinite(value.w);
+}
+
+bool valid_character_input(const CharacterMoveInput& input) noexcept {
+    return finite(input.position) && finite(input.velocity) &&
+           finite(input.desired_horizontal_velocity) && finite(input.gravity) &&
+           std::isfinite(input.radius) && input.radius > 0.0f &&
+           std::isfinite(input.half_segment) && input.half_segment >= 0.0f &&
+           std::isfinite(input.dt) && input.dt > 0.0f &&
+           std::isfinite(input.max_slope_cos) && input.max_slope_cos >= 0.0f &&
+           input.max_slope_cos <= 1.0f && std::isfinite(input.step_height) &&
+           input.step_height >= 0.0f;
+}
+
+bool mover_accepts_static_shape(b3ShapeId shape) {
+    const b3BodyId body = b3Shape_GetBody(shape);
+    return b3Body_IsValid(body) && b3Body_GetType(body) == b3_staticBody &&
+           !b3Shape_IsSensor(shape);
+}
+
+struct StaticMoverPlaneGather {
+    b3CollisionPlane* planes = nullptr;
+    int* count = nullptr;
+    int capacity = 0;
+};
+
+bool static_mover_plane_callback(
+    b3ShapeId shape, const b3PlaneResult* results, int count, void* context) {
+    if (!mover_accepts_static_shape(shape)) return true;
+    auto* gather = static_cast<StaticMoverPlaneGather*>(context);
+    for (int index = 0; index < count && *gather->count < gather->capacity;
+         ++index) {
+        gather->planes[*gather->count] =
+            {results[index].plane, FLT_MAX, 0.0f, true};
+        ++*gather->count;
+    }
+    return true;
+}
+
+bool static_mover_filter(b3ShapeId shape, void*) {
+    return mover_accepts_static_shape(shape);
+}
+
+struct StaticRayResult {
+    bool hit = false;
+    b3Pos point{};
+    b3Vec3 normal{};
+    float fraction = 1.0f;
+};
+
+float static_ray_callback(
+    b3ShapeId shape,
+    b3Pos point,
+    b3Vec3 normal,
+    float fraction,
+    uint64_t,
+    int,
+    int,
+    void* context) {
+    if (!mover_accepts_static_shape(shape)) return -1.0f;
+    auto* result = static_cast<StaticRayResult*>(context);
+    if (!result->hit || fraction < result->fraction) {
+        result->hit = true;
+        result->point = point;
+        result->normal = normal;
+        result->fraction = fraction;
+    }
+    return fraction;
 }
 
 struct HullDeleter {
@@ -1737,6 +1805,109 @@ std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
     return query.entities;
 }
 
+bool PhysicsContext::move_character(
+    const CharacterMoveInput& input, CharacterMoveOutput& output) {
+    if (impl_ == nullptr || impl_->stepping || !world_is_valid() ||
+        std::this_thread::get_id() != impl_->owner_thread ||
+        !valid_character_input(input)) {
+        return false;
+    }
+
+    const b3WorldId world = impl_->world_id;
+    b3QueryFilter filter = b3DefaultQueryFilter();
+    filter.maskBits = input.category_mask;
+    const b3Capsule capsule{{0.0f, -input.half_segment, 0.0f},
+                            {0.0f, input.half_segment, 0.0f}, input.radius};
+    b3Pos position = box_position(input.position);
+    b3Vec3 velocity = box_vector(input.velocity);
+    const b3Vec3 gravity = box_vector(input.gravity);
+
+    const float snap_reach = input.radius + input.step_height + 0.05f;
+    auto probe_ground = [&](b3Pos at) {
+        at.y -= input.half_segment;
+        StaticRayResult result{};
+        const b3Vec3 down{0.0f, -(input.radius + snap_reach), 0.0f};
+        b3World_CastRay(
+            world, at, down, filter, static_ray_callback, &result);
+        return result;
+    };
+
+    const bool rising = velocity.y > 0.001f;
+    const StaticRayResult initial_ground = probe_ground(position);
+    const bool standable = initial_ground.hit && !rising &&
+        initial_ground.normal.y >= input.max_slope_cos;
+    CharacterMoveOutput next{};
+    next.ground_normal = {0.0f, 1.0f, 0.0f};
+    if (standable) {
+        next.ground_normal = engine_vector(initial_ground.normal);
+        velocity.x = input.desired_horizontal_velocity.x;
+        velocity.z = input.desired_horizontal_velocity.z;
+        if (velocity.y < 0.0f) velocity.y = 0.0f;
+    }
+
+    velocity.x += gravity.x * input.dt;
+    velocity.y += gravity.y * input.dt;
+    velocity.z += gravity.z * input.dt;
+    b3Vec3 move_velocity = velocity;
+    if (standable) move_velocity.y = 0.0f;
+    b3Pos target = position;
+    target.x += move_velocity.x * input.dt;
+    target.y += move_velocity.y * input.dt;
+    target.z += move_velocity.z * input.dt;
+
+    constexpr int kPlaneCapacity = 32;
+    b3CollisionPlane planes[kPlaneCapacity]{};
+    int plane_count = 0;
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        plane_count = 0;
+        StaticMoverPlaneGather gather{planes, &plane_count, kPlaneCapacity};
+        b3World_CollideMover(
+            world, position, &capsule, filter, static_mover_plane_callback,
+            &gather);
+        const b3Vec3 target_delta{
+            static_cast<float>(target.x - position.x),
+            static_cast<float>(target.y - position.y),
+            static_cast<float>(target.z - position.z)};
+        b3Vec3 delta = b3SolvePlanes(target_delta, planes, plane_count).delta;
+        const float fraction = b3World_CastMover(
+            world, position, &capsule, delta, filter, static_mover_filter,
+            nullptr);
+        delta.x *= fraction;
+        delta.y *= fraction;
+        delta.z *= fraction;
+        position.x += delta.x;
+        position.y += delta.y;
+        position.z += delta.z;
+        if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z <
+            1.0e-4f) {
+            break;
+        }
+    }
+    if (plane_count > 0) velocity = b3ClipVector(velocity, planes, plane_count);
+
+    if (!rising) {
+        const StaticRayResult ground = probe_ground(position);
+        if (ground.hit && ground.normal.y >= input.max_slope_cos) {
+            constexpr float kSkin = 0.02f;
+            const float normal_y = std::max(ground.normal.y, 0.5f);
+            const float rest_y = static_cast<float>(ground.point.y) +
+                input.radius / normal_y + input.half_segment + kSkin;
+            const float delta_y = rest_y - static_cast<float>(position.y);
+            if (delta_y <= input.step_height &&
+                delta_y >= -(input.radius + snap_reach)) {
+                position.y = rest_y;
+                if (velocity.y < 0.0f) velocity.y = 0.0f;
+                next.grounded = true;
+                next.ground_normal = engine_vector(ground.normal);
+            }
+        }
+    }
+    next.position = engine_position(position);
+    next.velocity = engine_vector(velocity);
+    output = next;
+    return true;
+}
+
 void PhysicsContext::capture_events(flecs::world& world) {
     PhysicsEvents next;
     const flecs::world_t* owning_world = ecs_get_world(world.c_ptr());
@@ -2376,6 +2547,21 @@ std::vector<flecs::entity_t> physics_overlap_sphere(
     }
     return ref->value->overlap_sphere(
         normalized_world, center, radius, category_mask);
+}
+
+bool physics_move_character(
+    flecs::world& world,
+    const CharacterMoveInput& input,
+    CharacterMoveOutput& output) {
+    const flecs::world_t* real_world = ecs_get_world(world.c_ptr());
+    if (real_world == nullptr) {
+        return false;
+    }
+    flecs::world normalized_world(const_cast<flecs::world_t*>(real_world));
+    const detail::PhysicsContextRef* ref =
+        normalized_world.try_get<detail::PhysicsContextRef>();
+    return ref != nullptr && ref->value != nullptr &&
+           ref->value->move_character(input, output);
 }
 
 } // namespace matter::physics
