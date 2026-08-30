@@ -1,6 +1,6 @@
 # RiverFloatLab character-controller integration
 
-Date: 2026-08-30. Status: approved integration direction; implementation and acceptance remain pending.
+Date: 2026-08-30. Status: runtime, scene, and editor walking integration implemented and reviewed through `7d263808`; real RiverFloatLab acceptance remains pending.
 
 ## Goal and decision
 
@@ -59,6 +59,8 @@ The feature's four-phase steps, hysteresis, push dynamics, spring grounding, and
 
 Expose authored fields through the existing descriptors, component fetch/store/add/remove dispatch, SceneService duplication, and SceneChangeTracker component reporting. Mutable editor copies are validated before writing them back. Keep the registry's current RiverFloatBody entry and count; the resulting count is 11. `MoveIntent` and runtime counters are not editable components.
 
+Use one registry-level `scene::validate_character_component` policy for service controller-add and editor controller-store. The editor walking helper reuses it rather than introducing a second edit validator or a generic scene-store framework.
+
 Expose the existing authored FNV-1a hash helper from `scene_registry.h` instead of duplicating its algorithm. Editor player lookup uses the stable authored hash and the current `SceneEntityId.generation`, never a retained Flecs handle or display name. Re-resolve after Stop, reload, deletion, and world changes. Missing or invalid players disable walking cleanly; no replacement player is silently spawned.
 
 Extend `EntitySnapshot` to copy the entire controller, including runtime fields. Preserve the existing `RiverFloatBody`, `RiverFloatState`, animation checkpoints, and other snapshot members. Stop restores the captured controller and transform, restores/removes/recreates components consistently with snapshot presence, and resets `MoveIntent` to all-zero. It also clears editor input/automation overrides and walk mode. A deleted authored player is recreated under its stable scene identity.
@@ -73,18 +75,21 @@ Extract testable policy into `MatterEditor/src/character_walk_controller.h/.cpp`
 - WASD is camera-yaw-relative and normalized. Space uses an explicit testable press-arming rule: focus/UI keyboard-capture loss disarms jumping; only an observed key release while keyboard input is accepted rearms it; the next press emits one latch and disarms again. Holding Space through refocus therefore cannot synthesize a jump. Shift uses the 1.5 sprint multiplier. Focus loss clears live directional input; explicit FIFO input remains independently usable for unattended acceptance.
 - Input is sampled before the session tick; camera position follows the resulting player transform after the tick. Eye position is capsule center plus `(0, height * 0.5 - 0.1, 0)`. Yaw/pitch remain camera-owned. Free-fly movement cannot also run in walk mode.
 - Retain the existing single camera-follow streaming anchor and its existing update cadence. Do not add `SectorStreaming` to the player or create another streaming owner.
+- The walking helper retains only the bound `SceneEntityId` value/generation token, never a Flecs entity handle. Each operation resolves the unique authored identity again; a changed generation or missing/ambiguous identity fails closed. Stop and session replacement clear the binding, including when Stop recreates the original identity. Do not invent a second global scene-generation authority.
 
 Add one typed `viewer::FifoCharacter` command through the existing parser/command registry with ActiveSession lifetime, not an environment-only test mode:
 
 | Grammar | Behavior |
 | --- | --- |
 | `character walk on` / `character walk off` | Same walking transition as G. |
-| `character intent <world_x> <world_z> <0-or-1>` | Finite world-space persistent intent, sprint flag; suppress live directional sampling while this override is active. |
+| `character intent <world_x> <world_z> <0-or-1>` | Requires walking enabled; finite world-space persistent intent and sprint flag suppress live directional sampling while active. |
 | `character intent clear` | Clear override, direction, sprint, and pending jump. |
-| `character jump` | Latch one press in Play/Pause; reject Edit. |
+| `character jump` | Requires walking enabled; latch one press in Play/Pause, reject Edit. |
 | `character status <label>` | Emit one machine-readable `character_status ` JSON line; no state mutation. |
 
 Labels are 1-64 ASCII letters/digits/underscore/hyphen. Reject malformed grammar and nonfinite numeric input. Status includes label, authored id, numeric scene identity and generation, simulation mode, walk-enabled, position/velocity, grounded, fixed_ticks, jumps_consumed, jumps_started, jump_pending, direction, and sprint. Use deliberate machine-readable stdout like existing FIFO telemetry. Document commands in `docs/agent/control-surface.md`.
+
+Status remains available for a valid player while walking is disabled or the simulation is in Edit, and clear/reset remain callable anytime. FIFO overrides are independent of keyboard focus, not of walking ownership. The helper's intent-setting method takes the current world so it can validate the bound identity directly before storing an override.
 
 The acceptance harness uses existing `pause`, `step`, `wait_frames 1`, `play`, `sim stop`, `shot_now`, and `quit`. Repeat `step` followed by `wait_frames 1` for exact tick counts; multiple adjacent `step` commands would otherwise collapse into one pending boolean. Status after the wait observes completed movement. No hidden controller state, render ray, teleport command, or test-only fixed-step loop is introduced.
 

@@ -14,6 +14,10 @@ requirements.
 
 ## Active engine designs
 
+- **[River character integration](superpowers/specs/2026-08-30-river-character-controller-integration-design.md)**
+  — fixed-step walking and editor controls are implemented; real-world proof is in progress.
+- **[Water-animation memory admission](superpowers/specs/2026-08-30-water-animation-memory-gates-design.md)**
+  — remaining shared publication/cache/playback limits, independent of waterfall visuals.
 - **[LOD/VT redesign](lod-vt-redesign-2026-08-04.md)** — incomplete
   visibility, proxy-world, and unified-budget endpoint.
 - **[RT TLAS CPU mirror redesign](rt-tlas-cpu-mirror-redesign-2026-08-07.md)**

@@ -24,7 +24,9 @@ The forward optics are implemented, but overall raster-water quality is
    1 GiB per complete animation file (including its header), and 700 MiB for
    the aggregate section/handoff files before publication. Report sidecar and
    peak-build residency separately. This remains open independently of the
-   rejected Task 11 refinement.
+   rejected Task 11 refinement; the
+   [memory-only plan](docs/superpowers/plans/2026-08-30-water-animation-memory-gates.md)
+   isolates these remaining admission checks.
 4. Finish the clean cold-bake/cache-hit and native screenshot acceptance,
    including matched frame/memory captures at 1, 10, and 16 shadow samples
    (10/16 remain unmeasured for the final optics candidate). Reconfirm zero
@@ -43,7 +45,10 @@ Controller integration proceeds against the accepted coarse river.
 
 1. Integrate the completed character-controller work from `main`/
    `feature/character-controller` into the fluid branch and validate its
-   fixed-step movement and terrain collision in the river world.
+   fixed-step movement and terrain collision in the river world. Runtime,
+   scene integration, and editor controls are reviewed; real-world proof remains
+   in progress in the
+   [integration plan](docs/superpowers/plans/2026-08-30-river-character-controller-integration.md).
 2. Build the first focused rapids playtest around the controller-driven player
    and controllable floating craft.
 3. Close remaining longer-river and waterfall/plunge visual quality with a
