@@ -4,6 +4,7 @@
 #include "matter/physics.h"
 #include "river_float_system.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -16,6 +17,21 @@ bool finite(matter::Float3 value) noexcept {
 bool unit_scale(matter::Float3 value) noexcept {
     return finite(value) && value.x == 1.0f && value.y == 1.0f &&
            value.z == 1.0f;
+}
+
+matter::Float3 clamped_xz_direction(matter::Float3 value) noexcept {
+    const float largest = std::max(std::fabs(value.x), std::fabs(value.z));
+    if (largest == 0.0f) return {};
+    if (largest <= 1.0f) {
+        const float length = std::sqrt(value.x * value.x + value.z * value.z);
+        if (length <= 1.0f) return {value.x, 0.0f, value.z};
+        return {value.x / length, 0.0f, value.z / length};
+    }
+    const float scaled_x = value.x / largest;
+    const float scaled_z = value.z / largest;
+    const float inverse_length = 1.0f /
+        std::sqrt(scaled_x * scaled_x + scaled_z * scaled_z);
+    return {scaled_x * inverse_length, 0.0f, scaled_z * inverse_length};
 }
 
 bool valid_character_entity(flecs::entity entity,
@@ -97,11 +113,7 @@ void register_character_systems(flecs::world& world) {
                 return;
             }
 
-            const float direction_length = std::sqrt(
-                intent_copy.move_dir.x * intent_copy.move_dir.x +
-                intent_copy.move_dir.z * intent_copy.move_dir.z);
-            float direction_scale = 1.0f;
-            if (direction_length > 1.0f) direction_scale = 1.0f / direction_length;
+            const Float3 direction = clamped_xz_direction(intent_copy.move_dir);
             const float speed = controller_copy.move_speed *
                 (intent_copy.sprint ? 1.5f : 1.0f);
 
@@ -122,8 +134,7 @@ void register_character_systems(flecs::world& world) {
             input.position = transform_copy.translation;
             input.velocity = controller_copy.velocity;
             input.desired_horizontal_velocity = {
-                intent_copy.move_dir.x * direction_scale * speed, 0.0f,
-                intent_copy.move_dir.z * direction_scale * speed};
+                direction.x * speed, 0.0f, direction.z * speed};
             input.gravity = settings->gravity;
             input.radius = controller_copy.radius;
             input.half_segment = controller_copy.height * 0.5f - controller_copy.radius;

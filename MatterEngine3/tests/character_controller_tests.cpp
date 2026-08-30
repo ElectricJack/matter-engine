@@ -132,6 +132,14 @@ void test_configuration_and_mover_rejections_are_transactional() {
     controller.velocity.x = std::numeric_limits<float>::quiet_NaN();
     CHECK(!character::valid_character_configuration(controller),
           "non-finite controller vectors are rejected");
+    controller = {}; controller.radius = 0.0f;
+    CHECK(!character::valid_character_configuration(controller), "nonpositive radius is rejected");
+    controller = {}; controller.move_speed = -1.0f;
+    CHECK(!character::valid_character_configuration(controller), "negative move speed is rejected");
+    controller = {}; controller.step_up_height = -1.0f;
+    CHECK(!character::valid_character_configuration(controller), "negative step height is rejected");
+    controller = {}; controller.jump_speed = -1.0f;
+    CHECK(!character::valid_character_configuration(controller), "negative jump speed is rejected");
 
     flecs::world no_context;
     physics::CharacterMoveInput input{};
@@ -141,6 +149,30 @@ void test_configuration_and_mover_rejections_are_transactional() {
     CHECK(output.position.x == 4.0f && output.velocity.y == 8.0f &&
               output.grounded,
           "failed mover leaves supplied output untouched");
+}
+
+void test_every_invalid_mover_input_preserves_output() {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    auto rejected = [&](physics::CharacterMoveInput input, const char* message) {
+        physics::CharacterMoveOutput output{{4, 5, 6}, {7, 8, 9}, {0, 0, 1}, true};
+        CHECK(!physics::physics_move_character(world, input, output) &&
+                  output.position.x == 4.0f && output.velocity.z == 9.0f &&
+                  output.grounded,
+              message);
+    };
+    auto input = mover_input({0, 1, 0}); input.position.x = nan; rejected(input, "NaN position rejects transactionally");
+    input = mover_input({0, 1, 0}); input.velocity.y = inf; rejected(input, "Inf velocity rejects transactionally");
+    input = mover_input({0, 1, 0}); input.desired_horizontal_velocity.z = nan; rejected(input, "NaN desired velocity rejects transactionally");
+    input = mover_input({0, 1, 0}); input.gravity.x = inf; rejected(input, "Inf gravity rejects transactionally");
+    input = mover_input({0, 1, 0}); input.radius = 0.0f; rejected(input, "nonpositive radius rejects transactionally");
+    input = mover_input({0, 1, 0}); input.half_segment = -0.1f; rejected(input, "negative half segment rejects transactionally");
+    input = mover_input({0, 1, 0}); input.dt = 0.0f; rejected(input, "nonpositive dt rejects transactionally");
+    input = mover_input({0, 1, 0}); input.max_slope_cos = -0.1f; rejected(input, "negative slope cosine rejects transactionally");
+    input = mover_input({0, 1, 0}); input.max_slope_cos = 1.1f; rejected(input, "large slope cosine rejects transactionally");
+    input = mover_input({0, 1, 0}); input.step_height = -0.1f; rejected(input, "negative step height rejects transactionally");
 }
 
 void test_grounded_walking_normalizes_and_sprints() {
@@ -178,6 +210,28 @@ void test_grounded_walking_normalizes_and_sprints() {
     CHECK(near(player.get<ecs::LocalTransform>().translation.x - sprint_start,
                6.75f, 0.15f),
           "sprint multiplies walking speed by 1.5");
+    player.set<character::MoveIntent>({{}, false, false});
+    const float stop_x = player.get<ecs::LocalTransform>().translation.x;
+    tick(runtime, 60);
+    CHECK(near(player.get<ecs::LocalTransform>().translation.x, stop_x, 0.001f),
+          "zero direction stops grounded movement");
+}
+
+void test_large_finite_xz_intent_normalizes_without_overflow() {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    install_flat_terrain(world);
+    const flecs::entity player = spawn(world, {0, 3, 0});
+    tick(runtime, 240);
+    const float start_x = player.get<ecs::LocalTransform>().translation.x;
+    const float largest = std::numeric_limits<float>::max();
+    player.set<character::MoveIntent>({{largest, 0, largest}, false, false});
+    tick(runtime, 60);
+    const Float3 end = player.get<ecs::LocalTransform>().translation;
+    const float distance = std::sqrt(
+        (end.x - start_x) * (end.x - start_x) + end.z * end.z);
+    CHECK(near(distance, 4.5f, 0.10f),
+          "large finite XZ intent normalizes to the normal walking speed");
 }
 
 void test_jump_latch_is_fixed_step_owned() {
@@ -205,6 +259,26 @@ void test_jump_latch_is_fixed_step_owned() {
     CHECK(after.jumps_consumed == before.jumps_consumed + 1 &&
               after.jumps_started == before.jumps_started + 1,
           "a multi-step frame consumes and launches one latched jump once");
+    tick(runtime, 4);
+    const auto held = player.get<character::CharacterController>();
+    CHECK(held.jumps_consumed == after.jumps_consumed &&
+              held.jumps_started == after.jumps_started,
+          "a consumed held latch cannot launch a second jump");
+}
+
+void test_airborne_jump_and_configured_gravity() {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{0, -20, 0}, 4});
+    const flecs::entity player = spawn(world, {0, 3, 0});
+    player.set<character::MoveIntent>({{}, true, false});
+    tick(runtime, 1);
+    const auto controller = player.get<character::CharacterController>();
+    CHECK(controller.jumps_consumed == 1 && controller.jumps_started == 0 &&
+              !player.get<character::MoveIntent>().jump,
+          "airborne jump press is consumed without a launch or buffering");
+    CHECK(near(controller.velocity.y, -20.0f / 60.0f, 0.001f),
+          "controller reads configured PhysicsSettings gravity");
 }
 
 void test_slope_walls_and_finite_terrain() {
@@ -222,6 +296,18 @@ void test_slope_walls_and_finite_terrain() {
         tick(runtime, 60);
         CHECK(player.get<ecs::LocalTransform>().translation.x > before + 1.5f,
               "standing controller climbs a 30-degree slope");
+    }
+    {
+        ecs_runtime::Runtime runtime;
+        auto& world = runtime.world();
+        install_tiles(world, 13, {xz_quad(-4, 4, -8, 8, -6.9282f, 6.9282f, 13)});
+        const flecs::entity player = spawn(world, {0, 2, 0});
+        const float before = player.get<ecs::LocalTransform>().translation.x;
+        player.set<character::MoveIntent>({{1, 0, 0}, false, false});
+        tick(runtime, 120);
+        CHECK(!player.get<character::CharacterController>().grounded &&
+                  player.get<ecs::LocalTransform>().translation.x <= before + 0.1f,
+              "60-degree slope is nonstandable and rejects uphill steering");
     }
     {
         ecs_runtime::Runtime runtime;
@@ -253,6 +339,21 @@ void test_slope_walls_and_finite_terrain() {
     }
 }
 
+void test_adjacent_tiles_preserve_grounding_at_the_seam() {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    install_tiles(world, 30, {
+        xz_quad(-16, 0, -8, 8, 0, 0, 31),
+        xz_quad(0, 16, -8, 8, 0, 0, 32)});
+    const flecs::entity player = spawn(world, {-2, 3, 0});
+    tick(runtime, 180);
+    player.set<character::MoveIntent>({{1, 0, 0}, false, false});
+    tick(runtime, 60);
+    CHECK(player.get<ecs::LocalTransform>().translation.x > 1.0f &&
+              player.get<character::CharacterController>().grounded,
+          "adjacent terrain tiles do not drop the capsule at their seam");
+}
+
 void test_fixed_updates_are_independent_per_character() {
     ecs_runtime::Runtime runtime;
     auto& world = runtime.world();
@@ -269,6 +370,37 @@ void test_fixed_updates_are_independent_per_character() {
     a.remove<character::CharacterController>();
     CHECK(!a.has<character::MoveIntent>(),
           "removing a controller removes its runtime intent");
+}
+
+void test_runtime_registration_and_fixed_tick_equivalence() {
+    ecs_runtime::Runtime first;
+    ecs_runtime::Runtime second;
+    for (ecs_runtime::Runtime* runtime : {&first, &second}) {
+        runtime->world().import<character::CharacterModule>();
+        character::register_character_systems(runtime->world());
+        character::register_character_systems(runtime->world());
+        install_flat_terrain(runtime->world());
+    }
+    const flecs::entity a = spawn(first.world(), {0, 3, 0});
+    const flecs::entity b = spawn(second.world(), {0, 3, 0});
+    CHECK(physics::physics_stats(first.world()).live_bodies == 0 &&
+              physics::physics_stats(second.world()).live_bodies == 0,
+          "ghost module registration creates no physics bodies");
+    tick(first, 180); tick(second, 180);
+    a.set<character::MoveIntent>({{1, 0, 0}, false, false});
+    b.set<character::MoveIntent>({{1, 0, 0}, false, false});
+    first.tick({2.0f / 60.0f, 1.0f / 60.0f, 2});
+    tick(second, 2);
+    const auto at = a.get<ecs::LocalTransform>();
+    const auto bt = b.get<ecs::LocalTransform>();
+    const auto ac = a.get<character::CharacterController>();
+    const auto bc = b.get<character::CharacterController>();
+    CHECK(near(at.translation.x, bt.translation.x, 0.0001f) &&
+              near(at.translation.y, bt.translation.y, 0.0001f) &&
+              ac.fixed_ticks == bc.fixed_ticks &&
+              ac.jumps_consumed == bc.jumps_consumed &&
+              ac.jumps_started == bc.jumps_started,
+          "one two-tick update matches two one-tick updates without duplicate systems");
 }
 
 void test_mover_rejects_foreign_and_in_step_calls_transactionally() {
@@ -422,10 +554,15 @@ void test_invalid_ecs_ownership_preserves_latches_and_counters() {
 int main() {
     test_runtime_character_settles_on_installed_terrain();
     test_configuration_and_mover_rejections_are_transactional();
+    test_every_invalid_mover_input_preserves_output();
     test_grounded_walking_normalizes_and_sprints();
+    test_large_finite_xz_intent_normalizes_without_overflow();
     test_jump_latch_is_fixed_step_owned();
+    test_airborne_jump_and_configured_gravity();
     test_slope_walls_and_finite_terrain();
+    test_adjacent_tiles_preserve_grounding_at_the_seam();
     test_fixed_updates_are_independent_per_character();
+    test_runtime_registration_and_fixed_tick_equivalence();
     test_mover_rejects_foreign_and_in_step_calls_transactionally();
     test_mover_filters_nonstatic_and_sensor_shapes_without_mutation();
     test_mover_blocks_only_static_nonsensor_boulders();
