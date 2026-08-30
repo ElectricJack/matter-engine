@@ -14,6 +14,10 @@
 reviewed through `a8166d78`. Two native RiverFloatLab processes passed the
 fixed-step/grounding/jump/Pause/Stop proof with zero measured deterministic
 drift. See the [acceptance evidence](../../../findings/river-character-controller-integration-acceptance-2026-08-30.md).
+Final cross-task review's numerical-safety finding was fixed in `0440d8b9`
+and independently approved; the post-fix native suite passed 14/14 and the
+PhysX-enabled editor rebuilt. Retained captures remain tied to their original
+binary, as recorded in the acceptance evidence.
 This is the bounded bank-path integration, not full playable-river acceptance.
 The instructions below are retained implementation history, not active work.
 

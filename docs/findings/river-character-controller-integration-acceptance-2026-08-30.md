@@ -208,3 +208,64 @@ PID 46796 was stopped after read-only executable-path verification under
 driver logs, and incomplete artifacts remain. This was deliberate cancellation,
 not a product failure or timeout. `rcc2` then provided the complete matched pair
 with the approved camera framing. No rejected or superseded evidence was deleted.
+
+## Cross-task review and follow-up boundary
+
+The independent integration review covered `a123f6f1..fc6dcffd`, including all
+four task reviews and their deferred findings. It accepted the retained
+bank-path evidence but found one Important numerical-safety gap: finite but
+extreme controller inputs can overflow derived query arithmetic, enter Box3D
+with invalid values, or publish an invalid result. The focused fix is
+`0440d8b9` (`physics_context.cpp` and `character_controller_tests.cpp` only).
+Independent scoped re-review marked the finding addressed and approved the
+fix, with no new Critical, Important, or Minor regression found. The bounded
+integration milestone is closed. The screenshots and hashes above remain
+evidence for their original binary, not for a later rebuild.
+
+The new native tests reproduced assertion termination (`0x80000003`) for
+integrated velocity, gravity product, displacement, position, support-sum,
+and ECS failure cases before the fix. Additional finite query-length/bounds
+and capsule/support cases failed normal test assertions. The fix validates
+derived query arithmetic and candidate output without clamping, preserving
+all output fields and ECS transform/state/counters/intent on rejection.
+Positive tests retain very large finite values when their derived query is
+representable. Existing float movement operations, filtering, defaults, and
+normal-path rounding are unchanged; the ECS commit code needed no change.
+
+Post-fix verification on 2026-08-30:
+
+- Focused controller tests passed after the test-first failure, including
+  all-axis transactional rejection and accepted finite-boundary cases.
+- The same explicit-PhysX integration build and 14-test CTest command listed
+  above passed **14/14 in 103.34 seconds**.
+- The same explicit-PhysX native editor build passed. Existing Flecs C4127
+  diagnostics remained; no new warnings or errors were reported.
+- Coordinator reran the CTest command with
+  `-R '^(character_controller_tests|character_walk_controller_tests|simulation_control_tests)$'`:
+  **3/3 passed in 0.56 seconds**. PhysX remained ON at `D:/PhysX-5.6.1`.
+- Coordinator independently confirmed the rebuilt editor SHA256:
+  `2EF8258A4E16CDBEEABA024E0DFA3191FA6CA56AC50C13D161F7C366F2C55CFD`.
+  The isolated `rcc2` editor still has the original `E52F65DC...` hash above.
+
+No new editor capture or fluid rebake was run for this numerical guard-only
+change. Its evidence is the fresh regression suite and native build; `rcc2`
+continues to demonstrate the normal bank path on its retained baseline.
+
+Other review findings are nonblocking for this bounded milestone:
+
+- Existing Flecs/ABI-test C4127 diagnostics are constant-condition warnings,
+  not an ABI mismatch.
+- The walking helper imports the full FIFO header for label validation;
+  extracting a small shared utility would reduce coupling and CPU-target
+  C4996 warning noise. The native editor passed its `/WX` build.
+- The acceptance runner automatically hashes the editor and pinned GPU DLL;
+  persisting all copied DLL hashes would improve future provenance. The
+  independent five-DLL audit above supports these retained runs.
+- Host overlay registrations, unused shader outputs, cache misses, and
+  transient empty-TLAS warnings remain disclosed rather than being treated
+  as proof of a clean host or renderer.
+
+This is a complete review of the character-integration milestone, not a merge
+review of the much larger fluid branch. No merge or push is implied. Broader
+water, craft-control, traversal, memory, and performance gates remain on the
+[roadmap](../../ROADMAP.md).

@@ -2,6 +2,11 @@
 
 Date: 2026-08-30. Status: completed implementation record; all four tasks individually reviewed through `a8166d78`, with [bounded RiverFloatLab acceptance](../../../findings/river-character-controller-integration-acceptance-2026-08-30.md). This is not acceptance of a full river playtest or the unfinished water optics.
 
+Final cross-task review is closed after the independently approved numerical
+safety fix `0440d8b9`; post-fix native integration tests and the PhysX-enabled
+editor build passed. The linked acceptance record distinguishes those checks
+from the original two-process screenshot evidence.
+
 ## Goal and decision
 
 Integrate the completed character-controller feature into the fluid branch by a selective semantic port, then demonstrate fixed-step walking, grounding, jumping, Pause/Step/Resume, and Stop/restore in RiverFloatLab. The player is an authored root entity whose transform is owned by a query-driven capsule mover. It queries the existing Box3D world, including its installed engine-wide terrain collision. It is not a rigid body and does not own a separate collider.
