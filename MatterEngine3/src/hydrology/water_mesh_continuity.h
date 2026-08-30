@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 
 namespace hydrology {
 
@@ -53,7 +54,8 @@ bool measure_water_cell_boundary_continuity(
     const WaterCellOwnershipCut& cut,
     float edge_match_tolerance_m,
     WaterCutContourMetrics& metrics,
-    FluidBakeError& error);
+    FluidBakeError& error,
+    std::string* topology_diagnostic = nullptr);
 
 bool water_cut_is_assertion_weldable(
     const WaterCutContourMetrics& metrics,

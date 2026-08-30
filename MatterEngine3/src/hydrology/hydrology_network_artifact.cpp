@@ -1741,7 +1741,8 @@ bool load_hydrology_field_product_validated(
 static bool serialize_network_artifact_impl(
     const HydrologyNetworkArtifact& artifact,
     std::vector<std::uint8_t>& bytes,
-    gpu_meshing::Error& error) {
+    gpu_meshing::Error& error,
+    std::uint64_t* content_digest) {
     bytes.clear();
     error = {};
     HydrologyNetworkArtifact canonical = artifact;
@@ -1797,6 +1798,7 @@ static bool serialize_network_artifact_impl(
 
     const std::uint64_t digest =
         digest_bytes(payload.bytes.data(), payload.bytes.size());
+    if (content_digest != nullptr) *content_digest = digest;
     Writer file;
     file.raw(kMagic, sizeof(kMagic));
     file.u32(animation_enabled ? kAnimationVersion : kLegacyVersion);
@@ -1811,8 +1813,24 @@ bool serialize_network_artifact(const HydrologyNetworkArtifact& artifact,
                                 std::vector<std::uint8_t>& bytes,
                                 gpu_meshing::Error& error) {
     return translate_artifact_exceptions(error, [&] {
-        return serialize_network_artifact_impl(artifact, bytes, error);
+        return serialize_network_artifact_impl(
+            artifact, bytes, error, nullptr);
     });
+}
+
+std::uint64_t hydrology_network_artifact_content_digest(
+    const HydrologyNetworkArtifact& artifact) noexcept {
+    try {
+        std::vector<std::uint8_t> bytes;
+        gpu_meshing::Error error{};
+        std::uint64_t digest = 0u;
+        if (!serialize_network_artifact_impl(
+                artifact, bytes, error, &digest))
+            return 0u;
+        return digest;
+    } catch (...) {
+        return 0u;
+    }
 }
 
 static bool deserialize_network_artifact_impl(

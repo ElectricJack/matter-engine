@@ -77,6 +77,18 @@ struct ViewerCommands {
 enum class ViewerRenderPathStatus : int32_t {
     Raster = 0, NativeRt = 1, NativeRtUnavailable = 2
 };
+inline const char* viewer_render_path_status_label(
+        ViewerRenderPathStatus status) {
+    switch (status) {
+        case ViewerRenderPathStatus::NativeRt:
+            return "native RT";
+        case ViewerRenderPathStatus::NativeRtUnavailable:
+            return "native RT unavailable";
+        case ViewerRenderPathStatus::Raster:
+        default:
+            return "Vulkan raster";
+    }
+}
 struct ViewerSessionStatus {
     ViewerRenderPathStatus render_path = ViewerRenderPathStatus::Raster;
     uint64_t presented_frame_serial = 0;

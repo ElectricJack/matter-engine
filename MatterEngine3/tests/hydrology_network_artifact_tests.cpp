@@ -526,6 +526,25 @@ void test_animation_manifest_extension_and_legacy_bytes() {
           "animation references remain confined to the network cache");
 }
 
+void test_manifest_content_address_tracks_product_generation() {
+    const auto original = animated_fixture_manifest();
+    auto reordered = original;
+    std::reverse(reordered.sections.begin(), reordered.sections.end());
+    auto changed_handoff = original;
+    changed_handoff.handoffs.front().semantic_key += 1u;
+    changed_handoff.handoffs.front().payload_digest += 1u;
+
+    const std::uint64_t original_digest =
+        hydrology::hydrology_network_artifact_content_digest(original);
+    CHECK(original_digest != 0u &&
+              hydrology::hydrology_network_artifact_content_digest(
+                  reordered) == original_digest,
+          "manifest content addressing follows canonical order");
+    CHECK(hydrology::hydrology_network_artifact_content_digest(
+              changed_handoff) != original_digest,
+          "a rebuilt handoff generation receives a distinct immutable manifest address");
+}
+
 void test_ready_animation_package_rejects_missing_or_corrupt_payload() {
     const auto stamp =
         std::chrono::steady_clock::now().time_since_epoch().count();
@@ -1173,6 +1192,7 @@ void test_manifest_publication_is_confined_and_transactional() {
 int main() {
     test_manifest_round_trip_is_canonical_and_transactional();
     test_animation_manifest_extension_and_legacy_bytes();
+    test_manifest_content_address_tracks_product_generation();
     test_ready_animation_package_rejects_missing_or_corrupt_payload();
     test_typed_field_wire_format_and_ready_package_closure();
     test_ready_package_rejects_reparse_escape_when_supported();

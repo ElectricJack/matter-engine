@@ -14087,7 +14087,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             float sun_disc_cos_core;
             float sun_size_scale;
             float water_animation_time_seconds;
-            float pad1;
+            // Reuses the final 4-byte padding lane; the block remains 128 B.
+            uint32_t shadow_samples;
         } gi{};
         static_assert(sizeof(GiConstants) == 128);
         gi.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
@@ -14112,6 +14113,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         gi.sun_size_scale =
             atmosphere_replay_constants_.rt_gi_sun_size_scale;
         gi.water_animation_time_seconds = water_animation_time_seconds_;
+        gi.shadow_samples = atmosphere_replay_constants_.rt_shadow_samples;
         vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
         const VkStridedDeviceAddressRegionKHR gi_raygen{

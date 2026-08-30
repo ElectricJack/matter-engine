@@ -37,32 +37,57 @@ bool update_fill_sensor(const FluidFillSensor& sensor,
                         FluidBakeError& error) {
     result = {};
     error = {};
+    if (state.initialized && step <= state.last_step) {
+        return fail(FluidBakeCode::InvalidInput,
+                    "fill sensor configuration or step is invalid", result,
+                    error);
+    }
+    FillSensorSurfaceSample sample{};
+    if (!sample_fill_sensor_surface(
+            sensor, particle_positions, sample, error)) {
+        result = {};
+        return false;
+    }
+    return update_fill_sensor_counts(
+        sensor, sample.wet_columns,
+        static_cast<std::uint32_t>(sample.columns.size()), step, state,
+        result, error);
+}
+
+bool sample_fill_sensor_surface(
+    const FluidFillSensor& sensor,
+    const std::vector<matter::Float3>& particle_positions,
+    FillSensorSurfaceSample& sample,
+    FluidBakeError& error) {
+    sample = {};
+    error = {};
     const std::uint64_t horizontal_cells =
         static_cast<std::uint64_t>(sensor.resolution.x) *
         static_cast<std::uint64_t>(sensor.resolution.z);
     if (!valid_bounds(sensor.bounds_m) ||
         !valid_fluid_fill_sensor_frame(sensor) ||
-        sensor.resolution.x == 0u ||
-        sensor.resolution.y == 0u || sensor.resolution.z == 0u ||
+        sensor.resolution.x == 0u || sensor.resolution.y == 0u ||
+        sensor.resolution.z == 0u ||
         horizontal_cells > std::numeric_limits<std::size_t>::max() ||
         horizontal_cells > std::numeric_limits<std::uint32_t>::max() ||
         !std::isfinite(sensor.required_wet_fraction) ||
         !(sensor.required_wet_fraction > 0.0f) ||
         sensor.required_wet_fraction > 1.0f || sensor.stable_steps == 0u ||
-        sensor.minimum_particles_per_cell == 0u ||
-        (state.initialized && step <= state.last_step)) {
-        return fail(FluidBakeCode::InvalidInput,
-                    "fill sensor configuration or step is invalid", result,
-                    error);
+        sensor.minimum_particles_per_cell == 0u) {
+        error = {FluidBakeCode::InvalidInput,
+                 "fill sensor surface configuration is invalid"};
+        return false;
     }
 
-    std::vector<std::uint32_t> contributions(
-        static_cast<std::size_t>(horizontal_cells), 0u);
+    sample.resolution_x = sensor.resolution.x;
+    sample.resolution_z = sensor.resolution.z;
+    sample.columns.resize(static_cast<std::size_t>(horizontal_cells));
     for (matter::Float3 position : particle_positions) {
         if (!finite(position)) {
-            return fail(FluidBakeCode::NonFinite,
-                        "fill sensor received a non-finite particle", result,
-                        error);
+            sample = {};
+            error = {FluidBakeCode::NonFinite,
+                     "fill sensor received a non-finite particle"};
+            return false;
         }
         const matter::Float3 local =
             fluid_fill_sensor_local_position(sensor, position);
@@ -73,27 +98,32 @@ bool update_fill_sensor(const FluidFillSensor& sensor,
         }
         const auto x = std::min(
             static_cast<std::uint32_t>(
-                local.x / sensor.frame_extent_m.x *
-                sensor.resolution.x),
+                local.x / sensor.frame_extent_m.x * sensor.resolution.x),
             sensor.resolution.x - 1u);
         const auto z = std::min(
             static_cast<std::uint32_t>(
-                local.z / sensor.frame_extent_m.z *
-                sensor.resolution.z),
+                local.z / sensor.frame_extent_m.z * sensor.resolution.z),
             sensor.resolution.z - 1u);
-        std::uint32_t& count = contributions[
+        FillSensorColumnSample& column = sample.columns[
             static_cast<std::size_t>(z) * sensor.resolution.x + x];
-        if (count < sensor.minimum_particles_per_cell) ++count;
+        if (column.particle_count !=
+            std::numeric_limits<std::uint32_t>::max()) {
+            ++column.particle_count;
+        }
+        column.highest_y_m = column.has_particles
+            ? std::max(column.highest_y_m, position.y)
+            : position.y;
+        column.has_particles = true;
     }
-
-    std::uint64_t wet_cells = 0u;
-    for (std::uint32_t count : contributions) {
-        wet_cells += count >= sensor.minimum_particles_per_cell ? 1u : 0u;
+    for (FillSensorColumnSample& column : sample.columns) {
+        column.wet =
+            column.particle_count >= sensor.minimum_particles_per_cell;
+        if (column.wet) ++sample.wet_columns;
     }
-    return update_fill_sensor_counts(
-        sensor, static_cast<std::uint32_t>(wet_cells),
-        static_cast<std::uint32_t>(horizontal_cells), step, state, result,
-        error);
+    sample.wet_fraction = static_cast<float>(
+        static_cast<double>(sample.wet_columns) /
+        static_cast<double>(sample.columns.size()));
+    return true;
 }
 
 bool update_fill_sensor_counts(const FluidFillSensor& sensor,

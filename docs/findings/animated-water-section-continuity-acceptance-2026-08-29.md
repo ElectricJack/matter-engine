@@ -157,3 +157,36 @@ unrelated RiverFloatLab authoring/provider work that remains deliberately
 unstaged under the dirty-worktree constraint. Its evidence is valid for that
 integration state; cache identities and timings are not promised to reproduce
 byte-for-byte from the Task 9a commit alone until those prerequisites land.
+
+## Native cold-bake validation follow-up — 2026-08-30
+
+The pre-merge native integration gate now uses the production Vulkan visual
+mesher with the actual adapter identity, rather than substituting the CPU
+mesher into the full animated-river test. A fresh bake exposed a validator
+defect at downstream frame 13, not a new visible gap: its two original
+contours differed by 0.00183885 m within the unchanged 0.009375 m tolerance,
+but independent short-edge contractions moved the compared contours enough
+to report 0.00962739 m and reject the handoff.
+
+Topology normalization now supplies component membership only. Distance,
+normal, and whole-segment coverage checks use the original geometry of each
+surviving component, including attached short edges. Entirely collapsed
+disconnected slivers retain their prior degenerate treatment; one-to-one
+component matching, genuine-gap rejection, and tolerances are unchanged.
+
+A small deterministic regression failed before the fix and passes afterward.
+The exact captured GPU frame also replays as weldable on CPU: 0.00183885 m
+distance, minimum normal dot 0.999997, no unmatched boundary edges or
+duplicate triangles. The opt-in capture/replay control is documented in
+[the agent control surface](../agent/control-surface.md). Run evidence is
+retained under `build/qa/main-integration-2026-08-30/`.
+
+The fresh native full two-section cold-bake test passed in 459.51 seconds:
+both sections reached Ready, both fill sensors completed, particles remained
+finite and within escape budgets, and visual/query/gameplay products and
+separated timing fields were published. The five final native gates passed
+in 464.19 seconds, including the animation, boundary-source, handoff and
+registration checks (`final-feature-gates.log`). These are feature-tree
+results; combined-main verification follows the merge. This validator
+correction does not extend visual acceptance to the still-open waterfall/foam
+quality work.

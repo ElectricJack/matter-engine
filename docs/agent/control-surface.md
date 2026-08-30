@@ -250,6 +250,17 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
   is a fatal world-open error. Use it with `MATTER_WATER_CAPTURE_FRAME` and
   `MatterEngine3/tools/run_water_mesh_continuity_diagnostics.ps1`; these views
   diagnose boundaries and are not visual-acceptance evidence by themselves.
+- `MATTER_WATER_BOUNDARY_REPRO_DIR=<absolute directory>` — on a rejected
+  animated handoff boundary, saves the exact two meshes, ownership cut and
+  unchanged tolerance to a uniquely named `.water-boundary.bin` capture plus
+  a text diagnostic. Unset by default; relative/empty paths do not enable it.
+  This does not change bake acceptance. Captures can be large; point it at a
+  run-specific QA directory, not a published cache. Replay without PhysX or
+  Vulkan using the native `hydrology_handoff_products_tests.exe
+  --boundary-replay <capture>`; exit 0 means weldable, 1 means the captured
+  boundary is rejected, and 2 means invalid replay input. Optional
+  `--boundary-minimize <capture> <new-output> [max-probes]` preserves the
+  measured failure while reducing triangles and refuses to overwrite output.
 - `MATTER_TEST_RESIZE` — exercises a forced window resize once baked, for resize
   regression testing.
 - `MATTER_FORCE_LOD_TINT` — forces the LOD-rung debug tint view on.

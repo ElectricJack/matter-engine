@@ -64,6 +64,10 @@ bool serialize_network_artifact(const HydrologyNetworkArtifact& artifact,
 bool deserialize_network_artifact(const std::vector<std::uint8_t>& bytes,
                                   HydrologyNetworkArtifact& artifact,
                                   gpu_meshing::Error& error);
+// Content address for the canonical serialized manifest. Returns zero when
+// the candidate is not a valid manifest.
+std::uint64_t hydrology_network_artifact_content_digest(
+    const HydrologyNetworkArtifact& artifact) noexcept;
 // Publishes an immutable manifest: an identical existing file is accepted,
 // while differing bytes at the same semantic cache path are never replaced.
 bool save_network_artifact_atomic(const std::filesystem::path& path,

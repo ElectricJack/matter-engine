@@ -101,7 +101,7 @@ matter::RiverNetworkDefinition two_section_request_network() {
     network.fluid.fill_sensor = {1.0f, 2.0f, 3.0f, 8u, 2u, 8u,
                                  0.75f, 8u, 1u};
     network.fluid.quality = {0.13f, 0.5f, 0.05f, 0.6f, 1.0f,
-                             100000u, 100000u, 300000u, 900000u};
+                             100000u, 300000u, 900000u};
     return network;
 }
 
@@ -168,6 +168,46 @@ void test_section_request_assembly_selects_local_inputs() {
                     104.0f) < 0.6f &&
               upper_request.input.sensor.bounds_m.maximum.y == 4.0f,
           "upper dam uses spillway plus offset and sensor top uses pool fill level");
+
+    auto broad_pool_network = network;
+    broad_pool_network.rivers[0].channel_profile = {
+        {0.0f, 20.0f, 8.0f, 0.0f},
+        {200.0f, 20.0f, 8.0f, 0.0f}};
+    broad_pool_network.sections[0].terminal_pool->fill_level_m = 8.0f;
+    broad_pool_network.sections[0].terminal_spillway->width_m = 4.0f;
+    broad_pool_network.fluid.fill_sensor = {
+        3.0f, 16.0f, 0.6f, 12u, 1u, 12u, 0.8f, 120u, 8u};
+    viewer::FluidBakeRequest broad_pool_request{};
+    CHECK(viewer::assemble_authored_fluid_section_request(
+              broad_pool_network, geometry,
+              broad_pool_network.sections[0], {}, colliders, context,
+              cache_root, broad_pool_request, error),
+          error.message.c_str());
+    CHECK(std::fabs(
+              broad_pool_request.input.sensor.frame_origin_m.y - 7.4f) <
+                  1.0e-5f &&
+              std::fabs(
+                  broad_pool_request.input.sensor.frame_extent_m.y - 0.6f) <
+                  1.0e-5f &&
+              broad_pool_request.input.sensor.frame_extent_m.z > 7.0f,
+          "the section request resolves a thin fill-level layer across the broad pool interior instead of only the narrow spillway throat");
+    auto wide_spillway_network = network;
+    wide_spillway_network.rivers[0].channel_profile = {
+        {0.0f, 4.0f, 4.0f, 0.0f},
+        {200.0f, 4.0f, 4.0f, 0.0f}};
+    wide_spillway_network.sections[0].terminal_spillway->width_m = 6.0f;
+    auto narrow_channel_geometry = geometry;
+    for (auto& sample : narrow_channel_geometry.centreline)
+        sample.width_m = 4.0f;
+    viewer::FluidBakeRequest wide_spillway_request{};
+    CHECK(viewer::assemble_authored_fluid_section_request(
+              wide_spillway_network, narrow_channel_geometry,
+              wide_spillway_network.sections[0], {}, colliders, context,
+              cache_root, wide_spillway_request, error),
+          error.message.c_str());
+    CHECK(std::fabs(wide_spillway_request.input.sensor.frame_extent_m.z -
+                    6.0f) < 1.0e-5f,
+          "the spillway remains the minimum sensor width even when wider than the upstream channel");
     CHECK(upper_request.cache_path.parent_path().filename() == "sections" &&
               upper_request.cache_path.filename().string().rfind(
                   "upper-", 0u) == 0u,
@@ -614,6 +654,57 @@ void test_fill_sensor_rejects_jets_and_requires_a_consecutive_window() {
               reduced_result.wet_fraction == 0.5f &&
               reduced_result.stable_steps == 1u,
           "bounded GPU occupancy counts use the same temporal sensor rule");
+}
+
+void test_pool_surface_sensor_rejects_shallow_water_and_sparse_spray() {
+    hydrology::FluidFillSensor sensor{};
+    sensor.bounds_m = {{0.0f, 9.4f, 0.0f}, {12.0f, 10.0f, 8.0f}};
+    sensor.resolution = {6u, 1u, 4u};
+    sensor.required_wet_fraction = 0.8f;
+    sensor.stable_steps = 2u;
+    sensor.minimum_particles_per_cell = 4u;
+    sensor.frame_origin_m = sensor.bounds_m.minimum;
+    sensor.longitudinal_axis_xz = {1.0f, 0.0f};
+    sensor.lateral_axis_xz = {0.0f, 1.0f};
+    sensor.frame_extent_m = {12.0f, 0.6f, 8.0f};
+
+    hydrology::FillSensorState state{};
+    hydrology::FillSensorResult result{};
+    hydrology::FluidBakeError error{};
+    std::vector<matter::Float3> shallow_water;
+    std::vector<matter::Float3> sparse_spray;
+    std::vector<matter::Float3> filled_surface;
+    for (std::uint32_t z = 0u; z != 4u; ++z) {
+        for (std::uint32_t x = 0u; x != 6u; ++x) {
+            const float px = static_cast<float>(x) * 2.0f + 1.0f;
+            const float pz = static_cast<float>(z) * 2.0f + 1.0f;
+            shallow_water.push_back({px, 5.0f, pz});
+            sparse_spray.push_back({px, 9.7f, pz});
+            for (std::uint32_t sample = 0u; sample != 4u; ++sample) {
+                filled_surface.push_back(
+                    {px + static_cast<float>(sample) * 0.02f,
+                     9.55f + static_cast<float>(sample) * 0.05f, pz});
+            }
+        }
+    }
+
+    CHECK(hydrology::update_fill_sensor(
+              sensor, shallow_water, 1u, state, result, error) &&
+              result.wet_fraction == 0.0f && !result.complete,
+          "broad shallow water below the authored fill level cannot complete the pool surface gate");
+    CHECK(hydrology::update_fill_sensor(
+              sensor, sparse_spray, 2u, state, result, error) &&
+              result.wet_fraction == 0.0f && !result.complete,
+          "one spray particle per surface cell cannot masquerade as a dense pool surface");
+    CHECK(hydrology::update_fill_sensor(
+              sensor, filled_surface, 3u, state, result, error) &&
+              result.wet_fraction == 1.0f &&
+              result.stable_steps == 1u && !result.complete,
+          "a dense surface starts but does not skip the stability window");
+    CHECK(hydrology::update_fill_sensor(
+              sensor, filled_surface, 4u, state, result, error) &&
+              result.complete && result.wet_fraction == 1.0f,
+          "a dense broad surface at the authored fill level completes the gate");
 }
 
 void test_fill_sensor_bins_curved_reach_in_its_oriented_frame() {
@@ -1920,7 +2011,7 @@ bool write_world_session_fixture(const std::filesystem::path& root,
           << (mesh_animation ? "1" : "1.2") << "});\n"
              "    n.virtualDam({height:4,thickness:.5});\n"
              "    n.fillSensor({upstreamOffset:1,length:1,height:3,resolution:[2,2,2],crestWetFraction:.5,stableWetSteps:1,minimumParticlesPerCell:1});\n"
-             "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxVisualParticles:1000,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n";
+             "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n";
     }
     world << "    r.section('upper',{from:0,to:8,dryMargin:1}).emitters(['main-inlet']).pool({from:7,to:8,fillLevel:3}).spillway({id:'pool-one',at:8,width:4,effectiveDepth:1,overlap:"
           << (two_sections ? upper_overlap_m : 1.0f)
@@ -3858,6 +3949,7 @@ int main() {
     test_emission_capacity_is_checked_before_state_or_output_changes();
     test_emission_rejects_duplicate_ids_before_initializing_state();
     test_fill_sensor_rejects_jets_and_requires_a_consecutive_window();
+    test_pool_surface_sensor_rejects_shallow_water_and_sparse_spray();
     test_fill_sensor_bins_curved_reach_in_its_oriented_frame();
     test_invalid_input_never_invokes_backend();
     test_every_nested_numeric_input_is_validated();

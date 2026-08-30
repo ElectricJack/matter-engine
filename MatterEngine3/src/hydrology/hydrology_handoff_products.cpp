@@ -2,12 +2,14 @@
 
 #include "hydrology/river_presentation_field.h"
 #include "hydrology/water_visual_products.h"
+#include "matter/log.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -1247,6 +1249,87 @@ void write_mesh(Writer& writer, const gpu_meshing::MeshResult& mesh) {
     writer.u64(mesh.content_digest);
 }
 
+// Opt-in failure evidence, never a geometry repair or a publication path.
+// The binary contains exact float bits using Writer's little-endian encoding:
+// magic[8], frame:u32, boundary:string, lattice_version:u32,
+// lattice_origin:float3, voxel:f32, signed_cut:f32, tolerance:f32,
+// write_handoff(), write_mesh(first), write_mesh(second).
+void dump_cell_boundary_repro(
+    const char* directory, const char* boundary, std::uint32_t frame_index,
+    const gpu_meshing::MeshResult& first,
+    const gpu_meshing::MeshResult& second,
+    const WaterCellOwnershipCut& cut, float tolerance,
+    const WaterCutContourMetrics& metrics,
+    const std::string& topology_diagnostic,
+    const std::string& measurement_error) noexcept {
+    if (!directory || directory[0] == '\0') return;
+    try {
+        const std::filesystem::path root(directory);
+        if (!root.is_absolute()) {
+            MATTER_LOGW("hydrology", "boundary repro directory must be absolute");
+            return;
+        }
+        std::error_code filesystem_error;
+        std::filesystem::create_directories(root, filesystem_error);
+        if (filesystem_error) {
+            MATTER_LOGW("hydrology", "boundary repro directory failed: %s",
+                        filesystem_error.message().c_str());
+            return;
+        }
+        static std::atomic<std::uint64_t> serial{0u};
+        const std::string stem = std::string(boundary) + "-frame-" +
+            std::to_string(frame_index) + '-' + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()) +
+            '-' + std::to_string(++serial);
+        const auto binary_path = root / (stem + ".water-boundary.bin");
+        const auto text_path = root / (stem + ".txt");
+        Writer writer;
+        constexpr std::uint8_t magic[8] = {
+            'M', 'W', 'C', 'U', 'T', '0', '0', '1'};
+        writer.raw(magic, sizeof(magic));
+        writer.u32(frame_index);
+        writer.string(boundary);
+        writer.u32(cut.lattice.version);
+        writer.point(cut.lattice.origin_m);
+        writer.floating(cut.lattice.voxel_m);
+        writer.floating(cut.signed_cut_m);
+        writer.floating(tolerance);
+        write_handoff(writer, cut.handoff);
+        write_mesh(writer, first);
+        write_mesh(writer, second);
+        std::ofstream binary(binary_path, std::ios::binary | std::ios::trunc);
+        binary.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                     static_cast<std::streamsize>(writer.bytes.size()));
+        binary.flush();
+        if (!binary) {
+            MATTER_LOGW("hydrology", "boundary repro write failed: %s",
+                        binary_path.string().c_str());
+            return;
+        }
+        std::ofstream text(text_path, std::ios::trunc);
+        text << std::setprecision(std::numeric_limits<float>::max_digits10)
+             << cell_boundary_failure(boundary, frame_index, metrics,
+                                      measurement_error) << '\n'
+             << "tolerance_m=" << tolerance
+             << " signed_cut_m=" << cut.signed_cut_m
+             << " voxel_m=" << cut.lattice.voxel_m << '\n'
+             << "first_vertices=" << first.positions.size() / 3u
+             << " first_triangles=" << first.indices.size() / 3u
+             << " second_vertices=" << second.positions.size() / 3u
+             << " second_triangles=" << second.indices.size() / 3u << '\n'
+             << topology_diagnostic << '\n';
+        text.flush();
+        MATTER_LOGI("hydrology", "boundary repro saved: %s (diagnostic=%s)",
+                    binary_path.string().c_str(),
+                    text ? text_path.string().c_str() : "write failed");
+    } catch (const std::exception& exception) {
+        MATTER_LOGW("hydrology", "boundary repro capture failed: %s",
+                    exception.what());
+    } catch (...) {
+        MATTER_LOGW("hydrology", "boundary repro capture failed");
+    }
+}
+
 bool read_mesh(Reader& reader, gpu_meshing::MeshResult& mesh) {
     std::uint64_t count = 0u;
     if (!reader.u64(count) || count > kMaximumMeshElements ||
@@ -1835,6 +1918,8 @@ bool build_handoff_animation_frames(
         output.frames.reserve(30u);
         diagnostics.peak_decoded_boundary_frames = 4u;
         const float continuity_tolerance = input.lattice.voxel_m / 16.0f;
+        const char* boundary_repro_directory =
+            std::getenv("MATTER_WATER_BOUNDARY_REPRO_DIR");
 
         const auto support_intersects_dam = [support_radius_m](
             const matter::Aabb& bounds, matter::Float3 position) {
@@ -2029,6 +2114,10 @@ bool build_handoff_animation_frames(
                     mesh_error.message);
             }
             FluidBakeError continuity_error{};
+            std::string topology_diagnostic;
+            std::string* topology_output =
+                boundary_repro_directory && boundary_repro_directory[0] != '\0'
+                    ? &topology_diagnostic : nullptr;
             const WaterCellOwnershipCut upstream_cut{
                 input.lattice, input.handoff,
                 input.handoff.upstream_visual_cut_m};
@@ -2040,10 +2129,16 @@ bool build_handoff_animation_frames(
                     upstream_bulk_frame, products.replacement_strip,
                     upstream_cut, continuity_tolerance,
                     diagnostics.upstream_cut[frame_index],
-                    continuity_error);
+                    continuity_error, topology_output);
             if (!upstream_measured || !water_cut_is_assertion_weldable(
                     diagnostics.upstream_cut[frame_index],
                     continuity_tolerance)) {
+                dump_cell_boundary_repro(
+                    boundary_repro_directory, "upstream", frame_index,
+                    upstream_bulk_frame, products.replacement_strip,
+                    upstream_cut, continuity_tolerance,
+                    diagnostics.upstream_cut[frame_index],
+                    topology_diagnostic, continuity_error.message);
                 return reject(cell_boundary_failure(
                     "upstream", frame_index,
                     diagnostics.upstream_cut[frame_index],
@@ -2055,10 +2150,16 @@ bool build_handoff_animation_frames(
                     products.replacement_strip, downstream_bulk_frame,
                     downstream_cut, continuity_tolerance,
                     diagnostics.downstream_cut[frame_index],
-                    continuity_error);
+                    continuity_error, topology_output);
             if (!downstream_measured || !water_cut_is_assertion_weldable(
                     diagnostics.downstream_cut[frame_index],
                     continuity_tolerance)) {
+                dump_cell_boundary_repro(
+                    boundary_repro_directory, "downstream", frame_index,
+                    products.replacement_strip, downstream_bulk_frame,
+                    downstream_cut, continuity_tolerance,
+                    diagnostics.downstream_cut[frame_index],
+                    topology_diagnostic, continuity_error.message);
                 return reject(cell_boundary_failure(
                     "downstream", frame_index,
                     diagnostics.downstream_cut[frame_index],

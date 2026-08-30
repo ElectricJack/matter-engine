@@ -2190,9 +2190,16 @@ void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
               network.fluid.limits.batch_steps == 256u &&
               network.fluid.limits.max_steps == 8192u &&
               network.fluid.limits.max_particles == 4000000u &&
+              network.fluid.fill_sensor.upstream_offset_m == 3.0f &&
+              network.fluid.fill_sensor.length_m == 16.0f &&
+              nearly_equal(network.fluid.fill_sensor.height_m, 0.6f) &&
+              network.fluid.fill_sensor.resolution_x == 12u &&
+              network.fluid.fill_sensor.resolution_y == 1u &&
+              network.fluid.fill_sensor.resolution_z == 12u &&
               network.fluid.fill_sensor.crest_wet_fraction == 0.80f &&
-              network.fluid.fill_sensor.stable_wet_steps == 32u,
-          "the scene retains the dry margin, explicit work budget, and sensor rule");
+              network.fluid.fill_sensor.stable_wet_steps == 120u &&
+              network.fluid.fill_sensor.minimum_particles_per_cell == 8u,
+          "the scene retains the dry margin, explicit work budget, and dense fill-level surface gate");
     CHECK(network.fluid.emitters.size() == 1u &&
               network.fluid.emitters[0].id == "upstream-inlet" &&
               network.fluid.emitters[0].flow_m3s == 600.0f &&
@@ -2453,8 +2460,8 @@ class River extends World {
                         stableWetSteps: 32, minimumParticlesPerCell: 1});
     network.quality({particleRadius: .13, visualVoxel: .1,
                      visualBlendWidth: .05, coarseVoxel: .4, gameplayCell: .5,
-                     maxVisualParticles: 1000000, maxGridVertices: 4194304,
-                     maxMeshVertices: 12582912, maxMeshIndices: 12582912});
+                     maxGridVertices: 4194304, maxMeshVertices: 12582912,
+                     maxMeshIndices: 12582912});
     main.section("upper", {from: 0, to: 145, dryMargin: 15})
       .emitters(["main-inlet"])
       .waterfall({lipAt: 105, landingAt: 117, expectedDrop: 12})

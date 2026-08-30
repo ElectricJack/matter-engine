@@ -20,9 +20,33 @@ struct FillSensorState {
     bool initialized = false;
 };
 
+struct FillSensorColumnSample {
+    std::uint32_t particle_count = 0u;
+    float highest_y_m = 0.0f;
+    bool has_particles = false;
+    bool wet = false;
+};
+
+struct FillSensorSurfaceSample {
+    std::uint32_t resolution_x = 0u;
+    std::uint32_t resolution_z = 0u;
+    std::uint32_t wet_columns = 0u;
+    float wet_fraction = 0.0f;
+    std::vector<FillSensorColumnSample> columns;
+};
+
+// Samples the same oriented thin fill-level layer used by the device gate.
+// Traces and tests consume this evidence instead of inferring a lake from one
+// aggregate wetness value.
+bool sample_fill_sensor_surface(
+    const FluidFillSensor& sensor,
+    const std::vector<matter::Float3>& particle_positions,
+    FillSensorSurfaceSample& sample,
+    FluidBakeError& error);
+
 // CPU reference for the device occupancy reduction. A horizontal X/Z column
-// is wet once it contains minimum_particles_per_cell particles anywhere in
-// the sensor's vertical span.
+// is wet once it contains minimum_particles_per_cell particles in the
+// sensor's oriented fill-level layer.
 bool update_fill_sensor(const FluidFillSensor& sensor,
                         const std::vector<matter::Float3>& particle_positions,
                         std::uint32_t step,

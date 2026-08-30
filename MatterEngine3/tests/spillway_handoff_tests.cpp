@@ -80,6 +80,10 @@ void test_handoff_conserves_discharge_and_builds_frame() {
               handoff.downstream_visual_cut_m > 0.0f &&
               handoff.semantic_key != 0u,
           "handoff owns deterministic collar cuts and a semantic key");
+    CHECK(std::fabs(handoff.lip_origin_m.x - 143.84615f) < 1.0e-4f &&
+              std::fabs(handoff.lip_origin_m.y - 17.53846f) < 1.0e-4f &&
+              std::fabs(handoff.lip_origin_m.z) < 1.0e-5f,
+          "handoff ownership, inherited emission, and visual cuts are anchored at the authored temporary dam");
 
     hydrology::FluidPbdSettings settings{};
     settings.particle_spacing_m = 0.2f;

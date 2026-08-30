@@ -216,6 +216,8 @@ int main() {
         read_shader("../shaders_vk/rt_lighting.rgen");
     const std::string water_visibility =
         read_shader("../shaders_vk/rt_visibility.rahit");
+    const std::string primary_shadow =
+        read_shader("../shaders_vk/rt_shadow.rgen");
     assert(!water_common.empty());
     assert(water_raster.find("#include \"water_surface.glsl\"") !=
            std::string::npos);
@@ -328,6 +330,16 @@ int main() {
            std::string::npos);
     assert(water_visibility.find("water_shadow_absorption") !=
            std::string::npos);
+    // Transparent water has its own RT transmission walk, which shades the
+    // terrain below the surface (including sun visibility).  The primary
+    // shadow target must stay neutral for water receivers or the same caster
+    // appears once on the surface and again on the riverbed.
+    assert(primary_shadow.find("is_water_receiver") != std::string::npos);
+    assert(primary_shadow.find(
+               "if (is_water_receiver) {\n"
+               "        imageStore(visibility_image, pixel, vec4(1.0));\n"
+               "        return;\n"
+               "    }") != std::string::npos);
     const std::string gi_temporal =
         read_shader("../shaders_vk/gi_temporal.comp");
     const std::string gi_atrous =

@@ -8,12 +8,15 @@
 #include "provider/local_provider.h"
 #include "script/world_definition_loader.h"
 #include "terrain_river_overlay.h"
+#include "matter/vulkan_device.h"
+#include "render/gpu_meshing/gpu_visual_mesher_vk.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -29,7 +32,44 @@
 #undef CloseWindow
 #endif
 
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
+
 namespace {
+
+// Native acceptance uses the production GPU visual mesher. Substituting the
+// CPU collision mesher here repeats expensive normal queries for every frame
+// of the full authored river instead of testing the editor's visual path.
+struct RiverVisualDevice {
+    bool glfw_started = false;
+    GLFWwindow* window = nullptr;
+    std::unique_ptr<matter::VulkanDevice> device;
+    std::unique_ptr<gpu_meshing::GpuVisualMesher> mesher;
+
+    bool initialize(std::string& error) {
+        glfw_started = glfwInit() == GLFW_TRUE;
+        if (!glfw_started) { error = "glfwInit failed"; return false; }
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        window = glfwCreateWindow(320, 200, "physx-river-test", nullptr, nullptr);
+        if (!window) { error = "hidden Vulkan test window failed"; return false; }
+        device = matter::VulkanDevice::create(window, true, error);
+        if (!device) return false;
+        mesher = std::make_unique<gpu_meshing::GpuVisualMesher>(*device);
+        return true;
+    }
+
+    ~RiverVisualDevice() {
+        if (device) device->wait_idle();
+        mesher.reset();
+        if (device)
+            CHECK(device->validation_error_count() == 0u,
+                  "real river GPU visuals have no Vulkan validation errors");
+        device.reset();
+        if (window) glfwDestroyWindow(window);
+        if (glfw_started) glfwTerminate();
+    }
+};
 
 hydrology::FluidCollisionMesh horizontal_quad(float half_extent,
                                                float height = 0.0f) {
@@ -720,6 +760,10 @@ void test_checked_in_ravine_collision_covers_the_validation_collar() {
 
 void test_real_two_section_river_reaches_ready() {
     namespace fs = std::filesystem;
+    RiverVisualDevice visual;
+    std::string visual_error;
+    CHECK(visual.initialize(visual_error), visual_error.c_str());
+    if (!visual.mesher) return;
     const fs::path project = fs::absolute("../../projects/world_demo");
     const fs::path cache = fs::temp_directory_path() /
                            "matter-real-two-section-river-acceptance";
@@ -739,31 +783,38 @@ void test_real_two_section_river_reaches_ready() {
         fs::absolute("../shared-lib").string(),
         [] { return std::make_shared<hydrology::PhysxRuntime>(); });
     config.cache_root = cache.string();
-    config.fluid_renderer_device.luid = probe.device_luid;
-    config.fluid_renderer_device.luid_valid = probe.device_luid_valid;
-    config.fluid_renderer_device.vendor_id = 0x10deu;
-    config.fluid_renderer_device.device_id = 1u;
-    config.fluid_renderer_device.driver_version =
-        static_cast<std::uint32_t>(probe.cuda_driver_version);
+    VkPhysicalDeviceIDProperties ids{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    properties.pNext = &ids;
+    vkGetPhysicalDeviceProperties2(visual.device->physical_device(), &properties);
+    std::copy_n(ids.deviceLUID, VK_LUID_SIZE,
+                config.fluid_renderer_device.luid.begin());
+    config.fluid_renderer_device.luid_valid = ids.deviceLUIDValid == VK_TRUE;
+    config.fluid_renderer_device.vendor_id = properties.properties.vendorID;
+    config.fluid_renderer_device.device_id = properties.properties.deviceID;
+    config.fluid_renderer_device.driver_version = properties.properties.driverVersion;
     config.gpu_run = [](const char*, std::function<bool(std::string&)> run,
                         std::string& error) { return run(error); };
-    config.vk_particle_visual_bake = [](
+    std::uint32_t gpu_visual_dispatches = 0u;
+    config.vk_particle_visual_bake = [&](
         const gpu_meshing::ParticleJob& job,
         gpu_meshing::MeshResult& mesh, gpu_meshing::Stats& stats,
         gpu_meshing::Error& error,
-        const gpu_meshing::BuildControl&) {
+        const gpu_meshing::BuildControl& control) {
         if (job.particle_count == 0u) {
             error = {gpu_meshing::ErrorCode::InvalidInput,
                      "acceptance visual requires fluid particles"};
             return false;
         }
-        if (!hydrology::build_cpu_particle_visual(
-                job, 0.65f, mesh, error))
+        if (!visual.mesher->build_particle_visual(job, mesh, stats, error, control))
             return false;
-        stats.particles = job.particle_count;
-        stats.triangles = static_cast<std::uint32_t>(
-            mesh.indices.size() / 3u);
-        error = {};
+        // Empty surface chunks still evaluate/classify a GPU field but return
+        // before allocating emission buffers and reporting device_bytes.
+        CHECK(stats.grid_vertices > 0u && stats.grid_cells > 0u &&
+                  (mesh.indices.empty() || stats.device_bytes > 0u),
+              "the native river visual callback executes real GPU meshing");
+        if (!mesh.indices.empty() && stats.device_bytes > 0u)
+            ++gpu_visual_dispatches;
         return true;
     };
 
@@ -804,6 +855,8 @@ void test_real_two_section_river_reaches_ready() {
     const bool ready = provider.run_authored_fluid_bake(
         context, status, error, result);
     CHECK(ready, error.message.c_str());
+    CHECK(gpu_visual_dispatches > 0u,
+          "real two-section acceptance exercised the production GPU visual mesher");
     CHECK(result.manifest.state ==
               hydrology::HydrologyNetworkState::Ready,
           "real network reaches Ready");
@@ -851,7 +904,12 @@ void test_real_two_section_river_reaches_ready() {
                   dam.minimum.z <= dam.maximum.z,
               "real aggregate remains a water-only mesh after the temporary dam is removed");
     }
-    fs::remove_all(cache, filesystem_error);
+    if (ready) {
+        fs::remove_all(cache, filesystem_error);
+    } else {
+        std::fprintf(stderr, "Failed river bake cache retained: %s\n",
+                     cache.string().c_str());
+    }
 }
 
 void test_core_sdk_is_statically_linked() {

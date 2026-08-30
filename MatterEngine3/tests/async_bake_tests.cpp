@@ -211,7 +211,10 @@ static bool build_authored_fluid_sandbox(const fs::path& root) {
         "    n.emitter({id:'main-inlet',position:[1,4,1],direction:[1,0,0],initialVelocity:[1,0,0],flow:1,radius:.5,startTime:0,stopTime:1.2});\n"
         "    n.virtualDam({height:4,thickness:.5});\n"
         "    n.fillSensor({upstreamOffset:1,length:1,height:3,resolution:[2,2,2],crestWetFraction:.5,stableWetSteps:1,minimumParticlesPerCell:1});\n"
-        "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxVisualParticles:1000,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n"
+        // The removed legacy cap remains an ignored extra property so older
+        // scene scripts continue to load. A value below the fake bake's three
+        // particles proves it no longer controls visual product generation.
+        "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxVisualParticles:1,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n"
         "    r.section('upper',{from:0,to:8,dryMargin:1}).emitters(['main-inlet']).pool({from:7,to:8,fillLevel:3}).spillway({id:'pool-one',at:8,width:4,effectiveDepth:1,overlap:1,damOffset:.5});\n"
         "    n.bakeSequential(); n.build();\n"
         "  }\n"

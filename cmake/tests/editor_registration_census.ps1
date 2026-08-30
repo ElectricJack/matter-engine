@@ -3,7 +3,8 @@ param(
     [string]$RepositoryRoot,
     [string]$MinGWEditor,
     [string]$MsvcEditor,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [switch]$CompareMinGW
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $RepositoryRoot) {
     $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
-if (-not $MinGWEditor) {
+if ($CompareMinGW -and -not $MinGWEditor) {
     $MinGWEditor = Join-Path $RepositoryRoot 'MatterEditor\build\windows\editor.exe'
 }
 if (-not $MsvcEditor) {
@@ -22,15 +23,18 @@ if (-not $OutputDirectory) {
         'MatterEditor\build\baselines\msvc\registration-census'
 }
 
-foreach ($editor in @($MinGWEditor, $MsvcEditor)) {
+$editorsToValidate = @($MsvcEditor)
+if ($CompareMinGW) { $editorsToValidate += $MinGWEditor }
+foreach ($editor in $editorsToValidate) {
     if (-not (Test-Path -LiteralPath $editor -PathType Leaf)) {
         throw "$editor was not found"
     }
 }
 
-function Get-SortedUnique([System.Collections.IEnumerable]$Items) {
-    return @($Items | Where-Object { $_ } | Sort-Object -Unique)
-}
+. (Join-Path $PSScriptRoot 'editor_registration_contract.ps1')
+$expectedPath = Join-Path $PSScriptRoot 'editor_registration_expected.json'
+$expectedRecord = Get-Content -LiteralPath $expectedPath -Raw | ConvertFrom-Json
+$expected = ConvertFrom-RegistrationCensusRecord $expectedRecord 'reviewed manifest'
 
 function Invoke-RuntimeCensus([string]$Path, [string]$LogPath) {
     $start = [System.Diagnostics.ProcessStartInfo]::new()
@@ -63,62 +67,20 @@ function Invoke-RuntimeCensus([string]$Path, [string]$LogPath) {
         throw "$Path runtime registration census failed with exit $($process.ExitCode)`n$stdout`n$stderr"
     }
 
-    $prefix = 'MATTER_REGISTRATION_CENSUS_JSON='
-    $records = @($stdout -split "`r?`n" |
-        Where-Object { $_.StartsWith($prefix, [System.StringComparison]::Ordinal) })
-    if ($records.Count -ne 1) {
-        throw "$Path emitted $($records.Count) runtime census records; expected exactly one`n$stdout`n$stderr"
-    }
-    try {
-        $record = $records[0].Substring($prefix.Length) | ConvertFrom-Json
-    } catch {
-        throw "$Path emitted invalid runtime census JSON: $($records[0])"
-    }
-
-    $result = [ordered]@{}
-    foreach ($category in @('world', 'dsl', 'property', 'editor')) {
-        $property = $record.PSObject.Properties[$category]
-        if ($null -eq $property) {
-            throw "$Path runtime census omitted '$category'"
-        }
-        $values = @($property.Value | ForEach-Object { [string]$_ })
-        $unique = Get-SortedUnique $values
-        if ($values.Count -eq 0) {
-            throw "$Path runtime census reported no '$category' registrations"
-        }
-        if ($values.Count -ne $unique.Count) {
-            throw "$Path runtime census reported duplicate '$category' registrations"
-        }
-        $result[$category] = $unique
-    }
-    return $result
-}
-
-function Compare-Set([string]$Category, [string]$LeftName, $Left,
-                     [string]$RightName, $Right) {
-    $missing = @($Left | Where-Object { $_ -notin $Right })
-    $extra = @($Right | Where-Object { $_ -notin $Left })
-    if ($missing.Count -eq 0 -and $extra.Count -eq 0) { return }
-
-    $message = "$Category registration mismatch: $LeftName vs $RightName"
-    if ($missing.Count -gt 0) {
-        $message += "`n  missing from ${RightName}: $($missing -join ', ')"
-    }
-    if ($extra.Count -gt 0) {
-        $message += "`n  extra in ${RightName}: $($extra -join ', ')"
-    }
-    throw $message
+    return ConvertFrom-RuntimeRegistrationCensusLog $stdout $Path
 }
 
 [System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
-$mingwLog = Join-Path $OutputDirectory 'mingw-runtime.log'
 $msvcLog = Join-Path $OutputDirectory 'msvc-runtime.log'
-$mingw = Invoke-RuntimeCensus $MinGWEditor $mingwLog
 $msvc = Invoke-RuntimeCensus $MsvcEditor $msvcLog
+Assert-RegistrationCensusMatches $expected $msvc 'MSVC editor.exe'
 
-foreach ($category in @('world', 'dsl', 'property', 'editor')) {
-    Compare-Set $category 'MinGW editor.exe' $mingw[$category] `
-        'MSVC editor.exe' $msvc[$category]
+# Rollback parity is never part of normal CTest. It requires this explicit
+# opt-in and compares against the same reviewed contract, not a stale oracle.
+if ($CompareMinGW) {
+    $mingw = Invoke-RuntimeCensus $MinGWEditor `
+        (Join-Path $OutputDirectory 'mingw-runtime.log')
+    Assert-RegistrationCensusMatches $expected $mingw 'MinGW editor.exe'
 }
 
 # A linked byte string is not a registration.  Appending a PE overlay proves the
@@ -144,25 +106,43 @@ if (-not $mutatedBytes.Contains($decoy)) {
 $decoyCensus = Invoke-RuntimeCensus $decoyEditor `
     (Join-Path $OutputDirectory 'msvc-unregistered-decoy-runtime.log')
 foreach ($category in @('world', 'dsl', 'property', 'editor')) {
-    if ($decoy -in $decoyCensus[$category]) {
+    if ($decoy -cin $decoyCensus[$category]) {
         throw "unregistered binary decoy was falsely reported as a $category registration"
     }
-    Compare-Set $category 'MSVC editor.exe' $msvc[$category] `
-        'MSVC editor.exe with unregistered string overlay' $decoyCensus[$category]
 }
+Assert-RegistrationCensusMatches $expected $decoyCensus `
+    'MSVC editor.exe with unregistered string overlay'
 
-$mingwRecord = [ordered]@{
-    compiler = 'MinGW'
-    executable = (Resolve-Path -LiteralPath $MinGWEditor).Path
-    registrations = $mingw
+if ($CompareMinGW) {
+    $mingwRecord = [ordered]@{
+        compiler = 'MinGW'
+        executable = (Resolve-Path -LiteralPath $MinGWEditor).Path
+        registrations = $mingw
+    }
+    $mingwRecord | ConvertTo-Json -Depth 6 |
+        Set-Content -LiteralPath (Join-Path $OutputDirectory 'mingw.json') -Encoding UTF8
+}
+# CTest may inherit a restricted PowerShell module path. Keep provenance
+# independent of Get-FileHash/utility-module discovery in that environment.
+$manifestHasher = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $manifestStream = [System.IO.File]::OpenRead($expectedPath)
+    try {
+        $manifestSha256 = [System.BitConverter]::ToString(
+            $manifestHasher.ComputeHash($manifestStream)).Replace('-', '')
+    } finally {
+        $manifestStream.Dispose()
+    }
+} finally {
+    $manifestHasher.Dispose()
 }
 $msvcRecord = [ordered]@{
     compiler = 'MSVC'
     executable = (Resolve-Path -LiteralPath $MsvcEditor).Path
+    expected_manifest = $expectedPath
+    expected_manifest_sha256 = $manifestSha256
     registrations = $msvc
 }
-$mingwRecord | ConvertTo-Json -Depth 6 |
-    Set-Content -LiteralPath (Join-Path $OutputDirectory 'mingw.json') -Encoding UTF8
 $msvcRecord | ConvertTo-Json -Depth 6 |
     Set-Content -LiteralPath (Join-Path $OutputDirectory 'msvc.json') -Encoding UTF8
 

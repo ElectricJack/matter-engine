@@ -279,8 +279,6 @@ std::string canonical_text(const RiverNetworkDefinition& network) {
     text.push_back(',');
     append_float(text, network.fluid.quality.gameplay_cell_m);
     text.push_back(',');
-    append_uint(text, network.fluid.quality.max_visual_particles);
-    text.push_back(',');
     append_uint(text, network.fluid.quality.max_grid_vertices);
     text.push_back(',');
     append_uint(text, network.fluid.quality.max_mesh_vertices);
@@ -832,9 +830,9 @@ bool RiverNetworkBuilder::set_quality(const HydrologyQualitySettings& quality,
         return fail(error, path + ".coarseVoxel", "coarseVoxel must be finite and positive");
     if (!positive(quality.gameplay_cell_m))
         return fail(error, path + ".gameplayCell", "gameplayCell must be finite and positive");
-    if (quality.max_visual_particles == 0u || quality.max_grid_vertices == 0u ||
+    if (quality.max_grid_vertices == 0u ||
         quality.max_mesh_vertices == 0u || quality.max_mesh_indices == 0u)
-        return fail(error, path + ".caps", "every product cap must be positive");
+        return fail(error, path + ".caps", "every mesh cap must be positive");
     fluid_.quality = quality;
     has_quality_ = true;
     return true;

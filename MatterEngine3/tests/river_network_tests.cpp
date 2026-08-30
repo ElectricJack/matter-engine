@@ -100,7 +100,6 @@ enum class FluidVariation {
     VisualBlend,
     CoarseVoxel,
     GameplayCell,
-    VisualParticleCap,
     VisualGridCap,
     VisualVertexCap,
     VisualIndexCap,
@@ -159,8 +158,6 @@ bool build_authored_fluid_network(FluidVariation variation,
                                  ? 0.45f : 0.40f;
     quality.gameplay_cell_m = variation == FluidVariation::GameplayCell
                                   ? 0.55f : 0.50f;
-    quality.max_visual_particles =
-        variation == FluidVariation::VisualParticleCap ? 999999u : 1000000u;
     quality.max_grid_vertices =
         variation == FluidVariation::VisualGridCap ? 4194303u : 4194304u;
     quality.max_mesh_vertices =

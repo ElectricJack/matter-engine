@@ -1343,8 +1343,6 @@ JSValue network_quality(JSContext* context, JSValueConst this_value,
                         quality.coarse_voxel_m) ||
         !required_float(context, arguments[0], "gameplayCell",
                         quality.gameplay_cell_m) ||
-        !required_uint32(context, arguments[0], "maxVisualParticles",
-                         quality.max_visual_particles) ||
         !required_uint32(context, arguments[0], "maxGridVertices",
                          quality.max_grid_vertices) ||
         !required_uint32(context, arguments[0], "maxMeshVertices",
@@ -1352,7 +1350,7 @@ JSValue network_quality(JSContext* context, JSValueConst this_value,
         !required_uint32(context, arguments[0], "maxMeshIndices",
                          quality.max_mesh_indices)) {
         return river_failure(context, handle->collector,
-                             "hydrology.quality: quality requires all particle/visual/coarse/gameplay settings and caps");
+                             "hydrology.quality: quality requires all particle/visual/coarse/gameplay settings and mesh caps");
     }
     std::string error;
     if (!handle->collector->river_builder->set_quality(quality, error))

@@ -7009,6 +7009,17 @@ static void rt_scenario_visibility_classification(
         matter::VulkanDevice& vulkan,
         std::string& error) {
     {
+        CHECK(std::string(viewer::viewer_render_path_status_label(
+                              viewer::ViewerRenderPathStatus::Raster)) ==
+                      "Vulkan raster" &&
+                  std::string(viewer::viewer_render_path_status_label(
+                              viewer::ViewerRenderPathStatus::NativeRt)) ==
+                      "native RT" &&
+                  std::string(viewer::viewer_render_path_status_label(
+                              viewer::ViewerRenderPathStatus::
+                                  NativeRtUnavailable)) ==
+                      "native RT unavailable",
+              "viewer debug render-path label reports the active path");
         const auto aligned_triangle = [](uint64_t hash, float z,
                                          uint32_t material_index) {
             viewer::VkScenePart part = known_raster_triangle(hash,
@@ -7025,12 +7036,14 @@ static void rt_scenario_visibility_classification(
         const auto trace_visibility = [&](uint64_t hash_base,
                                           MaterialGpuRecord blocker,
                                           uint32_t layer_count,
-                                          bool test_reclassification) {
+                                          bool test_reclassification,
+                                          uint32_t receiver_flags) {
             VisibilityResult result{};
             viewer::VkSceneRenderer visibility(vulkan);
             std::vector<MaterialGpuRecord> materials(2);
             materials[0].metal_opacity_spec_coat[1] = 1.0f;
             materials[0].scattering_shape[3] = 1.0f;
+            materials[0].flags_misc[0] = receiver_flags;
             materials[1] = blocker;
             if (!visibility.update_materials(materials, 1, 1, error) ||
                 visibility.ensure_part(
@@ -7191,15 +7204,18 @@ static void rt_scenario_visibility_classification(
         cap_glass.base_roughness[2] = 1.0f;
         cap_glass.transmission[0] = 1.0f;
         const VisibilityResult opaque_visibility =
-            trace_visibility(940, opaque, 1, true);
+            trace_visibility(940, opaque, 1, true, 0u);
         const VisibilityResult cutout_visibility =
-            trace_visibility(950, cutout, 1, false);
+            trace_visibility(950, cutout, 1, false, 0u);
         const VisibilityResult glass_visibility =
-            trace_visibility(960, glass, 2, false);
+            trace_visibility(960, glass, 2, false, 0u);
         const VisibilityResult colored_visibility =
-            trace_visibility(970, colored_glass, 1, false);
+            trace_visibility(970, colored_glass, 1, false, 0u);
         const VisibilityResult capped_visibility =
-            trace_visibility(980, cap_glass, 32, false);
+            trace_visibility(980, cap_glass, 32, false, 0u);
+        const VisibilityResult water_receiver_visibility =
+            trace_visibility(990, opaque, 1, false,
+                             MATERIAL_WATER_SURFACE);
         std::printf("aligned visibility: opaque=%.5f cutout=%.5f "
                     "glass=%.5f colored=%.5f/%.5f/%.5f\n",
                     opaque_visibility.visibility.x,
@@ -7228,6 +7244,9 @@ static void rt_scenario_visibility_classification(
         CHECK(capped_visibility.counters.capped_rays > 0 &&
                   capped_visibility.counters.any_hit_layers >= 32,
               "pathological transparent stack terminates at 32 layers");
+        CHECK(close3(water_receiver_visibility.visibility,
+                     {1.0f, 1.0f, 1.0f}, 1e-6f),
+              "water receiver keeps primary RT visibility neutral");
         CHECK(opaque_visibility.format ==
                   VK_FORMAT_R16G16B16A16_SFLOAT,
               "visibility target preserves RGB in a float format");
@@ -10381,7 +10400,8 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
 
     // Shared scene builder so the legacy-walk renderer sees the same world.
     const auto build_scene = [&](viewer::VkSceneRenderer& renderer,
-                                 bool with_foliage) {
+                                 bool with_foliage,
+                                 bool with_sun_blocker = false) {
         CHECK(renderer.ensure_part(rt_trans_quad(7801, -2.4f, 2.4f, -1.4f,
                                                  1.4f, -2.0f, 1.0f, kGlass),
                                    error) >= 0,
@@ -10432,6 +10452,21 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
                   error.empty() ? "rt-transmission: foliage card"
                                 : error.c_str());
             instances.push_back({7804, identity_matrix()});
+        }
+        if (with_sun_blocker) {
+            // Center-pixel wall hit is (0, 0, -6). Its center sun ray crosses
+            // z=-4 near (-0.44, 0.89), safely away from the camera/refraction
+            // ray. The 0.5 m blocker fully covers that center ray, but only a
+            // fraction of the 15.84-degree sun cone used by the regression
+            // below. A one-ray transmission shadow is therefore black while a
+            // correctly sampled transmission shadow lands in its penumbra.
+            CHECK(renderer.ensure_part(rt_trans_quad(
+                                           7805, -0.69f, -0.19f,
+                                           0.64f, 1.14f, -4.0f, 1.0f, kDark),
+                                       error) >= 0,
+                  error.empty() ? "rt-transmission: sun blocker"
+                                : error.c_str());
+            instances.push_back({7805, identity_matrix()});
         }
         CHECK(renderer.update_instances(instances, error),
               error.empty() ? "rt-transmission: upload instances"
@@ -10704,7 +10739,47 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
     CHECK(byte_identical,
           "rt-transmission: sub-threshold roughness is byte-identical to smooth");
 
-    // --- (4) composite fallback guard (black-glass regression) -------------
+    // --- (4) enlarged-sun penumbra reaches transmitted direct light --------
+    // Regression for RiverFloatLab's duplicate-looking shadow sets: the
+    // primary sun-visibility pass used the authored sample count and sun cone,
+    // but hit_radiance_sunlit() behind glass/water traced one center ray. Keep
+    // every stochastic input fixed and vary only the authored shadow samples.
+    // The center blocker covers the hard ray and only part of the enlarged
+    // cone, so a correctly sampled transmitted shadow must become brighter.
+    author(0.0f, 0.85f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    build_scene(renderer, false, true);
+    lighting.sun_angular_diameter_deg = 15.84f;
+    rt_enabled.samples = 1;
+    renderer.set_lighting(lighting);
+    renderer.set_ray_tracing_settings(rt_enabled);
+    render_frame(renderer, true, fixed_index + 1);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel hard_sun_center{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, hard_sun_center, error),
+          error.c_str());
+    rt_enabled.samples = 10;
+    renderer.set_ray_tracing_settings(rt_enabled);
+    render_frame(renderer, true, fixed_index + 1);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel sampled_sun_center{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, sampled_sun_center, error),
+          error.c_str());
+    const float hard_sun_luminance =
+        rt_trans_luminance(hard_sun_center.raw_transmission);
+    const float sampled_sun_luminance =
+        rt_trans_luminance(sampled_sun_center.raw_transmission);
+    std::printf("rt-transmission sun penumbra: hard=%.5f sampled=%.5f\n",
+                hard_sun_luminance, sampled_sun_luminance);
+    CHECK(sampled_sun_luminance > hard_sun_luminance + 0.01f,
+          "rt-transmission: enlarged sun samples soften the riverbed shadow");
+    lighting.sun_angular_diameter_deg = matter::kSunAngularDiameterDefaultDeg;
+    rt_enabled.samples = 1;
+    renderer.set_lighting(lighting);
+    renderer.set_ray_tracing_settings(rt_enabled);
+
+    // --- (5) composite fallback guard (black-glass regression) -------------
     // RT off => the transmission lane is cleared, coverage < 0.01, and the
     // composite takes the material fallback branch. A zeroed absorptionColor
     // must behave exactly like a clear (white) one.
@@ -10738,7 +10813,7 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
           "rt-transmission: the fallback guard treats black absorption as clear");
     renderer.set_ray_tracing_settings(rt_enabled);
 
-    // --- (5) alpha-tested occluders in the walk + cost --------------------
+    // --- (6) alpha-tested occluders in the walk + cost --------------------
     // Default (two-mask) walk: the failing alpha-test card is skipped, so the
     // center pixel still transmits the gray wall.
     author(0.0f, 0.05f, {1.0f, 1.0f, 1.0f});

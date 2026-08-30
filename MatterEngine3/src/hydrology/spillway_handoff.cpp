@@ -157,11 +157,18 @@ bool resolve_spillway_handoff(
         !finite(spillway.effective_depth_m) ||
         spillway.effective_depth_m <= 0.0f ||
         !finite(spillway.overlap_m) || spillway.overlap_m <= 0.0f ||
+        !finite(spillway.dam_offset_m) || spillway.dam_offset_m < 0.0f ||
+        spillway.distance_m + spillway.dam_offset_m >
+            geometry.centreline.back().distance_m + 1.0e-3f ||
         std::fabs(spillway.distance_m - upstream.to_m) > 1.0e-3f ||
         std::fabs(downstream.from_m - upstream.to_m) > 1.0e-3f)
         return fail("spillway handoff dimensions or section ranges are invalid",
                     handoff, error);
-    const auto sample = sample_at_distance(geometry, spillway.distance_m);
+    // The temporary dam is the physical transfer boundary. Ownership cuts and
+    // the inherited downstream emitter must share that origin; anchoring them
+    // at the upstream spillway marker leaves an authored dam-offset-sized hole.
+    const auto sample = sample_at_distance(
+        geometry, spillway.distance_m + spillway.dam_offset_m);
     matter::Float3 tangent{};
     if (!normalize(sample.tangent, tangent))
         return fail("spillway tangent is invalid", handoff, error);

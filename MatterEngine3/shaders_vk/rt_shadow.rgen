@@ -90,6 +90,11 @@ struct VisibilityPayload {
 
 layout(location = 0) rayPayloadEXT VisibilityPayload payload;
 
+// MaterialSurfaceFlags::MATERIAL_WATER_SURFACE.  Kept local because this
+// entry point intentionally does not include water_surface.glsl (that file
+// declares the water field resources used by the lighting/refraction path).
+const uint WATER_SURFACE_MATERIAL_FLAG = 1u << 4u;
+
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
     ivec2 extent = ivec2(gl_LaunchSizeEXT.xy);
@@ -145,6 +150,20 @@ void main() {
     // return above took it), so the mask is defence against a future edit that
     // moves or weakens that return, not against today's control flow.
     const uint shadow_material = impostor_identity_material(identity.x);
+    // Water's transmission RT lane shades the terrain below the surface and
+    // performs its own sun-visibility trace there.  Applying this primary
+    // GBuffer visibility at the water surface as well produces two displaced
+    // shadows from one caster: one on the surface and one on the riverbed.
+    // Leave the primary target neutral; water remains an RT occluder and the
+    // physically useful riverbed shadow remains in rt_lighting.rgen.
+    const bool is_water_receiver =
+        shadow_material < rt_materials.length() &&
+        (rt_materials[shadow_material].flags_misc.x &
+         WATER_SURFACE_MATERIAL_FLAG) != 0u;
+    if (is_water_receiver) {
+        imageStore(visibility_image, pixel, vec4(1.0));
+        return;
+    }
     // Phase 2 (horizon-map lighting): hoist the detail-slot lookup out of
     // this if block (it previously only tested `!= 0u` inline) so the
     // horizon-occlusion test below can reuse it.

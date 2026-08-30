@@ -241,13 +241,13 @@ export function authorRiverHydrologyNetwork(worldSeed, waterSurfaceMaterial = nu
   });
   network.virtualDam({ height: 8, thickness: 0.5 });
   network.fillSensor({
-    upstreamOffset: 2,
-    length: 8,
-    height: 6,
-    resolution: [6, 1, 3],
+    upstreamOffset: 3,
+    length: 16,
+    height: 0.6,
+    resolution: [12, 1, 12],
     crestWetFraction: 0.80,
-    stableWetSteps: 32,
-    minimumParticlesPerCell: 1,
+    stableWetSteps: 120,
+    minimumParticlesPerCell: 8,
   });
   network.quality({
     particleRadius: 0.13,
@@ -255,7 +255,6 @@ export function authorRiverHydrologyNetwork(worldSeed, waterSurfaceMaterial = nu
     visualBlendWidth: 0.10,
     coarseVoxel: 0.65,
     gameplayCell: 0.50,
-    maxVisualParticles: 1000000,
     maxGridVertices: 4194304,
     maxMeshVertices: 12582912,
     maxMeshIndices: 12582912,

@@ -78,6 +78,8 @@ struct HydrologyVirtualDam {
 struct HydrologyFillSensor {
     float upstream_offset_m = 0.0f;
     float length_m = 0.0f;
+    // Thickness of the dense surface layer immediately below the terminal
+    // pool's authored fill level. This is not the full pool depth.
     float height_m = 0.0f;
     std::uint32_t resolution_x = 0;
     std::uint32_t resolution_y = 0;
@@ -93,7 +95,6 @@ struct HydrologyQualitySettings {
     float visual_blend_width_m = 0.05f;
     float coarse_voxel_m = 0.40f;
     float gameplay_cell_m = 0.50f;
-    std::uint32_t max_visual_particles = 1000000;
     std::uint32_t max_grid_vertices = 4194304;
     std::uint32_t max_mesh_vertices = 12582912;
     std::uint32_t max_mesh_indices = 12582912;

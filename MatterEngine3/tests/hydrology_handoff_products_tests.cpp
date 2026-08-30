@@ -2,6 +2,7 @@
 #include "hydrology/hydrology_handoff_products.h"
 #include "hydrology/river_presentation_field.h"
 #include "hydrology/water_mesh_continuity.h"
+#include "water_boundary_replay.h"
 
 #include <cmath>
 #include <cstring>
@@ -712,6 +713,47 @@ void test_measures_section_cut_continuity_without_welding() {
           "equal-position co-planar triangle triples reject duplicate ownership");
 }
 
+void test_short_edge_topology_normalization_keeps_original_contour_geometry() {
+    auto handoff = shared_spillway();
+    handoff.downstream_visual_cut_m = 0.5f;
+    handoff.semantic_key = hydrology::spillway_handoff_semantic_key(handoff);
+    gpu_meshing::ParticleSamplingLattice lattice{};
+    gpu_meshing::Error lattice_error{};
+    CHECK(gpu_meshing::make_particle_sampling_lattice(
+              {0.125f, 0.0f, 0.0f}, 0.25f, lattice, lattice_error),
+          lattice_error.message.c_str());
+    const float tolerance = 0.25f / 16.0f;
+    const float low = tolerance * 100.49f;
+    const float high = tolerance * 100.51f;
+    const float middle_z = tolerance * 0.8f;
+    const float last_z = tolerance * 1.6f;
+    const auto contour = [&](bool before, bool perturbed) {
+        const float first_corner = perturbed ? high : low;
+        auto mesh = cell_face_segment(0.625f, before, low, -0.5f,
+                                      first_corner, 0.0f);
+        mesh = combine(std::move(mesh), cell_face_segment(
+            0.625f, before, first_corner, 0.0f, high, middle_z));
+        mesh = combine(std::move(mesh), cell_face_segment(
+            0.625f, before, high, middle_z, low, last_z));
+        return combine(std::move(mesh), cell_face_segment(
+            0.625f, before, low, last_z, low + 0.5f, last_z));
+    };
+    hydrology::WaterCutContourMetrics metrics{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              contour(true, false), contour(false, true),
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              tolerance, metrics, error), error.message.c_str());
+    // Corresponding vertices move by at most 0.02*tolerance, so matching
+    // corresponding segment parameters bounds the full curve distance too.
+    // The two connected 0.8*tolerance edges may collapse for topology, but
+    // choosing opposite endpoints of their chain must not move geometry.
+    CHECK(metrics.symmetric_hausdorff_m < tolerance * 0.03f &&
+              metrics.unmatched_open_edges == 0u &&
+              hydrology::water_cut_is_assertion_weldable(metrics, tolerance),
+          "topology contraction cannot turn sub-tolerance contour drift into a geometric gap");
+}
+
 void test_cut_continuity_fails_closed_on_invalid_meshes() {
     const auto handoff = spillway();
     const auto exact = continuity_ribbon(44.9f);
@@ -734,6 +776,39 @@ void test_cut_continuity_fails_closed_on_invalid_meshes() {
               metrics, error) &&
               error.code == hydrology::FluidBakeCode::ProductFailure,
           "non-finite water geometry fails closed");
+}
+
+void test_attached_nonzero_nextafter_edge_remains_measurable() {
+    auto handoff = shared_spillway();
+    handoff.downstream_visual_cut_m = 0.5f;
+    handoff.semantic_key = hydrology::spillway_handoff_semantic_key(handoff);
+    gpu_meshing::ParticleSamplingLattice lattice{};
+    gpu_meshing::Error lattice_error{};
+    CHECK(gpu_meshing::make_particle_sampling_lattice(
+              {0.125f, 0.0f, 0.0f}, 0.25f, lattice, lattice_error),
+          lattice_error.message.c_str());
+    const float tolerance = 0.25f / 16.0f;
+    const float low = std::nextafter(tolerance * 0.5f, 0.0f);
+    const float high = std::nextafter(tolerance * 0.5f, 1.0f);
+    const auto contour = [&](bool before) {
+        auto tiny = cell_face_segment(0.625f, before, low, 0.0f, high, 0.0f);
+        // Keep this synthetic triangle nondegenerate under the independent
+        // area gate so its ~1e-9 m edge really reaches the contour metric.
+        tiny.positions[6] = 0.625f + (before ? -64.0f : 64.0f);
+        tiny.content_digest = gpu_meshing::mesh_content_digest(tiny);
+        return combine(combine(
+            cell_face_segment(0.625f, before, low, -0.5f, low, 0.0f), tiny),
+            cell_face_segment(0.625f, before, high, 0.0f, high, 0.5f));
+    };
+    hydrology::WaterCutContourMetrics metrics{};
+    hydrology::FluidBakeError error{};
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              contour(true), contour(false),
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              tolerance, metrics, error) &&
+              metrics.symmetric_hausdorff_m == 0.0f &&
+              hydrology::water_cut_is_assertion_weldable(metrics, tolerance),
+          "an attached nonzero nextafter edge is geometry, not an invalid zero-length segment");
 }
 
 void test_cell_ownership_uses_one_exact_equality_convention() {
@@ -2158,8 +2233,11 @@ void test_formats_animation_acceptance_timing_trace() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 1) return water_boundary_replay::run(argc, argv);
     test_measures_section_cut_continuity_without_welding();
+    test_short_edge_topology_normalization_keeps_original_contour_geometry();
+    test_attached_nonzero_nextafter_edge_remains_measurable();
     test_cut_continuity_fails_closed_on_invalid_meshes();
     test_cell_ownership_uses_one_exact_equality_convention();
     test_builds_deterministic_seam_without_dam_curtain();

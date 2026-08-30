@@ -183,6 +183,16 @@ bool build_water_mesh_animation(
                                    template_job, error))
         return false;
 
+    for (std::uint32_t capture_index = 0u;
+         capture_index != kFrames; ++capture_index) {
+        if (capture.frames[capture_index].positions_m.size() >
+            template_job.limits.max_particles) {
+            return fail(error, gpu_meshing::ErrorCode::LimitExceeded,
+                        "water mesh animation capture frame " +
+                            std::to_string(capture_index) +
+                            " exceeds the visual particle limit");
+        }
+    }
 
     std::size_t maximum_combined = 0u;
     for (std::uint32_t frame_index = 0u;
@@ -198,11 +208,13 @@ bool build_water_mesh_animation(
                         "water mesh animation particle count overflowed");
         maximum_combined = std::max(maximum_combined, primary + secondary);
     }
-    if (maximum_combined > template_job.limits.max_particles ||
-        maximum_combined > std::numeric_limits<std::uint32_t>::max()) {
+    if (maximum_combined > std::numeric_limits<std::uint32_t>::max()) {
         return fail(error, gpu_meshing::ErrorCode::LimitExceeded,
-                    "water mesh animation exceeds the visual particle limit");
+                    "water mesh animation overlap workset exceeds the supported particle count");
     }
+    const std::uint32_t overlap_workset_limit = std::max(
+        template_job.limits.max_particles,
+        static_cast<std::uint32_t>(maximum_combined));
 
     std::vector<gpu_meshing::ParticleSample> particles;
     particles.reserve(maximum_combined);
@@ -228,6 +240,7 @@ bool build_water_mesh_animation(
             return false;
 
         gpu_meshing::ParticleJob job = template_job;
+        job.limits.max_particles = overlap_workset_limit;
         job.particles = particles.empty() ? nullptr : particles.data();
         job.particle_count = static_cast<std::uint32_t>(particles.size());
         job.phase_blend = {

@@ -1567,7 +1567,9 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
         ImGui::Text("GPU cull: emitted %d  frustum %d  hiz %d",
                     s.gpu_emitted, s.gpu_culled, s.gpu_occlusion_culled);
         ImGui::TextDisabled("HiZ occlusion: not available in Vulkan milestone");
-        ImGui::TextDisabled("Render path: Vulkan raster only");
+        ImGui::TextDisabled("Render path: %s",
+                            viewer_render_path_status_label(
+                                s.session_status.render_path));
     }
     ImGui::Separator();
 

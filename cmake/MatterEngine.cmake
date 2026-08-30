@@ -396,8 +396,13 @@ if(BUILD_TESTING)
         target_include_directories(physx_fluid_integration_tests PRIVATE
             "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
         target_link_libraries(physx_fluid_integration_tests PRIVATE
-            matter_engine_headless
-            matter_physx_adapter)
+            matter_engine_viewer_objects
+            matter_physx_adapter
+            matter_glfw
+            matter_vulkan_sdk
+            gdi32 winmm user32 shell32 ws2_32 dbghelp)
+        target_compile_definitions(physx_fluid_integration_tests PRIVATE
+            MATTER_HAVE_SCRIPT_HOST MATTER_VULKAN_VIEWER MATTER_VULKAN_ONLY)
         matter_apply_project_defaults(physx_fluid_integration_tests)
         matter_apply_test_assertion_policy(physx_fluid_integration_tests)
         add_test(NAME physx_fluid_integration_tests

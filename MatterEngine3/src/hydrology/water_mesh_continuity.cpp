@@ -7,6 +7,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -581,8 +582,11 @@ bool nearest_segment_sample(Vector3d point, const CutContour& target,
         const Vector3d delta = subtract(second->second.position,
                                         first->second.position);
         const double denominator = length_squared(delta);
+        // A surviving contour may include a nonzero nextafter-sized edge.
+        // Double squared float-coordinate differences remain representable;
+        // machine epsilon is not a minimum geometric segment length.
         if (!std::isfinite(denominator) ||
-            denominator <= std::numeric_limits<double>::epsilon())
+            denominator <= 0.0)
             return false;
         const double amount = std::clamp(
             dot(subtract(point, first->second.position), delta) /
@@ -626,7 +630,8 @@ bool accumulate_directed_metrics(const CutContour& source,
 }
 
 std::vector<SegmentKey> normalized_segments(const CutContour& contour,
-                                            double tolerance_m) {
+                                            double tolerance_m,
+                                            std::map<EndpointKey, EndpointKey>* roots) {
     // A packed contour can retain a near-zero subdivision edge that the raw
     // contour quantizes away. Collapse only endpoints connected by that
     // actual sub-tolerance edge. Unrelated nearby contour vertices must stay
@@ -754,15 +759,21 @@ std::vector<SegmentKey> normalized_segments(const CutContour& contour,
         claimed[second] = true;
         merged_continuation = true;
     }
+    if (roots) {
+        roots->clear();
+        for (const auto& point : contour.points)
+            roots->emplace(point.first, root(point.first));
+    }
     return merged_continuation ? collect_unique() : normalized;
 }
 
 bool reduce_short_contour_edges(const CutContour& source,
                                 double tolerance_m,
-                                CutContour& reduced) {
+                                CutContour& reduced,
+                                std::map<EndpointKey, EndpointKey>* roots = nullptr) {
     reduced = {};
     reduced.coplanar_triangles = source.coplanar_triangles;
-    reduced.segments = normalized_segments(source, tolerance_m);
+    reduced.segments = normalized_segments(source, tolerance_m, roots);
     for (const SegmentKey& segment : reduced.segments) {
         for (const EndpointKey key : {segment.first, segment.second}) {
             if (reduced.points.find(key) != reduced.points.end()) continue;
@@ -776,7 +787,16 @@ bool reduce_short_contour_edges(const CutContour& source,
 
 std::uint32_t unmatched_open_edges(const CutContour& first,
                                    const CutContour& second,
-                                   double tolerance_m) {
+                                   double tolerance_m,
+                                   CutContour& first_geometry,
+                                   CutContour& second_geometry,
+                                   std::string* diagnostic) {
+    first_geometry = {};
+    second_geometry = {};
+    const auto report_early = [&](const char* reason) {
+        if (diagnostic) *diagnostic = reason;
+        return 1u;
+    };
     struct ComponentSignature {
         std::uint64_t cycle_rank = 0u;
         std::uint32_t endpoint_count = 0u;
@@ -832,8 +852,7 @@ std::uint32_t unmatched_open_edges(const CutContour& first,
         const Vector3d source_origin = source_first->second.position;
         const Vector3d source_direction = subtract(
             source_second->second.position, source_origin);
-        if (length_squared(source_direction) <=
-            std::numeric_limits<double>::epsilon())
+        if (length_squared(source_direction) <= 0.0)
             return false;
 
         // The tolerance region of a target segment is a capsule. Intersect
@@ -853,8 +872,7 @@ std::uint32_t unmatched_open_edges(const CutContour& first,
                 target_second->second.position, target_origin);
             const double target_length_squared =
                 length_squared(target_direction);
-            if (target_length_squared <=
-                std::numeric_limits<double>::epsilon())
+            if (target_length_squared <= 0.0)
                 return false;
             const Vector3d relative = subtract(source_origin, target_origin);
             const double projection_origin =
@@ -928,7 +946,10 @@ std::uint32_t unmatched_open_edges(const CutContour& first,
     };
 
     struct ContourComponent {
+        // Quotient graph for component identity only. A short-edge chain can
+        // contract farther than tolerance, so its root chords are not geometry.
         CutContour contour{};
+        CutContour geometry{};
         ComponentSignature signature{};
     };
     const auto split_components = [](
@@ -1033,18 +1054,94 @@ std::uint32_t unmatched_open_edges(const CutContour& first,
 
     CutContour first_normalized{};
     CutContour second_normalized{};
+    std::map<EndpointKey, EndpointKey> first_roots, second_roots;
     if (!reduce_short_contour_edges(
-            first, tolerance_m, first_normalized) ||
+            first, tolerance_m, first_normalized, &first_roots) ||
         !reduce_short_contour_edges(
-            second, tolerance_m, second_normalized))
-        return 1u;
+            second, tolerance_m, second_normalized, &second_roots))
+        return report_early("reason=contour_normalization_failed");
 
     std::vector<ContourComponent> first_components;
     std::vector<ContourComponent> second_components;
+    const auto report = [&](const char* reason) {
+        if (!diagnostic) return;
+        std::ostringstream text;
+        text << "reason=" << reason
+             << " first_components=" << first_components.size()
+             << " second_components=" << second_components.size() << '\n';
+        const auto append_components = [&](const char* side,
+                                           const auto& components) {
+            for (std::size_t index = 0u; index != components.size(); ++index) {
+                const auto& component = components[index];
+                text << side << '[' << index << "] points="
+                     << component.contour.points.size()
+                     << " segments=" << component.contour.segments.size()
+                     << " endpoints=" << component.signature.endpoint_count
+                     << " cycle_rank=" << component.signature.cycle_rank
+                     << " branch_degrees=";
+                for (const auto degree : component.signature.branch_degrees)
+                    text << degree << ',';
+                text << '\n';
+            }
+        };
+        append_components("first", first_components);
+        append_components("second", second_components);
+        *diagnostic = text.str();
+    };
     if (!split_components(first_normalized, first_components) ||
-        !split_components(second_normalized, second_components) ||
-        first_components.size() != second_components.size())
+        !split_components(second_normalized, second_components)) {
+        report("component_split_failed");
         return 1u;
+    }
+    const auto retain_component_geometry = [](
+        const CutContour& source,
+        const std::map<EndpointKey, EndpointKey>& roots,
+        std::vector<ContourComponent>& components,
+        CutContour& retained) {
+        std::map<EndpointKey, std::size_t> component_of;
+        for (std::size_t index = 0u; index != components.size(); ++index)
+            for (const auto& point : components[index].contour.points)
+                component_of.emplace(point.first, index);
+        for (const SegmentKey& segment : source.segments) {
+            const auto first_root = roots.find(segment.first);
+            const auto second_root = roots.find(segment.second);
+            if (first_root == roots.end() || second_root == roots.end())
+                return false;
+            const auto first_component = component_of.find(first_root->second);
+            const auto second_component = component_of.find(second_root->second);
+            // Only whole disconnected components that collapse completely are
+            // degenerate. Short edges attached to a surviving component still
+            // carry real positions/normals and must participate in coverage.
+            if (first_component == component_of.end() &&
+                second_component == component_of.end())
+                continue;
+            if (first_component == component_of.end() ||
+                second_component == component_of.end() ||
+                first_component->second != second_component->second)
+                return false;
+            CutContour& geometry = components[first_component->second].geometry;
+            geometry.segments.push_back(segment);
+            retained.segments.push_back(segment);
+            for (const EndpointKey key : {segment.first, segment.second}) {
+                const auto point = source.points.find(key);
+                if (point == source.points.end()) return false;
+                geometry.points.emplace(key, point->second);
+                retained.points.emplace(key, point->second);
+            }
+        }
+        return !retained.points.empty() && !retained.segments.empty();
+    };
+    if (!retain_component_geometry(first, first_roots, first_components,
+                                   first_geometry) ||
+        !retain_component_geometry(second, second_roots, second_components,
+                                   second_geometry)) {
+        report("original_geometry_component_mapping_failed");
+        return 1u;
+    }
+    if (first_components.size() != second_components.size()) {
+        report("component_count_mismatch");
+        return 1u;
+    }
 
     std::vector<std::vector<std::size_t>> candidates(
         first_components.size());
@@ -1053,8 +1150,8 @@ std::uint32_t unmatched_open_edges(const CutContour& first,
         for (std::size_t second_index = 0u;
              second_index != second_components.size(); ++second_index) {
             if (components_cover_each_other(
-                    first_components[first_index].contour,
-                    second_components[second_index].contour)) {
+                    first_components[first_index].geometry,
+                    second_components[second_index].geometry)) {
                 candidates[first_index].push_back(second_index);
             }
         }
@@ -1094,8 +1191,23 @@ std::uint32_t unmatched_open_edges(const CutContour& first,
     for (std::size_t first_index = 0u;
          first_index != first_components.size(); ++first_index) {
         std::vector<bool> visited(second_components.size(), false);
-        if (!augment(augment, first_index, visited))
+        if (!augment(augment, first_index, visited)) {
+            report(candidates[first_index].empty()
+                       ? "component_has_no_bidirectional_coverage_match"
+                       : "one_to_one_component_matching_failed");
+            if (diagnostic) {
+                *diagnostic += "unmatched_first_component=" +
+                    std::to_string(first_index) + '\n';
+                for (std::size_t index = 0u; index != candidates.size(); ++index) {
+                    *diagnostic += "coverage_candidates[" +
+                        std::to_string(index) + "]=";
+                    for (const auto candidate : candidates[index])
+                        *diagnostic += std::to_string(candidate) + ',';
+                    *diagnostic += '\n';
+                }
+            }
             return 1u;
+        }
     }
 
     std::uint64_t unmatched = 0u;
@@ -1106,8 +1218,9 @@ std::uint32_t unmatched_open_edges(const CutContour& first,
             ++unmatched;
         }
     };
-    accumulate_uncovered(first_normalized, second_normalized);
-    accumulate_uncovered(second_normalized, first_normalized);
+    accumulate_uncovered(first_geometry, second_geometry);
+    accumulate_uncovered(second_geometry, first_geometry);
+    if (unmatched != 0u) report("uncovered_segment_after_component_matching");
     return static_cast<std::uint32_t>(std::min<std::uint64_t>(
         unmatched, std::numeric_limits<std::uint32_t>::max()));
 }
@@ -1152,27 +1265,26 @@ bool finite_metrics(const WaterCutContourMetrics& metrics) {
 bool reduce_contours(const CutContour& first_contour,
                      const CutContour& second_contour,
                      double endpoint_tolerance_m,
-                     WaterCutContourMetrics& metrics) {
-    CutContour first_reduced{};
-    CutContour second_reduced{};
-    if (!reduce_short_contour_edges(
-            first_contour, endpoint_tolerance_m, first_reduced) ||
-        !reduce_short_contour_edges(
-            second_contour, endpoint_tolerance_m, second_reduced))
+                     WaterCutContourMetrics& metrics,
+                     std::string* topology_diagnostic = nullptr) {
+    CutContour first_geometry{};
+    CutContour second_geometry{};
+    metrics.unmatched_open_edges = unmatched_open_edges(
+        first_contour, second_contour, endpoint_tolerance_m,
+        first_geometry, second_geometry, topology_diagnostic);
+    if (first_geometry.points.empty() || second_geometry.points.empty())
         return false;
-    if (first_reduced.points.size() >
+    if (first_geometry.points.size() >
             std::numeric_limits<std::uint32_t>::max() ||
-        second_reduced.points.size() >
+        second_geometry.points.size() >
             std::numeric_limits<std::uint32_t>::max())
         return false;
     metrics.first_points = static_cast<std::uint32_t>(
-        first_reduced.points.size());
+        first_geometry.points.size());
     metrics.second_points = static_cast<std::uint32_t>(
-        second_reduced.points.size());
-    metrics.first_height_quantiles_m = height_quantiles(first_reduced);
-    metrics.second_height_quantiles_m = height_quantiles(second_reduced);
-    metrics.unmatched_open_edges = unmatched_open_edges(
-        first_reduced, second_reduced, endpoint_tolerance_m);
+        second_geometry.points.size());
+    metrics.first_height_quantiles_m = height_quantiles(first_geometry);
+    metrics.second_height_quantiles_m = height_quantiles(second_geometry);
     metrics.duplicate_coplanar_triangles =
         duplicate_coplanar_triangles(first_contour, second_contour);
 
@@ -1184,10 +1296,10 @@ bool reduce_contours(const CutContour& first_contour,
                         second_contour.points.size());
     normal_angles.reserve(normal_dots.capacity());
     if (!accumulate_directed_metrics(
-            first_reduced, second_reduced, maximum_squared_distance,
+            first_geometry, second_geometry, maximum_squared_distance,
             sum_squared_distance, normal_dots, normal_angles) ||
         !accumulate_directed_metrics(
-            second_reduced, first_reduced, maximum_squared_distance,
+            second_geometry, first_geometry, maximum_squared_distance,
             sum_squared_distance, normal_dots, normal_angles) ||
         normal_dots.empty())
         return false;
@@ -1275,9 +1387,11 @@ bool measure_water_cell_boundary_continuity(
     const WaterCellOwnershipCut& cut,
     float edge_match_tolerance_m,
     WaterCutContourMetrics& metrics,
-    FluidBakeError& error) {
+    FluidBakeError& error,
+    std::string* topology_diagnostic) {
     metrics = {};
     error = {};
+    if (topology_diagnostic) topology_diagnostic->clear();
     if (cut.lattice.version != 1u ||
         !std::isfinite(cut.lattice.voxel_m) ||
         cut.lattice.voxel_m <= 0.0f ||
@@ -1301,7 +1415,8 @@ bool measure_water_cell_boundary_continuity(
                 "second water mesh has no valid cell boundary contour", error);
         if (!reduce_contours(
                 first_contour, second_contour,
-                static_cast<double>(edge_match_tolerance_m), metrics))
+                static_cast<double>(edge_match_tolerance_m), metrics,
+                topology_diagnostic))
             return fail("water cell boundary continuity reduction failed",
                         error);
         return true;

@@ -137,6 +137,43 @@ void test_frame_failure_publishes_nothing_and_names_the_frame() {
           "partial capture histories cannot publish partial animations");
 }
 
+void test_overlap_workset_is_derived_without_raising_the_scene_frame_cap() {
+    const auto capture = capture_fixture();
+    auto template_job = job_fixture();
+    template_job.limits.max_particles = 1u;
+    std::uint32_t calls = 0u;
+    bool workset_limit_was_derived = true;
+    hydrology::WaterMeshAnimationMesher mesher =
+        [&](const gpu_meshing::ParticleJob& job,
+            gpu_meshing::MeshResult& mesh,
+            gpu_meshing::Stats&,
+            gpu_meshing::Error& error) {
+            ++calls;
+            workset_limit_was_derived =
+                workset_limit_was_derived && job.particle_count == 2u &&
+                job.limits.max_particles == 2u;
+            mesh = triangle_for_call(calls);
+            error = {};
+            return true;
+        };
+    hydrology::WaterMeshAnimation animation{};
+    gpu_meshing::Error error{};
+    CHECK(hydrology::build_water_mesh_animation(
+              capture, 0.2f, template_job, mesher, animation, error) &&
+              calls == 30u && workset_limit_was_derived,
+          "the engine derives the two-frame overlap workset while retaining the authored per-frame cap");
+
+    auto oversized_capture = capture;
+    oversized_capture.frames[7u].positions_m.push_back({7.0f, 2.0f, 0.0f});
+    calls = 0u;
+    CHECK(!hydrology::build_water_mesh_animation(
+              oversized_capture, 0.2f, template_job, mesher, animation, error) &&
+              calls == 0u &&
+              error.code == gpu_meshing::ErrorCode::LimitExceeded &&
+              error.message.find("capture frame 7") != std::string::npos,
+          "the original visual-particle cap still guards each captured simulation frame");
+}
+
 void test_canonical_cell_ownership_bumps_the_section_cache_domain() {
     CHECK(std::string(hydrology::kSectionWaterAnimationCacheDomain) ==
               "water-mesh-animation-v4-retained-boundary-support" &&
@@ -150,6 +187,7 @@ void test_canonical_cell_ownership_bumps_the_section_cache_domain() {
 int main() {
     test_build_pairs_half_cycle_and_requests_thirty_independent_meshes();
     test_frame_failure_publishes_nothing_and_names_the_frame();
+    test_overlap_workset_is_derived_without_raising_the_scene_frame_cap();
     test_canonical_cell_ownership_bumps_the_section_cache_domain();
     return check_summary();
 }

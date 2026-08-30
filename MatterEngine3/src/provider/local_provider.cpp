@@ -15,6 +15,7 @@
 #include "bake_trace_names.h"  // kSpanTileset
 #include "material_registry.h"
 #include "matter/log.h"
+#include "hydrology/fill_sensor.h"
 #include "hydrology/hydrology_settings.h"
 #include "hydrology/physx_collision_input.h"
 #include "hydrology/river_geometry.h"
@@ -834,6 +835,20 @@ bool write_particle_trace(
         return false;
     }
 
+    std::vector<matter::Float3> surface_positions;
+    surface_positions.reserve(output.particles.size());
+    for (const hydrology::FluidParticle& particle : output.particles)
+        surface_positions.push_back(particle.position_m);
+    hydrology::FillSensorSurfaceSample surface_sample{};
+    hydrology::FluidBakeError surface_error{};
+    if (!hydrology::sample_fill_sensor_surface(
+            request.input.sensor, surface_positions,
+            surface_sample, surface_error)) {
+        error = "could not sample pool-surface trace: " +
+            surface_error.message;
+        return false;
+    }
+
     {
         std::ofstream stream(root / "particles.csv",
                              std::ios::binary | std::ios::trunc);
@@ -852,6 +867,47 @@ bool write_particle_trace(
         }
         if (!stream) {
             error = "could not write particle trace CSV";
+            return false;
+        }
+    }
+    {
+        std::ofstream stream(root / "pool_surface.csv",
+                             std::ios::binary | std::ios::trunc);
+        if (!stream) {
+            error = "could not open pool-surface trace CSV";
+            return false;
+        }
+        stream << "cell_x,cell_z,world_x_m,world_z_m,particle_count,wet,highest_y_m\n"
+               << std::setprecision(9);
+        const hydrology::FluidFillSensor& sensor = request.input.sensor;
+        for (std::uint32_t z = 0u; z != surface_sample.resolution_z; ++z) {
+            for (std::uint32_t x = 0u; x != surface_sample.resolution_x; ++x) {
+                const std::size_t index =
+                    static_cast<std::size_t>(z) *
+                        surface_sample.resolution_x + x;
+                const hydrology::FillSensorColumnSample& column =
+                    surface_sample.columns[index];
+                const float along = (static_cast<float>(x) + 0.5f) /
+                    static_cast<float>(surface_sample.resolution_x) *
+                    sensor.frame_extent_m.x;
+                const float across = (static_cast<float>(z) + 0.5f) /
+                    static_cast<float>(surface_sample.resolution_z) *
+                    sensor.frame_extent_m.z;
+                const float world_x = sensor.frame_origin_m.x +
+                    along * sensor.longitudinal_axis_xz.x +
+                    across * sensor.lateral_axis_xz.x;
+                const float world_z = sensor.frame_origin_m.z +
+                    along * sensor.longitudinal_axis_xz.y +
+                    across * sensor.lateral_axis_xz.y;
+                stream << x << ',' << z << ',' << world_x << ',' << world_z
+                       << ',' << column.particle_count << ','
+                       << (column.wet ? 1 : 0) << ',';
+                if (column.has_particles) stream << column.highest_y_m;
+                stream << '\n';
+            }
+        }
+        if (!stream) {
+            error = "could not write pool-surface trace CSV";
             return false;
         }
     }
@@ -920,6 +976,16 @@ bool write_particle_trace(
                << request.product_settings.particle_radius_m
                << "\nsensor_max=" << output.sensor.maximum_wet_fraction
                << "\nsensor_final=" << output.sensor.final_wet_fraction
+               << "\nsurface_layer_bottom_m="
+               << request.input.sensor.frame_origin_m.y
+               << "\nsurface_layer_top_m="
+               << request.input.sensor.frame_origin_m.y +
+                      request.input.sensor.frame_extent_m.y
+               << "\nsurface_layer_width_m="
+               << request.input.sensor.frame_extent_m.z
+               << "\nsurface_wet_columns=" << surface_sample.wet_columns
+               << "\nsurface_total_columns=" << surface_sample.columns.size()
+               << "\nsurface_wet_fraction=" << surface_sample.wet_fraction
                << "\nvisual_vertices=" << visual.positions.size() / 3u
                << "\nvisual_triangles=" << visual.indices.size() / 3u
                << '\n';
@@ -1150,7 +1216,24 @@ bool assemble_authored_fluid_section_request(
     const float lx = -tz;
     const float lz = tx;
     const float half_length = fluid.fill_sensor.length_m * 0.5f;
-    const float half_width = section.terminal_spillway->width_m * 0.5f;
+    // The completion gate samples the pool body, not only the narrow
+    // spillway throat. Derive the expected wet width at the authored fill
+    // elevation from the rounded-V channel profile, conservatively using the
+    // taller asymmetric bank. The spillway width remains the minimum so a
+    // shallow or imperfectly sampled profile still has a useful gate.
+    const float fill_depth = section.terminal_pool->fill_level_m -
+        sensor_sample.position_m.y;
+    const float conservative_bank_depth = sensor_sample.depth_m *
+        (1.0f + 0.85f * std::fabs(sensor_sample.asymmetry));
+    const float fill_fraction = conservative_bank_depth > 1.0e-6f
+        ? std::clamp(fill_depth / conservative_bank_depth, 0.0f, 1.0f)
+        : 0.0f;
+    const float expected_pool_width =
+        sensor_sample.width_m * fill_fraction;
+    const float sensor_width = std::max(
+        section.terminal_spillway->width_m,
+        std::min(expected_pool_width, sensor_sample.width_m));
+    const float half_width = sensor_width * 0.5f;
     float sensor_min_x = std::numeric_limits<float>::infinity();
     float sensor_min_z = std::numeric_limits<float>::infinity();
     float sensor_max_x = -std::numeric_limits<float>::infinity();
@@ -1211,8 +1294,11 @@ bool assemble_authored_fluid_section_request(
     products.visual_job.blend_width_m = quality.visual_blend_width_m;
     products.visual_job.iso_value = 0.0f;
     products.visual_job.material = 4u;
+    // A visual snapshot cannot exceed the physical section's accepted
+    // particle ceiling. Animation meshing derives its larger two-frame
+    // overlap workset internally, so neither limit belongs in scene quality.
     products.visual_job.limits = {
-        quality.max_visual_particles, quality.max_grid_vertices,
+        fluid.limits.max_particles, quality.max_grid_vertices,
         quality.max_mesh_vertices, quality.max_mesh_indices};
     const float gameplay_cell = quality.gameplay_cell_m;
     const auto gameplay_dimension = [gameplay_cell](float extent) {
@@ -1952,10 +2038,18 @@ bool LocalProvider::run_authored_fluid_bake(
                            "authored fluid network was superseded before manifest publication"};
             return false;
         }
+        const std::uint64_t manifest_content_digest =
+            hydrology::hydrology_network_artifact_content_digest(manifest);
+        if (manifest_content_digest == 0u) {
+            fluid_error = {hydrology::FluidBakeCode::ProductFailure,
+                           "ready network manifest has no valid content address"};
+            return false;
+        }
         const auto manifest_path = std::filesystem::path(abs_cache_root_) /
             "hydrology" /
             ("network-" + hex64(manifest.network_key) + "-" +
-             hex64(manifest.terrain_revision) + ".mhyn");
+             hex64(manifest.terrain_revision) + "-" +
+             hex64(manifest_content_digest) + ".mhyn");
         gpu_meshing::Error artifact_error{};
         const auto serialize_start = std::chrono::steady_clock::now();
         hydrology::HydrologyFieldProduct runtime_product{};
