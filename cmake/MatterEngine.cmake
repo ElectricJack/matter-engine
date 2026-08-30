@@ -340,6 +340,10 @@ if(BUILD_TESTING)
         MatterEngine3/tests/river_float_system_tests.cpp)
     matter_add_engine_cpu_test(scene_registry_tests
         MatterEngine3/tests/scene_registry_tests.cpp)
+    matter_add_engine_cpu_test(simulation_control_tests
+        MatterEngine3/tests/simulation_control_tests.cpp)
+    matter_add_engine_cpu_test(scene_tracker_tests
+        MatterEngine3/tests/scene_tracker_tests.cpp)
     matter_add_engine_cpu_test(entity_recipe_tests
         MatterEngine3/tests/entity_recipe_tests.cpp)
     matter_add_engine_cpu_test(dynamic_instance_slots_tests
@@ -427,6 +431,8 @@ if(BUILD_TESTING)
         terrain_collision_session_tests
         river_float_system_tests
         scene_registry_tests
+        simulation_control_tests
+        scene_tracker_tests
         entity_recipe_tests
         viewer_logic_tests)
 

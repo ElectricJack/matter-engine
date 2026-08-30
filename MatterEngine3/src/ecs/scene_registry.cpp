@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -191,6 +192,15 @@ static const FieldDescriptor s_river_float_fields[] = {
 // Component descriptor table.
 // ---------------------------------------------------------------------------
 
+static const FieldDescriptor s_character_fields[] = {
+    fd_float("radius", ME_FIELD_OFF(character::CharacterController, radius), 0.05f, 5.0f),
+    fd_float("height", ME_FIELD_OFF(character::CharacterController, height), 0.2f, 5.0f),
+    fd_float("move_speed", ME_FIELD_OFF(character::CharacterController, move_speed), 0.0f, 50.0f),
+    fd_float("max_slope_cos", ME_FIELD_OFF(character::CharacterController, max_slope_cos), 0.0f, 1.0f),
+    fd_float("step_up_height", ME_FIELD_OFF(character::CharacterController, step_up_height), 0.0f, 2.0f),
+    fd_float("jump_speed", ME_FIELD_OFF(character::CharacterController, jump_speed), 0.0f, 50.0f),
+};
+
 static const ComponentDescriptor s_descriptors[] = {
     {ComponentKind::Transform, "LocalTransform", s_transform_fields, 3, false,
      sizeof(ecs::LocalTransform), alignof(ecs::LocalTransform)},
@@ -212,6 +222,8 @@ static const ComponentDescriptor s_descriptors[] = {
      sizeof(streaming::SectorStreaming), alignof(streaming::SectorStreaming)},
     {ComponentKind::RiverFloatBody, "RiverFloatBody", s_river_float_fields, 14, false,
      sizeof(RiverFloatBody), alignof(RiverFloatBody)},
+    {ComponentKind::CharacterController, "CharacterController", s_character_fields, 6, false,
+     sizeof(character::CharacterController), alignof(character::CharacterController)},
 };
 
 static constexpr uint32_t s_descriptor_count = sizeof(s_descriptors) / sizeof(s_descriptors[0]);
@@ -230,6 +242,8 @@ static_assert(sizeof(RiverFloatBody) <= kMaxComponentStructSize,
               "kMaxComponentStructSize too small for RiverFloatBody");
 static_assert(alignof(RiverFloatBody) <= kMaxComponentStructAlign,
               "kMaxComponentStructAlign too small for RiverFloatBody");
+static_assert(sizeof(character::CharacterController) <= kMaxComponentStructSize);
+static_assert(alignof(character::CharacterController) <= kMaxComponentStructAlign);
 
 const ComponentDescriptor* find_component(const char* name) {
     for (uint32_t i = 0; i < s_descriptor_count; ++i) {
@@ -442,7 +456,7 @@ static std::string extract_component_value_json(const std::string& json,
     pos = json.find(':', pos);
     if (pos == std::string::npos) return "";
     ++pos;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
     if (pos >= json.size() || json[pos] != '{') return "";
 
     size_t start = pos;
@@ -623,7 +637,7 @@ static std::vector<std::string> extract_top_keys(const std::string& json) {
             while (i < json.size() && json[i] != ':') ++i;
             if (i < json.size()) ++i;
             // skip the value (could be object, array, string, number, bool, null)
-            while (i < json.size() && json[i] == ' ') ++i;
+            while (i < json.size() && std::isspace(static_cast<unsigned char>(json[i]))) ++i;
             if (i < json.size()) {
                 if (json[i] == '{') {
                     int d = 1; ++i;
@@ -663,7 +677,7 @@ static std::vector<std::string> extract_top_keys(const std::string& json) {
 // Session-created IDs use the high bit set with a monotonic counter.
 // ---------------------------------------------------------------------------
 
-static uint64_t hash_authored_id(const std::string& id) {
+uint64_t hash_authored_id(const std::string& id) {
     uint64_t h = 14695981039346656037ULL;
     for (char c : id) {
         h ^= static_cast<uint64_t>(static_cast<uint8_t>(c));
@@ -676,6 +690,140 @@ static uint64_t hash_authored_id(const std::string& id) {
 // validate — checks a single RawEntityRecipe.
 // ---------------------------------------------------------------------------
 
+static void skip_json_space(const std::string& json, size_t& pos) {
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+}
+
+// This component only accepts finite JSON numbers, never numeric prefixes or
+// strings. Keep parsing scoped here so existing component semantics stay put.
+static bool read_character_number(const std::string& json, size_t& pos, float& out) {
+    skip_json_space(json, pos);
+    const size_t start = pos;
+    if (pos < json.size() && json[pos] == '-') ++pos;
+    if (pos >= json.size() || json[pos] < '0' || json[pos] > '9') return false;
+    if (json[pos] == '0') ++pos;
+    else while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') ++pos;
+    if (pos < json.size() && json[pos] == '.') {
+        const size_t digits = ++pos;
+        while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') ++pos;
+        if (pos == digits) return false;
+    }
+    if (pos < json.size() && (json[pos] == 'e' || json[pos] == 'E')) {
+        ++pos;
+        if (pos < json.size() && (json[pos] == '+' || json[pos] == '-')) ++pos;
+        const size_t digits = pos;
+        while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') ++pos;
+        if (pos == digits) return false;
+    }
+    out = std::strtof(json.c_str() + start, nullptr);
+    skip_json_space(json, pos);
+    return std::isfinite(out);
+}
+
+static bool parse_character(const std::string& json, character::CharacterController& out,
+                            std::string& field) {
+    field = "CharacterController";
+    size_t pos = 0;
+    skip_json_space(json, pos);
+    if (pos >= json.size() || json[pos++] != '{') return false;
+    std::unordered_set<std::string> seen;
+    skip_json_space(json, pos);
+    while (pos < json.size() && json[pos] != '}') {
+        if (json[pos++] != '"') return false;
+        const size_t start = pos;
+        while (pos < json.size() && json[pos] != '"') ++pos;
+        if (pos == json.size()) return false;
+        const std::string key = json.substr(start, pos++ - start);
+        field = "CharacterController." + key;
+        float* destination = nullptr;
+        float angle = 45;
+        if (key == "radius") destination = &out.radius;
+        else if (key == "height") destination = &out.height;
+        else if (key == "moveSpeed") destination = &out.move_speed;
+        else if (key == "maxSlopeAngleDeg") destination = &angle;
+        else if (key == "stepHeight") destination = &out.step_up_height;
+        else if (key == "jumpSpeed") destination = &out.jump_speed;
+        if (!destination || !seen.insert(key).second) return false;
+        skip_json_space(json, pos);
+        if (pos >= json.size() || json[pos++] != ':' ||
+            !read_character_number(json, pos, *destination)) return false;
+        if (*destination < 0 || ((key == "radius" || key == "height") && *destination == 0)) return false;
+        if (key == "maxSlopeAngleDeg") {
+            if (angle > 90) return false;
+            // Exact endpoint avoids a negative cosine from float pi roundoff.
+            out.max_slope_cos = angle == 90 ? 0.0f :
+                static_cast<float>(std::cos(static_cast<double>(angle) * 3.14159265358979323846 / 180.0));
+        }
+        if (pos >= json.size()) return false;
+        if (json[pos] == '}') break;
+        if (json[pos++] != ',') return false;
+        skip_json_space(json, pos);
+        if (pos >= json.size() || json[pos] == '}') return false;
+    }
+    if (pos >= json.size() || json[pos++] != '}') return false;
+    skip_json_space(json, pos);
+    if (pos != json.size()) return false;
+    if (out.height < 2 * out.radius) { field = "CharacterController.height"; return false; }
+    return character::valid_character_configuration(out);
+}
+
+static bool character_unit_scale(const std::string& transform_json) {
+    const auto key = transform_json.find("\"scale\"");
+    if (key == std::string::npos) return true;
+    size_t pos = transform_json.find(':', key);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    skip_json_space(transform_json, pos);
+    if (pos >= transform_json.size() || transform_json[pos++] != '[') return false;
+    for (int i = 0; i < 3; ++i) {
+        float value = 0;
+        if (!read_character_number(transform_json, pos, value) || value != 1) return false;
+        if (pos >= transform_json.size() || transform_json[pos++] != (i == 2 ? ']' : ',')) return false;
+    }
+    return true;
+}
+
+bool validate_character_component(flecs::entity entity,
+                                  const character::CharacterController& value,
+                                  std::string& error) {
+    if (!entity.is_valid() || !entity.is_alive()) error = "invalid character entity";
+    else if (!character::valid_character_configuration(value)) error = "invalid CharacterController configuration";
+    else if (entity.target(flecs::ChildOf).id() != 0) error = "CharacterController requires a root entity";
+    else if (entity.has<physics::RigidBody>() || entity.has<physics::PhysicsVelocity>() ||
+             entity.has<physics::SphereCollider>() || entity.has<physics::CapsuleCollider>() ||
+             entity.has<physics::BoxCollider>() || entity.has<physics::ConvexHullCollider>() ||
+             entity.has<RiverFloatBody>()) error = "CharacterController conflicts with physics ownership";
+    else {
+        const auto* transform = entity.try_get<ecs::LocalTransform>();
+        if (!transform || transform->scale.x != 1 || transform->scale.y != 1 || transform->scale.z != 1 ||
+            !std::isfinite(transform->translation.x) || !std::isfinite(transform->translation.y) ||
+            !std::isfinite(transform->translation.z)) error = "CharacterController requires a finite, unit-scale transform";
+        else return true;
+    }
+    return false;
+}
+
+static bool validate_character_recipe(const RawEntityRecipe& raw,
+                                      const std::vector<std::string>& keys,
+                                      RecipeError& err) {
+    if (std::find(keys.begin(), keys.end(), "CharacterController") == keys.end()) return true;
+    auto fail = [&](const std::string& field) {
+        err = {"invalid CharacterController field or ownership: " + field, raw.authored_id, field};
+        return false;
+    };
+    character::CharacterController controller;
+    std::string field;
+    if (!parse_character(extract_component_value_json(raw.components_json, "CharacterController"), controller, field)) return fail(field);
+    if (!raw.parent_authored_id.empty()) return fail("parent");
+    if (!character_unit_scale(extract_component_value_json(raw.components_json, "LocalTransform"))) return fail("LocalTransform.scale");
+    for (const auto& key : keys) {
+        const auto* desc = find_component(key.c_str());
+        if (!desc || is_collider_kind(desc->kind) || desc->kind == ComponentKind::RigidBody ||
+            desc->kind == ComponentKind::Velocity || desc->kind == ComponentKind::RiverFloatBody) return fail(key);
+    }
+    return true;
+}
+
 bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
              const PartResolver& resolve_part) {
     if (raw.authored_id.empty()) {
@@ -687,6 +835,8 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
     auto keys = extract_top_keys(raw.components_json);
     int collider_count = 0;
     uint64_t resolved_part_hash = 0;
+
+    if (!validate_character_recipe(raw, keys, err)) return false;
 
     for (const auto& key : keys) {
         const ComponentDescriptor* desc = find_component(key.c_str());
@@ -817,6 +967,16 @@ bool instantiate(flecs::world& world,
                  const EntityRecipe* recipes, uint32_t count,
                  SceneGeneration& gen, RecipeError& err) {
     if (count == 0) return true;
+
+    // EntityRecipe is public and direct callers need not have normalized it.
+    // Preflight every controller before creating any entities in this batch.
+    // Part resolution and the existing non-controller paths remain unchanged.
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& recipe = recipes[i];
+        const RawEntityRecipe raw{recipe.authored_id, recipe.display_name,
+                                  recipe.parent_authored_id, recipe.components_json};
+        if (!validate_character_recipe(raw, extract_top_keys(raw.components_json), err)) return false;
+    }
 
     std::unordered_map<std::string, flecs::entity> id_to_entity;
     std::unordered_set<uint64_t> used_hashes;
@@ -979,6 +1139,16 @@ bool instantiate(flecs::world& world,
             case ComponentKind::RiverFloatBody:
                 if (has_river_float) e.set<RiverFloatBody>(parsed_river_float);
                 break;
+            case ComponentKind::CharacterController: {
+                character::CharacterController controller;
+                std::string field;
+                if (!parse_character(extract_component_value_json(recipe.components_json, key), controller, field)) {
+                    err = {"invalid CharacterController field: " + field, recipe.authored_id, field};
+                    return false;
+                }
+                e.set<character::CharacterController>(controller);
+                break;
+            }
             }
         }
 

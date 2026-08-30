@@ -1,6 +1,7 @@
 #pragma once
 
 #include "matter/math_types.h"
+#include "matter/character.h"
 #include "matter/props.h"
 #include "matter/scene.h"
 #include "matter/world_definition.h"
@@ -23,7 +24,8 @@ enum class ComponentKind : uint8_t {
     ConvexHullCollider,
     PartInstance,
     SectorStreaming,
-    RiverFloatBody
+    RiverFloatBody,
+    CharacterController
 };
 
 enum class FieldType : uint8_t {
@@ -156,6 +158,14 @@ bool to_props_desc(const FieldDescriptor& field, matter::props::Desc& out);
 
 bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
              const PartResolver& resolve_part = nullptr);
+
+// Stable authored identity: FNV-1a bytes with the high bit cleared.
+uint64_t hash_authored_id(const std::string& id);
+
+// Validate an edited copy against its entity before committing ECS storage.
+bool validate_character_component(flecs::entity entity,
+                                  const character::CharacterController& value,
+                                  std::string& error);
 
 bool validate_batch(const std::vector<RawEntityRecipe>& recipes,
                     std::vector<EntityRecipe>& out,

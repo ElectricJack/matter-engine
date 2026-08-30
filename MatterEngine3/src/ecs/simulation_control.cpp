@@ -9,8 +9,13 @@
 namespace matter::scene {
 
 bool SimulationControl::play(flecs::world& world, std::string& error) {
+    if (mode_ == SimulationMode::Pause) {
+        mode_ = SimulationMode::Play;
+        step_pending_ = false;
+        return true;
+    }
     if (mode_ != SimulationMode::Edit) {
-        error = "play() requires Edit mode";
+        error = "play() requires Edit or Pause mode";
         return false;
     }
     if (!capture_snapshot(world)) {
@@ -132,6 +137,10 @@ bool SimulationControl::capture_snapshot(flecs::world& world) {
             snap.river_float_state = *state;
             snap.has_river_float_state = true;
         }
+        if (const auto* controller = e.try_get<character::CharacterController>()) {
+            snap.character_controller = *controller;
+            snap.has_character_controller = true;
+        }
         snapshot_.entities.push_back(std::move(snap));
     });
 
@@ -170,6 +179,10 @@ bool SimulationControl::restore_snapshot(flecs::world& world) {
         if (snap.has_river_float_body) e.set<RiverFloatBody>(snap.river_float_body);
         if (snap.has_river_float_state)
             e.set<river_float::RiverFloatState>(snap.river_float_state);
+        if (snap.has_character_controller) {
+            e.set<character::CharacterController>(snap.character_controller);
+            e.set<character::MoveIntent>({});
+        }
         if (!snap.name.empty()) e.set_name(snap.name.c_str());
         id_to_entity[snap.id.value] = e;
     }

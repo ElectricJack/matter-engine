@@ -202,6 +202,8 @@ bool component_fetch(flecs::entity e, matter::scene::ComponentKind kind, void* o
             return fetch_component_copy<matter::physics::ConvexHullCollider>(e, out);
         case ComponentKind::PartInstance:
             return fetch_component_copy<matter::scene::PartInstance>(e, out);
+        case ComponentKind::CharacterController:
+            return fetch_component_copy<matter::character::CharacterController>(e, out);
         case ComponentKind::SectorStreaming:
             return false;  // tag component, no fields
     }
@@ -227,6 +229,12 @@ bool component_store(flecs::entity e, matter::scene::ComponentKind kind, const v
             return store_component_copy<matter::physics::ConvexHullCollider>(e, in);
         case ComponentKind::PartInstance:
             return store_component_copy<matter::scene::PartInstance>(e, in);
+        case ComponentKind::CharacterController: {
+            const auto& controller = *static_cast<const matter::character::CharacterController*>(in);
+            std::string error;
+            if (!matter::scene::validate_character_component(e, controller, error)) return false;
+            return store_component_copy<matter::character::CharacterController>(e, in);
+        }
         case ComponentKind::SectorStreaming:
             return false;
     }
@@ -389,6 +397,13 @@ matter::scene::SceneEditResult component_add(matter::WorldSession* session,
     else if (!std::strcmp(component_name, "ConvexHullCollider")) e.set<matter::physics::ConvexHullCollider>({});
     else if (!std::strcmp(component_name, "PartInstance")) e.set<matter::scene::PartInstance>({});
     else if (!std::strcmp(component_name, "SectorStreaming")) e.add<matter::streaming::SectorStreaming>();
+    else if (!std::strcmp(component_name, "CharacterController")) {
+        matter::character::CharacterController controller;
+        std::string error;
+        if (!matter::scene::validate_character_component(e, controller, error))
+            return SceneEditResult{SceneEditError::InvalidTarget, {}};
+        e.set<matter::character::CharacterController>(controller);
+    }
     else return SceneEditResult{SceneEditError::InvalidTarget, {}};
 
     return SceneEditResult{SceneEditError::None, id};
@@ -411,6 +426,7 @@ matter::scene::SceneEditResult component_remove(matter::WorldSession* session,
     else if (!std::strcmp(component_name, "ConvexHullCollider")) e.remove<matter::physics::ConvexHullCollider>();
     else if (!std::strcmp(component_name, "PartInstance")) e.remove<matter::scene::PartInstance>();
     else if (!std::strcmp(component_name, "SectorStreaming")) e.remove<matter::streaming::SectorStreaming>();
+    else if (!std::strcmp(component_name, "CharacterController")) e.remove<matter::character::CharacterController>();
     else return SceneEditResult{SceneEditError::InvalidTarget, {}};
 
     return SceneEditResult{SceneEditError::None, id};

@@ -21,6 +21,13 @@ bool add_kind(flecs::entity e, ComponentKind kind) {
         case ComponentKind::ConvexHullCollider: e.set<physics::ConvexHullCollider>({}); return true;
         case ComponentKind::PartInstance:       e.set<PartInstance>({}); return true;
         case ComponentKind::SectorStreaming:    e.add<streaming::SectorStreaming>(); return true;
+        case ComponentKind::CharacterController: {
+            character::CharacterController controller;
+            std::string error;
+            if (!validate_character_component(e, controller, error)) return false;
+            e.set<character::CharacterController>(controller);
+            return true;
+        }
     }
     return false;
 }
@@ -37,6 +44,7 @@ bool remove_kind(flecs::entity e, ComponentKind kind) {
         case ComponentKind::ConvexHullCollider: e.remove<physics::ConvexHullCollider>(); return true;
         case ComponentKind::PartInstance:       e.remove<PartInstance>(); return true;
         case ComponentKind::SectorStreaming:    e.remove<streaming::SectorStreaming>(); return true;
+        case ComponentKind::CharacterController: e.remove<character::CharacterController>(); return true;
     }
     return false;
 }
@@ -56,6 +64,8 @@ void copy_components(flecs::entity src, flecs::entity dst) {
     copy_one<physics::BoxCollider>(src, dst);
     copy_one<physics::ConvexHullCollider>(src, dst);
     copy_one<PartInstance>(src, dst);
+    copy_one<character::CharacterController>(src, dst);
+    if (src.has<character::CharacterController>()) dst.set<character::MoveIntent>({});
     if (src.has<streaming::SectorStreaming>()) dst.add<streaming::SectorStreaming>();
 }
 

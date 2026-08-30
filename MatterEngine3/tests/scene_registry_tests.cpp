@@ -2,6 +2,7 @@
 
 #include "check.h"
 #include "matter/ecs.h"
+#include "matter/character.h"
 #include "matter/physics.h"
 #include "matter/river_runtime.h"
 #include "matter/scene.h"
@@ -12,6 +13,7 @@
 #include "flecs.h"
 
 #include <string>
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -159,7 +161,7 @@ static void test_find_component_unknown() {
 }
 
 static void test_component_count() {
-    CHECK(component_count() == 10, "expected 10 registered components");
+    CHECK(component_count() == 11, "registry adds controller and keeps river float");
 }
 
 // ---------------------------------------------------------------------------
@@ -829,7 +831,152 @@ static void test_authored_ids_produce_stable_hashes() {
 // Main.
 // ---------------------------------------------------------------------------
 
+static void test_character_authoring() {
+    RawEntityRecipe raw{"river-player", "River Player", "", R"({
+      "LocalTransform":{"translation":[48,126,31],"scale":[1,1,1]},
+      "CharacterController":{"radius":0.4,"height":1.8,"moveSpeed":4.5,
+        "maxSlopeAngleDeg":45,"stepHeight":0.45,"jumpSpeed":5}})"};
+    EntityRecipe recipe;
+    RecipeError error;
+    CHECK(validate(raw, recipe, error), "valid authored controller recipe");
+    const auto* desc = find_component("CharacterController");
+    CHECK(desc && desc->field_count == 6, "only six controller fields exposed");
+    CHECK(!find_component("MoveIntent"), "intent is not authorable");
+    if (desc) {
+        character::CharacterController copy;
+        const char* fields[] = {"radius", "height", "move_speed", "max_slope_cos", "step_up_height", "jump_speed"};
+        const float values[] = {0.5f, 2.2f, 6.0f, 0.5f, 0.6f, 7.0f};
+        for (int i = 0; i < 6; ++i) {
+            const auto* field = find_field(*desc, fields[i]);
+            CHECK(field != nullptr, "snake-case storage descriptor exists");
+            if (!field) continue;
+            CHECK(field_set_float(&copy, *field, values[i]), "controller descriptor write");
+            float got = 0;
+            CHECK(field_get_float(&copy, *field, got) && got == values[i], "controller descriptor read");
+        }
+        CHECK(copy.radius == 0.5f && copy.height == 2.2f && copy.move_speed == 6 &&
+              copy.max_slope_cos == 0.5f && copy.step_up_height == 0.6f && copy.jump_speed == 7,
+              "descriptors address all six independent members");
+        for (const char* field : {"velocity", "grounded", "fixed_ticks", "jumps_consumed", "jumps_started"})
+            CHECK(!find_field(*desc, field), "runtime state not exposed for editing");
+    }
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    world.import<character::CharacterModule>();
+    world.import<SceneModule>();
+    SceneGeneration generation;
+    raw.components_json = R"({"LocalTransform":{"translation":[48,126,31],"scale":[1,1,1]},"CharacterController":
+      {"radius":0.5,"height":2.2,"moveSpeed":6,"maxSlopeAngleDeg":60,"stepHeight":0.6,"jumpSpeed":7}})";
+    const bool authored_ok = bootstrap_transactional(world, {raw}, generation, nullptr, error);
+    CHECK(authored_ok, "multiline authored controller bootstraps");
+    if (authored_ok) world.each([&](flecs::entity e, const SceneEntityId&) {
+        const auto c = e.get<character::CharacterController>();
+        const auto t = e.get<ecs::LocalTransform>();
+        CHECK(c.radius == 0.5f && c.height == 2.2f && c.move_speed == 6 && c.max_slope_cos == 0.5f &&
+              c.step_up_height == 0.6f && c.jump_speed == 7 && t.translation.x == 48 && t.translation.y == 126 && t.translation.z == 31,
+              "all six authored configuration fields and spawn reach ECS exactly");
+    });
+    for (const char* controller : {"{}", R"({"maxSlopeAngleDeg":0})", R"({"maxSlopeAngleDeg":30})", R"({"maxSlopeAngleDeg":90})",
+                                  R"({"radius":0.5,"height":1,"moveSpeed":0,"stepHeight":0,"jumpSpeed":0})"}) {
+        raw.components_json = std::string("{\"CharacterController\":") + controller + "}";
+        const bool ok = bootstrap_transactional(world, {raw}, generation, nullptr, error);
+        CHECK(ok, "defaults and inclusive controller boundaries bootstrap");
+        if (!ok) continue;
+        world.each([&](flecs::entity e, const SceneEntityId&) {
+            CHECK(e.has<character::CharacterController>() && e.has<character::MoveIntent>(), "controller auto-adds intent");
+            if (!e.has<character::CharacterController>()) return;
+            const auto c = e.get<character::CharacterController>();
+            CHECK(character::valid_character_configuration(c), "converted slope remains valid");
+            if (std::string(controller) == "{}") {
+                CHECK(c.radius == 0.4f && c.height == 1.8f && c.move_speed == 4.5f &&
+                      c.max_slope_cos == 0.70710678f && c.step_up_height == 0.45f && c.jump_speed == 5,
+                      "exact controller defaults");
+                CHECK(!c.grounded && c.fixed_ticks == 0 && c.jumps_consumed == 0 && c.jumps_started == 0 &&
+                      c.velocity.x == 0 && c.velocity.y == 0 && c.velocity.z == 0, "default runtime state zero");
+            }
+            if (std::string(controller).find(":30") != std::string::npos)
+                CHECK(std::abs(c.max_slope_cos - 0.8660254f) < 0.000001f, "degrees convert to cosine");
+            if (std::string(controller).find(":90") != std::string::npos)
+                CHECK(c.max_slope_cos == 0, "ninety degrees canonicalizes to zero");
+            CHECK(!e.has<physics::RigidBody>() && !e.has<physics::PhysicsVelocity>() &&
+                  !e.has<physics::SphereCollider>() && !e.has<physics::CapsuleCollider>() &&
+                  !e.has<physics::BoxCollider>() && !e.has<physics::ConvexHullCollider>(), "ghost has no body or collider");
+        });
+    }
+}
+
+static void test_character_validation_is_strict_and_transactional() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<SceneModule>();
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(bootstrap_transactional(world, {{"prior", "Prior", "", "{}"}}, generation, nullptr, error), "prior generation");
+    flecs::entity prior;
+    world.each([&](flecs::entity e, const SceneEntityId&) { prior = e; });
+    const auto original_generation = generation.value;
+    auto reject = [&](const std::string& json, const std::string& field, const std::string& parent = "") {
+        RawEntityRecipe raw{"river-player", "River Player", parent, json};
+        EntityRecipe recipe;
+        error = {};
+        CHECK(!validate(raw, recipe, error), "invalid controller rejected");
+        CHECK(error.authored_id == "river-player" && error.field_path == field && !error.message.empty(), "field-specific recipe error");
+        CHECK(!bootstrap_transactional(world, {raw}, generation, nullptr, error), "invalid reload rejected");
+        CHECK(generation.value == original_generation && prior.is_alive() && world.count<SceneEntityId>() == 1,
+              "failed reload leaves prior generation intact");
+    };
+    const char* fields[] = {"radius", "height", "moveSpeed", "maxSlopeAngleDeg", "stepHeight", "jumpSpeed"};
+    for (const char* field : fields) {
+        for (const char* value : {"\"4\"", "true", "null", "[]", "{}", "nan", "inf", "1e999", "-1"})
+            reject(std::string("{\"CharacterController\":{\"") + field + "\":" + value + "}}", std::string("CharacterController.") + field);
+    }
+    for (const char* field : {"radius", "height"})
+        reject(std::string("{\"CharacterController\":{\"") + field + "\":0}}", std::string("CharacterController.") + field);
+    reject(R"({"CharacterController":{"radius":1,"height":1.9}})", "CharacterController.height");
+    reject(R"({"CharacterController":{"maxSlopeAngleDeg":90.01}})", "CharacterController.maxSlopeAngleDeg");
+    reject(R"({"CharacterController":{"radius":0.4,"radius":0.5}})", "CharacterController.radius");
+    for (const char* value : {"0.4junk", "0x1", "+1", "01", "1.", "1e"})
+        reject(std::string("{\"CharacterController\":{\"radius\":") + value + "}}", "CharacterController.radius");
+    for (const char* field : {"unknown", "velocity", "grounded", "fixed_ticks", "jumps_consumed", "jumps_started", "move_speed", "max_slope_cos"})
+        reject(std::string("{\"CharacterController\":{\"") + field + "\":1}}", std::string("CharacterController.") + field);
+    for (const char* value : {"null", "true", "[]", "1", "\"controller\""})
+        reject(std::string("{\"CharacterController\":") + value + "}", "CharacterController");
+    reject(R"({"CharacterController":{},"MoveIntent":{}})", "MoveIntent");
+    for (const char* conflict : {"RigidBody", "PhysicsVelocity", "SphereCollider", "CapsuleCollider", "BoxCollider", "ConvexHullCollider", "RiverFloatBody"})
+        reject(std::string("{\"CharacterController\":{},\"") + conflict + "\":{}}", conflict);
+    reject(R"({"CharacterController":{}})", "parent", "prior");
+    for (const char* scale : {"[2,1,1]", "[1,2,1]", "[1,1,2]", "[nan,1,1]", "[1,1]", "[1,1,1,1]", "\"unit\"", "null"})
+        reject(std::string("{\"CharacterController\":{},\"LocalTransform\":{\"scale\":") + scale + "}}", "LocalTransform.scale");
+}
+
+static void test_character_instantiation_preflights_before_mutation() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    world.import<character::CharacterModule>();
+    world.import<SceneModule>();
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(bootstrap_transactional(world, {{"prior", "Prior", "", "{}"}}, generation, nullptr, error), "instantiate preflight prior scene");
+    for (const char* json : {R"({"CharacterController":{"radius":0}})",
+                             R"({"CharacterController":{},"MoveIntent":{}})",
+                             R"({"CharacterController":{},"RigidBody":{}})",
+                             R"({"CharacterController":{},"LocalTransform":{"scale":[2,1,1]}})"}) {
+        EntityRecipe batch[] = {{"before-invalid", "", "", "{}"}, {"invalid", "", "", json}};
+        const auto before = generation.value;
+        CHECK(!instantiate(world, batch, 2, generation, error), "direct controller instantiation rejects invalid recipe");
+        CHECK(generation.value == before && world.count<SceneEntityId>() == 1,
+              "controller preflight precedes every entity mutation in a batch");
+    }
+}
+
 int main() {
+    CHECK(hash_authored_id("") == 0x4bf29ce484222325ULL, "authored hash retains FNV offset with high bit cleared");
+    CHECK(hash_authored_id("hello") == 0x2430d84680aabd0bULL, "authored hash retains FNV-1a byte semantics and high-bit mask");
+    test_character_authoring();
+    test_character_validation_is_strict_and_transactional();
+    test_character_instantiation_preflights_before_mutation();
     test_scene_module_registers_scene_entity_id();
     test_scene_module_registers_part_instance();
     test_scene_module_registers_part_instance_error();
