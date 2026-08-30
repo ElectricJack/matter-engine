@@ -3,11 +3,13 @@
 #include "../src/ecs/physics_context.h"
 #include "matter/character.h"
 #include "matter/ecs.h"
+#include "matter/river_runtime.h"
 #include "terrain_collision/terrain_collision_artifact.h"
 
 #include <cmath>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace matter;
@@ -78,6 +80,26 @@ flecs::entity spawn(flecs::world& world, Float3 position) {
     return world.entity()
         .set<ecs::LocalTransform>({position})
         .set<character::CharacterController>({});
+}
+
+flecs::entity add_box(
+    flecs::world& world, physics::RigidBodyType type, Float3 position,
+    Float3 half_extents, bool sensor = false) {
+    physics::RigidBody body{};
+    body.type = type;
+    physics::BoxCollider box{};
+    box.half_extents = half_extents;
+    box.properties.sensor = sensor;
+    return world.entity()
+        .set<ecs::LocalTransform>({position})
+        .set<physics::RigidBody>(body)
+        .set<physics::BoxCollider>(box);
+}
+
+physics::CharacterMoveInput mover_input(Float3 position) {
+    physics::CharacterMoveInput input{};
+    input.position = position;
+    return input;
 }
 
 void test_runtime_character_settles_on_installed_terrain() {
@@ -249,6 +271,152 @@ void test_fixed_updates_are_independent_per_character() {
           "removing a controller removes its runtime intent");
 }
 
+void test_mover_rejects_foreign_and_in_step_calls_transactionally() {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    install_flat_terrain(world);
+    auto* context = world.get<physics::detail::PhysicsContextRef>().value;
+    const physics::CharacterMoveInput input = mover_input({0, 1, 0});
+    physics::CharacterMoveOutput foreign{{4, 5, 6}, {7, 8, 9}, {0, 0, 1}, true};
+    bool foreign_ok = true;
+    std::thread foreign_thread([&] {
+        foreign_ok = context->move_character(input, foreign);
+    });
+    foreign_thread.join();
+    CHECK(!foreign_ok && foreign.position.x == 4.0f && foreign.velocity.y == 8.0f &&
+              foreign.grounded,
+          "foreign-thread mover rejection leaves output untouched");
+
+    context->set_stepping_for_test(true);
+    physics::CharacterMoveOutput stepping{{1, 2, 3}, {4, 5, 6}, {0, 0, 1}, true};
+    CHECK(!context->move_character(input, stepping) && stepping.position.x == 1.0f &&
+              stepping.velocity.z == 6.0f && stepping.grounded,
+          "in-step mover rejection leaves output untouched");
+    context->set_stepping_for_test(false);
+}
+
+void test_mover_filters_nonstatic_and_sensor_shapes_without_mutation() {
+    const struct Case {
+        physics::RigidBodyType type;
+        bool sensor;
+        bool supports;
+        const char* message;
+    } cases[] = {
+        {physics::RigidBodyType::Static, false, true, "static boulder supports the ghost"},
+        {physics::RigidBodyType::Dynamic, false, false, "dynamic body is ignored as support"},
+        {physics::RigidBodyType::Kinematic, false, false, "kinematic body is ignored as support"},
+        {physics::RigidBodyType::Static, true, false, "sensor is ignored as support"},
+    };
+    for (const Case& test : cases) {
+        ecs_runtime::Runtime runtime;
+        auto& world = runtime.world();
+        const flecs::entity boulder = add_box(
+            world, test.type, {0, 0, 0}, {2, 0.5f, 2}, test.sensor);
+        tick(runtime, 1);
+        auto* context = world.get<physics::detail::PhysicsContextRef>().value;
+        physics::detail::PhysicsBodyState before{};
+        CHECK(context->get_body_state(boulder.id(), before),
+              "queried body has a reconciled Box3D state");
+        physics::CharacterMoveOutput output{};
+        const bool moved = physics::physics_move_character(
+            world, mover_input({0, 1.42f, 0}), output);
+        physics::detail::PhysicsBodyState after{};
+        CHECK(moved && output.grounded == test.supports, test.message);
+        CHECK(context->get_body_state(boulder.id(), after) &&
+                  near(before.position.x, after.position.x, 1.0e-6f) &&
+                  near(before.position.y, after.position.y, 1.0e-6f) &&
+                  near(before.linear_velocity.y, after.linear_velocity.y, 1.0e-6f),
+              "ghost query leaves queried body state unchanged");
+    }
+}
+
+void test_mover_blocks_only_static_nonsensor_boulders() {
+    const struct Case {
+        physics::RigidBodyType type;
+        bool sensor;
+        bool blocks;
+        const char* message;
+    } cases[] = {
+        {physics::RigidBodyType::Static, false, true, "static boulder blocks the ghost"},
+        {physics::RigidBodyType::Dynamic, false, false, "dynamic boulder does not block the ghost"},
+        {physics::RigidBodyType::Kinematic, false, false, "kinematic boulder does not block the ghost"},
+        {physics::RigidBodyType::Static, true, false, "sensor boulder does not block the ghost"},
+    };
+    for (const Case& test : cases) {
+        ecs_runtime::Runtime runtime;
+        auto& world = runtime.world();
+        install_flat_terrain(world);
+        const flecs::entity boulder = add_box(
+            world, test.type, {2, 0.5f, 0}, {0.5f, 0.5f, 2}, test.sensor);
+        tick(runtime, 1);
+        auto* context = world.get<physics::detail::PhysicsContextRef>().value;
+        physics::detail::PhysicsBodyState before{};
+        CHECK(context->get_body_state(boulder.id(), before),
+              "blocking fixture body is reconciled");
+        physics::CharacterMoveInput input = mover_input({0, 0.92f, 0});
+        input.desired_horizontal_velocity = {4.5f, 0, 0};
+        physics::CharacterMoveOutput output{};
+        for (int index = 0; index < 60; ++index) {
+            input.position = output.position;
+            if (index == 0) input.position = {0, 0.92f, 0};
+            CHECK(physics::physics_move_character(world, input, output),
+                  "ghost mover query succeeds");
+            input.velocity = output.velocity;
+        }
+        physics::detail::PhysicsBodyState after{};
+        CHECK((test.blocks ? output.position.x < 1.2f : output.position.x > 3.0f),
+              test.message);
+        CHECK(context->get_body_state(boulder.id(), after) &&
+                  near(before.position.x, after.position.x, 1.0e-6f) &&
+                  near(before.position.y, after.position.y, 1.0e-6f),
+              "blocking query leaves body state unchanged");
+    }
+}
+
+void test_terrain_replacement_and_removal_change_support() {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    install_flat_terrain(world);
+    physics::CharacterMoveOutput output{};
+    CHECK(physics::physics_move_character(world, mover_input({0, 1, 0}), output) &&
+              output.grounded && near(output.position.y, 0.92f, 0.05f),
+          "initial installed generation supports at its flat rest height");
+    install_tiles(world, 22, {xz_quad(-16, 16, -16, 16, 2, 2, 22)});
+    CHECK(physics::physics_move_character(world, mover_input({0, 3, 0}), output) &&
+              output.grounded && near(output.position.y, 2.92f, 0.05f),
+          "replaced terrain generation changes the support height");
+    world.get<physics::detail::PhysicsContextRef>().value->clear_terrain_collision();
+    CHECK(physics::physics_move_character(world, mover_input({0, 3, 0}), output) &&
+              !output.grounded,
+          "removing the installed generation removes support without a fallback floor");
+}
+
+void test_invalid_ecs_ownership_preserves_latches_and_counters() {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    const flecs::entity parent = world.entity();
+    const flecs::entity parented = spawn(world, {0, 3, 0}).child_of(parent);
+    const flecs::entity scaled = spawn(world, {1, 3, 0});
+    scaled.set<ecs::LocalTransform>({{1, 3, 0}, {}, {2, 1, 1}});
+    const flecs::entity body = spawn(world, {2, 3, 0}).add<physics::RigidBody>();
+    const flecs::entity collider = spawn(world, {3, 3, 0}).add<physics::SphereCollider>();
+    const flecs::entity velocity = spawn(world, {4, 3, 0}).add<physics::PhysicsVelocity>();
+    const flecs::entity river = spawn(world, {5, 3, 0}).add<RiverFloatBody>();
+    const flecs::entity invalids[] = {parented, scaled, body, collider, velocity, river};
+    for (const flecs::entity entity : invalids)
+        entity.set<character::MoveIntent>({{}, true, false});
+    tick(runtime, 1);
+    for (const flecs::entity entity : invalids) {
+        const auto controller = entity.get<character::CharacterController>();
+        const auto transform = entity.get<ecs::LocalTransform>();
+        const auto intent = entity.get<character::MoveIntent>();
+        CHECK(controller.fixed_ticks == 0 && controller.jumps_consumed == 0 &&
+                  controller.jumps_started == 0 && intent.jump &&
+                  near(transform.translation.y, 3.0f, 1.0e-6f),
+              "invalid ECS ownership preserves transform, counters, and latch");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -258,5 +426,10 @@ int main() {
     test_jump_latch_is_fixed_step_owned();
     test_slope_walls_and_finite_terrain();
     test_fixed_updates_are_independent_per_character();
+    test_mover_rejects_foreign_and_in_step_calls_transactionally();
+    test_mover_filters_nonstatic_and_sensor_shapes_without_mutation();
+    test_mover_blocks_only_static_nonsensor_boulders();
+    test_terrain_replacement_and_removal_change_support();
+    test_invalid_ecs_ownership_preserves_latches_and_counters();
     return check_summary();
 }

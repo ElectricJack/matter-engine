@@ -1807,9 +1807,9 @@ std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
 
 bool PhysicsContext::move_character(
     const CharacterMoveInput& input, CharacterMoveOutput& output) {
-    if (impl_ == nullptr || impl_->stepping || !world_is_valid() ||
+    if (impl_ == nullptr ||
         std::this_thread::get_id() != impl_->owner_thread ||
-        !valid_character_input(input)) {
+        impl_->stepping || !world_is_valid() || !valid_character_input(input)) {
         return false;
     }
 
