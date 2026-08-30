@@ -258,6 +258,144 @@ void test_nonfinite_controller_configuration_preserves_ecs_state() {
     }
 }
 
+// Each group can run alone so a Box3D assertion in a RED run does not hide
+// the other numerical boundaries. With no filter all groups run normally.
+void test_finite_derived_overflow_preserves_output(const std::string& group = {}) {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    const float largest = std::numeric_limits<float>::max();
+    const physics::CharacterMoveOutput sentinel{{4, 5, 6}, {7, 8, 9}, {10, 11, 12}, true};
+    bool selected = false;
+    auto rejected = [&](const char* kind, physics::CharacterMoveInput input) {
+        if (!group.empty() && group != kind) return;
+        selected = true;
+        std::printf("numeric boundary: %s\n", kind);
+        std::fflush(stdout);
+        auto output = sentinel;
+        CHECK(!physics::physics_move_character(world, input, output) &&
+                  same_output(output, sentinel), kind);
+    };
+    for (int axis = 0; axis != 3; ++axis) {
+        for (float sign : {1.0f, -1.0f}) {
+            auto input = mover_input({0, 3, 0});
+            input.gravity = {};
+            set_component(input.velocity, axis, sign * largest);
+            set_component(input.gravity, axis, sign * largest);
+            input.dt = 1.0f / 60.0f;
+            rejected("integration", input);
+
+            input.velocity = {};
+            input.dt = 2.0f;
+            rejected("gravity-product", input);
+
+            input.gravity = {};
+            set_component(input.velocity, axis, sign * largest);
+            rejected("displacement", input);
+
+            input = mover_input({0, 3, 0});
+            input.gravity = {};
+            input.dt = 1.0f;
+            set_component(input.velocity, axis, sign * 1.0e20f);
+            rejected("query-norm", input);
+
+            input.velocity = {};
+            set_component(input.position, axis, sign * largest * 0.75f);
+            set_component(input.velocity, axis, sign * largest * 0.5f);
+            rejected("position", input);
+
+            input.velocity = {};
+            rejected("query-bounds", input);
+        }
+    }
+    auto input = mover_input({0, 3, 0});
+    input.radius = largest;
+    input.step_height = largest;
+    rejected("support-sum", input);
+    input = mover_input({0, 3, 0});
+    input.step_height = largest;
+    rejected("support-norm", input);
+    input = mover_input({0, 3, 0});
+    input.half_segment = 1.0e20f;
+    rejected("capsule-norm", input);
+    input = mover_input({0, 3, 0});
+    input.radius = 1.0e20f;
+    rejected("capsule-radius", input);
+    CHECK(selected, "numeric test filter selects a real boundary");
+}
+
+void test_large_finite_values_with_safe_derived_motion_are_accepted() {
+    ecs_runtime::Runtime runtime;
+    auto& world = runtime.world();
+    for (int axis = 0; axis != 3; ++axis) {
+        auto input = mover_input({0, 0, 0});
+        input.gravity = {};
+        input.dt = 1.0e-30f;
+        set_component(input.velocity, axis, std::numeric_limits<float>::max());
+        physics::CharacterMoveOutput output{};
+        CHECK(physics::physics_move_character(world, input, output) &&
+                  std::isfinite(output.position.x) && std::isfinite(output.position.y) &&
+                  std::isfinite(output.position.z) && !output.grounded &&
+                  output.velocity.x == input.velocity.x &&
+                  output.velocity.y == input.velocity.y &&
+                  output.velocity.z == input.velocity.z,
+              "large finite velocity remains accepted when its displacement is safe");
+    }
+    auto input = mover_input({1.0e12f, 1.0e12f, -1.0e12f});
+    input.gravity = {};
+    physics::CharacterMoveOutput output{};
+    CHECK(physics::physics_move_character(world, input, output) &&
+              output.position.x == input.position.x && output.position.y == input.position.y &&
+              output.position.z == input.position.z && !output.grounded,
+          "large representable world coordinates are not subject to a gameplay cap");
+}
+
+void test_finite_overflow_preserves_ecs_transaction() {
+    const float largest = std::numeric_limits<float>::max();
+    for (int axis = 0; axis != 3; ++axis) {
+        ecs_runtime::Runtime runtime;
+        auto& world = runtime.world();
+        physics::PhysicsSettings settings{};
+        settings.gravity = {};
+        set_component(settings.gravity, axis, largest);
+        world.set<physics::PhysicsSettings>(settings);
+        const ecs::LocalTransform expected{{1, 3, 5}, {0, 0, 0, 1}, {1, 1, 1}};
+        const flecs::entity player = spawn(world, expected.translation);
+        character::CharacterController controller{};
+        controller.velocity = {7, 8, 9};
+        set_component(controller.velocity, axis, largest);
+        controller.fixed_ticks = 11;
+        controller.jumps_consumed = 12;
+        controller.jumps_started = 13;
+        // Airborne pending jump must remain pending if movement fails.
+        controller.grounded = false;
+        const character::MoveIntent intent{{1, 2, 3}, true, true};
+        player.set<ecs::LocalTransform>(expected);
+        player.set<character::CharacterController>(controller);
+        player.set<character::MoveIntent>(intent);
+        tick(runtime, 1);
+        const auto after = player.get<character::CharacterController>();
+        const auto after_intent = player.get<character::MoveIntent>();
+        CHECK(same_transform(player.get<ecs::LocalTransform>(), expected) &&
+                  after.radius == controller.radius && after.height == controller.height &&
+                  after.move_speed == controller.move_speed &&
+                  after.max_slope_cos == controller.max_slope_cos &&
+                  after.step_up_height == controller.step_up_height &&
+                  after.jump_speed == controller.jump_speed &&
+                  after.velocity.x == controller.velocity.x &&
+                  after.velocity.y == controller.velocity.y &&
+                  after.velocity.z == controller.velocity.z &&
+                  after.grounded == controller.grounded &&
+                  after.fixed_ticks == controller.fixed_ticks &&
+                  after.jumps_consumed == controller.jumps_consumed &&
+                  after.jumps_started == controller.jumps_started &&
+                  after_intent.move_dir.x == intent.move_dir.x &&
+                  after_intent.move_dir.y == intent.move_dir.y &&
+                  after_intent.move_dir.z == intent.move_dir.z &&
+                  after_intent.jump == intent.jump && after_intent.sprint == intent.sprint,
+              "finite arithmetic failure preserves full ECS transform, controller and intent");
+    }
+}
+
 void test_grounded_walking_normalizes_and_sprints() {
     ecs_runtime::Runtime runtime;
     auto& world = runtime.world();
@@ -634,11 +772,21 @@ void test_invalid_ecs_ownership_preserves_latches_and_counters() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2) {
+        if (std::string(argv[1]) == "ecs-numeric")
+            test_finite_overflow_preserves_ecs_transaction();
+        else
+            test_finite_derived_overflow_preserves_output(argv[1]);
+        return check_summary();
+    }
     test_runtime_character_settles_on_installed_terrain();
     test_configuration_and_mover_rejections_are_transactional();
     test_every_invalid_mover_input_preserves_output();
     test_nonfinite_controller_configuration_preserves_ecs_state();
+    test_finite_derived_overflow_preserves_output();
+    test_finite_overflow_preserves_ecs_transaction();
+    test_large_finite_values_with_safe_derived_motion_are_accepted();
     test_grounded_walking_normalizes_and_sprints();
     test_large_finite_xz_intent_normalizes_without_overflow();
     test_jump_latch_is_fixed_step_owned();

@@ -274,6 +274,45 @@ bool valid_character_input(const CharacterMoveInput& input) noexcept {
            input.step_height >= 0.0f;
 }
 
+bool character_float_range(double value) noexcept {
+    return std::isfinite(value) && value >= -FLT_MAX && value <= FLT_MAX;
+}
+
+bool character_position_range(b3Pos value) noexcept {
+    return character_float_range(value.x) && character_float_range(value.y) &&
+           character_float_range(value.z);
+}
+
+bool character_query_vector(b3Vec3 value) noexcept {
+    // Box3D normalizes ray/capsule vectors and uses squared distances. Merely
+    // finite components do not make those float operations representable.
+    const double squared = static_cast<double>(value.x) * value.x +
+        static_cast<double>(value.y) * value.y +
+        static_cast<double>(value.z) * value.z;
+    return character_float_range(squared) &&
+           std::isfinite(b3LengthSquared(value));
+}
+
+bool character_query_bounds(b3Pos position, const b3Capsule& capsule,
+                            b3Vec3 translation) noexcept {
+    const float reach = capsule.center2.y + capsule.radius;
+    const b3Vec3 extent{capsule.radius, reach, capsule.radius};
+    const b3Pos lower{position.x - extent.x, position.y - extent.y,
+                      position.z - extent.z};
+    const b3Pos upper{position.x + extent.x, position.y + extent.y,
+                      position.z + extent.z};
+    if (!character_position_range(lower) || !character_position_range(upper))
+        return false;
+    const b3AABB box = b3OffsetAABB(
+        {{-extent.x, -extent.y, -extent.z}, extent}, position);
+    // BoxCast computes (lower + upper) / 2, (upper - lower) / 2, and
+    // translated bounds in float, even though the query origin is double.
+    return finite(engine_vector(b3Add(box.lowerBound, box.upperBound))) &&
+           finite(engine_vector(b3Sub(box.upperBound, box.lowerBound))) &&
+           finite(engine_vector(b3Add(box.lowerBound, translation))) &&
+           finite(engine_vector(b3Add(box.upperBound, translation)));
+}
+
 bool mover_accepts_static_shape(b3ShapeId shape) {
     const b3BodyId body = b3Shape_GetBody(shape);
     return b3Body_IsValid(body) && b3Body_GetType(body) == b3_staticBody &&
@@ -284,6 +323,7 @@ struct StaticMoverPlaneGather {
     b3CollisionPlane* planes = nullptr;
     int* count = nullptr;
     int capacity = 0;
+    bool valid = true;
 };
 
 bool static_mover_plane_callback(
@@ -292,6 +332,11 @@ bool static_mover_plane_callback(
     auto* gather = static_cast<StaticMoverPlaneGather*>(context);
     for (int index = 0; index < count && *gather->count < gather->capacity;
          ++index) {
+        if (!character_query_vector(results[index].plane.normal) ||
+            !std::isfinite(results[index].plane.offset)) {
+            gather->valid = false;
+            return false;
+        }
         gather->planes[*gather->count] =
             {results[index].plane, FLT_MAX, 0.0f, true};
         ++*gather->count;
@@ -308,6 +353,7 @@ struct StaticRayResult {
     b3Pos point{};
     b3Vec3 normal{};
     float fraction = 1.0f;
+    bool valid = true;
 };
 
 float static_ray_callback(
@@ -321,6 +367,11 @@ float static_ray_callback(
     void* context) {
     if (!mover_accepts_static_shape(shape)) return -1.0f;
     auto* result = static_cast<StaticRayResult*>(context);
+    if (!character_position_range(point) || !character_query_vector(normal) ||
+        !std::isfinite(fraction) || fraction < 0.0f || fraction > 1.0f) {
+        result->valid = false;
+        return 0.0f;
+    }
     if (!result->hit || fraction < result->fraction) {
         result->hit = true;
         result->point = point;
@@ -1823,17 +1874,28 @@ bool PhysicsContext::move_character(
     const b3Vec3 gravity = box_vector(input.gravity);
 
     const float snap_reach = input.radius + input.step_height + 0.05f;
-    auto probe_ground = [&](b3Pos at) {
+    const float support_reach = input.radius + snap_reach;
+    const b3Vec3 down{0.0f, -support_reach, 0.0f};
+    if (!character_query_vector(down) ||
+        !character_query_vector({0.0f, 2.0f * input.half_segment, 0.0f}) ||
+        !character_query_vector({input.radius, input.half_segment + input.radius,
+                                 input.radius})) {
+        return false;
+    }
+    auto probe_ground = [&](b3Pos at, StaticRayResult& result) {
         at.y -= input.half_segment;
-        StaticRayResult result{};
-        const b3Vec3 down{0.0f, -(input.radius + snap_reach), 0.0f};
+        if (!character_position_range(at) ||
+            !finite(engine_vector(b3Add(box_vector(engine_position(at)), down))))
+            return false;
         b3World_CastRay(
             world, at, down, filter, static_ray_callback, &result);
-        return result;
+        return result.valid;
     };
 
     const bool rising = velocity.y > 0.001f;
-    const StaticRayResult initial_ground = probe_ground(position);
+    StaticRayResult initial_ground{};
+    if (!character_query_bounds(position, capsule, {}) ||
+        !probe_ground(position, initial_ground)) return false;
     const bool standable = initial_ground.hit && !rising &&
         initial_ground.normal.y >= input.max_slope_cos;
     CharacterMoveOutput next{};
@@ -1848,53 +1910,79 @@ bool PhysicsContext::move_character(
     velocity.x += gravity.x * input.dt;
     velocity.y += gravity.y * input.dt;
     velocity.z += gravity.z * input.dt;
+    if (!finite(engine_vector(velocity))) return false;
     b3Vec3 move_velocity = velocity;
     if (standable) move_velocity.y = 0.0f;
+    const b3Vec3 displacement{move_velocity.x * input.dt,
+                              move_velocity.y * input.dt,
+                              move_velocity.z * input.dt};
+    if (!character_query_vector(displacement)) return false;
     b3Pos target = position;
-    target.x += move_velocity.x * input.dt;
-    target.y += move_velocity.y * input.dt;
-    target.z += move_velocity.z * input.dt;
+    target.x += displacement.x;
+    target.y += displacement.y;
+    target.z += displacement.z;
+    if (!character_position_range(target)) return false;
 
     constexpr int kPlaneCapacity = 32;
     b3CollisionPlane planes[kPlaneCapacity]{};
     int plane_count = 0;
     for (int iteration = 0; iteration < 5; ++iteration) {
+        if (!character_query_bounds(position, capsule, {})) return false;
         plane_count = 0;
         StaticMoverPlaneGather gather{planes, &plane_count, kPlaneCapacity};
         b3World_CollideMover(
             world, position, &capsule, filter, static_mover_plane_callback,
             &gather);
+        if (!gather.valid) return false;
+        const b3Pos target_difference{target.x - position.x,
+                                      target.y - position.y,
+                                      target.z - position.z};
+        if (!character_position_range(target_difference)) return false;
         const b3Vec3 target_delta{
-            static_cast<float>(target.x - position.x),
-            static_cast<float>(target.y - position.y),
-            static_cast<float>(target.z - position.z)};
+            static_cast<float>(target_difference.x),
+            static_cast<float>(target_difference.y),
+            static_cast<float>(target_difference.z)};
+        if (!character_query_vector(target_delta)) return false;
         b3Vec3 delta = b3SolvePlanes(target_delta, planes, plane_count).delta;
+        if (!character_query_vector(delta) ||
+            !character_query_bounds(position, capsule, delta)) return false;
+        for (int index = 0; index < plane_count; ++index)
+            if (!std::isfinite(planes[index].push)) return false;
         const float fraction = b3World_CastMover(
             world, position, &capsule, delta, filter, static_mover_filter,
             nullptr);
+        if (!std::isfinite(fraction) || fraction < 0.0f || fraction > 1.0f)
+            return false;
         delta.x *= fraction;
         delta.y *= fraction;
         delta.z *= fraction;
         position.x += delta.x;
         position.y += delta.y;
         position.z += delta.z;
+        if (!character_position_range(position)) return false;
         if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z <
             1.0e-4f) {
             break;
         }
     }
-    if (plane_count > 0) velocity = b3ClipVector(velocity, planes, plane_count);
+    if (plane_count > 0) {
+        if (!character_query_vector(velocity)) return false;
+        velocity = b3ClipVector(velocity, planes, plane_count);
+        if (!finite(engine_vector(velocity))) return false;
+    }
 
     if (!rising) {
-        const StaticRayResult ground = probe_ground(position);
+        StaticRayResult ground{};
+        if (!probe_ground(position, ground)) return false;
         if (ground.hit && ground.normal.y >= input.max_slope_cos) {
             constexpr float kSkin = 0.02f;
             const float normal_y = std::max(ground.normal.y, 0.5f);
             const float rest_y = static_cast<float>(ground.point.y) +
                 input.radius / normal_y + input.half_segment + kSkin;
             const float delta_y = rest_y - static_cast<float>(position.y);
+            if (!std::isfinite(rest_y) || !std::isfinite(delta_y)) return false;
             if (delta_y <= input.step_height &&
-                delta_y >= -(input.radius + snap_reach)) {
+                delta_y >= -support_reach) {
                 position.y = rest_y;
                 if (velocity.y < 0.0f) velocity.y = 0.0f;
                 next.grounded = true;
@@ -1902,6 +1990,8 @@ bool PhysicsContext::move_character(
             }
         }
     }
+    if (!character_position_range(position) || !finite(engine_vector(velocity)) ||
+        !finite(next.ground_normal)) return false;
     next.position = engine_position(position);
     next.velocity = engine_vector(velocity);
     output = next;
