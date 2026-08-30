@@ -332,6 +332,9 @@ if(BUILD_TESTING)
         MatterEngine3/tests/ecs_tests.cpp)
     matter_add_engine_cpu_test(character_controller_tests
         MatterEngine3/tests/character_controller_tests.cpp)
+    matter_add_engine_cpu_test(character_walk_controller_tests
+        MatterEngine3/tests/character_walk_controller_tests.cpp
+        MatterEditor/src/character_walk_controller.cpp)
     matter_add_engine_cpu_test(terrain_collision_physics_tests
         MatterEngine3/tests/terrain_collision_physics_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_session_tests
@@ -423,6 +426,7 @@ if(BUILD_TESTING)
     add_custom_target(matter_character_integration_tests)
     add_dependencies(matter_character_integration_tests
         character_controller_tests
+        character_walk_controller_tests
         ecs_tests
         physics_tests
         terrain_collision_definition_tests

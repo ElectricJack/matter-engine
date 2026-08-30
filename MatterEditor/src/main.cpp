@@ -13,6 +13,7 @@
 #include "ecs/scene_registry.h"
 #include "scene/scene_service.h"  // E5c: session->scene_service() (world_session.h fwd-decls it)
 #include "camera_controller.h"
+#include "character_walk_controller.h"
 #include "camera_focus.h"
 #include "camera_orbit.h"
 #include "editor_model.h"
@@ -231,9 +232,7 @@ bool component_store(flecs::entity e, matter::scene::ComponentKind kind, const v
             return store_component_copy<matter::scene::PartInstance>(e, in);
         case ComponentKind::CharacterController: {
             const auto& controller = *static_cast<const matter::character::CharacterController*>(in);
-            std::string error;
-            if (!matter::scene::validate_character_component(e, controller, error)) return false;
-            return store_component_copy<matter::character::CharacterController>(e, in);
+            return viewer::store_character_component(e, controller);
         }
         case ComponentKind::SectorStreaming:
             return false;
@@ -1431,6 +1430,8 @@ int main() {
     editor_model.attach_scheduler(property_scheduler);
     viewer::SelectionSet selection_set;
     matter::scene::SimulationControl sim_control;
+    viewer::CharacterWalkController character_walk;
+    viewer::CharacterJumpEdge character_jump;
     viewer::ConsoleLog console_log;
     // Mirror the engine-wide matter::log stream into this panel for as long as
     // console_log lives (guard removes the sink before console_log destructs).
@@ -2287,9 +2288,19 @@ int main() {
     const matter::evt::lane app_lane = matter::evt::lane::app;
     registry.claim_lane(app_lane);
 
+    auto reset_character_walk = [&]() {
+        const bool was_walking = character_walk.enabled();
+        character_walk.reset(session->ecs());
+        character_jump.reset();
+        if (was_walking) {
+            camera_capture = false;
+            camera_controller.set_capture(window, false, false);
+        }
+    };
     // Clears app-side models referencing a dead/reloaded world. The E5 scene
     // adapter resnapshots here; E4b clears selection + editor selection + sim.
     auto clear_app_models = [&]() {
+        reset_character_walk();
         selection_set.clear();
         editor_model.clear_selection();
         sim_control = matter::scene::SimulationControl{};
@@ -2551,10 +2562,64 @@ int main() {
                 return viewer::FifoSimTransport::Result::failed(sim_err);
             }
             if (cmd.action == Action::Stop) {
+                reset_character_walk();
                 selection_set.clear();
                 editor_model.clear_selection();
             }
             return viewer::FifoSimTransport::Result::succeeded(true);
+        });
+
+    // This command owns authored-player input, so queued commands may never
+    // cross a SessionBinding epoch. G executes this same typed policy.
+    auto reg_fifo_character = registry.must_register_handler<viewer::FifoCharacter>(
+        matter::evt::CommandScope::ActiveSession, app_lane,
+        [&](const viewer::FifoCharacter& cmd) {
+            using Action = viewer::FifoCharacter::Action;
+            std::string character_error;
+            bool ok = false;
+            switch (cmd.action) {
+                case Action::Walk: {
+                    const auto* state = session->ecs().try_get<matter::ecs::WorldRuntimeState>();
+                    const auto collision = session->terrain_collision_status().state;
+                    const bool ready = state && state->status == matter::ecs::WorldStatus::Ready &&
+                        (collision == matter::TerrainCollisionState::Installed ||
+                         collision == matter::TerrainCollisionState::Disabled) &&
+                        !binding.pending_reload() && binding.pending_switch() < 0;
+                    ok = character_walk.set_enabled(session->ecs(), sim_control,
+                                                    cmd.enabled, ready, character_error);
+                    if (ok) {
+                        character_jump.reset();
+                        camera_capture = character_walk.enabled();
+                        camera_controller.set_capture(window, camera_capture, camera_prefs.raw_mouse_motion);
+                    }
+                    break;
+                }
+                case Action::Intent:
+                    ok = character_walk.set_intent(session->ecs(), cmd.direction, cmd.sprint, character_error);
+                    // Make same-pump status observe the accepted persistent
+                    // direction; sample never consumes a pending jump.
+                    if (ok) character_walk.sample(session->ecs(), sim_control.mode(), {});
+                    break;
+                case Action::ClearIntent:
+                    character_walk.clear_intent(session->ecs());
+                    character_jump.reset();
+                    ok = true;
+                    break;
+                case Action::Jump:
+                    ok = character_walk.latch_jump(session->ecs(), sim_control.mode(), character_error);
+                    break;
+                case Action::Status: {
+                    std::string json;
+                    ok = character_walk.status_json(session->ecs(), sim_control.mode(), cmd.label, json, character_error);
+                    if (ok) std::printf("character_status %s\n", json.c_str());
+                    break;
+                }
+            }
+            if (!ok) {
+                std::printf("character: failed %s\n", character_error.c_str());
+                return viewer::FifoCharacter::Result::failed(character_error);
+            }
+            return viewer::FifoCharacter::Result::succeeded(true);
         });
 
     // ---- E5c scene-edit handlers (ActiveSession; SceneService) --------------
@@ -2809,6 +2874,10 @@ int main() {
             return ms;
         };
         glfwPollEvents();
+        // Also disarm while minimized: begin_frame may skip the later input
+        // sample, and holding Space through refocus must not create a press.
+        if (glfwGetWindowAttrib(window, GLFW_FOCUSED) != GLFW_TRUE)
+            character_jump.reset();
         // Retire preview textures queued on earlier frames. Must run before any
         // drawing: they are freed here precisely because freeing them at the
         // point of retirement would pull a descriptor out from under the draw
@@ -2961,6 +3030,12 @@ int main() {
                                    std::get_if<viewer::FifoHistoryReset>(
                                        &presentation_command.command)) {
                         registry.dispatch(*history_reset_command);
+                    } else if (const auto* character_command =
+                                   std::get_if<viewer::FifoCharacter>(
+                                       &presentation_command.command)) {
+                        const auto ticket = registry.dispatch(*character_command);
+                        if (ticket.ready() && ticket.status() != matter::evt::CommandStatus::Success)
+                            std::printf("character: dispatch failed (%s)\n", matter::evt::to_string(ticket.status()));
                     } else if (const auto* wait_frames_command =
                                    std::get_if<viewer::FifoWaitFrames>(
                                        &presentation_command.command)) {
@@ -3386,13 +3461,22 @@ int main() {
             // delta-driven by the SessionBinding scene adapter, and its flattened
             // rows are re-derived at property_scheduler.flush_dirty() (after tick)
             // only on ticks that actually changed rows.
-            // Gizmo mode hotkeys (G/T = translate, R = rotate, S = scale).
+            // G toggles authored-player walking; T/R/S retain gizmo control
+            // when not walking. Walking's S must not also select gizmo scale.
             // Only when ImGui isn't capturing keyboard/text input, so typing
             // in a Properties field doesn't retarget the gizmo.
             {
                 const ImGuiIO& io = ImGui::GetIO();
-                if (!io.WantTextInput && !io.WantCaptureKeyboard) {
-                    ui.update_gizmo_hotkeys();
+                if (!io.WantTextInput && !io.WantCaptureKeyboard &&
+                    glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE) {
+                    const bool walk_toggle = ImGui::IsKeyPressed(ImGuiKey_G, false);
+                    if (walk_toggle) {
+                        viewer::FifoCharacter command;
+                        command.action = viewer::FifoCharacter::Action::Walk;
+                        command.enabled = !character_walk.enabled();
+                        registry.execute(command);
+                    }
+                    if (!character_walk.enabled() && !walk_toggle) ui.update_gizmo_hotkeys();
                     // Task 13: F focuses the camera on the current selection;
                     // Delete removes every selected entity (Edit/Pause only).
                     if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
@@ -3451,6 +3535,7 @@ int main() {
                     if (!sim_control.stop(session->ecs(), sim_err)) {
                         MATTER_LOGE("sim", "stop: %s\n", sim_err.c_str());
                     } else {
+                        reset_character_walk();
                         selection_set.clear();
                         editor_model.clear_selection();
                     }
@@ -3739,9 +3824,9 @@ int main() {
         }
 
         // UI actions (including Frame Anchor) and the gizmo have finished. Keep
-        // this snapshot immutable through streaming, tick, scene render, and UI
-        // submission so every current-frame camera consumer agrees.
-        const matter::CameraDesc frame_camera = camera;
+        // this pose through streaming/picking. Walking refreshes its eye after
+        // the fixed tick below, before render, without changing yaw/pitch.
+        matter::CameraDesc frame_camera = camera;
 
         {
             const bool mouse_down =
@@ -3861,42 +3946,51 @@ int main() {
         if (bake_ready) ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera,
                                    !stats.freeze_stream_anchor);
-        matter::TickDesc tick{};
-        // Slow motion scales the frame delta only. fixed_delta_seconds is left
-        // alone so the fixed step keeps its size and simply occurs less often;
-        // scaling it would change what the simulation does, not how fast it
-        // runs. A single-frame Step is exempt -- it must advance one whole
-        // fixed step regardless of the inspection rate.
-        tick.frame_delta_seconds = dt * ui.sim_time_scale();
-        // Presentation cadence (animation pose-LOD refresh) always runs on the
-        // unscaled wall delta: slow motion changes what is simulated per frame,
-        // never how often the shown pose refreshes.
-        tick.presentation_delta_seconds = dt;
-        if (sim_control.should_advance_fixed()) {
-            // Play mode: run physics normally.
-        } else if (sim_control.consume_pending_step()) {
-            tick.max_fixed_steps = 1;
-        } else {
-            // Edit/Pause. This used to pass max_fixed_steps = 0, which
-            // Runtime::tick defines as MALFORMED -- so WorldSession::tick
-            // returned at its invalid guard and skipped everything below it,
-            // including animation reconciliation. The visible symptom was that
-            // an animated entity never produced a binding until you pressed
-            // Play, so the Part Workbench animation tabs were empty in exactly
-            // the mode an author inspects a rig in.
-            //
-            // advance_fixed = false is the sanctioned form: an ordinary,
-            // VALID frame tick that advances no fixed simulation and leaves the
-            // accumulator untouched, so Stop means stopped and resuming
-            // continues from the exact sub-step position it froze at.
-            tick.advance_fixed = false;
-            // Frame-cadence work must not creep forward either while stopped;
-            // the frame pipeline still RUNS (lifecycle reconciliation needs it),
-            // it simply advances nothing.
-            tick.frame_delta_seconds = 0.0f;
+        viewer::CharacterWalkInput walk_input{};
+        const bool accepts_walk_keyboard = character_walk.enabled() && camera_capture && ui_frame_ready &&
+            glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE &&
+            !ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantTextInput &&
+            !viewer::issue_reporter_wants_mouse(issue_state) && !cam_path_running;
+        if (accepts_walk_keyboard) {
+            const float forward = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ? 1.0f : 0.0f) -
+                                  (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ? 1.0f : 0.0f);
+            const float right = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1.0f : 0.0f) -
+                                (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1.0f : 0.0f);
+            float fx = camera.target.x - camera.position.x;
+            float fz = camera.target.z - camera.position.z;
+            const float yaw_length = std::sqrt(fx * fx + fz * fz);
+            if (yaw_length > 1e-6f) { fx /= yaw_length; fz /= yaw_length; }
+            else { fx = 0; fz = -1; }
+            walk_input.world_direction = {fx * forward - fz * right, 0, fz * forward + fx * right};
+            const float length = std::sqrt(walk_input.world_direction.x * walk_input.world_direction.x +
+                                           walk_input.world_direction.z * walk_input.world_direction.z);
+            if (length > 1) {
+                walk_input.world_direction.x /= length;
+                walk_input.world_direction.z /= length;
+            }
+            walk_input.sprint = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                                glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
         }
+        walk_input.jump_pressed = character_jump.update(
+            glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS, accepts_walk_keyboard);
+        const bool was_walking = character_walk.enabled();
+        character_walk.sample(session->ecs(), sim_control.mode(), walk_input);
+        if (was_walking && !character_walk.enabled()) {
+            character_jump.reset();
+            camera_capture = false;
+            camera_controller.set_capture(window, false, false);
+        }
+        const matter::TickDesc tick = viewer::make_editor_tick(sim_control, dt, ui.sim_time_scale());
         phase.ui = phase_split();   // ImGui panel building
         session->tick(tick);
+        matter::Float3 character_eye{};
+        if (character_walk.eye_position(session->ecs(), character_eye)) {
+            camera.target.x += character_eye.x - camera.position.x;
+            camera.target.y += character_eye.y - camera.position.y;
+            camera.target.z += character_eye.z - camera.position.z;
+            camera.position = character_eye;
+            frame_camera = camera;
+        }
         phase.tick = phase_split();   // ECS systems, physics, transform propagation
         // E5c (event-system.md S I.14): flush observable models AFTER tick, so
         // this frame's tick -> SceneChangeTracker::flush -> scene-adapter apply ->
@@ -4712,8 +4806,10 @@ int main() {
                 if ((camera_input_order.camera_update_allowed() ||
                      camera_capture) &&
                     !viewer::issue_reporter_wants_mouse(issue_state) &&
-                    !cam_path_running) {
-                    camera_controller.update(window, dt, camera, camera_prefs);
+                    !cam_path_running && glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE) {
+                    auto effective_camera_prefs = camera_prefs;
+                    if (character_walk.enabled()) effective_camera_prefs.move_speed = 0;
+                    camera_controller.update(window, dt, camera, effective_camera_prefs);
                 }
             }
             if (capture && issue_capture) {

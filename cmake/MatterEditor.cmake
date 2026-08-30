@@ -12,10 +12,10 @@ set(matter_editor_sources_unique ${matter_editor_sources})
 list(REMOVE_DUPLICATES matter_editor_sources_unique)
 list(LENGTH matter_editor_sources matter_editor_source_count)
 list(LENGTH matter_editor_sources_unique matter_editor_unique_source_count)
-if(NOT matter_editor_source_count EQUAL 40 OR
-        NOT matter_editor_unique_source_count EQUAL 40)
+if(NOT matter_editor_source_count EQUAL 41 OR
+        NOT matter_editor_unique_source_count EQUAL 41)
     message(FATAL_ERROR
-        "editor.sources must provide exactly 40 unique editor C++ sources; "
+        "editor.sources must provide exactly 41 unique editor C++ sources; "
         "count=${matter_editor_source_count}, unique=${matter_editor_unique_source_count}")
 endif()
 
@@ -30,7 +30,7 @@ target_include_directories(matter_editor PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
 )
 # Headers owned by source-built dependencies retain their own warning policy.
-# /WX below applies to Matter's 40 editor translation units, while MSVC treats
+# /WX below applies to Matter's 41 editor translation units, while MSVC treats
 # these include roots as external at a narrowly suppressed warning level.
 target_include_directories(matter_editor SYSTEM PRIVATE
     "${matter_vulkan_include}"

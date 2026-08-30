@@ -23,6 +23,17 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
     endfunction()
 
     function(matter_assert_viewer_graph)
+        get_target_property(editor_sources matter_editor SOURCES)
+        set(editor_sources_unique ${editor_sources})
+        list(REMOVE_DUPLICATES editor_sources_unique)
+        list(LENGTH editor_sources editor_count)
+        list(LENGTH editor_sources_unique editor_unique_count)
+        if(NOT editor_count EQUAL 41 OR NOT editor_unique_count EQUAL 41)
+            message(FATAL_ERROR
+                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=41")
+        endif()
+        assert_list_contains("${editor_sources}" MatterEditor/src/character_walk_controller.cpp
+            "editor character policy source is missing")
         get_target_property(headless_core_sources matter_engine_core SOURCES)
         get_target_property(headless_surface_sources matter_engine_surface_objects SOURCES)
         list(LENGTH headless_core_sources headless_core_count)

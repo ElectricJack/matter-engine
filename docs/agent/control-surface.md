@@ -105,6 +105,84 @@ see the comment at the `STATS,` `printf` in `main.cpp` for the exact current
 field list, which has grown twice (task 14's timing lanes, M4's GPU-timestamp
 lanes) without breaking older parsers.
 
+### Authored character walking
+
+`character` is a typed ActiveSession command, available without a test-mode
+environment variable. Queued commands from an old session epoch cannot operate
+on a replacement world. The player is the unique authored `river-player`
+identity, resolved by its shared authored-id hash and nonzero generation on
+each operation; no anonymous player is spawned.
+
+| Grammar | Behavior |
+|---|---|
+| `character walk on` | Validate the player and Ready session, capture the cursor, and enter/resume Play. Configured collision must be installed; a deliberately collision-disabled or installed-empty world is allowed. |
+| `character walk off` | Release the cursor and disable walking; clear persistent/live intent and any jump latch, but do not Stop simulation. |
+| `character intent <world_x> <world_z> <0-or-1>` | Set persistent world-space XZ direction and sprint (exactly `0` or `1`). Requires walking enabled; overrides live directional input even without window focus. |
+| `character intent clear` | Clear the override, direction, sprint, pending jump, and live Space arming. Safe even when disabled; normal live input resumes on subsequent samples. |
+| `character jump` | Latch one press while walking in Play/Pause. Edit or disabled walking rejects it. Repeated requests before a fixed tick still represent one pending latch. |
+| `character status <label>` | Print one `character_status ` prefix followed by a JSON object, without changing state. Works in Edit/disabled mode if the player is valid. |
+
+Labels are 1–64 ASCII letters, digits, `_`, or `-`. Missing/extra tokens,
+nonfinite numbers, unsafe labels, unknown actions, and other sprint spellings
+are rejected. Handler failures print `character: failed <reason>` and return a
+failed command result. A missing/ambiguous/invalid player or changed bound
+generation explicitly fails diagnostics/input; the next input sample disables
+walking and zeros authored-player intent. No fabricated origin is reported.
+Stop and world replacement/reload reset walking, the identity binding,
+overrides, and Space arming; Stop may recreate the player under its original
+snapshot identity, which must be explicitly re-enabled.
+
+G uses the same walking transition as FIFO. With cursor capture and accepted
+keyboard focus, WASD is camera-yaw-relative and normalized in XZ; Shift sets
+sprint (the fixed controller applies exactly 1.5× speed). G takes precedence
+over gizmo translate; T/R/S remain gizmo hotkeys outside walking. Space emits
+only a released-then-pressed edge: focus/UI keyboard-capture loss disarms it,
+so holding Space through refocus cannot jump. Losing focus zeros live direction
+without clearing an explicit FIFO override or an already pending jump.
+
+Direction is clamped to magnitude one, with Y zero. Units are world meters and
+seconds. Simulation alone moves the capsule on fixed ticks; camera eye follows
+the resulting capsule center plus `(0, height/2 - 0.1, 0)` after each tick.
+Mouse yaw/pitch remain camera-owned, free-fly translation is suppressed during
+walking, and the existing single camera-follow streaming anchor is unchanged.
+
+Status schema (numbers are finite; counters/identity are JSON integers):
+
+```json
+{"label":"before_step","authored_id":"river-player","scene_id":123,"generation":7,"mode":"pause","walk_enabled":true,"position":[2,10,3],"velocity":[0,0,0],"grounded":false,"fixed_ticks":0,"jumps_consumed":0,"jumps_started":0,"jump_pending":true,"direction":[1,0,0],"sprint":false}
+```
+
+`scene_id` above is illustrative; it is the authored hash, not a Flecs handle.
+`mode` is `edit`, `play`, or `pause`. `position`, `velocity`, and `direction`
+are `[x,y,z]`. `fixed_ticks` counts successful controller fixed updates;
+`jumps_consumed` counts consumed latches (including airborne presses), while
+`jumps_started` counts grounded launches. `jump_pending` remains true through
+render-only/Pause frames until a successful fixed update consumes it. Parse
+64-bit identity/counters without rounding through a double.
+
+For deterministic stepping, send `step` followed by `wait_frames 1` before each
+next Step/status. Adjacent `step` commands collapse into one pending boolean:
+
+```text
+character walk on
+pause
+character intent 1 0 0
+character jump
+character status before_step
+step
+wait_frames 1
+character status after_step
+sim stop
+character status restored
+```
+
+Paused Step supplies exactly one fixed delta, independent of wall-frame speed
+or slow-motion scale, while retaining the existing fractional accumulator.
+Pause without Step changes neither movement/counters nor that accumulator.
+Walking adds no collision outside the installed authored terrain union and
+does not float on water. Only allowed static collision supports/blocks this
+slice; dynamic crates/rafts retain their own rigid-body/river ownership.
+
 ## c) Environment variables
 
 Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an

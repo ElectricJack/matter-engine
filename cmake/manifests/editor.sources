@@ -16,6 +16,7 @@ MatterEditor/src/part_workbench_iso.cpp|all
 MatterEditor/src/reveal_part.cpp|all
 MatterEditor/src/lod_inspector.cpp|all
 MatterEditor/src/camera_controller.cpp|all
+MatterEditor/src/character_walk_controller.cpp|all
 MatterEditor/src/camera_focus.cpp|all
 MatterEditor/src/camera_orbit.cpp|all
 MatterEditor/src/streaming_anchor_controller.cpp|all

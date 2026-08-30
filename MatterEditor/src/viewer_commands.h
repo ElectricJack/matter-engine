@@ -9,10 +9,9 @@
 // evt::CommandRegistry instead of smuggling deliver-once requests through
 // shared state.
 //
-// Every command here is App-scoped (CommandScope::App) and non-undoable: none
-// mutates world entity state, so none is stamped with the SessionBinding's
-// ActiveSession epoch token (the first ActiveSession commands — scene edits —
-// land in E5). Same-thread UI triggers reach these via execute() (synchronous,
+// Viewer controls are App-scoped; scene edits and authored character input
+// use the SessionBinding's ActiveSession epoch token so stale queued commands
+// cannot mutate a replacement world. Same-thread UI triggers use execute() (synchronous,
 // on the app lane); the cross-thread MATTER_CMD_FIFO source reaches them via
 // dispatch() (ticketed), pumped at the frame-loop's command point (S II.3.4).
 //
@@ -24,10 +23,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <string>
 #include <variant>
@@ -148,7 +149,7 @@ struct ViewerRevealPart {
 };
 
 // --- MATTER_CMD_FIFO dev-convenience commands (S II.3.4) ---------------------
-// Non-undoable App commands; the FIFO reader parses each line into one of these
+// Non-undoable commands (App except FifoCharacter); the FIFO reader parses each line into one of these
 // and dispatch()es it so external commands are named / traced / journaled and
 // every submission gets an explicit ticket completion.
 
@@ -254,9 +255,28 @@ struct FifoSimTransport {
     Action action = Action::Play;
 };
 
+struct FifoCharacter {
+    MT_COMMAND_NAME("fifo.character");
+    using Result = matter::evt::CommandResult<bool>;
+    enum class Action { Walk, Intent, ClearIntent, Jump, Status };
+    Action action = Action::Status;
+    bool enabled = false;
+    bool sprint = false;
+    matter::Float3 direction{};
+    std::string label;
+};
+
+inline bool fifo_character_label_valid(const std::string& label) {
+    return !label.empty() && label.size() <= 64 &&
+        std::all_of(label.begin(), label.end(), [](char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '_' || c == '-';
+        });
+}
+
 using FifoParsedCommand =
     std::variant<std::monostate, FifoRenderPath, FifoHistoryReset,
-                 FifoWaitFrames, FifoScreenshotNow>;
+                 FifoWaitFrames, FifoScreenshotNow, FifoCharacter>;
 
 struct FifoParseResult {
     bool recognized = false;
@@ -346,6 +366,40 @@ inline FifoParseResult parse_fifo_line(const std::string& line) {
     FifoParseResult result;
     const size_t token_end = line.find_first_of(" \t");
     const std::string token = line.substr(0, token_end);
+    if (token == "character") {
+        result.recognized = true;
+        result.error = "character: expected walk on|off, intent <world_x> <world_z> <0|1>, intent clear, jump, or status <label>";
+        std::istringstream input(line);
+        input.imbue(std::locale::classic());
+        std::vector<std::string> words;
+        for (std::string word; input >> word;) words.push_back(std::move(word));
+        if (words.size() < 2) return result;
+        FifoCharacter parsed;
+        if (words[1] == "walk" && words.size() == 3 && (words[2] == "on" || words[2] == "off")) {
+            parsed.action = FifoCharacter::Action::Walk;
+            parsed.enabled = words[2] == "on";
+        } else if (words[1] == "intent" && words.size() == 3 && words[2] == "clear") {
+            parsed.action = FifoCharacter::Action::ClearIntent;
+        } else if (words[1] == "intent" && words.size() == 5 && (words[4] == "0" || words[4] == "1")) {
+            const auto number = [](const std::string& text, float& value) {
+                std::istringstream stream(text);
+                stream.imbue(std::locale::classic());
+                return (stream >> value) && stream.eof() && std::isfinite(value);
+            };
+            if (!number(words[2], parsed.direction.x) || !number(words[3], parsed.direction.z)) return result;
+            parsed.action = FifoCharacter::Action::Intent;
+            parsed.sprint = words[4] == "1";
+        } else if (words[1] == "jump" && words.size() == 2) {
+            parsed.action = FifoCharacter::Action::Jump;
+        } else if (words[1] == "status" && words.size() == 3 && fifo_character_label_valid(words[2])) {
+            parsed.action = FifoCharacter::Action::Status;
+            parsed.label = words[2];
+        } else return result;
+        result.success = true;
+        result.error.clear();
+        result.command = std::move(parsed);
+        return result;
+    }
     if (token == "render_path") {
         result.recognized = true;
         std::istringstream input(line);
