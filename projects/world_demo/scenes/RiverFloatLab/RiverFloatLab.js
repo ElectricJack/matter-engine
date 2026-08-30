@@ -181,6 +181,21 @@ export function buildRiverFloatLabDefinition(worldSeed) {
   const entities = placements.map((placement, index) =>
     bodyEntity(river, placement, index));
   for (const root of river.roots) entities.push(boulderColliderEntity(root));
+  entities.push({
+    id: "river-player",
+    name: "River Player",
+    components: {
+      LocalTransform: {
+        translation: [48, 126, 31],
+        rotation: [0, 0, 0, 1],
+        scale: [1, 1, 1],
+      },
+      CharacterController: {
+        radius: 0.4, height: 1.8, moveSpeed: 4.5,
+        maxSlopeAngleDeg: 45, stepHeight: 0.45, jumpSpeed: 5,
+      },
+    },
+  });
   return Object.freeze({
     river,
     roots: river.roots,

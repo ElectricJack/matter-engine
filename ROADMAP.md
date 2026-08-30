@@ -43,12 +43,12 @@ appearance and overall raster-water acceptance remain open. See the
 [bounded rejection evidence](docs/findings/waterfall-refinement-rejection-2026-08-30.md).
 Controller integration proceeds against the accepted coarse river.
 
-1. Integrate the completed character-controller work from `main`/
-   `feature/character-controller` into the fluid branch and validate its
-   fixed-step movement and terrain collision in the river world. Runtime,
-   scene integration, and editor controls are reviewed; real-world proof remains
-   in progress in the
-   [integration plan](docs/superpowers/plans/2026-08-30-river-character-controller-integration.md).
+1. Character-controller integration is accepted for the bounded RiverFloatLab
+   bank path: two fresh MSVC/PhysX processes proved fixed-step movement,
+   installed-terrain grounding, jump/Pause/Stop behavior, and current visual
+   continuity. See the
+   [acceptance evidence](docs/findings/river-character-controller-integration-acceptance-2026-08-30.md);
+   whole-river traversal, swimming, and craft riding remain unproven.
 2. Build the first focused rapids playtest around the controller-driven player
    and controllable floating craft.
 3. Close remaining longer-river and waterfall/plunge visual quality with a

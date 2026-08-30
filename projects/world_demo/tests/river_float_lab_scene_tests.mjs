@@ -126,6 +126,21 @@ assert.deepEqual(definition.roots, accepted.roots,
 
 const ids = definition.entities.map(entity => entity.id);
 assert.equal(new Set(ids).size, ids.length, 'all scene entity ids are stable and unique');
+const players = definition.entities.filter(entity => entity.id === 'river-player');
+assert.equal(players.length, 1, 'RiverFloatLab authors exactly one river-player');
+const player = players[0];
+assert.equal(player.name, 'River Player');
+assert.equal(player.parent, undefined, 'the player is an authored root');
+assert.deepEqual(player.components.LocalTransform, {
+  translation: [48, 126, 31], rotation: [0, 0, 0, 1], scale: [1, 1, 1],
+}, 'player starts at the elevated drop spawn, without inferred ground support');
+assert.deepEqual(player.components.CharacterController, {
+  radius: 0.4, height: 1.8, moveSpeed: 4.5,
+  maxSlopeAngleDeg: 45, stepHeight: 0.45, jumpSpeed: 5,
+});
+assert.deepEqual(Object.keys(player.components).sort(),
+  ['CharacterController', 'LocalTransform'],
+  'player has no authored intent, body, velocity, collider, float, part, or streaming owner');
 const dynamicBodies = definition.entities.filter(entity =>
   entity.components.RigidBody?.type === 'dynamic');
 assert.ok(dynamicBodies.length >= 24, 'RiverFloatLab authors at least 24 dynamic bodies');
