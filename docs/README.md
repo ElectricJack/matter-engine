@@ -46,6 +46,9 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [Water-field interpolation at mesh edges](findings/water-field-fringe-interpolation-2026-08-30.md)
+  records the bounded wet-neighbor fix and its remaining visual limits.
+
 `findings/` contains acceptance records and root-cause reports. Other current
 measurement notes remain at the top of `docs/`, including LOD/VT,
 StreamMountain, seam, allocation, and bake-throughput investigations. They are
