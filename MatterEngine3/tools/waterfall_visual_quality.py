@@ -11,6 +11,7 @@ from pathlib import Path
 WORLD_SILHOUETTE_LIMIT_M = 0.15 / 4.0
 CAMERA_SILHOUETTE_LIMIT_PIXELS = 2.0
 PARAMETER_COVERAGE_DELTA_LIMIT = 0.02
+NORMAL_VARIATION_RATIO_LIMIT = 1.5
 SECTION_FILE_LIMIT_BYTES = 1024 * 1024 * 1024
 NETWORK_FILE_LIMIT_BYTES = 700 * 1024 * 1024
 
@@ -37,6 +38,10 @@ def _integer(value):
 
 def _format_number(value):
     return f"{value:g}" if _finite(value) else repr(value)
+
+
+def _format_precise_number(value):
+    return f"{value:.9g}" if _finite(value) else repr(value)
 
 
 def _validate_fixture(report, failures):
@@ -95,7 +100,8 @@ def _validate_row_shape(row, row_id, failures):
 
 
 def _validate_candidate(row, row_id, oracle, default_row,
-                        network_other_bytes, section_other_bytes, failures):
+                        network_other_bytes, section_other_bytes,
+                        normal_variation_ratio, failures):
     world_error = row.get("silhouetteHausdorffM")
     if _finite(world_error) and world_error >= WORLD_SILHOUETTE_LIMIT_M:
         failures.append(
@@ -107,6 +113,17 @@ def _validate_candidate(row, row_id, oracle, default_row,
         failures.append(
             f"silhouetteHausdorffPixels {_format_number(pixel_error)} "
             f"exceeds {_format_number(CAMERA_SILHOUETTE_LIMIT_PIXELS)}")
+
+    if (_finite(normal_variation_ratio) and
+            normal_variation_ratio > NORMAL_VARIATION_RATIO_LIMIT):
+        failures.append(
+            "normalVariationRatioToOracle "
+            f"{_format_precise_number(normal_variation_ratio)} exceeds "
+            f"{_format_number(NORMAL_VARIATION_RATIO_LIMIT)} "
+            "(normalVariationDegrees "
+            f"{_format_precise_number(row.get('normalVariationDegrees'))}, "
+            "oracle "
+            f"{_format_precise_number(oracle.get('normalVariationDegrees'))})")
 
     for key in ("connectedComponents", "intentionalSprayComponents"):
         value = row.get(key)
@@ -163,11 +180,14 @@ def evaluate_report(report):
         "failures": [],
         "oracleRowId": None,
         "selectedCandidateId": None,
+        "selectedCandidateNormalVariationDegrees": None,
+        "selectedCandidateNormalVariationRatioToOracle": None,
         "rows": {},
         "limits": {
             "worldSilhouetteM": WORLD_SILHOUETTE_LIMIT_M,
             "cameraSilhouettePixels": CAMERA_SILHOUETTE_LIMIT_PIXELS,
             "parameterCoverageDelta": PARAMETER_COVERAGE_DELTA_LIMIT,
+            "normalVariationRatioToOracle": NORMAL_VARIATION_RATIO_LIMIT,
             "sectionFileBytes": SECTION_FILE_LIMIT_BYTES,
             "networkFileBytesExclusive": NETWORK_FILE_LIMIT_BYTES,
         },
@@ -224,6 +244,9 @@ def evaluate_report(report):
             "voxelM": row.get("voxelM"),
             "radiusM": row.get("radiusM"),
             "blendWidthM": row.get("blendWidthM"),
+            "normalVariationDegrees": row.get("normalVariationDegrees"),
+            "normalVariationRatioToOracle": None,
+            "normalVariationRatioLimit": NORMAL_VARIATION_RATIO_LIMIT,
         }
 
     for row_id, expected in REQUIRED_ROWS.items():
@@ -285,13 +308,29 @@ def evaluate_report(report):
             any(value != 0.0 for value in oracle_self_metrics)):
         failures.append(
             f"oracle row {oracle_id} self-comparison metrics must be zero")
-    oracle_reference_valid = not summary["rows"][oracle_id]["failures"]
+    oracle_normal_variation = oracle.get("normalVariationDegrees")
+    oracle_normal_variation_valid = (
+        _finite(oracle_normal_variation) and oracle_normal_variation > 0.0)
+    if not oracle_normal_variation_valid:
+        summary["rows"][oracle_id]["failures"].append(
+            "oracle normalVariationDegrees must be finite and positive")
+    oracle_reference_failures = list(
+        summary["rows"][oracle_id]["failures"])
+    oracle_reference_valid = not oracle_reference_failures
 
     for row_id, row in rows.items():
         row_summary = summary["rows"][row_id]
+        normal_variation = row.get("normalVariationDegrees")
+        normal_variation_ratio = (
+            normal_variation / oracle_normal_variation
+            if (oracle_normal_variation_valid and
+                _finite(normal_variation) and normal_variation >= 0.0)
+            else None)
+        row_summary["normalVariationRatioToOracle"] = normal_variation_ratio
         _validate_candidate(
             row, row_id, oracle, current, network_other_bytes,
-            section_other_bytes, row_summary["failures"])
+            section_other_bytes, normal_variation_ratio,
+            row_summary["failures"])
         row_summary["passed"] = not row_summary["failures"]
         if _integer(row.get("projectedCompleteAnimationFileBytes")) and \
                 _integer(network_other_bytes):
@@ -306,6 +345,9 @@ def evaluate_report(report):
 
     if not oracle_reference_valid:
         failures.append(f"oracle row {oracle_id} failed validation")
+        failures.extend(
+            f"oracle row {oracle_id}: {failure}"
+            for failure in oracle_reference_failures)
 
     if failures:
         return summary
@@ -326,6 +368,10 @@ def evaluate_report(report):
 
     selected = min(passing, key=choice_key)
     summary["selectedCandidateId"] = selected["id"]
+    summary["selectedCandidateNormalVariationDegrees"] = selected[
+        "normalVariationDegrees"]
+    summary["selectedCandidateNormalVariationRatioToOracle"] = summary[
+        "rows"][selected["id"]]["normalVariationRatioToOracle"]
     summary["passed"] = True
     return summary
 
@@ -343,6 +389,9 @@ def compare_reports(reports):
         "passed": False,
         "failures": [],
         "selectedCandidateId": None,
+        "selectedCandidateNormalVariationDegrees": None,
+        "selectedCandidateNormalVariationRatioToOracle": None,
+        "normalVariationRatioLimit": NORMAL_VARIATION_RATIO_LIMIT,
         "runSummaries": [],
     }
     if len(reports) != 3:
@@ -358,6 +407,10 @@ def compare_reports(reports):
             result["failures"].append(f"run {index} has no valid decision")
     baseline_decision = summaries[0]["selectedCandidateId"]
     result["selectedCandidateId"] = baseline_decision
+    result["selectedCandidateNormalVariationDegrees"] = summaries[0][
+        "selectedCandidateNormalVariationDegrees"]
+    result["selectedCandidateNormalVariationRatioToOracle"] = summaries[0][
+        "selectedCandidateNormalVariationRatioToOracle"]
     for index, summary in enumerate(summaries[1:], start=2):
         if summary["selectedCandidateId"] != baseline_decision:
             result["failures"].append(
@@ -413,7 +466,7 @@ def render_markdown(reports, comparison, report_paths=None):
         lines.append("")
     render_numbers = (
         "gpuMeshMs", "silhouetteHausdorffM",
-        "silhouetteHausdorffPixels")
+        "silhouetteHausdorffPixels", "normalVariationDegrees")
     render_integers = (
         "connectedComponents", "openEdges", "holes",
         "projectedCompleteAnimationFileBytes")
@@ -444,7 +497,9 @@ def render_markdown(reports, comparison, report_paths=None):
         len(comparison.get("runSummaries", [])) == 3 and
         all(rows is not None and set(rows) == baseline_ids
             for rows in candidate_rows) and
-        all(row_id in summary_rows for row_id in baseline_ids))
+        all(row_id in summary_rows and _finite(
+            summary_rows[row_id].get("normalVariationRatioToOracle"))
+            for row_id in baseline_ids))
     if not valid_rows:
         if comparison["failures"]:
             lines.append("Failures:")
@@ -457,16 +512,22 @@ def render_markdown(reports, comparison, report_paths=None):
     first = reports[0]
     summary = comparison["runSummaries"][0]
     lines.extend([
-        "| Candidate | Pass | World upper bound / pixel silhouette | Topology "
+        "| Candidate | Pass | World upper bound / pixel silhouette | Normal "
+        "variation / oracle ratio (limit 1.5) | Topology "
         "(components/open/holes) | 30-frame file | GPU ms (runs 1/2/3) "
         "| Reason |",
-        "|---|---:|---:|---:|---:|---:|---|",
+        "|---|---:|---:|---:|---:|---:|---:|---|",
     ])
     rows_by_run = candidate_rows
     for row in first["rows"]:
         row_id = row["id"]
         decision = summary["rows"][row_id]
-        reason = "; ".join(decision["failures"]) or "all gates pass"
+        ratio = decision["normalVariationRatioToOracle"]
+        normal_gate = (
+            "normalVariationRatioToOracle "
+            f"{ratio:.6f} (limit {NORMAL_VARIATION_RATIO_LIMIT:g})")
+        reason = ("; ".join(decision["failures"]) or
+                  f"all gates pass; {normal_gate}")
         timings = "/".join(
             f"{rows[row_id]['gpuMeshMs']:.3f}" for rows in rows_by_run)
         topology = (f"{row['connectedComponents']}/"
@@ -475,7 +536,8 @@ def render_markdown(reports, comparison, report_paths=None):
                       f"{row['silhouetteHausdorffPixels']:.3f} px")
         lines.append(
             f"| {row_id} | {'yes' if decision['passed'] else 'no'} | "
-            f"{silhouette} | {topology} | "
+            f"{silhouette} | {row['normalVariationDegrees']:.6f} deg / "
+            f"{ratio:.6f} | {topology} | "
             f"{row['projectedCompleteAnimationFileBytes']} | {timings} | "
             f"{reason} |")
     lines.extend([
@@ -486,8 +548,20 @@ def render_markdown(reports, comparison, report_paths=None):
         f"{first.get('measuredContainingSectionFileBytes')} bytes.",
         f"Vulkan validation errors: "
         f"{[report.get('validationErrors') for report in reports]}.",
-        "",
     ])
+    selected_id = comparison.get("selectedCandidateId")
+    selected = summary.get("rows", {}).get(selected_id, {})
+    projected_network = selected.get("projectedNetworkFileBytes")
+    projected_section = selected.get("projectedContainingSectionFileBytes")
+    if _integer(projected_network):
+        lines.append(
+            "Selected projected network margin: "
+            f"{NETWORK_FILE_LIMIT_BYTES - projected_network} bytes.")
+    if _integer(projected_section):
+        lines.append(
+            "Selected projected containing-section margin: "
+            f"{SECTION_FILE_LIMIT_BYTES - projected_section} bytes.")
+    lines.append("")
     if comparison["failures"]:
         lines.append("Failures:")
         lines.append("")

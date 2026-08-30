@@ -21,7 +21,7 @@ class WaterfallVisualQualityTests(unittest.TestCase):
             "holes": 0,
             "silhouetteHausdorffM": 0.01,
             "silhouetteHausdorffPixels": 1.0,
-            "normalVariationDegrees": 8.0,
+            "normalVariationDegrees": 5.0,
             "offSheetCoverageFraction": 0.05,
             "projectedCompleteAnimationFileBytes": 200 * 1024 * 1024,
             "gpuMeshMs": 2.5,
@@ -73,6 +73,95 @@ class WaterfallVisualQualityTests(unittest.TestCase):
         self.assertTrue(summary["passed"])
         self.assertEqual(summary["selectedCandidateId"], "v150-r013-b010")
         self.assertEqual(summary["failures"], [])
+        self.assertEqual(
+            summary["limits"]["normalVariationRatioToOracle"], 1.5)
+        for row_id, row in summary["rows"].items():
+            self.assertEqual(row["normalVariationRatioLimit"], 1.5)
+            expected_ratio = (1.0 if row_id == "v075-r013-b010" else 1.25)
+            self.assertEqual(
+                row["normalVariationRatioToOracle"], expected_ratio)
+
+    def test_missing_nonnumeric_boolean_and_nonfinite_normal_variation_fail_closed(self):
+        invalid_values = (None, "5.0", True, math.nan, math.inf)
+        for value in invalid_values:
+            with self.subTest(value=value):
+                report = self._report()
+                row = report["rows"][0]
+                if value is None:
+                    del row["normalVariationDegrees"]
+                else:
+                    row["normalVariationDegrees"] = value
+                summary = quality.evaluate_report(report)
+                decision = summary["rows"]["v150-r013-b010"]
+                self.assertFalse(decision["passed"])
+                self.assertIn(
+                    "v150-r013-b010 normalVariationDegrees must be finite "
+                    "and nonnegative",
+                    decision["failures"])
+                self.assertIsNone(
+                    decision["normalVariationRatioToOracle"])
+                self.assertEqual(decision["normalVariationRatioLimit"], 1.5)
+
+    def test_zero_or_negative_oracle_normal_variation_fails_closed(self):
+        for value in (0.0, -0.001):
+            with self.subTest(value=value):
+                report = self._report()
+                report["rows"][2]["normalVariationDegrees"] = value
+                summary = quality.evaluate_report(report)
+                oracle = summary["rows"]["v075-r013-b010"]
+                self.assertFalse(summary["passed"])
+                self.assertIsNone(summary["selectedCandidateId"])
+                self.assertIn(
+                    "oracle normalVariationDegrees must be finite and "
+                    "positive",
+                    oracle["failures"])
+                self.assertIsNone(
+                    oracle["normalVariationRatioToOracle"])
+
+    def test_smoothness_ratio_equal_to_limit_passes(self):
+        report = self._report()
+        report["rows"][0]["normalVariationDegrees"] = 6.0
+        summary = quality.evaluate_report(report)
+        row = summary["rows"]["v150-r013-b010"]
+        self.assertTrue(row["passed"])
+        self.assertEqual(row["normalVariationRatioToOracle"], 1.5)
+        self.assertEqual(summary["selectedCandidateId"], "v150-r013-b010")
+
+    def test_smoothness_ratio_just_over_limit_fails_with_ratio_and_limit(self):
+        report = self._report()
+        report["rows"][0]["normalVariationDegrees"] = 6.000004
+        summary = quality.evaluate_report(report)
+        row = summary["rows"]["v150-r013-b010"]
+        self.assertFalse(row["passed"])
+        self.assertAlmostEqual(
+            row["normalVariationRatioToOracle"], 1.500001)
+        self.assertIn(
+            "normalVariationRatioToOracle 1.500001 exceeds 1.5 "
+            "(normalVariationDegrees 6.000004, oracle 4)",
+            row["failures"])
+
+    def test_smoothness_gate_changes_selection_from_v150_to_v100_independent_of_order(self):
+        report = self._report()
+        for row in report["rows"]:
+            if math.isclose(row["voxelM"], 0.15):
+                row["normalVariationDegrees"] = 8.0
+        by_id = {row["id"]: row for row in report["rows"]}
+        by_id["v100-r013-b010"]["normalVariationDegrees"] = 5.2
+        reversed_report = copy.deepcopy(report)
+        reversed_report["rows"] = list(reversed(reversed_report["rows"]))
+        for candidate in (report, reversed_report):
+            summary = quality.evaluate_report(candidate)
+            self.assertTrue(summary["passed"])
+            self.assertEqual(
+                summary["selectedCandidateId"], "v100-r013-b010")
+            self.assertEqual(
+                summary["rows"]["v150-r013-b010"]
+                ["normalVariationRatioToOracle"],
+                2.0)
+            self.assertEqual(
+                summary["rows"]["v100-r013-b010"]
+                ["normalVariationRatioToOracle"],
+                1.3)
 
     def test_selection_is_independent_of_input_row_order(self):
         first = self._report()
@@ -311,7 +400,23 @@ class WaterfallVisualQualityTests(unittest.TestCase):
         self.assertTrue(comparison["passed"])
         self.assertEqual(comparison["selectedCandidateId"],
                          "v150-r013-b010")
+        self.assertEqual(
+            comparison["selectedCandidateNormalVariationRatioToOracle"],
+            1.25)
+        self.assertEqual(comparison["normalVariationRatioLimit"], 1.5)
         self.assertEqual(comparison["failures"], [])
+
+    def test_markdown_reports_normal_gate_and_projected_memory_margins(self):
+        reports = [copy.deepcopy(self._report()) for _ in range(3)]
+        comparison = quality.compare_reports(reports)
+        markdown = quality.render_markdown(reports, comparison)
+        self.assertIn("Normal variation / oracle ratio (limit 1.5)", markdown)
+        self.assertIn("5.000000 deg / 1.250000", markdown)
+        self.assertIn(
+            "Selected projected network margin: 209715200 bytes", markdown)
+        self.assertIn(
+            "Selected projected containing-section margin: 549453824 bytes",
+            markdown)
 
     def test_three_run_comparison_rejects_changed_topology_digest_or_decision(self):
         reports = [copy.deepcopy(self._report()) for _ in range(3)]
@@ -366,6 +471,18 @@ class WaterfallVisualQualityTests(unittest.TestCase):
         self.assertIn("Three-run topology/digest/decision determinism: **fail**",
                       markdown)
         self.assertIn("run 2 row ids changed", markdown)
+
+    def test_markdown_fails_closed_on_zero_oracle_normal_variation(self):
+        reports = [copy.deepcopy(self._report()) for _ in range(3)]
+        for report in reports:
+            report["rows"][2]["normalVariationDegrees"] = 0.0
+        comparison = quality.compare_reports(reports)
+        markdown = quality.render_markdown(reports, comparison)
+        self.assertIn("Three-run topology/digest/decision determinism: **fail**",
+                      markdown)
+        self.assertIn(
+            "oracle normalVariationDegrees must be finite and positive",
+            markdown)
 
 
 if __name__ == "__main__":
