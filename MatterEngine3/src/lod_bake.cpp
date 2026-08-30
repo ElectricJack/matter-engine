@@ -218,8 +218,30 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     return true;
 }
 
-// M6: adopt rep 0's chart table for a coarser rung. See the header for why
-// this needs no texel transfer — the parameterisation is analytic.
+// M6: adopt rep 0's chart table for a coarser rung, so every rung of a ladder
+// shares one parameterisation (same charts, same atlas, same plane bases) and
+// the VT resolve can sample any rung through the same UV space. No texels are
+// transferred — the parameterisation is analytic (see the header): a chart's
+// UV is a plane projection through ChartEntry's tangent/bitangent/origin, so
+// adopting is a matter of deciding WHICH chart each coarse triangle belongs
+// to, then evaluating the same projection.
+//
+// Four stages, in source order:
+//   1. Recover rep 0's per-triangle chart id by inverting the counting sort
+//      build_chart_rung wrote into first_tri/tri_count/tri_order (the table
+//      stays the single authority; no parallel array is plumbed through).
+//   2. Hash rep 0's triangle centroids into a uniform grid (~1 tri/cell).
+//   3. Classify each coarse triangle by its nearest base centroid (ring
+//      search over the grid, ties to the lower index so two cold bakes
+//      agree) and inherit that triangle's chart id.
+//   4. Copy the base's charts/atlas verbatim, rebuild this rung's own
+//      tri_order + per-chart ranges by counting sort, and write chart UVs
+//      into triex — arithmetically identical to build_chart_rung's write.
+//
+// Returns false with `out` empty when the base table is inconsistent with
+// base_tris (ranges out of bounds, unassigned triangles) or any lookup finds
+// no base triangle within the 64-ring search; the caller then falls back to
+// charting the rung from scratch. Only triex's UVs are written.
 bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       const std::vector<Tri>& base_tris,
                       const chart_atlas::ChartAtlasRung& base,
