@@ -3,12 +3,14 @@
 #include "matter/windows_compat.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -16,6 +18,7 @@
 
 #include "fixtures/gpu_mesher_synthetic_pbf.h"
 #include "hydrology/hydrology_artifact.h"
+#include "hydrology/physx_fluid_bake.h"
 #include "hydrology/water_visual_products.h"
 #include "matter/gpu_visual_meshing.h"
 #include "render/gpu_meshing/gpu_visual_mesher_vk.h"
@@ -64,7 +67,9 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
                          gpu_meshing::Aabb bounds, float blend,
                          const char* label,
                          gpu_meshing::ParticlePhaseBlend phase_blend = {},
-                         gpu_meshing::ParticleSamplingLattice lattice = {}) {
+                         gpu_meshing::ParticleSamplingLattice lattice = {},
+                         gpu_meshing::ParticleLongitudinalFieldBlend
+                             longitudinal_blend = {}) {
     gpu_meshing::ParticleJob job{};
     job.particles = samples.data();
     job.particle_count = static_cast<uint32_t>(samples.size());
@@ -74,6 +79,7 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
     job.blend_width_m = blend;
     job.phase_blend = phase_blend;
     job.sampling_lattice = lattice;
+    job.longitudinal_field_blend = longitudinal_blend;
     job.limits = {64u, 1u << 20u, 1u << 20u, 1u << 20u};
 
     std::vector<float> first;
@@ -143,25 +149,29 @@ void check_field_fixture(gpu_meshing::GpuVisualMesher& mesher,
                 const float reference =
                     gpu_meshing::evaluate_particle_field_reference(
                         samples.data(), static_cast<uint32_t>(samples.size()),
-                        blend, phase_blend, point);
-                const float oracle = ProbeFieldScalar(
-                    scratch, surface_particles.data(), max_radius,
-                    static_cast<int>(surface_particles.size()), blend, nullptr,
-                    nullptr, 0, nullptr, 0, 0.0f,
-                    {point.x, point.y, point.z});
+                        blend, phase_blend, longitudinal_blend, point);
+                const float oracle = longitudinal_blend.enabled
+                    ? std::numeric_limits<float>::infinity()
+                    : ProbeFieldScalar(
+                          scratch, surface_particles.data(), max_radius,
+                          static_cast<int>(surface_particles.size()), blend,
+                          nullptr, nullptr, 0, nullptr, 0, 0.0f,
+                          {point.x, point.y, point.z});
                 if (std::isfinite(reference)) {
                     GPU_CHECK(std::isfinite(first[index]),
                               "GPU field finite classification matches reference");
                     GPU_CHECK(std::fabs(first[index] - reference) <= 2e-5f,
                               "GPU field matches compiler-neutral reference");
-                    if (phase_blend.primary_weight == 1.0f &&
+                    if (!longitudinal_blend.enabled &&
+                        phase_blend.primary_weight == 1.0f &&
                         phase_blend.secondary_weight == 0.0f) {
                         GPU_CHECK(std::fabs(first[index] - oracle) <= 2e-5f,
                                   "GPU field matches MatterSurface ProbeFieldScalar");
                     }
                 } else {
                     GPU_CHECK(!std::isfinite(first[index]) &&
-                                  !std::isfinite(oracle),
+                                  (longitudinal_blend.enabled ||
+                                   !std::isfinite(oracle)),
                               "GPU field outside classification matches both oracles");
                 }
             }
@@ -230,6 +240,179 @@ gpu_meshing::MeshResult check_mesh_fixture(
                       first.content_digest == second.content_digest,
                   "repeated GPU mesh extraction is byte-identical");
     return first;
+}
+
+using QuantizedVertex = std::array<std::int64_t, 3>;
+using QuantizedTriangle = std::array<QuantizedVertex, 3>;
+
+std::vector<QuantizedTriangle> canonical_triangles(
+    const gpu_meshing::MeshResult& mesh, float tolerance_m) {
+    std::vector<QuantizedTriangle> triangles;
+    triangles.reserve(mesh.indices.size() / 3u);
+    for (std::size_t triangle = 0u;
+         triangle != mesh.indices.size() / 3u; ++triangle) {
+        QuantizedTriangle canonical{};
+        for (std::size_t corner = 0u; corner != 3u; ++corner) {
+            const std::uint32_t index = mesh.indices[triangle * 3u + corner];
+            for (std::size_t axis = 0u; axis != 3u; ++axis) {
+                canonical[corner][axis] = static_cast<std::int64_t>(std::llround(
+                    mesh.positions[index * 3u + axis] / tolerance_m));
+            }
+        }
+        std::sort(canonical.begin(), canonical.end());
+        triangles.push_back(canonical);
+    }
+    std::sort(triangles.begin(), triangles.end());
+    return triangles;
+}
+
+void check_longitudinal_mesh_normals_and_chunk_parity(
+    gpu_meshing::GpuVisualMesher& mesher) {
+    const std::vector<gpu_meshing::ParticleSample> particles{
+        {{0.0f, -0.38f, 0.0f}, 0.72f},
+        {{0.0f, 0.38f, 0.0f}, 0.72f},
+    };
+    gpu_meshing::ParticleJob root = mesh_job(
+        particles, 0.12f,
+        {64u, 1u << 20u, 1u << 20u, 1u << 20u});
+    root.bounds_m = {{-1.2f, -1.4f, -1.2f}, {1.2f, 1.4f, 1.2f}};
+    root.voxel_m = 0.15f;
+    root.longitudinal_field_blend.source[0].primary_begin = 0u;
+    root.longitudinal_field_blend.source[0].primary_count = 1u;
+    root.longitudinal_field_blend.source[1].primary_begin = 1u;
+    root.longitudinal_field_blend.source[1].primary_count = 1u;
+    root.longitudinal_field_blend.origin_m = {0.0f, 0.0f, 0.0f};
+    root.longitudinal_field_blend.direction = {1.0f, 0.0f, 0.0f};
+    root.longitudinal_field_blend.upstream_full_m = -0.65f;
+    root.longitudinal_field_blend.downstream_full_m = 0.65f;
+    root.longitudinal_field_blend.enabled = true;
+
+    const hydrology::PhysxFluidBake::VisualMesher gpu_mesher =
+        [&](const gpu_meshing::ParticleJob& job,
+            gpu_meshing::MeshResult& mesh, gpu_meshing::Stats& stats,
+            gpu_meshing::Error& error,
+            const gpu_meshing::BuildControl& control) {
+            return mesher.build_particle_visual(
+                job, mesh, stats, error, control);
+        };
+    gpu_meshing::MeshResult unchunked{};
+    gpu_meshing::Error error{};
+    GPU_CHECK(hydrology::PhysxFluidBake::build_visual_job_chunks(
+                  root, gpu_mesher, unchunked, error),
+              error.message.empty()
+                  ? "longitudinal GPU mesh builds without forced chunks"
+                  : error.message.c_str());
+    if (unchunked.positions.empty()) return;
+
+    std::size_t checked_normals = 0u;
+    constexpr float epsilon = 1.0e-3f;
+    for (std::size_t vertex = 0u;
+         vertex != unchunked.positions.size() / 3u; ++vertex) {
+        const matter::Float3 point{
+            unchunked.positions[vertex * 3u + 0u],
+            unchunked.positions[vertex * 3u + 1u],
+            unchunked.positions[vertex * 3u + 2u]};
+        if (point.x <= -0.45f || point.x >= 0.45f) continue;
+        const auto field = [&](matter::Float3 probe) {
+            return gpu_meshing::evaluate_particle_field_reference(
+                particles.data(), static_cast<std::uint32_t>(particles.size()),
+                root.blend_width_m, root.phase_blend,
+                root.longitudinal_field_blend, probe);
+        };
+        const float xp = field({point.x + epsilon, point.y, point.z});
+        const float xm = field({point.x - epsilon, point.y, point.z});
+        const float yp = field({point.x, point.y + epsilon, point.z});
+        const float ym = field({point.x, point.y - epsilon, point.z});
+        const float zp = field({point.x, point.y, point.z + epsilon});
+        const float zm = field({point.x, point.y, point.z - epsilon});
+        if (!std::isfinite(xp) || !std::isfinite(xm) ||
+            !std::isfinite(yp) || !std::isfinite(ym) ||
+            !std::isfinite(zp) || !std::isfinite(zm)) {
+            continue;
+        }
+        const float gx = xp - xm;
+        const float gy = yp - ym;
+        const float gz = zp - zm;
+        const float length = std::sqrt(gx * gx + gy * gy + gz * gz);
+        if (length <= 1.0e-6f) continue;
+        const float dot =
+            (unchunked.normals[vertex * 3u + 0u] * gx +
+             unchunked.normals[vertex * 3u + 1u] * gy +
+             unchunked.normals[vertex * 3u + 2u] * gz) / length;
+        GPU_CHECK(dot >= 0.985f,
+                  "longitudinal GPU normals differentiate the blended scalar field");
+        ++checked_normals;
+    }
+    GPU_CHECK(checked_normals >= 24u,
+              "longitudinal normal fixture exercises the blend interior");
+
+    gpu_meshing::GridLayout layout{};
+    error = {};
+    GPU_CHECK(gpu_meshing::validate_particle_job(root, layout, error),
+              error.message.empty()
+                  ? "longitudinal chunk fixture has a valid root lattice"
+                  : error.message.c_str());
+    gpu_meshing::ParticleJob chunked_job = root;
+    chunked_job.limits.max_grid_vertices =
+        std::max(384u, layout.grid_vertices / 4u);
+    std::uint32_t chunk_calls = 0u;
+    const hydrology::PhysxFluidBake::VisualMesher counted_gpu_mesher =
+        [&](const gpu_meshing::ParticleJob& job,
+            gpu_meshing::MeshResult& mesh, gpu_meshing::Stats& stats,
+            gpu_meshing::Error& chunk_error,
+            const gpu_meshing::BuildControl& control) {
+            ++chunk_calls;
+            std::vector<float> gpu_field;
+            gpu_meshing::GridLayout chunk_layout{};
+            if (!mesher.debug_evaluate_particle_field(
+                    job, gpu_field, chunk_layout, chunk_error)) {
+                return false;
+            }
+            for (std::uint32_t z = 0u; z != chunk_layout.sample_dims[2]; ++z)
+                for (std::uint32_t y = 0u; y != chunk_layout.sample_dims[1]; ++y)
+                    for (std::uint32_t x = 0u; x != chunk_layout.sample_dims[0]; ++x) {
+                        const std::uint32_t index = x +
+                            chunk_layout.sample_dims[0] *
+                                (y + chunk_layout.sample_dims[1] * z);
+                        const matter::Float3 point{
+                            chunk_layout.origin_m.x + chunk_layout.spacing_m.x * x,
+                            chunk_layout.origin_m.y + chunk_layout.spacing_m.y * y,
+                            chunk_layout.origin_m.z + chunk_layout.spacing_m.z * z};
+                        const float cpu =
+                            gpu_meshing::evaluate_particle_field_reference(
+                                job.particles, job.particle_count,
+                                job.blend_width_m, job.phase_blend,
+                                job.longitudinal_field_blend, point);
+                        if (std::isfinite(cpu)) {
+                            if (!std::isfinite(gpu_field[index]) ||
+                                std::fabs(cpu - gpu_field[index]) > 2.0e-5f) {
+                                chunk_error = {
+                                    gpu_meshing::ErrorCode::VulkanFailure,
+                                    "forced chunk GPU field diverged from CPU reference"};
+                                return false;
+                            }
+                        } else if (std::isfinite(gpu_field[index])) {
+                            chunk_error = {
+                                gpu_meshing::ErrorCode::VulkanFailure,
+                                "forced chunk GPU field wet/dry classification diverged from CPU reference"};
+                            return false;
+                        }
+                    }
+            return mesher.build_particle_visual(
+                job, mesh, stats, chunk_error, control);
+        };
+    gpu_meshing::MeshResult chunked{};
+    error = {};
+    GPU_CHECK(hydrology::PhysxFluidBake::build_visual_job_chunks(
+                  chunked_job, counted_gpu_mesher, chunked, error),
+              error.message.empty()
+                  ? "longitudinal GPU mesh builds with forced chunks"
+                  : error.message.c_str());
+    GPU_CHECK(chunk_calls > 1u,
+              "longitudinal parity fixture actually forces multiple GPU chunks");
+    GPU_CHECK(canonical_triangles(chunked, 1.0e-4f) ==
+                  canonical_triangles(unchunked, 1.0e-4f),
+              "forced-chunk longitudinal GPU geometry matches the unchunked field topology");
 }
 
 }  // namespace
@@ -349,6 +532,62 @@ int run_gpu_visual_mesher_vk_tests(matter::VulkanDevice& vulkan) {
         {{-1.5f, -1.0f, -1.0f}, {1.5f, 1.0f, 1.0f}}, 0.18f,
         "dual-phase weighted GPU field dispatch succeeds",
         {1u, 0.35f, 0.65f});
+    gpu_meshing::ParticleLongitudinalFieldBlend source_blend{};
+    source_blend.source[0] = {0u, 1u, 2u, 1u};
+    source_blend.source[1] = {1u, 1u, 3u, 1u};
+    source_blend.origin_m = {-30.4f, 7.9f, 12.0f};
+    source_blend.direction = {1.0f, 0.0f, 0.0f};
+    source_blend.upstream_full_m = -0.20f;
+    source_blend.downstream_full_m = 0.20f;
+    source_blend.enabled = true;
+    check_field_fixture(
+        mesher,
+        {{{-30.4f, 7.9f, 12.0f}, 0.45f},
+         {{-30.4f, 7.9f, 12.0f}, 0.45f},
+         {{std::numeric_limits<float>::quiet_NaN(), 7.9f, 12.0f}, 0.45f},
+         {{std::numeric_limits<float>::quiet_NaN(), 7.9f, 12.0f}, 0.45f}},
+        {{-31.03f, 7.46f, 11.67f}, {-29.71f, 8.11f, 12.46f}},
+        0.12f,
+        "translated longitudinal source blend matches CPU endpoints, wet/dry, and midpoint without union bulging",
+        {2u, 1.0f, 0.0f},
+        {{-31.2f, 7.4f, 11.8f}, 0.15f, 1u}, source_blend);
+    source_blend.source[0] = {0u, 1u, 0u, 0u};
+    source_blend.source[1] = {1u, 1u, 0u, 0u};
+    source_blend.downstream_full_m = 3.0f;
+    check_field_fixture(
+        mesher,
+        {{{-30.4f, 7.9f, 12.0f}, 0.45f},
+         {{-27.4f, 7.9f, 12.0f}, 0.45f}},
+        {{-31.03f, 7.46f, 11.67f}, {-26.71f, 8.11f, 12.46f}},
+        0.12f,
+        "translated longitudinal source blend matches CPU when only upstream, only downstream, or neither source is wet",
+        {2u, 1.0f, 0.0f},
+        {{-31.2f, 7.4f, 11.8f}, 0.15f, 1u}, source_blend);
+    source_blend.origin_m = {0.0f, 0.0f, 0.0f};
+    source_blend.upstream_full_m = -1.0f;
+    source_blend.downstream_full_m = 1.0f;
+    check_field_fixture(
+        mesher,
+        {{{1.0f, 0.0f, 0.0f}, 0.2f},
+         {{-1.0f, 0.0f, 0.0f}, 0.8f}},
+        {{-1.25f, -0.25f, -0.25f}, {1.25f, 0.25f, 0.25f}},
+        0.12f,
+        "full-source endpoints preserve designated dry state and mixed-radius source support matches CPU",
+        {2u, 1.0f, 0.0f},
+        {{-1.25f, -0.25f, -0.25f}, 0.25f, 1u}, source_blend);
+    source_blend.upstream_full_m = -1.25f;
+    source_blend.downstream_full_m = 1.25f;
+    check_field_fixture(
+        mesher,
+        {{{1.25f, 0.0f, 0.0f}, 0.2f},
+         {{-1.25f, 0.0f, 0.0f}, 0.2f}},
+        {{-1.5f, -0.25f, -0.25f}, {1.5f, 0.25f, 0.25f}},
+        0.12f,
+        "full-source endpoints stay dry when only the opposite source is wet",
+        {2u, 1.0f, 0.0f},
+        {{-1.5f, -0.25f, -0.25f}, 0.25f, 1u}, source_blend);
+
+    check_longitudinal_mesh_normals_and_chunk_parity(mesher);
 
     const std::vector<gpu_meshing::ParticleSample> one_sphere{
         {{0.0f, 0.0f, 0.0f}, 0.65f}};

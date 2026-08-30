@@ -1582,7 +1582,7 @@ std::uint64_t derive_handoff_animation_semantic_key(
         downstream_animation_payload_digest == 0u)
         return 0u;
     Digest semantic(UINT64_C(0x48414e44414e4934));
-    semantic.u64(2u);
+    semantic.u64(3u);
     semantic.u64(input.handoff.semantic_key);
     semantic.u64(input.upstream->payload_digest);
     semantic.u64(input.downstream->payload_digest);
@@ -1700,6 +1700,15 @@ bool build_handoff_animation_frames(
                 support_radius_m, mesh_error)) {
             return reject(mesh_error.message);
         }
+        const float upstream_full_m =
+            input.handoff.upstream_visual_cut_m + support_radius_m;
+        const float downstream_full_m =
+            input.handoff.downstream_visual_cut_m - support_radius_m;
+        if (!finite(upstream_full_m) || !finite(downstream_full_m) ||
+            upstream_full_m >= downstream_full_m) {
+            return reject(
+                "handoff shared-field strip cannot fit two complete support halos");
+        }
         output.frames_per_second = 30u;
         output.phase_offset_frames = 15u;
         output.duration_seconds = 1.0f;
@@ -1782,14 +1791,33 @@ bool build_handoff_animation_frames(
             particles.reserve(
                 upstream_primary.size() + downstream_primary.size() +
                 upstream_secondary.size() + downstream_secondary.size());
-            if (!append_source(upstream_primary, true, particles) ||
-                !append_source(downstream_primary, false, particles))
+            gpu_meshing::ParticleLongitudinalFieldBlend source_blend{};
+            source_blend.source[0].primary_begin = 0u;
+            if (!append_source(upstream_primary, true, particles))
                 return reject("handoff primary boundary frame is invalid");
+            source_blend.source[0].primary_count =
+                static_cast<std::uint32_t>(particles.size());
+            source_blend.source[1].primary_begin =
+                static_cast<std::uint32_t>(particles.size());
+            if (!append_source(downstream_primary, false, particles))
+                return reject("handoff primary boundary frame is invalid");
+            source_blend.source[1].primary_count =
+                static_cast<std::uint32_t>(particles.size()) -
+                source_blend.source[1].primary_begin;
             const std::uint32_t phase_split =
                 static_cast<std::uint32_t>(particles.size());
-            if (!append_source(upstream_secondary, true, particles) ||
-                !append_source(downstream_secondary, false, particles))
+            source_blend.source[0].secondary_begin = phase_split;
+            if (!append_source(upstream_secondary, true, particles))
                 return reject("handoff secondary boundary frame is invalid");
+            source_blend.source[0].secondary_count =
+                static_cast<std::uint32_t>(particles.size()) - phase_split;
+            source_blend.source[1].secondary_begin =
+                static_cast<std::uint32_t>(particles.size());
+            if (!append_source(downstream_secondary, false, particles))
+                return reject("handoff secondary boundary frame is invalid");
+            source_blend.source[1].secondary_count =
+                static_cast<std::uint32_t>(particles.size()) -
+                source_blend.source[1].secondary_begin;
             if (particles.empty() ||
                 particles.size() > std::numeric_limits<std::uint32_t>::max())
                 return reject(
@@ -1827,6 +1855,12 @@ bool build_handoff_animation_frames(
                 job.limits.max_particles, job.particle_count);
             job.phase_blend = {phase_split, phase.primary_weight,
                                phase.secondary_weight};
+            source_blend.origin_m = input.handoff.lip_origin_m;
+            source_blend.direction = input.handoff.tangent;
+            source_blend.upstream_full_m = upstream_full_m;
+            source_blend.downstream_full_m = downstream_full_m;
+            source_blend.enabled = true;
+            job.longitudinal_field_blend = source_blend;
             gpu_meshing::MeshResult joint_mesh{};
             if (!PhysxFluidBake::build_visual_job_chunks(
                     job, mesher, joint_mesh, mesh_error)) {
@@ -1917,6 +1951,7 @@ bool build_handoff_animation_frames(
         if (output.frames.size() != 30u)
             return reject(
                 "handoff shared-field construction produced an incomplete loop");
+        diagnostics.source_blend_required = true;
         return true;
     } catch (const std::exception& exception) {
         return reject(exception.what());

@@ -78,6 +78,135 @@ void gpuMeshQueryRange(vec3 point, out ivec3 binMin, out ivec3 binMax) {
         params.binOriginAndSize.w)), ivec3(0), maximum);
 }
 
+struct GpuMeshSourceFieldGradient {
+    float value;
+    vec3 gradient;
+};
+
+GpuMeshSourceFieldGradient gpuMeshSourceFieldGradient(
+    uint source, vec3 point, ivec3 binMin, ivec3 binMax) {
+    const float radiusSquared = params.queryRadiusAndPadding.x *
+        params.queryRadiusAndPadding.x;
+    float minimum = uintBitsToFloat(0x7f800000u);
+    uint neighbors = 0u;
+    float onlyWeight = 0.0;
+    for (int z = binMin.z; z <= binMax.z; ++z)
+        for (int y = binMin.y; y <= binMax.y; ++y)
+            for (int x = binMin.x; x <= binMax.x; ++x) {
+                const uint bin = gpuMeshLinearBin(uvec3(x, y, z),
+                                                  params.binDimsAndCount.xyz);
+                for (uint cursor = binOffsets[bin];
+                     cursor < binOffsets[bin] + binCounts[bin]; ++cursor) {
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight = gpuMeshSourceParticleWeight(
+                        source, particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
+                    const vec3 delta = point - particle.positionM;
+                    const float squared = dot(delta, delta);
+                    if (squared > radiusSquared) continue;
+                    minimum = min(minimum,
+                                  sqrt(squared) - particle.radiusM);
+                    onlyWeight = phaseWeight;
+                    ++neighbors;
+                }
+            }
+    GpuMeshSourceFieldGradient result;
+    result.value = minimum;
+    result.gradient = vec3(0.0);
+    if (neighbors == 0u) return result;
+
+    const bool hardMinimum = params.spacingAndBlend.w <= 1e-5;
+    const bool exactSingle = neighbors == 1u && onlyWeight == 1.0;
+    float scalarWeightSum = 0.0;
+    float gradientWeightSum = 0.0;
+    for (int z = binMin.z; z <= binMax.z; ++z)
+        for (int y = binMin.y; y <= binMax.y; ++y)
+            for (int x = binMin.x; x <= binMax.x; ++x) {
+                const uint bin = gpuMeshLinearBin(uvec3(x, y, z),
+                                                  params.binDimsAndCount.xyz);
+                for (uint cursor = binOffsets[bin];
+                     cursor < binOffsets[bin] + binCounts[bin]; ++cursor) {
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight = gpuMeshSourceParticleWeight(
+                        source, particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
+                    const vec3 delta = point - particle.positionM;
+                    const float squared = dot(delta, delta);
+                    if (squared > radiusSquared) continue;
+                    const float distanceFromCenter = sqrt(squared);
+                    const float distance =
+                        distanceFromCenter - particle.radiusM;
+                    const float weight = hardMinimum
+                        ? (abs(distance - minimum) <= 1e-6
+                            ? phaseWeight : 0.0)
+                        : phaseWeight * exp(-(distance - minimum) /
+                                            params.spacingAndBlend.w);
+                    scalarWeightSum += weight;
+                    if (distanceFromCenter > 1e-8 && weight > 0.0) {
+                        result.gradient +=
+                            weight * delta / distanceFromCenter;
+                        gradientWeightSum += weight;
+                    }
+                }
+            }
+    if (!hardMinimum && !exactSingle && scalarWeightSum > 0.0) {
+        result.value = minimum - params.spacingAndBlend.w *
+            log(scalarWeightSum);
+    }
+    if (gradientWeightSum > 0.0)
+        result.gradient /= gradientWeightSum;
+    return result;
+}
+
+vec3 gpuMeshNormalizedGradient(vec3 gradient) {
+    const float gradientLength = length(gradient);
+    return gradientLength > 1e-8
+        ? gradient / gradientLength : vec3(0.0, 1.0, 0.0);
+}
+
+vec3 gpuMeshLongitudinalAnalyticNormal(vec3 point) {
+    ivec3 binMin;
+    ivec3 binMax;
+    gpuMeshQueryRange(point, binMin, binMax);
+    const GpuMeshSourceFieldGradient upstream =
+        gpuMeshSourceFieldGradient(0u, point, binMin, binMax);
+    const GpuMeshSourceFieldGradient downstream =
+        gpuMeshSourceFieldGradient(1u, point, binMin, binMax);
+    const float along = dot(
+        point - params.sourceBlendOriginAndEnabled.xyz,
+        params.sourceBlendDirection.xyz);
+    if (along <= params.sourceBlendDistancesAndPadding.x)
+        return gpuMeshNormalizedGradient(upstream.gradient);
+    if (along >= params.sourceBlendDistancesAndPadding.y)
+        return gpuMeshNormalizedGradient(downstream.gradient);
+
+    const bool upstreamWet =
+        !isinf(upstream.value) && !isnan(upstream.value);
+    const bool downstreamWet =
+        !isinf(downstream.value) && !isnan(downstream.value);
+    if (!upstreamWet)
+        return gpuMeshNormalizedGradient(downstream.gradient);
+    if (!downstreamWet || upstream.value == downstream.value)
+        return gpuMeshNormalizedGradient(upstream.gradient);
+
+    const float interval = params.sourceBlendDistancesAndPadding.y -
+        params.sourceBlendDistancesAndPadding.x;
+    const float linearAmount = clamp(
+        (along - params.sourceBlendDistancesAndPadding.x) / interval,
+        0.0, 1.0);
+    const float amount = linearAmount * linearAmount *
+        (3.0 - 2.0 * linearAmount);
+    const float derivative =
+        6.0 * linearAmount * (1.0 - linearAmount) / interval;
+    const vec3 gradient = mix(
+        upstream.gradient, downstream.gradient, amount) +
+        (downstream.value - upstream.value) * derivative *
+            params.sourceBlendDirection.xyz;
+    return gpuMeshNormalizedGradient(gradient);
+}
+
 vec3 gpuMeshAnalyticNormal(vec3 point) {
     ivec3 binMin;
     ivec3 binMax;
@@ -167,7 +296,9 @@ void main() {
             const vec3 position = gpuMeshEdgePosition(cell, edges[vertex]);
             positions[outputBase + vertex] = vec4(position, 1.0);
             normals[outputBase + vertex] =
-                vec4(gpuMeshAnalyticNormal(position), 0.0);
+                vec4(params.sourceBlendOriginAndEnabled.w != 0.0
+                    ? gpuMeshLongitudinalAnalyticNormal(position)
+                    : gpuMeshAnalyticNormal(position), 0.0);
             indices[outputBase + vertex] = outputBase + vertex;
         }
     }

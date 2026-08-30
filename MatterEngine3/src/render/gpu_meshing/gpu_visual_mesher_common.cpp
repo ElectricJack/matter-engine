@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 namespace gpu_meshing {
 namespace {
@@ -244,6 +245,70 @@ bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
     if (phase.secondary_weight > 0.0f && job.blend_width_m <= 1e-5f)
         return fail(error, ErrorCode::InvalidInput,
                     "dual-phase particle meshing requires a positive blend width");
+    const ParticleLongitudinalFieldBlend& longitudinal =
+        job.longitudinal_field_blend;
+    if (longitudinal.enabled) {
+        const float direction_length_squared =
+            longitudinal.direction.x * longitudinal.direction.x +
+            longitudinal.direction.y * longitudinal.direction.y +
+            longitudinal.direction.z * longitudinal.direction.z;
+        if (!finite(longitudinal.origin_m) ||
+            !finite(longitudinal.direction) ||
+            !finite(longitudinal.upstream_full_m) ||
+            !finite(longitudinal.downstream_full_m) ||
+            std::fabs(direction_length_squared - 1.0f) > 1.0e-4f ||
+            longitudinal.upstream_full_m >=
+                longitudinal.downstream_full_m) {
+            return fail(error, ErrorCode::InvalidInput,
+                        "particle longitudinal source blend metadata is invalid");
+        }
+        const std::uint32_t resolved_split =
+            phase.split_index == 0u && phase.primary_weight == 1.0f &&
+                    phase.secondary_weight == 0.0f
+                ? job.particle_count
+                : phase.split_index;
+        std::array<std::pair<std::uint32_t, std::uint32_t>, 4> spans{};
+        std::uint64_t covered = 0u;
+        for (std::size_t source = 0u; source != longitudinal.source.size();
+             ++source) {
+            const ParticleSourcePhaseSpan& span = longitudinal.source[source];
+            const std::uint64_t primary_end =
+                static_cast<std::uint64_t>(span.primary_begin) +
+                span.primary_count;
+            const std::uint64_t secondary_end =
+                static_cast<std::uint64_t>(span.secondary_begin) +
+                span.secondary_count;
+            if (primary_end > resolved_split ||
+                secondary_end > job.particle_count ||
+                (span.secondary_count != 0u &&
+                 span.secondary_begin < resolved_split)) {
+                return fail(error, ErrorCode::InvalidInput,
+                            "particle longitudinal source span exceeds its phase");
+            }
+            spans[source] = {span.primary_begin,
+                             static_cast<std::uint32_t>(primary_end)};
+            spans[source + 2u] = {
+                span.secondary_begin,
+                static_cast<std::uint32_t>(secondary_end)};
+            covered += span.primary_count;
+            covered += span.secondary_count;
+        }
+        for (std::size_t left = 0u; left != spans.size(); ++left) {
+            if (spans[left].first == spans[left].second) continue;
+            for (std::size_t right = left + 1u; right != spans.size();
+                 ++right) {
+                if (spans[right].first == spans[right].second) continue;
+                if (std::max(spans[left].first, spans[right].first) <
+                    std::min(spans[left].second, spans[right].second)) {
+                    return fail(error, ErrorCode::InvalidInput,
+                                "particle longitudinal source spans overlap");
+                }
+            }
+        }
+        if (covered != job.particle_count)
+            return fail(error, ErrorCode::InvalidInput,
+                        "particle longitudinal source spans must cover every particle");
+    }
     if (!finite(job.iso_value))
         return fail(error, ErrorCode::InvalidInput,
                     "particle mesh isolevel must be finite");
@@ -334,6 +399,15 @@ bool validate_particle_job(const ParticleJob& job, GridLayout& layout,
 
     float max_radius = 0.0f;
     for (std::uint32_t index = 0; index != job.particle_count; ++index) {
+        const float temporal_weight = index <
+                (phase.split_index == 0u &&
+                         phase.primary_weight == 1.0f &&
+                         phase.secondary_weight == 0.0f
+                     ? job.particle_count
+                     : phase.split_index)
+            ? phase.primary_weight
+            : phase.secondary_weight;
+        if (temporal_weight == 0.0f) continue;
         const ParticleSample& particle = job.particles[index];
         if (!finite(particle.position_m) || !finite(particle.radius_m) ||
             particle.radius_m <= 0.0f) {
@@ -511,6 +585,124 @@ float evaluate_particle_field_reference(
     }
     if (sum <= 0.0f) return std::numeric_limits<float>::infinity();
     return minimum - blend_width_m * std::log(sum);
+}
+
+float evaluate_particle_field_reference(
+    const ParticleSample* particles,
+    std::uint32_t particle_count,
+    float blend_width_m,
+    ParticlePhaseBlend phase_blend,
+    const ParticleLongitudinalFieldBlend& longitudinal_blend,
+    matter::Float3 point_m) {
+    if (!longitudinal_blend.enabled) {
+        return evaluate_particle_field_reference(
+            particles, particle_count, blend_width_m, phase_blend, point_m);
+    }
+    const std::uint32_t phase_split =
+        phase_blend.split_index == 0u &&
+                phase_blend.primary_weight == 1.0f &&
+                phase_blend.secondary_weight == 0.0f
+            ? particle_count
+            : phase_blend.split_index;
+    float max_radius = 0.0f;
+    for (std::uint32_t index = 0u; index != particle_count; ++index) {
+        const float weight = index < phase_split
+            ? phase_blend.primary_weight
+            : phase_blend.secondary_weight;
+        if (weight == 0.0f || particles == nullptr) continue;
+        max_radius = std::max(max_radius, particles[index].radius_m);
+    }
+    float query_radius = 0.0f;
+    Error support_error{};
+    if (!particle_field_support_radius_m(
+            max_radius, blend_width_m, query_radius, support_error)) {
+        return std::numeric_limits<float>::infinity();
+    }
+    const float query_radius_squared = query_radius * query_radius;
+    const auto evaluate_source = [&](std::size_t source) {
+        const ParticleSourcePhaseSpan& spans =
+            longitudinal_blend.source[source];
+        const auto visit = [&](auto&& callback) {
+            if (phase_blend.primary_weight != 0.0f) {
+                for (std::uint32_t offset = 0u;
+                     offset != spans.primary_count; ++offset) {
+                    callback(spans.primary_begin + offset,
+                             phase_blend.primary_weight);
+                }
+            }
+            if (phase_blend.secondary_weight != 0.0f) {
+                for (std::uint32_t offset = 0u;
+                     offset != spans.secondary_count; ++offset) {
+                    callback(spans.secondary_begin + offset,
+                             phase_blend.secondary_weight);
+                }
+            }
+        };
+
+        float minimum = std::numeric_limits<float>::infinity();
+        std::uint32_t neighbors = 0u;
+        float only_weight = 0.0f;
+        visit([&](std::uint32_t index, float weight) {
+            if (particles == nullptr || index >= particle_count) return;
+            const matter::Float3 center = particles[index].position_m;
+            const float dx = point_m.x - center.x;
+            const float dy = point_m.y - center.y;
+            const float dz = point_m.z - center.z;
+            const float distance_squared = dx * dx + dy * dy + dz * dz;
+            if (distance_squared > query_radius_squared) return;
+            const float distance =
+                std::sqrt(distance_squared) - particles[index].radius_m;
+            minimum = std::min(minimum, distance);
+            only_weight = weight;
+            ++neighbors;
+        });
+        if (neighbors == 0u) return std::numeric_limits<float>::infinity();
+        if (blend_width_m <= 1.0e-5f ||
+            (neighbors == 1u && only_weight == 1.0f)) {
+            return minimum;
+        }
+
+        float sum = 0.0f;
+        visit([&](std::uint32_t index, float weight) {
+            if (particles == nullptr || index >= particle_count) return;
+            const matter::Float3 center = particles[index].position_m;
+            const float dx = point_m.x - center.x;
+            const float dy = point_m.y - center.y;
+            const float dz = point_m.z - center.z;
+            const float distance_squared = dx * dx + dy * dy + dz * dz;
+            if (distance_squared > query_radius_squared) return;
+            const float distance =
+                std::sqrt(distance_squared) - particles[index].radius_m;
+            sum += weight *
+                std::exp(-(distance - minimum) / blend_width_m);
+        });
+        return sum > 0.0f
+            ? minimum - blend_width_m * std::log(sum)
+            : std::numeric_limits<float>::infinity();
+    };
+
+    const float upstream = evaluate_source(0u);
+    const float downstream = evaluate_source(1u);
+    const float along =
+        (point_m.x - longitudinal_blend.origin_m.x) *
+            longitudinal_blend.direction.x +
+        (point_m.y - longitudinal_blend.origin_m.y) *
+            longitudinal_blend.direction.y +
+        (point_m.z - longitudinal_blend.origin_m.z) *
+            longitudinal_blend.direction.z;
+    if (along <= longitudinal_blend.upstream_full_m) return upstream;
+    if (along >= longitudinal_blend.downstream_full_m) return downstream;
+    const bool upstream_wet = std::isfinite(upstream);
+    const bool downstream_wet = std::isfinite(downstream);
+    if (!upstream_wet) return downstream;
+    if (!downstream_wet) return upstream;
+    if (upstream == downstream) return upstream;
+    float blend = (along - longitudinal_blend.upstream_full_m) /
+        (longitudinal_blend.downstream_full_m -
+         longitudinal_blend.upstream_full_m);
+    blend = std::max(0.0f, std::min(1.0f, blend));
+    blend = blend * blend * (3.0f - 2.0f * blend);
+    return upstream + (downstream - upstream) * blend;
 }
 
 bool exclusive_scan_reference(const std::vector<std::uint32_t>& input,

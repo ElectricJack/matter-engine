@@ -38,6 +38,29 @@ gpu_meshing::MeshResult combine(gpu_meshing::MeshResult first,
     return first;
 }
 
+bool same_quantized_mesh(const gpu_meshing::MeshResult& actual,
+                         const gpu_meshing::MeshResult& expected,
+                         float position_tolerance) {
+    if (actual.positions.size() != expected.positions.size() ||
+        actual.normals.size() != expected.normals.size() ||
+        actual.indices != expected.indices)
+        return false;
+    for (std::size_t index = 0u; index != actual.positions.size(); ++index)
+        if (std::fabs(actual.positions[index] - expected.positions[index]) >
+            position_tolerance)
+            return false;
+    for (std::size_t index = 0u; index != actual.normals.size(); index += 3u) {
+        const float dot = actual.normals[index + 0u] *
+                              expected.normals[index + 0u] +
+                          actual.normals[index + 1u] *
+                              expected.normals[index + 1u] +
+                          actual.normals[index + 2u] *
+                              expected.normals[index + 2u];
+        if (dot < 0.999f) return false;
+    }
+    return true;
+}
+
 void append_dam_curtain(gpu_meshing::MeshResult& mesh) {
     const std::uint32_t base =
         static_cast<std::uint32_t>(mesh.positions.size() / 3u);
@@ -491,6 +514,58 @@ void append_duplicate_coplanar_triangle(gpu_meshing::MeshResult& mesh,
     mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
 }
 
+void append_quantized_cell_face_sliver(gpu_meshing::MeshResult& mesh,
+                                       float face_x, float tolerance_m,
+                                       float base_y = 2.0f) {
+    const auto base = static_cast<std::uint32_t>(mesh.positions.size() / 3u);
+    mesh.positions.insert(mesh.positions.end(), {
+        face_x, base_y, 0.0f,
+        face_x, base_y + tolerance_m * 0.1f, 0.0f,
+        face_x, base_y + 1.0f, 0.0f});
+    mesh.normals.insert(mesh.normals.end(), {
+        1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f});
+    mesh.indices.insert(mesh.indices.end(), {base, base + 1u, base + 2u});
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+}
+
+void append_sub_quantization_cell_face_triangle(
+    gpu_meshing::MeshResult& mesh, float face_x, float tolerance_m,
+    float base_y = 8.0f) {
+    const auto base = static_cast<std::uint32_t>(mesh.positions.size() / 3u);
+    mesh.positions.insert(mesh.positions.end(), {
+        face_x, base_y, 0.0f,
+        face_x, base_y + tolerance_m * 0.1f, 0.0f,
+        face_x, base_y, tolerance_m * 0.1f});
+    mesh.normals.insert(mesh.normals.end(), {
+        1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f});
+    mesh.indices.insert(mesh.indices.end(), {base, base + 1u, base + 2u});
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+}
+
+gpu_meshing::MeshResult cell_face_segment(float face_x, bool before_face,
+                                           float y0, float z0,
+                                           float y1, float z1) {
+    gpu_meshing::MeshResult mesh{};
+    const float interior_x = face_x + (before_face ? -0.05f : 0.05f);
+    mesh.positions = {
+        face_x, y0, z0,
+        face_x, y1, z1,
+        interior_x, (y0 + y1) * 0.5f + 0.05f,
+        (z0 + z1) * 0.5f + 0.05f};
+    mesh.normals = {
+        0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f};
+    mesh.indices = {0u, 1u, 2u};
+    mesh.material = 4u;
+    mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    return mesh;
+}
+
 void test_measures_section_cut_continuity_without_welding() {
     const auto handoff = spillway();
     hydrology::WaterCutContourMetrics metrics{};
@@ -614,6 +689,390 @@ void test_cell_ownership_uses_one_exact_equality_convention() {
               metrics.unmatched_open_edges == 0u &&
               metrics.duplicate_coplanar_triangles == 0u,
           "cell-boundary measurement uses the same downstream equality predicate as ownership clipping");
+    auto tolerance_straddled = downstream;
+    const float endpoint_tolerance_m = lattice.voxel_m / 16.0f;
+    for (std::size_t index = 1u; index < tolerance_straddled.positions.size();
+         index += 3u) {
+        tolerance_straddled.positions[index] += endpoint_tolerance_m * 0.51f;
+    }
+    tolerance_straddled.content_digest =
+        gpu_meshing::mesh_content_digest(tolerance_straddled);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              strip, tolerance_straddled,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error),
+          error.message.c_str());
+    CHECK(metrics.symmetric_hausdorff_m < endpoint_tolerance_m &&
+              metrics.unmatched_open_edges == 0u &&
+              hydrology::water_cut_is_assertion_weldable(
+                  metrics, endpoint_tolerance_m),
+          "corresponding ownership edges remain matched when sub-tolerance vertex drift straddles adjacent quantization keys");
+    const float nearby_first_y = endpoint_tolerance_m * 100.49f;
+    const float nearby_second_y = endpoint_tolerance_m * 100.51f;
+    const auto nearby_strip = combine(
+        quad(-0.625f, 0.625f, nearby_first_y, -0.5f, 0.5f),
+        quad(-0.625f, 0.625f, nearby_second_y, -0.5f, 0.5f));
+    const auto nearby_downstream = combine(
+        quad(0.625f, 1.625f, nearby_first_y, -0.5f, 0.5f),
+        quad(0.625f, 1.625f, nearby_second_y, -0.5f, 0.5f));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              nearby_strip, nearby_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.first_points == 4u &&
+              metrics.second_points == 4u &&
+              metrics.symmetric_hausdorff_m == 0.0f &&
+              metrics.unmatched_open_edges == 0u,
+          "distinct contour vertices remain distinct even when they are geometrically closer than the cross-mesh weld tolerance");
+    const float split_y = endpoint_tolerance_m * 100.49f;
+    const auto split_strip = combine(
+        quad(-0.625f, 0.625f, split_y, -0.5f, 0.0f),
+        quad(-0.625f, 0.625f,
+             split_y + endpoint_tolerance_m * 0.02f, 0.0f, 0.5f));
+    const auto split_downstream = combine(
+        quad(0.625f, 1.625f, split_y, -0.5f, 0.0f),
+        quad(0.625f, 1.625f, split_y, 0.0f, 0.5f));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              split_strip, split_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.symmetric_hausdorff_m < endpoint_tolerance_m &&
+              metrics.unmatched_open_edges == 0u,
+          "sub-tolerance duplicate endpoints that continue one contour edge remain topologically welded");
+
+    const float graph_y = 4.0f;
+    const auto unsplit_strip = cell_face_segment(
+        0.625f, true, graph_y, -0.5f, graph_y, 0.5f);
+    const auto subdivided_downstream = combine(
+        cell_face_segment(0.625f, false, graph_y, -0.5f,
+                          graph_y, 0.0f),
+        cell_face_segment(0.625f, false, graph_y, 0.0f,
+                          graph_y, 0.5f));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              unsplit_strip, subdivided_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.symmetric_hausdorff_m == 0.0f &&
+              metrics.unmatched_open_edges == 0u,
+          "equivalent contour curves remain welded when independent marching-cubes packing retains a different edge subdivision");
+
+    const auto missing_subdivision = cell_face_segment(
+        0.625f, false, graph_y, -0.5f, graph_y, 0.0f);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              unsplit_strip, missing_subdivision,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.unmatched_open_edges != 0u,
+          "bidirectional contour coverage rejects a genuine missing segment");
+
+    const auto branched_downstream = combine(
+        subdivided_downstream,
+        cell_face_segment(0.625f, false, graph_y, 0.0f,
+                          graph_y + 0.25f, 0.0f));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              unsplit_strip, branched_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.unmatched_open_edges != 0u,
+          "contour topology rejects an extra branch even when the main path is covered");
+
+    const auto closed_strip = combine(
+        combine(
+            cell_face_segment(0.625f, true, graph_y, -0.5f,
+                              graph_y + 0.25f, 0.0f),
+            cell_face_segment(0.625f, true, graph_y + 0.25f, 0.0f,
+                              graph_y, 0.5f)),
+        cell_face_segment(0.625f, true, graph_y, 0.5f,
+                          graph_y, -0.5f));
+    const auto open_downstream = combine(
+        cell_face_segment(0.625f, false, graph_y, -0.5f,
+                          graph_y + 0.25f, 0.0f),
+        cell_face_segment(0.625f, false, graph_y + 0.25f, 0.0f,
+                          graph_y, 0.5f));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              closed_strip, open_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.unmatched_open_edges != 0u,
+          "contour topology rejects a closed-loop versus open-path mismatch");
+
+    const float quotient_y = 7.0f;
+    const float quotient_mid_y =
+        quotient_y + endpoint_tolerance_m * 0.8f;
+    const auto narrow_closed_strip = combine(
+        combine(
+            cell_face_segment(0.625f, true, quotient_y, -0.5f,
+                              quotient_y, 0.5f),
+            cell_face_segment(0.625f, true, quotient_y, -0.5f,
+                              quotient_mid_y, 0.0f)),
+        cell_face_segment(0.625f, true, quotient_mid_y, 0.0f,
+                          quotient_y, 0.5f));
+    const auto narrow_open_downstream = cell_face_segment(
+        0.625f, false, quotient_y, -0.5f, quotient_y, 0.5f);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              narrow_closed_strip, narrow_open_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.symmetric_hausdorff_m < endpoint_tolerance_m &&
+              metrics.unmatched_open_edges == 0u,
+          "one-to-one components whose complete curves mutually cover at the fixed tolerance normalize a narrow closed triangle to its chord");
+
+    const auto closed_downstream = combine(
+        combine(
+            cell_face_segment(0.625f, false, graph_y, -0.5f,
+                              graph_y + 0.25f, 0.0f),
+            cell_face_segment(0.625f, false, graph_y + 0.25f, 0.0f,
+                              graph_y, 0.5f)),
+        cell_face_segment(0.625f, false, graph_y, 0.5f,
+                          graph_y, -0.5f));
+    auto quantized_duplicate_edge = cell_face_segment(
+        0.625f, true, graph_y, -0.5f, graph_y + 0.25f, 0.0f);
+    for (std::size_t index = 1u;
+         index < quantized_duplicate_edge.positions.size(); index += 3u)
+        quantized_duplicate_edge.positions[index] +=
+            endpoint_tolerance_m * 0.02f;
+    quantized_duplicate_edge.content_digest =
+        gpu_meshing::mesh_content_digest(quantized_duplicate_edge);
+    const auto closed_with_duplicate_strip = combine(
+        closed_strip, quantized_duplicate_edge);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              closed_with_duplicate_strip, closed_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.symmetric_hausdorff_m < endpoint_tolerance_m &&
+              metrics.unmatched_open_edges == 0u,
+          "a quantized duplicate contour segment remains one geometric edge instead of cancelling a closed loop open");
+
+    const auto packed_forward_incidence = cell_face_segment(
+        0.625f, true, 6.0f, -0.5f, 6.0f, 0.5f);
+    const auto packed_reverse_incidence = cell_face_segment(
+        0.625f, true,
+        6.0f + endpoint_tolerance_m * 0.2f, 0.5f,
+        6.0f + endpoint_tolerance_m * 0.2f, -0.5f);
+    const auto closed_with_packed_shared_edge = combine(
+        closed_strip,
+        combine(packed_forward_incidence, packed_reverse_incidence));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              closed_with_packed_shared_edge, closed_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.unmatched_open_edges == 0u,
+          "opposite-winding packed incidences cancel one shared edge even when their endpoints drift within a quantization bin");
+
+    auto diagonal_handoff = handoff;
+    diagonal_handoff.lip_origin_m = {};
+    diagonal_handoff.tangent = {0.0f, 0.70710677f, 0.70710677f};
+    diagonal_handoff.upstream_visual_cut_m = -0.5f;
+    diagonal_handoff.downstream_visual_cut_m = 0.05f;
+    diagonal_handoff.semantic_key =
+        hydrology::spillway_handoff_semantic_key(diagonal_handoff);
+    const auto lattice_face_edge = [](float y_shift, bool reverse) {
+        gpu_meshing::MeshResult mesh{};
+        mesh.positions = {
+            reverse ? 0.5f : -0.5f,
+            (reverse ? 0.5f : -0.5f) + y_shift, 0.0f,
+            reverse ? -0.5f : 0.5f,
+            (reverse ? -0.5f : 0.5f) + y_shift, 0.0f,
+            0.0f, y_shift + 0.05f, 0.05f};
+        mesh.normals = {
+            0.0f, 1.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+            0.0f, 1.0f, 0.0f};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = 4u;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+        return mesh;
+    };
+    const auto cut_boundary = lattice_face_edge(
+        endpoint_tolerance_m * 0.2f, false);
+    const auto off_cut_forward = lattice_face_edge(
+        -endpoint_tolerance_m * 0.2f, false);
+    const auto off_cut_reverse = lattice_face_edge(
+        -endpoint_tolerance_m * 0.2f, true);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              cut_boundary, cut_boundary,
+              {lattice, diagonal_handoff,
+               diagonal_handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error),
+          error.message.c_str());
+    CHECK(!hydrology::measure_water_cell_boundary_continuity(
+              off_cut_forward, off_cut_forward,
+              {lattice, diagonal_handoff,
+               diagonal_handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error),
+          "the diagonal synthetic shared edge is outside the ownership cut");
+    const auto boundary_with_off_cut_shared_edge = combine(
+        cut_boundary, combine(off_cut_forward, off_cut_reverse));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              boundary_with_off_cut_shared_edge, cut_boundary,
+              {lattice, diagonal_handoff,
+               diagonal_handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.symmetric_hausdorff_m == 0.0f &&
+              metrics.unmatched_open_edges == 0u,
+          "off-cut triangle incidences in the same packing bin cannot cancel a real ownership-boundary edge");
+
+    const float duplicate_mid_y =
+        graph_y + 0.125f + endpoint_tolerance_m * 0.25f;
+    const auto closed_with_subdivided_duplicate_path = combine(
+        closed_strip,
+        combine(
+            cell_face_segment(0.625f, true, graph_y, -0.5f,
+                              duplicate_mid_y, -0.25f),
+            cell_face_segment(0.625f, true, duplicate_mid_y, -0.25f,
+                              graph_y + 0.25f, 0.0f)));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              closed_with_subdivided_duplicate_path, closed_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.symmetric_hausdorff_m < endpoint_tolerance_m &&
+              metrics.unmatched_open_edges == 0u,
+          "a sub-tolerance subdivided duplicate path cannot turn one closed contour into a figure-eight topology");
+
+    const float paired_y = 5.0f;
+    const auto paired_outer_strip = combine(
+        cell_face_segment(0.625f, true, paired_y, 0.5f,
+                          paired_y + 0.25f, 0.0f),
+        cell_face_segment(0.625f, true, paired_y + 0.25f, 0.0f,
+                          paired_y, -0.5f));
+    const auto paired_theta_strip = combine(
+        combine(
+            paired_outer_strip,
+            cell_face_segment(0.625f, true, paired_y, -0.5f,
+                              paired_y, 0.5f)),
+        combine(
+            cell_face_segment(
+                0.625f, true, paired_y, -0.5f,
+                paired_y + endpoint_tolerance_m * 1.5f, 0.0f),
+            cell_face_segment(
+                0.625f, true,
+                paired_y + endpoint_tolerance_m * 1.5f, 0.0f,
+                paired_y, 0.5f)));
+    const auto paired_target = combine(
+        combine(
+            cell_face_segment(0.625f, false, paired_y, 0.5f,
+                              paired_y + 0.25f, 0.0f),
+            cell_face_segment(0.625f, false, paired_y + 0.25f, 0.0f,
+                              paired_y, -0.5f)),
+        combine(
+            cell_face_segment(
+                0.625f, false, paired_y, -0.5f,
+                paired_y + endpoint_tolerance_m * 0.75f, 0.0f),
+            cell_face_segment(
+                0.625f, false,
+                paired_y + endpoint_tolerance_m * 0.75f, 0.0f,
+                paired_y, 0.5f)));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              paired_theta_strip, paired_target,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.symmetric_hausdorff_m < endpoint_tolerance_m &&
+              metrics.unmatched_open_edges == 0u,
+          "a quantized alternate path is normalized only when the paired contour bidirectionally covers it and the retained topology");
+
+    const auto covered_spur_strip = combine(
+        closed_strip,
+        cell_face_segment(
+            0.625f, true, graph_y, -0.5f,
+            graph_y - endpoint_tolerance_m * 0.55f, -0.25f));
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              covered_spur_strip, closed_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.symmetric_hausdorff_m < endpoint_tolerance_m &&
+              metrics.unmatched_open_edges == 0u,
+          "a target-covered dangling duplicate path is normalized independent of endpoint key ordering");
+
+    const float close_component_y = endpoint_tolerance_m * 300.49f;
+    const auto two_close_components = combine(
+        cell_face_segment(0.625f, true, close_component_y, -0.5f,
+                          close_component_y, 0.5f),
+        cell_face_segment(
+            0.625f, true,
+            close_component_y + endpoint_tolerance_m * 0.02f, -0.5f,
+            close_component_y + endpoint_tolerance_m * 0.02f, 0.5f));
+    const auto one_close_component = cell_face_segment(
+        0.625f, false, close_component_y, -0.5f,
+        close_component_y, 0.5f);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              two_close_components, one_close_component,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.unmatched_open_edges != 0u,
+          "topology rejects a missing nearby parallel component even when geometric distance alone is sub-tolerance");
+    const auto second_strip = quad(-0.625f, 0.625f, 2.0f,
+                                   -0.5f, 0.5f);
+    auto second_downstream = quad(0.625f, 1.625f,
+                                  2.0f + endpoint_tolerance_m * 0.51f,
+                                  -0.5f, 0.5f);
+    const auto two_strip = combine(strip, second_strip);
+    auto tolerance_straddled_missing = combine(
+        tolerance_straddled, second_downstream);
+    tolerance_straddled_missing.indices.resize(6u);
+    tolerance_straddled_missing.content_digest =
+        gpu_meshing::mesh_content_digest(tolerance_straddled_missing);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              two_strip, tolerance_straddled_missing,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error),
+          error.message.c_str());
+    CHECK(metrics.unmatched_open_edges != 0u &&
+              !hydrology::water_cut_is_assertion_weldable(
+                  metrics, endpoint_tolerance_m),
+          "tolerance-aware vertex matching still rejects a genuinely missing ownership edge");
+    auto off_boundary_duplicate = strip;
+    append_duplicate_coplanar_triangle(off_boundary_duplicate, -2.0f);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              off_boundary_duplicate, downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              lattice.voxel_m / 16.0f, metrics, error),
+          error.message.c_str());
+    CHECK(metrics.duplicate_coplanar_triangles == 0u,
+          "duplicate geometry away from the ownership face cannot pollute a cell-boundary continuity decision");
+    auto on_boundary_duplicate = strip;
+    append_duplicate_coplanar_triangle(on_boundary_duplicate, 0.625f);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              on_boundary_duplicate, downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              lattice.voxel_m / 16.0f, metrics, error),
+          error.message.c_str());
+    CHECK(metrics.duplicate_coplanar_triangles != 0u,
+          "duplicate coplanar geometry on the ownership face remains a hard continuity failure");
+    auto collapsed_face_triangle_strip = strip;
+    auto collapsed_face_triangle_downstream = downstream;
+    append_sub_quantization_cell_face_triangle(
+        collapsed_face_triangle_strip, 0.625f, endpoint_tolerance_m);
+    append_sub_quantization_cell_face_triangle(
+        collapsed_face_triangle_downstream, 0.625f,
+        endpoint_tolerance_m);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              collapsed_face_triangle_strip,
+              collapsed_face_triangle_downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              metrics.duplicate_coplanar_triangles == 0u,
+          "a cell-face triangle whose three vertices collapse to one contour key is not duplicate geometry at the fixed contour resolution");
+    auto quantized_sliver = strip;
+    append_quantized_cell_face_sliver(
+        quantized_sliver, 0.625f, lattice.voxel_m / 16.0f);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              quantized_sliver, downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              lattice.voxel_m / 16.0f, metrics, error) &&
+              hydrology::water_cut_is_assertion_weldable(
+                  metrics, lattice.voxel_m / 16.0f),
+          "a sub-quantization cell-face sliver cannot create a zero-length contour segment or invalidate an otherwise weldable boundary");
+    auto adjacent_key_sliver = strip;
+    append_quantized_cell_face_sliver(
+        adjacent_key_sliver, 0.625f, endpoint_tolerance_m,
+        2.0f + endpoint_tolerance_m * 0.49f);
+    CHECK(hydrology::measure_water_cell_boundary_continuity(
+              adjacent_key_sliver, downstream,
+              {lattice, handoff, handoff.downstream_visual_cut_m},
+              endpoint_tolerance_m, metrics, error) &&
+              hydrology::water_cut_is_assertion_weldable(
+                  metrics, endpoint_tolerance_m),
+          "a sub-tolerance cell-face sliver remains degenerate when its endpoints straddle adjacent quantization keys");
     CHECK(!hydrology::measure_water_cell_boundary_continuity(
               strip, downstream,
               {lattice, handoff, 0.0f},
@@ -831,6 +1290,7 @@ void test_builds_thirty_shared_field_frames_without_static_geometry() {
     struct ObservedJob {
         std::vector<gpu_meshing::ParticleSample> particles;
         gpu_meshing::ParticlePhaseBlend phase{};
+        gpu_meshing::ParticleLongitudinalFieldBlend source_blend{};
     };
     std::vector<ObservedJob> observed;
     const hydrology::PhysxFluidBake::VisualMesher observing_mesher =
@@ -841,7 +1301,7 @@ void test_builds_thirty_shared_field_frames_without_static_geometry() {
             observed.push_back({
                 std::vector<gpu_meshing::ParticleSample>(
                     job.particles, job.particles + job.particle_count),
-                job.phase_blend});
+                job.phase_blend, job.longitudinal_field_blend});
             return canonical_plane_mesher(job, mesh, stats, error, control);
         };
     hydrology::WaterMeshAnimationArtifact artifact{};
@@ -863,6 +1323,44 @@ void test_builds_thirty_shared_field_frames_without_static_geometry() {
               observed[0].phase.split_index > 0u &&
               observed[0].phase.split_index < observed[0].particles.size(),
           "frame zero jointly uses upstream/downstream captures zero and fifteen with the existing cosine phase weights");
+    const auto& source_blend = observed.front().source_blend;
+    constexpr float support_radius_m = 0.05f * 2.5f + 0.01f * 4.0f;
+    const auto ends_at = [](const gpu_meshing::ParticleSourcePhaseSpan& span,
+                            bool primary) {
+        return (primary ? span.primary_begin : span.secondary_begin) +
+            (primary ? span.primary_count : span.secondary_count);
+    };
+    CHECK(source_blend.enabled &&
+              source_blend.origin_m.x ==
+                  fixture.input.handoff.lip_origin_m.x &&
+              source_blend.origin_m.y ==
+                  fixture.input.handoff.lip_origin_m.y &&
+              source_blend.origin_m.z ==
+                  fixture.input.handoff.lip_origin_m.z &&
+              source_blend.direction.x == fixture.input.handoff.tangent.x &&
+              source_blend.direction.y == fixture.input.handoff.tangent.y &&
+              source_blend.direction.z == fixture.input.handoff.tangent.z &&
+              std::fabs(source_blend.upstream_full_m -
+                        (fixture.input.handoff.upstream_visual_cut_m +
+                         support_radius_m)) < 1.0e-6f &&
+              std::fabs(source_blend.downstream_full_m -
+                        (fixture.input.handoff.downstream_visual_cut_m -
+                         support_radius_m)) < 1.0e-6f &&
+              source_blend.upstream_full_m <
+                  source_blend.downstream_full_m,
+          "handoff source blending reaches full-source endpoints one complete support halo inside both outer cuts");
+    CHECK(source_blend.source[0].primary_begin == 0u &&
+              ends_at(source_blend.source[0], true) ==
+                  source_blend.source[1].primary_begin &&
+              ends_at(source_blend.source[1], true) ==
+                  observed.front().phase.split_index &&
+              source_blend.source[0].secondary_begin ==
+                  observed.front().phase.split_index &&
+              ends_at(source_blend.source[0], false) ==
+                  source_blend.source[1].secondary_begin &&
+              ends_at(source_blend.source[1], false) ==
+                  observed.front().particles.size(),
+          "source spans preserve upstream/downstream ownership in both temporal phases");
     bool has_upstream_interior = false;
     bool has_downstream_interior = false;
     bool has_upstream_opposite_crossing = false;
@@ -889,8 +1387,9 @@ void test_builds_thirty_shared_field_frames_without_static_geometry() {
               !has_upstream_opposite_crossing &&
               !has_downstream_opposite_crossing && !has_upstream_dam,
           "both interior sources survive while opposite-cut support and upstream dam contributors are absent");
-    CHECK(diagnostics.peak_decoded_boundary_frames == 4u,
-          "one output frame retains only its four cropped phase-source decodes");
+    CHECK(diagnostics.peak_decoded_boundary_frames == 4u &&
+              diagnostics.source_blend_required,
+          "one output frame retains only its four cropped phase-source decodes and records the triggered field blend");
 
     gpu_meshing::MeshResult frame{};
     gpu_meshing::Error artifact_error{};

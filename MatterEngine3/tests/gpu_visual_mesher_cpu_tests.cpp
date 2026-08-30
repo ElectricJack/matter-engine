@@ -342,6 +342,115 @@ void test_phase_weighted_reference_field_blends_two_captures() {
           "a zero-weight phase is skipped before it can introduce NaN");
 }
 
+void test_longitudinal_source_blend_preserves_water_without_union_thickening() {
+    gpu_meshing::ParticleSample particles[2] = {
+        {{0.0f, 0.0f, 0.0f}, 0.5f},
+        {{0.0f, 0.0f, 0.0f}, 0.5f},
+    };
+    gpu_meshing::ParticleLongitudinalFieldBlend blend{};
+    blend.source[0].primary_begin = 0u;
+    blend.source[0].primary_count = 1u;
+    blend.source[1].primary_begin = 1u;
+    blend.source[1].primary_count = 1u;
+    blend.origin_m = {0.0f, 0.0f, 0.0f};
+    blend.direction = {1.0f, 0.0f, 0.0f};
+    blend.upstream_full_m = -0.5f;
+    blend.downstream_full_m = 0.5f;
+    blend.enabled = true;
+    constexpr float smooth_min_width = 0.18f;
+
+    const matter::Float3 upstream_probe{-0.75f, 0.0f, 0.0f};
+    const matter::Float3 midpoint_probe{0.0f, 0.1f, 0.0f};
+    const matter::Float3 downstream_probe{0.75f, 0.0f, 0.0f};
+    const auto blended = [&](matter::Float3 point) {
+        return gpu_meshing::evaluate_particle_field_reference(
+            particles, 2u, smooth_min_width, {2u, 1.0f, 0.0f},
+            blend, point);
+    };
+    const float upstream_only = gpu_meshing::evaluate_particle_field_reference(
+        particles, 1u, smooth_min_width, upstream_probe);
+    const float downstream_only = gpu_meshing::evaluate_particle_field_reference(
+        particles + 1u, 1u, smooth_min_width, downstream_probe);
+    const float one_midpoint = gpu_meshing::evaluate_particle_field_reference(
+        particles, 1u, smooth_min_width, midpoint_probe);
+    const float blended_upstream = blended(upstream_probe);
+    const float blended_downstream = blended(downstream_probe);
+    CHECK(std::memcmp(&blended_upstream, &upstream_only,
+                      sizeof(float)) == 0 &&
+              std::memcmp(&blended_downstream, &downstream_only,
+                          sizeof(float)) == 0,
+          "longitudinal endpoints are bit-identical to their single source");
+    const float blended_midpoint = blended(midpoint_probe);
+    CHECK(std::memcmp(&blended_midpoint, &one_midpoint, sizeof(float)) == 0,
+          "coincident upstream and downstream sources do not thicken the midpoint isosurface");
+
+    particles[0].position_m = {1.0f, 0.0f, 0.0f};
+    particles[1].position_m = {-1.0f, 0.0f, 0.0f};
+    blend.upstream_full_m = -1.0f;
+    blend.downstream_full_m = 1.0f;
+    const float dry_upstream_endpoint = blended({-1.0f, 0.0f, 0.0f});
+    const float dry_downstream_endpoint = blended({1.0f, 0.0f, 0.0f});
+    CHECK(!std::isfinite(dry_upstream_endpoint) &&
+              !std::isfinite(dry_downstream_endpoint),
+          "full-source bands preserve a dry designated source even when the opposite source is wet");
+
+    particles[0].position_m = {0.0f, 0.0f, 0.0f};
+    particles[1].position_m = {0.0f, 0.0f, 0.0f};
+    blend.upstream_full_m = -0.5f;
+    blend.downstream_full_m = 0.5f;
+
+    blend.source[1] = {};
+    const float surviving_wet =
+        gpu_meshing::evaluate_particle_field_reference(
+            particles, 1u, smooth_min_width, {1u, 1.0f, 0.0f},
+            blend, midpoint_probe);
+    CHECK(std::isfinite(surviving_wet) &&
+              std::memcmp(&surviving_wet, &one_midpoint,
+                          sizeof(float)) == 0,
+          "an absent dry source cannot erase a finite wet source");
+    blend.source[0] = {};
+    CHECK(!std::isfinite(gpu_meshing::evaluate_particle_field_reference(
+              nullptr, 0u, smooth_min_width, {}, blend, midpoint_probe)),
+          "two dry longitudinal sources remain dry");
+}
+
+void test_longitudinal_source_blend_descriptor_validation_fails_closed() {
+    gpu_meshing::ParticleSample particles[2] = {
+        {{-0.25f, 0.0f, 0.0f}, 0.5f},
+        {{0.25f, 0.0f, 0.0f}, 0.5f},
+    };
+    gpu_meshing::ParticleSample scratch[1];
+    auto job = one_sphere_job(scratch);
+    job.particles = particles;
+    job.particle_count = 2u;
+    job.blend_width_m = 0.15f;
+    job.longitudinal_field_blend.source[0].primary_count = 1u;
+    job.longitudinal_field_blend.source[1].primary_begin = 1u;
+    job.longitudinal_field_blend.source[1].primary_count = 1u;
+    job.longitudinal_field_blend.direction = {1.0f, 0.0f, 0.0f};
+    job.longitudinal_field_blend.upstream_full_m = -0.5f;
+    job.longitudinal_field_blend.downstream_full_m = 0.5f;
+    job.longitudinal_field_blend.enabled = true;
+    gpu_meshing::GridLayout layout{};
+    gpu_meshing::Error error{};
+    CHECK(gpu_meshing::validate_particle_job(job, layout, error),
+          error.message.c_str());
+
+    auto invalid = job;
+    invalid.longitudinal_field_blend.source[1].primary_begin = 2u;
+    invalid.longitudinal_field_blend.source[1].primary_count = 1u;
+    CHECK(rejects(invalid, gpu_meshing::ErrorCode::InvalidInput),
+          "a longitudinal source span cannot exceed the particle array");
+    invalid = job;
+    invalid.longitudinal_field_blend.direction = {2.0f, 0.0f, 0.0f};
+    CHECK(rejects(invalid, gpu_meshing::ErrorCode::InvalidInput),
+          "the longitudinal source direction must be unit length");
+    invalid = job;
+    invalid.longitudinal_field_blend.downstream_full_m = -0.5f;
+    CHECK(rejects(invalid, gpu_meshing::ErrorCode::InvalidInput),
+          "longitudinal full-source positions must define a positive interval");
+}
+
 void test_phase_weighted_job_validation_fails_closed() {
     gpu_meshing::ParticleSample particles[2] = {
         {{-0.25f, 0.0f, 0.0f}, 0.5f},
@@ -618,6 +727,8 @@ int main() {
     test_validation_fails_closed_without_rejecting_supported_edges();
     test_reference_field_matches_matter_surface_oracle();
     test_phase_weighted_reference_field_blends_two_captures();
+    test_longitudinal_source_blend_preserves_water_without_union_thickening();
+    test_longitudinal_source_blend_descriptor_validation_fails_closed();
     test_phase_weighted_job_validation_fails_closed();
     test_reference_scan_covers_empty_zero_max_and_overflow();
     test_mesh_digest_is_stable_and_sensitive();

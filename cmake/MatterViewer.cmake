@@ -170,6 +170,9 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/water_animation_gpu.cpp
         MatterEngine3/src/render/water_mesh_animation_playback.cpp
         MatterEngine3/src/hydrology/hydrology_artifact.cpp
+        MatterEngine3/src/hydrology/fluid_gameplay_field.cpp
+        MatterEngine3/src/hydrology/physx_fluid_bake.cpp
+        MatterEngine3/src/hydrology/river_presentation_field.cpp
         MatterEngine3/src/hydrology/water_mesh_animation_artifact.cpp
         MatterEngine3/src/hydrology/water_visual_products.cpp
         MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp

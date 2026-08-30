@@ -706,16 +706,46 @@ bool build_particle_visual_job_chunks_impl(
                            grid_coordinate(axis, mesh_range.end[axis]));
         }
 
-        std::vector<gpu_meshing::ParticleSample> primary_particles;
-        std::vector<gpu_meshing::ParticleSample> secondary_particles;
-        primary_particles.reserve(root_template.particle_count);
-        secondary_particles.reserve(root_template.particle_count);
+        std::array<std::vector<gpu_meshing::ParticleSample>, 4>
+            source_phase_particles;
+        for (auto& particles : source_phase_particles)
+            particles.reserve(root_template.particle_count);
+        const std::uint32_t root_phase_split =
+            gpu_meshing::resolved_particle_phase_split(root_template);
+        const auto source_for_particle = [&](std::uint32_t particle_index,
+                                             bool secondary) {
+            if (!root_template.longitudinal_field_blend.enabled) return 0u;
+            for (std::uint32_t source = 0u; source != 2u; ++source) {
+                const gpu_meshing::ParticleSourcePhaseSpan& span =
+                    root_template.longitudinal_field_blend.source[source];
+                const std::uint32_t begin = secondary
+                    ? span.secondary_begin
+                    : span.primary_begin;
+                const std::uint32_t count = secondary
+                    ? span.secondary_count
+                    : span.primary_count;
+                if (particle_index >= begin &&
+                    particle_index - begin < count) {
+                    return source;
+                }
+            }
+            return 2u;
+        };
         const float halo = root_layout.query_radius_m;
         for (std::uint32_t particle_index = 0u;
              particle_index != root_template.particle_count;
              ++particle_index) {
+            const bool secondary = particle_index >= root_phase_split;
+            const float phase_weight = secondary
+                ? root_template.phase_blend.secondary_weight
+                : root_template.phase_blend.primary_weight;
             const gpu_meshing::ParticleSample& particle =
                 root_template.particles[particle_index];
+            if (phase_weight == 0.0f &&
+                (!finite(particle.position_m) ||
+                 !finite(particle.radius_m))) {
+                continue;
+            }
             bool relevant = true;
             for (std::size_t axis = 0; axis != 3u; ++axis) {
                 const float value = coordinate(particle.position_m, axis);
@@ -726,30 +756,60 @@ bool build_particle_visual_job_chunks_impl(
                 }
             }
             if (!relevant) continue;
-            const bool secondary =
-                root_template.phase_blend.secondary_weight > 0.0f &&
-                particle_index >= root_template.phase_blend.split_index;
-            (secondary ? secondary_particles : primary_particles)
+            const std::uint32_t source =
+                source_for_particle(particle_index, secondary);
+            if (source >= 2u) {
+                error = {gpu_meshing::ErrorCode::InvalidInput,
+                         "particle-water chunk lost longitudinal source ownership"};
+                return false;
+            }
+            source_phase_particles[(secondary ? 2u : 0u) + source]
                 .push_back(particle);
         }
-        if (primary_particles.empty() && secondary_particles.empty())
+        if (std::all_of(
+                source_phase_particles.begin(), source_phase_particles.end(),
+                [](const auto& particles) { return particles.empty(); }))
             return true;
 
         std::vector<gpu_meshing::ParticleSample> job_particles;
-        job_particles.reserve(primary_particles.size() +
-                              secondary_particles.size());
-        job_particles.insert(job_particles.end(), primary_particles.begin(),
-                             primary_particles.end());
+        job_particles.reserve(root_template.particle_count);
+        gpu_meshing::ParticleLongitudinalFieldBlend chunk_source_blend =
+            root_template.longitudinal_field_blend;
+        chunk_source_blend.source[0].primary_begin = 0u;
+        job_particles.insert(job_particles.end(),
+                             source_phase_particles[0].begin(),
+                             source_phase_particles[0].end());
+        chunk_source_blend.source[0].primary_count =
+            static_cast<std::uint32_t>(source_phase_particles[0].size());
+        chunk_source_blend.source[1].primary_begin =
+            static_cast<std::uint32_t>(job_particles.size());
+        job_particles.insert(job_particles.end(),
+                             source_phase_particles[1].begin(),
+                             source_phase_particles[1].end());
+        chunk_source_blend.source[1].primary_count =
+            static_cast<std::uint32_t>(source_phase_particles[1].size());
         const std::uint32_t phase_split =
             static_cast<std::uint32_t>(job_particles.size());
-        job_particles.insert(job_particles.end(), secondary_particles.begin(),
-                             secondary_particles.end());
+        chunk_source_blend.source[0].secondary_begin = phase_split;
+        job_particles.insert(job_particles.end(),
+                             source_phase_particles[2].begin(),
+                             source_phase_particles[2].end());
+        chunk_source_blend.source[0].secondary_count =
+            static_cast<std::uint32_t>(source_phase_particles[2].size());
+        chunk_source_blend.source[1].secondary_begin =
+            static_cast<std::uint32_t>(job_particles.size());
+        job_particles.insert(job_particles.end(),
+                             source_phase_particles[3].begin(),
+                             source_phase_particles[3].end());
+        chunk_source_blend.source[1].secondary_count =
+            static_cast<std::uint32_t>(source_phase_particles[3].size());
         gpu_meshing::ParticleJob job = visual_template;
         job.particles = job_particles.data();
         job.particle_count =
             static_cast<std::uint32_t>(job_particles.size());
         job.phase_blend = root_template.phase_blend;
         job.phase_blend.split_index = phase_split;
+        job.longitudinal_field_blend = chunk_source_blend;
         gpu_meshing::Error job_error{};
         gpu_meshing::GridLayout job_layout{};
         if (!gpu_meshing::validate_particle_job(job, job_layout, job_error)) {

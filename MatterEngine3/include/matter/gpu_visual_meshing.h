@@ -51,6 +51,22 @@ struct ParticlePhaseBlend {
     float secondary_weight = 0.0f;
 };
 
+struct ParticleSourcePhaseSpan {
+    std::uint32_t primary_begin = 0;
+    std::uint32_t primary_count = 0;
+    std::uint32_t secondary_begin = 0;
+    std::uint32_t secondary_count = 0;
+};
+
+struct ParticleLongitudinalFieldBlend {
+    std::array<ParticleSourcePhaseSpan, 2> source{};
+    matter::Float3 origin_m{};
+    matter::Float3 direction{};
+    float upstream_full_m = 0.0f;
+    float downstream_full_m = 0.0f;
+    bool enabled = false;
+};
+
 struct ParticleSamplingLattice {
     matter::Float3 origin_m{};
     float voxel_m = 0.0f;
@@ -69,6 +85,7 @@ struct ParticleJob {
     std::uint64_t generation = 0;
     ParticlePhaseBlend phase_blend{};
     ParticleSamplingLattice sampling_lattice{};
+    ParticleLongitudinalFieldBlend longitudinal_field_blend{};
 };
 
 struct BuildControl {
@@ -137,6 +154,14 @@ float evaluate_particle_field_reference(
     std::uint32_t particle_count,
     float blend_width_m,
     ParticlePhaseBlend phase_blend,
+    matter::Float3 point_m);
+
+float evaluate_particle_field_reference(
+    const ParticleSample* particles,
+    std::uint32_t particle_count,
+    float blend_width_m,
+    ParticlePhaseBlend phase_blend,
+    const ParticleLongitudinalFieldBlend& longitudinal_blend,
     matter::Float3 point_m);
 
 bool exclusive_scan_reference(const std::vector<std::uint32_t>& input,

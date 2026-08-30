@@ -177,13 +177,18 @@ struct alignas(16) FieldParams {
     std::array<std::uint32_t, 4> bin_dims_and_count{};
     std::array<std::uint32_t, 4> counts{};
     std::array<float, 4> query_radius_and_padding{};
+    std::array<std::uint32_t, 4> source0_phase_spans{};
+    std::array<std::uint32_t, 4> source1_phase_spans{};
+    std::array<float, 4> source_blend_origin_and_enabled{};
+    std::array<float, 4> source_blend_direction{};
+    std::array<float, 4> source_blend_distances_and_padding{};
 };
 
 static_assert(sizeof(ScanParams) == 16, "scan params must match one uvec4");
 static_assert(sizeof(BinParams) == 48,
               "bin params must match three std430 vec4 values");
-static_assert(sizeof(FieldParams) == 112,
-              "field params must match seven std430 vec4 values");
+static_assert(sizeof(FieldParams) == 192,
+              "field params must match twelve std430 vec4 values");
 // FieldParams::counts.z and query_radius_and_padding.yz are the phase split
 // and weights declared by GpuMeshFieldParams in gpu_mesh_common.glsl.
 static_assert(sizeof(ParticleSample) == 16,
@@ -361,7 +366,9 @@ struct GpuVisualMesher::Impl {
              layout.bin_origin_m.z, layout.bin_size_m},
             {layout.bin_dims[0], layout.bin_dims[1], layout.bin_dims[2],
              layout.bins},
-            {job.particle_count, 0u, 0u, 0u},
+            {job.particle_count, resolved_particle_phase_split(job),
+             job.phase_blend.primary_weight != 0.0f ? 1u : 0u,
+             job.phase_blend.secondary_weight != 0.0f ? 1u : 0u},
         };
         std::vector<std::uint32_t> zeros(layout.bins, 0u);
         if (!upload(vulkan, params_buffer, &params, sizeof(params), error) ||
@@ -525,6 +532,23 @@ struct GpuVisualMesher::Impl {
              resolved_particle_phase_split(job), 0u},
             {layout.query_radius_m, job.phase_blend.primary_weight,
              job.phase_blend.secondary_weight, 0.0f},
+            {job.longitudinal_field_blend.source[0].primary_begin,
+             job.longitudinal_field_blend.source[0].primary_count,
+             job.longitudinal_field_blend.source[0].secondary_begin,
+             job.longitudinal_field_blend.source[0].secondary_count},
+            {job.longitudinal_field_blend.source[1].primary_begin,
+             job.longitudinal_field_blend.source[1].primary_count,
+             job.longitudinal_field_blend.source[1].secondary_begin,
+             job.longitudinal_field_blend.source[1].secondary_count},
+            {job.longitudinal_field_blend.origin_m.x,
+             job.longitudinal_field_blend.origin_m.y,
+             job.longitudinal_field_blend.origin_m.z,
+             job.longitudinal_field_blend.enabled ? 1.0f : 0.0f},
+            {job.longitudinal_field_blend.direction.x,
+             job.longitudinal_field_blend.direction.y,
+             job.longitudinal_field_blend.direction.z, 0.0f},
+            {job.longitudinal_field_blend.upstream_full_m,
+             job.longitudinal_field_blend.downstream_full_m, 0.0f, 0.0f},
         };
         if (!upload(vulkan, params_buffer, &params, sizeof(params), error) ||
             (!resident &&
