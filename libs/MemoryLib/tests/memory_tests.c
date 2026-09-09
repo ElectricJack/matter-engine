@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#ifdef _MSC_VER
+#define MATTER_MAX_ALIGN_T double
+#else
+#define MATTER_MAX_ALIGN_T max_align_t
+#endif
+
 // Test that objects are properly aligned to max_align_t
 void test_object_alignment() {
     printf("Testing object alignment with objectSize=12...\n");
@@ -14,7 +20,7 @@ void test_object_alignment() {
     MemPool* allocator = mem_pool_create(12, 10);
     assert(allocator != NULL);
 
-    size_t alignment = _Alignof(max_align_t);
+    size_t alignment = _Alignof(MATTER_MAX_ALIGN_T);
 
     // Allocate several objects and verify alignment
     void* ptrs[5];
@@ -82,7 +88,7 @@ void test_multi_page_alignment() {
     MemPool* allocator = mem_pool_create(12, 10);
     assert(allocator != NULL);
 
-    size_t alignment = _Alignof(max_align_t);
+    size_t alignment = _Alignof(MATTER_MAX_ALIGN_T);
     void* ptrs[25];
 
     // Allocate 25 objects (more than one page of 10 objects)
@@ -269,9 +275,30 @@ static void test_array_ensure_overflow(void) {
     printf("  MemArray overflow guard tests passed!\n");
 }
 
+/* mem_array's entry points tolerate a NULL array, matching mem_arena and
+ * mem_pool. This pins that contract down: the void-returning functions must
+ * do nothing, ensure must report failure and push must return NULL, and none
+ * of them may dereference the pointer (ASan would catch it if they did). */
+static void test_array_null_tolerance(void) {
+    printf("Testing mem_array NULL tolerance...\n");
+    mem_array_init(NULL, sizeof(int));
+    assert(mem_array_ensure(NULL, 16) == 0);
+    assert(mem_array_push(NULL) == NULL);
+    mem_array_clear(NULL);
+    mem_array_free(NULL);
+
+    /* get_stats leaves *out untouched for a NULL array, so a caller must not
+     * read it -- assert only that it does not write. */
+    MemStats st;
+    st.liveBytes = 12345;
+    mem_array_get_stats(NULL, &st);
+    assert(st.liveBytes == 12345);
+    printf("  mem_array NULL tolerance tests passed!\n");
+}
+
 int main() {
     printf("Running MemPool tests...\n");
-    printf("max_align_t alignment: %zu bytes\n\n", _Alignof(max_align_t));
+    printf("max_align_t alignment: %zu bytes\n\n", _Alignof(MATTER_MAX_ALIGN_T));
 
     test_object_alignment();
     printf("\n");
@@ -288,6 +315,8 @@ int main() {
     test_array_growth_policy();
     printf("\n");
     test_array_ensure_overflow();
+    printf("\n");
+    test_array_null_tolerance();
 
     printf("\nAll tests passed!\n");
     return 0;

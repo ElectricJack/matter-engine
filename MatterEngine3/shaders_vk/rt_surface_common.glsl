@@ -53,6 +53,8 @@ struct RtSurface {
     // width plus spread * hit_t, written by the closest-hit shader. This is
     // the quantity that replaced RT_TILESET_CONE_SPREAD * hit_t.
     float cone_width;
+    uint water_binding_slot;
+    uint water_generation;
 };
 
 // Ray cone (WP-G). `cone_width` is the footprint width at the RAY ORIGIN and
@@ -77,7 +79,9 @@ struct GpuRtPartRecord {
     uint primitive_count;
     uint valid;
     uint vt_slot;   // WP-G, was pad0 (see vk_gi_contract.h)
-    uint pad1; uint pad2; uint pad3;
+    uint water_binding_slot;
+    uint water_generation;
+    uint pad3;
 };
 
 struct RtRasterVertex {
@@ -305,6 +309,8 @@ RtSurface invalid_rt_surface() {
     surface.vt_slot = 0u;
     surface.uv_density = 0.0;
     surface.cone_width = 0.0;
+    surface.water_binding_slot = 0xffffffffu;
+    surface.water_generation = 0u;
     return surface;
 }
 
@@ -362,6 +368,8 @@ RtSurface load_rt_surface(vec2 hit_barycentrics) {
     // the warp words — RT has no march (spec §8), so it has no use for the
     // march's coordinate.
     surface.vt_slot = part.vt_slot;
+    surface.water_binding_slot = part.water_binding_slot;
+    surface.water_generation = part.water_generation;
     surface.uv_density = 0.0;
     surface.cone_width = 0.0;
     if (part.vt_slot != 0u) {

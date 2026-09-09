@@ -2,7 +2,9 @@
 
 #include "check.h"
 #include "matter/ecs.h"
+#include "matter/character.h"
 #include "matter/physics.h"
+#include "matter/river_runtime.h"
 #include "matter/scene.h"
 #include "matter/streaming.h"
 #include "matter/world_definition.h"
@@ -11,6 +13,8 @@
 #include "flecs.h"
 
 #include <string>
+#include <cmath>
+#include <limits>
 #include <vector>
 
 using namespace matter;
@@ -112,6 +116,19 @@ static void test_physics_module_reflects_convex_hull_collider() {
     CHECK(comp.id() != 0, "ConvexHullCollider not registered");
 }
 
+static void test_physics_module_reflects_river_float_body() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    auto comp = world.component<RiverFloatBody>();
+    CHECK(comp.id() != 0, "RiverFloatBody not registered");
+}
+
+static void test_river_float_body_public_abi_is_pinned() {
+    CHECK(sizeof(RiverFloatBody) == 56 && alignof(RiverFloatBody) == 4,
+          "RiverFloatBody public ABI remains 56 bytes with 4-byte alignment");
+}
+
 static void test_streaming_module_reflects_sector_streaming() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -135,6 +152,7 @@ static void test_find_component_known() {
     CHECK(find_component("ConvexHullCollider") != nullptr, "ConvexHullCollider not found");
     CHECK(find_component("PartInstance") != nullptr, "PartInstance not found");
     CHECK(find_component("SectorStreaming") != nullptr, "SectorStreaming not found");
+    CHECK(find_component("RiverFloatBody") != nullptr, "RiverFloatBody not found");
 }
 
 static void test_find_component_unknown() {
@@ -143,7 +161,7 @@ static void test_find_component_unknown() {
 }
 
 static void test_component_count() {
-    CHECK(component_count() == 9, "expected 9 registered components");
+    CHECK(component_count() == 11, "registry adds controller and keeps river float");
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +201,7 @@ static void test_component_struct_sizes_match() {
         {"ConvexHullCollider", sizeof(physics::ConvexHullCollider), alignof(physics::ConvexHullCollider)},
         {"PartInstance", sizeof(PartInstance), alignof(PartInstance)},
         {"SectorStreaming", sizeof(streaming::SectorStreaming), alignof(streaming::SectorStreaming)},
+        {"RiverFloatBody", sizeof(RiverFloatBody), alignof(RiverFloatBody)},
     };
     for (const auto& e : expected) {
         const ComponentDescriptor* cd = find_component(e.name);
@@ -195,6 +214,52 @@ static void test_component_struct_sizes_match() {
         CHECK(cd->struct_align <= kMaxComponentStructAlign,
               "component alignment above kMaxComponentStructAlign");
     }
+}
+
+static void test_river_float_body_descriptor_round_trip() {
+    const ComponentDescriptor* component = find_component("RiverFloatBody");
+    CHECK(component != nullptr && component->field_count == 14,
+          "RiverFloatBody exposes exactly every authored field");
+    RiverFloatBody value{};
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "effective_density_kg_m3"), 731.25f),
+          "density descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "displaced_volume_scale"), 1.75f),
+          "volume descriptor writes exact storage");
+    CHECK(field_set_uint(&value, *field_of("RiverFloatBody", "probes_x"), 4),
+          "probe-x descriptor writes one-byte storage");
+    CHECK(field_set_uint(&value, *field_of("RiverFloatBody", "probes_y"), 3),
+          "probe-y descriptor writes one-byte storage");
+    CHECK(field_set_uint(&value, *field_of("RiverFloatBody", "probes_z"), 2),
+          "probe-z descriptor writes one-byte storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "probe_inset"), 0.23f),
+          "inset descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "buoyancy_response"), 1.2f),
+          "buoyancy descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "longitudinal_drag"), 0.6f),
+          "longitudinal descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "lateral_drag"), 1.7f),
+          "lateral descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "vertical_drag"), 2.1f),
+          "vertical descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "angular_damping"), 0.9f),
+          "angular descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "max_force_per_probe_n"), 4567.0f),
+          "per-probe cap descriptor writes exact storage");
+    CHECK(field_set_float(&value, *field_of("RiverFloatBody", "max_total_force_n"), 9876.0f),
+          "total cap descriptor writes exact storage");
+    CHECK(field_set_float3(&value, *field_of("RiverFloatBody", "diagnostic_color"), {0.3f, 0.4f, 0.5f}),
+          "diagnostic-color descriptor writes exact storage");
+    CHECK(value.effective_density_kg_m3 == 731.25f &&
+              value.displaced_volume_scale == 1.75f && value.probes_x == 4 &&
+              value.probes_y == 3 && value.probes_z == 2 &&
+              value.probe_inset == 0.23f && value.buoyancy_response == 1.2f &&
+              value.longitudinal_drag == 0.6f && value.lateral_drag == 1.7f &&
+              value.vertical_drag == 2.1f && value.angular_damping == 0.9f &&
+              value.max_force_per_probe_n == 4567.0f &&
+              value.max_total_force_n == 9876.0f &&
+              value.diagnostic_color.x == 0.3f && value.diagnostic_color.y == 0.4f &&
+              value.diagnostic_color.z == 0.5f,
+          "descriptor round trip preserves every exact authored value independently");
 }
 
 static void test_every_field_offset_is_in_bounds() {
@@ -354,6 +419,23 @@ static void test_part_instance_offsets() {
     CHECK(field_set_bool(&pi, *field_of("PartInstance", "casts_shadow"), false),
           "casts_shadow set failed");
     CHECK(pi.casts_shadow == false, "casts_shadow offset/type drift");
+
+    const FieldDescriptor* ray_traced = field_of("PartInstance", "ray_traced");
+    CHECK(ray_traced != nullptr && ray_traced->type == FieldType::Enum &&
+              ray_traced->enum_count == 3,
+          "ray_traced is a reflected three-option enum");
+    if (ray_traced) {
+        CHECK(std::string(ray_traced->enum_labels[0]) == "Inherit" &&
+                  std::string(ray_traced->enum_labels[1]) == "Raster only" &&
+                  std::string(ray_traced->enum_labels[2]) == "Ray traced",
+              "ray_traced presents the approved editor labels");
+        CHECK(field_set_int(
+                  &pi, *ray_traced,
+                  static_cast<int32_t>(RayTracingOverride::Disabled)),
+              "ray_traced enum writes through its descriptor");
+        CHECK(pi.ray_traced == RayTracingOverride::Disabled,
+              "ray_traced descriptor targets the PartInstance enum storage");
+    }
 }
 
 static void test_read_only_fields_reject_writes() {
@@ -475,6 +557,93 @@ static void test_validate_empty_components() {
     EntityRecipe out;
     RecipeError err;
     CHECK(validate(raw, out, err), "empty components should pass");
+}
+
+static void test_validate_river_float_defaults_and_boundaries() {
+    RawEntityRecipe defaults{"float-default", "", "", R"({"RiverFloatBody": {}})"};
+    EntityRecipe out;
+    RecipeError err;
+    CHECK(validate(defaults, out, err), "default RiverFloatBody recipe validates");
+
+    const char* invalid[] = {
+        R"({"RiverFloatBody":{"effectiveDensityKgM3":0}})",
+        R"({"RiverFloatBody":{"effectiveDensityKgM3":2001}})",
+        R"({"RiverFloatBody":{"displacedVolumeScale":0}})",
+        R"({"RiverFloatBody":{"displacedVolumeScale":4.01}})",
+        R"({"RiverFloatBody":{"probesX":0}})",
+        R"({"RiverFloatBody":{"probesY":5}})",
+        R"({"RiverFloatBody":{"probesZ":1.5}})",
+        R"({"RiverFloatBody":{"probeInset":0.5}})",
+        R"({"RiverFloatBody":{"buoyancyResponse":-0.01}})",
+        R"({"RiverFloatBody":{"longitudinalDrag":nan}})",
+        R"({"RiverFloatBody":{"lateralDrag":-1}})",
+        R"({"RiverFloatBody":{"verticalDrag":inf}})",
+        R"({"RiverFloatBody":{"angularDamping":-1}})",
+        R"({"RiverFloatBody":{"maxForcePerProbeN":0}})",
+        R"({"RiverFloatBody":{"maxTotalForceN":inf}})",
+        R"({"RiverFloatBody":{"diagnosticColor":[0,nan,1]}})"
+    };
+    for (const char* components : invalid) {
+        RawEntityRecipe raw{"float-invalid", "", "", components};
+        err = {};
+        CHECK(!validate(raw, out, err) &&
+                  err.field_path.find("RiverFloatBody") == 0,
+              "invalid/non-finite RiverFloatBody boundary fails scene validation");
+    }
+}
+
+static void test_instantiate_river_float_exact_and_independent() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    world.import<streaming::StreamingModule>();
+    world.import<SceneModule>();
+    std::vector<EntityRecipe> recipes = {{
+        "float-exact", "Float", "",
+        R"({"RiverFloatBody":{"effectiveDensityKgM3":731.25,"displacedVolumeScale":1.75,"probesX":4,"probesY":3,"probesZ":2,"probeInset":0.23,"buoyancyResponse":1.2,"longitudinalDrag":0.6,"lateralDrag":1.7,"verticalDrag":2.1,"angularDamping":0.9,"maxForcePerProbeN":4567,"maxTotalForceN":9876,"diagnosticColor":[0.3,0.4,0.5]},"PhysicsVelocity":{"linear":[8,7,6]}})"
+    }};
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(instantiate(world, recipes.data(), 1, generation, error),
+          "exact RiverFloatBody recipe instantiates");
+    flecs::entity entity;
+    world.each([&](flecs::entity candidate, const SceneEntityId&) { entity = candidate; });
+    CHECK(entity.has<RiverFloatBody>() && entity.has<physics::PhysicsVelocity>(),
+          "RiverFloatBody remains independent of sibling components");
+    const RiverFloatBody value = entity.get<RiverFloatBody>();
+    const physics::PhysicsVelocity velocity = entity.get<physics::PhysicsVelocity>();
+    CHECK(value.effective_density_kg_m3 == 731.25f && value.probes_x == 4 &&
+              value.probes_y == 3 && value.probes_z == 2 &&
+              value.max_total_force_n == 9876.0f &&
+              value.diagnostic_color.z == 0.5f &&
+              velocity.linear.x == 8.0f && velocity.linear.z == 6.0f,
+          "instantiation preserves exact float values without cross-component aliasing");
+}
+
+static void test_instantiate_preserves_reference_traverser_body_flags() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    world.import<streaming::StreamingModule>();
+    world.import<SceneModule>();
+    std::vector<EntityRecipe> recipes = {{
+        "reference-traverser", "Reference Traverser", "",
+        R"({"RigidBody":{"type":"dynamic","linearDamping":0.1,"angularDamping":0.2,"gravityScale":1,"sleepThreshold":0.125,"enableSleep":false,"continuous":true},"BoxCollider":{"halfExtents":[1.5,1.5,1.5]},"RiverFloatBody":{"effectiveDensityKgM3":620}})"
+    }};
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(instantiate(world, recipes.data(), 1, generation, error),
+          "reference traverser recipe instantiates");
+    flecs::entity entity;
+    world.each([&](flecs::entity candidate, const SceneEntityId&) {
+        entity = candidate;
+    });
+    const physics::RigidBody body = entity.get<physics::RigidBody>();
+    CHECK(body.type == physics::RigidBodyType::Dynamic &&
+              body.linear_damping == 0.1f && body.angular_damping == 0.2f &&
+              body.gravity_scale == 1.0f && body.sleep_threshold == 0.125f &&
+              !body.enable_sleep && body.continuous,
+          "instantiation preserves every authored RigidBody transport flag");
 }
 
 // ---------------------------------------------------------------------------
@@ -662,7 +831,205 @@ static void test_authored_ids_produce_stable_hashes() {
 // Main.
 // ---------------------------------------------------------------------------
 
+static void test_character_authoring() {
+    RawEntityRecipe raw{"river-player", "River Player", "", R"({
+      "LocalTransform":{"translation":[48,126,31],"scale":[1,1,1]},
+      "CharacterController":{"radius":0.4,"height":1.8,"moveSpeed":4.5,
+        "maxSlopeAngleDeg":45,"stepHeight":0.45,"jumpSpeed":5}})"};
+    EntityRecipe recipe;
+    RecipeError error;
+    CHECK(validate(raw, recipe, error), "valid authored controller recipe");
+    const auto* desc = find_component("CharacterController");
+    CHECK(desc && desc->field_count == 6, "only six controller fields exposed");
+    CHECK(!find_component("MoveIntent"), "intent is not authorable");
+    if (desc) {
+        character::CharacterController copy;
+        const char* fields[] = {"radius", "height", "move_speed", "max_slope_cos", "step_up_height", "jump_speed"};
+        const float values[] = {0.5f, 2.2f, 6.0f, 0.5f, 0.6f, 7.0f};
+        for (int i = 0; i < 6; ++i) {
+            const auto* field = find_field(*desc, fields[i]);
+            CHECK(field != nullptr, "snake-case storage descriptor exists");
+            if (!field) continue;
+            CHECK(field_set_float(&copy, *field, values[i]), "controller descriptor write");
+            float got = 0;
+            CHECK(field_get_float(&copy, *field, got) && got == values[i], "controller descriptor read");
+        }
+        CHECK(copy.radius == 0.5f && copy.height == 2.2f && copy.move_speed == 6 &&
+              copy.max_slope_cos == 0.5f && copy.step_up_height == 0.6f && copy.jump_speed == 7,
+              "descriptors address all six independent members");
+        for (const char* field : {"velocity", "grounded", "fixed_ticks", "jumps_consumed", "jumps_started"})
+            CHECK(!find_field(*desc, field), "runtime state not exposed for editing");
+    }
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    world.import<character::CharacterModule>();
+    world.import<SceneModule>();
+    SceneGeneration generation;
+    raw.components_json = R"({"LocalTransform":{"translation":[48,126,31],"scale":[1,1,1]},"CharacterController":
+      {"radius":0.5,"height":2.2,"moveSpeed":6,"maxSlopeAngleDeg":60,"stepHeight":0.6,"jumpSpeed":7}})";
+    const bool authored_ok = bootstrap_transactional(world, {raw}, generation, nullptr, error);
+    CHECK(authored_ok, "multiline authored controller bootstraps");
+    if (authored_ok) world.each([&](flecs::entity e, const SceneEntityId&) {
+        const auto c = e.get<character::CharacterController>();
+        const auto t = e.get<ecs::LocalTransform>();
+        CHECK(c.radius == 0.5f && c.height == 2.2f && c.move_speed == 6 && c.max_slope_cos == 0.5f &&
+              c.step_up_height == 0.6f && c.jump_speed == 7 && t.translation.x == 48 && t.translation.y == 126 && t.translation.z == 31,
+              "all six authored configuration fields and spawn reach ECS exactly");
+    });
+    for (const char* controller : {"{}", R"({"maxSlopeAngleDeg":0})", R"({"maxSlopeAngleDeg":30})", R"({"maxSlopeAngleDeg":90})",
+                                  R"({"radius":0.5,"height":1,"moveSpeed":0,"stepHeight":0,"jumpSpeed":0})"}) {
+        raw.components_json = std::string("{\"CharacterController\":") + controller + "}";
+        const bool ok = bootstrap_transactional(world, {raw}, generation, nullptr, error);
+        CHECK(ok, "defaults and inclusive controller boundaries bootstrap");
+        if (!ok) continue;
+        world.each([&](flecs::entity e, const SceneEntityId&) {
+            CHECK(e.has<character::CharacterController>() && e.has<character::MoveIntent>(), "controller auto-adds intent");
+            if (!e.has<character::CharacterController>()) return;
+            const auto c = e.get<character::CharacterController>();
+            CHECK(character::valid_character_configuration(c), "converted slope remains valid");
+            if (std::string(controller) == "{}") {
+                CHECK(c.radius == 0.4f && c.height == 1.8f && c.move_speed == 4.5f &&
+                      c.max_slope_cos == 0.70710678f && c.step_up_height == 0.45f && c.jump_speed == 5,
+                      "exact controller defaults");
+                CHECK(!c.grounded && c.fixed_ticks == 0 && c.jumps_consumed == 0 && c.jumps_started == 0 &&
+                      c.velocity.x == 0 && c.velocity.y == 0 && c.velocity.z == 0, "default runtime state zero");
+            }
+            if (std::string(controller).find(":30") != std::string::npos)
+                CHECK(std::abs(c.max_slope_cos - 0.8660254f) < 0.000001f, "degrees convert to cosine");
+            if (std::string(controller).find(":90") != std::string::npos)
+                CHECK(c.max_slope_cos == 0, "ninety degrees canonicalizes to zero");
+            CHECK(!e.has<physics::RigidBody>() && !e.has<physics::PhysicsVelocity>() &&
+                  !e.has<physics::SphereCollider>() && !e.has<physics::CapsuleCollider>() &&
+                  !e.has<physics::BoxCollider>() && !e.has<physics::ConvexHullCollider>(), "ghost has no body or collider");
+        });
+    }
+}
+
+static void test_character_validation_is_strict_and_transactional() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<SceneModule>();
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(bootstrap_transactional(world, {{"prior", "Prior", "", "{}"}}, generation, nullptr, error), "prior generation");
+    flecs::entity prior;
+    world.each([&](flecs::entity e, const SceneEntityId&) { prior = e; });
+    const auto original_generation = generation.value;
+    auto reject = [&](const std::string& json, const std::string& field, const std::string& parent = "") {
+        RawEntityRecipe raw{"river-player", "River Player", parent, json};
+        EntityRecipe recipe;
+        error = {};
+        CHECK(!validate(raw, recipe, error), "invalid controller rejected");
+        CHECK(error.authored_id == "river-player" && error.field_path == field && !error.message.empty(), "field-specific recipe error");
+        CHECK(!bootstrap_transactional(world, {raw}, generation, nullptr, error), "invalid reload rejected");
+        CHECK(generation.value == original_generation && prior.is_alive() && world.count<SceneEntityId>() == 1,
+              "failed reload leaves prior generation intact");
+    };
+    const char* fields[] = {"radius", "height", "moveSpeed", "maxSlopeAngleDeg", "stepHeight", "jumpSpeed"};
+    for (const char* field : fields) {
+        for (const char* value : {"\"4\"", "true", "null", "[]", "{}", "nan", "inf", "1e999", "-1"})
+            reject(std::string("{\"CharacterController\":{\"") + field + "\":" + value + "}}", std::string("CharacterController.") + field);
+    }
+    for (const char* field : {"radius", "height"})
+        reject(std::string("{\"CharacterController\":{\"") + field + "\":0}}", std::string("CharacterController.") + field);
+    reject(R"({"CharacterController":{"radius":1,"height":1.9}})", "CharacterController.height");
+    reject(R"({"CharacterController":{"maxSlopeAngleDeg":90.01}})", "CharacterController.maxSlopeAngleDeg");
+    reject(R"({"CharacterController":{"radius":0.4,"radius":0.5}})", "CharacterController.radius");
+    for (const char* value : {"0.4junk", "0x1", "+1", "01", "1.", "1e"})
+        reject(std::string("{\"CharacterController\":{\"radius\":") + value + "}}", "CharacterController.radius");
+    for (const char* field : {"unknown", "velocity", "grounded", "fixed_ticks", "jumps_consumed", "jumps_started", "move_speed", "max_slope_cos"})
+        reject(std::string("{\"CharacterController\":{\"") + field + "\":1}}", std::string("CharacterController.") + field);
+    for (const char* value : {"null", "true", "[]", "1", "\"controller\""})
+        reject(std::string("{\"CharacterController\":") + value + "}", "CharacterController");
+    reject(R"({"CharacterController":{},"MoveIntent":{}})", "MoveIntent");
+    for (const char* conflict : {"RigidBody", "PhysicsVelocity", "SphereCollider", "CapsuleCollider", "BoxCollider", "ConvexHullCollider", "RiverFloatBody"})
+        reject(std::string("{\"CharacterController\":{},\"") + conflict + "\":{}}", conflict);
+    reject(R"({"CharacterController":{}})", "parent", "prior");
+    for (const char* scale : {"[2,1,1]", "[1,2,1]", "[1,1,2]", "[nan,1,1]", "[1,1]", "[1,1,1,1]", "\"unit\"", "null"})
+        reject(std::string("{\"CharacterController\":{},\"LocalTransform\":{\"scale\":") + scale + "}}", "LocalTransform.scale");
+}
+
+static void test_character_instantiation_preflights_before_mutation() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<physics::PhysicsModule>();
+    world.import<character::CharacterModule>();
+    world.import<SceneModule>();
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(bootstrap_transactional(world, {{"prior", "Prior", "", "{}"}}, generation, nullptr, error), "instantiate preflight prior scene");
+    for (const char* json : {R"({"CharacterController":{"radius":0}})",
+                             R"({"CharacterController":{},"MoveIntent":{}})",
+                             R"({"CharacterController":{},"RigidBody":{}})",
+                             R"({"CharacterController":{},"LocalTransform":{"scale":[2,1,1]}})"}) {
+        EntityRecipe batch[] = {{"before-invalid", "", "", "{}"}, {"invalid", "", "", json}};
+        const auto before = generation.value;
+        CHECK(!instantiate(world, batch, 2, generation, error), "direct controller instantiation rejects invalid recipe");
+        CHECK(generation.value == before && world.count<SceneEntityId>() == 1,
+              "controller preflight precedes every entity mutation in a batch");
+    }
+}
+
+static void test_character_position_preflight_preserves_prior_scene() {
+    // JSON doubles can be finite yet overflow the float storage used by the
+    // instantiator. Catch every position axis at both mutation entry points.
+    for (const char* position : {"[1e39,0,0]", "[0,-1e39,0]", "[0,0,1e39]",
+                                 "[nan,0,0]", "[0,inf,0]", "[0,0,-inf]"}) {
+        for (bool direct : {false, true}) {
+            flecs::world world;
+            world.import<ecs::CoreModule>();
+            world.import<physics::PhysicsModule>();
+            world.import<character::CharacterModule>();
+            world.import<SceneModule>();
+            SceneGeneration generation;
+            RecipeError error;
+            CHECK(bootstrap_transactional(world, {{"prior", "Prior", "", R"({"LocalTransform":{"translation":[7,8,9]}})"}},
+                                          generation, nullptr, error), "position preflight prior scene");
+            flecs::entity prior;
+            world.each([&](flecs::entity e, const SceneEntityId&) { prior = e; });
+            const auto original_generation = generation.value;
+            const RawEntityRecipe invalid{"invalid-position", "", "",
+                std::string("{\"CharacterController\":{},\"LocalTransform\":{\"translation\":") + position + "}}"};
+            EntityRecipe normalized;
+            CHECK(!validate(invalid, normalized, error), "nonfinite resulting controller position rejected");
+            CHECK(error.authored_id == "invalid-position" && error.field_path == "LocalTransform.translation" && !error.message.empty(),
+                  "position validation reports translation-specific error");
+            error = {};
+            bool result;
+            if (direct) {
+                const EntityRecipe batch[] = {{"before-invalid", "", "", "{}"},
+                    {invalid.authored_id, invalid.display_name, invalid.parent_authored_id, invalid.components_json}};
+                result = instantiate(world, batch, 2, generation, error);
+            } else {
+                result = bootstrap_transactional(world, {{"before-invalid", "", "", "{}"}, invalid}, generation, nullptr, error);
+            }
+            CHECK(!result, "position rejected before bootstrap or direct instantiation");
+            CHECK(error.authored_id == "invalid-position" && error.field_path == "LocalTransform.translation",
+                  "mutation entry point preserves translation-specific error");
+            CHECK(generation.value == original_generation && prior.is_alive() && world.count<SceneEntityId>() == 1,
+                  "invalid position retains prior generation and prevents partial batch creation");
+            if (prior.is_alive()) {
+                const auto t = prior.get<ecs::LocalTransform>();
+                CHECK(t.translation.x == 7 && t.translation.y == 8 && t.translation.z == 9,
+                      "invalid position leaves prior transform unchanged");
+            }
+        }
+    }
+    RawEntityRecipe finite{"finite-position", "", "",
+        R"({"CharacterController":{},"LocalTransform":{"translation":[1e20,-1e20,0]}})"};
+    EntityRecipe normalized;
+    RecipeError error;
+    CHECK(validate(finite, normalized, error), "finite float position remains valid without arbitrary bounds");
+}
+
 int main() {
+    CHECK(hash_authored_id("") == 0x4bf29ce484222325ULL, "authored hash retains FNV offset with high bit cleared");
+    CHECK(hash_authored_id("hello") == 0x2430d84680aabd0bULL, "authored hash retains FNV-1a byte semantics and high-bit mask");
+    test_character_authoring();
+    test_character_validation_is_strict_and_transactional();
+    test_character_instantiation_preflights_before_mutation();
+    test_character_position_preflight_preserves_prior_scene();
     test_scene_module_registers_scene_entity_id();
     test_scene_module_registers_part_instance();
     test_scene_module_registers_part_instance_error();
@@ -673,6 +1040,8 @@ int main() {
     test_physics_module_reflects_capsule_collider();
     test_physics_module_reflects_box_collider();
     test_physics_module_reflects_convex_hull_collider();
+    test_physics_module_reflects_river_float_body();
+    test_river_float_body_public_abi_is_pinned();
     test_streaming_module_reflects_sector_streaming();
 
     test_find_component_known();
@@ -682,6 +1051,7 @@ int main() {
     test_find_field();
     test_component_struct_sizes_match();
     test_every_field_offset_is_in_bounds();
+    test_river_float_body_descriptor_round_trip();
     test_transform_offsets();
     test_rigid_body_offsets();
     test_rigid_body_type_labels();
@@ -697,6 +1067,7 @@ int main() {
     test_validate_multiple_colliders_rejected();
     test_validate_valid_recipe();
     test_validate_empty_components();
+    test_validate_river_float_defaults_and_boundaries();
 
     test_batch_duplicate_ids_rejected();
     test_batch_missing_parent_rejected();
@@ -707,6 +1078,8 @@ int main() {
     test_instantiate_wires_parent();
     test_instantiate_adds_components();
     test_instantiate_empty_is_noop();
+    test_instantiate_river_float_exact_and_independent();
+    test_instantiate_preserves_reference_traverser_body_flags();
 
     test_authored_ids_produce_stable_hashes();
 

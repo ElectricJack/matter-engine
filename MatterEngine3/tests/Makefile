@@ -159,18 +159,22 @@ ANIMATION_DIAGNOSTICS_CPP = $(sort animation_diagnostics_tests.cpp \
                             $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)))
 ANIMATION_DIAGNOSTICS_C   = $(COMMON_MSL_C)
 
+# scene_registry.cpp and physics_systems.cpp register RiverFloatForces. Every
+# legacy target that compiles either TU must carry this implementation too.
+RIVER_FLOAT_SYSTEM_CPP = ../src/ecs/river_float_system.cpp
+
 ANIMATION_STORE_TARGET = build/animation_store_tests
-ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ANIMATION_EVALUATOR_TARGET = build/animation_evaluator_tests
 ANIMATION_EVALUATOR_CPP = animation_evaluator_tests.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_targets.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 ANIMATION_BUDGET_TARGET = build/animation_budget_tests
 ANIMATION_BUDGET_CPP = animation_budget_tests.cpp ../src/animation/animation_budget.cpp
 
 ANIMATION_SYSTEMS_TARGET = build/animation_systems_tests
-ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 ANIMATION_SIMULATION_TARGET = build/animation_simulation_tests
-ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/dynamic_scene_bridge.cpp ../src/render/animation_rigid_bridge.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_skinning.cpp ../src/render/vk_animation_bounds.cpp ../src/render/dynamic_instance_slots.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/dynamic_scene_bridge.cpp ../src/render/animation_rigid_bridge.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_skinning.cpp ../src/render/vk_animation_bounds.cpp ../src/render/dynamic_instance_slots.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 # C4 headless acceptance owns both ends of the actual production contract:
 # ScriptHost bakes/reloads AnimatedRigGallery, then Runtime and the rigid/skin
@@ -269,12 +273,38 @@ ANIMATION_BAKE_HOST_CPP = ../src/dsl_animation.cpp \
                           ../src/render/indexed_part_geometry.cpp
 
 ECS_TARGET = build/ecs_tests
-ECS_CPP = ecs_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ECS_CPP = ecs_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
+# Current ghost-character mover tests use Runtime's installed terrain-collision
+# generation and the character system, not the retired streamed-collider API.
+# Rollback-only closure; MSVC/CMake remains the Windows acceptance path.
+CHARACTER_TARGET = build/character_controller_tests
+CHARACTER_CPP = character_controller_tests.cpp ../src/ecs/character_systems.cpp $(filter-out ecs_tests.cpp,$(ECS_CPP))
+CHARACTER_C = $(FLECS_C)
+
 PHYSICS_TARGET = build/physics-tests
-PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
+
+# Terrain collision Box3D lifetime/behavior suite. Rollback-only source
+# closure; acceptance executes the MSVC/CMake target, never this recipe.
+TERRAIN_COLLISION_PHYSICS_TARGET = build/terrain_collision_physics_tests
+TERRAIN_COLLISION_PHYSICS_CPP = terrain_collision_physics_tests.cpp \
+    $(filter-out physics_tests.cpp,$(PHYSICS_CPP))
+TERRAIN_COLLISION_PHYSICS_C = $(PHYSICS_C)
+
+# River floating is registered here only for rollback source-census parity.
+# Acceptance executes the MSVC/CMake target, never this legacy Make target.
+RIVER_FLOAT_SYSTEM_TARGET = build/river_float_system_tests
+RIVER_FLOAT_SYSTEM_TEST_CPP = river_float_system_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) \
+                         $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/simulation_control.cpp \
+                         ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp \
+                         ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp \
+                         ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp \
+                         ../src/ecs/transform_system.cpp \
+                         ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+RIVER_FLOAT_SYSTEM_C = $(FLECS_C)
 
 # ---------------------------------------------------------------------------
 # Object-path mangling. Two DIFFERENT source paths must never map to the SAME
@@ -293,7 +323,7 @@ obj_of = $(OBJDIR)/$(1)/$(call mangle,$(2)).o
 #
 # COMMON_MSL_FULL_SRC — full mesher + BLAS/TLAS; used by targets that invoke
 #   the marching-cubes / mesh-build pipeline: script, graph-integration, shlib,
-#   example, gallery, treebake, grasslod, stressforest,
+#   example, gallery, treebake, grasslod,
 #   viewer-logic, tilesetbake.
 #
 # COMMON_MSL_C     — full C-source set (surface.c et al.) used alongside
@@ -584,13 +614,21 @@ TILESETMEADOWMANIFEST_TARGET = build/tileset_meadow_manifest_tests
 TILESETMEADOWMANIFEST_CPP = tileset_meadow_manifest_tests.cpp ../src/part_graph.cpp \
                             ../src/part_asset_v2.cpp \
                             ../src/script/world_definition_loader.cpp \
+                            ../src/hydrology/river_network_builder.cpp \
+                            ../src/hydrology/hydrology_settings.cpp \
                             ../src/module_resolver.cpp \
                             $(COMMON_MSL_BLAS_SRC)
 TILESETMEADOWMANIFEST_C   = $(MSL)/material_registry.c
 
 ISO_TARGET = build/iso_primitive_tests
+# dsl_state.cpp routes translate/rotate to clip_translate/clip_rotate while an
+# animation clip is open, so every target that compiles it needs dsl_animation.cpp
+# and its closure (same set DSLDET_CPP below carries) plus the Ozz archives.
 ISO_CPP = iso_primitive_tests.cpp field_probe.cpp \
           ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+          ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp \
+          ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp \
+          ../src/animation/animation_validate.cpp \
           ../src/part_asset_v2.cpp \
           $(COMMON_MSL_BLAS_SRC)
 ISO_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
@@ -702,6 +740,7 @@ SCENE_REGISTRY_TARGET = build/scene_registry_tests
 SCENE_REGISTRY_CPP    = scene_registry_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                        $(RIVER_FLOAT_SYSTEM_CPP) \
                         ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                         ../src/streaming/sector_streaming_coordinator.cpp \
                         ../src/sector_streamer.cpp
@@ -734,6 +773,7 @@ DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animatio
                         ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                        $(RIVER_FLOAT_SYSTEM_CPP) \
                         ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                         ../src/streaming/sector_streaming_coordinator.cpp \
                         ../src/sector_streamer.cpp
@@ -780,6 +820,7 @@ PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp $(ANIMATION_ECS_RUNTI
                              ../src/ecs/scene_registry.cpp \
                              ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                              ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                             $(RIVER_FLOAT_SYSTEM_CPP) \
                              ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                              ../src/streaming/sector_streaming_coordinator.cpp \
                              ../src/sector_streamer.cpp
@@ -791,6 +832,7 @@ SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp $(ANIMATION_ECS_RUNTIME
                             ../src/ecs/scene_registry.cpp \
                             ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                             ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                            $(RIVER_FLOAT_SYSTEM_CPP) \
                             ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                             ../src/streaming/sector_streaming_coordinator.cpp \
                             ../src/sector_streamer.cpp
@@ -801,7 +843,8 @@ SPECIALIZED_EDITORS_TARGET = build/specialized_editors_tests
 SPECIALIZED_EDITORS_CPP    = specialized_editors_tests.cpp \
                              ../../MatterEditor/src/specialized_editors.cpp \
                              ../../MatterEditor/src/properties_registry.cpp \
-                             ../src/ecs/scene_registry.cpp
+                             ../src/ecs/scene_registry.cpp \
+                             $(RIVER_FLOAT_SYSTEM_CPP)
 SPECIALIZED_EDITORS_C      = $(FLECS_C)
 
 # Phase 5 — entity -> ECS bridge (Ready world-state commands bootstrap Flecs
@@ -812,6 +855,7 @@ ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp $(ANIMATION_ECS_RUNTIME_R
                            ../src/ecs/scene_registry.cpp \
                            ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                            ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                           $(RIVER_FLOAT_SYSTEM_CPP) \
                            ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                            ../src/streaming/sector_streaming_coordinator.cpp \
                            ../src/sector_streamer.cpp
@@ -850,11 +894,13 @@ MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
 
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
 TERRAINFIELD_TARGET = build/terrain_field_tests
-TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp
+TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp \
+                      ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # Phase C Task 5 — terrain mesher (pure CPU: terrain_field + terrain_mesher, no JS, no GL).
 TERRAINMESH_TARGET = build/terrain_mesher_tests
-TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp
+TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+                     ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # M0-WP3 — cross-level seam welder (pure geometry: seam_boundary.h + seam_weld,
 # no terrain_field, no raylib, no GL, no JS). The suite builds its FaceRecords
@@ -948,6 +994,8 @@ SCATTERPROF_TARGET = build/sector_scatter_profile
 # eval_world fails with "not registered" and no habitat tape ever compiles.
 SCATTERPROF_CPP = sector_scatter_profile.cpp \
                   ../src/script/world_definition_loader.cpp \
+                  ../src/hydrology/river_network_builder.cpp \
+                  ../src/hydrology/hydrology_settings.cpp \
                   $(filter-out sector_bake_tests.cpp,$(SECTORBAKE_CPP))
 SCATTERPROF_C = $(COMMON_MSL_C)
 
@@ -978,7 +1026,7 @@ PARTSTORE_RACE_C   = $(PARTSTORE_C)
 
 # ===== flavor sh (script-host) =========================================
 # script_host_tests uses just def+QJS_INC (no MATTER_HAVE_SCRIPT_HOST). But
-# the graph_integration/example/gallery/treebake/grasslod/stressforest
+# the graph_integration/example/gallery/treebake/grasslod
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = build/script_host_tests
 SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
@@ -1030,7 +1078,7 @@ EXAMPLE_TARGET = build/example_world
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/script/world_definition_loader.cpp \
+              ../src/script/world_definition_loader.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
               ../src/impostor_bake.cpp \
               ../src/retopo_blacklist.cpp \
@@ -1119,15 +1167,150 @@ TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
 WORLD_DEFINITION_TARGET = build/world_definition_tests
 WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
-                       ../src/module_resolver.cpp
+                       ../src/terrain_collision/terrain_collision_definition.cpp \
+                       ../src/hydrology/river_network_builder.cpp \
+                       ../src/module_resolver.cpp \
+                       ../src/hydrology/hydrology_settings.cpp
 # defineMaterial (chart-VT Phase 3) makes the loader call into the material
 # registry, so the registry TU joins this otherwise QuickJS-only link.
 WORLD_DEFINITION_C   = $(MSL)/material_registry.c
+
+# Terrain collision definition canonicalization is provider-neutral and has no
+# renderer, physics, or QuickJS dependency. This rollback-only target is kept
+# registered for source-closure parity; the MSVC CMake target is authoritative.
+TERRAIN_COLLISION_DEFINITION_TARGET = build/terrain_collision_definition_tests
+TERRAIN_COLLISION_DEFINITION_CPP = terrain_collision_definition_tests.cpp \
+                                   ../src/terrain_collision/terrain_collision_definition.cpp
+TERRAIN_COLLISION_DEFINITION_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_DEFINITION_CPP))
+$(eval $(call objrule_cpp,def,terrain_collision_definition_tests.cpp))
+
+# Terrain collision immutable CPU tile/cache tests. Rollback-only closure;
+# the MSVC CMake target is authoritative and this recipe is not an acceptance
+# path on Windows.
+TERRAIN_COLLISION_ARTIFACT_TARGET = build/terrain_collision_artifact_tests
+TERRAIN_COLLISION_ARTIFACT_CPP = terrain_collision_artifact_tests.cpp \
+    ../src/terrain_collision/terrain_collision_artifact.cpp \
+    ../src/terrain_collision/terrain_collision_definition.cpp \
+    ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+    ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
+TERRAIN_COLLISION_ARTIFACT_OBJS = \
+    $(call obj_list,def,$(TERRAIN_COLLISION_ARTIFACT_CPP))
+
+RIVER_NETWORK_TARGET = build/river_network_tests
+RIVER_NETWORK_CPP = river_network_tests.cpp \
+                    ../src/hydrology/river_network_builder.cpp
+RIVER_NETWORK_OBJS = $(call obj_list,def,$(RIVER_NETWORK_CPP))
+
+RIVER_SECTION_GRAPH_TARGET = build/river_section_graph_tests
+RIVER_SECTION_GRAPH_CPP = river_section_graph_tests.cpp \
+                          ../src/hydrology/river_section_graph.cpp
+RIVER_SECTION_GRAPH_OBJS = $(call obj_list,def,$(RIVER_SECTION_GRAPH_CPP))
+
+RIVER_SECTION_COORDINATOR_TARGET = build/river_section_coordinator_tests
+RIVER_SECTION_COORDINATOR_CPP = river_section_coordinator_tests.cpp \
+                                ../src/hydrology/river_section_coordinator.cpp
+RIVER_SECTION_COORDINATOR_OBJS = \
+    $(call obj_list,def,$(RIVER_SECTION_COORDINATOR_CPP))
+
+SPILLWAY_HANDOFF_TARGET = build/spillway_handoff_tests
+SPILLWAY_HANDOFF_CPP = spillway_handoff_tests.cpp \
+                       ../src/hydrology/fluid_emitter_layout.cpp \
+                       ../src/hydrology/spillway_handoff.cpp \
+                       ../src/hydrology/fluid_emission.cpp
+SPILLWAY_HANDOFF_OBJS = $(call obj_list,def,$(SPILLWAY_HANDOFF_CPP))
+
+AUTHORED_FLUID_COLLIDERS_TARGET = build/authored_fluid_colliders_tests
+AUTHORED_FLUID_COLLIDERS_CPP = authored_fluid_colliders_tests.cpp \
+                               ../src/hydrology/authored_fluid_colliders.cpp
+AUTHORED_FLUID_COLLIDERS_OBJS = $(call obj_list,def,$(AUTHORED_FLUID_COLLIDERS_CPP))
+
+# Visual river Task 1 — standalone validation and canonical key contract.
+HYDROLOGY_SETTINGS_TARGET = build/hydrology_settings_tests
+HYDROLOGY_SETTINGS_CPP = hydrology_settings_tests.cpp \
+                         ../src/hydrology/hydrology_settings.cpp
+HYDROLOGY_SETTINGS_OBJS = $(call obj_list,def,$(HYDROLOGY_SETTINGS_CPP))
+
+$(foreach s,$(HYDROLOGY_SETTINGS_CPP),$(eval $(call objrule_cpp,def,$(s))))
+$(foreach s,$(RIVER_NETWORK_CPP),$(eval $(call objrule_cpp,def,$(s))))
+$(foreach s,$(RIVER_SECTION_GRAPH_CPP),$(eval $(call objrule_cpp,def,$(s))))
+$(foreach s,$(SPILLWAY_HANDOFF_CPP),$(eval $(call objrule_cpp,def,$(s))))
+$(foreach s,$(AUTHORED_FLUID_COLLIDERS_CPP),$(eval $(call objrule_cpp,def,$(s))))
+
+GPU_VISUAL_MESHER_CPU_TARGET = build/gpu_visual_mesher_cpu_tests
+GPU_VISUAL_MESHER_CPU_CPP = gpu_visual_mesher_cpu_tests.cpp \
+                            ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp \
+                            ../src/hydrology/fluid_gameplay_field.cpp \
+                            ../src/hydrology/water_visual_products.cpp
+GPU_VISUAL_MESHER_CPU_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+                          $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
+
+RIVER_PRESENTATION_FIELD_TARGET = build/river_presentation_field_tests
+RIVER_PRESENTATION_FIELD_CPP = river_presentation_field_tests.cpp \
+                               ../src/hydrology/fluid_gameplay_field.cpp \
+                               ../src/hydrology/river_presentation_field.cpp \
+                               ../src/hydrology/water_visual_products.cpp
+RIVER_PRESENTATION_FIELD_OBJS = $(call obj_list,def,$(RIVER_PRESENTATION_FIELD_CPP))
+
+$(foreach s,$(RIVER_PRESENTATION_FIELD_CPP),$(eval $(call objrule_cpp,def,$(s))))
+
+RIVER_RUNTIME_TARGET = build/river_runtime_tests
+RIVER_RUNTIME_CPP = river_runtime_tests.cpp \
+                    ../src/hydrology/river_runtime.cpp \
+                    ../src/hydrology/hydrology_handoff_products.cpp \
+                    ../src/hydrology/fluid_gameplay_field.cpp \
+                    ../src/hydrology/river_presentation_field.cpp \
+                    ../src/hydrology/water_visual_products.cpp
+RIVER_RUNTIME_OBJS = $(call obj_list,def,$(RIVER_RUNTIME_CPP))
+
+$(foreach s,$(RIVER_RUNTIME_CPP),$(eval $(call objrule_cpp,def,$(s))))
+
+HYDROLOGY_ARTIFACT_TARGET = build/hydrology_artifact_tests
+HYDROLOGY_ARTIFACT_CPP = hydrology_artifact_tests.cpp \
+                         ../src/hydrology/hydrology_artifact.cpp \
+                         ../src/hydrology/fluid_gameplay_field.cpp \
+                         ../src/hydrology/water_visual_products.cpp \
+                         ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp
+HYDROLOGY_ARTIFACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+                       $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
+
+HYDROLOGY_NETWORK_ARTIFACT_TARGET = build/hydrology_network_artifact_tests
+HYDROLOGY_NETWORK_ARTIFACT_CPP = hydrology_network_artifact_tests.cpp \
+                                 ../src/hydrology/hydrology_network_artifact.cpp
+
+HYDROLOGY_HANDOFF_PRODUCTS_TARGET = build/hydrology_handoff_products_tests
+HYDROLOGY_HANDOFF_PRODUCTS_CPP = hydrology_handoff_products_tests.cpp \
+                                 ../src/hydrology/hydrology_handoff_products.cpp \
+                                 ../src/hydrology/fluid_gameplay_field.cpp \
+                                 ../src/hydrology/river_presentation_field.cpp \
+                                 ../src/hydrology/water_visual_products.cpp \
+                                 ../src/hydrology/physx_fluid_bake.cpp \
+                                 ../src/hydrology/spillway_handoff.cpp \
+                                 ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp
+HYDROLOGY_HANDOFF_PRODUCTS_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+                               $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
+HYDROLOGY_HANDOFF_PRODUCTS_OBJS = \
+    $(call obj_list,def,$(HYDROLOGY_HANDOFF_PRODUCTS_CPP)) \
+    $(call obj_list,mslc,$(HYDROLOGY_HANDOFF_PRODUCTS_C))
+
+PHYSX_ADAPTER_CONTRACT_TARGET = build/physx_adapter_contract_tests
+PHYSX_ADAPTER_CONTRACT_CPP = physx_adapter_contract_tests.cpp \
+                             ../src/hydrology/physx_fluid_bake.cpp \
+                             ../src/hydrology/hydrology_artifact.cpp \
+                             ../src/hydrology/fluid_gameplay_field.cpp \
+                             ../src/hydrology/water_visual_products.cpp \
+                             ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp \
+                             ../src/hydrology/physx_collision_input.cpp \
+                             ../src/hydrology/fluid_emission.cpp \
+                             ../src/hydrology/fill_sensor.cpp
+PHYSX_ADAPTER_CONTRACT_C = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+                           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
 
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
 PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
                             ../src/script/world_definition_loader.cpp \
+                            ../src/hydrology/river_network_builder.cpp \
+                            ../src/hydrology/hydrology_settings.cpp \
                             ../src/module_resolver.cpp
 PHYSICS_PLAYGROUND_C      = $(MSL)/material_registry.c
 
@@ -1150,7 +1333,9 @@ EVALWORLD_C = $(COMMON_MSL_C)
 # resulting program); see cavern_probe.cpp for what it reports and why.
 CAVERNPROBE_TARGET = build/cavern_probe
 CAVERNPROBE_CPP = $(subst eval_world_tests.cpp,cavern_probe.cpp,$(EVALWORLD_CPP)) \
-                  ../src/script/world_definition_loader.cpp
+                  ../src/script/world_definition_loader.cpp \
+                  ../src/hydrology/river_network_builder.cpp \
+                  ../src/hydrology/hydrology_settings.cpp
 CAVERNPROBE_C = $(COMMON_MSL_C)
 
 # Phase C Task 1: fold cache in ScriptHost (sh flavor).
@@ -1304,7 +1489,19 @@ GPU_RENDER_CPP = \
 
 GPU_PIPELINE_CPP = \
     ../src/part_graph.cpp \
-    ../src/script_host.cpp ../src/script/world_definition_loader.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+    ../src/script_host.cpp ../src/script/world_definition_loader.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+    ../src/hydrology/river_geometry.cpp \
+    ../src/hydrology/physx_fluid_bake.cpp \
+    ../src/hydrology/physx_collision_input.cpp \
+    ../src/hydrology/fluid_emission.cpp \
+    ../src/hydrology/fill_sensor.cpp \
+    ../src/hydrology/hydrology_artifact.cpp \
+    ../src/hydrology/fluid_gameplay_field.cpp \
+    ../src/hydrology/water_visual_products.cpp \
+    ../src/render/gpu_meshing/gpu_visual_mesher_common.cpp \
+    ../src/terrain_river_overlay.cpp \
+    ../src/terrain_collision/terrain_collision_definition.cpp \
+    ../src/terrain_collision/terrain_collision_artifact.cpp \
     ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
     ../src/script_rng_binding.cpp \
     ../src/polygon_triangulate.cpp \
@@ -1355,6 +1552,7 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
               ../src/ecs/scene_registry.cpp \
               ../src/animation/animation_systems.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+              $(RIVER_FLOAT_SYSTEM_CPP) \
               ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
               ../src/streaming/sector_streaming_coordinator.cpp \
               ../src/props/props.cpp ../src/props/draw_overrides.cpp \
@@ -1396,9 +1594,12 @@ GPU_PIPELINE_CPP += $(ANIMATION_BAKE_HOST_CPP)
 # Collect the sources compiled under each flavor.
 def_CPP_SRCS := $(sort \
     $(ECS_CPP) \
+    $(CHARACTER_CPP) \
     $(ANIMATION_STORE_CPP) \
     $(ANIMATION_BUDGET_CPP) \
     $(PHYSICS_CPP) \
+    $(TERRAIN_COLLISION_PHYSICS_CPP) \
+    $(RIVER_FLOAT_SYSTEM_TEST_CPP) \
     $(ANIMATION_SYSTEMS_CPP) \
     $(ANIMATION_SIMULATION_CPP) \
     $(SCENE_REGISTRY_CPP) \
@@ -1428,7 +1629,9 @@ def_CPP_SRCS := $(sort \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
     $(BAKETRACE_CPP) \
-    $(SUNANGLES_CPP)     $(PROPS_CPP) \n    $(CLOUDLAYER_CPP) \
+    $(SUNANGLES_CPP) \
+    $(PROPS_CPP) \
+    $(CLOUDLAYER_CPP) \
     $(PROPERTY_EDITOR_CPP) \
     $(DRAWOVERRIDES_CPP) \
     $(TILESETGTEX_CPP) \
@@ -1443,11 +1646,21 @@ def_CPP_SRCS := $(sort \
     $(MODAPPLY_CPP) \
     $(TERRAINFIELD_CPP) \
     $(TERRAINMESH_CPP) \
+    $(TERRAIN_COLLISION_ARTIFACT_CPP) \
     $(SEAMWELD_CPP) \
     $(CONTOURSEAM_CPP) \
     $(CONTOURMESH_CPP) \
     $(CONTOURENGINE_CPP) \
     $(SEAMINTEGRATION_CPP) \
+    $(GPU_VISUAL_MESHER_CPU_CPP) \
+    $(HYDROLOGY_ARTIFACT_CPP) \
+    $(HYDROLOGY_NETWORK_ARTIFACT_CPP) \
+    $(HYDROLOGY_HANDOFF_PRODUCTS_CPP) \
+    $(RIVER_SECTION_GRAPH_CPP) \
+    $(RIVER_SECTION_COORDINATOR_CPP) \
+    $(SPILLWAY_HANDOFF_CPP) \
+    $(AUTHORED_FLUID_COLLIDERS_CPP) \
+    $(PHYSX_ADAPTER_CONTRACT_CPP) \
     $(PARTSTORE_CPP))
 
 qjs_CPP_SRCS := $(sort \
@@ -1496,6 +1709,7 @@ retopo_CPP_SRCS := $(sort $(RETOPO_INT_CPP))
 gpu_CPP_SRCS := $(sort \
     api_tests.cpp \
     async_bake_tests.cpp \
+    terrain_collision_session_tests.cpp \
     demand_bake_tests.cpp \
     transient_tests.cpp \
     vk_scene_renderer_tests.cpp \
@@ -1571,7 +1785,10 @@ EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
     ../src/event/dispatch_context.cpp)
 
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
+CHARACTER_OBJS = $(call obj_list,def,$(CHARACTER_CPP)) $(call obj_list,flecsc,$(CHARACTER_C)) $(EVENT_IMPL_DEF_OBJS)
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
+TERRAIN_COLLISION_PHYSICS_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_PHYSICS_CPP)) $(call obj_list,physicsc,$(TERRAIN_COLLISION_PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
+RIVER_FLOAT_SYSTEM_OBJS = $(call obj_list,def,$(RIVER_FLOAT_SYSTEM_TEST_CPP)) $(call obj_list,physicsc,$(RIVER_FLOAT_SYSTEM_C)) $(EVENT_IMPL_DEF_OBJS)
 # The animation suites below reach physics_context.cpp through the same ECS
 # runtime closure (ANIMATION_ECS_RUNTIME_REQUIRED / ANIMATION_STORE_CPP), so
 # they need the E6 event trio for exactly the reason described above.
@@ -1603,7 +1820,9 @@ TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_li
 WARPFIELD_OBJS = $(call obj_list,def,$(WARPFIELD_CPP)) $(call obj_list,mslc,$(WARPFIELD_C))
 TILESETMEADOWMANIFEST_OBJS = $(call obj_list,qjs,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C)) $(qjsc_C_OBJS)
 ISO_OBJS = $(call obj_list,def,$(ISO_CPP)) $(call obj_list,mslc,$(ISO_C))
-DSLDET_OBJS = $(call obj_list,def,$(DSLDET_CPP)) $(call obj_list,mslc,$(DSLDET_C))
+DSLDET_OBJS = $(call obj_list,def,$(DSLDET_CPP)) \
+              $(call obj_of,def,../src/hydrology/river_network_builder.cpp) \
+              $(call obj_list,mslc,$(DSLDET_C))
 DEV_OBJS = $(call obj_list,def,$(DEV_SOURCES))
 POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
@@ -1631,6 +1850,17 @@ CONTOURSEAM_OBJS  = $(call obj_list,def,$(CONTOURSEAM_CPP))
 CONTOURMESH_OBJS  = $(call obj_list,def,$(CONTOURMESH_CPP))
 CONTOURENGINE_OBJS = $(call obj_list,def,$(CONTOURENGINE_CPP))
 SEAMINTEGRATION_OBJS = $(call obj_list,def,$(SEAMINTEGRATION_CPP))
+GPU_VISUAL_MESHER_CPU_OBJS = \
+    $(call obj_list,def,$(GPU_VISUAL_MESHER_CPU_CPP)) \
+    $(call obj_list,mslc,$(GPU_VISUAL_MESHER_CPU_C))
+HYDROLOGY_ARTIFACT_OBJS = \
+    $(call obj_list,def,$(HYDROLOGY_ARTIFACT_CPP)) \
+    $(call obj_list,mslc,$(HYDROLOGY_ARTIFACT_C))
+HYDROLOGY_NETWORK_ARTIFACT_OBJS = \
+    $(call obj_list,def,$(HYDROLOGY_NETWORK_ARTIFACT_CPP))
+PHYSX_ADAPTER_CONTRACT_OBJS = \
+    $(call obj_list,def,$(PHYSX_ADAPTER_CONTRACT_CPP)) \
+    $(call obj_list,mslc,$(PHYSX_ADAPTER_CONTRACT_C))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 SECTORPROF_OBJS = $(call obj_list,sh,$(SECTORPROF_CPP)) $(call obj_list,mslc,$(SECTORPROF_C)) $(qjsc_C_OBJS)
@@ -1676,7 +1906,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-terrain-collision-session terrain-collision-session-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench run-river-network run-authored-fluid-colliders run-character
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1850,11 +2080,28 @@ $(ECS_TARGET): check-ecs-animation-sources $(ECS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLIN
 run-ecs: $(ECS_TARGET)
 	./$(ECS_TARGET)
 
+$(CHARACTER_TARGET): $(CHARACTER_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(CHARACTER_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
+
+run-character: $(CHARACTER_TARGET)
+	./$(CHARACTER_TARGET)
+
 $(PHYSICS_TARGET): check-physics-animation-sources $(PHYSICS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(PHYSICS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
 run-physics: $(PHYSICS_TARGET)
 	./$(PHYSICS_TARGET)
+
+$(TERRAIN_COLLISION_PHYSICS_TARGET): $(TERRAIN_COLLISION_PHYSICS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(TERRAIN_COLLISION_PHYSICS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
+
+run-terrain-collision-physics: $(TERRAIN_COLLISION_PHYSICS_TARGET)
+	./$(TERRAIN_COLLISION_PHYSICS_TARGET)
+
+.PHONY: run-terrain-collision-physics
+
+$(RIVER_FLOAT_SYSTEM_TARGET): $(RIVER_FLOAT_SYSTEM_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(RIVER_FLOAT_SYSTEM_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
 # Phase 4 Task 4 — Scene registry (reflected components, validation, instantiation).
 # Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
@@ -1995,8 +2242,78 @@ $(CAVERNPROBE_TARGET): $(CAVERNPROBE_OBJS)
 $(WORLD_DEFINITION_TARGET): $(WORLD_DEFINITION_OBJS)
 	$(CC) $(WORLD_DEFINITION_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
 
+$(TERRAIN_COLLISION_DEFINITION_TARGET): $(TERRAIN_COLLISION_DEFINITION_OBJS)
+	$(CC) $(TERRAIN_COLLISION_DEFINITION_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+$(TERRAIN_COLLISION_ARTIFACT_TARGET): $(TERRAIN_COLLISION_ARTIFACT_OBJS)
+	$(CC) $(TERRAIN_COLLISION_ARTIFACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread
+
+run-terrain-collision-artifact: $(TERRAIN_COLLISION_ARTIFACT_TARGET)
+	./$(TERRAIN_COLLISION_ARTIFACT_TARGET)
+
+.PHONY: run-terrain-collision-artifact clean-terrain-collision-artifact
+clean: clean-terrain-collision-artifact
+clean-terrain-collision-artifact:
+	rm -f $(TERRAIN_COLLISION_ARTIFACT_TARGET)
+
+$(HYDROLOGY_SETTINGS_TARGET): $(HYDROLOGY_SETTINGS_OBJS)
+	$(CC) $(HYDROLOGY_SETTINGS_OBJS) -o $@ $(CFLAGS) -lm
+
+run-hydrology-settings: $(HYDROLOGY_SETTINGS_TARGET)
+	./$(HYDROLOGY_SETTINGS_TARGET)
+
 run-world-definition: $(WORLD_DEFINITION_TARGET)
 	./$(WORLD_DEFINITION_TARGET)
+
+$(RIVER_NETWORK_TARGET): $(RIVER_NETWORK_OBJS)
+	$(CC) $(RIVER_NETWORK_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-river-network: $(RIVER_NETWORK_TARGET)
+	./$(RIVER_NETWORK_TARGET)
+
+$(RIVER_SECTION_GRAPH_TARGET): $(RIVER_SECTION_GRAPH_OBJS) | build
+	$(CC) $(RIVER_SECTION_GRAPH_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-river-section-graph: $(RIVER_SECTION_GRAPH_TARGET)
+	./$(RIVER_SECTION_GRAPH_TARGET)
+
+.PHONY: run-river-section-graph clean-river-section-graph
+clean: clean-river-section-graph
+clean-river-section-graph:
+	rm -f $(RIVER_SECTION_GRAPH_TARGET)
+
+$(RIVER_SECTION_COORDINATOR_TARGET): $(RIVER_SECTION_COORDINATOR_OBJS) | build
+	$(CC) $(RIVER_SECTION_COORDINATOR_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-river-section-coordinator: $(RIVER_SECTION_COORDINATOR_TARGET)
+	./$(RIVER_SECTION_COORDINATOR_TARGET)
+
+.PHONY: run-river-section-coordinator clean-river-section-coordinator
+clean: clean-river-section-coordinator
+clean-river-section-coordinator:
+	rm -f $(RIVER_SECTION_COORDINATOR_TARGET)
+
+$(SPILLWAY_HANDOFF_TARGET): $(SPILLWAY_HANDOFF_OBJS) | build
+	$(CC) $(SPILLWAY_HANDOFF_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-spillway-handoff: $(SPILLWAY_HANDOFF_TARGET)
+	./$(SPILLWAY_HANDOFF_TARGET)
+
+.PHONY: run-spillway-handoff clean-spillway-handoff
+clean: clean-spillway-handoff
+clean-spillway-handoff:
+	rm -f $(SPILLWAY_HANDOFF_TARGET)
+
+$(AUTHORED_FLUID_COLLIDERS_TARGET): $(AUTHORED_FLUID_COLLIDERS_OBJS) | build
+	$(CC) $(AUTHORED_FLUID_COLLIDERS_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-authored-fluid-colliders: $(AUTHORED_FLUID_COLLIDERS_TARGET)
+	./$(AUTHORED_FLUID_COLLIDERS_TARGET)
+
+.PHONY: clean-authored-fluid-colliders
+clean: clean-authored-fluid-colliders
+clean-authored-fluid-colliders:
+	rm -f $(AUTHORED_FLUID_COLLIDERS_TARGET)
 
 $(PHYSICS_PLAYGROUND_TARGET): $(PHYSICS_PLAYGROUND_OBJS)
 	$(CC) $(PHYSICS_PLAYGROUND_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
@@ -2083,8 +2400,8 @@ run-scatterprof: $(SCATTERPROF_TARGET)
 	./$(SCATTERPROF_TARGET)
 
 # Phase 1 typed iso-primitives + ordered CSG.
-$(ISO_TARGET): $(ISO_OBJS)
-	$(CC) $(ISO_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+$(ISO_TARGET): $(ISO_OBJS) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ISO_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-iso: $(ISO_TARGET)
 	./$(ISO_TARGET)
@@ -2312,9 +2629,12 @@ run-tilesetplacement: build/tileset_placement_tests
 	./build/tileset_placement_tests
 
 # Tileset DSL root.
-$(TILESETDSL_TARGET): $(TILESETDSL_OBJS)
+# TILESETDSL_CPP is SCRIPT_CPP minus its own main, so it compiles the same
+# animation bake-host closure (dsl_animation/ozz_adapter/ozz_bake) and needs the
+# Ozz archives on the link line exactly like $(SCRIPT_TARGET) does.
+$(TILESETDSL_TARGET): $(TILESETDSL_OBJS) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(TILESETDSL_OBJS) -o $@ \
-	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-tilesetdsl: $(TILESETDSL_TARGET)
 	./$(TILESETDSL_TARGET)
@@ -2338,19 +2658,23 @@ $(TILESETBAKE_TARGET): $(TILESETBAKE_OBJS) $(BOX3D_DIR)/libbox3d.a
 run-tilesetbake: $(TILESETBAKE_TARGET)
 	./$(TILESETBAKE_TARGET)
 
-$(TILESETPARAMS_TARGET): $(TILESETPARAMS_OBJS) $(BOX3D_DIR)/libbox3d.a
+# Same source closure as $(TILESETBAKE_TARGET) (TILESETBAKE_CPP minus its main),
+# so it needs the same Ozz archives.
+$(TILESETPARAMS_TARGET): $(TILESETPARAMS_OBJS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 	$(CC) $(TILESETPARAMS_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a
+	      $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 
 run-tilesetparams: $(TILESETPARAMS_TARGET)
 	./$(TILESETPARAMS_TARGET)
 
 # Bake Lab task 5.4 — settle_bench headless benchmark CLI.
-$(SETTLEBENCH_TARGET): $(SETTLEBENCH_OBJS) $(BOX3D_DIR)/libbox3d.a
+# Same source closure as $(TILESETBAKE_TARGET) plus tileset_metrics.cpp, so it
+# needs the same Ozz archives.
+$(SETTLEBENCH_TARGET): $(SETTLEBENCH_OBJS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 	$(CC) $(SETTLEBENCH_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a
+	      $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 
 run-settlebench: $(SETTLEBENCH_TARGET)
 	./$(SETTLEBENCH_TARGET) --spec synthetic
@@ -2577,6 +2901,16 @@ async-bake-tests: $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) | .
 
 run-asyncbake: async-bake-tests
 	./build/async_bake_tests
+
+# Terrain collision WorldSession lifecycle integration. Rollback-only source
+# census; Windows acceptance uses the authoritative MSVC/CMake target.
+terrain-collision-session-tests: $(call obj_of,gpu,terrain_collision_session_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
+	$(CC) $(call obj_of,gpu,terrain_collision_session_tests.cpp) $(GPU_SHARED_OBJS) \
+	      -o build/terrain_collision_session_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+
+run-terrain-collision-session: terrain-collision-session-tests
+	./build/terrain_collision_session_tests
 
 # Phase C Task 13 — demand-driven bake primitives (BakePolicy + bake_plan + ensure_*).
 demand-bake-tests: $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
@@ -2903,16 +3237,25 @@ clean-scenetracker:
 # observer receives the per-entity gameplay events the pull stage now emits,
 # and the session hub trace records the aggregate phys.step. Headless,
 # Windows-runnable (physics engine + flecs + box3d + the event hub, no
-# GL/raylib) -- links like the physics target ($(LDFLAGS) $(BOX3D_LIB)).
+# GL/raylib) -- links like the scene-registry target (see the link rule below;
+# it uses -lm -lpthread rather than $(LDFLAGS), which carries Linux-only libs).
 # The physics engine sources already carry def rules (via PHYSICS_CPP in the
-# line-833 union) and the event sources carry def rules (via the scene_tracker
-# target above); only physicsevents_tests.cpp needs a fresh def rule. flecs.c
-# reuses the physicsc flavor object the physics target builds.
+# def_CPP_SRCS union) and the event sources carry def rules (via the
+# scene_tracker target above); only physicsevents_tests.cpp needs a fresh def
+# rule. flecs.c reuses the physicsc flavor object the physics target builds.
+#
+# ecs_runtime.cpp constructs AnimationSystems (and therefore AnimationEvaluator,
+# PoseLodScheduler and Box3DAnimationWorldQueries), so this closure needs
+# ANIMATION_ECS_RUNTIME_REQUIRED and the Ozz archives exactly like ECS_CPP /
+# PHYSICS_CPP / SCENE_REGISTRY_CPP do. Omitting it is a link error, not a
+# missing-coverage problem.
 # ---------------------------------------------------------------------------
 PHYSICSEVENTS_TARGET = build/physicsevents_tests
-PHYSICSEVENTS_CPP    = physicsevents_tests.cpp ../src/ecs/scene_registry.cpp \
+PHYSICSEVENTS_CPP    = physicsevents_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) \
+                       ../src/ecs/scene_registry.cpp \
                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                       $(RIVER_FLOAT_SYSTEM_CPP) \
                        ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
                        ../src/streaming/sector_streaming_coordinator.cpp \
                        ../src/sector_streamer.cpp \
@@ -2923,11 +3266,11 @@ PHYSICSEVENTS_OBJS   = $(call obj_list,def,$(PHYSICSEVENTS_CPP)) $(call obj_list
 
 $(eval $(call objrule_cpp,def,physicsevents_tests.cpp))
 
-# Links like the scene-registry target: box3d + the Windows flecs runtime libs
-# (ws2_32/dbghelp/winmm) flecs.c pulls in for its HTTP/OS layer, so the binary
-# actually runs headless on Windows (not just compiles).
-$(PHYSICSEVENTS_TARGET): $(PHYSICSEVENTS_OBJS) $(BOX3D_LIB)
-	$(CC) $(PHYSICSEVENTS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+# Links like the scene-registry target: box3d + Ozz + the Windows flecs runtime
+# libs (ws2_32/dbghelp/winmm) flecs.c pulls in for its HTTP/OS layer, so the
+# binary actually runs headless on Windows (not just compiles).
+$(PHYSICSEVENTS_TARGET): $(PHYSICSEVENTS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(PHYSICSEVENTS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-physicsevents: $(PHYSICSEVENTS_TARGET)
 	./$(PHYSICSEVENTS_TARGET)
@@ -2958,6 +3301,96 @@ run-surfacefield: $(SURFACEFIELD_TARGET)
 clean: clean-surfacefield
 clean-surfacefield:
 	rm -f build/surface_field_tests
+
+$(GPU_VISUAL_MESHER_CPU_TARGET): $(GPU_VISUAL_MESHER_CPU_OBJS) \
+        ../include/matter/gpu_visual_meshing.h check.h | build
+	$(CC) $(GPU_VISUAL_MESHER_CPU_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-gpu-visual-mesher-cpu: $(GPU_VISUAL_MESHER_CPU_TARGET)
+	./$(GPU_VISUAL_MESHER_CPU_TARGET)
+
+.PHONY: run-gpu-visual-mesher-cpu clean-gpu-visual-mesher-cpu
+clean: clean-gpu-visual-mesher-cpu
+clean-gpu-visual-mesher-cpu:
+	rm -f $(GPU_VISUAL_MESHER_CPU_TARGET)
+
+$(RIVER_PRESENTATION_FIELD_TARGET): $(RIVER_PRESENTATION_FIELD_OBJS) \
+        ../src/hydrology/river_presentation_field.h check.h | build
+	$(CC) $(RIVER_PRESENTATION_FIELD_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-river-presentation-field: $(RIVER_PRESENTATION_FIELD_TARGET)
+	./$(RIVER_PRESENTATION_FIELD_TARGET)
+
+.PHONY: run-river-presentation-field clean-river-presentation-field
+clean: clean-river-presentation-field
+clean-river-presentation-field:
+	rm -f $(RIVER_PRESENTATION_FIELD_TARGET)
+
+$(RIVER_RUNTIME_TARGET): $(RIVER_RUNTIME_OBJS) \
+        ../include/matter/river_runtime.h check.h | build
+	$(CC) $(RIVER_RUNTIME_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-river-runtime: $(RIVER_RUNTIME_TARGET)
+	./$(RIVER_RUNTIME_TARGET)
+
+.PHONY: run-river-runtime clean-river-runtime
+clean: clean-river-runtime
+clean-river-runtime:
+	rm -f $(RIVER_RUNTIME_TARGET)
+
+$(HYDROLOGY_ARTIFACT_TARGET): $(HYDROLOGY_ARTIFACT_OBJS) \
+        ../src/hydrology/hydrology_artifact.h \
+        ../src/hydrology/water_visual_products.h check.h | build
+	$(CC) $(HYDROLOGY_ARTIFACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-hydrology-artifact: $(HYDROLOGY_ARTIFACT_TARGET)
+	./$(HYDROLOGY_ARTIFACT_TARGET)
+
+.PHONY: run-hydrology-artifact clean-hydrology-artifact
+clean: clean-hydrology-artifact
+clean-hydrology-artifact:
+	rm -f $(HYDROLOGY_ARTIFACT_TARGET)
+
+$(HYDROLOGY_NETWORK_ARTIFACT_TARGET): $(HYDROLOGY_NETWORK_ARTIFACT_OBJS) \
+        ../src/hydrology/hydrology_network_artifact.h check.h | build
+	$(CC) $(HYDROLOGY_NETWORK_ARTIFACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-hydrology-network-artifact: $(HYDROLOGY_NETWORK_ARTIFACT_TARGET)
+	./$(HYDROLOGY_NETWORK_ARTIFACT_TARGET)
+
+.PHONY: run-hydrology-network-artifact clean-hydrology-network-artifact
+clean: clean-hydrology-network-artifact
+clean-hydrology-network-artifact:
+	rm -f $(HYDROLOGY_NETWORK_ARTIFACT_TARGET)
+
+$(HYDROLOGY_HANDOFF_PRODUCTS_TARGET): $(HYDROLOGY_HANDOFF_PRODUCTS_OBJS) \
+        ../src/hydrology/hydrology_handoff_products.h check.h | build
+	$(CC) $(HYDROLOGY_HANDOFF_PRODUCTS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-hydrology-handoff-products: $(HYDROLOGY_HANDOFF_PRODUCTS_TARGET)
+	./$(HYDROLOGY_HANDOFF_PRODUCTS_TARGET)
+
+.PHONY: run-hydrology-handoff-products clean-hydrology-handoff-products
+clean: clean-hydrology-handoff-products
+clean-hydrology-handoff-products:
+	rm -f $(HYDROLOGY_HANDOFF_PRODUCTS_TARGET)
+
+$(PHYSX_ADAPTER_CONTRACT_TARGET): $(PHYSX_ADAPTER_CONTRACT_OBJS) \
+        ../src/hydrology/physx_fluid_types.h \
+        ../src/hydrology/physx_runtime.h \
+        ../src/hydrology/physx_fluid_bake.h \
+        ../src/hydrology/physx_collision_input.h \
+        ../src/hydrology/fluid_emission.h \
+        ../src/hydrology/fill_sensor.h check.h | build
+	$(CC) $(PHYSX_ADAPTER_CONTRACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-physx-adapter-contract: $(PHYSX_ADAPTER_CONTRACT_TARGET)
+	./$(PHYSX_ADAPTER_CONTRACT_TARGET)
+
+.PHONY: run-physx-adapter-contract clean-physx-adapter-contract
+clean: clean-physx-adapter-contract
+clean-physx-adapter-contract:
+	rm -f $(PHYSX_ADAPTER_CONTRACT_TARGET)
 
 # Physical atmosphere CPU reference model (header-only; no graphics runtime).
 ATMOSPHERE_TARGET = build/atmosphere_tests
@@ -3028,6 +3461,26 @@ run-vt-enrich:
 	    MATTER_VK_SMOKE_MODE=vt-enrich ./vulkan_smoke_tests.exe
 	cd ../../MatterEditor/build/windows && \
 	    MATTER_VK_SMOKE_MODE=vt-enrich-nort ./vulkan_smoke_tests.exe
+
+# Staged river Task 2 -- deterministic CPU centreline and boulder geometry.
+RIVER_GEOMETRY_TARGET = build/river_geometry_tests
+RIVER_GEOMETRY_CPP = river_geometry_tests.cpp ../src/hydrology/river_geometry.cpp \
+                     ../src/terrain_river_overlay.cpp
+
+$(RIVER_GEOMETRY_TARGET): $(RIVER_GEOMETRY_CPP) \
+        ../src/hydrology/river_geometry.h ../include/matter/bounds.h \
+        ../include/matter/river_network.h \
+        ../include/matter/math_types.h check.h | build
+	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 \
+	    -I../include -I../src -o $@ $(RIVER_GEOMETRY_CPP) -lm
+
+run-river-geometry: $(RIVER_GEOMETRY_TARGET)
+	./$(RIVER_GEOMETRY_TARGET)
+
+.PHONY: run-river-geometry clean-river-geometry
+clean: clean-river-geometry
+clean-river-geometry:
+	rm -f $(RIVER_GEOMETRY_TARGET)
 
 # ---------------------------------------------------------------------------
 # RT PBR Phase 1 — microfacet (frosted) transmission GPU test: the

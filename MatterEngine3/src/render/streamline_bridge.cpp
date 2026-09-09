@@ -1,3 +1,25 @@
+// MatterEngine3/src/render/streamline_bridge.cpp
+//
+// The one place NVIDIA's Streamline SDK is allowed to appear. streamline_bridge.h
+// carries the lifecycle, the fail-open doctrine and the meaning of each state
+// flag; this file is where the SDK types, the dynamic loading and the type
+// punning live.
+//
+// Compile shape: everything SDK-specific sits behind
+// `#if defined(MATTER_HAVE_STREAMLINE) && MATTER_HAVE_STREAMLINE`, and the
+// `sl.h` family is included with -Wdeprecated-declarations and -Wconversion-null
+// suppressed because the vendor headers do not compile warning-clean under GCC.
+// Without that macro every method below reduces to a plain Vulkan call and the
+// unavailability reason says to rebuild with HAVE_STREAMLINE=1. The real path
+// also needs windows.h (LoadLibraryW / GetProcAddress), so it is Windows-only.
+//
+// Two things are worth knowing before editing:
+//   - The SDK entry points are stored as `void*` on the class and cast back at
+//     each call site. That is what keeps `sl::` out of the header.
+//   - Loading is deliberately narrow: `sl.interposer.dll` is taken from beside
+//     the executable and nowhere else, and only after
+//     sl::security::verifyEmbeddedSignature accepts it.
+
 #include "streamline_bridge.h"
 
 #include <algorithm>
@@ -29,12 +51,27 @@
 namespace matter {
 namespace {
 
+// OR every feature bit of `source` into `destination` by walking the struct as
+// an array of VkBool32 starting just past the sType/pNext header. This is type
+// punning that relies on a property of the Vulkan core feature structs: after
+// the first two members, every member is a VkBool32 with no padding. It exists
+// so the caller's pNext chain — which it deliberately steps over — survives the
+// merge untouched.
+//
+// If a future Vulkan header ever adds a non-VkBool32 member to
+// VkPhysicalDeviceVulkan1x Features, this silently corrupts it. The same
+// assumption is made by required_feature_bits_supported below.
 template <typename Features>
 void merge_feature_bits(Features& destination, const Features& source) {
     // Both Vulkan core feature structs start with sType and pNext; every
     // remaining member is VkBool32.  Preserve the caller-owned pNext chain.
     constexpr size_t kFirstFeature = sizeof(VkBaseOutStructure);
     static_assert(sizeof(Features) >= kFirstFeature);
+    // Catches the cheapest form of the hazard above: a member added after the
+    // header whose size or alignment leaves the tail no longer a whole number
+    // of VkBool32s. It cannot catch a 4-byte non-bool member.
+    static_assert((sizeof(Features) - kFirstFeature) % sizeof(VkBool32) == 0,
+                  "feature struct tail must be whole VkBool32s");
     auto* destination_bits = reinterpret_cast<VkBool32*>(
         reinterpret_cast<unsigned char*>(&destination) + kFirstFeature);
     const auto* source_bits = reinterpret_cast<const VkBool32*>(
@@ -48,6 +85,8 @@ void merge_feature_bits(Features& destination, const Features& source) {
     }
 }
 
+// Subset test over the same VkBool32 array view: true when every bit `required`
+// asks for is also set in `supported`. Bits set only in `supported` are fine.
 template <typename Features>
 bool required_feature_bits_supported(const Features& required,
                                     const Features& supported) {
@@ -65,6 +104,11 @@ bool required_feature_bits_supported(const Features& required,
 }
 
 #if defined(MATTER_HAVE_STREAMLINE) && MATTER_HAVE_STREAMLINE
+// The full path of `sl.interposer.dll` NEXT TO THE RUNNING EXECUTABLE. There is
+// deliberately no PATH search and no configurable override — the caller
+// signature-verifies exactly this path before loading it, and a search would
+// make that check meaningless. Returns an empty string if the executable path
+// cannot be determined or has no directory component.
 std::wstring interposer_path() {
     std::array<wchar_t, MAX_PATH> executable{};
     const DWORD length = GetModuleFileNameW(nullptr, executable.data(),
@@ -100,6 +144,11 @@ using SlFreeResourcesFn = PFun_slFreeResources*;
 using SlDlssGetOptimalSettingsFn = PFun_slDLSSGetOptimalSettings*;
 using SlDlssSetOptionsFn = PFun_slDLSSSetOptions*;
 
+// GetProcAddress plus a memcpy to the target function-pointer type. The memcpy
+// (rather than a cast) is what keeps GCC from warning about converting a
+// FARPROC object pointer to a function pointer; the static_assert makes the
+// conversion safe. Returns null when the export is absent, which every caller
+// checks.
 template <typename Function>
 Function streamline_function(HMODULE module, const char* name) {
     const FARPROC address = GetProcAddress(module, name);
@@ -133,6 +182,9 @@ sl::DLSSOptions streamline_dlss_options(const DlssOptions& options) {
     return converted;
 }
 
+// Copy a row-major float[16] (the engine's matter::Mat4f convention — m[0..3]
+// is the first row) into the SDK's 4x4 type row by row. Both sides are
+// row-major, so this is a straight copy and never a transpose.
 void copy_matrix(sl::float4x4& destination, const float source[16]) {
     for (uint32_t row = 0; row < 4; ++row) {
         destination[row] = {source[row * 4], source[row * 4 + 1],
@@ -140,6 +192,12 @@ void copy_matrix(sl::float4x4& destination, const float source[16]) {
     }
 }
 
+// Reinterpret a Vulkan handle as the opaque `void*` the SDK's resource
+// descriptors take. Works for both dispatchable handles (already pointers) and
+// non-dispatchable ones (64-bit integers) by copying the bits. The
+// static_assert turns a target where a handle is wider than a pointer — a
+// 32-bit build, where non-dispatchable handles stay 64 bits — into a compile
+// error rather than a silent truncation.
 template <typename Handle>
 void* vulkan_handle(Handle handle) {
     static_assert(sizeof(Handle) <= sizeof(uintptr_t));
@@ -151,6 +209,21 @@ void* vulkan_handle(Handle handle) {
 
 }  // namespace
 
+// Bring-up, in order, with every step's failure producing a usable native
+// bridge rather than an error:
+//   1. locate sl.interposer.dll beside the executable;
+//   2. verify its embedded signature — an unsigned or tampered DLL is refused,
+//      never loaded;
+//   3. LoadLibraryW it and resolve the eleven sl* entry points plus the two
+//      manual-hook vkGet*ProcAddr dispatchers, requiring ALL of them;
+//   4. slInit with manual hooking and frame-based resource tagging, which is
+//      what lets this engine keep creating its own Vulkan objects;
+//   5. slGetFeatureRequirements(DLSS) to learn the instance/device extensions,
+//      the 1.2/1.3 feature bits and the extra graphics/compute queues that
+//      device creation must then satisfy.
+// Only after (5) are dlss_requested_ / native_retry_required_ / proxy dispatch
+// turned on. dlss_available_ set here is provisional — set_vulkan_info() is
+// what confirms the adapter can really run DLSS.
 StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
     StreamlineBridge bridge;
     bridge.initialized_ = true;
@@ -339,6 +412,17 @@ bool StreamlineBridge::query_dlss_optimal_settings(
     return false;
 }
 
+// See the header for the contract and the sticky-failure rule. The structure of
+// the body is: the Native-mode transition first (tell the SDK eOff and return),
+// then one large validity conjunction over extents / distinct images / the
+// exact format-layout-stage-access contract / complete Vulkan objects, and only
+// then the SDK sequence — slGetNewFrameToken, slDLSSSetOptions,
+// slSetConstants, slSetTagForFrame with the four tagged resources, and
+// slEvaluateFeature. Each step is gated on the previous one having returned
+// eOk, so the first failing call is the one named in `error`.
+//
+// The resources are tagged eValidUntilEvaluate, so the caller may reuse them
+// after this returns, but they must stay alive for the submitted frame.
 bool StreamlineBridge::evaluate_dlss(
     VkCommandBuffer command_buffer, uint64_t attempt_token,
     const DlssOptions& options, const DlssConstants& constants,
@@ -842,6 +926,14 @@ bool StreamlineBridge::set_vulkan_info(
 #endif
 }
 
+// The fail-open path every error in this file funnels into: clear the DLSS
+// flags, latch the reason, drop the requirements the caller may not have
+// applied yet, and — unless a proxy-created Vulkan object is still alive —
+// shut the SDK down and unload the interposer. That early return is the
+// important part: a swapchain or surface born from a proxy keeps the library
+// and the proxy routing in place until it is destroyed, which is why recovery
+// is "tear the device down and re-initialize natively" rather than "keep going
+// with this object".
 void StreamlineBridge::disable(std::string reason) {
     dlss_requested_ = false;
     dlss_available_ = false;
@@ -882,6 +974,10 @@ void StreamlineBridge::shutdown() {
 #endif
 }
 
+// Resolve the six device-level WSI entry points Streamline must be allowed to
+// intercept, through the interposer's own vkGetDeviceProcAddr. All or nothing:
+// a single missing proxy returns false, and the caller treats that as a failed
+// device creation so the owner can retry natively.
 bool StreamlineBridge::populate_device_proxies(VkDevice device) {
     if (!get_device_proc_addr_proxy_) return false;
     queue_present_proxy_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
@@ -970,6 +1066,11 @@ VkResult StreamlineBridge::get_swapchain_images(
     return vkGetSwapchainImagesKHR(device, swapchain, image_count, images);
 }
 
+// Enforces the one-handoff-per-frame pairing before presenting anything: with
+// proxy dispatch on, a present with no pending present_common (or a zero
+// serial) is refused outright with VK_ERROR_INITIALIZATION_FAILED. The pairing
+// is consumed whether or not the proxy is actually used, so it cannot leak into
+// the next frame.
 VkResult StreamlineBridge::queue_present(VkQueue queue,
                                          const VkPresentInfoKHR* present) {
     if (use_proxy_dispatch_ &&
@@ -990,6 +1091,11 @@ VkResult StreamlineBridge::queue_present(VkQueue queue,
     return vkQueuePresentKHR(queue, present);
 }
 
+// Record that a frame is finished and about to be presented. Must be called
+// immediately before queue_present, with a NON-ZERO serial — zero is rejected.
+// Returns false if a handoff is already pending, i.e. two present_commons
+// without an intervening present, which the caller must treat as an error
+// rather than ignoring. Without proxy dispatch it succeeds and records nothing.
 bool StreamlineBridge::present_common(uint64_t frame_serial) {
     if (frame_serial == 0) return false;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION

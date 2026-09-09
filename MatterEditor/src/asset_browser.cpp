@@ -1,3 +1,38 @@
+// MatterEditor/src/asset_browser.cpp
+//
+// Implementation of the editor's Assets pane (asset_browser.h): scan the world
+// projects, hash every authored object exactly the way the bake pipeline would,
+// look each hash up in the per-world caches, and render the result as a
+// filterable tree.
+//
+// Read-only, deliberately -- see the class comment in asset_browser.h for the
+// audit of which ScriptHost entry points are used and why none of them bakes.
+// Nothing here writes to the project tree or to the cache.
+//
+// The cycle, all driven from draw():
+//
+//   rescan()           group worlds by project, derive the shared-lib and cache
+//                      roots, enumerate and read every objects/*.js.
+//   annotate_project() per object: fold the requires DAG into a resolved hash,
+//                      then probe each per-world cache for the matching
+//                      artifact and peek its LOD count.
+//   draw_project()     worlds, objects grouped by owning scene, shared-lib.
+//   draw_object_row()  one object plus its required-child sub-rows.
+//
+// Freshness: a full rescan happens on the first draw, on "Refresh", and when
+// the engine shared-lib root changes. Otherwise every frame stats each object
+// source and re-annotates only the projects whose files actually changed. The
+// stat sweep is O(objects) per frame; the QuickJS evaluation is not.
+//
+// Two invariants keep the annotations honest, and either is easy to break:
+//   - the shared-lib root ORDER must match LocalProviderConfig (project-local
+//     first, engine root second) -- see rescan().
+//   - child hashes must be folded recursively, leaves first -- see
+//     resolve_object_hash().
+// Skip either and every composite part reads as unbaked.
+//
+// Render thread only: ImGui, QuickJS and std::filesystem are all touched here.
+
 #include "asset_browser.h"
 #include "asset_browser_ids.h"
 
@@ -28,6 +63,8 @@ std::string to_lower(const std::string& s) {
     return out;
 }
 
+// Whole-file read. Returns an empty string for a missing or unreadable file,
+// which classify_kind then classifies as Support rather than failing the scan.
 std::string read_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return {};
@@ -36,6 +73,9 @@ std::string read_file(const std::string& path) {
     return ss.str();
 }
 
+// Row decoration for a Kind: a one-character glyph, a tint, and a word. The
+// duplicated `return` after each switch exists to satisfy compilers that do not
+// treat the switch as exhaustive; it is not a reachable default.
 const char* kind_glyph(AssetBrowser::Kind kind) {
     switch (kind) {
         case AssetBrowser::Kind::Part:    return "P";
@@ -65,6 +105,10 @@ const char* kind_label(AssetBrowser::Kind kind) {
 
 } // namespace
 
+// The ScriptHost is built here and destroyed by the defaulted destructor, which
+// has to live in this TU because the header only forward-declares the type. One
+// host serves every project; annotate_project() re-points its shared-lib roots
+// before touching a given project's objects.
 AssetBrowser::AssetBrowser() : host_(std::make_unique<script_host::ScriptHost>()) {}
 AssetBrowser::~AssetBrowser() = default;
 
@@ -94,6 +138,9 @@ long long AssetBrowser::read_mtime(const std::string& path) {
     return static_cast<long long>(t.time_since_epoch().count());
 }
 
+// Case-insensitive substring match; an empty filter passes everything. Applied
+// to world names and module names independently, so a filter can leave a
+// project showing worlds but no objects, or the reverse.
 bool AssetBrowser::passes_filter(const std::string& name) const {
     if (filter_buf_[0] == '\0') return true;
     return to_lower(name).find(to_lower(filter_buf_)) != std::string::npos;
@@ -350,6 +397,8 @@ void AssetBrowser::annotate_project(Project& project) {
 void AssetBrowser::draw(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
                         const std::string& shared_lib_root,
                         const ViewerCommands& commands) {
+    // A changed shared-lib root invalidates every hash the browser holds, so it
+    // forces the same full rescan that the first draw and the Refresh button do.
     bool need_full_scan = !scanned_ || shared_lib_root != scanned_shared_lib_root_;
 
     if (ImGui::Button("Refresh")) need_full_scan = true;
@@ -411,9 +460,37 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
         }
 
         if (ImGui::TreeNodeEx("Objects", ImGuiTreeNodeFlags_DefaultOpen)) {
+            // Mirror the on-disk objects/ folder layout: a sub-tree per owning
+            // scene, plus the project-wide shared tier. rescan()/add_objects
+            // append objects contiguously by scene (shared tier first, then
+            // each scene in sorted order), so we open a new group whenever the
+            // scene key changes rather than needing a separate grouping pass.
+            // The per-scene PushID scope also disambiguates modules that exist
+            // in more than one tier (e.g. WorldSector, shared + StreamMountain),
+            // which otherwise collide on draw_object_row's PushID(module).
+            bool have_group = false;
+            bool group_open = false;
+            std::string current_scene;
             for (AssetObject& obj : project.objects) {
                 if (!passes_filter(obj.module)) continue;
-                draw_object_row(project, obj, commands);
+                if (!have_group || obj.scene != current_scene) {
+                    if (have_group) {
+                        if (group_open) ImGui::TreePop();
+                        ImGui::PopID();
+                    }
+                    current_scene = obj.scene;
+                    have_group = true;
+                    const bool shared = current_scene.empty();
+                    ImGui::PushID(shared ? "\x01shared" : current_scene.c_str());
+                    group_open = ImGui::TreeNodeEx(
+                        shared ? "objects/ (shared)" : current_scene.c_str(),
+                        ImGuiTreeNodeFlags_DefaultOpen);
+                }
+                if (group_open) draw_object_row(project, obj, commands);
+            }
+            if (have_group) {
+                if (group_open) ImGui::TreePop();
+                ImGui::PopID();
             }
             if (project.objects.empty()) ImGui::TextDisabled("(none)");
             ImGui::TreePop();
@@ -431,6 +508,12 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
     ImGui::PopID();
 }
 
+// One object row: kind glyph, name, bake badge, action buttons, and an
+// expandable list of its declared required children.
+//
+// PushID(module) is NOT unique on its own -- the same module name can exist in
+// the shared tier and in a scene (WorldSector, above all) -- which is why
+// draw_project() wraps each scene group in its own PushID scope.
 void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
                                    const ViewerCommands& commands) {
     ImGui::PushID(obj.module.c_str());
@@ -445,6 +528,9 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
     ImGui::TextColored(kind_color(obj.kind), "[%s]", kind_glyph(obj.kind));
     ImGui::SameLine();
 
+    // An object with no children is drawn as a leaf that must not push the tree
+    // stack. The TreePop at the bottom of this function is gated on the same
+    // flag; an unconditional TreePop here would unbalance ImGui's ID stack.
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
     if (obj.requires_children.empty())
         flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
@@ -478,6 +564,10 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
         for (std::size_t occurrence = 0; occurrence < obj.requires_children.size();
              ++occurrence) {
             const RequiredChildUi& child = obj.requires_children[occurrence];
+            // Every child control is literally labelled "Go", so the enclosing
+            // row identity is the only thing keeping them distinct on ImGui's
+            // ID stack. asset_browser_ids.h explains the length-prefixed
+            // encoding and what it protects against.
             const std::string row_identity = required_child_row_identity(
                 child.module, child.params_json, occurrence);
             ImGui::PushID(row_identity.c_str());

@@ -1,4 +1,24 @@
 // tileset_metrics.cpp — pose-delta metric (settle-tick-optimizer.md §II.3).
+//
+// Implements tileset_metrics.h, which states every contract this file honours
+// (fallbacks, pairing, weighting, percentile definition); nothing is repeated
+// here. The three small rules -- characteristic size, orientation weight, and
+// their pairing into a `PoseMetricInfo` -- live at the top; `compare_settled`
+// is the whole comparison.
+//
+// WHAT THIS IS FOR, and what it is not. It answers "would a viewer notice the
+// difference between these two settle runs", so that a settle optimisation
+// (fewer ticks, a cheaper solver, different parameters) can be accepted on
+// visual equivalence rather than on bit equality. It is explicitly NOT a
+// determinism check: two runs that pass here can have completely different
+// `pose_hash` values, and `pose_hash` remains the only determinism gate.
+//
+// Read-only over both `SettledTorus` arguments; no state, no I/O, allocates
+// only the two delta vectors it sorts. Cost is O(n log n) in instance count.
+//
+// TUNING CONSTANTS live in the anonymous namespace below (fallback size,
+// isotropy ratio) and in `PoseDeltaGate`'s defaults in the header. Changing one
+// changes which experiments are called acceptable, so change them deliberately.
 #include "tileset_metrics.h"
 #include "tileset_layout.h"  // kTorusN
 

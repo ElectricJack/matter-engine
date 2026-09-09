@@ -9,7 +9,7 @@ speed-optimization one. Do not make the bake faster; make it not run on the
 render thread.
 
 Derived from a 2026-08-07 Fable analysis, grounded in the new ProfileLib
-findings (`docs/superpowers/specs/2026-08-07-engine-profiler-design.md`): the
+findings (`docs/completed/superpowers/specs/2026-08-07-engine-profiler-design.md`): the
 render-thread cost is `loop_pump`, and a `[gpu-job] stream.publish took 98.2 ms`
 outlier was observed.
 

@@ -1,3 +1,21 @@
+// MatterEditor/src/scene_model_adapter.cpp
+//
+// Implementation of the SessionBinding-owned scene-graph adapter. The
+// contract, the sequencing invariant and the event-system references are in
+// scene_model_adapter.h.
+//
+// Both subscriptions are registered `matter::evt::immediate`, so their
+// callbacks run inline at publish rather than being queued or coalesced. That
+// is only sound because the tracker flush and the model update are both
+// app-thread-affine (see the header); nothing here takes a lock.
+//
+// The recovery path — a delivered sequence that is not exactly
+// `last_sequence_ + 1` — discards the incoming delta entirely and re-primes
+// from a fresh atomic snapshot, which resynchronises the rows and the sequence
+// counter in one step. Upsert and remove implement the identical rule; they
+// are two copies rather than one helper only because they carry different
+// payloads.
+
 #include "scene_model_adapter.h"
 
 #include <cstdio>
@@ -15,6 +33,11 @@ SceneModelAdapter::SceneModelAdapter(EditorModel& model,
                                      std::unique_ptr<matter::WorldSession>& session_slot)
     : model_(model), session_(session_slot) {}
 
+// Prime (or re-prime) the model from the session's atomic (rows, sequence)
+// pair. With no session bound this CLEARS the model and resets the sequence to
+// 0, which is what lets a later bind start counting from the new session's
+// first delta. Called on bind/rebind and as the gap-recovery path; it rebuilds
+// the entire row set, so it is O(scene) and is not something to run per frame.
 void SceneModelAdapter::full_snapshot() {
     if (!session_) {
         model_.apply_snapshot({});

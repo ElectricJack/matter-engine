@@ -1,15 +1,48 @@
 // terrain_field.cpp — native field program interpreter for infinite-world terrain.
 // Pure CPU module: no JS, no GL, no engine subsystem dependencies.
 
+// ---------------------------------------------------------------------------
+// What is in this file, and in what order
+// ---------------------------------------------------------------------------
+//   1. The op caps (`kMaxOps`, `kMaxTapeRegs`) and why the register files are
+//      stack arrays that are deliberately NOT zero-initialised.
+//   2. The NOISE CORE, in an anonymous namespace: integer lattice hashes,
+//      2D/3D value noise, and the fbm built on them. Everything the field and
+//      the tapes compute bottoms out here.
+//   3. FieldProgram::parse and FieldRuntime -- the terrain field, including
+//      the column cache and the heightfield recogniser.
+//   4. HeightLattice -- pre-sampled heights with bilinear reconstruction.
+//   5. SurfaceProgram::parse and SurfaceRuntime -- the surfaces() and
+//      habitat() tapes.
+//
+// THE INVARIANT EVERYTHING RESTS ON: both parsers admit only BACKWARD register
+// references, so op i can read only registers < i. That is what makes an
+// uninitialised stack register file sound, what makes the column cache's
+// y-dependence split sound, and what the assert in SurfaceRuntime::eval_regs
+// exists to catch if a future op kind breaks it.
+//
+// DETERMINISM. The noise below is bit-exact 32-bit integer arithmetic with a
+// float tail, and shaders_vk/vt_surface_tape.glsl mirrors it for the GPU tape.
+// Changing a constant, a shift, or an octave's accumulation order changes
+// every world's terrain and every baked artifact's content -- and silently, in
+// the sense that nothing fails to compile. Treat this file's arithmetic as a
+// published format.
+//
+// THREADING. No file-scope mutable state except the three `g_field_height_*`
+// diagnostic counters (atomics plus one opt-in flag). Every runtime method is
+// const and puts its register file on the stack, so bake workers share
+// runtimes freely.
 #include <cassert>
 #include <atomic>
 #include <chrono>
 #include "terrain_field.h"
+#include "terrain_river_overlay.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <stdexcept>
 #include <algorithm>
 #include <unordered_map>
 
@@ -48,6 +81,22 @@ static constexpr int kMaxTapeRegs = terrain_field::kMaxHabitatOps;
 // ---------------------------------------------------------------------------
 namespace {
 
+// ---- The noise core -------------------------------------------------------
+//
+// VALUE noise, not gradient/Perlin noise: a hash gives each integer lattice
+// point a pseudo-random value in [0, 1) and the sample is that value
+// interpolated with a quintic fade. Cheaper than gradient noise and trivially
+// reproducible in GLSL, which is the property that decided it -- the tape has
+// a GPU twin and the two must agree bit-for-bit.
+//
+// Everything here is a pure function of its arguments, with no table, no
+// state and no allocation, so it is safe from any thread.
+//
+// Ranges, since they are load-bearing for the ops built on them:
+//   value_noise / value_noise3   [0, 1)
+//   fbm2 / fbm3                  about [-1, 1] (amplitude-normalized)
+//   the ridged variant           same range, folded so peaks land ON the
+//                                lattice rather than between it
 inline uint32_t hash2i(int32_t ix, int32_t iz, uint32_t seed) {
     uint32_t h = (uint32_t)ix * 374761393u + (uint32_t)iz * 668265263u
                + seed * 2246822519u;
@@ -61,6 +110,11 @@ inline float rand01(int32_t ix, int32_t iz, uint32_t seed) {
 
 inline float smooth5(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
 
+// 2D value noise at (x, z) in LATTICE units -- the caller has already
+// multiplied by the frequency, so one unit here is one lattice cell. Bilinear
+// blend of the four surrounding corner values under a quintic fade, which is
+// what makes the result C2-continuous across cell boundaries (a plain linear
+// blend would show the lattice as creases). Returns [0, 1).
 float value_noise(float x, float z, uint32_t seed) {
     int32_t ix = (int32_t)std::floor(x), iz = (int32_t)std::floor(z);
     float fx = x - ix, fz = z - iz;
@@ -72,6 +126,20 @@ float value_noise(float x, float z, uint32_t seed) {
     return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;   // 0..1
 }
 
+// Fractional Brownian motion: `oct` octaves of value noise, each at `lac`
+// times the previous frequency and `gain` times the previous amplitude, summed
+// and divided by the total amplitude -- so the output stays about [-1, 1]
+// whatever gain and octave count are authored, and an author can change either
+// without rescaling everything downstream.
+//
+// `freq` is the BASE frequency in 1/metres: the world coordinate is multiplied
+// by it, so a smaller number means larger features. Each octave takes its own
+// seed (seed + i*131), so octaves are decorrelated rather than being the same
+// field at different scales.
+//
+// `ridged` folds each octave through 1 - 2*|n|, which turns the smooth field
+// into creased ridges with the peaks on the lattice. Cost is linear in `oct`
+// and this is normally a program's dominant term.
 float fbm2(float x, float z, uint32_t seed, int oct, float gain, float lac,
            float freq, bool ridged) {
     float amp = 1.0f, sum = 0.0f, norm = 0.0f;
@@ -168,6 +236,31 @@ float parse_float(const std::string& s) {
 // ---------------------------------------------------------------------------
 namespace terrain_field {
 
+// Compile the canonical field-program text. `out` is fully overwritten
+// (including on failure, where it is left default-constructed with whatever
+// ops parsed so far -- callers must not use it unless true is returned), and
+// `err` gets a human-readable reason.
+//
+// The grammar is one op or directive per line, whitespace-separated, blank
+// lines ignored. Directives are order-independent and by convention trail the
+// ops; five are REQUIRED (height, moisture, relief, seaLevel, biome) and
+// `density` is optional -- its absence is what marks a heightfield world.
+//
+// This function is the ONLY validator in the pipeline; nothing downstream
+// re-checks a program. Four things are established here and assumed
+// everywhere afterwards:
+//   * every register reference is backward (which the evaluators depend on);
+//   * the op count is within kMaxOps, counting the implicit `const` ops a
+//     literal operand emits;
+//   * per-op y-dependence, propagated forward along the operand edges, which
+//     drives both the height/moisture/relief contract check and the column
+//     cache's split;
+//   * whether the program is a heightfield -- either by omitting `density`, or
+//     by spelling out `height - wy`, both recognised so a round-tripped
+//     program does not lose the mesher's specialisations over notation.
+//
+// Fail-closed throughout: any violation returns false and no partial program
+// is usable.
 bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string& err) {
     out = FieldProgram();
     out.text_ = text;
@@ -258,7 +351,7 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
 
         int op_idx = (int)out.ops.size();
         if (op_idx >= kMaxOps) {
-            err = "too many ops (max 64)";
+            err = "too many ops (max " + std::to_string(kMaxOps) + ")";
             return false;
         }
 
@@ -575,7 +668,38 @@ FieldRuntime::FieldRuntime(FieldProgram p)
     : prog_(std::move(p))
 {}
 
+FieldRuntime::FieldRuntime(FieldProgram p,
+                           std::shared_ptr<const HeightOverlay> overlay)
+    : prog_(std::move(p)), overlay_(std::move(overlay))
+{
+    if (overlay_ && !prog_.is_heightfield)
+        throw std::invalid_argument(
+            "HeightOverlay requires a heightfield FieldProgram");
+}
+
+uint64_t FieldRuntime::hash() const {
+    uint64_t result = prog_.hash();
+    if (!overlay_) return result;
+    uint64_t overlay_hash = overlay_->hash();
+    constexpr uint64_t prime = UINT64_C(1099511628211);
+    for (unsigned byte = 0; byte < sizeof(overlay_hash); ++byte) {
+        result ^= static_cast<unsigned char>(overlay_hash >> (byte * 8u));
+        result *= prime;
+    }
+    return result;
+}
+
 // Evaluate all registers 0..(count-1) into regs[] for world position (x, y, z).
+//
+// `regs` is caller-supplied and must have room for `count` floats; it is not
+// required to be initialised, because op i only reads registers < i and this
+// loop writes them in order. `count` is clamped against the program length, so
+// asking for more registers than exist is harmless.
+//
+// RECURSIVE through Op::Warp2, which re-evaluates its source subexpression at
+// a displaced (x, z) using its own stack register file. Depth is bounded by
+// the nesting of warp2 ops in the program, not by the sample -- but a program
+// with warp2 under warp2 pays a full sub-evaluation per level.
 void FieldRuntime::eval_regs(float regs[], int count, float x, float y, float z) const {
     const auto& ops = prog_.ops;
     for (int i = 0; i < count && i < (int)ops.size(); ++i) {
@@ -704,10 +828,12 @@ float FieldRuntime::height_at(float x, float z) const {
     // here cannot reach the result.
     if (!g_field_probe_timing) {
         g_field_height_calls.fetch_add(1, std::memory_order_relaxed);
-        return eval_reg(prog_.height_reg, x, 0.0f, z);
+        const float base = eval_reg(prog_.height_reg, x, 0.0f, z);
+        return overlay_ ? overlay_->height_at(x, z, base) : base;
     }
     const auto t0 = std::chrono::steady_clock::now();
-    const float v = eval_reg(prog_.height_reg, x, 0.0f, z);
+    const float base = eval_reg(prog_.height_reg, x, 0.0f, z);
+    const float v = overlay_ ? overlay_->height_at(x, z, base) : base;
     g_field_height_calls.fetch_add(1, std::memory_order_relaxed);
     g_field_height_ns.fetch_add((unsigned long long)std::chrono::duration_cast<
         std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
@@ -747,6 +873,9 @@ void FieldRuntime::eval_column(ColumnCache& cache, float x, float z) const {
     // y-INDEPENDENT slot can be wrong, which holds because a y-independent op
     // cannot read a y-dependent one without becoming y-dependent itself.
     eval_regs(cache.regs, count, x, 0.0f, z);
+    if (prog_.is_heightfield && overlay_)
+        cache.regs[prog_.height_reg] = overlay_->height_at(
+            x, z, cache.regs[prog_.height_reg]);
 }
 
 float FieldRuntime::density_at(ColumnCache& cache, float y) const {
@@ -814,6 +943,14 @@ float FieldRuntime::density_at(ColumnCache& cache, float y) const {
     return cache.regs[prog_.density_reg];
 }
 
+// |grad h| by central differences: FOUR height_at calls, so four complete
+// program evaluations per query -- this is the single most expensive routine
+// in the file's hot path and the reason HeightLattice exists.
+//
+// eps = 0.5 m gives a 1 m differencing baseline, fixed rather than rung-
+// derived so the answer is identical at every LOD (see kSurfInFieldSlope's
+// note in the header). The result is RISE OVER RUN, not an angle: 1.0 is 45
+// degrees and there is no upper bound.
 float FieldRuntime::slope_at(float x, float z) const {
     constexpr float eps = 0.5f;
     float hx0 = height_at(x - eps, z);
@@ -908,6 +1045,14 @@ float FieldRuntime::relief_at(float x, float z) const {
     return eval_reg(prog_.relief_reg, x, 0.0f, z);
 }
 
+// Classify a column into one of four biomes. The tests are a PRECEDENCE chain,
+// not independent predicates: below sea level is Ocean whatever the relief
+// says, then high relief is Mountains, then dry is Foothills, else Meadow.
+// The two thresholds come from the program's `biome` directive, so a world
+// authors them; sea level comes from `seaLevel`.
+//
+// Costs up to three full program evaluations (height, then relief, then
+// moisture), short-circuiting as soon as a test fires.
 FieldRuntime::Biome FieldRuntime::biome_at(float x, float z) const {
     if (height_at(x, z) < prog_.sea_level)             return Ocean;
     if (relief_at(x, z) >= prog_.mount_relief_thresh)  return Mountains;
@@ -915,6 +1060,14 @@ FieldRuntime::Biome FieldRuntime::biome_at(float x, float z) const {
     return Meadow;
 }
 
+// The legacy per-column material rule, kept for consumers predating the
+// surfaces() tape (which supersedes it with authored weights).
+//
+// Unlike biome_at, the numbers here are NOT authored: the slope cutoff of 1.0
+// (45 degrees) and the 100 m snow line are literals in this function, so a
+// world cannot tune them through its field program. Up to eight program
+// evaluations per call -- slope_at is four and biome_at up to three, plus the
+// snow-line height probe.
 FieldRuntime::Material FieldRuntime::material_at(float x, float z) const {
     if (slope_at(x, z) > 1.0f) return MatRock;
     Biome b = biome_at(x, z);
@@ -976,6 +1129,29 @@ float surface_op_fbm3(const Op& op, float x, float y, float z, bool ridged) {
     return fbm3_op(op, x, y, z, ridged);
 }
 
+// Compile a canonical TAPE. Same line-oriented grammar and same fail-closed
+// discipline as FieldProgram::parse, with four differences worth holding in
+// mind:
+//
+//   * TWO MODES. `mode` decides which output directives are legal -- material
+//     / tint / roughbias / wetness / metallic for Surfaces, `channel` for
+//     Habitat -- and each mode rejects the other's outright rather than
+//     ignoring them. Each also fails when its own list ends up empty: a tape
+//     that declares no outputs computed a pile of noise and discarded it.
+//   * A LARGER OP SET than the field program: part-local and world-anchored
+//     noise variants, `curv`, `fract`, and the optional domain-warp tail on
+//     the 3D noise ops.
+//   * SOURCE ORDINALS. Register refs in the text number the op LINES; parse
+//     deduplicates identical `const` lines and remaps refs through `src_map`,
+//     so emitted indices diverge from the text's and the op cap applies to the
+//     deduplicated count.
+//   * A PER-MODE CAP: kMaxOps for a surfaces tape (mirrored by the shader's
+//     register file) and the far larger kMaxHabitatOps for a habitat tape
+//     (bounded only by the evaluator's stack array).
+//
+// Also derives `uses_world_inputs_` and `input_mask_` here, including the
+// inputs an op IMPLIES rather than names (the world-frame noise variants and
+// `curv` imply the world coordinates they sample at).
 bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
                            std::string& err, TapeMode mode) {
     out = SurfaceProgram();
@@ -1302,7 +1478,7 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
 
     // Each mode fails closed on declaring nothing, for the same reason: a tape
     // with no outputs computed a pile of noise and threw it away, which is
-    // always a bug and never a intent.
+    // always a bug and never intentional.
     if (mode == TapeMode::Habitat) {
         if (out.channel_count == 0) {
             err = "habitat() declared no channels (missing 'channel' "
@@ -1585,6 +1761,17 @@ void SurfaceRuntime::appearance_at(const float pos[3], const float nrm[3],
         out.metallic = clamp_to(regs[prog_.metallic_reg], 0.0f, 1.0f);
 }
 
+// One FULL tape evaluation per vertex -- there is no batching and no reuse
+// across vertices, so this is O(vertex_count * ops) plus any field queries the
+// input mask admits, each of which is itself a field-program evaluation. It is
+// the dominant cost of classifying a chart mesh.
+//
+// Weights are normalized to sum 1 and quantized to u8, so `out` needs
+// vertex_count * material_count() bytes and reads weight-major within each
+// vertex. An all-zero vertex is not an error: material 0 takes the whole
+// sample (255), a deterministic fail-closed choice rather than an
+// undefined-blend one. `normals` may be null, in which case every sample is
+// treated as facing +Y.
 void SurfaceRuntime::classify_vertices(const float* positions,
                                        const float* normals,
                                        uint32_t vertex_count,
@@ -1613,6 +1800,14 @@ void SurfaceRuntime::classify_vertices(const float* positions,
     }
 }
 
+// Warn-once latch: true the first time, false forever after, so the caller can
+// emit one diagnostic per runtime instead of one per sample.
+//
+// A plain bool behind a const method, NOT an atomic. Two threads entering
+// together can both observe false and both return true, so the diagnostic may
+// print twice -- accepted, because the alternative is a synchronized write on
+// a path every bake worker shares, and the cost of the race is a duplicated
+// log line.
 bool SurfaceRuntime::note_world_input_misuse() const {
     if (misuse_noted_) return false;
     misuse_noted_ = true;

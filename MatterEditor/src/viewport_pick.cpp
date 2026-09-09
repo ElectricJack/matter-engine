@@ -1,3 +1,26 @@
+// MatterEditor/src/viewport_pick.cpp
+//
+// Implementation of the editor's viewport pick. See viewport_pick.h for the
+// contract and the coordinate-space warning.
+//
+// Two stages, in order:
+//   1. GPU identity buffer (WorldSession::pick_at_pixel). Pixel-exact, needs
+//      no CPU geometry, and is the ONLY way to hit baked/streamed static
+//      instances — that geometry exists on the GPU and in the sector cache,
+//      not as CPU colliders. It returns false for background and before the
+//      renderer has completed a frame.
+//   2. CPU ray vs oriented box over the ECS. Reached only when stage 1 misses.
+//      Each entity with a SceneEntityId and a LocalTransform is tested against
+//      the local-space AABB of its part (or a +/-0.5 m default box when the
+//      part has no loaded geometry, per local_aabb_for_part), transformed by
+//      its WorldTransform. Nearest hit wins.
+//
+// The little Vec3 / matrix helpers below are file-local on purpose: this
+// translation unit needs a handful of operations and nothing that would pull
+// in a matrix library. MATRIX CONVENTION throughout is matter::Mat4f's —
+// ROW-MAJOR storage with column-vector algebra, so translation is
+// m[3]/m[7]/m[11] and the linear part is the 3x3 at 0,1,2 / 4,5,6 / 8,9,10.
+// Everything is single-threaded, called from the main loop on a click.
 #include "viewport_pick.h"
 #include "selection_bounds.h"
 
@@ -30,6 +53,11 @@ Vec3 normalize(const Vec3& a) {
     return {a.x / len, a.y / len, a.z / len};
 }
 
+// Standard slab test. Two properties the callers rely on: `tmin` starts at 0,
+// so a ray whose origin is INSIDE the box hits at t = 0 (the camera sitting
+// inside an object still picks it), and an axis with a near-zero direction
+// component is handled by a containment test instead of dividing by it.
+// `dir` need not be normalized; t is then in units of `dir`.
 bool ray_aabb(const float origin[3], const float dir[3],
               const float aabb_min[3], const float aabb_max[3],
               float& t_out) {
@@ -51,6 +79,12 @@ bool ray_aabb(const float origin[3], const float dir[3],
     return true;
 }
 
+// Inverse of an affine row-major 4x4: the 3x3 linear part is inverted by
+// cofactors and the translation is back-substituted through it. The bottom row
+// is written as (0,0,0,1) rather than inverted, so a projective matrix would
+// be silently mishandled — every matrix reaching here is a TRS world
+// transform. Returns false for a singular linear part (|det| < 1e-20), which
+// is what a zero scale on any axis produces.
 bool invert_affine(const float m[16], float inv[16]) {
     float a[9] = {m[0],m[1],m[2], m[4],m[5],m[6], m[8],m[9],m[10]};
     float det = a[0]*(a[4]*a[8]-a[5]*a[7])
@@ -92,6 +126,15 @@ void xform_dir(const float m[16], const float in[3], float out[3]) {
     out[2] = m[8]*in[0] + m[9]*in[1] + m[10]*in[2];
 }
 
+// Ray vs oriented box: transform the ray into the object's local space and run
+// the AABB slab test there, which is cheaper and more robust than building the
+// box's world corners.
+//
+// The returned `t` stays in WORLD units even though the test ran in local
+// space, because the local direction is deliberately NOT renormalized after
+// the transform: the same t satisfies both parameterisations. That is what
+// makes t comparable across objects with different scales, which the
+// nearest-hit loop depends on.
 bool ray_obb(const float origin[3], const float dir[3],
              const float world_mat[16],
              const float local_min[3], const float local_max[3],
@@ -106,6 +149,16 @@ bool ray_obb(const float origin[3], const float dir[3],
 
 }  // namespace
 
+// The fallback ray is built from the camera basis by hand rather than by
+// inverting a projection: forward/right/up from position, target and up, then
+// the cursor mapped to NDC and scaled by tan(vertical_fov/2) and the aspect
+// ratio. It assumes a symmetric perspective frustum and ignores any jitter the
+// renderer applies, which is right for picking — the user aimed at the
+// un-jittered image they saw.
+//
+// Degenerate inputs are handled by returning a miss: a zero-area viewport
+// exits immediately, and normalize() falls back to +Z for a zero-length
+// vector rather than producing NaNs.
 PickResult viewport_pick(float cursor_x, float cursor_y,
                          int fb_width, int fb_height,
                          const matter::CameraDesc& camera,

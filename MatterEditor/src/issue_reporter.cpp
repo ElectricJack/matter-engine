@@ -1,6 +1,17 @@
 // Writer half of the in-editor issue reporter: pure formatting, cropping and
 // file IO, no ImGui (mirrors the console_log.cpp / console_panel.cpp split), so
 // the report schema and the crop math can be exercised headlessly.
+//
+// This file is the sole WRITER of the on-disk report format. It has readers:
+// shot_replay.cpp parses state.json to reproduce a shot under MATTER_REPLAY,
+// and docs/agent/issue-system.md documents the layout for the agent workflow
+// (`bash docs/baselines/capture-replay-baseline.sh issues/<guid> ...`). Adding
+// a field is safe — every reader tolerates unknown keys — but RENAMING or
+// removing one silently breaks replay of reports already on disk, so treat the
+// key names here as the interface they are.
+//
+// Everything runs on the main thread, synchronously, at the moment the user
+// presses "File report": several files are opened, written and closed inline.
 #include "issue_reporter.h"
 
 #include <algorithm>
@@ -234,6 +245,18 @@ void write_shot_json(std::ostream& out, const IssueShot& shot) {
     out << "    }";
 }
 
+// state.json: the machine-readable half of a report. Structure is
+//   id / world / project_dir
+//   shots[]        — one write_shot_json() per capture, each self-contained
+//                    enough for a replay
+//   at_file_time   — deep engine telemetry read ONCE, when the report is
+//                    submitted, not per shot (it is large, and it rarely
+//                    differs meaningfully between shots seconds apart)
+//   props          — present only when a Registry was supplied
+// Written by hand rather than through a JSON library, so every string must go
+// through json_escape(); the props section is the exception and goes through
+// jsondoc. Returns false if the file could not be opened or the stream ended
+// in a failed state.
 bool write_state_json(const std::filesystem::path& path,
                       const IssueReporterState& state,
                       const IssueContext& context, const ViewerStats& stats,
@@ -625,6 +648,18 @@ void record_shot(IssueReporterState& state, const IssueShot& shot) {
     state.status_is_error = false;
 }
 
+// File the open report: create the directory if the shots did not already,
+// then write issue.md, the per-shot layout sidecars, state.json, log-tail.txt
+// and (best effort) profile_tail.json.
+//
+// Fails EARLY, not atomically: a failure part-way through returns "" with
+// state.status set and leaves the files already written on disk. That is
+// deliberate — a half-written report directory is still evidence, and the
+// status line tells the user which file did not make it. The PNGs were written
+// at capture time by main.cpp and are untouched here.
+//
+// The profiler trace is the one step that may silently do nothing (a
+// profiler-disabled build, or an empty ring); it must never block filing.
 std::string write_issue_report(IssueReporterState& state,
                                const IssueContext& context,
                                const ViewerStats& stats,

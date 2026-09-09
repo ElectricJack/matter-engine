@@ -1,4 +1,35 @@
 #pragma once
+// MatterEngine3/src/part_base.js.h
+//
+// THE PART PRELUDE. This is JavaScript, not C++: a raw string literal that the
+// script host evaluates in a part-bake context BEFORE the part's own source, so
+// that a schema can `extends Part` and reach the DSL. It defines four things:
+//
+//   MAT / SHAPE / JOIN  the material handle and shape/join enums scripts use by
+//                       name (the numbers are registry ids — see
+//                       material_registry.h — so changing one re-colours worlds).
+//   profSlot/Begin/End  the ScriptProfile timers (dsl_bindings.h), inert unless
+//                       MATTER_SCRIPT_PROFILE is set.
+//   LOD                 the `static lods` ladder helpers. Each returns a plain
+//                       DATA descriptor, never a closure, so the bake can read a
+//                       part's ladder without evaluating build().
+//   Part                the base class: almost every method is a one-line
+//                       forward to a `__dsl_*` binding installed by
+//                       dsl_bindings.cpp.
+//
+// THE SHARP EDGE IS ARITY. These wrappers forward POSITIONALLY, so a signature
+// that drifts from its binding does not throw — it silently binds the wrong
+// argument. The `terrainVolumeTiled` comment below records the last time that
+// happened (a material array that fell off the end and mis-coloured every voxel
+// sector). Change a wrapper, its binding and every call site together.
+//
+// This prelude is NOT the only one: other contexts get their own, and a world
+// eval installs no `__dsl_*` bindings at all — which is why the profiling
+// globals guard INSIDE the call rather than around the definition (see the note
+// there). A shared-lib module imported by both contexts must survive in both.
+//
+// Being a string in a header, it is compiled into the binary: editing it needs a
+// rebuild, and it re-bakes every part (the source text feeds the resolved hash).
 static const char* kPartBaseJS = R"JS(
 globalThis.MAT = {
   bark: 14, leaf: 15, dirt: 16, snow: 17,
@@ -169,6 +200,7 @@ globalThis.Part = class Part {
   raycast(o,d)           { return __dsl_raycast(o[0],o[1],o[2], d[0],d[1],d[2]); }
   beginModifier()        { __dsl_beginModifier(); }
   endModifier(list)      { __dsl_endModifier(list); }
+  rayTraced(value) { __dsl_rayTraced(value); }
   placeChild(module,params,opts) { __dsl_placeChild(module, params, opts); }
   beginShape(mode)       { __dsl_beginShape(mode|0); }
   vertex(x,y,z)          { __dsl_vertex(x,y,(z===undefined?0:z)); }

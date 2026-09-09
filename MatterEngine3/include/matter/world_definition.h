@@ -1,26 +1,93 @@
 #pragma once
 
+// MatterEngine3/include/matter/world_definition.h
+//
+// The plain-data result of loading a world: the root parts to bake, the point
+// lights, the entity recipes, the materials and runtime props the script
+// declared, and the world-level settings block (sun, sky, fog and cloud decks,
+// streaming rings, terrain bands, atmosphere, volumetrics, ground POM, authored
+// camera).
+//
+// PRODUCED BY MatterEngine3/src/script/world_definition_loader.cpp, which runs
+// the world's JavaScript `World` class against a WorldLoadDesc and fills a
+// WorldDefinition (or a WorldLoadError naming the offending property path).
+// CONSUMED BY the provider (MatterEngine3/src/provider/local_provider.{h,cpp},
+// adapt_world_definition) which turns `roots` into a bake plan, and by
+// WorldSession / the editor, which read `settings` for rendering and streaming.
+//
+// No script types leak through: everything here is std::string, std::vector and
+// the engine's own math types, so a translation unit can include this without
+// pulling in QuickJS. The structs are copyable aggregates by design — a
+// WorldDefinition is captured whole at connect and copied, and several of the
+// settings sub-structs (FogSettings, TilesetPomSettings, VtNearBandSettings)
+// ride the per-frame RenderOptions by value.
+//
+// CONVENTIONS. Distances are world metres, angles are degrees unless a field
+// says otherwise, colours are linear RGB triples, and `sun_direction` points
+// FROM the sun TOWARD the scene (matter/sun_angles.h owns that convention and
+// the azimuth/elevation spellings a script may use instead).
+
 #include "atmosphere.h"
 #include "cloud_layers.h"
 #include "cloud_shadow_settings.h"
+#include "hydrology.h"
 #include "math_types.h"
+#include "river_network.h"
 #include "sun_angles.h"
+#include "terrain_collision.h"
 #include "volumetric_quality.h"
 
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace matter {
 
+enum class WorldFluidColliderShape : std::uint8_t {
+    None = 0,
+    Sphere,
+    Box,
+};
+
+struct WorldFluidCollider {
+    WorldFluidColliderShape shape = WorldFluidColliderShape::None;
+    float radius_m = 0.0f;
+    Float3 half_extents_m{};
+    Float3 center_m{};
+};
+
+// One entry of the world's `static roots` array: a part module to instantiate
+// at the top of the world, plus the params it is baked with.
+//
+// `module` is the module name resolved against the objects search path.
+// `params_json` is the CANONICALIZED JSON of the authored `params` object —
+// canonical because it feeds the content hash, so two roots with equal params
+// share one bake.
+//
 struct WorldRoot {
+    std::string id;
     std::string module;
     std::string params_json = "{}";
-    Mat4f transform{};
-    bool expand = false;
-    bool tileset = false;
+    // Authored 4x4 placement, row-major 16 floats. DEFAULTS TO IDENTITY, not
+    // to the all-zero Mat4f (`float m[16] = {}`, see matter/math_types.h):
+    // extract_roots only writes this when the script supplies a 16-number
+    // `transform` array, and the provider passes it straight through
+    // (adapt_world_definition -> root_transforms_ -> place()), so a zeroed
+    // default would collapse a root that omits `transform` to a degenerate
+    // zero-scale matrix at the origin instead of leaving it unplaced.
+    Mat4f transform{{1.0f, 0.0f, 0.0f, 0.0f,
+                     0.0f, 1.0f, 0.0f, 0.0f,
+                     0.0f, 0.0f, 1.0f, 0.0f,
+                     0.0f, 0.0f, 0.0f, 1.0f}};
+    WorldFluidCollider fluid_collider{};
+    bool expand = false;     // promote the baked child-instance table to individual
+                             // world instances (per-child LOD, culling, batching)
+                             // instead of placing the root as one instance
+    bool tileset = false;    // not placed as a world instance at all: handled by the
+                             // provider's tileset phase (detail-atlas bake)
 };
 
 // Point-light contract used by World JavaScript. Directional sun and sky values
@@ -163,11 +230,21 @@ inline void compact_clouds(FogSettings& fog) {
     fog.cloud_count = out;
 }
 
+// One annulus boundary of a world-authored LOD profile: everything inside
+// `radius` metres of the streaming anchor gets `rung`. Rings are listed
+// innermost-first with increasing radii. What `rung` means depends on which
+// list it is in — the scatter tier for WorldSettings::streaming_rings, the
+// terrain LOD (0 coarsest .. 5 native voxel) for WorldSettings::terrain_bands.
+// The editor mirrors these as WorldSession::StreamingLodRing.
 struct WorldStreamingRing {
     float radius = 0.0f;
     int rung = 0;
 };
 
+// Optional spawn camera declared by the world script. `authored` false means
+// the world declared none and position/target are meaningless — callers reach
+// this through WorldSession::apply_authored_camera, which returns false in that
+// case and leaves the caller's camera alone. Both vectors are world metres.
 struct WorldCameraSettings {
     bool authored = false;
     Float3 position{};
@@ -301,6 +378,21 @@ struct VtNearBandSettings {
     float near_fade_m = 10.0f;
 };
 
+// The world-level settings block: everything the world script declares that is
+// not a part. Two different kinds of field live here and they are consumed at
+// different times.
+//
+//   * Tiling and streaming (nested_sectors, volumetric_sectors, sector_size,
+//     y_min/y_max, streaming_rings, terrain_bands) shape what the streamer
+//     requests and what the mesher bakes. They are read at CONNECT; changing
+//     one means a world reload, since it changes the tile keyspace.
+//   * Lighting and atmosphere (sun_*, sky_color, fog, atmosphere, volumetrics,
+//     cloud_shadows) are render inputs that ride the per-frame options — the
+//     editor can override them live (see RenderOptions::use_fog_override /
+//     use_sun_override in matter/world_session.h).
+//
+// The vector members use "empty means keep the engine default" rather than a
+// separate present flag.
 struct WorldSettings {
     // Nested sector LOD (streaming.nestedSectors). Off = today's uniform grid,
     // which is the rollback position. On, sector_size below is the LEVEL 0
@@ -320,6 +412,8 @@ struct WorldSettings {
     // this back off rather than half-honouring it.
     bool volumetric_sectors = false;
 
+    // Tile pitch in world metres. With nested_sectors on this is the LEVEL 0
+    // (finest) tile and level L tiles are sector_size << L across.
     float sector_size = 16.0f;
     // With volumetric_sectors ON these bound the octree, not a mesh slab: the
     // selector will not descend outside [y_min, y_max] and no tile is requested
@@ -449,6 +543,11 @@ inline bool operator!=(const WorldPropSpec& a, const WorldPropSpec& b) {
     return !(a == b);
 }
 
+// Everything one successful world load produced. Filled by
+// load_world_definition (world_definition_loader.cpp) and then treated as
+// immutable by its consumers; a reload or a live-edit rebake builds a fresh
+// one rather than mutating this. Empty vectors are normal — a world need not
+// declare lights, entities, materials or props.
 struct WorldDefinition {
     std::vector<WorldRoot> roots;
     std::vector<WorldLight> lights;
@@ -459,17 +558,32 @@ struct WorldDefinition {
     // World.props declaration order. Empty when the world declares none.
     std::vector<WorldPropSpec> props;
     WorldSettings settings{};
+    // Static, typed bake input. The engine intentionally leaves it inert until
+    // the hydrology runtime owns its artifact lifecycle.
+    std::optional<HydrologyWorldSettings> hydrology;
+    std::optional<RiverNetworkDefinition> river_network;
+    std::optional<TerrainCollisionDefinition> terrain_collision;
 };
 
+// The inputs to one world load. EngineContext::open_world derives these from
+// WorldDesc (project_dir + world_name) before the script host runs.
 struct WorldLoadDesc {
-    std::string world_path;
-    std::string objects_dir;
-    std::string project_shared_lib_dir;
-    std::string engine_shared_lib_dir;
+    std::string world_path;              // the world's .js source file
+    std::string objects_dir;             // root of the object-module search path
+    std::string project_shared_lib_dir;  // project shared-lib modules
+    std::string engine_shared_lib_dir;   // engine shared-lib modules (prelude)
     std::uint64_t world_seed = 0;
+    // Canonicalized JSON of the world's own params. Canonical because it is
+    // hashed into content addresses, so byte-equal params must produce a
+    // byte-equal string here.
     std::string canonical_params_json = "{}";
 };
 
+// A load failure, reported instead of a WorldDefinition. `source_location` is
+// where in the script it happened when the host could tell; `property_path` is
+// the authored path the loader was validating, spelled the way the author wrote
+// it (`roots[2].transform[5]`, `settings.fog.density`), which is what makes a
+// load error actionable without a stack trace.
 struct WorldLoadError {
     std::string message;
     std::string source_location;

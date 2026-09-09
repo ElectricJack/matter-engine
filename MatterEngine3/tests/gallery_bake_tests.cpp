@@ -8,7 +8,8 @@
 // set_error stub) would surface here as a failed install or an empty BLAS.
 //
 // GL-free: raylib is linked only for the Tri<->mesh bridge, like example_world.
-// Bakes into a fresh /tmp sandbox so the repo cache stays clean.
+// Bakes into a fresh scratch sandbox (see test_sandbox.h) so the repo cache
+// stays clean.
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
 #include "part_asset_v2.h"     // cache_path_resolved, load_v2, ChildInstance
@@ -29,6 +30,7 @@ using namespace part_graph;
 
 #include "check.h"
 #include "portable_realpath.h"
+#include "test_sandbox.h"
 
 // Count the full-resolution triangles a baked artifact loaded back with.
 static size_t load_tri_count(uint64_t h, size_t& child_count) {
@@ -48,9 +50,7 @@ int main() {
     const std::string objects    = abspath("../../projects/primitive_demo/objects");
     const std::string shared_lib  = abspath("../shared-lib");
 
-    const std::string sandbox = "/tmp/me3_gallery_bake";
-    system(("rm -rf " + sandbox).c_str());
-    system(("mkdir -p " + sandbox + "/parts").c_str());
+    const std::string sandbox = make_sandbox("sandbox/me3_gallery_bake");
     if (chdir(sandbox.c_str()) != 0) { printf("FAIL: chdir sandbox\n"); return 1; }
 
     script_host::ScriptHost host;

@@ -8,7 +8,7 @@
 believable limbs (F), and make ray-traced reflections and shadows match the animated pose (J).
 
 **Basis:** [system design](../specs/2026-07-22-procedural-animation-system-design.md) as
-revised 2026-07-26, and [sequencing](2026-07-26-procedural-animation-remaining-work.md).
+revised 2026-07-26, and [sequencing](../../deprecated/superpowers/plans/2026-07-26-procedural-animation-remaining-work.md).
 Phases A–C are delivered and merged. G/H/I are planned but deprioritized and are NOT in
 this document.
 

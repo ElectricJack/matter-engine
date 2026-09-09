@@ -1,5 +1,74 @@
 #pragma once
 
+// MatterEngine3/src/render/vk_scene_renderer.h
+//
+// VkSceneRenderer — the scene renderer's declaration, and with it the POD types
+// the engine hands across (VkScenePart, VkSceneInstance, VkSceneLighting) and
+// the CPU mirrors of the structs the shaders read (GpuCluster, GpuInstance,
+// GpuDrawTransform, TilesetParamsGpu). The implementation is
+// vk_scene_renderer.cpp.
+//
+// WHERE IT SITS. MatterEngine3's render subsystem is Vulkan-ONLY: the
+// GL/raylib rendering path was deleted outright, so nothing here has a GL
+// twin. matter_engine.cpp drives this class; underneath it are the compute
+// cull (shaders_vk/cull.comp), the raster/G-buffer pass, the hardware
+// ray-tracing lanes (shadows, GI, reflections), the volumetrics / atmosphere /
+// cloud-shadow modules (vk_volumetrics.h, vk_atmosphere.h, vk_cloud_shadows.h)
+// and the chart-space virtual-texturing runtime (vt_residency.h +
+// vt_compositor.h + vt_enrich.h), all of which this object owns.
+//
+// REGISTRATION (between frames, from the thread that drives the renderer):
+//   ensure_part(part)       -> dense part_slot: stages the part's clusters,
+//                              vertices and indices, adopts its impostor
+//                              atlases, registers (or defers) its VT rungs
+//   update_instances(list)  -> replaces the WHOLE static instance set
+//   release_part(hash)      -> returns the part's ranges to the free lists
+//
+// FRAME LIFECYCLE, in the order matter_engine.cpp calls it and the order the
+// methods require:
+//   set_lighting / set_atmosphere_settings / the set_* tunables
+//   prepare_frame(frame, ...)             selects the frame slot, resolves the
+//                                         atmosphere transaction, captures the
+//                                         previous cull result, uploads
+//   take_vt_rung_requests + register_vt_rung   (the engine services demand)
+//   record_cull_and_render(frame, ...)    cull dispatch, G-buffer, and — from
+//                                         inside its own raster recorder —
+//                                         record_ray_traced_shadows + denoise
+//   record_overlay_lines(...)             optional, into hdr_
+//   record_composite_to_swapchain(frame)
+//   finish_ray_tracing_frame(serial, ok)  after the submit
+// prepare_frame must run before record_cull_and_render for the same
+// VulkanFrame: the recorder rejects a frame slot that is not the prepared one.
+//
+// OWNERSHIP AND THREADING. The renderer owns its Vulkan objects outright and
+// destroys them in ~VkSceneRenderer / reset(); it is non-copyable. The
+// VulkanDevice passed to the constructor must outlive it. Nothing here is
+// internally synchronised — every method belongs to the thread that owns the
+// Vulkan frame. The one atomic is the VT route census, which is written from
+// a const record-path method.
+//
+// FAIL-CLOSED. An unrecoverable error POISONS the renderer (poison_reason_):
+// every entry point then returns false or an empty answer until reset() tears
+// the GPU state down and re-init()s. Per-feature failures degrade instead — a
+// tileset slot, the VT runtime, DLSS or ray tracing switches off and the frame
+// still renders.
+//
+// CONVENTIONS USED THROUGHOUT
+//  - Reversed-Z depth (see record_overlay_lines, which depth-tests under it).
+//  - LOD has exactly ONE rule, render/lod_distance.h: rungs carry NORMALIZED
+//    SWITCH DISTANCES, increasing fine -> coarse. cull.comp and both CPU
+//    mirrors call it. Do not add a second projected-size comparison.
+//  - A CHART RUNG IS NOT A LOD INDEX — see the kVkMaxChartRung block below.
+//  - Positions, AABBs and radii are metres; cluster AABBs are in the part's
+//    object space and are transformed by object_to_world at use.
+//  - `pixel_budget` scales the LOD switch reach (lod_distance.h's G term); it
+//    is a dial, not a pixel count.
+//  - Anything under MATTER_VK_TEST_FAULT_INJECTION is compiled out of shipping
+//    builds; those members exist for the Vulkan smoke suite.
+//  - Shader-facing structs here are contracts: their field order and the
+//    static_asserts under them must be changed together with the GLSL, and
+//    shaders need a build that regenerates SPIR-V.
+
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
@@ -25,6 +94,7 @@
 #include "matter/render_debug.h"
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
+#include "matter/gpu_visual_meshing.h"
 #include "matter/math_types.h"
 #include "matter/world_definition.h"
 #include "material_registry.h"
@@ -35,7 +105,11 @@
 #include "vk_animation_bounds.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
-// For VkComputePipelineResource (the HZB pyramid's per-level build pipelines).
+#include "water_field_vk.h"
+#include "water_field_vk_resources.h"
+#include "water_animation_gpu.h"
+// For VkComputePipelineResource (the visible-id reduce pass; the HZB pyramid
+// that used to be this header's other user was deleted in M4).
 #include "vk_pipeline.h"
 #include "vk_temporal.h"
 #include "vt_compositor.h"  // WP-D: tier-1 page compositor (the filler)
@@ -52,6 +126,10 @@ struct FogSettings;
 struct TilesetPomSettings;
 }
 
+namespace gpu_meshing {
+class GpuVisualMesher;
+}
+
 namespace tileset {
 struct SettledTorus;
 struct BakeInputs;
@@ -63,6 +141,18 @@ class VkVolumetrics;
 struct FroxelDispatchGrid;
 class VkAtmosphere;
 
+// The 64-byte tail of the per-frame-slot environment UBO
+// (FrameResources::environment_constants), written directly after the 40-float
+// cloud-shadow EnvironmentBlock. Four vec4 lanes, all resolved from
+// ResolvedAtmosphereStatus:
+//   direct_world_sun_ratio     .rgb = direct_world_sun_rgb,
+//                              .w   = direct_world_ratio
+//   sun_disc_reserved          .rgb = sun_disc_rgb, .w unused
+//   sky_display_reserved       .rgb = sky_display_modifier_rgb, .w unused
+//   sky_irradiance_ambient_ratio .rgb = sky_irradiance_modifier_rgb,
+//                              .w   = sky_ambient_ratio
+// The offsets are asserted below because the GLSL block mirrors them: this is
+// a shader contract, so the `_reserved` .w lanes are the growth room.
 struct alignas(16) EnvironmentLightingGpu {
     float direct_world_sun_ratio[4]{};
     float sun_disc_reserved[4]{};
@@ -77,6 +167,30 @@ static_assert(offsetof(EnvironmentLightingGpu, sky_display_reserved) == 32);
 static_assert(offsetof(EnvironmentLightingGpu,
                        sky_irradiance_ambient_ratio) == 48);
 
+struct alignas(16) WaterForwardConstants {
+    GpuMat4 clip_to_world;
+    matter::Float4 to_sun;
+    matter::Float4 viewport_refraction;
+    matter::Float4 reflection_controls;
+    uint32_t diagnostics[4]{};
+};
+static_assert(sizeof(WaterForwardConstants) == 128,
+              "water forward constants must match the std140 shader block");
+static_assert(std::is_standard_layout_v<WaterForwardConstants>);
+static_assert(offsetof(WaterForwardConstants, clip_to_world) == 0);
+static_assert(offsetof(WaterForwardConstants, to_sun) == 64);
+static_assert(offsetof(WaterForwardConstants, viewport_refraction) == 80);
+static_assert(offsetof(WaterForwardConstants, reflection_controls) == 96);
+static_assert(offsetof(WaterForwardConstants, diagnostics) == 112);
+
+// The CPU-side result of one atmosphere transaction: everything the composite,
+// RT and volumetric passes need from the sky, resolved once per frame by
+// resolve_atmosphere_transaction and published through
+// resolved_atmosphere_status(). `generation_serial` identifies the LUT
+// generation it was resolved against, so a consumer can tell a re-resolve from
+// a re-read. All rgb triples are linear radiance/tint values; the two `ratio`
+// scalars are the dimensionless .w lanes of EnvironmentLightingGpu above;
+// `irradiance_sh` is the nine-coefficient sky irradiance basis.
 struct ResolvedAtmosphereStatus {
     uint64_t generation_serial = 0;
     float resolved_elevation_deg = 0.0f;
@@ -93,6 +207,21 @@ struct ResolvedAtmosphereStatus {
     matter::Float3 sky_irradiance_modifier_rgb{};
 };
 
+// Four small OBSERVATION structs for the atmosphere module. None of them is an
+// input: the renderer fills them so the smoke suite (and, for the counters, the
+// editor overlay) can see what VkAtmosphere actually published without reaching
+// into it.
+//   AtmosphereLutHandles       the four LUT images and their views, index order
+//                              as vk_atmosphere.h publishes them
+//   AtmosphereHistoryCounters  one counter per presentation history an
+//                              atmosphere change can invalidate
+//   AtmosphereCandidateCounters the candidate-publication census: image sets
+//                              allocated, generation stages completed, sets
+//                              discarded
+//   AtmosphereReplayConstants  the atmosphere-derived scalars a frame was
+//                              recorded with, snapshotted by
+//                              update_atmosphere_replay_constants so a replay
+//                              can assert on exact values
 struct AtmosphereLutHandles {
     std::array<VkImage, 4> images{};
     std::array<VkImageView, 4> views{};
@@ -126,6 +255,10 @@ struct AtmosphereReplayConstants {
 };
 class VkCloudShadows;
 
+// cull.comp's MAX_LOD, and the stride of every per-(part, lod) table declared
+// in this file (the command template, vt_draw_slots, GpuCluster's parallel
+// arrays). It bounds the ladder length of ONE cluster — see kVkMaxChartRung
+// below for why a chart rung is a different, wider number.
 constexpr uint32_t kVkMaxLod =
     static_cast<uint32_t>(matter::kMaxSerializedLodLevels);
 static_assert(kVkMaxLod == 9u,
@@ -155,6 +288,10 @@ constexpr uint32_t kVkMaxChartRung = 32u;
 static_assert(kVkMaxChartRung >= kVkMaxLod,
               "a chart rung numbering is at least as wide as one cluster's");
 
+// Fold a 64-bit instance id down to the 32-bit `instance_token` the identity
+// attachment carries (GpuInstance::instance_token, GpuDrawTransform, the
+// temporal-history match in the denoisers). The fold can land on 0; that value
+// is remapped to 1, so the result is always nonzero.
 inline uint32_t vulkan_history_token(uint64_t instance_id) {
     const uint32_t folded = static_cast<uint32_t>(instance_id) ^
                             static_cast<uint32_t>(instance_id >> 32);
@@ -173,7 +310,7 @@ inline uint32_t vulkan_history_token(uint64_t instance_id) {
 // stop shading and emit a flat, self-lit line colour, so it must never be
 // raised on a device that fell back to fill -- see select_raster_pipelines,
 // which is the single place that decides both at once.
-struct RasterDebugPushConstants {
+struct alignas(16) RasterDebugPushConstants {
     uint32_t direct_lod = 0;
     uint32_t direct_lod_valid = 0;
     uint32_t lod_tint_enabled = 0;
@@ -187,23 +324,35 @@ struct RasterDebugPushConstants {
     // NOTE: distinct from tileset POM, which already excludes impostors
     // outright (`tileset_slot >= 0 && !is_impostor`).
     uint32_t impostor_parallax_enabled = 1;
+    // Zero is the static-water sentinel. Animated direct draws replace this
+    // first pre-existing padding word with a hash of their playback identity.
+    uint32_t water_diagnostic_identity = 0u;
+    uint32_t water_padding0[2]{};
+    float water_bounds_min[4]{};
+    float water_bounds_extent[4]{};
+    uint32_t water_material_index = 0u;
+    uint32_t water_padding1[3]{};
 };
-// FIVE words now. The GLSL block is declared identically in BOTH gbuffer.frag
-// and raster.vert; all three must be changed together, and the shaders need
-// `make -C MatterEngine3 vulkan-spirv` -- a plain build silently keeps the old
-// SPIR-V and the new word reads as garbage.
-static_assert(sizeof(RasterDebugPushConstants) == 20,
-              "raster debug push constants must remain five uint32_t words");
+// Five aligned vec4 records. The GLSL block is declared identically in BOTH
+// gbuffer.frag and raster.vert; all three must be changed together. The default
+// `make -C MatterEngine3` target rebuilds SPIR-V whenever a shader source
+// changes, so no separate shader target has to be remembered.
+static_assert(sizeof(RasterDebugPushConstants) == 80,
+              "raster push constants must remain five aligned vec4 records");
 
 // Keep raster-pipeline choice atomic: an unavailable or partially created line
 // variant must never produce a mixed fill/line frame, and must never leave the
 // push constant claiming wireframe while filled triangles are drawn.
 //
-// The reference branch carried a third member here for the far-field impostor
-// sidecar (a five-vertex LINE_STRIP perimeter rather than polygon-line over
-// the fill quad's diagonal). There is no impostor system on this base, so that
-// member and its perimeter contract are deliberately absent; add them back
-// with the impostor pipeline, not before.
+// There is no impostor member here even though this base HAS impostors
+// (M2.5: VkScenePartImpostor, impostor_atlas_, adopt_part_impostors,
+// lod_is_billboard). An impostor is two ordinary triangles on the same LOD
+// ladder, drawn through `static_mesh` and distinguished only by
+// impostor::kQuadMarker in the vertex `surface.x`, so it needs no pipeline of
+// its own. What IS absent is the reference branch's far-field impostor
+// SIDECAR pipeline -- a five-vertex LINE_STRIP perimeter, used in wireframe
+// instead of polygon-line over the fill quad's diagonal. Add that member back
+// with the sidecar, not before.
 struct RasterPipelineSet {
     VkPipeline static_mesh = VK_NULL_HANDLE;
     VkPipeline skinned_mesh = VK_NULL_HANDLE;
@@ -246,10 +395,32 @@ inline RasterDebugPushConstants make_raster_debug_push_constants(
     matter::GeometryDebugView geometry_debug_view,
     bool wireframe_enabled,
     bool impostor_parallax_enabled = true) noexcept {
-    return {direct_lod, direct_lod_valid ? 1u : 0u,
-            geometry_debug_view == matter::GeometryDebugView::LodTint ? 1u : 0u,
-            wireframe_enabled ? 1u : 0u,
-            impostor_parallax_enabled ? 1u : 0u};
+    RasterDebugPushConstants result{};
+    result.direct_lod = direct_lod;
+    result.direct_lod_valid = direct_lod_valid ? 1u : 0u;
+    result.lod_tint_enabled =
+        geometry_debug_view == matter::GeometryDebugView::LodTint ? 1u : 0u;
+    result.wireframe_enabled = wireframe_enabled ? 1u : 0u;
+    result.impostor_parallax_enabled = impostor_parallax_enabled ? 1u : 0u;
+    return result;
+}
+
+inline RasterDebugPushConstants make_water_animation_push_constants(
+    const RasterDebugPushConstants& base,
+    const VkWaterAnimationRasterDraw& draw) noexcept {
+    RasterDebugPushConstants result = base;
+    result.water_bounds_min[0] = draw.quantization_bounds_m.min_m.x;
+    result.water_bounds_min[1] = draw.quantization_bounds_m.min_m.y;
+    result.water_bounds_min[2] = draw.quantization_bounds_m.min_m.z;
+    result.water_bounds_extent[0] = draw.quantization_bounds_m.max_m.x -
+                                    draw.quantization_bounds_m.min_m.x;
+    result.water_bounds_extent[1] = draw.quantization_bounds_m.max_m.y -
+                                    draw.quantization_bounds_m.min_m.y;
+    result.water_bounds_extent[2] = draw.quantization_bounds_m.max_m.z -
+                                    draw.quantization_bounds_m.min_m.z;
+    result.water_material_index = draw.material_index;
+    result.water_diagnostic_identity = draw.diagnostic_identity;
+    return result;
 }
 
 // Emission is stored as log2(1 + strength) in the alpha channel of the
@@ -284,6 +455,8 @@ bool checked_dispatch_groups(uint32_t instance_count,
                              std::string& error);
 bool checked_size_to_int(size_t count, int& result, const char* label,
                          std::string& error);
+uint64_t water_forward_image_bytes_for_extent(uint32_t width,
+                                              uint32_t height) noexcept;
 size_t frame_constants_size_for_test() noexcept;
 VkPipelineStageFlags2 ray_depth_destination_stages(
     bool native_ray_tracing_available) noexcept;
@@ -304,6 +477,14 @@ static_assert(offsetof(DrawCommand, vertex_offset) ==
 static_assert(offsetof(DrawCommand, first_instance) ==
               offsetof(VkDrawIndexedIndirectCommand, firstInstance));
 
+// One rung of ONE cluster's LOD ladder, as the caller supplies it. Ladders run
+// fine -> coarse: index 0 is the finest mesh and `threshold` DECREASES along
+// the ladder (it is the legacy projected-size threshold; upload converts it
+// with lod::normalized_switch_distance, giving the INCREASING switch distances
+// GpuCluster carries and cull.comp compares against — render/lod_distance.h is
+// the single rule). A trailing rung may be the terminal impostor billboard
+// rather than a mesh: vk_scene_detail::lod_is_billboard reads that off the
+// geometry, and vk_scene_detail::cluster_mesh_lod_count is the RT cutoff.
 struct VkSceneLod {
     // first_index/index_count are part-local (into VkScenePart::indices).
     // ensure_part rebases first_index to the global index_staging_ offset.
@@ -318,6 +499,13 @@ struct VkSceneLod {
     uint32_t chart_rung = UINT32_MAX;
 };
 
+// A part's unit of culling and LOD selection: one contiguous chunk of geometry
+// with its own bound and its own ladder. The AABB and radius are in the PART's
+// object space, in metres — cull.comp and the CPU mirrors transform the AABB
+// centre by object_to_world before measuring distance to the eye
+// (vk_scene_detail::cluster_distance_to_eye). One part has many clusters and
+// each picks its rung independently, which is why a chart rung is numbered
+// across all of them rather than within one.
 struct VkSceneCluster {
     matter::Float3 aabb_min{};
     matter::Float3 aabb_max{};
@@ -325,6 +513,18 @@ struct VkSceneCluster {
     std::vector<VkSceneLod> lods;
 };
 
+// The interleaved raster vertex, and a hard shader contract: raster.vert
+// consumes it as vertex attributes AND the ray-tracing hit shaders decode it
+// manually by word offset out of the part's rt_geometry buffer. Stride is 88
+// bytes (it grew from 72 by APPENDING the warp block below — see that comment
+// for why every pre-existing word offset had to stay put).
+//
+// position/normal are part-local metres; tint is linear RGBA; `surface` is the
+// per-vertex surface parameter set, whose .x carries impostor::kQuadMarker on
+// the two triangles of a terminal billboard (the sentinel raster.vert,
+// gbuffer.frag and vk_scene_detail::lod_is_billboard all branch on, and the one
+// adopt_part_impostors patches with the assigned atlas slot).
+// material_index == UINT32_MAX means "no material record".
 struct VkRasterVertex {
     matter::Float3 position{};
     matter::Float3 normal{};
@@ -382,6 +582,27 @@ struct VkScenePartImpostor {
     std::vector<uint8_t> atlas;   // impostor::kAtlasBytes: shade layer, tint layer
 };
 
+// Everything the renderer needs to register one part, assembled by the caller
+// (the part store / bake pipeline) and handed to ensure_part().
+//
+// `part_hash` is the part's CONTENT hash and its identity across the whole
+// renderer API: registered_part_slot(), release_part(), the draw-override
+// table and VkSceneInstance::part_hash all key off it, and the renderer maps it
+// to the dense part_slot cull.comp actually sees.
+//
+// LIFETIME: ensure_part COPIES everything it keeps, so this object and all its
+// vectors may be destroyed the moment it returns. It is large — the vertex,
+// index and per-rung chart-mesh arrays are the bulk of a sector — so callers
+// should ask registered_part_slot() first and skip building it at all for a
+// part the renderer already holds.
+//
+// Two independent VT paths live in here: the EAGER one (populate lod_charts /
+// lod_chart_meshes / chart_material_table, and every chart rung registers at
+// ensure_part) and the DEMAND-DRIVEN one (leave those empty, set
+// vt_deferred_rung_mask, and rungs materialize later through
+// register_vt_rung). The streamed-world default is demand-driven.
+//
+// Field ORDER is load-bearing at the tail — see the note on `impostors`.
 struct VkScenePart {
     uint64_t part_hash = 0;
     std::vector<VkSceneCluster> clusters;
@@ -428,10 +649,16 @@ struct VkScenePart {
     uint32_t vt_deferred_rung_mask = 0;
     // M2.5 terminal impostors, one per cluster that earned one. Empty for
     // every part whose ladder bottoms out above the impostor tier. LAST in the
-    // struct on purpose: the Vulkan smoke fixtures build VkScenePart with
-    // positional aggregate initialisers, so a field inserted anywhere earlier
-    // silently re-binds their arguments.
+    // legacy aggregate tail on purpose: the Vulkan smoke fixtures build
+    // VkScenePart with positional aggregate initialisers, so a field inserted
+    // anywhere earlier silently re-binds their arguments.
     std::vector<VkScenePartImpostor> impostors;
+    // Explicit immutable flow-field identity. Ordinary geometry and debug
+    // water use the fail-closed default; authored river parts never infer a
+    // field from their material id. Appended after the legacy aggregate tail
+    // so existing positional fixtures continue to omit it safely.
+    WaterFieldBinding water_field_binding{};
+    bool raster_water_surface = false;
 };
 
 // Demand-driven VT: one wanted-but-unregistered (part, rung), surfaced by the
@@ -518,6 +745,17 @@ std::vector<RtGeometrySelection> select_rt_instance_geometry(
     matter::Float3 camera_eye, float pixel_budget);
 }  // namespace vk_scene_detail
 
+// One placement of one registered part. update_instances() takes the ENTIRE
+// static instance set as a vector of these every publish — there is no
+// incremental add/remove on this lane (the dynamic lane, update_dynamic_
+// instances, is the incremental one).
+//
+// `part_hash` must name a part that ensure_part() has registered; the renderer
+// resolves it to a dense part_slot. `object_to_world` places the part's
+// object-space geometry into world space (metres). The remaining three fields
+// each opt an instance out of a default: instance_id out of the input-order
+// identity fallback, animation_instance_slot out of the static culling path,
+// and ray_traced out of the TLAS.
 struct VkSceneInstance {
     uint64_t part_hash = 0;
     matter::Mat4f object_to_world{};
@@ -537,8 +775,16 @@ struct VkSceneInstance {
     // and identical normals -- a black strip painted over terrain that was
     // already correct (docs/seam-suite-2026-08-13.md, finding 2).
     bool ray_traced = true;
+    // Suppresses only the accepted immutable raster proxy while active direct
+    // animation owns visibility. This flag never grants RT participation;
+    // engine-generated water keeps ray_traced false in active and fallback.
+    bool rt_proxy_only = false;
 };
 
+// The counters cull.comp accumulates into a frame slot's `stats` buffer.
+// Reading them back costs a round trip, so the production path caches the last
+// successfully read set (cached_cull_stats()) rather than stalling; the
+// immediate readback (cull_stats) is test-only.
 struct VkCullStats {
     uint32_t frustum_culled = 0;
     uint32_t occlusion_culled = 0;
@@ -553,23 +799,37 @@ struct VkRasterAttachment {
     VkFormat format = VK_FORMAT_UNDEFINED;
 };
 
+// A handle view of the G-buffer the raster pass writes and the RT/composite
+// passes sample — handed out by raster_attachments() so other modules can bind
+// them without owning them. The renderer owns the images; these handles are
+// invalidated by any resize or by reset().
+//
+// `extent` is the INTERNAL raster extent, which is the pre-upscale resolution
+// when DLSS is active — not the swapchain extent.
 struct VkRasterAttachments {
     VkRasterAttachment albedo{};
     VkRasterAttachment normal{};
     VkRasterAttachment orm{};
     VkRasterAttachment velocity{};
     VkRasterAttachment material_instance{};
+    // R8_UNORM water presentation reactivity. Zero for non-water/calm water.
+    VkRasterAttachment reactivity{};
     VkRasterAttachment depth{};
     // R16G16B16A16_SFLOAT is the explicit linear HDR composite format.
     VkRasterAttachment hdr{};
     VkExtent2D extent{};
 };
 
+// One fully decoded screen sample: every G-buffer attachment plus the RT and
+// denoiser lanes for a single pixel, assembled by readback_raster_pixel() for
+// the Vulkan smoke suite. It is a DIAGNOSTIC aggregate, not a GPU layout —
+// nothing on the device has this shape, and reading one costs a full stall.
 struct VkRasterPixel {
     matter::Float4 albedo{};
     matter::Float4 normal{};
     matter::Float4 orm{};
     matter::Float3 velocity{};
+    float reactivity = 0.0f;
     // The identity attachment's .x, with gbuffer.frag's impostor bit already
     // MASKED OFF -- the same contract every GPU reader honours (see
     // shaders_vk/impostor_common.glsl). Every existing assertion of the form
@@ -595,6 +855,17 @@ struct VkRasterPixel {
     matter::Float3 transmission_aux{};
 };
 
+struct WaterForwardObservation {
+    uint32_t static_draws = 0u;
+    uint32_t direct_draws = 0u;
+    bool copied_opaque_hdr = false;
+    bool copied_opaque_depth = false;
+    bool wrote_depth = false;
+    bool wrote_velocity = false;
+    bool wrote_reactivity = false;
+    bool wrote_identity = false;
+};
+
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     // What the last recorded raster pass ACTUALLY bound, as distinct from
     // what was requested. `wireframe_enabled` here is the push-constant word,
@@ -615,6 +886,8 @@ struct VkRasterPixel {
         VkDeviceAddress blas_address = 0;
         bool opaque = false;
         bool built_this_frame = false;
+        uint32_t water_binding_slot = UINT32_MAX;
+        uint32_t water_generation = 0;
     };
 struct RtTraceCounters {
     uint32_t invalid_part_records = 0;
@@ -657,6 +930,7 @@ struct GiTemporalGpuFixture {
     matter::Float4 normal{0.0f, 0.0f, 1.0f, 0.0f};
     uint32_t material_index = 7;
     uint32_t instance_token = 41;
+    float reactivity = 0.0f;
     matter::Float4 previous_radiance{0.25f, 0.5f, 0.75f, 1.0f};
     matter::Float3 previous_moments{};
     uint32_t previous_history_length = 3;
@@ -712,6 +986,22 @@ struct VkAnimationSkinGpuResult {
 };
 #endif
 
+// The frame's lighting and camera block, published through set_lighting().
+//
+// TWO HALVES, and the boundary is enforced by the asserts below. Everything
+// from `sun_direction` up to (not including) `authored_sun_rgb` is pushed to
+// the shaders VERBATIM as push constants — kVkSceneLightingPushBytes is
+// offsetof(authored_sun_rgb) and must stay 104. That makes the field ORDER and
+// every offset in the first half a shader contract: APPEND new lanes just
+// before `authored_sun_rgb`, never insert. It is also why several logical
+// booleans (vol_enabled, debug_view, vol_debug_view) are floats — the block is
+// a raw push-constant image, not a struct the compiler is free to lay out.
+// Everything from `authored_sun_rgb` on is CPU-only input to the atmosphere
+// transaction and never reaches a shader through this path.
+//
+// Angles are degrees, distances metres, directions unnormalized-but-intended-
+// unit. sun_disc_cos_edge / sun_disc_cos_core are DERIVED by set_lighting from
+// sun_angular_diameter_deg — see their comment; do not assign them.
 struct VkSceneLighting {
     // Direction from the sun toward the scene, matching WorldLights.
     matter::Float3 sun_direction{-0.45f, -0.80f, -0.35f};
@@ -763,6 +1053,11 @@ static_assert(offsetof(VkSceneLighting, camera_pos_x) == 96);
 static_assert(offsetof(VkSceneLighting, camera_pos_z) == 100);
 static_assert(kVkSceneLightingPushBytes == 104);
 
+// Monotonic upload census for one renderer, surfaced by upload_counters().
+// Observation only — nothing branches on these. The interesting ratios are
+// static_full vs static_append (a full count that climbs with resident parts is
+// the O(N^2) streaming regression) and static_capacity_overflows, which the
+// reservation floor exists to hold at zero.
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
     uint64_t cluster_uploads = 0;
@@ -783,14 +1078,74 @@ struct VkSceneUploadCounters {
     uint64_t static_capacity_overflows = 0;
 };
 
+// The slice of the indirect draw-command buffer that belongs to one part slot:
+// commands [first_command, first_command + command_count) of command_template_
+// and of the frame's `commands` buffer. Built by the command-layout rebuild,
+// and snapshotted per frame into recorded_draw_ranges_ so a test can assert
+// which parts a frame actually recorded.
 struct PartCommandRange {
     uint32_t first_command = 0;
     uint32_t command_count = 0;
     uint32_t part_slot = 0;
+    bool raster_water_surface = false;
 };
 
+// The scene renderer: one object per world session that owns every GPU resource
+// a frame touches — pipelines and descriptor layouts, the static cluster /
+// vertex / index buffers, the per-frame-in-flight FrameResources ring, the
+// G-buffer and HDR targets, the ray-tracing acceleration structures and SBT,
+// the impostor and tileset atlases, and (through unique_ptr) the volumetrics,
+// atmosphere, cloud-shadow and virtual-texturing sub-managers.
+//
+// OWNERSHIP AND LIFETIME. Constructed with a VulkanDevice& that must outlive
+// it; non-copyable and non-movable. init() creates the GPU state and is called
+// lazily by prepare_frame()/record_cull_and_render() when it has not run, so an
+// explicit call is optional. ~VkSceneRenderer and reset() destroy everything;
+// after reset() the renderer needs a fresh init() (implicit or explicit) and
+// has forgotten every registered part.
+//
+// THREAD AFFINITY. Not internally synchronised. Every method belongs to the
+// thread that owns the Vulkan frame — registration (ensure_part,
+// update_instances, release_part), configuration (the set_* family) and
+// recording all run there. A VkScenePart may be BUILT on a worker thread, but
+// handing it over is a render-thread call.
+//
+// FRAME LIFECYCLE. See the file header for the full order. In short:
+// prepare_frame() selects and prepares the frame slot; record_cull_and_render()
+// records the cull dispatch, the G-buffer pass and — from inside its own raster
+// recorder — the ray-tracing and denoise passes; record_composite_to_swapchain()
+// blits the HDR result; finish_ray_tracing_frame() closes the frame after the
+// submit. Calling the recorders without a matching prepare_frame() for the same
+// VulkanFrame is rejected, not undefined.
+//
+// TWO INSTANCE LANES. The STATIC lane (update_instances) is the whole set,
+// re-sent each publish, with an unchanged-input fast path. The DYNAMIC lane
+// (update_dynamic_instances + finish_dynamic_frame) is incremental and
+// serial-gated so retired slots can be recycled. They share one command layout;
+// dynamic_command_layout_applied_ says which baseline is currently installed.
+//
+// POISONING. Any unrecoverable failure records a poison reason; from then on
+// every entry point fails closed (false, -1, zero counts) until reset(). That
+// is deliberate: a half-built GPU state must never record a frame. Feature-level
+// failures do NOT poison — a tileset slot, the VT runtime, DLSS and ray tracing
+// each degrade on their own and the frame still renders.
+//
+// SURPRISES worth knowing before editing:
+//  - Most public getters are cheap reads of cached last-frame state
+//    (rt_*_observed, gpu_zone_ms, cached_cull_stats); they never query the GPU.
+//  - The public vt_record_pre_pass / vt_record_post_pass and
+//    record_ray_traced_shadows are public only so the file-local raster
+//    recorder in the .cpp can reach them. They are not app-facing API.
+//  - Anything named *_for_test / test_* is a fault-injection or readback seam,
+//    and most of it is compiled out without MATTER_VK_TEST_FAULT_INJECTION.
 class VkSceneRenderer {
 public:
+    // One candidate entry of the ray-tracing instance list the renderer keeps
+    // in step with the raster instance set. It is PARALLEL to, not the same as,
+    // that set: a VkSceneInstance with ray_traced == false never produces one
+    // of these, and build_ray_geometry can still reject an instance whose
+    // clusters all resolve to a billboard rung (no traced geometry at all).
+    // fill_rt_instances() hands the current list out for inspection.
     struct RtInstance {
         uint64_t part_hash = 0;
         float transform[16]{};
@@ -809,8 +1164,49 @@ public:
     VkSceneRenderer(const VkSceneRenderer&) = delete;
     VkSceneRenderer& operator=(const VkSceneRenderer&) = delete;
 
+    // Creates the descriptor layouts, pipelines, static-buffer reservations and
+    // the tileset / impostor / VT-dummy infrastructure. Optional to call:
+    // prepare_frame() and record_cull_and_render() invoke it when it has not
+    // run. Returns false with `error` set; a false here means no frame may be
+    // recorded until reset() and a successful re-init.
     bool init(std::string& error);
+    bool publish_water_field(const PackedWaterField& candidate,
+                             const WaterFieldBinding* replacing,
+                             std::uint64_t retire_after_serial,
+                             WaterFieldBinding& binding,
+                             WaterFieldError& error);
+    bool release_water_field(WaterFieldBinding binding,
+                             std::uint64_t retire_after_serial,
+                             WaterFieldError& error);
+    void collect_water_fields(std::uint64_t completed_serial) noexcept;
+    VkImageView test_water_field_image_view(
+        WaterFieldBinding binding, std::uint32_t channel) const noexcept;
+    VkSampler test_water_field_sampler(std::uint32_t channel) const noexcept;
+    WaterFieldGpuRecord test_water_field_gpu_record(
+        std::uint32_t slot) const noexcept;
+    bool test_water_field_descriptors_match(
+        std::uint32_t frame_slot, WaterFieldBinding binding) const noexcept;
+    bool build_particle_visual(
+        const gpu_meshing::ParticleJob& job,
+        gpu_meshing::MeshResult& result,
+        gpu_meshing::Stats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control = {});
+    // Registers `part` (or returns the slot it already has) and hands back the
+    // dense part_slot every GPU table is indexed by, or -1 on failure. Stages
+    // the part's clusters, vertices and indices into the static staging arrays
+    // through the free-range recycler, adopts its impostor atlases, and either
+    // registers its chart rungs with the VT runtime or records its deferred
+    // rung mask. O(part) and allocating; everything it keeps is COPIED, so the
+    // caller may destroy `part` on return. Call registered_part_slot() first to
+    // avoid building the VkScenePart at all for a part already held.
     int ensure_part(const VkScenePart& part, std::string& error);
+    // Rebinds an immutable registered mesh to a newly published field
+    // generation without rebuilding its geometry. This is the render-thread
+    // half of an authored hydrology publication replacement.
+    bool set_part_water_field_binding(std::uint64_t part_hash,
+                                      WaterFieldBinding binding,
+                                      std::string& error);
 
     // M2.5: how many terminal impostors currently hold an atlas slot. On the
     // editor stats overlay so "are any drawing?" is answerable at a glance --
@@ -838,6 +1234,10 @@ public:
         const auto found = slot_of_.find(part_hash);
         return found != slot_of_.end() ? found->second : -1;
     }
+    // Replaces the whole GPU material table; the two revisions let the renderer
+    // tell a shading-only edit from one that changes geometry-affecting
+    // properties. Also dirties the per-part occluder-class table, because
+    // MATERIAL_ALPHA_TESTED is what that table is derived from.
     bool update_materials(const std::vector<MaterialGpuRecord>& records,
                           uint64_t shading_revision,
                           uint64_t geometry_revision, std::string& error);
@@ -887,7 +1287,20 @@ public:
     void vt_record_pre_pass(VkCommandBuffer command_buffer);
     void vt_record_post_pass(VkCommandBuffer command_buffer);
     bool rt_geometry_classification_dirty(uint64_t part_hash) const;
+    // Unregisters a part: erases it from slot_of_ (bumping slot_of_version_),
+    // returns its cluster / vertex / index ranges to the free-range lists —
+    // O(part), with no compaction and no O(world) re-upload — hands back its
+    // impostor atlas slots, and releases its VT variants through the deferred
+    // invalidation queue rather than stalling the device. No-op for an unknown
+    // hash. Instances still naming the hash no longer resolve, so the caller
+    // must re-send its instance list.
     void release_part(uint64_t part_hash);
+    // Replaces the ENTIRE static instance set — this lane has no incremental
+    // form, so a streaming world re-sends every resident instance each publish.
+    // O(instances x clusters) when it rebuilds, but an unchanged call is cheap:
+    // the five-input snapshot (see instance_input_snapshot_ and friends) lets an
+    // identical frame early out before materialising the candidate set at all.
+    // Rebuilds the indirect command layout when the part/cluster mix moved.
     bool update_instances(const std::vector<VkSceneInstance>& instances,
                           std::string& error);
     // Dynamic lane (Task 7): consumes CPU-side slot changes produced by
@@ -939,6 +1352,34 @@ public:
     // Also folds the incoming history into the unchanged-input fast path of
     // update_instances(): see temporal_history_changed_.
     void set_temporal_frame(const TemporalFrame& frame);
+    void set_water_animation_time(float seconds) noexcept {
+        water_animation_time_seconds_ =
+            std::isfinite(seconds) && seconds >= 0.0f ? seconds : 0.0f;
+    }
+    void set_water_diagnostic_view(WaterDiagnosticView view) noexcept {
+        water_diagnostic_view_ = view;
+    }
+    // Publishes one immutable animation generation. GPU buffers are allocated
+    // per Vulkan frame slot; a failed candidate leaves the previous generation
+    // untouched. `retire_after_serial` is the last frame which can reference
+    // the replaced resources.
+    bool publish_water_animation(
+        std::uint64_t generation,
+        std::uint32_t frame_slots,
+        const WaterAnimationGpuCapacity& capacity,
+        std::uint64_t retire_after_serial,
+        WaterAnimationGpuError& error);
+    bool prepare_water_animation_frame(
+        std::uint64_t generation,
+        std::uint32_t frame_slot,
+        const WaterAnimationFrameSelection& selection,
+        const std::vector<std::uint32_t>& proxy_transform_slots,
+        WaterAnimationGpuError& error);
+    void clear_water_animation(std::uint64_t retire_after_serial);
+    void collect_water_animation(std::uint64_t completed_serial) noexcept;
+    std::uint64_t water_animation_generation() const noexcept {
+        return water_animation_schedule_.generation();
+    }
     void set_dlss_mode(matter::DlssMode mode);
     VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
     matter::DlssMode selected_dlss_mode() const { return selected_dlss_mode_; }
@@ -960,20 +1401,59 @@ public:
     uint64_t rt_tlas_build_count() const { return rt_tlas_builds_; }
     uint64_t rt_tlas_reuse_count() const { return rt_tlas_reuses_; }
     bool consume_dlss_history_reset();
+    // Step 1 of the frame. Must be called for a frame whose slot fence has
+    // already been waited (the Vulkan context's begin_frame does that), because
+    // everything it does depends on the slot being idle: it ensures the frame
+    // resources exist, resolves the atmosphere transaction, captures the
+    // PREVIOUS submission's cull result out of this slot before anything
+    // overwrites it, advances the free-range recycler, flushes any deferred
+    // command-template rebuild, and reads back the slot's GPU timestamps.
+    // Does not record scene work into the command buffer.
+    //
+    // `camera_eye` is world-space metres and `pixel_budget` the LOD reach dial;
+    // both must be the same values record_cull_and_render is given, or the CPU
+    // and GPU LOD picks diverge. Lighting and atmosphere settings must be
+    // published (set_lighting / set_atmosphere_settings) BEFORE this call — the
+    // transaction consumes them here.
     bool prepare_frame(const matter::VulkanFrame& frame,
                        const FrameMatrices& matrices,
                        matter::Float3 camera_eye, float pixel_budget,
                        std::string& error);
+    // Step 2, and the bulk of the frame: records the demand-driven VT pass, the
+    // VT page fills, the cull dispatch (plus the occlusion ID pass and its
+    // reduce when enabled), the G-buffer pass, and — from inside its own raster
+    // recorder — record_ray_traced_shadows and the denoisers. Requires the
+    // matching prepare_frame() for the SAME VulkanFrame: it rejects a frame slot
+    // that is not the prepared, active one.
+    //
+    // CPU cost here is not just recording. The VT demand pass is an O(static
+    // instances x clusters) CPU mirror of cull.comp's LOD pick, which is why a
+    // big world shows up in this call rather than in prepare_frame.
     bool record_cull_and_render(const matter::VulkanFrame& frame,
                                 const FrameMatrices& matrices,
                                 matter::Float3 camera_eye,
                                 float pixel_budget, std::string& error);
+    // NOT an entry point the engine calls. record_cull_and_render's file-local
+    // raster recorder invokes this after the G-buffer pass has transitioned its
+    // attachments to shader-read; it is public only because that recorder lives
+    // outside the class. Builds/refreshes the BLAS set for the rungs actually
+    // selected this frame, emits the TLAS instances (reusing the slot's cached
+    // TLAS when nothing it references moved), and dispatches the trace.
+    // Degrades rather than fails when ray tracing is unavailable — the
+    // visibility and signal targets are cleared to their unshadowed values and
+    // the reason lands in rt_fallback_reason_observed().
     bool record_ray_traced_shadows(const matter::VulkanFrame& frame,
                                    const FrameMatrices& matrices,
                                    matter::Float3 camera_eye,
                                    float pixel_budget,
                                    VkExtent2D trace_extent,
                                    std::string& error);
+    // Call once per frame AFTER the submit, reporting whether the frame was
+    // actually presented. This is what promotes the frame's ray-tracing work
+    // from pending to valid: a slot's cached TLAS only becomes reusable
+    // (FrameResources::rt_tlas_valid) once the frame that recorded its build
+    // reports success, so an abandoned frame can never leave the cache claiming
+    // content the GPU never wrote.
     void finish_ray_tracing_frame(uint64_t frame_serial, bool succeeded);
     const std::vector<PartCommandRange>& test_recorded_draw_ranges() const {
         return recorded_draw_ranges_;
@@ -1024,6 +1504,69 @@ public:
                    : live_eye;
     }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    bool part_is_raster_water(uint64_t part_hash) const noexcept;
+    VkPipeline test_water_forward_static_pipeline() const noexcept {
+        return water_forward_static_pipeline_;
+    }
+    VkPipeline test_water_forward_direct_pipeline() const noexcept {
+        return water_forward_direct_pipeline_;
+    }
+    VkPipelineLayout test_water_forward_pipeline_layout() const noexcept {
+        return water_forward_pipeline_layout_;
+    }
+    VkDescriptorSet test_water_forward_descriptor_set(
+        uint32_t frame_slot) const noexcept {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].water_forward_descriptor_set
+                   : VK_NULL_HANDLE;
+    }
+    WaterForwardConstants test_water_forward_constants(
+        uint32_t frame_slot) const noexcept {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].water_forward_constants_cache
+                   : WaterForwardConstants{};
+    }
+    VkFormat test_opaque_hdr_format() const noexcept {
+        return opaque_hdr_.format;
+    }
+    VkFormat test_opaque_depth_format() const noexcept {
+        return opaque_depth_.format;
+    }
+    VkExtent2D test_opaque_extent() const noexcept {
+        return {opaque_hdr_.extent.width, opaque_hdr_.extent.height};
+    }
+    VkImage test_opaque_hdr_image() const noexcept {
+        return opaque_hdr_.image;
+    }
+    VkImage test_opaque_depth_image() const noexcept {
+        return opaque_depth_.image;
+    }
+    VkImageUsageFlags test_hdr_usage() const noexcept { return hdr_usage_; }
+    VkImageUsageFlags test_depth_usage() const noexcept {
+        return depth_usage_;
+    }
+    VkImageUsageFlags test_opaque_hdr_usage() const noexcept {
+        return opaque_hdr_usage_;
+    }
+    VkImageUsageFlags test_opaque_depth_usage() const noexcept {
+        return opaque_depth_usage_;
+    }
+    const std::vector<PartCommandRange>&
+    test_recorded_visibility_id_ranges() const {
+        return recorded_visibility_id_ranges_;
+    }
+    uint32_t test_recorded_water_draw_count() const noexcept {
+        return recorded_water_draw_count_;
+    }
+    WaterForwardObservation test_water_forward_observation() const noexcept {
+        return last_water_forward_observation_;
+    }
+    uint8_t test_gpu_zone_written(uint32_t frame_slot,
+                                  uint32_t zone) const noexcept {
+        return frame_slot < frames_.size() && zone < kGpuZoneCount
+                   ? frames_[frame_slot].ts_written[zone]
+                   : 0u;
+    }
     const std::vector<RtGeometryDebugRecord>&
     test_last_rt_geometry_records() const {
         return test_last_rt_geometry_records_;
@@ -1053,6 +1596,8 @@ public:
                            std::string& error);
     bool readback_draw_transforms(std::vector<GpuMat4>& transforms,
                                   std::string& error);
+    bool readback_draw_water_bindings(
+        std::vector<WaterFieldBinding>& bindings, std::string& error);
     bool render_gbuffer_and_composite(uint32_t width, uint32_t height,
                                       std::string& error);
 #endif
@@ -1111,7 +1656,6 @@ public:
     uint64_t volumetrics_resource_generation() const;
     bool volumetrics_allocation_rejected() const;
     const std::string& volumetrics_allocation_error() const;
-    void set_fail_next_froxel_bundle_creation_for_test(bool enabled);
     void set_fail_next_froxel_bundle_descriptor_allocation_for_test(bool enabled);
     uint32_t volumetrics_grid_rgba16f_volume_count_for_test() const;
     bool volumetrics_cloud_density_allocated_for_test() const;
@@ -1368,6 +1912,15 @@ public:
 
     uint32_t raster_width() const { return raster_extent_.width; }
     uint32_t raster_height() const { return raster_extent_.height; }
+    uint64_t water_forward_image_bytes() const noexcept {
+        if (opaque_hdr_.image == VK_NULL_HANDLE ||
+            opaque_depth_.image == VK_NULL_HANDLE ||
+            opaque_hdr_.extent.width != opaque_depth_.extent.width ||
+            opaque_hdr_.extent.height != opaque_depth_.extent.height)
+            return 0u;
+        return vk_scene_detail::water_forward_image_bytes_for_extent(
+            opaque_hdr_.extent.width, opaque_hdr_.extent.height);
+    }
 
     // GPU timer results (ms, EMA-smoothed). Zones are non-overlapping;
     // each begin is recorded after the previous zone's end.
@@ -1397,10 +1950,26 @@ public:
     static constexpr uint32_t kGpuZoneVolDensity    = 14;
     static constexpr uint32_t kGpuZoneVolScatter    = 15;
     static constexpr uint32_t kGpuZoneVolIntegrate  = 16;
-    static constexpr uint32_t kGpuZoneCount         = 17;
+    static constexpr uint32_t kGpuZoneWaterDecode   = 17;
+    static constexpr uint32_t kGpuZoneWaterDraw     = 18;
+    static constexpr uint32_t kGpuZoneWaterDirectDraw = 19;
+    static constexpr uint32_t kGpuZoneCount         = 20;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
+    }
+    float gpu_zone_last_ms(uint32_t zone) const {
+        return zone < kGpuZoneCount ? gpu_last_ms_[zone] : 0.0f;
+    }
+    std::uint64_t water_animation_upload_count() const noexcept {
+        return water_animation_upload_count_;
+    }
+    std::uint64_t water_animation_decode_dispatch_count() const noexcept {
+        return water_animation_decode_dispatch_count_;
+    }
+    std::uint64_t water_animation_steady_state_allocation_count() const
+        noexcept {
+        return water_animation_schedule_.steady_state_allocation_count();
     }
     // A poisoned renderer fails closed. reset() then performs a full GPU
     // resource/pipeline teardown, clears the poison, and requires re-init
@@ -1498,6 +2067,13 @@ public:
     static StaticUploadCensus static_upload_census();
 
 private:
+    // Mirrors ClusterMeta in shaders_vk/cull.comp — the 128-byte size asserted
+    // below, the field order and the padding are all a shader contract; change
+    // this and the .comp together, and rebuild SPIR-V. One entry per GLOBAL
+    // cluster slot (PartRecord::cluster_start + the part-local index), so the
+    // array is shared by every registered part and a released part's range is
+    // recycled by the free-range list. AABB and radius are the part's
+    // object-space metres.
     struct GpuCluster {
         float aabb_min[3];
         float radius;
@@ -1517,6 +2093,11 @@ private:
         uint32_t vis_mesh_lods;
         uint32_t pad1[2];
     };
+    // One row of the instance storage buffer cull.comp reads. Both the static
+    // and dynamic lanes stage into this same layout; `cluster_start` /
+    // `cluster_count` name the instance's slice of the global cluster table
+    // above, and the two matrices are the current and previous frame's
+    // transforms (previous drives motion vectors, gated by `history_valid`).
     struct GpuInstance {
         GpuMat4 object_to_world;
         GpuMat4 previous_object_to_world;
@@ -1528,7 +2109,18 @@ private:
         uint32_t instance_token;
         uint32_t animation_instance_slot;
         uint32_t animation_instance_generation;
+        uint32_t water_binding_slot = UINT32_MAX;
+        uint32_t water_generation = 0;
+        // Nonzero suppresses cull/raster only. CPU RT selection never reads it.
+        uint32_t water_pad0 = 0;
+        uint32_t water_pad1 = 0;
     };
+    // The per-DRAW transform record: cull.comp writes one per emitted draw and
+    // raster.vert reads it back by firstInstance. The CPU writes this struct
+    // directly for exactly one region, the skin tail past skin_transform_base_,
+    // where cull.comp deliberately emits nothing. 144 bytes, asserted below —
+    // and the trailing word is `selected_lod`, a RENAME of the old pad word,
+    // not an addition.
     struct GpuDrawTransform {
         GpuMat4 current;
         GpuMat4 previous;
@@ -1541,22 +2133,39 @@ private:
         // fail-closed legacy path.
         uint32_t vt_slot;
         // LOD debug view: the rung cull.comp selected for this draw. This is
-        // the old trailing pad word renamed, NOT a new field -- the 144-byte
-        // assert below is the guard. Direct writers of this struct (the skin
+        // the old trailing pad word renamed. Direct writers of this struct (the skin
         // tail, tests) leave it zero and supply their rung by push constant.
         uint32_t selected_lod;
+        // Task 7 appends one aligned uvec4 for explicit immutable water-field
+        // identity. The final two words are intentional std430 padding.
+        uint32_t water_binding_slot = UINT32_MAX;
+        uint32_t water_generation = 0;
+        uint32_t water_pad0 = 0;
+        uint32_t water_pad1 = 0;
     };
     static_assert(sizeof(GpuCluster) == 128);
-    static_assert(sizeof(GpuInstance) == 160);
-    static_assert(sizeof(GpuDrawTransform) == 144);
+    static_assert(sizeof(GpuInstance) == 176);
+    static_assert(sizeof(GpuDrawTransform) == 160);
     static_assert(offsetof(GpuDrawTransform, selected_lod) == 140);
+    static_assert(offsetof(GpuDrawTransform, water_binding_slot) == 144);
 
+    // One (cluster, rung) of a part in the ray-tracing lane: the index range it
+    // traces and the bottom-level acceleration structure built from it. Only
+    // MESH rungs get one — a terminal billboard is never traced (see
+    // vk_scene_detail::cluster_mesh_lod_count for why).
+    //
+    // `blas` is the structure instances currently reference; `candidate` is a
+    // structure whose build was recorded at `candidate_serial` and which is not
+    // yet the referenced one. Both are shared_ptr because a frame in flight can
+    // still be reading a structure the CPU has already replaced.
     struct RtLodRecord {
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
-        // first_index is part-local (NOT rebased; stored this way so compaction
-        // in release_part does not invalidate surviving parts' rt_lods).
-        // Consumers address the per-part rt_index buffer directly via this offset.
+        // first_index is part-local and is NOT rebased, because there is
+        // nothing to rebase it against: RT indices live in the part's OWN
+        // rt_index buffer (PartRecord::rt_index), not in a shared arena the
+        // way the raster lane's index_staging_ works. Consumers address that
+        // buffer directly via this offset.
         uint32_t first_index = 0;    // part-local index into rt_index buffer
         uint32_t index_count = 0;    // 3 × triangle count
         uint32_t primitive_count = 0;
@@ -1569,8 +2178,21 @@ private:
         std::vector<uint32_t> material_ids;
     };
 
+    // The renderer's own record for one registered part, living at
+    // parts_[part_slot]; slot_of_ maps content hash -> that slot and is the
+    // authoritative registration map. `live == false` marks a slot whose part
+    // was released and which is awaiting reuse — parts_ is never compacted, so
+    // a slot index stays valid for the renderer's lifetime.
+    //
+    // The record carries three families of state: the static staging ranges
+    // (cluster/vertex/index start+count, all GLOBAL offsets into the shared
+    // staging arrays), the ray-tracing lane (rt_geometry / rt_index buffers,
+    // rt_lods and the two derived early-out bounds), and the VT bookkeeping
+    // (transported slots plus the demand-driven mask and LRU stamps).
     struct PartRecord {
         uint64_t hash = 0;
+        uint32_t water_binding_slot = UINT32_MAX;
+        uint32_t water_generation = 0;
         // RT instance-level early-out, precomputed once at registration so
         // build_ray_geometry can reject a whole instance before the part
         // lookup's scattered cluster_staging_ fetch and the per-cluster LOD
@@ -1623,8 +2245,14 @@ private:
         // Indexed by CHART RUNG, not LOD index — see kVkMaxChartRung.
         std::array<uint64_t, kVkMaxChartRung> vt_last_wanted{};
         std::array<uint64_t, kVkMaxChartRung> vt_last_requested{};
+        bool raster_water_surface = false;
     };
 
+    // The device limits every sizing and dispatch-shape check consults.
+    // Two copies exist on purpose: physical_limits_ is what the device actually
+    // reported, limits_ is what the checks read — so a fault test can substitute
+    // artificially small values (set_test_device_limits) and drive the
+    // overflow paths on real hardware.
     struct DeviceLimits {
         VkDeviceSize max_storage_buffer_range = 0;
         VkDeviceSize max_uniform_buffer_range = 0;
@@ -1801,8 +2429,32 @@ private:
                   "TilesetParamsGpu must remain twenty-nine vec4 records "
                   "(std140)");
 
+    // Everything that must exist ONCE PER FRAME IN FLIGHT. frames_ holds one of
+    // these per swapchain frame slot (sized from VulkanFrame::frame_slot_count)
+    // and active_frame_index_ names the slot prepare_frame() selected.
+    //
+    // THE RULE that shapes this whole struct: a slot's buffers, images and
+    // DESCRIPTOR SETS may only be written once that slot's fence has been
+    // waited. Anything a submitted command buffer can still read therefore has
+    // to be per slot, not shared — which is why even a pipeline lives here
+    // (visibility_id_reduce, whose descriptor set names this slot's buffer).
+    // The two deliberate exceptions are called out where they are declared:
+    // the shared visibility_mask_, which is a cross-frame hand-off by design,
+    // and the static cluster/vertex/index buffers, which are only ever
+    // tail-appended while frames are in flight.
+    //
+    // The `*_generation` fields are the "what does this slot already hold"
+    // cache: an upload is skipped when the slot's generation matches the
+    // renderer's current one. The `*_valid` flags (stats_valid,
+    // cull_result_valid, lod_trace_valid, rt_tlas_valid, ts_valid,
+    // skin_raster_ready) each say that a specific piece of this slot's content
+    // was actually published by a frame that completed — never assume one
+    // implies another; see the cull_result_valid comment for what happened when
+    // two of them were merged.
     struct FrameResources {
         matter::VkBufferResource frame_constants;
+        matter::VkBufferResource water_forward_constants;
+        WaterForwardConstants water_forward_constants_cache{};
         // Set-1 physical environment state is deliberately per frame slot so
         // a new camera/sun cannot rewrite storage still referenced by a
         // submitted composite, RT, or froxel dispatch.
@@ -1860,15 +2512,24 @@ private:
         // them as occluders (and the mask may cull them); 0 = excluded from
         // occlusion on both sides.
         matter::VkBufferResource part_occluder_class;
+        // Immutable river-field records. Descriptor arrays live in this
+        // frame slot's scene/RT sets; the buffer is per-slot so a generation
+        // replacement never rewrites storage an in-flight frame reads.
+        matter::VkBufferResource water_field_records;
         std::vector<VkSkinRasterDraw> ready_skin_raster_draws;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet environment_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet water_forward_descriptor_set = VK_NULL_HANDLE;
         VkImageView environment_cloud_views[4]{};
         VkExtent3D environment_cloud_extents[4]{};
         float environment_cloud_state[4]{};
+        VkImageView water_field_views[4][kWaterFieldBindingSlots]{};
+        std::uint32_t water_field_generations[kWaterFieldBindingSlots]{};
+        bool water_field_raster_descriptors_valid = false;
+        bool water_field_rt_descriptors_valid = false;
         VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
         // Three denoised signals (diffuse, specular, transmission), one
         // temporal set each and three a-trous ping-pong sets each.
@@ -1989,6 +2650,7 @@ private:
     bool create_environment_layout(std::string& error);
     bool create_environment_resources(std::string& error);
     bool create_raster_pipelines(std::string& error);
+    bool create_water_forward_pipelines(std::string& error);
     bool create_display_pipeline(std::string& error);
     bool create_overlay_line_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
@@ -2024,6 +2686,9 @@ private:
     bool ensure_frame_resources(uint32_t frame_slot_count,
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
+    bool write_water_field_descriptors_for_frame(
+        FrameResources& frame, VkDescriptorSet rt_set,
+        std::string& error);
     bool record_animation_skinning(const matter::VulkanFrame& frame,
                                    FrameResources& resources,
                                    std::string& error);
@@ -2033,6 +2698,11 @@ private:
     void probe_skin_raster_draws(
         const std::vector<VkSkinRasterDraw>& draws) const;
     void update_composite_descriptor(FrameResources& frame);
+    void update_water_forward_descriptor(FrameResources& frame);
+    bool upload_water_forward_constants(FrameResources& frame,
+                                        const FrameMatrices& matrices,
+                                        VkExtent2D extent,
+                                        std::string& error);
     bool update_environment_descriptor(FrameResources& frame,
                                        std::string& error,
                                        const matter::VkImageResource* sky = nullptr,
@@ -2215,6 +2885,9 @@ private:
     void evict_vt_rung(PartRecord& record, uint32_t rung);
 
     matter::VulkanDevice* vulkan_ = nullptr;
+    WaterFieldVk water_fields_;
+    WaterFieldVkResources water_field_resources_;
+    std::unique_ptr<gpu_meshing::GpuVisualMesher> gpu_visual_mesher_;
     VkAnimationSkinning animation_skinning_;
     std::vector<VkSkinFallback> consumed_animation_skin_fallbacks_;
     VkAnimationBounds animation_bounds_;
@@ -2229,6 +2902,9 @@ private:
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
     uint32_t test_last_rt_blas_build_count_ = 0;
     RasterPipelineDrawDebug test_last_raster_pipeline_draw_{};
+    std::vector<PartCommandRange> recorded_visibility_id_ranges_;
+    uint32_t recorded_water_draw_count_ = 0u;
+    WaterForwardObservation last_water_forward_observation_{};
 #endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;
@@ -2246,6 +2922,14 @@ private:
     // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte
     // VkSkinVertex binding with an explicit previous-position attribute.
     VkPipeline skinned_raster_pipeline_ = VK_NULL_HANDLE;
+    // Raster-only dynamic water. Its vertices never receive device-address or
+    // acceleration-structure usage and therefore cannot enter a BLAS path.
+    VkPipeline water_animation_raster_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout water_forward_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout water_forward_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline water_forward_static_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline water_forward_direct_pipeline_ = VK_NULL_HANDLE;
+    VkSampler water_forward_sampler_ = VK_NULL_HANDLE;
     // VK_POLYGON_MODE_LINE twins of the two above, created only when the
     // device enabled fillModeNonSolid. Everything else about them -- shaders,
     // layout, attachments, depth state -- is identical, so the wireframe view
@@ -2278,22 +2962,54 @@ private:
     VkDescriptorPool rt_descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> rt_descriptor_sets_;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
+    VkDescriptorPool water_forward_descriptor_pool_ = VK_NULL_HANDLE;
     bool initialized_ = false;
 
     matter::VkBufferResource clusters_;
     matter::VkBufferResource vertices_;
     matter::VkBufferResource indices_;
+    // One FrameResources per frame in flight, grown to the frame slot count the
+    // Vulkan context reports; active_frame_index_ is the slot prepare_frame()
+    // selected, and the public buffer/size getters all answer for that slot.
+    // frame_resource_slot_capacity_ is what the descriptor pool was sized for,
+    // which is why growing the ring is a re-creation rather than a push_back.
     std::vector<FrameResources> frames_;
     uint32_t active_frame_index_ = 0;
     uint32_t frame_resource_slot_capacity_ = 0;
+
+    struct WaterAnimationVulkanFrame {
+        matter::VkBufferResource vertices;
+        matter::VkBufferResource indices;
+    };
+    struct WaterAnimationVulkanGeneration {
+        std::uint64_t generation = 0u;
+        std::vector<WaterAnimationVulkanFrame> frames;
+    };
+    struct RetiredWaterAnimationVulkanGeneration {
+        std::uint64_t retire_after_serial = 0u;
+        WaterAnimationVulkanGeneration resources;
+    };
+    WaterAnimationGpuSchedule water_animation_schedule_;
+    WaterAnimationVulkanGeneration water_animation_resources_;
+    std::vector<RetiredWaterAnimationVulkanGeneration>
+        retired_water_animation_resources_;
+    // Direct-water transforms follow the skinned tail. Each source index names
+    // the immutable static proxy instance whose object/history/water binding
+    // record is copied into the direct-draw tail for the current frame.
+    uint32_t water_animation_transform_base_ = 0u;
+    std::vector<std::uint32_t> water_animation_proxy_instance_indices_;
+    std::vector<std::uint32_t> water_animation_direct_transform_slots_;
 
     matter::VkImageResource albedo_;
     matter::VkImageResource normal_;
     matter::VkImageResource orm_;
     matter::VkImageResource velocity_;
     matter::VkImageResource material_instance_;
+    matter::VkImageResource reactivity_;
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
+    matter::VkImageResource opaque_hdr_;
+    matter::VkImageResource opaque_depth_;
     matter::VkImageResource visibility_;
     matter::VkImageResource raw_diffuse_;
     matter::VkImageResource raw_specular_;
@@ -2307,9 +3023,10 @@ private:
 
     // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
     TilesetSlotGpu tileset_slots_[tileset::kMaxTilesetSlots]{};
-    // One dummy per distinct format among the 4 channels (albedo and ORM
-    // share R8G8B8A8_UNORM, so 3 dummies cover all 4 channel roles).
-    TilesetImage tileset_dummy_rgba8_;  // albedo, orm
+    // One dummy per distinct FORMAT, not per channel: the six
+    // kTilesetChannel* roles use only three formats, so 3 dummies cover all 6
+    // (see tileset_channel_view's switch, whose default is the RGBA8 one).
+    TilesetImage tileset_dummy_rgba8_;  // albedo, orm, horizon A/B
     TilesetImage tileset_dummy_rg8_;    // normal
     TilesetImage tileset_dummy_r16_;    // height
     VkSampler tileset_sampler_ = VK_NULL_HANDLE;
@@ -2353,12 +3070,53 @@ private:
         VkBuffer index_buffer;
         VkBuffer indirect_buffer;
         uint32_t static_command_count;
+        const PartCommandRange* draw_ranges;
+        uint32_t draw_range_count;
         uint32_t max_draw_indirect_count;
     };
     void record_visibility_id_pass(VkCommandBuffer command_buffer,
                                    const RasterRecordView& record);
     void record_visibility_id_reduce(VkCommandBuffer command_buffer,
                                      FrameResources& frame);
+    struct WaterForwardRecord {
+        VkExtent2D extent{};
+        matter::VkImageResource* hdr = nullptr;
+        matter::VkImageResource* depth = nullptr;
+        matter::VkImageResource* velocity = nullptr;
+        matter::VkImageResource* reactivity = nullptr;
+        matter::VkImageResource* material_instance = nullptr;
+        matter::VkImageResource* opaque_hdr = nullptr;
+        matter::VkImageResource* opaque_depth = nullptr;
+        VkPipeline static_pipeline = VK_NULL_HANDLE;
+        VkPipeline direct_pipeline = VK_NULL_HANDLE;
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        VkDescriptorSet sets[4]{};
+        VkBuffer static_vertices = VK_NULL_HANDLE;
+        VkBuffer static_indices = VK_NULL_HANDLE;
+        VkBuffer indirect = VK_NULL_HANDLE;
+        uint32_t static_command_count = 0u;
+        const PartCommandRange* ranges = nullptr;
+        uint32_t range_count = 0u;
+        uint32_t max_draw_indirect_count = 0u;
+        VkBuffer direct_vertices = VK_NULL_HANDLE;
+        VkBuffer direct_indices = VK_NULL_HANDLE;
+        const VkWaterAnimationRasterDraw* direct_draws = nullptr;
+        uint32_t direct_draw_count = 0u;
+        uint32_t direct_vertex_count = 0u;
+        uint32_t direct_index_count = 0u;
+        uint32_t draw_transform_slots = 0u;
+        RasterDebugPushConstants debug_push{};
+        VkQueryPool timing_pool = VK_NULL_HANDLE;
+        uint8_t* timing_written = nullptr;
+        uint32_t timing_zone = 0u;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        WaterForwardObservation* observation = nullptr;
+#endif
+    };
+    void record_water_forward(VkCommandBuffer command_buffer,
+                              const WaterForwardRecord& record);
+    static void record_raster_and_water(VkCommandBuffer command_buffer,
+                                        void* user_data);
     // Assigns atlas slots for `part`, uploads its atlases, and patches the
     // billboard vertices already staged at `vertex_base`. Failure is reported
     // and the part still registers -- with its impostor rungs drawing as
@@ -2477,6 +3235,10 @@ private:
     bool gi_candidate_used_reflection_reset_ = false;
     bool last_composite_used_gi_temporal_ = false;
     VkImageUsageFlags visibility_usage_ = 0;
+    VkImageUsageFlags hdr_usage_ = 0;
+    VkImageUsageFlags depth_usage_ = 0;
+    VkImageUsageFlags opaque_hdr_usage_ = 0;
+    VkImageUsageFlags opaque_depth_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
     VkDeviceAddress rt_sbt_address_ = 0;
     VkDeviceAddress rt_sbt_test_raygen_address_ = 0;
@@ -2486,6 +3248,9 @@ private:
     VkDeviceSize rt_sbt_stride_ = 0;
     VkDeviceSize rt_sbt_miss_size_ = 0;
     VkDeviceSize rt_sbt_hit_size_ = 0;
+    // The INTERNAL raster extent the G-buffer and HDR targets were built at —
+    // the pre-upscale resolution when DLSS is active, not the swapchain's.
+    // raster_width()/raster_height() report it.
     VkExtent2D raster_extent_{};
     bool raster_attachments_ready_ = false;
 
@@ -2519,6 +3284,11 @@ private:
     // slot_of_.find(hash)->second, or -1. Behaviourally identical to the map
     // lookup it replaces. MATTER_VK_SLOT_INDEX=0 forwards to slot_of_ directly.
     int part_slot_lookup(uint64_t part_hash) const;
+    // CPU mirrors of the static GPU tables, indexed by GLOBAL cluster slot
+    // (PartRecord::cluster_start + the part-local index). cluster_lods_ is
+    // exactly parallel to cluster_staging_ and keeps the CPU-side ladder the
+    // LOD mirrors and vt_slot_for_lod() read; a released part's slots stay in
+    // both arrays until the free-range list hands them to a new part.
     std::vector<GpuCluster> cluster_staging_;
     std::vector<std::vector<VkSceneLod>> cluster_lods_;
     std::vector<GpuInstance> instance_staging_;
@@ -2530,6 +3300,9 @@ private:
     // Scratch for the skin transform tail; see skin_transform_base_.
     std::vector<GpuDrawTransform> skin_transform_staging_;
     std::vector<uint32_t> dynamic_instance_part_slots_;
+    // Final engine-resolved policy, parallel to the stable dynamic slots.
+    // VkSceneRenderer never interprets authored overrides or part defaults.
+    std::vector<uint8_t> dynamic_instance_ray_traced_;
     uint32_t dynamic_instance_count_ = 0;
     uint64_t dynamic_submit_serial_ = 0;
     uint64_t dynamic_completed_serial_ = 0;
@@ -2642,6 +3415,8 @@ private:
     uint32_t last_rt_trace_dispatches_ = 0;
     std::string last_rt_fallback_reason_;
     TemporalFrame temporal_frame_{};
+    float water_animation_time_seconds_ = 0.0f;
+    WaterDiagnosticView water_diagnostic_view_ = WaterDiagnosticView::None;
 
     // ---- update_instances() unchanged-input fast path --------------------
     // The candidate instance set update_instances() builds is a pure function
@@ -2694,10 +3469,14 @@ private:
     uint64_t command_generation_ = 1;
     // What the next upload_scene_buffers() owes the static cluster/vertex/
     // index buffers. kAppend is only valid while every mutation since the
-    // last upload was a pure tail-append (register_part); anything that
-    // rewrites existing bytes (release_part compaction, reset) must escalate
-    // to kFull, because in-flight frames read the live buffers and only a
-    // disjoint tail write is safe in place.
+    // last upload was a pure tail-append (register_part) or a write into a
+    // range the free lists have quarantined for a full in-flight window;
+    // anything that rewrites bytes an in-flight frame may still read must
+    // escalate to kFull, because kFull allocates NEW buffers and moves them
+    // in. Today the only escalation left is a static-capacity overflow in
+    // upload_scene_buffers -- release_part does NOT compact (it just returns
+    // ranges to the recyclers) and reset() idles the device and restarts from
+    // kClean.
     enum class StaticUpload : uint8_t { kClean, kAppend, kFull };
     // kCLEAN, not kFull. The buffers are RESERVED at init(), so seeding is just
     // an append of every registered range -- register_part is the only writer
@@ -2805,6 +3584,11 @@ private:
     float timestamp_period_ns_ = 0.0f;
     // EMA-smoothed per-zone GPU timings (ms). Updated each frame on readback.
     float gpu_smoothed_ms_[kGpuZoneCount]{};
+    // Most recently retired raw sample per zone. Acceptance/perf capture uses
+    // this rather than an EMA so median and p95 retain their meaning.
+    float gpu_last_ms_[kGpuZoneCount]{};
+    std::uint64_t water_animation_upload_count_ = 0u;
+    std::uint64_t water_animation_decode_dispatch_count_ = 0u;
     // Helper recorded per-frame to stamp the command buffer.
     void write_gpu_timestamp(VkCommandBuffer cmd, uint32_t zone_id,
                              bool is_end, FrameResources& frame);

@@ -1,6 +1,24 @@
 #ifndef VIEWER_SECTOR_RESOLVER_H
 #define VIEWER_SECTOR_RESOLVER_H
 
+// MatterEngine3/src/provider/sector_resolver.h
+//
+// Declares ResolvedInstance and SectorLodResolver: the per-frame LOD and
+// activation pass that sits between the authoritative WorldState
+// (world_source.h) and the composer that turns instances into draw records.
+// The implementation is in resolvers.cpp.
+//
+// Depends on lod_select (per-sector rung choice), sector_grid (spatial binning)
+// and, through the .cpp, render/lod_distance.h — the one LOD rule. Nothing here
+// touches the GPU or the filesystem.
+//
+// Use: construct once with the sector pitch and an activation radius, keep the
+// instance alive across frames (the cached sector binning is the whole point of
+// keeping it), then call resolve(state, lods, cam_pos) each frame and hand the
+// result to the composer. The setters below may be called between frames; none
+// of them invalidates the binning cache, which keys on WorldState::version()
+// alone.
+
 #include "world_source.h"
 #include "lod_select.h"        // lod_select::PartLodTable; also brings in float3/make_float3
 #include "sector_grid.h"       // sector_grid::SectorGrid, bin_instances (transitively precomp.h)
@@ -36,6 +54,11 @@ class SectorLodResolver {
 public:
     SectorLodResolver(float pitch, float active_radius)
         : pitch_(pitch), active_radius_(active_radius) {}
+    // The per-frame pass: re-bin (only if the world version changed), select a
+    // rung per sector, emit the instances inside the activation radius plus any
+    // inline-cutover children. Allocates and returns a fresh vector every call
+    // and is O(active instances) even on the cached path. The float3 is the
+    // camera position in world space.
     std::vector<ResolvedInstance>
         resolve(const WorldState&, const lod_select::PartLodTable&, const float3&);
     const char* name() const { return "SectorLod"; }

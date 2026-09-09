@@ -1,24 +1,86 @@
 #ifndef MATERIAL_REGISTRY_H
 #define MATERIAL_REGISTRY_H
 
+// ---------------------------------------------------------------------------
+// libs/MatterSurfaceLib/include/material_registry.h
+// ---------------------------------------------------------------------------
+// The material table. One definition of a material serves everyone: the CPU
+// mesher (merge grouping, mesher selection, the translucency carve gate), the
+// engine, and the GPU (both packing paths below).
+//
+// Deliberately plain C with an `extern "C"` guard, because surface.c and the
+// rest of the C mesher consume it alongside the C++ engine. That is also why
+// the tileset slot count here is paired with tileset::kMaxTilesetSlots by
+// comment rather than by #include -- see MATERIAL_MAX_DETAIL_SLOTS.
+//
+// Two populations, one index space
+//   [0, MaterialRegistryStaticCount())        frozen builtins, never change
+//   [MaterialRegistryStaticCount(), COUNT)    per-world dynamic entries added
+//                                             by MaterialRegistryDefineDynamic
+//   MaterialRegistryCount() is the live total and is what every pack path and
+//   every `out` array must be sized against. MATERIAL_MAX_TOTAL is the hard
+//   ceiling on the whole index space and on every per-material side array.
+//
+// Lifecycle
+//   The registry is process-global mutable state with no locking: builtins are
+//   static, dynamic entries are appended at world load and dropped by
+//   MaterialRegistryResetDynamic() on world (re)connect, and the runtime slot
+//   overrides persist for the life of the process. Treat definition and reset
+//   as load-time, single-threaded operations; the query functions are the ones
+//   safe to call from meshing and rendering.
+//
+// GPU packing
+//   MaterialRegistryPackForGPU()   - legacy MATERIAL_FLOATS_PER_DEF-float rows.
+//   MaterialRegistryPackRtForGPU() - MaterialGpuRecord, the Vulkan ray-tracing
+//                                    layout. Both are ABIs shared with the
+//                                    shaders; changing a lane means changing
+//                                    shaders_vk/ too (contract documented in
+//                                    MatterEngine3/src/render/vk_gi_contract.h).
+//
+// Versioning
+//   MATERIAL_SCHEMA_VERSION covers MaterialDef's authored layout. Baked `.part`
+//   artifacts serialize exactly MaterialRegistryStaticCount() MaterialDefs
+//   (part_asset_v2.cpp), which is why the builtin count is frozen: a world's
+//   dynamic entries must never be able to invalidate an existing bake.
+// ---------------------------------------------------------------------------
+
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// A single material definition. This is the ONE place materials are defined;
-// both the CPU (meshing decisions) and the GPU (shading) consume this table.
+// Per-material surface behaviour bits: OR-ed together into
+// MaterialDef.surfaceFlags and forwarded verbatim to the GPU as
+// MaterialGpuRecord.flags_misc[0]. Nothing in this module interprets the
+// individual bits -- the mesher and the shaders each decode the ones they care
+// about, so a new bit must be added at both ends. MATERIAL_SURFACE_NONE is the
+// empty set, not a flag.
 typedef enum MaterialSurfaceFlags {
     MATERIAL_SURFACE_NONE    = 0u,
     MATERIAL_THIN_WALLED     = 1u << 0,
     MATERIAL_DOUBLE_SIDED    = 1u << 1,
     MATERIAL_ALPHA_TESTED    = 1u << 2,
-    MATERIAL_VOLUME_BOUNDARY = 1u << 3
+    MATERIAL_VOLUME_BOUNDARY = 1u << 3,
+    MATERIAL_WATER_SURFACE   = 1u << 4
 } MaterialSurfaceFlags;
 
-enum { MATERIAL_SCHEMA_VERSION = 4 };
+// Version of MaterialDef's authored/serialized layout, returned by
+// MaterialRegistrySchemaVersion(). Bump it whenever a MaterialDef field is
+// added, removed, or given a new meaning -- v4 is the revision that turned
+// groundTilesetSlot into the general "detail slot" and added groundMacroSlot.
+enum { MATERIAL_SCHEMA_VERSION = 5 };
 
+// One authored material: PBR surface parameters, plus the handful of fields
+// the CPU side reads (mergeGroup for SDF grouping, meshingAlgorithm for mesher
+// selection, translucency for the cross-group carve gate).
+//
+// Plain C POD -- copied by value, compared byte-wise by
+// MaterialRegistryDefineDynamic's idempotency check, and serialized into baked
+// `.part` artifacts. Scalars named as fractions are normalized 0-1 unless a
+// trailing comment says otherwise; the *Color[3] members are RGB triples with
+// no alpha. Because the struct is serialized and byte-compared, any layout or
+// semantic change must bump MATERIAL_SCHEMA_VERSION.
 typedef struct {
     float albedo[3];      // base color
     float roughness;      // 0 = mirror, 1 = rough
@@ -38,8 +100,14 @@ typedef struct {
                              // atlas.
     int   groundMacroSlot;  // Schema v4: -1 = no macro layer, else the viewer tileset slot (in
                              // [0, MATERIAL_MAX_DETAIL_SLOTS)) sampled
-                             // as the coarse macro/frequency-split layer (Phase 3). Overridden at
-                             // runtime via MaterialRegistrySetGroundMacroSlot(). Vulkan-only: the
+                             // as the coarse macro/frequency-split layer (Phase 3). Unlike
+                             // groundTilesetSlot there is NO runtime override setter -- the
+                             // symmetric MaterialRegistrySetGroundMacroSlot() was deleted as
+                             // uncalled (e7c19aae) -- so this struct field is the only way in:
+                             // populate it on the MaterialDef you hand to
+                             // MaterialRegistryDefineDynamic(). Every static entry, and every
+                             // dynamic entry the world loader builds today, leaves it -1.
+                             // Vulkan-only: the
                              // GL path (MaterialRegistryPackForGPU, 12-float table) never reads
                              // this field; it flows solely through MaterialGpuRecord.flags_misc[1]
                              // (see MaterialRegistryPackRtForGPU and vk_gi_contract.h).
@@ -62,6 +130,28 @@ typedef struct {
     uint32_t surfaceFlags;
 } MaterialDef;
 
+// The Vulkan ray-tracing material layout: one record per material, produced by
+// MaterialRegistryPackRtForGPU() and read by the RT shaders (contract in
+// MatterEngine3/src/render/vk_gi_contract.h). This is a GPU ABI -- the lane
+// assignment below is duplicated in GLSL, so changing it means changing
+// shaders_vk/ in the same commit.
+//
+// Lane map, as packed today:
+//   base_roughness               albedo.rgb, roughness
+//   metal_opacity_spec_coat      metallic, opacity, specularStrength, clearcoat
+//   specular_tint_coat_roughness specularTint.rgb, clearcoatRoughness
+//   emission_strength            emissionColor.rgb, emission -- a legacy
+//                                material with emission > 0 and a black
+//                                emissionColor gets albedo substituted into
+//                                rgb, so shaders can read the rgb lanes
+//                                unconditionally
+//   transmission                 transmission, ior, thickness, absorptionDistance
+//   absorption_pad               absorptionColor.rgb, 0
+//   scattering                   scatteringColor.rgb, subsurface
+//   scattering_shape             scatteringDistance, anisotropy, alphaCutoff,
+//                                shadowOpacity
+//   flags_misc[0]                MaterialDef.surfaceFlags, verbatim
+//   flags_misc[1]                MaterialPackDetailMacroSlots(detail, macro)
 typedef struct MaterialGpuRecord {
     float base_roughness[4];
     float metal_opacity_spec_coat[4];
@@ -189,6 +279,11 @@ static inline uint32_t MaterialPackDetailMacroSlots(int detailSlot, int macroSlo
 }
 
 // Packs the registry into the Vulkan ray-tracing material layout.
+// `out` must have room for MaterialRegistryCount() records -- the live total,
+// not MATERIAL_MAX_TOTAL and not the static count. Reads the runtime
+// detail/macro slot overrides as well as the static table, so the packed
+// result changes after MaterialRegistrySetGroundTilesetSlot() and must be
+// re-packed and re-uploaded whenever an override moves.
 void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out);
 
 // Runtime override: bind material `materialId` to viewer tileset slot `slot`.
@@ -199,16 +294,6 @@ void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out);
 // [-1, MATERIAL_MAX_DETAIL_SLOTS-1].
 void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot);
 
-// Runtime override: bind material `materialId` to viewer macro tileset slot
-// `slot` (Phase 3 frequency-split ground layer). Pass slot < 0 to clear.
-// Mirrors MaterialRegistrySetGroundTilesetSlot's semantics and validation but
-// is independent: a material can carry a detail slot, a macro slot, both, or
-// neither. Values persist for the life of the process. Consumed only by
-// MaterialRegistryPackRtForGPU (Vulkan MaterialGpuRecord.flags_misc[1]); the
-// GL path's MaterialRegistryPackForGPU never reads it.
-// Silently no-op on materialId out of range OR slot outside
-// [-1, MATERIAL_MAX_DETAIL_SLOTS-1].
-void MaterialRegistrySetGroundMacroSlot(int materialId, int slot);
 
 #ifdef __cplusplus
 }

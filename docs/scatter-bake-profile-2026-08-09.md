@@ -1,7 +1,7 @@
 # Where a sector bake's scatter time actually goes — 2026-08-09
 
 Branch: `feature/nested-sector-lod`. Supersedes the "remaining ~65% is
-unknown" note in `docs/habitat-tape-sketch-2026-08-08.md` and the estimates in
+unknown" note in `docs/completed/habitat-tape-sketch-2026-08-08.md` and the estimates in
 `projects/world_demo/shared-lib/alpine_ecology.js`.
 
 ## Why this document exists

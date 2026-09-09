@@ -1,18 +1,181 @@
 // MatterEngine3 Vulkan world viewer. The production path creates a GLFW
 // NO_API window and presents genuine WorldSession data through VkSceneRenderer.
-// MATTER_CAM, MATTER_WORLD, MATTER_HIZ, MATTER_SCREENSHOT and FIFO commands are
-// retained from the legacy viewer.
+// MATTER_CAM, MATTER_WORLD, MATTER_SCREENSHOT and FIFO commands are retained
+// from the legacy viewer. MATTER_HIZ is recognised but IGNORED — the Hi-Z
+// buffer it selected is gone; see the note at its getenv below.
+//
+// MatterEditor/src/main.cpp
+//
+// The editor's whole entry point: `main()` plus a file-local anonymous
+// namespace of helpers. There is no App/Editor class — every long-lived
+// object (the GLFW window, VulkanDevice, EngineContext, WorldSession, Ui,
+// the panels, the command registry) is a LOCAL of `main()`, and their
+// declaration order is their destruction order. Several teardown comments at
+// the bottom of the file depend on that.
+//
+// Vulkan-only. The GL/raylib render and windowing path was deleted in Phase
+// 5a: the window is created with GLFW_CLIENT_API = GLFW_NO_API and every
+// pixel goes through matter::VulkanDevice + VkSceneRenderer.
+//
+// ---------------------------------------------------------------------------
+// Startup sequence
+// ---------------------------------------------------------------------------
+// In order, because most steps depend on the one before:
+//
+//   1. `process_start_time` is stamped first, so the device-fault auto-filer
+//      at the very end can tell a vulkan_device_fault.log written by THIS run
+//      from a stale one left by an earlier crash.
+//   2. stdout is unbuffered when MATTER_CMD_FIFO is set — FIFO automation
+//      consumes exact acknowledgement lines as its synchronization.
+//   3. read_perf_run_config() (MATTER_PERF_*), then glfwInit().
+//   4. viewer::load_replay_from_env() runs BEFORE the window exists: a
+//      MATTER_REPLAY shot records its framebuffer size, and the window has to
+//      be created at that size for the same geometry to land on the same
+//      pixels.
+//   5. glfwCreateWindow -> matter::VulkanDevice::create -> EngineContext::create.
+//   6. viewer::Ui::setup (Dear ImGui + its Vulkan backend). For a replay the
+//      recorded imgui.ini layout is restored and IniFilename is cleared, so
+//      the panel layout — and therefore the viewport rect — is reproduced too.
+//   7. viewer::scan_worlds(examples_root()) builds the world list; MATTER_WORLD
+//      (or, failing that, the replay's own world) picks `initial_world`.
+//   8. EditorProps::init() binds the property registry BEFORE anything writes
+//      the tunable structs, so bind() captures the compiled defaults.
+//   9. open_world() -> matter::WorldSession, then SessionBinding::initialize()
+//      builds the app<->session bridge and opens the first command epoch
+//      BEFORE requesting the initial bake, so no bake.started can precede its
+//      subscribers.
+//  10. Command handlers are registered on the app lane; the frame loop starts.
+//
+// ---------------------------------------------------------------------------
+// What one iteration of the frame loop does
+// ---------------------------------------------------------------------------
+//   glfwPollEvents -> retire preview textures queued on earlier frames ->
+//   hotkeys (TAB mouse capture, F8 DLSS, F9/F10 issue capture, F11
+//   presentation mode) -> read MATTER_CMD_FIFO bytes and dispatch as many
+//   queued lines as no blocking wait forbids -> registry.pump(app_lane) ->
+//   shot/issue-capture deadman checks -> VulkanDevice::begin_frame (fence
+//   wait + swapchain acquire) -> Ui::begin_frame and all panel drawing ->
+//   MATTER_CAM_PATH pose -> the `frame_camera` snapshot -> viewport pick and
+//   orbit -> streaming anchor update -> WorldSession::tick ->
+//   PropertyScheduler::flush_dirty -> pump_gpu_jobs -> Bake Lab / Workbench
+//   tick -> poll_event drain (bake events, world-authored value adoption) ->
+//   RenderOptions assembly -> WorldSession::render -> selection/frustum/
+//   animation overlays -> FrameStats mirrored into ViewerStats ->
+//   Ui::end_frame -> optional swapchain readback (screenshot or issue shot)
+//   -> VulkanDevice::end_frame -> phase timing + the issue frame-history ring
+//   -> FIFO block releases and the deferred `quit` -> perf sampling -> the
+//   STATS line -> post-frame seam (reload / world switch).
+//
+//   Two timing rules the rest of the loop relies on:
+//   - `frame_camera` is taken after the UI and after the cam-path pose, and is
+//     const for the remainder of the frame, so streaming, tick, render, the
+//     overlays and the pick all agree on exactly one camera.
+//   - Heavy session operations (reload, world switch) NEVER run mid-ImGui
+//     draw. Their command handlers only RECORD intent on SessionBinding; the
+//     actual session destroy/recreate happens at the post-frame seam at the
+//     bottom of the loop.
+//
+// ---------------------------------------------------------------------------
+// Environment control surface
+// ---------------------------------------------------------------------------
+// Full reference: docs/agent/control-surface.md. Read directly by THIS file:
+//
+//   MATTER_WORLD              world to open, by name, case-insensitive; a name
+//                             not in the scanned list is fatal
+//   MATTER_CAM                "ex,ey,ez,tx,ty,tz" initial camera
+//   MATTER_CAM_PATH           file of one `eye target` pose per line, consumed
+//                             ONE POSE PER RENDERED FRAME — frame-indexed, not
+//                             wall-clock, which is what makes it a determinism
+//                             gate. `#` and blank lines are ignored.
+//   MATTER_CAM_PATH_WARMUP    frames held at pose 0 once drawable (default 30)
+//   MATTER_CAM_PATH_SETTLE    SECONDS of unchanged resident_sectors required
+//                             before the path starts (0 = off)
+//   MATTER_CAM_PATH_EXIT      quit once the path plus its drain tail ends
+//   MATTER_SCREENSHOT         capture-then-quit to this PNG path
+//   MATTER_SCREENSHOT_SETTLE  frames to hold before that capture (default 3;
+//                             a streamed world needs far more)
+//   MATTER_REPLAY             reproduce a recorded issue shot (shot_replay.h)
+//   MATTER_REPLAY_OUT         where the replay PNG goes (default replay.png)
+//   MATTER_REPLAY_SETTLE      replay settle frames (default 90 — RT worlds
+//                             accumulate through a temporal denoiser)
+//   MATTER_REPLAY_STRICT      make a non-comparable replay a fatal error
+//   MATTER_CMD_FIFO           command stream: a real FIFO on POSIX, an
+//                             append-only polled file on Windows
+//   MATTER_HIDE_UI            hide every panel; the 3D view then renders
+//                             straight to the swapchain image
+//   MATTER_TIME_SCALE         initial simulation time scale (clamped to the
+//                             toolbar range, otherwise ignored with a message)
+//   MATTER_LIVE_EDIT          enable world-script live edit on the session
+//   MATTER_CACHE_ROOT         engine cache root, canonicalized to absolute
+//   MATTER_VK_VALIDATION      request Vulkan validation layers — opt-in,
+//                             because they are a Vulkan-SDK dependency the
+//                             shipped exe must not require
+//   MATTER_PERF_OUTPUT        with MATTER_PERF_WARMUP_SECONDS and
+//                             MATTER_PERF_SAMPLE_SECONDS: a timed perf run
+//                             that writes one JSON object and quits. All three
+//                             must be set together or startup fails.
+//   MATTER_PROFILE_TRACE      dump the ProfileLib tail as a Chrome trace on exit
+//   MATTER_SEAM_TRACE         per-frame seam-welder poll, printed on change,
+//                             plus an end-of-run PASS/FAIL verdict
+//   MATTER_FORCE_LOD_TINT     force the LOD-tint geometry debug view
+//   MATTER_TEST_RESIZE        resize the window once, after the bake
+//   MATTER_CAPTURE_LIGHTING_UI focus the Lighting tab during a capture run
+//   MATTER_HIZ                recognised but IGNORED (the HZB is gone)
+//
+// Reached through the property registry's own env layer rather than a getenv
+// in this file: MATTER_DISABLE_VK_RT, MATTER_DLSS_MODE, the MATTER_SUN_*
+// angles, and every other `.env()`-bound tunable (see editor_props.cpp).
+// MATTER_VK_SMOKE_MODE is not handled here at all — the Vulkan smoke suite is
+// a separate binary (MatterEngine3/tests/vulkan_smoke_tests.cpp).
+//
+// ---------------------------------------------------------------------------
+// The FIFO / QA timeline
+// ---------------------------------------------------------------------------
+// Lines arriving on MATTER_CMD_FIFO are split into `fifo_pending_lines` and
+// popped one at a time. A blocking verb (wait_frames / wait_idle / wait_event
+// / shot / shot_now / `issue capture`) sets `fifo_block` and STOPS the pop
+// loop until it releases — that is what turns a pre-written command file into
+// a timeline instead of "every buffered line lands in one frame". Reading more
+// bytes off the file is never gated; only dispatch is. Everything else parses
+// into a typed viewer::Fifo* command and goes through registry.dispatch(), so
+// each external submission is named, traced and explicitly completed.
+//
+// ---------------------------------------------------------------------------
+// Sharp edges
+// ---------------------------------------------------------------------------
+// - Teardown order is load-bearing and partly MANUAL, because C++ would
+//   otherwise get it wrong: session.reset(), issue_previews.shutdown() and
+//   bake_lab.workbench().close() are all called by hand before vulkan.reset(),
+//   since those objects hold GPU resources but are stack locals that would be
+//   destroyed only when main() returns — after the device was gone.
+// - The process returns 1 when vulkan->validation_error_count() is non-zero at
+//   shutdown, independently of `fatal_error`.
+// - `fatal_error_reason` is set only by mark_device_fatal(), i.e. only at the
+//   Vulkan/device-surfacing failure sites. That is how the post-loop auto-filer
+//   tells a device fault from any other fatal exit without matching on error
+//   text — a non-device fatal exits with no report, exactly as before.
+// - Most world-authored settings (camera, fog, sun, volumetrics, atmosphere,
+//   cloud shadows, the world's `static props`) adopt through a one-shot
+//   `apply_world_*_after_bake` flag consumed at the first successful bake, and
+//   are re-armed at both the reload seam and the world-switch seam. The ORDER
+//   inside that block matters: the authored values must land before
+//   EditorProps::on_world_connected() snapshots the "Reset to World" baseline.
+// - A replay deliberately neither persists nor adopts: EditorProps::init() is
+//   passed persist=false and ImGui's IniFilename is cleared, so a headless
+//   capture can neither inherit nor overwrite an interactive session's files.
 #include "matter/engine_context.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_session.h"
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/character.h"  // walking mode (M3)
 #include "matter/scene.h"
 #include "matter/streaming.h"
 #include "ecs/simulation_control.h"
 #include "ecs/scene_registry.h"
 #include "scene/scene_service.h"  // E5c: session->scene_service() (world_session.h fwd-decls it)
 #include "camera_controller.h"
+#include "character_walk_controller.h"
 #include "camera_focus.h"
 #include "camera_orbit.h"
 #include "editor_model.h"
@@ -41,14 +204,17 @@
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
 #include "matter/event/property.h"
+#include "matter/windows_compat.h"
 // QA timeline `wait_event`: subscribes directly against session->events()
 // (bake./stream.) and app_hub (cmd.*) by name, so the typed event structs
 // must be visible here (world_session.h only pulls in the legacy events.h).
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 #include "viewport_pick.h"
+#include "dsl_bindings.h"
 
 #include "imgui.h"
+#include "quickjs.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -79,9 +245,6 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#else
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #endif
 
 namespace {
@@ -150,6 +313,16 @@ const T* get_ptr(flecs::entity e) {
     return e.has<T>() ? &e.get<T>() : nullptr;
 }
 
+// Resolve a stable authored SceneEntityId to the live flecs entity carrying it.
+//
+// O(entities): a full each() scan with no early exit, run once per Properties
+// field get/set, once per specialized-editor action, and once per selection
+// validate callback. Entity selections are keyed by SceneEntityId rather than
+// by flecs entity id on purpose, so a selection survives across frames for
+// entities the ECS creates dynamically.
+//
+// Returns a default-constructed (`is_valid() == false`) entity when nothing
+// matches; every caller treats that as "not found", not as an error.
 flecs::entity find_scene_entity(flecs::world& world, matter::scene::SceneEntityId id) {
     flecs::entity found;
     world.each([&](flecs::entity e, const matter::scene::SceneEntityId& sid) {
@@ -202,6 +375,8 @@ bool component_fetch(flecs::entity e, matter::scene::ComponentKind kind, void* o
             return fetch_component_copy<matter::physics::ConvexHullCollider>(e, out);
         case ComponentKind::PartInstance:
             return fetch_component_copy<matter::scene::PartInstance>(e, out);
+        case ComponentKind::CharacterController:
+            return fetch_component_copy<matter::character::CharacterController>(e, out);
         case ComponentKind::SectorStreaming:
             return false;  // tag component, no fields
     }
@@ -227,6 +402,10 @@ bool component_store(flecs::entity e, matter::scene::ComponentKind kind, const v
             return store_component_copy<matter::physics::ConvexHullCollider>(e, in);
         case ComponentKind::PartInstance:
             return store_component_copy<matter::scene::PartInstance>(e, in);
+        case ComponentKind::CharacterController: {
+            const auto& controller = *static_cast<const matter::character::CharacterController*>(in);
+            return viewer::store_character_component(e, controller);
+        }
         case ComponentKind::SectorStreaming:
             return false;
     }
@@ -369,6 +548,33 @@ bool field_set_quat(matter::WorldSession* session, matter::scene::SceneEntityId 
     return component_store(r.entity, r.kind, buf.data());
 }
 
+// The one non-field entry in FieldCommands: the parent's accumulated
+// WorldTransform, which is what the transform gizmo needs to place a child
+// entity's handle where the renderer actually draws it.
+//
+// `out` is ALWAYS written — identity when the entity is a root, or when the
+// parent exists but has not been propagated yet (the transform systems only
+// write WorldTransform for entities they have visited). A false return means
+// the entity id itself did not resolve, and `out` is identity in that case too,
+// so a caller that ignores the result still gets the old parentless behaviour
+// rather than garbage.
+bool field_get_parent_world_matrix(matter::WorldSession* session,
+                                   matter::scene::SceneEntityId id,
+                                   matter::Mat4f& out) {
+    out = matter::Mat4f{};
+    out.m[0] = 1.0f; out.m[5] = 1.0f; out.m[10] = 1.0f; out.m[15] = 1.0f;
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    flecs::entity parent = e.parent();
+    if (!parent.is_valid()) return true;
+    const matter::ecs::WorldTransform* wt =
+        parent.try_get<matter::ecs::WorldTransform>();
+    if (!wt) return true;
+    out = wt->matrix;
+    return true;
+}
+
 // Adds a default-constructed component instance to a scene entity by name.
 // Mirrors ecs/scene_registry.cpp's instantiate() switch, minus Transform
 // (always present) — used by the Properties panel's "+ Add Component" menu.
@@ -389,11 +595,24 @@ matter::scene::SceneEditResult component_add(matter::WorldSession* session,
     else if (!std::strcmp(component_name, "ConvexHullCollider")) e.set<matter::physics::ConvexHullCollider>({});
     else if (!std::strcmp(component_name, "PartInstance")) e.set<matter::scene::PartInstance>({});
     else if (!std::strcmp(component_name, "SectorStreaming")) e.add<matter::streaming::SectorStreaming>();
+    else if (!std::strcmp(component_name, "CharacterController")) {
+        matter::character::CharacterController controller;
+        std::string error;
+        if (!matter::scene::validate_character_component(e, controller, error))
+            return SceneEditResult{SceneEditError::InvalidTarget, {}};
+        e.set<matter::character::CharacterController>(controller);
+    }
     else return SceneEditResult{SceneEditError::InvalidTarget, {}};
 
     return SceneEditResult{SceneEditError::None, id};
 }
 
+// The remove half of component_add above, and the same shape: a strcmp ladder
+// over component NAMES, because flecs remove<T>() is typed on the C++ type.
+// Transform is absent from both ladders — every scene entity has one — so
+// asking for "Transform" here returns InvalidTarget rather than removing it.
+// Removing a component the entity does not have is a no-op in flecs and still
+// reports success.
 matter::scene::SceneEditResult component_remove(matter::WorldSession* session,
                                                 matter::scene::SceneEntityId id,
                                                 const char* component_name) {
@@ -411,6 +630,7 @@ matter::scene::SceneEditResult component_remove(matter::WorldSession* session,
     else if (!std::strcmp(component_name, "ConvexHullCollider")) e.remove<matter::physics::ConvexHullCollider>();
     else if (!std::strcmp(component_name, "PartInstance")) e.remove<matter::scene::PartInstance>();
     else if (!std::strcmp(component_name, "SectorStreaming")) e.remove<matter::streaming::SectorStreaming>();
+    else if (!std::strcmp(component_name, "CharacterController")) e.remove<matter::character::CharacterController>();
     else return SceneEditResult{SceneEditError::InvalidTarget, {}};
 
     return SceneEditResult{SceneEditError::None, id};
@@ -522,6 +742,11 @@ bool toggle_presentation_mode(GLFWwindow* window, WindowedPlacement& saved) {
     return true;
 }
 
+// Rising-edge key test: true only on the frame the key goes down. `previous`
+// is an in/out latch OWNED BY THE CALLER — one bool per key (see the
+// tab_down/f8_down/f9_down/f10_down/f11_down locals in main) — and is updated
+// to the current down-state on every call, so each key must be polled once per
+// frame or its latch goes stale.
 bool key_pressed(GLFWwindow* window, int key, bool& previous) {
     const bool down = glfwGetKey(window, key) == GLFW_PRESS;
     const bool pressed = down && !previous;
@@ -529,6 +754,12 @@ bool key_pressed(GLFWwindow* window, int key, bool& previous) {
     return pressed;
 }
 
+// Write tightly-packed RGBA8 (4 bytes/texel, no row padding) to `path` as a
+// PNG, creating any missing parent directories first. Returns false when
+// `rgba` is not exactly width*height*4 bytes — a caller bug, not an I/O
+// failure — or when stb's encoder fails. Never throws; directory creation
+// takes the std::error_code overload and its result is deliberately ignored,
+// since stbi_write_png reports the real outcome.
 bool write_png(const std::string& path, const std::vector<uint8_t>& rgba,
                uint32_t width, uint32_t height) {
     if (rgba.size() != static_cast<size_t>(width) * height * 4) return false;
@@ -610,18 +841,31 @@ std::string issues_root() {
 
 std::string shared_lib_root() { return resolve_asset_root("MatterEngine3/shared-lib"); }
 
+// A timed performance run, configured entirely by MATTER_PERF_OUTPUT /
+// MATTER_PERF_WARMUP_SECONDS / MATTER_PERF_SAMPLE_SECONDS — all three or none
+// (read_perf_run_config below rejects a partial set). The run waits for the
+// bake to finish and the world to actually draw, warms for `warmup_seconds`,
+// samples end-to-end frame cadence for `sample_seconds`, writes one JSON
+// object to `output_path`, and then requests quit. See the PerfPhase state
+// machine in the frame loop.
 struct PerfRunConfig {
     bool enabled = false;
     std::string output_path;
-    double warmup_seconds = 0.0;
-    double sample_seconds = 0.0;
+    double warmup_seconds = 0.0;   // seconds; may be 0
+    double sample_seconds = 0.0;   // seconds; must be > 0
 };
 
+// Monotonic engine counters snapshotted at the start and at the end of the
+// sampling window. The JSON reports the DELTAS, not these absolutes, which is
+// what makes "a static scene must stop uploading" an assertable property.
 struct PerfCounters {
     uint64_t vertex_uploads = 0;
     uint64_t cluster_uploads = 0;
     uint64_t instance_uploads = 0;
     uint64_t immediate_submits = 0;
+    uint64_t water_animation_uploads = 0;
+    uint64_t water_animation_decode_dispatches = 0;
+    uint64_t water_animation_steady_state_allocations = 0;
 };
 
 bool parse_perf_seconds(const char* value, const char* name, double& result,
@@ -662,7 +906,10 @@ bool read_perf_run_config(PerfRunConfig& config, std::string& error) {
 
 PerfCounters capture_perf_counters(const matter::FrameStats& stats) {
     return {stats.vk_vertex_uploads, stats.vk_cluster_uploads,
-            stats.vk_instance_uploads, stats.vk_immediate_submits};
+            stats.vk_instance_uploads, stats.vk_immediate_submits,
+            stats.water_animation_uploads,
+            stats.water_animation_decode_dispatches,
+            stats.water_animation_steady_state_allocations};
 }
 
 double median_of_sorted(const std::vector<double>& sorted) {
@@ -672,6 +919,11 @@ double median_of_sorted(const std::vector<double>& sorted) {
                : (sorted[middle - 1] + sorted[middle]) * 0.5;
 }
 
+// Escape `value` for embedding inside a JSON string. Returns the escaped INNER
+// text only — the surrounding double quotes are written by the call sites in
+// write_perf_result — so the result is not a complete JSON literal on its own.
+// Control characters below 0x20 become \u00xx; bytes >= 0x80 pass through
+// unchanged (the inputs here are ASCII diagnostic strings).
 std::string json_string(const std::string& value) {
     std::string escaped;
     escaped.reserve(value.size());
@@ -695,8 +947,139 @@ std::string json_string(const std::string& value) {
     return escaped;
 }
 
+std::vector<std::string> quickjs_global_property_names(JSContext* context,
+                                                       std::string& error) {
+    JSValue global = JS_GetGlobalObject(context);
+    JSPropertyEnum* properties = nullptr;
+    uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(context, &properties, &count, global,
+                               JS_GPN_STRING_MASK) != 0) {
+        JS_FreeValue(context, global);
+        error = "QuickJS failed to enumerate global properties";
+        return {};
+    }
+
+    std::vector<std::string> names;
+    names.reserve(count);
+    for (uint32_t index = 0; index < count; ++index) {
+        const char* name = JS_AtomToCString(context, properties[index].atom);
+        if (name) {
+            names.emplace_back(name);
+            JS_FreeCString(context, name);
+        }
+        JS_FreeAtom(context, properties[index].atom);
+    }
+    js_free(context, properties);
+    JS_FreeValue(context, global);
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
+}
+
+std::vector<std::string> runtime_dsl_binding_names(std::string& error) {
+    JSRuntime* runtime = JS_NewRuntime();
+    if (!runtime) {
+        error = "QuickJS failed to create a runtime for the registration census";
+        return {};
+    }
+    JSContext* context = JS_NewContext(runtime);
+    if (!context) {
+        JS_FreeRuntime(runtime);
+        error = "QuickJS failed to create a context for the registration census";
+        return {};
+    }
+
+    const std::vector<std::string> before =
+        quickjs_global_property_names(context, error);
+    std::vector<std::string> after;
+    if (error.empty()) {
+        dsl::install_bindings(context);
+        after = quickjs_global_property_names(context, error);
+    }
+
+    std::vector<std::string> installed;
+    if (error.empty()) {
+        std::set_difference(after.begin(), after.end(), before.begin(),
+                            before.end(), std::back_inserter(installed));
+    }
+    JS_FreeContext(context);
+    JS_FreeRuntime(runtime);
+    return installed;
+}
+
+void append_json_string_array(std::ostringstream& stream,
+                              const std::vector<std::string>& values) {
+    stream << '[';
+    for (size_t index = 0; index < values.size(); ++index) {
+        if (index != 0) stream << ',';
+        stream << '"' << json_string(values[index]) << '"';
+    }
+    stream << ']';
+}
+
+void emit_registration_census(
+    const std::vector<viewer::WorldEntry>& worlds,
+    const matter::props::Registry& properties,
+    const matter::evt::CommandRegistry& commands) {
+    std::vector<std::string> world_names;
+    world_names.reserve(worlds.size());
+    for (const viewer::WorldEntry& world : worlds) {
+        world_names.push_back(world.world_name);
+    }
+    std::sort(world_names.begin(), world_names.end());
+    world_names.erase(std::unique(world_names.begin(), world_names.end()),
+                      world_names.end());
+
+    std::vector<std::string> property_names;
+    property_names.reserve(properties.size());
+    for (size_t index = 0; index < properties.size(); ++index) {
+        const char* path = properties.at(index).schema().path;
+        if (path && path[0] != '\0') property_names.emplace_back(path);
+    }
+    std::sort(property_names.begin(), property_names.end());
+    property_names.erase(
+        std::unique(property_names.begin(), property_names.end()),
+        property_names.end());
+
+    std::string dsl_error;
+    const std::vector<std::string> dsl_names =
+        runtime_dsl_binding_names(dsl_error);
+    if (!dsl_error.empty()) {
+        MATTER_LOGE("registration-census", "FATAL: %s\n", dsl_error.c_str());
+        return;
+    }
+
+    std::ostringstream json;
+    json << '{';
+    json << "\"world\":";
+    append_json_string_array(json, world_names);
+    json << ",\"dsl\":";
+    append_json_string_array(json, dsl_names);
+    json << ",\"property\":";
+    append_json_string_array(json, property_names);
+    json << ",\"editor\":";
+    append_json_string_array(json, commands.registered_handler_names());
+    json << '}';
+    std::printf("MATTER_REGISTRATION_CENSUS_JSON=%s\n", json.str().c_str());
+}
+
+// Write the perf run's single-line JSON result; returns false with `error` set
+// on an empty sample set or an output path that cannot be written.
+//
+// `frame_times` is taken BY VALUE and sorted in place (milliseconds per frame,
+// end-to-end loop cadence). The median and p95 come out of that sorted vector;
+// p95 is element ceil(0.95 * n) - 1, so a one-frame run reports that frame for
+// both.
+//
+// Two different time bases live in the output and mixing them up is the usual
+// mistake: the `*_delta` fields are end-minus-start over the whole sampling
+// window, while every gpu_*_ms / cpu_*_ms / loop_*_ms field is the LAST
+// SAMPLED FRAME only. The inline comments in the body say why each group was
+// added.
 bool write_perf_result(const PerfRunConfig& config, const std::string& world,
-                       std::vector<double> frame_times, const PerfCounters& start,
+                       std::vector<double> frame_times,
+                       std::vector<double> water_animation_times,
+                       const PerfCounters& start,
                        const PerfCounters& finish,
                        const matter::FrameStats& frame_stats,
                        const viewer::ViewerStats& loop_stats,
@@ -712,6 +1095,14 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
     const size_t p95_index = static_cast<size_t>(
         std::ceil(static_cast<double>(frame_times.size()) * 0.95)) - 1;
     const double p95_frame_ms = frame_times[p95_index];
+    if (water_animation_times.size() != frame_times.size()) {
+        error = "water-animation GPU samples do not match performance frames";
+        return false;
+    }
+    std::sort(water_animation_times.begin(), water_animation_times.end());
+    const double median_water_animation_ms =
+        median_of_sorted(water_animation_times);
+    const double p95_water_animation_ms = water_animation_times[p95_index];
     const double median_fps = median_frame_ms > 0.0 ? 1000.0 / median_frame_ms : 0.0;
     std::ofstream output(config.output_path, std::ios::out | std::ios::trunc);
     if (!output) {
@@ -732,6 +1123,19 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << (finish.instance_uploads - start.instance_uploads)
            << ",\"immediate_submit_delta\":"
            << (finish.immediate_submits - start.immediate_submits)
+           << ",\"water_animation_gpu_median_ms\":"
+           << median_water_animation_ms
+           << ",\"water_animation_gpu_p95_ms\":"
+           << p95_water_animation_ms
+           << ",\"water_animation_upload_delta\":"
+           << (finish.water_animation_uploads -
+               start.water_animation_uploads)
+           << ",\"water_animation_decode_dispatch_delta\":"
+           << (finish.water_animation_decode_dispatches -
+               start.water_animation_decode_dispatches)
+           << ",\"water_animation_steady_state_allocation_delta\":"
+           << (finish.water_animation_steady_state_allocations -
+               start.water_animation_steady_state_allocations)
            << ",\"selected_dlss_mode\":\""
            << matter::dlss_mode_name(frame_stats.dlss_selected_mode) << "\""
            << ",\"active_dlss_mode\":\""
@@ -811,8 +1215,11 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_dlss_ms\":" << frame_stats.gpu_dlss_ms
            << ",\"gpu_composite_ms\":" << frame_stats.gpu_composite_ms
            << ",\"gpu_vt_ms\":" << frame_stats.gpu_vt_ms
-           // CPU render-thread split (last sampled frame).
-           << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
+           << ",\"gpu_water_animation_ms\":"
+           << frame_stats.gpu_water_animation_ms;
+    matter::append_water_forward_perf_json(output, frame_stats);
+    // CPU render-thread split (last sampled frame).
+    output << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
            << ",\"cpu_build_ms\":" << frame_stats.build_ms
            << ",\"cpu_draw_ms\":" << frame_stats.draw_ms
            << ",\"cpu_draw_vt_requests_ms\":" << frame_stats.draw_vt_requests_ms
@@ -829,6 +1236,14 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// main() — startup
+// ---------------------------------------------------------------------------
+// Every long-lived object below is a local of this function, and declaration
+// order is destruction order (see the Shutdown section at the bottom, which
+// has to undo part of that by hand). The full startup sequence is in the file
+// header. Each early-failure path unwinds only what it has already created,
+// which is why the teardown calls repeat with a growing prefix.
 int main() {
     // Stamped before anything else so the device-fault auto-filer (see the
     // post-loop seam near the end of main) can tell a vulkan_device_fault.log
@@ -840,6 +1255,9 @@ int main() {
     // exact acknowledgements as synchronization, so publish them immediately.
     if (std::getenv("MATTER_CMD_FIFO"))
         std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const bool registration_census_mode =
+        std::getenv("MATTER_REGISTRATION_CENSUS") != nullptr;
+    if (registration_census_mode) std::setvbuf(stdout, nullptr, _IONBF, 0);
     PerfRunConfig perf;
     std::string perf_error;
     if (!read_perf_run_config(perf, perf_error)) {
@@ -862,11 +1280,48 @@ int main() {
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    // Perf mode is an automated GPU measurement, not an interactive editor
+    // session. Keeping its window hidden prevents the Windows desktop manager
+    // from clipping oversized acceptance resolutions to the work area or
+    // throttling an occluded surface to roughly one present per second.
+    if (registration_census_mode || perf.enabled)
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    if (perf.enabled)
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    int initial_window_width = replay.valid && replay.frame_width > 0
+        ? static_cast<int>(replay.frame_width) : 1280;
+    int initial_window_height = replay.valid && replay.frame_height > 0
+        ? static_cast<int>(replay.frame_height) : 720;
+    if (!replay.valid) {
+        const char* width_env = std::getenv("MATTER_WINDOW_WIDTH");
+        const char* height_env = std::getenv("MATTER_WINDOW_HEIGHT");
+        if ((width_env == nullptr) != (height_env == nullptr)) {
+            MATTER_LOGE(
+                "editor",
+                "FATAL: MATTER_WINDOW_WIDTH and MATTER_WINDOW_HEIGHT must be set together\n");
+            glfwTerminate();
+            return 1;
+        }
+        if (width_env && height_env) {
+            char* width_end = nullptr;
+            char* height_end = nullptr;
+            const long width = std::strtol(width_env, &width_end, 10);
+            const long height = std::strtol(height_env, &height_end, 10);
+            if (!width_end || *width_end != '\0' || !height_end ||
+                *height_end != '\0' || width < 320 || width > 16384 ||
+                height < 240 || height > 16384) {
+                MATTER_LOGE(
+                    "editor",
+                    "FATAL: MATTER_WINDOW_WIDTH/HEIGHT must be integers in [320,16384]x[240,16384]\n");
+                glfwTerminate();
+                return 1;
+            }
+            initial_window_width = static_cast<int>(width);
+            initial_window_height = static_cast<int>(height);
+        }
+    }
     GLFWwindow* window = glfwCreateWindow(
-        replay.valid && replay.frame_width > 0
-            ? static_cast<int>(replay.frame_width) : 1280,
-        replay.valid && replay.frame_height > 0
-            ? static_cast<int>(replay.frame_height) : 720,
+        initial_window_width, initial_window_height,
         "MatterEngine3 World Viewer", nullptr, nullptr);
     if (!window) {
         MATTER_LOGE("editor", "FATAL: glfwCreateWindow failed\n");
@@ -973,6 +1428,15 @@ int main() {
         return 1;
     }
 
+    // -----------------------------------------------------------------------
+    // Camera and scripted camera paths
+    // -----------------------------------------------------------------------
+    // Layered, later layers overwriting earlier ones: the compiled default
+    // (init_camera), then a replay's recorded projection, then MATTER_CAM.
+    // The world's own authored camera is adopted later still — at the first
+    // successful bake, via apply_world_camera_after_bake — and only when
+    // neither a replay nor MATTER_CAM has already fixed the pose.
+    // -----------------------------------------------------------------------
     matter::CameraDesc camera{};
     init_camera(camera);
     const char* initial_camera_env = std::getenv("MATTER_CAM");
@@ -1034,11 +1498,21 @@ int main() {
         } else {
             MATTER_LOGE("editor", "FATAL: MATTER_CAM_PATH: cannot open %s\n",
                          value);
+            ui.shutdown();
+            engine.reset();
+            vulkan.reset();
+            glfwDestroyWindow(window);
+            glfwTerminate();
             return 1;
         }
         if (cam_path.empty()) {
             MATTER_LOGE("editor", "FATAL: MATTER_CAM_PATH: %s has no poses\n",
                          value);
+            ui.shutdown();
+            engine.reset();
+            vulkan.reset();
+            glfwDestroyWindow(window);
+            glfwTerminate();
             return 1;
         }
         // Hold the LOD trace closed until the path actually starts, so the
@@ -1083,6 +1557,9 @@ int main() {
     // would drop the last few poses' results.
     int cam_path_drain = 0;
 
+    // -----------------------------------------------------------------------
+    // World selection, ViewerStats, and the property registry
+    // -----------------------------------------------------------------------
     int initial_world = 0;
     // MATTER_WORLD still wins, so a replay can be re-aimed at another world
     // deliberately; absent that, the shot's own world is authoritative.
@@ -1092,12 +1569,16 @@ int main() {
     if (const char* value = world_env) {
         std::string wanted(value);
         std::transform(wanted.begin(), wanted.end(), wanted.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
+                       [](unsigned char c) {
+                           return static_cast<char>(std::tolower(c));
+                       });
         bool found = false;
         for (size_t i = 0; i < worlds.size(); ++i) {
             std::string candidate = worlds[i].world_name;
             std::transform(candidate.begin(), candidate.end(), candidate.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
+                           [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
             if (candidate == wanted) {
                 initial_world = static_cast<int>(i);
                 found = true;
@@ -1120,6 +1601,10 @@ int main() {
     stats.world_current = initial_world;
     stats.gpu_cull_active = true;
     stats.connected = true;
+    // MATTER_HIZ is recognised only so old scripts get an answer instead of
+    // silence: the Hi-Z occlusion buffer it selected no longer exists (it could
+    // not work on tile-sized clusters) and the FIFO `hiz` verb prints the same
+    // kind of notice, pointing at viewer.debug.occlusion_draw_cull.
     if (std::getenv("MATTER_HIZ"))
         std::printf("MATTER_HIZ: not available in Vulkan milestone; ignored\n");
     float min_projected_size = 0.0f;
@@ -1140,7 +1625,8 @@ int main() {
     camera_prefs.far_plane = camera.far_plane;
     viewer::EditorProps editor_props;
     editor_props.init(stats, camera_prefs, ui.toolbar_state(),
-                      ui.console_state(), !replay.valid);
+                      ui.console_state(),
+                      !replay.valid && !registration_census_mode);
     camera.far_plane = camera_prefs.far_plane;
     // render.gpu.ray_tracing has now been through every layer that can set it
     // (compiled default -> User scope file -> MATTER_DISABLE_VK_RT via
@@ -1177,6 +1663,14 @@ int main() {
     // the world-authored values above it have been adopted.
     bool apply_world_props_after_bake = true;
 
+    // -----------------------------------------------------------------------
+    // Session lifecycle
+    // -----------------------------------------------------------------------
+    // open_world() is the ONE place a matter::WorldSession is created — used
+    // both for the initial open here and for every world switch at the
+    // post-frame seam, so the two can never drift. It deliberately does not
+    // request a bake: SessionBinding owns bake ordering.
+    // -----------------------------------------------------------------------
     const std::string shared_lib = shared_lib_root();
     auto open_world = [&](const viewer::WorldEntry& entry) {
         matter::WorldDesc desc;
@@ -1210,6 +1704,17 @@ int main() {
         return 1;
     }
 
+    // -----------------------------------------------------------------------
+    // App-side models, panel state, and the ECS/scene bridges
+    // -----------------------------------------------------------------------
+    // Everything from here to the command-registry section is wiring: the
+    // observable EditorModel and its scheduler, the selection set, simulation
+    // transport, the console log, and the std::function bridges
+    // (FieldCommands / ComponentCommands / SpecializedEditors / SceneCommands)
+    // that let UI code in viewer:: mutate world state without knowing about
+    // flecs or WorldSession. Several of those closures capture `session` by
+    // reference, so they follow a world switch automatically.
+    // -----------------------------------------------------------------------
     // E5c: app-owned observable-model scheduler (event-system.md S I.9). Declared
     // BEFORE editor_model so it OUTLIVES it — the EditorModel's revision Property
     // unregisters from this scheduler in its destructor, so the scheduler must
@@ -1222,6 +1727,8 @@ int main() {
     editor_model.attach_scheduler(property_scheduler);
     viewer::SelectionSet selection_set;
     matter::scene::SimulationControl sim_control;
+    viewer::CharacterWalkController character_walk;
+    viewer::CharacterJumpEdge character_jump;
     viewer::ConsoleLog console_log;
     // Mirror the engine-wide matter::log stream into this panel for as long as
     // console_log lives (guard removes the sink before console_log destructs).
@@ -1282,6 +1789,11 @@ int main() {
     field_commands.set_quat = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, matter::Quaternion v) {
         return field_set_quat(session.get(), id, c, f, v);
     };
+    // Not a field: the parent's world matrix, so the transform gizmo can place
+    // its handle where a CHILD entity is actually drawn (see gizmo.cpp).
+    field_commands.get_parent_world_matrix = [&session](matter::scene::SceneEntityId id, matter::Mat4f& out) {
+        return field_get_parent_world_matrix(session.get(), id, out);
+    };
     viewer::ComponentCommands component_commands;
     component_commands.add_component = [&session](matter::scene::SceneEntityId id, const char* name) {
         return component_add(session.get(), id, name);
@@ -1305,6 +1817,15 @@ int main() {
             matter::scene::PartInstance copy = e.get<matter::scene::PartInstance>();
             copy.part_hash = new_hash;
             e.set<matter::scene::PartInstance>(copy);
+            return true;
+        };
+    specialized_editors.part_commands().current_part_hash =
+        [&session](matter::scene::SceneEntityId id, uint64_t& out_hash) {
+            out_hash = 0;
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            if (!e.is_valid() || !e.has<matter::scene::PartInstance>()) return false;
+            out_hash = e.get<matter::scene::PartInstance>().part_hash;
             return true;
         };
     specialized_editors.part_commands().list_available_parts =
@@ -1387,20 +1908,25 @@ int main() {
             e.remove<matter::streaming::SectorStreaming>();
             return true;
         };
-    specialized_editors.streaming_commands().set_follow_camera =
-        [](bool /*follow*/) {
-            // Stub: per-anchor follow-camera toggling isn't wired to
-            // matter_viewer::StreamingAnchorState yet (that controller
-            // currently tracks a single global anchor, not a per-entity
-            // flag). Follow-camera behavior today is still driven by
-            // Ui::update_sector_streaming / streaming_anchor_controller.
-        };
-    specialized_editors.streaming_commands().regenerate =
-        [](uint64_t /*seed*/) {
-            // Stub: no reseed entry point is exposed by
-            // matter::streaming::SectorStreaming / sector_streamer.cpp yet.
-        };
+    // set_follow_camera and regenerate are deliberately left NULL rather than
+    // assigned a do-nothing lambda. There is nothing behind either one yet —
+    // per-anchor follow-camera is not wired to
+    // matter_viewer::StreamingAnchorState (that controller tracks a single
+    // global anchor, not a per-entity flag; follow-camera behaviour today
+    // comes from Ui::update_sector_streaming / streaming_anchor_controller),
+    // and no reseed entry point is exposed by
+    // matter::streaming::SectorStreaming / sector_streamer.cpp. A null command
+    // is what the Properties panel greys the control out on, so the user is
+    // told the action is unavailable instead of clicking into a no-op.
 
+    // -----------------------------------------------------------------------
+    // Frame-loop state
+    // -----------------------------------------------------------------------
+    // Per-key rising-edge latches for key_pressed(), the saved windowed rect
+    // for F11 presentation mode, and the `reported_*` mirrors that make the
+    // DLSS and RT reporters below print only when something actually changed
+    // (a per-frame print would drown a several-thousand-frame soak).
+    // -----------------------------------------------------------------------
     bool left_mouse_down = false;
     bool camera_capture = false;
     bool tab_down = false;
@@ -1779,6 +2305,15 @@ int main() {
     // part_workbench.h's architecture note. cache/lab-scratch is entirely
     // separate from production worlds' <project>/.cache/<world> roots.
     bake_lab.workbench().configure(vulkan.get(), examples_root(), shared_lib);
+    // -----------------------------------------------------------------------
+    // Capture control: MATTER_SCREENSHOT / MATTER_REPLAY
+    // -----------------------------------------------------------------------
+    // A replay run IS a screenshot run — it reuses the settle/readback/quit
+    // path wholesale and differs only in cropping the result to the recorded
+    // rect. The `apply_world_*_after_bake` / `*_override_ready` flags declared
+    // just below are the one-shot adoption latches described in the file
+    // header's "sharp edges".
+    // -----------------------------------------------------------------------
     // Frames to hold after the world is ready before reading back. Three is
     // enough for a raster frame, but RT worlds accumulate through a temporal
     // denoiser, so an early capture catches whatever the accumulation happened
@@ -1898,8 +2433,22 @@ int main() {
         ui.set_hide_ui(true);
     }
 
+    // -----------------------------------------------------------------------
+    // MATTER_CMD_FIFO command stream
+    // -----------------------------------------------------------------------
+    // POSIX: a real named FIFO, created here and opened O_RDWR|O_NONBLOCK so
+    // the read side never blocks and never sees EOF between writers; it is
+    // unlinked at shutdown.
+    // Windows: there is no POSIX FIFO, so the same path names an append-only
+    // file that the loop polls by size, remembering its own read offset
+    // (`cmd_offset`) and rewinding to 0 if the file shrinks — i.e. if a driver
+    // truncated or replaced it.
+    // Either way the bytes land in `cmd_buffer`, are split on newlines into
+    // `fifo_pending_lines`, and are dispatched under the `fifo_block` gate.
+    // -----------------------------------------------------------------------
+#ifndef _WIN32
     int cmd_fd = -1;
-#ifdef _WIN32
+#else
     HANDLE cmd_handle = INVALID_HANDLE_VALUE;
     LARGE_INTEGER cmd_offset{};
 #endif
@@ -2051,11 +2600,17 @@ int main() {
         if (fatal_error_reason.empty()) fatal_error_reason = reason;
     };
     enum class PerfPhase { WaitingForBake, Warming, Sampling, Complete };
+    constexpr std::uint32_t kPerfStaticStableFrames = 30u;
     PerfPhase perf_phase = PerfPhase::WaitingForBake;
     std::chrono::steady_clock::time_point perf_phase_start{};
+    std::uint64_t perf_last_static_vertex_uploads = 0u;
+    std::uint64_t perf_last_static_cluster_uploads = 0u;
+    std::uint32_t perf_static_stable_frames = 0u;
+    bool perf_observed_static_uploads = false;
     PerfCounters perf_start_counters{};
     uint64_t perf_start_dlss_resets = 0;
     std::vector<double> perf_frame_times;
+    std::vector<double> perf_water_animation_times;
     auto previous_time = std::chrono::steady_clock::now();
     double hud_frame_ms = 0.0;
 
@@ -2071,9 +2626,19 @@ int main() {
     const matter::evt::lane app_lane = matter::evt::lane::app;
     registry.claim_lane(app_lane);
 
+    auto reset_character_walk = [&]() {
+        const bool was_walking = character_walk.enabled();
+        character_walk.reset(session->ecs());
+        character_jump.reset();
+        if (was_walking) {
+            camera_capture = false;
+            camera_controller.set_capture(window, false, false);
+        }
+    };
     // Clears app-side models referencing a dead/reloaded world. The E5 scene
     // adapter resnapshots here; E4b clears selection + editor selection + sim.
     auto clear_app_models = [&]() {
+        reset_character_walk();
         selection_set.clear();
         editor_model.clear_selection();
         sim_control = matter::scene::SimulationControl{};
@@ -2099,10 +2664,6 @@ int main() {
                          std::vector<matter::evt::Subscription>& out) {
             scene_adapter.build(session_hub, out);
         });
-    // Startup bind-then-request: builds the bridge (snapshot-primes the scene
-    // model) + opens the first command epoch BEFORE requesting the initial bake.
-    binding.initialize();
-
     // ---- Registered viewer commands (S I.11 migration map) ------------------
     // Handlers live where the poll-site code lived (this main loop / the lab
     // shell). All App-scoped and non-undoable. Same-thread UI triggers reach
@@ -2339,10 +2900,64 @@ int main() {
                 return viewer::FifoSimTransport::Result::failed(sim_err);
             }
             if (cmd.action == Action::Stop) {
+                reset_character_walk();
                 selection_set.clear();
                 editor_model.clear_selection();
             }
             return viewer::FifoSimTransport::Result::succeeded(true);
+        });
+
+    // This command owns authored-player input, so queued commands may never
+    // cross a SessionBinding epoch. G executes this same typed policy.
+    auto reg_fifo_character = registry.must_register_handler<viewer::FifoCharacter>(
+        matter::evt::CommandScope::ActiveSession, app_lane,
+        [&](const viewer::FifoCharacter& cmd) {
+            using Action = viewer::FifoCharacter::Action;
+            std::string character_error;
+            bool ok = false;
+            switch (cmd.action) {
+                case Action::Walk: {
+                    const auto* state = session->ecs().try_get<matter::ecs::WorldRuntimeState>();
+                    const auto collision = session->terrain_collision_status().state;
+                    const bool ready = state && state->status == matter::ecs::WorldStatus::Ready &&
+                        (collision == matter::TerrainCollisionState::Installed ||
+                         collision == matter::TerrainCollisionState::Disabled) &&
+                        !binding.pending_reload() && binding.pending_switch() < 0;
+                    ok = character_walk.set_enabled(session->ecs(), sim_control,
+                                                    cmd.enabled, ready, character_error);
+                    if (ok) {
+                        character_jump.reset();
+                        camera_capture = character_walk.enabled();
+                        camera_controller.set_capture(window, camera_capture, camera_prefs.raw_mouse_motion);
+                    }
+                    break;
+                }
+                case Action::Intent:
+                    ok = character_walk.set_intent(session->ecs(), cmd.direction, cmd.sprint, character_error);
+                    // Make same-pump status observe the accepted persistent
+                    // direction; sample never consumes a pending jump.
+                    if (ok) character_walk.sample(session->ecs(), sim_control.mode(), {});
+                    break;
+                case Action::ClearIntent:
+                    character_walk.clear_intent(session->ecs());
+                    character_jump.reset();
+                    ok = true;
+                    break;
+                case Action::Jump:
+                    ok = character_walk.latch_jump(session->ecs(), sim_control.mode(), character_error);
+                    break;
+                case Action::Status: {
+                    std::string json;
+                    ok = character_walk.status_json(session->ecs(), sim_control.mode(), cmd.label, json, character_error);
+                    if (ok) std::printf("character_status %s\n", json.c_str());
+                    break;
+                }
+            }
+            if (!ok) {
+                std::printf("character: failed %s\n", character_error.c_str());
+                return viewer::FifoCharacter::Result::failed(character_error);
+            }
+            return viewer::FifoCharacter::Result::succeeded(true);
         });
 
     // ---- E5c scene-edit handlers (ActiveSession; SceneService) --------------
@@ -2378,6 +2993,22 @@ int main() {
             return viewer::SceneReparentEntity::Result::succeeded(
                 session->scene_service().reparent(cmd.child, cmd.new_parent));
         });
+
+    // The diagnostic reaches the same live registries and actual production
+    // handler registrations as normal startup, but exits before
+    // SessionBinding::initialize() requests the first (expensive) world bake.
+    // It is intentionally machine-readable and has no source/string inventory
+    // fallback: registration handles must have executed and still be live.
+    if (registration_census_mode) {
+        emit_registration_census(worlds, editor_props.registry(), registry);
+        editor_props.shutdown();
+        ui.shutdown();
+        return 0;
+    }
+
+    // Startup bind-then-request: builds the bridge (snapshot-primes the scene
+    // model) + opens the first command epoch BEFORE requesting the initial bake.
+    binding.initialize();
 
     // Scene-tree mutation bridge (E5c): same std::function idiom as
     // FieldCommands, but each closure now issues a SceneService ActiveSession
@@ -2559,6 +3190,19 @@ int main() {
         return true;
     };
 
+    // =======================================================================
+    // Frame loop
+    // =======================================================================
+    // Exits on: the window's close button, `quit_requested` (a MATTER_SCREENSHOT
+    // capture landing, a FIFO `quit` once nothing is in flight, a finished perf
+    // run, or MATTER_CAM_PATH_EXIT), or `fatal_error`. The per-frame ordering
+    // — and the two timing rules it exists to preserve — are laid out in the
+    // file header.
+    //
+    // `phase_split()` below is a rolling split timer: each call returns the ms
+    // since the previous split, so the recorded phases exactly partition
+    // perf_frame_start..end_frame and sum to the frame time they decompose.
+    // =======================================================================
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
         // swapchain acquire are part of the user-visible frame cadence.
@@ -2581,6 +3225,10 @@ int main() {
             return ms;
         };
         glfwPollEvents();
+        // Also disarm while minimized: begin_frame may skip the later input
+        // sample, and holding Space through refocus must not create a press.
+        if (glfwGetWindowAttrib(window, GLFW_FOCUSED) != GLFW_TRUE)
+            character_jump.reset();
         // Retire preview textures queued on earlier frames. Must run before any
         // drawing: they are freed here precisely because freeing them at the
         // point of retirement would pull a descriptor out from under the draw
@@ -2666,6 +3314,9 @@ int main() {
                     (editor_props.gpu_prefs().dlss_mode + 1) % 4);
             }
         }
+        // ---- FIFO: drain bytes, split into lines, dispatch under the gate ---
+        // Reading is unconditional every frame; only DISPATCH is gated by
+        // `fifo_block`. See the file header's "FIFO / QA timeline" note.
 #ifndef _WIN32
         if (cmd_fd >= 0) {
             char bytes[512];
@@ -2725,18 +3376,24 @@ int main() {
                     if (!presentation_command.success) {
                         std::printf("%s\n",
                                     presentation_command.error.c_str());
-                    } else if (const auto* command =
+                    } else if (const auto* render_path_command =
                                    std::get_if<viewer::FifoRenderPath>(
                                        &presentation_command.command)) {
-                        registry.dispatch(*command);
-                    } else if (const auto* command =
+                        registry.dispatch(*render_path_command);
+                    } else if (const auto* history_reset_command =
                                    std::get_if<viewer::FifoHistoryReset>(
                                        &presentation_command.command)) {
-                        registry.dispatch(*command);
-                    } else if (const auto* command =
+                        registry.dispatch(*history_reset_command);
+                    } else if (const auto* character_command =
+                                   std::get_if<viewer::FifoCharacter>(
+                                       &presentation_command.command)) {
+                        const auto ticket = registry.dispatch(*character_command);
+                        if (ticket.ready() && ticket.status() != matter::evt::CommandStatus::Success)
+                            std::printf("character: dispatch failed (%s)\n", matter::evt::to_string(ticket.status()));
+                    } else if (const auto* wait_frames_command =
                                    std::get_if<viewer::FifoWaitFrames>(
                                        &presentation_command.command)) {
-                        const auto ticket = registry.dispatch(*command);
+                        const auto ticket = registry.dispatch(*wait_frames_command);
                         // D-06: dispatch() can finalize the ticket
                         // SYNCHRONOUSLY as a rejection (no handler / registry
                         // shut down / queue full) before pump() ever runs the
@@ -2758,10 +3415,10 @@ int main() {
                             // below in the completed_waits loop after advance()).
                             fifo_block = FifoBlockKind::WaitFrames;
                         }
-                    } else if (const auto* command =
+                    } else if (const auto* screenshot_now_command =
                                    std::get_if<viewer::FifoScreenshotNow>(
                                        &presentation_command.command)) {
-                        registry.dispatch(*command);
+                        registry.dispatch(*screenshot_now_command);
                         // D-02: shot_now blocks like `shot` -- see the release
                         // check beside fifo_quit_pending's, after end_frame.
                         // Recommended for consistency (control-surface.md):
@@ -2994,13 +3651,17 @@ int main() {
                     // multi-world sweep.
                     std::string wanted(word);
                     std::transform(wanted.begin(), wanted.end(), wanted.begin(),
-                                   [](unsigned char ch) { return std::tolower(ch); });
+                                   [](unsigned char ch) {
+                                       return static_cast<char>(std::tolower(ch));
+                                   });
                     int world_index = -1;
                     for (size_t i = 0; i < worlds.size(); ++i) {
                         std::string candidate = worlds[i].world_name;
                         std::transform(candidate.begin(), candidate.end(),
                                        candidate.begin(),
-                                       [](unsigned char ch) { return std::tolower(ch); });
+                                       [](unsigned char ch) {
+                                           return static_cast<char>(std::tolower(ch));
+                                       });
                         if (candidate == wanted) {
                             world_index = static_cast<int>(i);
                             break;
@@ -3101,6 +3762,17 @@ int main() {
         }
 
         phase.poll = phase_split();   // events + input, everything up to acquire
+        // ---- Frame begin: fence wait + swapchain acquire --------------------
+        // A "zero-sized" failure is the minimized-window case: wait briefly on
+        // events and retry, without treating it as an error. Any other failure
+        // breaks the loop. begin_frame also rebuilds an out-of-date swapchain,
+        // which is why a window resize (F11 presentation mode,
+        // MATTER_TEST_RESIZE, a user drag) needs no handling of its own here.
+        //
+        // NOTE: the `continue` on the zero-sized path skips the whole rest of
+        // the iteration, including the end-of-frame capture/quit resolution.
+        // That is why the shot and issue-capture deadman checks sit ABOVE this
+        // point rather than below it.
         matter::VulkanFrame frame{};
         if (!vulkan->begin_frame(frame, error)) {
             if (error.find("zero-sized") != std::string::npos) {
@@ -3138,6 +3810,15 @@ int main() {
                 selection_pivot, pivot_radius);
         }
 
+        // ---- UI pass --------------------------------------------------------
+        // `frame` is the swapchain frame; `render_frame` is what the 3D scene
+        // renders into — normally the offscreen viewport image that ImGui then
+        // samples, but when the UI is hidden (MATTER_HIDE_UI or F11
+        // presentation mode) viewport_render_frame hands back the swapchain
+        // frame directly, so the scene goes straight to the screen.
+        // A false `ui_frame_ready` is a device-surfacing failure and is
+        // reported through mark_device_fatal; the rest of the frame still runs
+        // its non-UI work.
         const bool ui_frame_ready = ui.begin_frame(frame, error);
         matter::VulkanFrame render_frame = frame;
         // Reset before the Bake Lab tab bar draws so wants_viewport() below
@@ -3154,13 +3835,22 @@ int main() {
             // delta-driven by the SessionBinding scene adapter, and its flattened
             // rows are re-derived at property_scheduler.flush_dirty() (after tick)
             // only on ticks that actually changed rows.
-            // Gizmo mode hotkeys (G/T = translate, R = rotate, S = scale).
+            // G toggles authored-player walking; T/R/S retain gizmo control
+            // when not walking. Walking's S must not also select gizmo scale.
             // Only when ImGui isn't capturing keyboard/text input, so typing
             // in a Properties field doesn't retarget the gizmo.
             {
                 const ImGuiIO& io = ImGui::GetIO();
-                if (!io.WantTextInput && !io.WantCaptureKeyboard) {
-                    ui.update_gizmo_hotkeys();
+                if (!io.WantTextInput && !io.WantCaptureKeyboard &&
+                    glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE) {
+                    const bool walk_toggle = ImGui::IsKeyPressed(ImGuiKey_G, false);
+                    if (walk_toggle) {
+                        viewer::FifoCharacter command;
+                        command.action = viewer::FifoCharacter::Action::Walk;
+                        command.enabled = !character_walk.enabled();
+                        registry.execute(command);
+                    }
+                    if (!character_walk.enabled() && !walk_toggle) ui.update_gizmo_hotkeys();
                     // Task 13: F focuses the camera on the current selection;
                     // Delete removes every selected entity (Edit/Pause only).
                     if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
@@ -3219,6 +3909,7 @@ int main() {
                     if (!sim_control.stop(session->ecs(), sim_err)) {
                         MATTER_LOGE("sim", "stop: %s\n", sim_err.c_str());
                     } else {
+                        reset_character_walk();
                         selection_set.clear();
                         editor_model.clear_selection();
                     }
@@ -3507,9 +4198,9 @@ int main() {
         }
 
         // UI actions (including Frame Anchor) and the gizmo have finished. Keep
-        // this snapshot immutable through streaming, tick, scene render, and UI
-        // submission so every current-frame camera consumer agrees.
-        const matter::CameraDesc frame_camera = camera;
+        // this pose through streaming/picking. Walking refreshes its eye after
+        // the fixed tick below, before render, without changing yaw/pitch.
+        matter::CameraDesc frame_camera = camera;
 
         {
             const bool mouse_down =
@@ -3629,42 +4320,51 @@ int main() {
         if (bake_ready) ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera,
                                    !stats.freeze_stream_anchor);
-        matter::TickDesc tick{};
-        // Slow motion scales the frame delta only. fixed_delta_seconds is left
-        // alone so the fixed step keeps its size and simply occurs less often;
-        // scaling it would change what the simulation does, not how fast it
-        // runs. A single-frame Step is exempt -- it must advance one whole
-        // fixed step regardless of the inspection rate.
-        tick.frame_delta_seconds = dt * ui.sim_time_scale();
-        // Presentation cadence (animation pose-LOD refresh) always runs on the
-        // unscaled wall delta: slow motion changes what is simulated per frame,
-        // never how often the shown pose refreshes.
-        tick.presentation_delta_seconds = dt;
-        if (sim_control.should_advance_fixed()) {
-            // Play mode: run physics normally.
-        } else if (sim_control.consume_pending_step()) {
-            tick.max_fixed_steps = 1;
-        } else {
-            // Edit/Pause. This used to pass max_fixed_steps = 0, which
-            // Runtime::tick defines as MALFORMED -- so WorldSession::tick
-            // returned at its invalid guard and skipped everything below it,
-            // including animation reconciliation. The visible symptom was that
-            // an animated entity never produced a binding until you pressed
-            // Play, so the Part Workbench animation tabs were empty in exactly
-            // the mode an author inspects a rig in.
-            //
-            // advance_fixed = false is the sanctioned form: an ordinary,
-            // VALID frame tick that advances no fixed simulation and leaves the
-            // accumulator untouched, so Stop means stopped and resuming
-            // continues from the exact sub-step position it froze at.
-            tick.advance_fixed = false;
-            // Frame-cadence work must not creep forward either while stopped;
-            // the frame pipeline still RUNS (lifecycle reconciliation needs it),
-            // it simply advances nothing.
-            tick.frame_delta_seconds = 0.0f;
+        viewer::CharacterWalkInput walk_input{};
+        const bool accepts_walk_keyboard = character_walk.enabled() && camera_capture && ui_frame_ready &&
+            glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE &&
+            !ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantTextInput &&
+            !viewer::issue_reporter_wants_mouse(issue_state) && !cam_path_running;
+        if (accepts_walk_keyboard) {
+            const float forward = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ? 1.0f : 0.0f) -
+                                  (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ? 1.0f : 0.0f);
+            const float right = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1.0f : 0.0f) -
+                                (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1.0f : 0.0f);
+            float fx = camera.target.x - camera.position.x;
+            float fz = camera.target.z - camera.position.z;
+            const float yaw_length = std::sqrt(fx * fx + fz * fz);
+            if (yaw_length > 1e-6f) { fx /= yaw_length; fz /= yaw_length; }
+            else { fx = 0; fz = -1; }
+            walk_input.world_direction = {fx * forward - fz * right, 0, fz * forward + fx * right};
+            const float length = std::sqrt(walk_input.world_direction.x * walk_input.world_direction.x +
+                                           walk_input.world_direction.z * walk_input.world_direction.z);
+            if (length > 1) {
+                walk_input.world_direction.x /= length;
+                walk_input.world_direction.z /= length;
+            }
+            walk_input.sprint = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                                glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
         }
+        walk_input.jump_pressed = character_jump.update(
+            glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS, accepts_walk_keyboard);
+        const bool was_walking = character_walk.enabled();
+        character_walk.sample(session->ecs(), sim_control.mode(), walk_input);
+        if (was_walking && !character_walk.enabled()) {
+            character_jump.reset();
+            camera_capture = false;
+            camera_controller.set_capture(window, false, false);
+        }
+        const matter::TickDesc tick = viewer::make_editor_tick(sim_control, dt, ui.sim_time_scale());
         phase.ui = phase_split();   // ImGui panel building
         session->tick(tick);
+        matter::Float3 character_eye{};
+        if (character_walk.eye_position(session->ecs(), character_eye)) {
+            camera.target.x += character_eye.x - camera.position.x;
+            camera.target.y += character_eye.y - camera.position.y;
+            camera.target.z += character_eye.z - camera.position.z;
+            camera.position = character_eye;
+            frame_camera = camera;
+        }
         phase.tick = phase_split();   // ECS systems, physics, transform propagation
         // E5c (event-system.md S I.14): flush observable models AFTER tick, so
         // this frame's tick -> SceneChangeTracker::flush -> scene-adapter apply ->
@@ -3795,6 +4495,15 @@ int main() {
                                   "[" + event.module + "] " + event.message);
             }
         }
+        // ---- RenderOptions assembly -----------------------------------------
+        // Rebuilt from scratch every frame out of ViewerStats + EditorProps, so
+        // every control is live with no separate "apply" step. Device
+        // capability is ANDed in HERE, once (RT, wireframe), so no caller can
+        // ask the renderer for something the GPU cannot do. The `use_*_override`
+        // flags are set only once the matching stats field actually holds THIS
+        // world's authored value — see fog_override_ready / sun_override_ready
+        // — and are cleared again for the Part Workbench's isolation session,
+        // which has its own world and its own authored fog and sun.
         matter::RenderOptions options;
         const bool native_rt_requested =
             fifo_render_path_override
@@ -4019,6 +4728,14 @@ int main() {
                 }
             }
         }
+        // ---- Post-render: QA waits, seam trace, stats mirror -----------------
+        // `frame_stats` binds the session's own FrameStats and is read
+        // throughout the rest of the iteration. Note it is always the
+        // PRODUCTION session's, even on a frame where the Part Workbench's
+        // isolation session owned the viewport.
+        //
+        // The long assignment block further down copies it field-by-field into
+        // ViewerStats, which is what the HUD and every panel actually read.
         const matter::FrameStats& frame_stats = session->frame_stats();
         // QA timeline: wait_idle / wait_event release checks. Here (frame_stats
         // just refreshed, and bake_ready reflects this frame's poll_event
@@ -4026,20 +4743,20 @@ int main() {
         // wait_frames' own release is symmetric, after present, below.
         if (fifo_block == FifoBlockKind::WaitIdle) {
             const uint32_t resident = frame_stats.resident_sectors;
-            const auto now = std::chrono::steady_clock::now();
+            const auto idle_now = std::chrono::steady_clock::now();
             if (resident != fifo_wait_idle_last_resident) {
                 fifo_wait_idle_last_resident = resident;
-                fifo_wait_idle_last_change = now;
+                fifo_wait_idle_last_change = idle_now;
             }
             const double settled_for =
-                std::chrono::duration<double>(now - fifo_wait_idle_last_change).count();
+                std::chrono::duration<double>(idle_now - fifo_wait_idle_last_change).count();
             if (bake_ready && settled_for >= fifo_wait_idle_seconds) {
                 const double elapsed =
-                    std::chrono::duration<double>(now - fifo_wait_idle_start).count();
+                    std::chrono::duration<double>(idle_now - fifo_wait_idle_start).count();
                 std::printf("idle: settled after %.1fs\n", elapsed);
                 fifo_block = FifoBlockKind::None;
             } else if (fifo_wait_idle_timeout_s > 0.0 &&
-                       std::chrono::duration<double>(now - fifo_wait_idle_start)
+                       std::chrono::duration<double>(idle_now - fifo_wait_idle_start)
                                .count() >= fifo_wait_idle_timeout_s) {
                 // D-04: explicit deadline expired without ever settling --
                 // mirrors wait_event's timeout branch below: print and
@@ -4325,6 +5042,19 @@ int main() {
             }
         }
 
+        // ---- Swapchain readback: screenshots and issue shots -----------------
+        // At most ONE capture per frame, chosen by the priority of the
+        // if/else-if chain below: MATTER_SCREENSHOT (which also quits once its
+        // PNG lands), then a settled FIFO `shot`, then a FIFO `shot_now` via
+        // fifo_present, then an F9/F10/`issue capture` readback. The issue
+        // readback is deliberately NOT gated on instances_drawn — "the world
+        // renders nothing" is exactly the kind of defect worth photographing.
+        //
+        // The readback runs BEFORE VulkanDevice::end_frame, i.e. before
+        // present. A failure re-arms the relevant settle counter so the next
+        // frame retries; five consecutive failures is treated as a device
+        // fatal (mark_device_fatal), on the theory that it is a plausible
+        // device-loss symptom.
         bool capture = false;
         bool issue_capture = false;
         bool fifo_immediate_capture = false;
@@ -4480,8 +5210,10 @@ int main() {
                 if ((camera_input_order.camera_update_allowed() ||
                      camera_capture) &&
                     !viewer::issue_reporter_wants_mouse(issue_state) &&
-                    !cam_path_running) {
-                    camera_controller.update(window, dt, camera, camera_prefs);
+                    !cam_path_running && glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE) {
+                    auto effective_camera_prefs = camera_prefs;
+                    if (character_walk.enabled()) effective_camera_prefs.move_speed = 0;
+                    camera_controller.update(window, dt, camera, effective_camera_prefs);
                 }
             }
             if (capture && issue_capture) {
@@ -4694,13 +5426,22 @@ int main() {
                                  capture_path.c_str());
                     fatal_error = true;
                 } else {
-                    screenshot_failures = 0;
-                    std::printf("screenshot written to %s\n",
-                                capture_path.c_str());
+                    bool completion_written = true;
                     if (capture_path == shot_path || fifo_immediate_capture) {
                         const std::string done = capture_path + ".done";
-                        if (FILE* file = std::fopen(done.c_str(), "w"))
-                            std::fclose(file);
+                        completion_written =
+                            viewer::write_screenshot_completion_marker(done);
+                    }
+                    if (!completion_written) {
+                        MATTER_LOGE(
+                            "screenshot",
+                            "screenshot completion marker FAILED %s.done\n",
+                            capture_path.c_str());
+                        fatal_error = true;
+                    } else {
+                        screenshot_failures = 0;
+                        std::printf("screenshot written to %s\n",
+                                    capture_path.c_str());
                     }
                     if (capture_path == screenshot_path) quit_requested = true;
                 }
@@ -4739,10 +5480,26 @@ int main() {
             const auto perf_now = std::chrono::steady_clock::now();
             if (perf_phase == PerfPhase::WaitingForBake) {
                 if (bake_ready && frame_stats.instances_drawn > 0) {
-                    perf_phase = PerfPhase::Warming;
-                    perf_phase_start = perf_now;
-                    std::printf("perf: bake ready; warming for %.3f seconds\n",
-                                perf.warmup_seconds);
+                    const bool static_uploads_unchanged =
+                        perf_observed_static_uploads &&
+                        frame_stats.vk_vertex_uploads ==
+                            perf_last_static_vertex_uploads &&
+                        frame_stats.vk_cluster_uploads ==
+                            perf_last_static_cluster_uploads;
+                    perf_static_stable_frames = static_uploads_unchanged
+                        ? perf_static_stable_frames + 1u : 0u;
+                    perf_last_static_vertex_uploads =
+                        frame_stats.vk_vertex_uploads;
+                    perf_last_static_cluster_uploads =
+                        frame_stats.vk_cluster_uploads;
+                    perf_observed_static_uploads = true;
+                    if (perf_static_stable_frames >= kPerfStaticStableFrames) {
+                        perf_phase = PerfPhase::Warming;
+                        perf_phase_start = perf_now;
+                        std::printf(
+                            "perf: static geometry stable for %u frames; warming for %.3f seconds\n",
+                            kPerfStaticStableFrames, perf.warmup_seconds);
+                    }
                 }
             } else if (perf_phase == PerfPhase::Warming &&
                        std::chrono::duration<double>(perf_now - perf_phase_start)
@@ -4752,10 +5509,13 @@ int main() {
                 perf_start_counters = capture_perf_counters(frame_stats);
                 perf_start_dlss_resets = frame_stats.dlss_reset_count;
                 perf_frame_times.clear();
+                perf_water_animation_times.clear();
                 std::printf("perf: sampling for %.3f seconds\n",
                             perf.sample_seconds);
             } else if (perf_phase == PerfPhase::Sampling) {
                 perf_frame_times.push_back(perf_frame_cadence_ms);
+                perf_water_animation_times.push_back(
+                    frame_stats.gpu_water_animation_ms);
                 if (std::chrono::duration<double>(perf_now - perf_phase_start)
                         .count() >= perf.sample_seconds) {
                     const PerfCounters perf_finish_counters =
@@ -4764,7 +5524,9 @@ int main() {
                         vulkan->validation_error_count();
                     if (!write_perf_result(
                             perf, worlds[stats.world_current].world_name,
-                            perf_frame_times, perf_start_counters,
+                            perf_frame_times,
+                            perf_water_animation_times,
+                            perf_start_counters,
                             perf_finish_counters, frame_stats, stats,
                             perf_start_dlss_resets,
                             validation_errors, perf_error)) {
@@ -5054,6 +5816,21 @@ int main() {
         }
     }
 
+    // =======================================================================
+    // Shutdown
+    // =======================================================================
+    // Order here is load-bearing and partly MANUAL. GPU-owning objects that are
+    // stack locals of main() — issue_previews, the Bake Lab workbench's
+    // isolation session, and the WorldSession itself — would otherwise be
+    // destroyed only when main() returns, i.e. after vulkan.reset() had already
+    // killed the device. Each is therefore released explicitly below, and
+    // ui.shutdown() runs after issue_previews.shutdown() because the preview
+    // handles are ImGui descriptor sets that need the ImGui Vulkan backend
+    // alive to remove.
+    //
+    // Exit code: 1 if the device counted any Vulkan validation error over the
+    // run, otherwise 1 if `fatal_error`, otherwise 0.
+    // =======================================================================
     // Idempotent: a completed MATTER_CAM_PATH already closed it. This covers a
     // run that ended some other way (window closed, fatal error) so the trace
     // still gets its summary line rather than being silently truncated.
@@ -5063,7 +5840,14 @@ int main() {
     print_seam_summary("shutdown");
 
 #ifndef _WIN32
-    if (cmd_fd >= 0) close(cmd_fd);
+    // Close once and disarm: the symmetric teardown further down (the partner
+    // of the Windows CloseHandle) also closes cmd_fd, and closing the same
+    // descriptor twice can take out an unrelated fd that the runtime handed
+    // out for the same number in between.
+    if (cmd_fd >= 0) {
+        close(cmd_fd);
+        cmd_fd = -1;
+    }
     if (fifo_path) unlink(fifo_path);
 #endif
     if (camera_capture) camera_controller.set_capture(window, false, false);

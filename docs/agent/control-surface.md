@@ -17,7 +17,9 @@ argv-based CLI. Every startup and runtime behavior is driven by:
 Output is `stdout`/`stderr` text (one line per event/ack/error — see the verb
 table in §b for exact wording) plus PNG sidecars: the FIFO `shot` and
 `shot_now` verbs also write `<path>.done` once the PNG is on disk, so a
-script can poll for the sidecar instead of racing the file write.
+script can poll for the sidecar instead of racing the file write. The marker
+contains `captured` plus a newline; a missing or empty marker is not a
+successful capture.
 (`MATTER_SCREENSHOT`/`MATTER_REPLAY_OUT` captures do NOT write a sidecar —
 those runs quit after writing, so poll for process exit instead.)
 
@@ -103,6 +105,84 @@ see the comment at the `STATS,` `printf` in `main.cpp` for the exact current
 field list, which has grown twice (task 14's timing lanes, M4's GPU-timestamp
 lanes) without breaking older parsers.
 
+### Authored character walking
+
+`character` is a typed ActiveSession command, available without a test-mode
+environment variable. Queued commands from an old session epoch cannot operate
+on a replacement world. The player is the unique authored `river-player`
+identity, resolved by its shared authored-id hash and nonzero generation on
+each operation; no anonymous player is spawned.
+
+| Grammar | Behavior |
+|---|---|
+| `character walk on` | Validate the player and Ready session, capture the cursor, and enter/resume Play. Configured collision must be installed; a deliberately collision-disabled or installed-empty world is allowed. |
+| `character walk off` | Release the cursor and disable walking; clear persistent/live intent and any jump latch, but do not Stop simulation. |
+| `character intent <world_x> <world_z> <0-or-1>` | Set persistent world-space XZ direction and sprint (exactly `0` or `1`). Requires walking enabled; overrides live directional input even without window focus. |
+| `character intent clear` | Clear the override, direction, sprint, pending jump, and live Space arming. Safe even when disabled; normal live input resumes on subsequent samples. |
+| `character jump` | Latch one press while walking in Play/Pause. Edit or disabled walking rejects it. Repeated requests before a fixed tick still represent one pending latch. |
+| `character status <label>` | Print one `character_status ` prefix followed by a JSON object, without changing state. Works in Edit/disabled mode if the player is valid. |
+
+Labels are 1–64 ASCII letters, digits, `_`, or `-`. Missing/extra tokens,
+nonfinite numbers, unsafe labels, unknown actions, and other sprint spellings
+are rejected. Handler failures print `character: failed <reason>` and return a
+failed command result. A missing/ambiguous/invalid player or changed bound
+generation explicitly fails diagnostics/input; the next input sample disables
+walking and zeros authored-player intent. No fabricated origin is reported.
+Stop and world replacement/reload reset walking, the identity binding,
+overrides, and Space arming; Stop may recreate the player under its original
+snapshot identity, which must be explicitly re-enabled.
+
+G uses the same walking transition as FIFO. With cursor capture and accepted
+keyboard focus, WASD is camera-yaw-relative and normalized in XZ; Shift sets
+sprint (the fixed controller applies exactly 1.5× speed). G takes precedence
+over gizmo translate; T/R/S remain gizmo hotkeys outside walking. Space emits
+only a released-then-pressed edge: focus/UI keyboard-capture loss disarms it,
+so holding Space through refocus cannot jump. Losing focus zeros live direction
+without clearing an explicit FIFO override or an already pending jump.
+
+Direction is clamped to magnitude one, with Y zero. Units are world meters and
+seconds. Simulation alone moves the capsule on fixed ticks; camera eye follows
+the resulting capsule center plus `(0, height/2 - 0.1, 0)` after each tick.
+Mouse yaw/pitch remain camera-owned, free-fly translation is suppressed during
+walking, and the existing single camera-follow streaming anchor is unchanged.
+
+Status schema (numbers are finite; counters/identity are JSON integers):
+
+```json
+{"label":"before_step","authored_id":"river-player","scene_id":123,"generation":7,"mode":"pause","walk_enabled":true,"position":[2,10,3],"velocity":[0,0,0],"grounded":false,"fixed_ticks":0,"jumps_consumed":0,"jumps_started":0,"jump_pending":true,"direction":[1,0,0],"sprint":false}
+```
+
+`scene_id` above is illustrative; it is the authored hash, not a Flecs handle.
+`mode` is `edit`, `play`, or `pause`. `position`, `velocity`, and `direction`
+are `[x,y,z]`. `fixed_ticks` counts successful controller fixed updates;
+`jumps_consumed` counts consumed latches (including airborne presses), while
+`jumps_started` counts grounded launches. `jump_pending` remains true through
+render-only/Pause frames until a successful fixed update consumes it. Parse
+64-bit identity/counters without rounding through a double.
+
+For deterministic stepping, send `step` followed by `wait_frames 1` before each
+next Step/status. Adjacent `step` commands collapse into one pending boolean:
+
+```text
+character walk on
+pause
+character intent 1 0 0
+character jump
+character status before_step
+step
+wait_frames 1
+character status after_step
+sim stop
+character status restored
+```
+
+Paused Step supplies exactly one fixed delta, independent of wall-frame speed
+or slow-motion scale, while retaining the existing fractional accumulator.
+Pause without Step changes neither movement/counters nor that accumulator.
+Walking adds no collision outside the installed authored terrain union and
+does not float on water. Only allowed static collision supports/blocks this
+slice; dynamic crates/rafts retain their own rigid-body/river ownership.
+
 ## c) Environment variables
 
 Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
@@ -120,10 +200,14 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
   - `MATTER_CAM_PATH_EXIT=1` — quit once the path (plus its FIFO drain tail) ends.
   - `MATTER_CAM_PATH_WARMUP=<n>` — frames to hold at the first pose after the
     world is drawable; default **30**.
-  - `MATTER_CAM_PATH_SETTLE=<seconds>` — wall-clock seconds of unchanged
+- `MATTER_CAM_PATH_SETTLE=<seconds>` — wall-clock seconds of unchanged
     `resident_sectors` required before the path starts (0 = off, frame-warmup
-    only). Deliberately wall-clock, not a frame count, so it means the same
-    thing at any framerate.
+  only). Deliberately wall-clock, not a frame count, so it means the same
+  thing at any framerate.
+- `MATTER_WINDOW_WIDTH` / `MATTER_WINDOW_HEIGHT` — optional paired initial
+  framebuffer dimensions for automated screenshots and resolution-specific
+  performance gates. Both must be set; replays continue to use their recorded
+  dimensions.
 - `MATTER_SCREENSHOT=<path>` — capture-then-quit: writes one PNG after settling
   and exits.
   - `MATTER_SCREENSHOT_SETTLE=<n>` — frames to hold before capture; default **3**.
@@ -150,6 +234,33 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
   backend (`WinDirWatcher`, `MatterEngine3/src/file_watcher.h`) is a stub.
 - `MATTER_VK_VALIDATION=1` — opt in to Vulkan validation layers (off by default
   so machines without the Vulkan SDK aren't broken by default).
+- `MATTER_WATER_ANIMATION_FORCE_LOAD_FAILURE=1` — QA fault injection: resolves
+  baked-water animation references through a deliberately missing subdirectory
+  so the accepted static-water fallback can be captured without corrupting or
+  moving real cache artifacts.
+- `MATTER_WATER_CAPTURE_FRAME=<0..29>` — freezes only cosmetic baked-water
+  presentation at the midpoint of the selected 30 Hz frame,
+  `(frame + 0.5) / 30`. It does not change simulation time, bake phase, or the
+  network clock stored in hydrology artifacts. A present malformed or
+  out-of-range value is a fatal world-open error.
+- `MATTER_WATER_DIAGNOSTIC_VIEW=identity|geometry-normal|foam-driver` — replaces
+  forward water optics with a retained QA view: stable section/handoff
+  ownership color, pre-shading geometry normal, or baked foam-driver heat map.
+  The variable must be absent for normal rendering; an empty or unknown value
+  is a fatal world-open error. Use it with `MATTER_WATER_CAPTURE_FRAME` and
+  `MatterEngine3/tools/run_water_mesh_continuity_diagnostics.ps1`; these views
+  diagnose boundaries and are not visual-acceptance evidence by themselves.
+- `MATTER_WATER_BOUNDARY_REPRO_DIR=<absolute directory>` — on a rejected
+  animated handoff boundary, saves the exact two meshes, ownership cut and
+  unchanged tolerance to a uniquely named `.water-boundary.bin` capture plus
+  a text diagnostic. Unset by default; relative/empty paths do not enable it.
+  This does not change bake acceptance. Captures can be large; point it at a
+  run-specific QA directory, not a published cache. Replay without PhysX or
+  Vulkan using the native `hydrology_handoff_products_tests.exe
+  --boundary-replay <capture>`; exit 0 means weldable, 1 means the captured
+  boundary is rejected, and 2 means invalid replay input. Optional
+  `--boundary-minimize <capture> <new-output> [max-probes]` preserves the
+  measured failure while reducing triangles and refuses to overwrite output.
 - `MATTER_TEST_RESIZE` — exercises a forced window resize once baked, for resize
   regression testing.
 - `MATTER_FORCE_LOD_TINT` — forces the LOD-rung debug tint view on.
@@ -162,7 +273,11 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
 - `MATTER_PERF_OUTPUT`, `MATTER_PERF_WARMUP_SECONDS`, `MATTER_PERF_SAMPLE_SECONDS`
   — headless perf run (§ recipe 8 in the QA cookbook). **Must be set together**;
   setting any subset is a fatal startup error
-  (`read_perf_run_config` in `main.cpp`).
+  (`read_perf_run_config` in `main.cpp`). The hidden window is borderless so
+  `MATTER_WINDOW_WIDTH/HEIGHT` describe the exact framebuffer. Sampling begins
+  only after the static vertex/cluster upload counters remain unchanged for 30
+  rendered frames, preventing terrain-sector publication from contaminating a
+  steady-state GPU measurement.
 - `MATTER_HIZ` — dead. Legacy env var, retained only to print
   `MATTER_HIZ: not available in Vulkan milestone; ignored` instead of silently
   doing nothing.
@@ -407,7 +522,7 @@ authoritative). All go to stdout unless noted.
 | shot_now queued | `shot_now: queued %s` | `shot_now` was accepted and queued in `FifoPresentSequencer`; the actual write comes later (see "screenshot written to" below). |
 | screenshot written | `screenshot written to %s` | Either `shot` or `shot_now`'s PNG was actually written to disk — the reliable "this shot happened" line for either verb (`shot_now: queued` only means it was accepted, not that it completed). |
 | bake ready | `viewer: bake ready` | The world bake finished and the viewer is actually drawing — the line every scripted harness polls the log for before sending commands (§a). |
-| `.done` sidecar | *(no log line)* | Not a printed marker — a **filesystem artifact**: `<path>.done` is created (empty file) immediately after "screenshot written to `<path>`" for both `shot` and `shot_now`. Poll for the file, not a log line, when racing the write from outside the process (this is what `drive.py` does). |
+| `.done` sidecar | *(no log line)* | Not a printed marker — a **filesystem artifact**: `<path>.done` is written with `captured` plus a newline after the PNG completes for both `shot` and `shot_now`. Missing or empty means incomplete. Poll for the file, not a log line, when racing the write from outside the process (this is what `drive.py` does). |
 | issue capture timeout | `issue: capture timeout, abandoned` | The `issue capture` deadman fired — the `AwaitingCapture` readback never resolved within 30s and was abandoned; the block released anyway. |
 | issue capture failed | `issue: capture failed (%s)` | An `issue capture` readback resolved but the shot itself failed (`ensure_report_dir` or the PNG write) — `%s` is `issue_state.status`. The block still released; the draft note/shots are unaffected. |
 | issue captured | `issue: captured %s` | An `issue capture` readback resolved and the shot was written to `%s` — printed alongside (after) the unprefixed `issue shot written to %s` line the interactive F10 path also prints. |

@@ -1,3 +1,28 @@
+// MatterEngine3/src/modifier_apply.cpp
+//
+// Implements modifier_apply.h: run an authored modifier stack over one welded
+// region mesh at part bake, in order, each modifier consuming the previous one's
+// output.
+//
+// THE RULE THAT SHAPES THIS FILE IS FAIL-SOFT. Every branch either replaces
+// `mesh` with a good result or leaves it exactly as it was and prints one
+// stderr line; nothing throws and nothing aborts the bake. A modifier that
+// produced an empty mesh counts as a failure, because an empty region is
+// indistinguishable from a deleted one downstream.
+//
+// Retopo is the only branch with machinery around it:
+//   * it is compiled at all only under MATTER_HAVE_AUTOREMESHER (otherwise it
+//     warns and skips, which keeps the Windows cross-build honest);
+//   * every attempt is bracketed by retopo_blacklist::begin_attempt/end_attempt
+//     and a blacklisted chunk hash is skipped without being retried;
+//   * it runs single-threaded (opts.threads = 1) for determinism and holds a
+//     process-wide mutex, because geogram's globals and the blacklist journal
+//     were only ever exercised one caller at a time.
+//
+// Determinism matters here: the mesh this file returns is serialized into a
+// content-addressed part artifact, so a non-reproducible result would make two
+// bakes of the same source disagree.
+
 #include "modifier_apply.h"
 
 #include "mesh_simplifier.hpp"

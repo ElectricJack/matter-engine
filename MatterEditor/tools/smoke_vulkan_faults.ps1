@@ -4,6 +4,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $TestPath = (Resolve-Path $TestPath).Path
+$EditorRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $savedMode = [Environment]::GetEnvironmentVariable(
     'MATTER_VK_SMOKE_MODE', [EnvironmentVariableTarget]::Process)
 try {
@@ -57,6 +58,10 @@ try {
         try {
             $startInfo = New-Object System.Diagnostics.ProcessStartInfo
             $startInfo.FileName = $TestPath
+            # Source-level guard fixtures resolve paths relative to the editor
+            # root. Make the harness independent of the caller's current
+            # directory so root/WSL/CI invocations exercise the same suite.
+            $startInfo.WorkingDirectory = $EditorRoot
             $startInfo.UseShellExecute = $false
             $startInfo.CreateNoWindow = $true
             $startInfo.RedirectStandardOutput = $true

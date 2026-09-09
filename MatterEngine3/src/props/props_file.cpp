@@ -20,6 +20,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
+// Whole-file read as binary. Returns false when the file cannot be opened, which
+// every caller treats as "no file yet" rather than as an error.
 bool read_text(const std::string& path, std::string& out) {
     std::ifstream f(path, std::ios::binary);
     if (!f.good()) return false;
@@ -31,6 +33,19 @@ bool read_text(const std::string& path, std::string& out) {
 
 }  // namespace
 
+// Writes one scope's modified fields to `path`, READ-MODIFY-WRITE: the existing
+// file is parsed first so keys this build does not know about (other scopes,
+// other groups, future schema fields) survive the rewrite. An unparsable
+// existing file is reported and rewritten from scratch.
+//
+// No file is created when there is nothing to persist and none existed before,
+// so a clean session leaves no artifact. Parent directories are created as
+// needed. The write goes to `path + ".tmp"` and is then atomically swapped into
+// place, so a crash mid-write cannot leave a truncated settings file.
+//
+// Returns false on any write or replace failure; the caller's in-memory state is
+// unaffected either way, and every failure path removes the temp file rather
+// than leaving it beside the settings file.
 bool save_scope_file(const Registry& r, Scope scope, const std::string& path) {
     jsondoc::Value doc;
     std::string existing;
@@ -51,17 +66,27 @@ bool save_scope_file(const Registry& r, Scope scope, const std::string& path) {
     if (target.has_parent_path()) fs::create_directories(target.parent_path(), ec);
 
     const std::string tmp = path + ".tmp";
+    // `ok` rather than an early return: the stream has to be CLOSED (end of this
+    // block) before the temp file can be removed on Windows, and every failure
+    // path must remove it or a half-written .tmp is left beside the settings
+    // file forever.
+    bool ok = true;
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f.good()) {
             MATTER_LOGE("props", "%s: cannot open temp file for write\n", tmp.c_str());
-            return false;
+            ok = false;
+        } else {
+            f << jsondoc::write_json(doc);
+            if (!f.good()) {
+                MATTER_LOGE("props", "%s: write failed\n", tmp.c_str());
+                ok = false;
+            }
         }
-        f << jsondoc::write_json(doc);
-        if (!f.good()) {
-            MATTER_LOGE("props", "%s: write failed\n", tmp.c_str());
-            return false;
-        }
+    }
+    if (!ok) {
+        fs::remove(tmp, ec);
+        return false;
     }
 
     if (part_asset::replace_file_atomic_detailed(tmp, path) ==
@@ -73,6 +98,11 @@ bool save_scope_file(const Registry& r, Scope scope, const std::string& path) {
     return true;
 }
 
+// Applies a scope file to every binding in `scope`. Returns false for a missing
+// or unparsable file — both are ordinary outcomes (no settings saved yet, or a
+// corrupt file being ignored), not errors the caller must handle. Per-field
+// semantics are load_group's: a sparse overlay that leaves absent and
+// type-mismatched fields at their current values.
 bool load_scope_file(Registry& r, Scope scope, const std::string& path) {
     std::string text;
     if (!read_text(path, text)) return false;
@@ -85,6 +115,9 @@ bool load_scope_file(Registry& r, Scope scope, const std::string& path) {
     return true;
 }
 
+// Same as load_scope_file but for a single binding, and without the scope
+// filter: it applies whatever the document holds under that binding's group
+// path.
 bool load_group_file(Binding& b, const std::string& path) {
     std::string text;
     if (!read_text(path, text)) return false;

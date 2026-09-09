@@ -1,3 +1,24 @@
+// MatterEngine3/src/triangle_emit.cpp — TriangleBuildBuffer / VariationRecorder
+// implementation. See triangle_emit.hpp for the DSL binding contract; this
+// file documents the geometry conventions every generator below shares.
+//
+//  - Output is a TRIANGLE SOUP. Nothing is indexed and no vertex is ever
+//    shared between triangles, so an N-quad wall costs 2N independent Tris.
+//    tris_ and triex_ are a strictly parallel stream: index i of one always
+//    describes index i of the other.
+//  - Vertices are authored in LOCAL space and baked through `transform` at
+//    emit time; nothing is stored untransformed. `transform.TransformPoint`
+//    is applied per corner, so a generator's own math can stay axis-aligned.
+//  - Winding is outward-facing everywhere (CCW seen from outside). A
+//    transform with negative determinant would mirror that, so emitTriangle
+//    swaps two corners to compensate -- see reverses_handedness().
+//  - Shading normals: only sphere() emits per-vertex (smooth) normals via
+//    emitTriangleSmooth. Every other generator, capsule included, tags its
+//    triangles with the face normal computed after transform.
+//  - Degenerate inputs are dropped, never clamped: a zero-length segment, a
+//    profile with fewer than 3 outer points, or a path shorter than 2 points
+//    emits nothing at all rather than emitting junk.
+
 #include "triangle_emit.hpp"
 #include "polygon_triangulate.hpp"
 #include <cmath>
@@ -20,6 +41,9 @@ static float3 face_normal(float3 p0, float3 p1, float3 p2) {
     return make_float3(n.x/len, n.y/len, n.z/len);
 }
 
+// Determinant of the upper-left 3x3 (the linear part). Negative means the
+// transform mirrors, which would flip every emitted triangle's facing; the
+// emitters swap two corners in that case so the surface still faces outward.
 static bool reverses_handedness(const mat4& m) {
     const float det =
         m.cell[0]*(m.cell[5]*m.cell[10]-m.cell[6]*m.cell[9])-
@@ -54,6 +78,12 @@ void TriangleBuildBuffer::emitTriangle(float3 p0, float3 p1, float3 p2,
     triex_.push_back(e);
 }
 
+// As emitTriangle, but with authored per-vertex normals instead of the face
+// normal. The normals go through transform.TransformVector -- the plain
+// linear part, NOT the inverse transpose -- so they stay correct under
+// rotation, translation and uniform scale, and are skewed by a non-uniform
+// scale. The mirror swap is applied to the normals as well as the positions
+// so they keep matching their corners.
 void TriangleBuildBuffer::emitTriangleSmooth(float3 p0, float3 p1, float3 p2,
                                              float3 n0, float3 n1, float3 n2,
                                              int material_id,
@@ -98,6 +128,11 @@ void TriangleBuildBuffer::vertex(float3 position) {
     if (open_) verts_.push_back(position);
 }
 
+// Assemble the pending vertices into triangles and close the shape. Leftover
+// vertices that do not complete a primitive are silently dropped (a TRIANGLES
+// shape with 7 vertices emits 2 triangles), and endShape() without a matching
+// beginShape() is a no-op. A second beginShape() before endShape() discards
+// whatever was pending, since it clears verts_.
 void TriangleBuildBuffer::endShape() {
     if (!open_) return;
     const size_t n = verts_.size();
@@ -122,6 +157,11 @@ void TriangleBuildBuffer::endShape() {
     open_ = false;
 }
 
+// Swept tube from a to b. Emits 4 triangles per radial segment (two for the
+// wall band, one per end cap fan), all with face normals, so a default
+// 6-segment call costs 24 triangles. `rings` is accepted and ignored -- it
+// survives only so existing call sites keep compiling. A segment shorter than
+// 1e-6 emits nothing.
 void TriangleBuildBuffer::line(float3 a, float3 b, float r0, float r1,
                                int material_id, const mat4& transform,
                                int rings, int segments, float4 tint) {
@@ -171,6 +211,11 @@ void TriangleBuildBuffer::line(float3 a, float3 b, float r0, float r1,
     }
 }
 
+// Closed UV sphere with SMOOTH normals (the only generator here that has
+// them: the unit radial direction is the exact normal, so there is nothing to
+// approximate). `segments` doubles as the latitude ring count, making the cost
+// roughly 2*segments^2 triangles. The first and last rings emit one triangle
+// instead of two because their far edge collapses onto a pole.
 void TriangleBuildBuffer::sphere(float3 center, float r, int material_id,
                                  const mat4& transform, int segments, float4 tint) {
     if (segments < 3) segments = 3;
@@ -288,6 +333,11 @@ void TriangleBuildBuffer::cappedCone(float3 a, float3 b, float r0, float r1,
     }
 }
 
+// Cylinder wall plus a hemisphere cap at each end. Watertight because the cap
+// ring at lat 0 is generated from the same `dir()` as the wall ring, so the
+// two share their corner positions exactly. Coincident endpoints degrade to a
+// plain sphere() of the same radius. Note the caps use emitTriangle, so the
+// capsule is smooth in SHAPE but flat-shaded per triangle.
 void TriangleBuildBuffer::capsule(float3 a, float3 b, float r, int material_id,
                                   const mat4& transform, int segments, int rings,
                                   float4 tint) {
@@ -412,6 +462,16 @@ float3 nrm(float3 v) {
 
 } // namespace
 
+// Sweep a 2D profile along a polyline. Shape of the algorithm, in order:
+// flatten the profile into one concatenated point list with per-contour
+// ranges, triangulate it once for the caps, build a parallel-transport frame
+// per segment, place a ring at each path point, then stitch wall bands and
+// (for BEVEL) chamfer bands.
+//
+// Two behaviours worth knowing before reading: JoinType::ROUND currently takes
+// the same branch as BEVEL, so it produces an identical flat chamfer rather
+// than a rounded one; and nothing here detects self-intersection, so a miter
+// at a very sharp bend can invert its ring instead of failing.
 void TriangleBuildBuffer::extrude(const Profile& profile, const float3* path,
                                   int path_n, JoinType join, int material_id,
                                   const mat4& transform, float4 tint) {

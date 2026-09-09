@@ -1,6 +1,25 @@
+// MatterEditor/src/shot_replay.cpp
+//
 // Reads a recorded shot descriptor back. JSON parsing goes through QuickJS-ng,
 // which the editor already links for the script host — writing a second parser
 // for one file shape would be worse than borrowing the one that is here.
+//
+// How it fits: this is the read side of `issue_reporter.cpp`'s write side —
+// the same `state.json` shape, one file per issue report under `issues/`.
+// `main.cpp` calls load_replay_from_env() during startup and, if it returns a
+// valid descriptor, drives the whole run from it (window size, layout, camera,
+// render toggles) and exits after writing one PNG.
+//
+// Everything here is TOLERANT by design. Each getter returns the caller's
+// fallback when a property is absent or the wrong type, and the only hard
+// failures are: the file cannot be read, it is not JSON, there is no "shots"
+// array, the index is out of range, or the shot names no world. A descriptor
+// written by an older build (or trimmed by hand) therefore still replays with
+// defaults for whatever it is missing, which is the point — these files are
+// archived alongside issue reports and outlive the code that wrote them.
+//
+// No threading story: both entry points are ordinary blocking calls made from
+// the main thread before the render loop starts.
 #include "shot_replay.h"
 
 #include <cstdio>
@@ -105,6 +124,14 @@ std::string read_file(const std::string& path, bool& ok) {
 
 } // namespace
 
+// Builds and tears down an entire QuickJS runtime per call. That is fine for
+// the once-per-process replay path and would be wasteful in a loop.
+//
+// `shot_index` is 1-based to match MATTER_REPLAY_SHOT. Every early return
+// frees what it had allocated and leaves `valid` false with `error` set.
+// A missing layout sidecar is NOT a failure: it warns on stderr and the replay
+// falls back to ImGui's default layout (which moves the viewport, so the
+// resulting image is not pixel-comparable to the original).
 ShotReplay load_shot_replay(const std::string& path, int shot_index) {
     ShotReplay replay;
     bool read_ok = false;
@@ -176,9 +203,9 @@ ShotReplay load_shot_replay(const std::string& path, int shot_index) {
         const std::filesystem::path sidecar =
             std::filesystem::path(path).parent_path() / layout_file;
         bool layout_ok = false;
-        const std::string text = read_file(sidecar.string(), layout_ok);
+        const std::string layout_text = read_file(sidecar.string(), layout_ok);
         if (layout_ok)
-            replay.layout_ini = text;
+            replay.layout_ini = layout_text;
         else
             MATTER_LOGW("replay", "layout sidecar %s is missing\n",
                         sidecar.string().c_str());
@@ -246,6 +273,11 @@ ShotReplay load_shot_replay(const std::string& path, int shot_index) {
     return replay;
 }
 
+// MATTER_REPLAY (descriptor path) + MATTER_REPLAY_SHOT (1-based index,
+// defaults to 1; a non-numeric or non-positive value is ignored rather than
+// rejected). Unset MATTER_REPLAY returns the default ShotReplay — valid=false
+// with an EMPTY error, which the caller must read as "ordinary run", not as a
+// failure.
 ShotReplay load_replay_from_env() {
     ShotReplay replay;
     const char* path = std::getenv("MATTER_REPLAY");

@@ -1,3 +1,40 @@
+// libs/MatterSurfaceLib/src/oriented_cube_algorithm.cpp
+//
+// The `MeshAlgorithm::OrientedCubes` mesher. Where marching cubes evaluates a
+// blended density field over a grid, this one emits pure per-particle geometry:
+// one independently rotated cube per particle, 24 vertices and 12 triangles
+// each. No SDF, no grid, no `SurfaceScratch` — every field of `MeshContext`
+// except `particles`, `particle_tints`, `voxel` and `group_id` is ignored.
+//
+// Determinism. Orientation is seeded from the particle's position quantized to
+// the group's `voxel` size (`seed_from_pos`), so a particle keeps the same
+// rotation across re-meshes and across bakes — nothing is stored. Two particles
+// landing in the same voxel cell get the SAME orientation; that is accepted for
+// a scatter mesher.
+//
+// Geometry conventions. Cube half-edge is `radius * sizeScale`, so the full
+// edge is `2 * radius * sizeScale`. Faces are flat-shaded: all four corners of
+// a face carry that face's rotated normal, and both of its triangles get
+// N0=N1=N2 equal to it. Corner winding in `FV` is CCW when viewed from outside.
+//
+// Two outputs, two precisions:
+//   - `result.mesh` — raylib CPU Mesh for the GL preview path. Its indices are
+//     16-bit, so the mesh WRAPS silently past 2730 particles (24 * 2731 >
+//     65535). Per-cell merge-group counts stay well under that in practice.
+//   - `result.triangles` / `result.triangle_normals` — full float3 `Tri`/`TriEx`
+//     for the BLAS/raytraced path, unaffected by that limit.
+// Both are allocated here (`RL_MALLOC` for the Mesh arrays) and owned by the
+// caller; `GroupMeshResult` never frees them.
+//
+// Tuning is via env vars, read on EVERY generate() call (no caching), so they
+// can be changed between rebuilds without a restart:
+//   MSL_CUBE_SIZE_SCALE  — cube size multiplier, must be > 0. Default 0.6.
+//   MSL_CUBE_ROT_JITTER  — 0 = all cubes axis-aligned, 1 = fully random
+//                          orientation, values between nlerp toward identity.
+//                          Default 1.0.
+//
+// CPU-only and reentrant (no member state, no globals written), so it runs on a
+// mesh worker thread like every other `MeshingAlgorithm`.
 #include "oriented_cube_algorithm.h"
 #include "material_registry.h"
 #include "raylib.h"     // Mesh, RL_MALLOC, Vector3
@@ -7,6 +44,9 @@
 
 namespace {
 
+// Integer avalanche finalizer (lowbias32). Mixes a weakly-distributed key such
+// as a packed grid coordinate into a well-spread 32-bit value; it is not a
+// cryptographic hash and is not stable against future retuning.
 uint32_t hash_u32(uint32_t x) {
     x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16;
     return x;
@@ -48,6 +88,9 @@ float4 seeded_quat(uint32_t seed, float jitter) {
     return q;
 }
 
+// Rotate `v` by quaternion `q` (x,y,z = vector part, w = scalar) using the
+// two-cross-product form. Assumes `q` is unit-length — `seeded_quat`
+// normalizes before returning — so a unit input vector comes back unit-length.
 Vector3 rotate(float4 q, Vector3 v) {
     Vector3 u = { q.x, q.y, q.z };
     Vector3 t = { u.y*v.z - u.z*v.y, u.z*v.x - u.x*v.z, u.x*v.y - u.y*v.x };
@@ -69,6 +112,10 @@ const float FV[6][4][3] = {
 
 } // namespace
 
+// Emits the whole merge group in one pass. Returns an empty result (default
+// `GroupMeshResult`, vertexCount 0) for an empty particle set, which callers
+// read as "no mesh, skip". `ctx.particle_tints` must be parallel to
+// `ctx.particles`; it is indexed unchecked.
 GroupMeshResult OrientedCubeAlgorithm::generate(const MeshContext& ctx) const {
     GroupMeshResult result;
     result.group_id = ctx.group_id;
@@ -76,6 +123,10 @@ GroupMeshResult OrientedCubeAlgorithm::generate(const MeshContext& ctx) const {
     const int n = (int)ctx.particles.size();
     if (n == 0) return result;
 
+    // Env overrides are re-read per call and rejected rather than clamped when
+    // out of range: a non-positive MSL_CUBE_SIZE_SCALE or a negative
+    // MSL_CUBE_ROT_JITTER leaves the default in place. An unparseable value
+    // reads as 0.0 through atof and hits the same guard.
     float sizeScale = 0.6f;
     if (const char* e = getenv("MSL_CUBE_SIZE_SCALE")) { float v = (float)atof(e); if (v > 0.0f) sizeScale = v; }
     float jitter = 1.0f;
@@ -105,6 +156,9 @@ GroupMeshResult OrientedCubeAlgorithm::generate(const MeshContext& ctx) const {
         float h = p.radius * sizeScale;  // half-edge (edge = 2*radius*sizeScale)
         float4 q = seeded_quat(seed_from_pos(p.position, ctx.voxel), jitter);
 
+        // MaterialRegistryGet never returns null — an unknown or negative id
+        // resolves to the registry's default material — so the deref below is
+        // safe without a check.
         const MaterialDef* md = MaterialRegistryGet(p.materialId);
         float4 tnt = ctx.particle_tints[i];
         float a = tnt.w;

@@ -4,6 +4,18 @@
 #include <functional>
 #include <deque>
 
+// MatterEngine3/src/file_watcher.h
+//
+// The file-change source for the dev live-edit loop. `LiveEditSession`
+// (live_edit.h) holds a FileWatcher by REFERENCE and calls poll() once per
+// host tick; the watcher must therefore outlive the session. The watcher
+// itself does no debouncing, no path filtering and no rebuild scoping -- it
+// only reports raw changes, and the session decides what they mean.
+//
+// The clock is part of the interface on purpose: the session's debounce
+// window is measured with the watcher's own `now_ms()`, so FakeWatcher can
+// drive the whole timing path from a test without sleeping.
+//
 // OS-native file-change abstraction for SP-5 dev live-edit. Real backends:
 // InotifyWatcher (Linux), WinDirWatcher (Windows, stubbed). FakeWatcher drives
 // tests with synthetic events. See
@@ -36,6 +48,10 @@ public:
 class FakeWatcher : public FileWatcher {
 public:
     void add_watch(const std::string& dir) override { watched_.push_back(dir); }
+    // Hands back everything pushed so far and clears the queue, regardless of
+    // the fake clock -- `push` stamps the event with the clock value at push
+    // time, and it is the session that decides whether the quiet window has
+    // elapsed.
     int poll(std::vector<FileEvent>& out) override {
         int n = 0;
         while (!pending_.empty()) { out.push_back(pending_.front()); pending_.pop_front(); ++n; }

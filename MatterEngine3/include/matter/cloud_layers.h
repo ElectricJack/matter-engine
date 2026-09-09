@@ -60,6 +60,10 @@ inline constexpr int kMaxCloudLayers = 4;
 inline constexpr float kCloudCoverageEdge = 0.12f;
 
 struct CloudLayer {
+    // Master switch. `sanitize_cloud_layer` force-clears this for a
+    // degenerate layer (max_height <= min_height), so a layer can come back
+    // from sanitization disabled even though the author asked for it — see
+    // `seed_default_cloud_layer` for the toggle path that avoids that.
     bool enabled = false;
 
     // The deck's vertical extent, in world metres. Density is exactly zero
@@ -101,10 +105,25 @@ struct CloudLayer {
     // the ground-fog noise and nothing else).
     float wind[3] = {0.0f, 0.0f, 0.0f};
 
+    // Two further noise fields on top of the base fbm above, both consumed
+    // only by the shader (they ride across in GpuCloudLayer, they do not
+    // affect cloud_height_profile()). Every range below is what
+    // `sanitize_cloud_layer` enforces.
+
+    // Large-scale weather field: world-space frequency in 1/m, must be > 0
+    // (a non-positive value is reset to the default), and how strongly it
+    // modulates coverage, 0 (no effect, the default) to 1.
     float weather_scale = 0.00025f;
     float weather_influence = 0.0f;
+
+    // High-frequency detail field: world-space frequency in 1/m, must be > 0,
+    // and how much of it is eroded off the deck's edges, 0 (off, the default)
+    // to 1.
     float detail_scale = 0.012f;
     float detail_erosion = 0.0f;
+
+    // Signed bias on the vertical shape, clamped to [-1, 1]. 0 leaves the
+    // profile symmetric.
     float shape_bias = 0.0f;
 };
 
@@ -277,6 +296,19 @@ inline uint32_t cloud_layer_seed(int index) {
     return 0x63u + static_cast<uint32_t>(index) * 7919u;
 }
 
+// Write the std430 mirror for the layer at `index`. Two things to know:
+//
+//   - It does NOT sanitize. Run `sanitize_cloud_layer` on the source first;
+//     packing an unsanitized layer puts an out-of-range octave count or a
+//     negative density straight into the SSBO.
+//   - `index` is not cosmetic: the seed is derived from it here
+//     (cloud_layer_seed), so packing the SAME CloudLayer at a different index
+//     produces a different cloud pattern. Keep a layer's index stable across
+//     frames or the deck will re-shuffle.
+//
+// `enabled` is not mirrored — the GPU side takes its layer count from the
+// caller, so a disabled layer must be excluded before packing, not packed and
+// masked.
 inline void pack_cloud_layer(const CloudLayer& in, int index,
                              GpuCloudLayer& out) {
     out.min_height = in.min_height;

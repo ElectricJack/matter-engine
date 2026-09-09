@@ -1,0 +1,38 @@
+wait_event bake.finished 3600
+wait_idle 5 3600
+cam 150 190 100 150 30 0
+shot build/qa/water-animation-2026-08-26/fresh/overview.png
+play
+wait_frames 5
+cam 45 72 2 78 60 -3
+wait_idle 3 120
+shot build/qa/water-animation-2026-08-26/fresh/upper-boulder-rapids.png
+wait_frames 5
+cam 86 72 -1 107 52 7
+wait_idle 3 120
+shot build/qa/water-animation-2026-08-26/fresh/curved-ravine.png
+wait_frames 5
+cam 119 72 2 110 49 5
+wait_idle 3 120
+shot build/qa/water-animation-2026-08-26/fresh/waterfall-side.png
+wait_frames 5
+cam 126 75 -3 111 45 5
+wait_idle 3 120
+shot build/qa/water-animation-2026-08-26/fresh/plunge-pool.png
+wait_frames 5
+cam 140 70 -1 151 43 0
+wait_idle 3 120
+shot build/qa/water-animation-2026-08-26/fresh/spillway-transition.png
+wait_frames 5
+cam 167 57 -6 195 35 -1
+wait_idle 3 120
+shot build/qa/water-animation-2026-08-26/fresh/lower-rapids.png
+wait_frames 5
+cam 60 70 -2 88 57 0
+wait_idle 3 120
+shot build/qa/water-animation-2026-08-26/fresh/floating-crates-rafts.png
+wait_frames 5
+cam 266 65 2 286 22 -1
+wait_idle 3 120
+shot build/qa/water-animation-2026-08-26/fresh/second-pool.png
+quit

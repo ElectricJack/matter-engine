@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "url": "https://github.com/NVIDIA-Omniverse/PhysX.git",
+  "tag": "107.3-physx-5.6.1",
+  "commit": "5ca9f472105a90d70d957c243cb0ef36fe251a9f",
+  "sdkVersion": "5.6.1",
+  "physicsVersionHex": "0x05060100",
+  "cudaToolkitVersion": "12.8",
+  "cudaNvccVersion": "12.8.61",
+  "windowsPreset": "vc17win64",
+  "binaryAbi": "win.x86_64.vc143.mt",
+  "license": "LICENSE.md"
+}

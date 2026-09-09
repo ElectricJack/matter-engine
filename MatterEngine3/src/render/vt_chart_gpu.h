@@ -17,12 +17,29 @@
 // Header-only on purpose: vt_compositor_tests.exe links a deliberately minimal
 // TU list (the compositor is standalone by contract) and must not grow a new
 // translation unit just to see these structs.
+//
+// CONVENTIONS AND THREADING. Nothing here holds state: both entry points are
+// pure functions of their arguments (they only write the caller's output
+// containers), so they are safe to call from any thread — the compositor
+// calls them while recording, the enricher from its own pass.
+//
+// Spaces and units:
+//   * positions, normals and the chart plane origin/tangent/bitangent are
+//     PART-LOCAL; positions are metres, the basis vectors are unit length.
+//   * chart rects and the page footprint are ATLAS TEXELS at the FINEST mip
+//     (mip 0); a coarser page's footprint is scaled by `1 << mip`.
+//   * plane U/V (the `.w` lanes of GpuTri's p*/n* rows) are METRES along the
+//     chart tangent/bitangent, not texels — the shader multiplies by
+//     texels_per_meter (GpuChart::origin_tpm.w) to reach texel space, and
+//     subtracts the chart origin's projection carried in tangent_ou.w /
+//     bitangent_ov.w.
 
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
 #include "chart_atlas.h"
+#include "terrain_field.h"   // kMaxSurfaceMaterials (the source of truth)
 #include "vt_types.h"
 
 namespace vt {
@@ -34,6 +51,10 @@ struct GpuChart {
     float bitangent_ov[4];   // xyz B (unit),  w = dot(origin, B)
     uint32_t rect[4];        // finest-mip atlas texels: x, y, w, h
     uint32_t tri_range[4];   // x = first tri (into tris[]), y = count
+    // tri_range.y is the count actually EMITTED into tris[], which can be
+    // lower than the source ChartEntry::tri_count — the builder below drops
+    // triangles whose index or corner index is out of range for the mesh.
+    // tri_range.z/.w are std430 padding; the builder always writes 0.
 };
 static_assert(sizeof(GpuChart) == 80, "GpuChart must match std430 layout");
 
@@ -66,9 +87,23 @@ struct GpuTri {
 };
 static_assert(sizeof(GpuTri) == 160, "GpuTri must match std430 layout");
 
-// Per-vertex tape weight columns packed into the triangle stream — must equal
-// terrain_field::kMaxSurfaceMaterials and the shader packing width.
-constexpr uint32_t kVtMaxSurfaceMaterials = 8;
+// Per-vertex tape weight columns packed into the triangle stream. DERIVED
+// from terrain_field::kMaxSurfaceMaterials rather than restated, because the
+// two silently disagreeing is a mis-decode of every tape weight; the shader
+// packing width must be changed with it.
+constexpr uint32_t kVtMaxSurfaceMaterials =
+    static_cast<uint32_t>(terrain_field::kMaxSurfaceMaterials);
+
+// MODE-3 f16 field lanes one vertex can carry, taken from GpuTri's own rows
+// rather than written out again: one 16 B row per vertex, two halves per u32.
+// vt_surface_tape.h's kVtMaxSurfaceLanes must agree -- vt_compositor.cpp,
+// which sees both headers, static_asserts that it does.
+// (Split in two so the division is not a `sizeof(array) / sizeof(type)`
+// idiom, which -Wsizeof-array-div flags because the element type differs.)
+constexpr uint32_t kGpuTriLaneBytesPerVertex =
+    static_cast<uint32_t>(sizeof(GpuTri::wA));
+constexpr uint32_t kGpuTriLanesPerVertex =
+    kGpuTriLaneBytesPerVertex / static_cast<uint32_t>(sizeof(uint16_t));
 
 // True when `ctx` carries a usable surfaces()-tape classification (WP-F).
 inline bool vt_context_has_tape(const VtPartContext& ctx) {
@@ -90,6 +125,17 @@ inline bool vt_context_has_tape(const VtPartContext& ctx) {
 //
 // DETERMINISM: fixed iteration order (charts ascending, then the chart's
 // tri_order range ascending). Same atlas + mesh => byte-identical streams.
+//
+// Both output vectors are CLEARED on entry, so a caller may reuse them across
+// calls. Cost is O(atlas.tri_order.size()) with one GpuTri (160 B) appended
+// per accepted triangle — this is the repack the compositor profiles as
+// `vt.chart_streams`. Details worth knowing:
+//   * a triangle whose index, or any corner index, is out of range for `ctx`
+//     is skipped SILENTLY (see the GpuChart::tri_range note above);
+//   * with `ctx.normals == nullptr` the fallback is the geometric face
+//     normal, and it is NOT normalized — the shaders normalize;
+//   * the material id (per-triangle, taken from corner 0, falling back to
+//     ctx.dominant_material and then 0) is truncated to its low 8 bits.
 inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
                                        const VtPartContext& ctx,
                                        std::vector<GpuChart>& out_charts,
@@ -104,7 +150,7 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
     const bool has_tape = vt_context_has_tape(ctx);
     const uint32_t tape_cols = has_tape ? ctx.surface_material_count : 0;
     const bool pack_lanes = lanes != nullptr && lane_count > 0 &&
-                            lane_count <= 8u;
+                            lane_count <= kGpuTriLanesPerVertex;
 
     out_charts.resize(atlas.charts.size());
     out_tris.reserve(atlas.tri_order.size());
@@ -249,6 +295,14 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
 //
 // Shared by the compositor and the enricher so both passes resolve a texel
 // against exactly the same candidate set.
+//
+// `out` is APPENDED to, never cleared — callers pack many pages' candidate
+// lists back to back into one GPU buffer and record the (offset, count) pair
+// per page. `page_x`/`page_y` are page coordinates AT `mip`; the page's
+// payload+border footprint and the 32-texel dilation margin are both
+// converted to finest-mip texels by `1 << mip`. Cost is a linear scan of the
+// whole chart table per page, so a heavily-charted variant pays it again on
+// every page it fills.
 inline uint32_t vt_page_candidate_charts(
     const chart_atlas::ChartAtlasRung& atlas, uint32_t page_x, uint32_t page_y,
     uint32_t mip, std::vector<uint32_t>& out) {

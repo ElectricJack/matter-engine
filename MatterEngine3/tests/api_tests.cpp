@@ -12,11 +12,24 @@
 #include <vector>
 
 int main() {
+    // Unbuffered: every failure here is an assert(), and abort() discards
+    // whatever printf left in stdio's buffer -- which is exactly the
+    // diagnostic printout that says why the assertion failed.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(640, 360, "api_tests");
     std::string err;
     matter::EngineDesc ed;
     ed.cache_root = "cache";   // run from MatterEditor/ so the bake cache is warm
+    // Headless kernel session: no interactive renderer. Despite its legacy
+    // name, allow_gl_lt_46 means exactly "this caller does not need a render
+    // device" (see EngineContext::create in matter_engine.cpp), and that is
+    // the truth here -- everything below is bake, ECS and raycast, and
+    // WorldSession::render() is the MATTER_VULKAN_ONLY no-op stub this
+    // binary is compiled against, so a VulkanDevice would draw nothing.
+    // Without this flag create() correctly refuses with "an interactive
+    // session requires a Vulkan render device".
+    ed.allow_gl_lt_46 = true;
     auto engine = matter::EngineContext::create(ed, err);
     if (!engine) { printf("FAIL create: %s\n", err.c_str()); return 1; }
 
@@ -31,7 +44,17 @@ int main() {
     // install+compose+publish path. A warm-cache bake legitimately takes the
     // fast path (publish span only), which would make the trace check below
     // nondeterministic across runs.
-    std::remove("cache/cache/Primitives.resolve");
+    //
+    // The path is NOT EngineDesc::cache_root. Each world gets its own cache
+    // root, `<project_dir>/.cache/<world_name>` (LocalProviderConfig, see
+    // local_provider.h), and resolve_cache::save writes
+    // `<that>/cache/<world_name>.resolve`. This used to point at
+    // "cache/cache/Primitives.resolve" under MatterEditor/, which no longer
+    // exists -- so the remove() silently did nothing, every run after the
+    // first took the resolve-cache fast path, and the trace below had one
+    // child ("publish") instead of three.
+    std::remove("../projects/primitive_demo/.cache/Primitives/cache/"
+                "Primitives.resolve");
 
     session->request_bake();
     // Phase B (Task 6): bake now runs on a worker thread and marshals GL work
@@ -70,7 +93,24 @@ int main() {
     // and all spans are closed (end_ms >= begin_ms >= 0).
     {
         bake_trace::Span trace;
-        session->last_bake_trace(trace);
+        // BakeFinished is emitted from the finalize GPU job, which runs on THIS
+        // thread inside pump_gpu_jobs -- while the bake worker is still unwinding
+        // out of publish_pipeline and has not yet closed its "publish" span. So
+        // the event arrives a hair before the trace is complete and a snapshot
+        // taken the instant BakeFinished is polled catches publish still open
+        // (end_ms == kOpenEndMs == -1). Keep pumping until every root child is
+        // closed, bounded, rather than asserting on a torn tree.
+        {
+            const double t0 = GetTime();
+            for (;;) {
+                session->last_bake_trace(trace);
+                bool all_closed = !trace.children.empty();
+                for (auto& c : trace.children)
+                    if (c.end_ms == bake_trace::kOpenEndMs) all_closed = false;
+                if (all_closed || GetTime() - t0 > 10.0) break;
+                session->pump_gpu_jobs(4.0f);
+            }
+        }
         assert(trace.name && std::strcmp(trace.name, bake_trace::kRootName) == 0);
         printf("bake trace: %zu root children\n", trace.children.size());
         for (auto& c : trace.children)
@@ -101,6 +141,7 @@ int main() {
     float tx = info.transform[3];
     float ty = info.transform[7];
     float tz = info.transform[11];
+    printf("instance[0]: translation=(%.3f, %.3f, %.3f)\n", tx, ty, tz);
     matter::CameraDesc cam{{tx + 8.0f, ty + 6.0f, tz + 8.0f},
                            {tx, ty, tz}, {0, 1, 0},
                            60.0f * 3.14159265358979323846f / 180.0f,
@@ -129,23 +170,61 @@ int main() {
     UnloadImageColors(px);
     UnloadImage(img);
 
-    // raycast straight down onto the world near instance 0.
-    // Cast from (tx, ty+100, tz) downward — if the world geometry is at or near
-    // ty=0 this will hit something.
-    float origin[3] = { tx, ty + 100.0f, tz };
-    float dir[3]    = { 0.0f, -1.0f, 0.0f };
-    matter::RayHit hit;
-    bool hit_ok = session->raycast(origin, dir, 1000.0f, hit);
-    printf("raycast: hit=%d t=%.3f instance=%u\n",
-           (int)hit_ok, hit.t, hit.instance);
-    if (!hit_ok) {
-        // Try from further offset in case geometry is displaced
-        float origin2[3] = { tx + 0.5f, ty + 100.0f, tz + 0.5f };
-        hit_ok = session->raycast(origin2, dir, 1000.0f, hit);
-        printf("raycast (retry +0.5): hit=%d t=%.3f instance=%u\n",
-               (int)hit_ok, hit.t, hit.instance);
+    // raycast down onto the world above instance 0.
+    //
+    // What the query API actually traces matters here, and it is NOT the mesh
+    // the renderer draws: WorldTracer selects the COARSEST ladder rung of each
+    // part (see the LOD-choice note on load_part in world_tracer.cpp), so on
+    // this fixture the whole 27 m Gallery is a few dozen triangles. A single
+    // ray down the instance origin therefore proves nothing -- the primitive
+    // that stands there at LOD 0 has been decimated away at the rung the
+    // tracer holds, and asserting on it made this test a fixture-geometry
+    // test rather than an API test.
+    //
+    // So sweep the instance footprint on a 0.5 m grid and require that the
+    // world is hittable at all, then check the API contract on every hit:
+    // t inside the ray bound, and a resolved instance index / part hash.
+    int hit_count = 0;
+    matter::RayHit first_hit{};
+    float first_hit_x = 0.0f, first_hit_z = 0.0f;
+    for (int ix = -16; ix <= 48; ++ix) {
+        for (int iz = -20; iz <= 4; ++iz) {
+            const float x = tx + ix * 0.5f;
+            const float z = tz + iz * 0.5f;
+            float origin[3] = { x, ty + 100.0f, z };
+            float dir[3]    = { 0.0f, -1.0f, 0.0f };
+            matter::RayHit hit;
+            if (!session->raycast(origin, dir, 1000.0f, hit)) continue;
+            assert(hit.t > 0.0f && hit.t < 1000.0f);
+            assert(hit.instance != 0xffffffffu);
+            assert(hit.part_hash == info.part_hash);
+            if (hit_count == 0) { first_hit = hit; first_hit_x = x; first_hit_z = z; }
+            ++hit_count;
+        }
     }
-    assert(hit_ok && hit.t > 0.0f);
+    printf("raycast: %d hits over the footprint; first at (%.2f, %.2f) "
+           "t=%.3f instance=%u material=%d\n",
+           hit_count, first_hit_x, first_hit_z, first_hit.t,
+           first_hit.instance, first_hit.material_id);
+    assert(hit_count > 0 && "a downward sweep over the instance footprint hits it");
+    // A downward ray that hits a surface from above must come back with an
+    // upward-facing normal -- the tracer flips the geometric normal toward the
+    // ray origin, so this also pins that convention.
+    printf("raycast: first-hit normal=(%.3f, %.3f, %.3f)\n",
+           first_hit.normal[0], first_hit.normal[1], first_hit.normal[2]);
+    assert(first_hit.normal[1] > 0.0f);
+
+    // A ray pointed away from the world misses, and leaves the caller's Hit
+    // untouched (world_tracer.h's Hit contract).
+    {
+        float origin[3] = { tx, ty + 100.0f, tz };
+        float dir[3]    = { 0.0f, 1.0f, 0.0f };
+        matter::RayHit up{};
+        up.t = -42.0f;
+        const bool up_hit = session->raycast(origin, dir, 1000.0f, up);
+        printf("raycast (upward): hit=%d t=%.3f\n", (int)up_hit, up.t);
+        assert(!up_hit && up.t == -42.0f);
+    }
 
     session.reset();   // before CloseWindow
     engine.reset();

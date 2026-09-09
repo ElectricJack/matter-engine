@@ -1,0 +1,145 @@
+cmake_minimum_required(VERSION 3.25)
+
+project(MatterEngine2 LANGUAGES C CXX)
+
+if(NOT WIN32 OR NOT MSVC)
+    message(FATAL_ERROR "The root CMake build currently supports only native Windows MSVC; use the existing Makefiles on Linux")
+endif()
+
+include(CTest)
+include(cmake/MatterCompiler.cmake)
+include(cmake/MatterTargets.cmake)
+include(cmake/MatterThirdParty.cmake)
+include(cmake/MatterShaders.cmake)
+
+set(matter_vulkan_sdk_root "C:/VulkanSDK/1.4.357.0")
+set(matter_vulkan_glslc "${matter_vulkan_sdk_root}/Bin/glslc.exe")
+set(MATTER_PYTHON_EXECUTABLE "" CACHE FILEPATH
+    "Exact native Windows Python executable discovered by build-windows.ps1")
+foreach(required_shader_tool IN ITEMS
+        "${matter_vulkan_glslc}"
+        "${MATTER_PYTHON_EXECUTABLE}"
+        "${matter_vulkan_sdk_root}/Include/vulkan/vulkan.h"
+        "${matter_vulkan_sdk_root}/Lib/vulkan-1.lib"
+        "${matter_vulkan_sdk_root}/Bin/VkLayer_khronos_validation.json")
+    if(NOT EXISTS "${required_shader_tool}")
+        message(FATAL_ERROR
+            "Pinned Windows shader dependency was not found: ${required_shader_tool}")
+    endif()
+endforeach()
+matter_resolve_windows_python(
+    EXECUTABLE "${MATTER_PYTHON_EXECUTABLE}"
+    OUT_ARGUMENTS matter_python_arguments
+    OUT_VERSION matter_python_version)
+if(NOT matter_python_version MATCHES "^Python 3\\.13\\.14$")
+    message(FATAL_ERROR
+        "Pinned native Windows Python 3.13.14 is required; "
+        "'${MATTER_PYTHON_EXECUTABLE} ${matter_python_arguments}' reported "
+        "'${matter_python_version}'")
+endif()
+
+set(matter_shader_source_dir "${CMAKE_SOURCE_DIR}/MatterEngine3/shaders_vk")
+file(GLOB matter_vulkan_shader_stages
+    CONFIGURE_DEPENDS
+    LIST_DIRECTORIES false
+    RELATIVE "${matter_shader_source_dir}"
+    "${matter_shader_source_dir}/*.comp"
+    "${matter_shader_source_dir}/*.vert"
+    "${matter_shader_source_dir}/*.frag"
+    "${matter_shader_source_dir}/*.rgen"
+    "${matter_shader_source_dir}/*.rmiss"
+    "${matter_shader_source_dir}/*.rchit"
+    "${matter_shader_source_dir}/*.rahit"
+)
+list(SORT matter_vulkan_shader_stages)
+
+# MatterEngine3/Makefile remains the canonical logical SPIR-V inventory during
+# migration. Discover stages from disk for CMake dependency edges, then require
+# their outputs (plus the one specialization) to match that list exactly.
+file(READ "${CMAKE_SOURCE_DIR}/MatterEngine3/Makefile"
+    matter_engine_makefile_text)
+string(FIND "${matter_engine_makefile_text}" "VK_SPV =" matter_make_inventory_start)
+if(matter_make_inventory_start EQUAL -1)
+    message(FATAL_ERROR "MatterEngine3/Makefile has no VK_SPV inventory")
+endif()
+string(SUBSTRING "${matter_engine_makefile_text}"
+    ${matter_make_inventory_start} -1 matter_make_inventory_tail)
+string(FIND "${matter_make_inventory_tail}" "\n\n" matter_make_inventory_end)
+if(matter_make_inventory_end EQUAL -1)
+    message(FATAL_ERROR "MatterEngine3/Makefile VK_SPV inventory is unterminated")
+endif()
+string(SUBSTRING "${matter_make_inventory_tail}"
+    0 ${matter_make_inventory_end} matter_make_inventory_block)
+string(REGEX MATCHALL "build/shaders_vk/[A-Za-z0-9_.]+\\.spv"
+    matter_make_spirv_paths "${matter_make_inventory_block}")
+set(matter_make_spirv_inventory)
+foreach(make_spirv_path IN LISTS matter_make_spirv_paths)
+    get_filename_component(make_spirv_name "${make_spirv_path}" NAME)
+    list(APPEND matter_make_spirv_inventory "${make_spirv_name}")
+endforeach()
+set(matter_discovered_spirv_inventory)
+foreach(shader_stage IN LISTS matter_vulkan_shader_stages)
+    list(APPEND matter_discovered_spirv_inventory "${shader_stage}.spv")
+endforeach()
+list(APPEND matter_discovered_spirv_inventory
+    "raster_skin.vert.spv"
+    "raster_water.vert.spv")
+list(SORT matter_make_spirv_inventory)
+list(SORT matter_discovered_spirv_inventory)
+if(NOT matter_make_spirv_inventory STREQUAL matter_discovered_spirv_inventory)
+    message(FATAL_ERROR
+        "CMake shader discovery does not match MatterEngine3/Makefile VK_SPV. "
+        "Make: '${matter_make_spirv_inventory}', discovered: "
+        "'${matter_discovered_spirv_inventory}'")
+endif()
+matter_add_vulkan_shader_pipeline(
+    PREFIX matter
+    SOURCE_DIR "${matter_shader_source_dir}"
+    OUTPUT_DIR "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_vk"
+    EMBEDDED_HEADER
+        "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen/embedded_spirv.h"
+    GLSLC "${matter_vulkan_glslc}"
+    PYTHON_EXECUTABLE "${MATTER_PYTHON_EXECUTABLE}"
+    PYTHON_ARGUMENTS ${matter_python_arguments}
+    EMBED_SCRIPT "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_spirv.py"
+    SHADERS ${matter_vulkan_shader_stages}
+    SPECIALIZATIONS
+        "raster_skin.vert|raster.vert|MATTER_SKINNED_VERTEX_INPUT"
+        "raster_water.vert|raster.vert|MATTER_WATER_ANIMATION_VERTEX_INPUT"
+)
+
+# The text lookup API is compiled into both core and viewer builds. Keep its
+# generated table in this build tree, just like the embedded SPIR-V header.
+set(matter_text_shader_keys
+    shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl
+    shaders/raytrace_tlas_blas_processed.fs shaders/materials.glsl
+    shaders/bvh_tlas_common.glsl shaders/lighting.glsl)
+set(matter_text_shader_inputs)
+foreach(shader IN LISTS matter_text_shader_keys)
+    list(APPEND matter_text_shader_inputs
+        "${CMAKE_SOURCE_DIR}/libs/MatterSurfaceLib/${shader}")
+endforeach()
+set(matter_text_shader_header
+    "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen/embedded_shaders.h")
+add_custom_command(
+    OUTPUT "${matter_text_shader_header}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen"
+    COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_shaders.py"
+        "${matter_text_shader_header}"
+        "${CMAKE_SOURCE_DIR}/libs/MatterSurfaceLib" ${matter_text_shader_keys}
+    DEPENDS "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_shaders.py"
+        ${matter_text_shader_inputs}
+    VERBATIM)
+add_custom_target(matter_embedded_shader_text DEPENDS "${matter_text_shader_header}")
+
+include(cmake/MatterPhysx.cmake)
+include(cmake/MatterEngine.cmake)
+include(cmake/MatterViewer.cmake)
+include(cmake/MatterEditor.cmake)
+include(cmake/MatterPackaging.cmake)
+
+if(BUILD_TESTING)
+    add_subdirectory(cmake/tests/third_party_smoke)
+endif()

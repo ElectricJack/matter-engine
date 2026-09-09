@@ -38,16 +38,30 @@ pool's `totalObjects`/`freeObjects`).
 ## Build & test
 
 ```bash
-make            # builds the demo/self-test binary ./memorylib
+make            # builds the demo/self-test binary ./build/memorylib
 make test       # ASan+UBSan test suites (C + C++)
 ```
 
 ## Consumers
 
-SpatialQueryLib, SurfaceLib, OpenParticleSurfaceLib, GPURayTraceExample and
-ParticleDynamicsExample compile `src/mem_pool.c` directly via
-`-I../MemoryLib/include` (see their Makefiles). MatterSurfaceLib keeps its
-own vendored copy by design.
+Nothing copies or symlinks these sources — consumers add
+`-I../MemoryLib/include` and compile the `.c` from here, per CLAUDE.md.
+
+- **`mem_pool.c`** — the only in-tree caller is
+  `libs/SpatialQueryLib/src/spatial_hash.c`, so every project that compiles
+  the spatial hash also compiles the pool: `libs/SpatialQueryLib/Makefile`,
+  `MatterEngine3/Makefile` (both the kernel archive and the editor's viewer
+  archive, which is how MatterEditor gets it), `MatterEngine3/tests/Makefile`
+  and `libs/MatterSurfaceLib/tests/Makefile`.
+  `Prototypes/GPURayTraceExample/Makefile` also compiles it, but Prototypes is
+  a frozen snapshot excluded from `build-all.sh`.
+- **`mem_arena.c`** — `libs/AssetStoreLib` uses the arena in its public API
+  (`ReadBatch` lands blobs in a caller's arena) and compiles it in
+  `tests/Makefile`. `libasset_store.a` deliberately does not contain the
+  arena's object, so a consumer that already compiles `mem_arena.c` cannot get
+  duplicate symbols.
+- **`mem_array.c` / `memory.hpp`** — no consumers outside MemoryLib's own
+  tests yet; they are here as the blessed idiom for new code.
 
 ## History
 

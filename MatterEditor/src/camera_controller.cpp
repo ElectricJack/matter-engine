@@ -1,3 +1,33 @@
+// MatterEditor/src/camera_controller.cpp
+//
+// Implementation of the editor's free-fly camera (camera_controller.h).
+//
+// This is the only file in the editor that talks to GLFW's cursor and input
+// modes directly. It includes glfw3.h through the vendored raylib tree; raylib
+// itself is not used, and GLFW_INCLUDE_NONE keeps any GL headers out (the
+// renderer is Vulkan-only).
+//
+// The anonymous namespace holds a handful of matter::Float3 helpers rather than
+// pulling in MathLib, so that apply_camera_input stays a small, dependency-free
+// function. `normalized` takes an explicit fallback so a degenerate vector
+// yields a caller-chosen direction rather than a NaN -- that is why there are no
+// zero-length checks scattered through the math below.
+//
+// Behaviour worth knowing before changing anything here:
+//   - Look preserves the position-to-target distance; translation moves
+//     position and target together. Nothing here is an orbit -- camera_orbit.cpp
+//     owns pivot-relative motion.
+//   - Pitch is clamped by dot product against world up, not by accumulating an
+//     Euler angle, so there is no drift to reset and no gimbal flip.
+//   - Diagonal movement is normalized, so holding W+D is not faster than W.
+//   - There is deliberately NO recentring cursor warp. The long comment in
+//     update() explains why removing it fixed the remote-desktop runaway spin
+//     (issue a4203d22) and why the per-frame delta sanity clamp is belt and
+//     braces on top of that, not a substitute for it.
+//
+// Main/render thread only: every GLFW call here must run on the window's
+// thread.
+
 #include "camera_controller.h"
 
 #include <cmath>
@@ -30,12 +60,18 @@ matter::Float3 cross(matter::Float3 a, matter::Float3 b) {
             a.x * b.y - a.y * b.x};
 }
 
+// Unit vector, or `fallback` verbatim when the input is (near) zero length.
+// The fallback is not normalized for you -- callers pass either a unit axis or
+// the zero vector, the latter meaning "no movement this frame".
 matter::Float3 normalized(matter::Float3 v, matter::Float3 fallback) {
     const float length_squared = dot(v, v);
     if (length_squared <= 1e-12f) return fallback;
     return mul(v, 1.0f / std::sqrt(length_squared));
 }
 
+// Rodrigues rotation of `v` about `axis` by `angle` radians, right-handed.
+// `axis` is normalized here (falling back to world up), so callers may pass a
+// cross product without pre-normalizing it.
 matter::Float3 rotate_around_axis(matter::Float3 v, matter::Float3 axis, float angle) {
     axis = normalized(axis, {0.0f, 1.0f, 0.0f});
     const float c = std::cos(angle);
@@ -46,6 +82,16 @@ matter::Float3 rotate_around_axis(matter::Float3 v, matter::Float3 axis, float a
 
 } // namespace
 
+// Look, then move. The look step rebuilds `forward` from the current
+// position -> target vector every call, so the camera's orientation is stored
+// in the CameraDesc itself and there is no Euler state to drift.
+//
+// Pitch is limited by clamping the ANGLE derived from dot(forward, world_up)
+// against asin(kPoleDotLimit) rather than by rejecting the rotation, so pushing
+// past the pole stops smoothly at the limit instead of freezing or flipping.
+//
+// The translation is applied to position and target alike, which is what keeps
+// the look-at distance -- and therefore the next frame's `forward` -- stable.
 void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
                         float dt, float speed, float radians_per_pixel,
                         float boost_multiplier) {
@@ -75,6 +121,9 @@ void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
     // not a literal.
     const float distance =
         speed * dt * (input.speed_boost ? boost_multiplier : 1.0f);
+    // Normalizing the combined axis request is what stops diagonal movement
+    // being faster than straight movement; the zero fallback means "no keys
+    // held" costs nothing.
     const matter::Float3 movement = normalized(
         add(add(mul(forward, input.forward), mul(right, input.right)),
             mul(world_up, input.up)),
@@ -84,6 +133,9 @@ void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
     camera.target = add(camera.target, delta);
 }
 
+// Samples keyboard and cursor state and applies one frame of camera motion.
+// Returns immediately -- reading nothing -- unless capture is active, so it is
+// safe to call unconditionally every frame.
 void CameraController::update(GLFWwindow* window, float dt,
                               matter::CameraDesc& camera,
                               const CameraPrefs& prefs) {

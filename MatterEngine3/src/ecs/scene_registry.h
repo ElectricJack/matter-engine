@@ -1,6 +1,34 @@
+// MatterEngine3/src/ecs/scene_registry.h
+//
+// The dynamic scene's reflection schema and its recipe pipeline.
+//
+// SCHEMA. `ComponentDescriptor` / `FieldDescriptor` describe every ECS
+// component the editor is allowed to inspect, down to each member's byte offset
+// inside the struct. That offset is what makes generic editing possible: the
+// inspector never names a component type, it walks `component_at` /
+// `find_field` and calls the `field_get_*` / `field_set_*` accessors below. The
+// table itself lives in scene_registry.cpp, where every offset comes from
+// `offsetof` on the real struct.
+//
+// RECIPE PIPELINE. `validate` -> `validate_batch` -> `normalize` ->
+// `instantiate`, with `bootstrap_transactional` as the safe front door that
+// validates before mutating. Inputs are the `RawEntityRecipe`s the
+// world-definition loader produces (matter/world_definition.h).
+//
+// Relationship to the property system: this is the ECS-side sibling of
+// `matter::props` (spec S7). `to_props_desc` bridges one field descriptor over
+// where a props helper is wanted; the two shapes props cannot represent
+// (Quaternion members, and integer/enum members that are not 4 bytes) stay
+// ECS-only.
+//
+// Threading: app-thread affine. The descriptor tables are static const data and
+// safe to read from anywhere, but every function that takes a `flecs::world&`
+// mutates it and must run on the thread that pumps the world.
+
 #pragma once
 
 #include "matter/math_types.h"
+#include "matter/character.h"
 #include "matter/props.h"
 #include "matter/scene.h"
 #include "matter/world_definition.h"
@@ -13,6 +41,10 @@
 
 namespace matter::scene {
 
+// Which ECS component a ComponentDescriptor describes. Used to switch on a
+// descriptor without string comparison — notably in `instantiate`, which needs
+// per-component JSON decoding. The order matches `s_descriptors` in
+// scene_registry.cpp; the numeric values are not persisted anywhere.
 enum class ComponentKind : uint8_t {
     Transform,
     RigidBody,
@@ -22,9 +54,15 @@ enum class ComponentKind : uint8_t {
     BoxCollider,
     ConvexHullCollider,
     PartInstance,
-    SectorStreaming
+    SectorStreaming,
+    RiverFloatBody,
+    CharacterController
 };
 
+// The interpretation of the bytes at a FieldDescriptor's offset, and therefore
+// which accessor pair is legal for it. Note this is the LOGICAL type: for Int,
+// UInt and Enum the physical width is `FieldDescriptor::storage_size`, which is
+// often not 4.
 enum class FieldType : uint8_t {
     Float,
     Int,
@@ -70,6 +108,11 @@ struct FieldDescriptor {
     const char* doc = nullptr;  // tooltip text
 };
 
+// One row of the component schema. `fields` points at a static array of
+// `field_count` descriptors owned by scene_registry.cpp — never freed, valid
+// for the life of the process, so this struct is safe to copy or hold by
+// pointer. `struct_size`/`struct_align` let a caller stack-allocate a buffer
+// that can hold a copy of the component (see the kMax* bounds below).
 struct ComponentDescriptor {
     ComponentKind kind{};
     const char* name = nullptr;
@@ -86,12 +129,21 @@ struct ComponentDescriptor {
 inline constexpr uint32_t kMaxComponentStructSize = 512;
 inline constexpr uint32_t kMaxComponentStructAlign = 16;
 
+// Why a recipe was rejected. `message` is human-facing; `authored_id` names the
+// recipe at fault and `field_path` the component or field where known (it is
+// left empty for batch-level failures such as a parent cycle). Only meaningful
+// when the call that filled it returned false.
 struct RecipeError {
     std::string message;
     std::string authored_id;
     std::string field_path;
 };
 
+// Monotonic counter of scene bootstraps, held as a flecs singleton. Every
+// entity `instantiate` creates is stamped with the value, so a stale GPU slot
+// referring to an earlier generation can be recognized and dropped. Bumped once
+// per successful instantiate; `instantiate` fails rather than wrapping past
+// UINT32_MAX, which is the width of `SceneEntityId::generation`.
 struct SceneGeneration {
     uint64_t value = 0;
 };
@@ -156,6 +208,14 @@ bool to_props_desc(const FieldDescriptor& field, matter::props::Desc& out);
 bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
              const PartResolver& resolve_part = nullptr);
 
+// Stable authored identity: FNV-1a bytes with the high bit cleared.
+uint64_t hash_authored_id(const std::string& id);
+
+// Validate an edited copy against its entity before committing ECS storage.
+bool validate_character_component(flecs::entity entity,
+                                  const character::CharacterController& value,
+                                  std::string& error);
+
 bool validate_batch(const std::vector<RawEntityRecipe>& recipes,
                     std::vector<EntityRecipe>& out,
                     RecipeError& err,
@@ -168,6 +228,10 @@ SceneBootstrapCandidate normalize(const std::vector<RawEntityRecipe>& raw_recipe
                                   const PartResolver& resolve_part,
                                   RecipeError& err);
 
+// Creates entities for `count` already-validated recipes and wires their parent
+// relationships, bumping `gen` once on success. NOT transactional: a mid-batch
+// failure leaves the entities created so far in the world — prefer
+// bootstrap_transactional() unless you are managing that yourself.
 bool instantiate(flecs::world& world,
                  const EntityRecipe* recipes, uint32_t count,
                  SceneGeneration& gen, RecipeError& err);
@@ -182,6 +246,10 @@ bool bootstrap_transactional(flecs::world& world,
                              const PartResolver& resolve_part,
                              RecipeError& err);
 
+// Flecs module that registers reflection metadata for SceneEntityId,
+// PartInstance, PartInstanceError(Code) and SceneGeneration. Import once per
+// world with `world.import<matter::scene::SceneModule>()`. Types only — it
+// installs no systems and creates no entities.
 struct SceneModule {
     explicit SceneModule(flecs::world& world);
 };

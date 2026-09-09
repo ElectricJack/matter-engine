@@ -208,6 +208,31 @@ void test_graph_node_contracts_are_strict() {
     CHECK(validate_animation_build(build, additive_diagnostics), "additive clips validate only on additive graph inputs");
 }
 
+// Nothing upstream rejects `|` or a newline inside an authored name, and joint
+// names appear ONLY in `encode()` (`authored_state` does not carry them), so if
+// the encoder wrote names verbatim one name could reproduce the record
+// delimiters and make two different rigs hash identically. Length prefixes are
+// what make that impossible.
+void test_encoded_names_are_length_delimited() {
+    AnimationBuild build = valid_build();
+    // "arm" is a leaf nothing else references, so renaming it is local.
+    const std::string forged = "arm|0|0:0\nsocket|spoof";
+    build.rig.joints[3].name = forged;
+    build.rig.sockets = {{"a|0|0,0,0", "root", transform(), at("socket", 90)}};
+    CanonicalAnimationBuild canonical;
+    Diagnostics diagnostics;
+    CHECK(validate_and_canonicalize_animation_build(build, canonical, diagnostics),
+          "a joint or socket name containing record delimiters still validates");
+    const std::string encoded = canonical.encode();
+    CHECK(encoded.find(std::to_string(forged.size()) + ":" + forged) != std::string::npos,
+          "joint names are length-prefixed in the canonical encoding");
+    CHECK(encoded.find(std::string("socket|") + std::to_string(build.rig.sockets[0].name.size()) + ":" +
+                       build.rig.sockets[0].name) != std::string::npos,
+          "socket names are length-prefixed in the canonical encoding");
+    CHECK(encoded.find(std::to_string(build.targets[0].name.size()) + ":" + build.targets[0].name) != std::string::npos,
+          "target names are length-prefixed in the canonical encoding");
+}
+
 void test_diagnostics_are_stably_sorted() {
     AnimationBuild build = valid_build(); build.rig.joints[2].radius = -1.0f; build.rig.joints[1].parent = "missing"; Diagnostics first, second;
     validate_animation_build(build, first); validate_animation_build(build, second); CHECK(first.items == second.items, "diagnostics are stable across validation runs"); CHECK(std::is_sorted(first.items.begin(), first.items.end(), DiagnosticLess{}), "diagnostics have deterministic order");
@@ -221,7 +246,7 @@ void test_diagnostics_are_stably_sorted() {
 } // namespace
 
 int main() {
-    test_duplicate_names_are_rejected(); test_rig_structure_and_numeric_values_are_validated(); test_limits_and_clip_data_are_validated(); test_binding_segments_are_distinct_non_root_and_exclusive(); test_inputs_drivers_targets_and_graph_are_validated(); test_target_chains_and_canonical_orders_are_deterministic(); test_graph_node_contracts_are_strict(); test_diagnostics_are_stably_sorted();
+    test_duplicate_names_are_rejected(); test_rig_structure_and_numeric_values_are_validated(); test_limits_and_clip_data_are_validated(); test_binding_segments_are_distinct_non_root_and_exclusive(); test_inputs_drivers_targets_and_graph_are_validated(); test_target_chains_and_canonical_orders_are_deterministic(); test_graph_node_contracts_are_strict(); test_encoded_names_are_length_delimited(); test_diagnostics_are_stably_sorted();
     if (g_failures != 0) { std::printf("animation_ir_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_ir_tests: all tests passed\n"); return 0;
 }

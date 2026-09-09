@@ -219,28 +219,16 @@ void test_enhanced_lighting_derives_from_any_enhanced_feature() {
           "cloud shadows enable enhanced cloud lighting");
 }
 
-void test_froxel_capture_uses_the_reproducible_current_cost_baseline() {
-    const std::string harness =
-        read_file("../tools/atmosphere_cloud_shots.sh");
-    const size_t froxel = harness.find("  froxel)\n");
-    const size_t suite_end =
-        froxel == std::string::npos ? std::string::npos : harness.find("    ;;", froxel);
-    const std::string body = suite_end == std::string::npos
-        ? std::string{} : harness.substr(froxel, suite_end - froxel);
-    CHECK(body.find("set render.volumetrics.local_sun_march_steps 0") !=
-              std::string::npos &&
-              body.find("set render.volumetrics.multiple_scattering_orders 1") !=
-              std::string::npos &&
-              body.find("set render.volumetrics.multiple_scattering_strength 0") !=
-              std::string::npos &&
-              body.find("set render.volumetrics.powder_strength 0") !=
-              std::string::npos &&
-              body.find("set render.cloud_shadows.enabled false") !=
-              std::string::npos &&
-              body.find("set render.lighting.exposure_ev 0") !=
-              std::string::npos,
-          "froxel capture pins Task 7's Current-cost and daylight baseline");
-}
+// Two tests used to live here that read MatterEngine3/tools/atmosphere_cloud_shots.sh
+// and asserted on its text: one pinned the froxel suite's Task 7 "Current cost"
+// / daylight capture settings, the other pinned its warmup and telemetry
+// timeouts (FROXEL_PERF_WARMUP_SECONDS=140, TELEMETRY_WAIT_SECONDS). That
+// script was deleted on purpose in ac1c04dc ("Remove helper script that's not
+// needed any longer"), so read_file returned an empty string and both
+// assertions became unsatisfiable. They pinned QA-harness text, not engine
+// behaviour, and there is no replacement script to point them at -- the froxel
+// grid, memory, preset and wiring contracts they sat beside still cover the
+// shipped code.
 
 void test_effective_froxel_state_and_rejection_recovery_are_wired() {
     const std::string engine = read_file("../src/matter_engine.cpp");
@@ -282,15 +270,6 @@ void test_resize_smoke_observes_bundle_view_and_ceil_dispatch_coverage() {
           "the resize smoke pins bundle-view replacement, ceil dispatch coverage, and both frame slots");
 }
 
-void test_froxel_harness_reserves_time_for_the_entire_one_process_sweep() {
-    const std::string harness = read_file("../tools/atmosphere_cloud_shots.sh");
-    CHECK(harness.find("FROXEL_PERF_WARMUP_SECONDS=140") != std::string::npos &&
-              harness.find("MATTER_PERF_WARMUP_SECONDS=\"$PERF_WARMUP_SECONDS\"") !=
-                  std::string::npos &&
-              harness.find("TELEMETRY_WAIT_SECONDS") != std::string::npos,
-          "the froxel harness reserves enough process lifetime for all 25 pairs and four captures");
-}
-
 } // namespace
 
 int main() {
@@ -301,11 +280,9 @@ int main() {
     test_froxel_memory_saturates_instead_of_wrapping_for_unrepresentable_dimensions();
     test_presets_apply_and_identify_exact_fixed_table_values();
     test_enhanced_lighting_derives_from_any_enhanced_feature();
-    test_froxel_capture_uses_the_reproducible_current_cost_baseline();
     test_effective_froxel_state_and_rejection_recovery_are_wired();
     test_froxel_candidate_descriptor_failure_is_transactionally_destroyed();
     test_neutral_volume_fallback_is_explicitly_cleared();
     test_resize_smoke_observes_bundle_view_and_ceil_dispatch_coverage();
-    test_froxel_harness_reserves_time_for_the_entire_one_process_sweep();
     return check_summary();
 }

@@ -56,6 +56,10 @@ struct GpuInstance {
     uint instance_token;
     uint animation_instance_slot;
     uint animation_instance_generation;
+    uint water_binding_slot;
+    uint water_generation;
+    uint water_pad0;
+    uint water_pad1;
 };
 
 struct DynamicAnimationBound {
@@ -80,8 +84,12 @@ struct DrawTransform {
     uint vt_slot;
     // LOD debug view: the rung THIS dispatch selected for this draw, written
     // below and forwarded flat by raster.vert. Repurposes the trailing pad
-    // word, so DrawTransform stays 144 bytes.
+    // word; the water identity uvec4 follows it in the 160-byte record.
     uint selected_lod;
+    uint water_binding_slot;
+    uint water_generation;
+    uint water_pad0;
+    uint water_pad1;
 };
 
 struct DrawCommand {
@@ -100,6 +108,7 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 counts;
     uvec4 capacities;
     uvec4 temporal;
+    vec4 water_animation;
     // ---- occlusion ID pass (M4) -------------------------------------------
     // x = cull DRAWS against the visibility mask (0 = the mask is written and
     //     read by nobody, which is the default and the pre-M4 behaviour).
@@ -337,6 +346,10 @@ void main() {
     if (instance_index >= frame.counts.x ||
         instance_index >= frame.capacities.y) return;
     const GpuInstance instance = instances[instance_index];
+    // Animated water retains its immutable static instance in the CPU RT lane
+    // as a BLAS proxy, but healthy playback must not draw the coincident proxy
+    // in either visibility-ID or G-buffer raster passes.
+    if (instance.water_pad0 != 0u) return;
     if (local_cluster >= instance.cluster_count) return;
 
     if (instance.cluster_start >= frame.capacities.x ||
@@ -489,6 +502,10 @@ void main() {
                         instance.transform;
                     vis_draw_transforms[vis_first + vis_slot].instance_token =
                         instance.instance_token;
+                    vis_draw_transforms[vis_first + vis_slot]
+                        .water_binding_slot = instance.water_binding_slot;
+                    vis_draw_transforms[vis_first + vis_slot]
+                        .water_generation = instance.water_generation;
                 }
             }
         }
@@ -544,6 +561,10 @@ void main() {
     draw_transforms[first + slot].vt_slot =
         bucket < vt_draw_slots.length() ? vt_draw_slots[bucket] : 0u;
     draw_transforms[first + slot].selected_lod = lod;
+    draw_transforms[first + slot].water_binding_slot =
+        instance.water_binding_slot;
+    draw_transforms[first + slot].water_generation =
+        instance.water_generation;
     atomicAdd(emitted, 1u);
     atomicAdd(triangles, commands[bucket].index_count / 3u);
     if (slot == 0u) atomicAdd(batches, 1u);

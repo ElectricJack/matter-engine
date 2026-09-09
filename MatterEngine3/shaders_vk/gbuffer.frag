@@ -20,6 +20,14 @@
 #define VT_FEEDBACK_BINDING 13
 #include "vt_common.glsl"
 
+#define WATER_SET 1
+#define WATER_A_BINDING 20
+#define WATER_B_BINDING 21
+#define WATER_C_BINDING 22
+#define WATER_D_BINDING 23
+#define WATER_RECORD_BINDING 24
+#include "water_surface.glsl"
+
 // Phase 2 (Task 10): same FrameConstants block as raster.vert (set 0,
 // binding 0) -- world_to_clip projects the marched world position for the
 // conservative depth write, camera_eye_pixel_budget.xyz is the view-ray
@@ -33,6 +41,7 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     uvec4 counts;
     uvec4 capacities;
     uvec4 temporal;
+    vec4 water_animation;
 } frame;
 
 layout(location = 0) in vec3 in_normal;
@@ -61,6 +70,10 @@ layout(location = 11) flat in uint in_selected_lod;
 // The atlas stores OBJECT-space normals so one atlas serves every placement.
 layout(location = 12) flat in vec3 in_model_basis_x;
 layout(location = 13) flat in vec3 in_model_basis_y;
+layout(location = 15) flat in uint in_water_binding_slot;
+layout(location = 16) flat in uint in_water_generation;
+// Shared raster vertex interface; ordinary/static draws always supply zero.
+layout(location = 17) flat in uint in_water_diagnostic_identity;
 
 // M2.5 impostor atlas, scene set binding 15. Layer pairs: 2*slot is the SHADE
 // layer (rg = octahedral object-space normal, b = baked AO, a = fractional
@@ -80,6 +93,15 @@ layout(push_constant) uniform RasterDebugPushConstants {
     // raster.vert and in RasterDebugPushConstants (vk_scene_renderer.h); the
     // three must stay identical.
     uint impostor_parallax_enabled;
+    uint water_diagnostic_identity;
+    uint water_padding1;
+    uint water_padding2;
+    vec4 water_bounds_min;
+    vec4 water_bounds_extent;
+    uint water_material_index;
+    uint water_padding3;
+    uint water_padding4;
+    uint water_padding5;
 } debug_push;
 
 layout(location = 0) out vec4 out_albedo;
@@ -87,6 +109,7 @@ layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_orm;
 layout(location = 3) out vec2 out_velocity;
 layout(location = 4) out uvec2 out_material_instance;
+layout(location = 5) out float out_reactivity;
 
 // Phase 2 (Task 10): conservative depth write. Parallax only ever pushes the
 // displayed surface AWAY from the camera; under this pipeline's reversed-Z
@@ -148,6 +171,7 @@ void main() {
     float encoded_emission = min(log2(1.0 + emission), 15.875);
     float ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0) : 1.0;
     vec3 shading_normal = normalize(in_normal);
+    float water_reactivity = 0.0;
 
     // ---- M2.5: the terminal impostor rep ----------------------------------
     //
@@ -1057,6 +1081,26 @@ void main() {
         }
     }
 
+    // The baked mesh remains static. Only the shading normal and roughness
+    // move, evaluated from this draw's explicit immutable field identity.
+    if ((material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u) {
+        WaterSurfaceState water_state;
+        if (water_evaluate_surface(
+                in_water_binding_slot, in_water_generation,
+                in_material_index, in_world_pos.xz, shading_normal,
+                frame.water_animation.x, roughness, water_state)) {
+            shading_normal = water_state.shading_normal;
+            roughness = water_state.roughness;
+            water_reactivity = water_state.reactivity;
+            float water_scatter = clamp(
+                water_state.optics.diffuse_scattering_weight +
+                0.35 * water_state.foam.coverage, 0.0, 1.0);
+            base_color = mix(
+                base_color * water_state.optics.transmittance,
+                water_state.optics.scattering_color, water_scatter);
+        }
+    }
+
     gl_FragDepth = frag_depth;
 
     // render.pom.horizon_debug: the last word on base_color, deliberately.
@@ -1101,6 +1145,7 @@ void main() {
     // declaration), so this is the identity for every other pixel.
     out_orm = vec4(roughness, metallic, ao,
                    clamp(horizon_sun_visibility, 0.0, 1.0));
+    out_reactivity = clamp(water_reactivity, 0.0, 1.0);
     out_velocity = in_velocity_valid.z > 0.5
                        ? in_velocity_valid.xy
                        : vec2(0.0);

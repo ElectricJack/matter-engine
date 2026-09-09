@@ -682,9 +682,6 @@ void test_task9_shared_density_and_optional_r16f_contract() {
     std::ifstream composite_file("../shaders_vk/composite.frag", std::ios::binary);
     const std::string composite((std::istreambuf_iterator<char>(composite_file)),
                                 std::istreambuf_iterator<char>());
-    std::ifstream harness_file("../tools/atmosphere_cloud_shots.sh", std::ios::binary);
-    const std::string harness((std::istreambuf_iterator<char>(harness_file)),
-                              std::istreambuf_iterator<char>());
     CHECK(shared.find("CloudDensitySample evaluate_cloud_density") != std::string::npos &&
               volume.find("ENHANCED_CLOUDS") != std::string::npos &&
               volume.find("vol_cloud_density") != std::string::npos &&
@@ -700,9 +697,14 @@ void test_task9_shared_density_and_optional_r16f_contract() {
               volume.find("fog_albedo * non_cloud_extinction + vec3(0.99) * cloud_extinction") !=
                   std::string::npos,
           "Task 9 debug covers full sky rays and enhanced scattering excludes cloud double-counting");
-    CHECK(harness.find("historical Task7 comparison is diagnostic only") != std::string::npos &&
-              harness.find("current-repeat.png\" --max-diff-pct 10.0") != std::string::npos,
-          "Task 9 capture gates same-process static repeat while retaining Task7 as a diagnostic");
+    // The same-process static-repeat gate this used to pin lived in the QA
+    // capture script MatterEngine3/tools/atmosphere_cloud_shots.sh, which was
+    // deleted on purpose in ac1c04dc ("Remove helper script that's not needed
+    // any longer"). Reading the missing file yielded an empty string, so the
+    // assertion could never pass again. The shipped Task 9 surface (shared
+    // density GLSL, the enhanced-cloud R16F allocation, and the composite
+    // ordering) is still pinned by the CHECKs above and below; nothing about
+    // the retired script remains to assert.
     CHECK(shared.find("if (L.weather_scale_influence_detail_scale_detail_erosion.y > 0.0)") !=
               std::string::npos &&
               shared.find("if (L.shape_bias_padding.x != 0.0)") !=

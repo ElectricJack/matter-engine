@@ -1,9 +1,44 @@
+// MatterEngine3/src/render/vk_resources.cpp
+//
+// Implementation of the Vulkan resource helpers declared in vk_resources.h,
+// plus three pieces of process-wide bookkeeping that live here because every
+// allocation in the engine funnels through this file:
+//
+//  1. GPU memory accounting (the `g_gpu_*` atomics) -- byte and allocation
+//     counters split into device-local and host-visible, published by
+//     `gpu_memory_stats()` and surfaced in the editor's Memory panel.
+//  2. The device-address registry (`g_live_device_addresses` and the bounded
+//     `g_freed_device_addresses` ring) -- every device-addressable range is
+//     recorded at creation and moved to the freed ring at destruction, so a
+//     faulting GPU VA reported by VK_EXT_device_fault can be attributed to a
+//     concrete allocation and to its allocation site. See
+//     `debug_describe_device_address`.
+//  3. The `detail::Vk*Allocation` types -- DeviceLifetimeControl subclasses
+//     that actually own the Vulkan objects behind every `Vk*Resource`. They
+//     are what lets a handle be dropped while work is still in flight: the
+//     objects die with the last shared_ptr, and if the VkDevice is torn down
+//     first the shared DeviceAccessToken invalidates them so `live_device()`
+//     returns VK_NULL_HANDLE and no destroy call is issued against a dead
+//     device.
+//
+// Threading. The counters (atomics) and the registry (guarded by
+// `g_device_address_mutex`) are safe from any thread. The resource wrappers
+// themselves are not synchronized. `submit_immediate` -- and therefore
+// `upload_buffer`, `readback_buffer`, `transition_image` and
+// `create_acceleration_structure` -- blocks on a fence, so calling it while
+// holding a lock the GPU-completion path also needs will deadlock.
+//
+// Portability. Allocation sites are captured with `__builtin_return_address`
+// (GCC/Clang), and the Win32 entry points used for process memory are
+// declared by hand and resolved at runtime rather than by including
+// <windows.h> or linking psapi.
 #include "vk_resources.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -14,6 +49,7 @@
 #include <utility>
 
 #include "matter/vulkan_device.h"
+#include "matter/compiler.h"
 #include "vk_device_internal.h"
 
 namespace matter {
@@ -63,6 +99,9 @@ std::atomic<uint64_t> g_gpu_device_local_bytes{0};
 std::atomic<uint64_t> g_gpu_host_visible_bytes{0};
 std::atomic<uint64_t> g_gpu_allocation_count{0};
 
+// Device-local vs host-visible is decided solely by the DEVICE_LOCAL bit, so
+// anything without it -- including memory that is neither, which does not
+// occur on the devices this runs on -- lands in the host-visible bucket.
 void track_gpu_alloc(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
     if (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
         g_gpu_device_local_bytes.fetch_add(bytes, std::memory_order_relaxed);
@@ -79,6 +118,10 @@ void track_gpu_free(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
     g_gpu_allocation_count.fetch_sub(1, std::memory_order_relaxed);
 }
 
+// Records a live device-addressable range. `kind` must be a string literal
+// with static storage -- the record keeps the pointer, not a copy. A zero
+// `base` or `size` is silently ignored, which is how the not-device-addressable
+// case is filtered out at the call sites.
 void register_device_address(uint64_t base, uint64_t size, const char* kind,
                              const void* site) {
     if (base == 0 || size == 0) return;
@@ -93,6 +136,10 @@ void register_device_address(uint64_t base, uint64_t size, const char* kind,
     g_live_device_addresses[base] = range;
 }
 
+// Moves a range from live to the freed-history ring, stamping the wall-clock
+// and frame at which it died. Called from the allocation destructors, i.e. at
+// the moment the memory really goes away -- which for a retained resource is
+// well after the owning handle was reset.
 void release_device_address(uint64_t base) {
     if (base == 0) return;
     std::lock_guard<std::mutex> lock(g_device_address_mutex);
@@ -109,9 +156,10 @@ void release_device_address(uint64_t base) {
     }
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(_WINDOWS_)
 // Declared rather than pulling in <windows.h>, which would drag min/max and a
-// few thousand macros into a header-light translation unit.
+// few thousand macros into a header-light translation unit. If a prior Vulkan
+// platform include already pulled in Windows.h, use its canonical declarations.
 extern "C" __declspec(dllimport) void* __stdcall GetModuleHandleW(
     const wchar_t*);
 extern "C" __declspec(dllimport) void* __stdcall GetProcAddress(
@@ -152,6 +200,13 @@ void gpu_memory_track_free(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
     track_gpu_free(bytes, props);
 }
 
+// Windows: `PMC` is a hand-mirrored PROCESS_MEMORY_COUNTERS -- its field order
+// and types must stay byte-compatible with the OS struct, since only `cb` is
+// checked. K32GetProcessMemoryInfo is resolved once from kernel32 so the
+// binary need not link psapi, and everything degrades to zeroes if it is
+// missing. Linux: resident pages from /proc/self/statm at an assumed 4 KiB
+// page size, and the peak from /proc/self/status's `VmHWM` (high-water mark,
+// reported in KiB). Either read failing leaves its field at 0.
 ProcessMemoryStats process_memory_stats() noexcept {
     ProcessMemoryStats s;
 #ifdef _WIN32
@@ -169,7 +224,7 @@ ProcessMemoryStats process_memory_stats() noexcept {
     };
     using Fn = int(__stdcall*)(void*, PMC*, uint32_t);
     static const Fn fn = [] {
-        void* k32 = GetModuleHandleW(L"kernel32.dll");
+        auto k32 = GetModuleHandleW(L"kernel32.dll");
         return k32 ? reinterpret_cast<Fn>(GetProcAddress(k32,
                          "K32GetProcessMemoryInfo"))
                    : nullptr;
@@ -190,6 +245,17 @@ ProcessMemoryStats process_memory_stats() noexcept {
         if (fscanf(f, "%*ld %ld", &pages) == 1)
             s.working_set_bytes = static_cast<uint64_t>(pages) * 4096;
         fclose(f);
+    }
+    if (FILE* st = fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), st)) {
+            unsigned long kib = 0;
+            if (sscanf(line, "VmHWM: %lu kB", &kib) == 1) {
+                s.peak_working_set_bytes = static_cast<uint64_t>(kib) * 1024;
+                break;
+            }
+        }
+        fclose(st);
     }
 #endif
     return s;
@@ -212,7 +278,7 @@ std::string debug_describe_device_address(uint64_t address, uint64_t span) {
     const uint64_t frame = g_device_address_frame.load(std::memory_order_relaxed);
     std::ostringstream out;
     out << std::hex;
-    size_t matches = 0;
+    size_t live_matches = 0;
     std::lock_guard<std::mutex> lock(g_device_address_mutex);
     for (const auto& entry : g_live_device_addresses) {
         const DeviceAddressRange& range = entry.second;
@@ -221,12 +287,20 @@ std::string debug_describe_device_address(uint64_t address, uint64_t span) {
             << range.size << ") from +0x" << site_rva(range.site)
             << ", created " << std::dec << age_ms(range.created) << " ms ago ("
             << (frame - range.created_frame) << " frames)" << std::hex << "; ";
-        ++matches;
+        ++live_matches;
     }
     // Newest-first: with VA reuse the most recent tenant of the range is the
-    // interesting one.
+    // interesting one -- which is exactly why the freed history gets its OWN
+    // budget rather than sharing one running count with the live loop above.
+    // Sharing it meant a fault inside a heavily aliased region (16+ live
+    // matches) skipped the freed scan entirely and omitted the likeliest
+    // culprit.
+    constexpr size_t kMaxFreedReported = 16;
+    size_t freed_matches = 0;
     for (auto it = g_freed_device_addresses.rbegin();
-         it != g_freed_device_addresses.rend() && matches < 16; ++it) {
+         it != g_freed_device_addresses.rend() &&
+         freed_matches < kMaxFreedReported;
+         ++it) {
         if (!in_range(*it)) continue;
         out << "FREED " << it->kind << " [0x" << it->base << " +0x" << it->size
             << ") from +0x" << site_rva(it->site) << ", destroyed " << std::dec
@@ -236,9 +310,12 @@ std::string debug_describe_device_address(uint64_t address, uint64_t span) {
                    it->freed - it->created)
                    .count()
             << " ms" << std::hex << "; ";
-        ++matches;
+        ++freed_matches;
     }
-    if (matches == 0) {
+    if (freed_matches == kMaxFreedReported)
+        out << std::dec << "(freed matches capped at " << kMaxFreedReported
+            << ")" << std::hex << "; ";
+    if (live_matches + freed_matches == 0) {
         // A miss is only evidence if the ring actually still holds the window
         // the fault could have come from. Say how far back it reaches, and
         // whether anything was evicted, so "untracked memory" and "aged out"
@@ -264,6 +341,16 @@ std::string debug_describe_device_address(uint64_t address, uint64_t span) {
 
 namespace detail {
 
+// The real owner behind `VkBufferResource`. One instance per buffer, held by
+// shared_ptr, so the VkBuffer/VkDeviceMemory pair is destroyed only when the
+// last handle AND the last in-flight submission that listed it as a dependency
+// have gone.
+//
+// `release_device_objects` is also invoked by DeviceAccessToken when the
+// VkDevice is destroyed first; every step re-checks `live_device()` for that
+// reason, and the function is idempotent (it nulls what it destroys).
+// `tracked_alloc_size` / `tracked_mem_props` are remembered purely so the free
+// can decrement the same GPU memory counters the allocation incremented.
 struct VkBufferAllocation final : DeviceLifetimeControl {
     explicit VkBufferAllocation(std::shared_ptr<DeviceAccessToken> device_access)
         : DeviceLifetimeControl(std::move(device_access)) {}
@@ -298,6 +385,10 @@ protected:
     }
 };
 
+// Owner behind `VkImageResource`: the view, the image and its memory, torn
+// down in that order. Same contract as `VkBufferAllocation` -- shared, may be
+// released by the device teardown path, idempotent. Images carry no device
+// address, so nothing here touches the address registry.
 struct VkImageAllocation final : DeviceLifetimeControl {
     explicit VkImageAllocation(std::shared_ptr<DeviceAccessToken> device_access)
         : DeviceLifetimeControl(std::move(device_access)) {}
@@ -329,6 +420,14 @@ protected:
     }
 };
 
+// Owner behind `VkAccelerationStructureResource`. `storage` is the backing
+// buffer's own allocation, held by shared_ptr, so the storage cannot be freed
+// while the structure still refers to it. Teardown order matters: the
+// structure handle is destroyed first, and only then is the storage reference
+// dropped.
+//
+// vkDestroyAccelerationStructureKHR is looked up per destruction rather than
+// cached, so a device without ray tracing simply never destroys anything here.
 struct VkAccelerationStructureAllocation final : DeviceLifetimeControl {
     explicit VkAccelerationStructureAllocation(
         std::shared_ptr<DeviceAccessToken> device_access)
@@ -380,6 +479,8 @@ VkDeviceSize align_down(VkDeviceSize value, VkDeviceSize alignment) {
     return value - value % alignment;
 }
 
+// Saturates instead of wrapping: an overflowing round-up returns
+// VkDeviceSize max, which callers then clamp against `allocation_size`.
 VkDeviceSize align_up(VkDeviceSize value, VkDeviceSize alignment) {
     if (value > std::numeric_limits<VkDeviceSize>::max() - (alignment - 1)) {
         return std::numeric_limits<VkDeviceSize>::max();
@@ -393,6 +494,11 @@ struct CopyBufferRecord {
     VkBufferCopy region;
 };
 
+// Records one buffer copy followed by a deliberately maximal pair of memory
+// barriers: TRANSFER_WRITE to ALL_COMMANDS read/write, and TRANSFER_WRITE to
+// HOST_READ. This is the shared record callback for both `upload_buffer` and
+// `readback_buffer`, which do not know what the copied bytes will be used for,
+// so the barriers cover every consumer including a subsequent host map.
 void record_copy_buffer(VkCommandBuffer command_buffer, void* user_data) {
     const auto& copy = *static_cast<const CopyBufferRecord*>(user_data);
     vkCmdCopyBuffer(command_buffer, copy.source, copy.destination, 1,
@@ -434,6 +540,16 @@ void record_transition(VkCommandBuffer command_buffer, void* user_data) {
                             transition.destination_access, transition.aspect);
 }
 
+// Escrow for a `submit_immediate` whose completion could not be proven.
+//
+// Normally the command pool and fence are destroyed as soon as the fence
+// signals. When the wait does not come back clean -- a lost device, most
+// often -- destroying them (or the dependency shared_ptrs, which may be the
+// only thing keeping a buffer the GPU is reading alive) would be a
+// use-after-free. `abandon` transfers the pool and fence into this object
+// instead, and it is then handed to the device's retention list, where it
+// lives until the VkDevice is destroyed. Deliberately a leak with a bounded
+// lifetime, traded against an unbounded correctness hazard.
 class ImmediateSubmissionRetention final
     : public detail::DeviceRetainedResource {
 public:
@@ -483,6 +599,13 @@ VkBufferResource& VkBufferResource::operator=(VkBufferResource&& other) noexcept
     return *this;
 }
 
+// Releases this handle's claim and returns the struct to its default state.
+//
+// The two branches are not equivalent. With a `lifetime` (everything
+// `create_buffer` produces) this only drops a reference -- the Vulkan objects
+// may outlive the call. The fallback branch, for a hand-assembled resource
+// that never got a `lifetime`, destroys immediately and does NOT decrement the
+// GPU memory counters, because nothing incremented them for it either.
 void VkBufferResource::reset() {
     if (lifetime) {
         lifetime.reset();
@@ -617,7 +740,7 @@ bool create_acceleration_structure(
     }
     candidate.lifetime->device_address = candidate.address;
     register_device_address(candidate.address, size, "acceleration structure",
-                            __builtin_return_address(0));
+                            matter::diagnostics::return_address());
     output = std::move(candidate);
     return true;
 }
@@ -730,7 +853,7 @@ bool create_buffer(VulkanDevice& vulkan, VkDeviceSize size,
     if (candidate.address != 0) {
         candidate.lifetime->device_address = candidate.address;
         register_device_address(candidate.address, candidate.allocation_size,
-                                "buffer", __builtin_return_address(0));
+                                "buffer", matter::diagnostics::return_address());
     }
     output = std::move(candidate);
     return true;
@@ -864,6 +987,10 @@ bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
         cleanup();
         return fail_result("vkCreateFence", result, error);
     }
+    // `completion_proven` is the load-bearing output, not `submitted`: it
+    // answers "is the GPU definitely done with this command buffer?", which is
+    // the only condition under which the pool, fence and dependencies may be
+    // destroyed here. A submission can fail while still leaving work queued.
     bool completion_proven = false;
     const char* phase_name = nullptr;
     switch (phase) {

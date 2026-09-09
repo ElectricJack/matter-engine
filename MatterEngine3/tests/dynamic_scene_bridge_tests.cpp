@@ -18,12 +18,14 @@ using namespace matter::scene;
 namespace {
 
 flecs::entity make_entity(flecs::world& world, uint64_t id, uint64_t part_hash,
-                          bool visible = true, bool casts_shadow = true) {
+                          bool visible = true, bool casts_shadow = true,
+                          RayTracingOverride ray_traced =
+                              RayTracingOverride::Inherit) {
     auto e = world.entity();
     e.set<SceneEntityId>({id});
     e.set<ecs::LocalTransform>({});
     e.set<ecs::WorldTransform>({});
-    e.set<PartInstance>({part_hash, visible, casts_shadow});
+    e.set<PartInstance>({part_hash, visible, casts_shadow, ray_traced});
     return e;
 }
 
@@ -50,6 +52,23 @@ struct RecordingSink {
         return sink;
     }
 };
+
+AnimatorInstanceHandle animation_handle() {
+    return {7, 3, UINT32_MAX, static_cast<AnimationValueType>(0xff),
+            AnimationCadence::Invalid};
+}
+
+void publish_pose(animation::AnimationPoseSnapshotStore& store,
+                  uint64_t frame_serial) {
+    std::vector<AnimationTransform> local(1);
+    std::vector<Mat4f> current{translated(2.0f)};
+    std::vector<Mat4f> previous{translated(1.0f)};
+    animation::AnimationPoseSnapshot snapshot{
+        animation_handle(), 4, frame_serial,
+        {local.data(), 1}, {current.data(), 1}, {previous.data(), 1},
+        {current.data(), 1}, {previous.data(), 1}};
+    CHECK(store.publish(snapshot), "articulated pose publishes");
+}
 
 } // namespace
 
@@ -122,6 +141,63 @@ static void test_bridge_part_change() {
               "expected Bind change on part hash change");
         CHECK(changes[0].part_hash == 0x5678, "expected updated part_hash");
     }
+}
+
+static void test_bridge_carries_root_policy_hash_and_override() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<SceneModule>();
+
+    make_entity(world, 0x100, 0x1234, true, true,
+                RayTracingOverride::Disabled);
+    DynamicSceneBridge bridge(8);
+    RecordingSink recorder;
+    std::string error;
+    CHECK(bridge.reconcile(world, recorder.make(), error),
+          "policy bridge reconcile succeeds");
+    const auto changes = bridge.drain();
+    CHECK(changes.size() == 1 && changes[0].policy_part_hash == 0x1234 &&
+              changes[0].ray_tracing_override ==
+                  RayTracingOverride::Disabled,
+          "root dynamic record carries its source part policy identity");
+}
+
+static void test_articulated_records_keep_entity_policy() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<SceneModule>();
+
+    animation::AnimationPoseSnapshotStore snapshots;
+    publish_pose(snapshots, 9);
+    animation::BindingBake bindings;
+    bindings.rigid_segments.push_back(
+        {"arm", 0, {}, false, {{0, 1, 0, 1}}});
+    bindings.attachments.push_back(
+        {"tool", "root", animation::AttachmentTargetKind::Joint, 0x222, {}});
+    animation::CanonicalRig rig;
+    rig.joints.push_back({"root"});
+    render::AnimationRigidAsset asset{0x7001, 2, &bindings, &rig, {0x111}};
+    auto entity = make_entity(world, 0x401, 0x9000, true, true,
+                              RayTracingOverride::Disabled);
+    entity.set<render::AnimationRigidBinding>(
+        {animation_handle(), &asset, asset.generation, true});
+
+    DynamicSceneBridge bridge(8, &snapshots);
+    RecordingSink recorder;
+    std::string error;
+    CHECK(bridge.reconcile(world, recorder.make(), error, 9),
+          "articulated policy reconcile succeeds");
+    const auto changes = bridge.drain();
+    CHECK(changes.size() == 2,
+          "rigid-only entity emits its segment and attachment");
+    bool all_use_entity_policy = changes.size() == 2;
+    for (const auto& change : changes) {
+        all_use_entity_policy = all_use_entity_policy &&
+            change.policy_part_hash == 0x9000 &&
+            change.ray_tracing_override == RayTracingOverride::Disabled;
+    }
+    CHECK(all_use_entity_policy,
+          "every articulated record keeps the entity override and root part hash");
 }
 
 static void test_bridge_hide_entity() {
@@ -329,6 +405,17 @@ static void test_bridge_scene_entities_query() {
 
     auto ids = bridge.scene_entities();
     CHECK(ids.size() == 3, "expected 3 tracked scene entities");
+    // tracked_ is an unordered_map, so the query has to impose its own order or
+    // the list reshuffles between frames. Ascending by (id, generation).
+    CHECK(ids[0].value == 0x100 && ids[1].value == 0x200 && ids[2].value == 0x300,
+          "scene_entities is sorted ascending by entity id");
+
+    // A second reconcile of the same world must produce the identical list.
+    bridge.reconcile(world, recorder.make(), err);
+    auto again = bridge.scene_entities();
+    CHECK(again.size() == ids.size() && again[0].value == ids[0].value &&
+              again[1].value == ids[1].value && again[2].value == ids[2].value,
+          "scene_entities is stable across frames");
 }
 
 static void test_bridge_resolve_pick() {
@@ -413,6 +500,8 @@ int main() {
     test_bridge_add_entity();
     test_bridge_transform_only();
     test_bridge_part_change();
+    test_bridge_carries_root_policy_hash_and_override();
+    test_articulated_records_keep_entity_policy();
     test_bridge_hide_entity();
     test_hidden_animation_is_successful_zero_submission();
     test_skinned_asset_binds_root_before_its_skin_attaches();

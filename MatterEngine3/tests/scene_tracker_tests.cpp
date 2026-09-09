@@ -23,6 +23,7 @@
 #include "matter/ecs.h"
 #include "matter/event/event_hub.h"
 #include "matter/physics.h"
+#include "matter/river_runtime.h"
 #include "matter/scene.h"
 #include "matter/scene/scene_events.h"
 #include "scene/scene_change_tracker.h"
@@ -32,6 +33,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <map>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -394,9 +396,121 @@ void test_direct_edit_caught() {
     }
 }
 
+// Missing dispatch/copy/observer cases must not turn controllers into empty
+// entities or leak the source input latch into a duplicate.
+void test_character_service_and_tracker() {
+    using namespace matter;
+    Fx fx;
+    fx.world.import<ecs::CoreModule>();
+    fx.world.import<physics::PhysicsModule>();
+    fx.world.import<character::CharacterModule>();
+    const auto id = fx.service.create_empty("Player").created_id;
+    CHECK(fx.service.add_component(id, ComponentKind::CharacterController).error == SceneEditError::None, "service adds controller");
+    auto e = fx.service.find_entity(id);
+    CHECK(e.has<character::CharacterController>() && e.has<character::MoveIntent>(), "service uses intent lifecycle");
+    fx.tracker.flush();
+    fx.deltas.clear();
+    character::CharacterController expected{0.5f, 2.0f, 6.0f, 0.5f, 0.3f, 8.0f, {1,2,3}, true, 41, 9, 7};
+    e.set<character::CharacterController>(expected);
+    e.set<character::MoveIntent>({{1,0,-1},true,true});
+    fx.tracker.flush();
+    CHECK(fx.deltas.size() == 1, "direct controller set observed");
+    if (!fx.deltas.empty()) {
+        const auto* row = find_row(fx.deltas[0].rows, id.value);
+        CHECK(row && std::count(row->component_names.begin(), row->component_names.end(), "CharacterController") == 1,
+              "exactly one controller component name");
+        CHECK(row && !has_component(*row, "MoveIntent"), "intent remains hidden");
+    }
+    const auto duplicate = fx.service.duplicate(id);
+    CHECK(duplicate.error == SceneEditError::None, "duplicate controller succeeds");
+    auto copy = fx.service.find_entity(duplicate.created_id);
+    CHECK(copy.has<character::CharacterController>() && copy.has<character::MoveIntent>(), "duplicate preserves controller presence");
+    if (copy.has<character::CharacterController>()) {
+        const auto c = copy.get<character::CharacterController>();
+        CHECK(c.radius == 0.5f && c.height == 2 && c.move_speed == 6 && c.max_slope_cos == 0.5f &&
+              c.step_up_height == 0.3f && c.jump_speed == 8 && c.velocity.x == 1 && c.velocity.y == 2 &&
+              c.velocity.z == 3 && c.grounded && c.fixed_ticks == 41 && c.jumps_consumed == 9 && c.jumps_started == 7,
+              "duplicate copies entire configuration and runtime state");
+    }
+    if (copy.has<character::MoveIntent>()) {
+        const auto intent = copy.get<character::MoveIntent>();
+        CHECK(intent.move_dir.x == 0 && intent.move_dir.y == 0 && intent.move_dir.z == 0 && !intent.jump && !intent.sprint,
+              "duplicate starts with zero intent");
+    }
+    CHECK(!copy.has<physics::RigidBody>() && !copy.has<physics::PhysicsVelocity>() &&
+          !copy.has<physics::SphereCollider>() && !copy.has<physics::CapsuleCollider>() &&
+          !copy.has<physics::BoxCollider>() && !copy.has<physics::ConvexHullCollider>(), "duplicate remains ghost");
+    CHECK(e.get<character::MoveIntent>().jump, "duplicate does not clear source intent");
+    fx.tracker.flush();
+    fx.deltas.clear();
+    CHECK(fx.service.remove_component(id, ComponentKind::CharacterController).error == SceneEditError::None, "service removes controller");
+    CHECK(!e.has<character::CharacterController>() && !e.has<character::MoveIntent>(), "service removes controller and intent");
+    fx.tracker.flush();
+    CHECK(fx.deltas.size() == 1 && !has_component(fx.deltas[0].rows[0], "CharacterController"), "service remove observed");
+    fx.deltas.clear();
+    e.set<character::CharacterController>({});
+    fx.tracker.flush();
+    CHECK(fx.deltas.size() == 1 && has_component(fx.deltas[0].rows[0], "CharacterController"), "direct add observed");
+    fx.deltas.clear();
+    e.remove<character::CharacterController>();
+    fx.tracker.flush();
+    CHECK(fx.deltas.size() == 1 && !has_component(fx.deltas[0].rows[0], "CharacterController"), "direct remove observed");
+}
+
+void test_character_edits_rejected_before_mutation() {
+    using namespace matter;
+    Fx fx;
+    fx.world.import<ecs::CoreModule>();
+    fx.world.import<physics::PhysicsModule>();
+    fx.world.import<character::CharacterModule>();
+    const auto id = fx.service.create_empty("Player").created_id;
+    auto e = fx.service.find_entity(id);
+    std::string error;
+    character::CharacterController edited;
+    CHECK(scene::validate_character_component(e, edited, error), "valid edited copy accepted");
+    e.set<character::CharacterController>(edited);
+    const float nonfinite = std::numeric_limits<float>::quiet_NaN();
+    float character::CharacterController::* fields[] = {&character::CharacterController::radius, &character::CharacterController::height,
+        &character::CharacterController::move_speed, &character::CharacterController::max_slope_cos,
+        &character::CharacterController::step_up_height, &character::CharacterController::jump_speed};
+    for (auto field : fields) {
+        for (float value : {-1.0f, nonfinite, std::numeric_limits<float>::infinity()}) {
+            edited = {}; edited.*field = value;
+            CHECK(!scene::validate_character_component(e, edited, error) && !error.empty(), "invalid edited controller rejected");
+            CHECK(e.get<character::CharacterController>().radius == 0.4f && e.get<character::CharacterController>().move_speed == 4.5f,
+                  "validation never mutates live controller");
+        }
+    }
+    edited = {}; edited.height = 0.7f;
+    CHECK(!scene::validate_character_component(e, edited, error), "edited capsule dimensions rejected");
+    edited = {}; edited.max_slope_cos = 1.01f;
+    CHECK(!scene::validate_character_component(e, edited, error), "edited cosine above one rejected");
+    edited = {}; edited.velocity.y = nonfinite;
+    CHECK(!scene::validate_character_component(e, edited, error), "nonfinite runtime copy rejected");
+    e.remove<character::CharacterController>();
+    for (auto kind : {ComponentKind::RigidBody, ComponentKind::Velocity, ComponentKind::SphereCollider,
+                      ComponentKind::CapsuleCollider, ComponentKind::BoxCollider, ComponentKind::ConvexHullCollider}) {
+        CHECK(fx.service.add_component(id, kind).error == SceneEditError::None, "conflicting owner setup");
+        CHECK(fx.service.add_component(id, ComponentKind::CharacterController).error == SceneEditError::InvalidTarget,
+              "service rejects conflicting owner");
+        CHECK(!e.has<character::CharacterController>() && !e.has<character::MoveIntent>(), "failed add leaves no partial components");
+        fx.service.remove_component(id, kind);
+    }
+    e.set<RiverFloatBody>({});
+    CHECK(fx.service.add_component(id, ComponentKind::CharacterController).error == SceneEditError::InvalidTarget, "service rejects float ownership");
+    e.remove<RiverFloatBody>();
+    auto transform = e.get<ecs::LocalTransform>(); transform.scale = {1,2,1}; e.set<ecs::LocalTransform>(transform);
+    CHECK(fx.service.add_component(id, ComponentKind::CharacterController).error == SceneEditError::InvalidTarget, "service rejects scaled player");
+    e.set<ecs::LocalTransform>({});
+    auto parent = fx.world.entity(); e.child_of(parent);
+    CHECK(fx.service.add_component(id, ComponentKind::CharacterController).error == SceneEditError::InvalidTarget, "service rejects parented player");
+}
+
 }  // namespace
 
 int main() {
+    test_character_service_and_tracker();
+    test_character_edits_rejected_before_mutation();
     test_create_upsert();
     test_delete_cascade_removed();
     test_reparent_upsert();

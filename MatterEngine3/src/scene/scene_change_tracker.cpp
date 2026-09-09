@@ -6,12 +6,13 @@
 #include "matter/ecs.h"
 #include "matter/event/event_hub.h"
 #include "matter/physics.h"
+#include "matter/character.h"
 #include "matter/streaming.h"
 
 namespace matter::scene {
 namespace {
 
-// The nine components that appear in SceneRecord::component_names, in the
+// The components that appear in SceneRecord::component_names, in the
 // canonical order of scene_registry.cpp's s_descriptors table (kept in sync
 // with it — that table is the naming source of truth; the tracker lives in
 // the kernel lib and must not depend on scene_registry.cpp, which is not a
@@ -26,6 +27,7 @@ void append_component_names(flecs::entity e, std::vector<std::string>& out) {
     if (e.has<physics::ConvexHullCollider>())      out.emplace_back("ConvexHullCollider");
     if (e.has<PartInstance>())                     out.emplace_back("PartInstance");
     if (e.has<streaming::SectorStreaming>())       out.emplace_back("SectorStreaming");
+    if (e.has<character::CharacterController>())   out.emplace_back("CharacterController");
 }
 
 } // namespace
@@ -141,6 +143,7 @@ SceneChangeTracker::SceneChangeTracker(flecs::world& world, evt::Hub& hub)
     observe(physics::BoxCollider{},         "SceneTracker_BoxCollider");
     observe(physics::ConvexHullCollider{},  "SceneTracker_ConvexHullCollider");
     observe(PartInstance{},                 "SceneTracker_PartInstance");
+    observe(character::CharacterController{}, "SceneTracker_CharacterController");
 
     // SectorStreaming is a zero-size TAG (streaming.h: `struct SectorStreaming
     // {};`) — it carries no data, so the templated each(entity, C&) form does

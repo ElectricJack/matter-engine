@@ -13,6 +13,29 @@
 // upgraded (coarse->full) or evicted (full->coarse). Like bake.*, it was
 // already queued-to-app, so the E3 compat shim routes it through
 // lane::legacy_poll unchanged.
+// ---------------------------------------------------------------------------
+// Using this event
+// ---------------------------------------------------------------------------
+// Payload struct only — no behavior. MT_EVENT_NAME
+// (matter/event/event_name.h) declares the dotted registry/trace name and a
+// stable per-type id. Emit and subscribe through the session's evt::Hub
+// (matter/event/event_hub.h):
+//
+//   hub.emit(matter::events::RefineTileDone{...});
+//   auto sub = hub.must_subscribe<matter::events::RefineTileDone>(
+//       "hud", lane_or_immediate, [](const auto& e) { ... });
+//
+// must_subscribe is [[nodiscard]]; the returned Subscription owns the
+// registration and must outlive the interest.
+//
+// Cost: Hub::emit takes the event by value and every queued lane stores its
+// own copied envelope, so `module` is copied once per emit plus once per
+// distinct subscribed lane. One of these fires per tile residency change, not
+// once per bake.
+//
+// Gotcha: a field added here is invisible to legacy poll_event consumers until
+// the hand-written to_legacy_event(const events::RefineTileDone&) overload in
+// src/matter_engine.cpp copies it across.
 #pragma once
 #include <string>
 
@@ -29,6 +52,8 @@ struct RefineTileDone {
     MT_EVENT_NAME("stream.refine_tile");
     std::string module;                  // "Terrain" (for now)
     int done = 0, total = 0;
+    // Integer tile coordinates in the RefineController's tile grid, not world
+    // metres; -1/-1 is the struct default for "no tile identified".
     int tile_tx = -1, tile_tz = -1;      // the (tx,tz) tile that changed
 };
 

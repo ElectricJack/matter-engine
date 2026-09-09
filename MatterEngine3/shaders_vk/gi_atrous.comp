@@ -16,6 +16,7 @@ layout(std430, set = 0, binding = 7) buffer PassMarkers {
     uint observedStepWidth[5];
 } markers;
 layout(set = 0, binding = 8) uniform sampler2D auxTex;
+layout(set = 0, binding = 9) uniform sampler2D reactivityTex;
 
 layout(push_constant) uniform AtrousConstants {
     uvec2 extent;
@@ -47,6 +48,8 @@ void main() {
     uvec2 centerIdentity = texelFetch(identityTex, pixel, 0).rg;
     uint centerHistory = texelFetch(historyTex, pixel, 0).r;
     vec2 centerAux = texelFetch(auxTex, pixel, 0).rg;
+    vec2 centerUv = (vec2(pixel) + 0.5) / vec2(pc.extent);
+    float centerReactivity = textureLod(reactivityTex, centerUv, 0.0).r;
     // signalMode: 0 = diffuse GI (radius 2), 1 = specular (radius 1, aux
     // edge-stops), 2 = transmission (RT PBR Phase 1: same as specular, but a
     // smooth pixel -- aux roughness < 0.02 -- passes through untouched: the
@@ -116,7 +119,11 @@ void main() {
                 wh = exp(-abs(centerAux.x - aux.x) / hitScale) *
                      exp(-abs(centerAux.y - aux.y) * 8.0);
             }
-            float weight = spatial * wl * wd * wn * wh;
+            vec2 qUv = (vec2(q) + 0.5) / vec2(pc.extent);
+            float neighborReactivity =
+                textureLod(reactivityTex, qUv, 0.0).r;
+            float wr = exp(-abs(centerReactivity - neighborReactivity) * 8.0);
+            float weight = spatial * wl * wd * wn * wh * wr;
             sum += signal * weight;
             weightSum += weight;
         }

@@ -58,6 +58,30 @@ int main() {
     CHECK(!bad.ok && bad.message.find("boom") != std::string::npos,
           "field() error surfaces");
 
+    WorldEvalResult field_collision = host.eval_world(R"JS(
+class FieldCollision extends World {
+  field() { terrainCollision({ cellSize: 0.5 }); }
+}
+)JS", "{}");
+    CHECK(!field_collision.ok &&
+              field_collision.message.find("terrainCollision") != std::string::npos &&
+              field_collision.message.find("field()") != std::string::npos,
+          "field() terrainCollision misuse reports the active phase");
+
+    WorldEvalResult biome_collision = host.eval_world(R"JS(
+class BiomeCollision extends World {
+  field() {
+    const zero = blend(0, 0, 0);
+    return { density: heightToDensity(zero), moisture: zero, relief: zero, seaLevel: 0 };
+  }
+  biomes() { terrainCollision({ cellSize: 0.5 }); }
+}
+)JS", "{}");
+    CHECK(!biome_collision.ok &&
+              biome_collision.message.find("terrainCollision") != std::string::npos &&
+              biome_collision.message.find("biomes()") != std::string::npos,
+          "biomes() terrainCollision misuse propagates the active-phase error");
+
     // Finding 2: static params defaults must be picked up even when the caller
     // passes "{}" (no overrides). The seed used in field() should be 42 (the
     // class default), so the program must match an explicit worldSeed:42 call.

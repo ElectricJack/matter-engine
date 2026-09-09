@@ -19,6 +19,32 @@
 // poll_event pumps that lane one envelope per call (S II.4 item 6). New
 // consumers subscribe lane::app / immediate as they wish; the emitter does
 // not know or care.
+// ---------------------------------------------------------------------------
+// Using these events
+// ---------------------------------------------------------------------------
+// These are payload structs only — no behavior, no base class, no virtuals.
+// Every field carries a default initializer, so `BakeStarted{}` and partial
+// aggregate init are both well-formed. MT_EVENT_NAME
+// (matter/event/event_name.h) declares the dotted registry/trace name plus a
+// stable per-type id, and needs the trailing semicolon.
+//
+//   hub.emit(matter::events::BakeFinished{errors});               // producer
+//   auto sub = hub.must_subscribe<matter::events::BakeFinished>(  // consumer
+//       "hud", lane_or_immediate, [](const auto& e) { ... });
+//
+// evt::Hub lives in matter/event/event_hub.h. `must_subscribe` is
+// [[nodiscard]] and hands back a Subscription that owns the registration
+// (matter/event/subscription.h) — keep it alive for as long as you want the
+// callback.
+//
+// Cost: Hub::emit takes the event BY VALUE and each queued lane stores its
+// own copied envelope, so every std::string member here is copied once per
+// emit and again once per distinct subscribed lane. bake.part_done fires per
+// part milestone, so keep this payload small.
+//
+// Gotcha: a field added here does NOT reach legacy poll_event consumers until
+// to_legacy_event() in src/matter_engine.cpp (one overload per struct below)
+// copies it across — the compat shim is hand-written, not generated.
 #pragma once
 #include <string>
 
@@ -30,6 +56,9 @@ namespace matter::events {
 // bake.started — a BakeAll / Reload / RebakeCone run has begun. The legacy
 // Event carried no payload for this type (all defaults), so neither does
 // this struct.
+// Because it has no payload, a consumer cannot tell which of the three run
+// kinds started from the event alone; code that must distinguish them has to
+// track the command it issued.
 struct BakeStarted {
     MT_EVENT_NAME("bake.started");
 };

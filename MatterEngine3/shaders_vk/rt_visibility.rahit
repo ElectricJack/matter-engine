@@ -15,6 +15,7 @@ hitAttributeEXT vec2 hit_barycentrics;
 
 const uint MATERIAL_ALPHA_TESTED = 1u << 2u;
 const uint MATERIAL_THIN_WALLED = 1u << 0u;
+const uint WATER_SURFACE_MATERIAL_FLAG = 1u << 4u;
 
 void main() {
     atomicAdd(any_hit_invocations, 1u);
@@ -46,8 +47,23 @@ void main() {
         payload.visibility *= clamp(material.scattering.rgb * subsurface,
                                     0.0, 1.0);
     } else {
-        vec3 transmission_tint = clamp(material.base_roughness.rgb *
-                                       material.transmission.x, 0.0, 1.0);
+        // A water isosurface is closed, so a sunlight ray normally visits an
+        // entry and an exit candidate.  The display albedo is deliberately a
+        // dark blue, not an absorption coefficient; multiplying by it at
+        // both boundaries made even sub-metre clear water cast a nearly black
+        // shadow on its own bed.  Match the refraction walk's compatibility
+        // rule here: authored absorption controls water filtering and a zero
+        // absorption lane means clear.  Non-water glass retains its existing
+        // base-colour tint contract.
+        vec3 water_shadow_absorption = material.absorption_pad.rgb;
+        if (dot(water_shadow_absorption, water_shadow_absorption) < 1e-8)
+            water_shadow_absorption = vec3(1.0);
+        vec3 shadow_filter =
+            (material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u
+                ? water_shadow_absorption
+                : material.base_roughness.rgb;
+        vec3 transmission_tint = clamp(
+            shadow_filter * material.transmission.x, 0.0, 1.0);
         float shadow_opacity =
             clamp(material.scattering_shape.w, 0.0, 1.0);
         payload.visibility *= mix(vec3(1.0), transmission_tint,

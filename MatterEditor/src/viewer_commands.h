@@ -9,24 +9,61 @@
 // evt::CommandRegistry instead of smuggling deliver-once requests through
 // shared state.
 //
-// Every command here is App-scoped (CommandScope::App) and non-undoable: none
-// mutates world entity state, so none is stamped with the SessionBinding's
-// ActiveSession epoch token (the first ActiveSession commands — scene edits —
-// land in E5). Same-thread UI triggers reach these via execute() (synchronous,
+// Viewer controls are App-scoped; scene edits and authored character input
+// use the SessionBinding's ActiveSession epoch token so stale queued commands
+// cannot mutate a replacement world. Same-thread UI triggers use execute() (synchronous,
 // on the app lane); the cross-thread MATTER_CMD_FIFO source reaches them via
 // dispatch() (ticketed), pumped at the frame-loop's command point (S II.3.4).
 //
-// This header is intentionally NOT on the wide ui.h include chain: only
-// main.cpp (registration + FIFO dispatch) and session_binding.cpp include it,
-// so command.h stays out of the ~25 other viewer TUs. UI panels issue these
-// commands indirectly through the plain-std::function ViewerCommands bridge in
-// ui.h (same idiom as SceneCommands / FieldCommands).
+// This header is intentionally NOT on the wide ui.h include chain: main.cpp
+// (registration + FIFO dispatch) is the only editor TU that includes it, so
+// command.h stays out of the ~25 others. UI panels issue these commands
+// indirectly through the plain-std::function ViewerCommands bridge in ui.h
+// (same idiom as SceneCommands / FieldCommands).
+//
+// WHAT IS IN HERE, in file order:
+//   1. Command TYPES only — a name, a Result alias and the payload fields.
+//      Not one handler lives here; every handler is registered in main.cpp,
+//      which is also where the semantics of each verb actually are.
+//   2. FIFO line parsing and path validation (parse_fifo_line and the
+//      fifo_*_windows_component / fifo_safe_absolute_png_path family). Only
+//      FOUR verbs are parsed here; the rest of the grammar is parsed inline in
+//      main.cpp's FIFO reader.
+//   3. FifoPresentSequencer — the frame-accurate half of `wait_frames` and
+//      `shot_now`.
+//   4. The generic property get/set helpers over matter::props::Registry.
+//
+// Header-only on purpose: everything is `inline`, so both the editor and the
+// headless tests get the same parser and the same path rules without a
+// library to link.
+//
+// VIEWER_FIFO_PROPERTY_HELPERS_ONLY: define it around the #include to keep
+// ONLY section 4 (FifoPropertyResult + fifo_get_property / fifo_set_property),
+// dropping command.h, scene.h and world_session.h from the include chain.
+// MatterEngine3/tests/property_editor_tests.cpp does exactly that to test the
+// `set`/`get` path headlessly. Anything added inside that guarded region must
+// stay dependency-free apart from matter/props.h.
+//
+// Includers today: MatterEditor/src/main.cpp (registration + FIFO dispatch),
+// MatterEngine3/tests/property_editor_tests.cpp (helpers-only) and
+// MatterEngine3/tests/vulkan_smoke_tests.cpp.
+//
+// Threading: the parse helpers and FifoPresentSequencer are plain values with
+// no synchronization of their own — the sequencer is stepped once per frame
+// from the main loop and must not be touched from the FIFO reader thread;
+// what crosses threads is the dispatch()ed command, not this state.
+//
+// The FIFO grammar these types back is documented for QA in
+// docs/agent/control-surface.md; keep the two in step when adding a verb.
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <string>
 #include <variant>
@@ -43,6 +80,18 @@
 #endif
 
 namespace viewer {
+
+inline bool write_screenshot_completion_marker(const std::string& path) {
+    FILE* file = std::fopen(path.c_str(), "w");
+    if (!file) return false;
+    static constexpr char kMarker[] = "captured\n";
+    const bool wrote =
+        std::fwrite(kMarker, 1u, sizeof(kMarker) - 1u, file) ==
+        sizeof(kMarker) - 1u;
+    const bool closed = std::fclose(file) == 0;
+    if (!wrote || !closed) std::remove(path.c_str());
+    return wrote && closed;
+}
 
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------
@@ -135,10 +184,21 @@ struct ViewerRevealPart {
 };
 
 // --- MATTER_CMD_FIFO dev-convenience commands (S II.3.4) ---------------------
-// Non-undoable App commands; the FIFO reader parses each line into one of these
+// Non-undoable commands (App except FifoCharacter); the FIFO reader parses each line into one of these
 // and dispatch()es it so external commands are named / traced / journaled and
 // every submission gets an explicit ticket completion.
 
+// The verb set, one struct per FIFO line. Names map to the grammar directly
+// (`cam` -> FifoSetCamera, `shot` -> FifoScreenshot, ...). Two pairs are easy
+// to confuse:
+//   - `shot` (FifoScreenshot) arms a short SETTLE countdown in main.cpp and
+//     captures after it, so the denoiser and any pending publish have caught
+//     up. `shot_now` (FifoScreenshotNow) skips the settle and captures on the
+//     next presented frame via FifoPresentSequencer. Use `shot` for anything
+//     you intend to diff.
+//   - `budget <f>` (FifoBudget) is a kept shorthand for
+//     `set viewer.budget.pixel_budget <f>` (FifoSetProp); both end at the same
+//     field.
 struct FifoSetCamera {
     MT_COMMAND_NAME("fifo.set_camera");
     using Result = matter::evt::CommandResult<bool>;
@@ -241,10 +301,37 @@ struct FifoSimTransport {
     Action action = Action::Play;
 };
 
+struct FifoCharacter {
+    MT_COMMAND_NAME("fifo.character");
+    using Result = matter::evt::CommandResult<bool>;
+    enum class Action { Walk, Intent, ClearIntent, Jump, Status };
+    Action action = Action::Status;
+    bool enabled = false;
+    bool sprint = false;
+    matter::Float3 direction{};
+    std::string label;
+};
+
+inline bool fifo_character_label_valid(const std::string& label) {
+    return !label.empty() && label.size() <= 64 &&
+        std::all_of(label.begin(), label.end(), [](char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '_' || c == '-';
+        });
+}
+
 using FifoParsedCommand =
     std::variant<std::monostate, FifoRenderPath, FifoHistoryReset,
-                 FifoWaitFrames, FifoScreenshotNow>;
+                 FifoWaitFrames, FifoScreenshotNow, FifoCharacter>;
 
+// Three-state parse outcome, and the distinction matters to the caller:
+//   recognized == false            -> not one of the verbs parsed here; hand
+//                                     the line to main.cpp's own parser.
+//   recognized && !success         -> our verb, bad arguments; `error` is a
+//                                     ready-to-print message and the line is
+//                                     dropped.
+//   recognized && success          -> `command` holds the typed command to
+//                                     dispatch.
 struct FifoParseResult {
     bool recognized = false;
     bool success = false;
@@ -252,6 +339,24 @@ struct FifoParseResult {
     std::string error;
 };
 
+// ---------------------------------------------------------------------------
+// Screenshot path validation
+// ---------------------------------------------------------------------------
+//
+// `shot_now` writes a file, and the FIFO is a text channel with no working
+// directory of its own, so the path is required to be unambiguous rather than
+// merely well-formed. fifo_safe_absolute_png_path accepts only:
+//   - a drive-absolute path (`C:/...` or `C:\...`) or a UNC path
+//     (`\\server\share\...`) whose server and share components are themselves
+//     valid — a SINGLE leading slash is rejected, because on Windows it is
+//     relative to the current drive;
+//   - ending in `.png`, case-insensitively;
+//   - with no control characters, no `" < > | * ?`, and no `:` outside the
+//     drive letter;
+//   - and no component that is empty, `.`, `..`, ends in a dot or space, or
+//     is a reserved DOS device name (CON/PRN/AUX/NUL/COM1-9/LPT1-9), any of
+//     which would either fail to create or resolve somewhere unintended.
+// Returns false for anything else; the caller reports it and drops the line.
 inline bool fifo_path_separator(char c) { return c == '/' || c == '\\'; }
 
 inline bool fifo_reserved_windows_component(const std::string& component) {
@@ -329,10 +434,53 @@ inline bool fifo_safe_absolute_png_path(const std::string& path) {
     return true;
 }
 
+// Parses ONE FIFO line, and only the four verbs in FifoParsedCommand:
+// `render_path`, `history_reset`, `wait_frames`, `shot_now`. Every other verb
+// in the grammar is parsed by main.cpp's reader — an unknown token here is
+// reported as unrecognized, not as an error.
+//
+// Strict about arguments on purpose: extra trailing tokens, a non-numeric or
+// zero/overflowing frame count, and an unsafe screenshot path all fail with a
+// message rather than being coerced into something plausible. A FIFO timeline
+// that silently did the wrong thing is worse than one that stops.
 inline FifoParseResult parse_fifo_line(const std::string& line) {
     FifoParseResult result;
     const size_t token_end = line.find_first_of(" \t");
     const std::string token = line.substr(0, token_end);
+    if (token == "character") {
+        result.recognized = true;
+        result.error = "character: expected walk on|off, intent <world_x> <world_z> <0|1>, intent clear, jump, or status <label>";
+        std::istringstream input(line);
+        input.imbue(std::locale::classic());
+        std::vector<std::string> words;
+        for (std::string word; input >> word;) words.push_back(std::move(word));
+        if (words.size() < 2) return result;
+        FifoCharacter parsed;
+        if (words[1] == "walk" && words.size() == 3 && (words[2] == "on" || words[2] == "off")) {
+            parsed.action = FifoCharacter::Action::Walk;
+            parsed.enabled = words[2] == "on";
+        } else if (words[1] == "intent" && words.size() == 3 && words[2] == "clear") {
+            parsed.action = FifoCharacter::Action::ClearIntent;
+        } else if (words[1] == "intent" && words.size() == 5 && (words[4] == "0" || words[4] == "1")) {
+            const auto number = [](const std::string& text, float& value) {
+                std::istringstream stream(text);
+                stream.imbue(std::locale::classic());
+                return (stream >> value) && stream.eof() && std::isfinite(value);
+            };
+            if (!number(words[2], parsed.direction.x) || !number(words[3], parsed.direction.z)) return result;
+            parsed.action = FifoCharacter::Action::Intent;
+            parsed.sprint = words[4] == "1";
+        } else if (words[1] == "jump" && words.size() == 2) {
+            parsed.action = FifoCharacter::Action::Jump;
+        } else if (words[1] == "status" && words.size() == 3 && fifo_character_label_valid(words[2])) {
+            parsed.action = FifoCharacter::Action::Status;
+            parsed.label = words[2];
+        } else return result;
+        result.success = true;
+        result.error.clear();
+        result.command = std::move(parsed);
+        return result;
+    }
     if (token == "render_path") {
         result.recognized = true;
         std::istringstream input(line);
@@ -427,6 +575,23 @@ struct FifoPresentUpdate {
     std::string screenshot_path;
 };
 
+// Sequences `wait_frames` and `shot_now` against PRESENTED frames rather than
+// against loop iterations — a frame that never reached present must not count,
+// which is the whole reason this exists.
+//
+// Use: queue_wait/queue_screenshot as the commands arrive, then call advance()
+// exactly ONCE per frame with whether that frame actually presented. advance()
+// returns the waits that completed on this frame and at most ONE screenshot
+// path (screenshots drain one per presented frame, and only while
+// `screenshot_readback_ready`). A frame that did not present is a no-op: the
+// serial does not move and nothing drains.
+//
+// queue_wait resolves its target serial at QUEUE time and saturates instead of
+// wrapping, so a huge count parks forever rather than completing immediately.
+//
+// Plain value, no locking, no ImGui, no Vulkan: main-loop-owned and testable
+// on its own. cancel_pending_screenshot is the escape hatch for main.cpp's
+// deadman when presents stop happening altogether.
 class FifoPresentSequencer {
 public:
     void queue_wait(uint32_t count) {
@@ -485,6 +650,16 @@ private:
 };
 #endif
 
+// ---------------------------------------------------------------------------
+// Generic property get/set (the `set` / `get` FIFO verbs)
+// ---------------------------------------------------------------------------
+//
+// This section is what survives VIEWER_FIFO_PROPERTY_HELPERS_ONLY: it depends
+// on matter/props.h and nothing else in the editor.
+//
+// `line` is always a finished, human-readable line for the console — on both
+// success and failure — so the caller only has to print it. `success` says
+// whether anything changed.
 struct FifoPropertyResult {
     bool success = false;
     std::string line;
@@ -509,6 +684,15 @@ inline FifoPropertyResult fifo_get_property(matter::props::Registry& registry,
                       fifo_property_value(binding->instance(), *desc)};
 }
 
+// `set <group.path>.<field> <value>`. Four ways it declines, each reported
+// rather than silent: unknown path, ReadOnly field, a field currently forced
+// by its env var, and a value the field's typed parser rejects.
+//
+// WHERE THE WRITE LANDS depends on the group: a RequiresReload group is
+// written to its DRAFT (and the returned line says "`reload` to apply"), so
+// nothing observes it until the world reconnects; every other group is written
+// straight to the live instance and marked dirty, which is what arms the
+// scope's autosave. Same parser and same clamping as the env layer.
 inline FifoPropertyResult fifo_set_property(matter::props::Registry& registry,
                                             const std::string& path,
                                             const std::string& value) {

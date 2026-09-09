@@ -45,6 +45,13 @@
 # Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
 include ../platform.mk
 
+# Canonical, repository-relative inventories shared with the CMake migration.
+# Keep this conversion intentionally narrow: Make still sees the exact paths it
+# historically compiled, while the manifests remain independent of cwd.
+MANIFEST_DIR = ../cmake/manifests
+manifest_sources = $(shell awk -F'|' '!/^[[:space:]]*#/ && NF == 2 && ($$2 == "all" || $$2 == "$(2)") { print $$1 }' "$(1)")
+manifest_engine_paths = $(foreach manifest_path,$(1),$(if $(filter MatterEngine3/%,$(manifest_path)),$(patsubst MatterEngine3/%,%,$(manifest_path)),../$(manifest_path)))
+
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
@@ -121,12 +128,14 @@ INCLUDE_PATHS = -I. -Iinclude -Isrc -Isrc/render -Isrc/provider \
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
-QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
-          $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
+VENDOR_MANIFEST_ALL = $(call manifest_sources,$(MANIFEST_DIR)/vendor.sources,all)
+QJS_C   = $(call manifest_engine_paths,$(filter third_party/quickjs-ng/%.c,$(VENDOR_MANIFEST_ALL)))
+BC7ENC_CPP = $(call manifest_engine_paths,$(filter third_party/bc7enc/%.cpp,$(VENDOR_MANIFEST_ALL)))
+PROFILE_CPP = $(call manifest_engine_paths,$(filter libs/ProfileLib/src/profile.cpp,$(VENDOR_MANIFEST_ALL)))
 QJS_OBJ = $(addprefix $(OBJDIR)/,quickjs.o libregexp.o libunicode.o cutils.o xsum.o)
 
 # Flecs is C17 and must never be compiled by the C++ rule below.
-FLECS_C   = $(FLECS_DIR)/flecs.c
+FLECS_C   = $(call manifest_engine_paths,$(filter third_party/flecs/flecs.c,$(VENDOR_MANIFEST_ALL)))
 FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
@@ -141,84 +150,18 @@ FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
 # NOT self-evident; check that the editor really does supply the symbol before
 # concluding one is intentional. pf_bindings, warp_field and the ParticleFlowLib
 # sources were each absent for that reason and left the archive unlinkable.
-ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_animation.cpp \
-          $(PFL_DIR)/src/pf_math.cpp $(PFL_DIR)/src/pf_sim.cpp \
-          $(PFL_DIR)/src/pf_fields.cpp $(PFL_DIR)/src/pf_path_recorder.cpp \
-          src/pf_bindings.cpp \
-          src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
-          src/csg_lowering.cpp src/module_resolver.cpp src/script/world_definition_loader.cpp src/script_rng_binding.cpp \
-          src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
-          src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
-          src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
-          src/warp_field.cpp \
-          src/impostor_bake.cpp \
-          src/retopo_blacklist.cpp \
-          src/modifier_apply.cpp \
-          src/sector_grid.cpp src/lod_select.cpp \
-          src/world_lights.cpp \
-          src/world_tracer.cpp \
-          src/part_cluster.cpp \
-          src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
-          src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
-          src/tileset_phase.cpp \
-          src/tileset_metrics.cpp \
-          src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
-          src/shader_source.cpp \
-          src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
-          src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp src/render/vk_atmosphere.cpp src/render/vk_cloud_shadows.cpp \
-          src/render/part_store.cpp src/render/world_state.cpp \
-          src/render/lod_trace.cpp \
-          src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
-          src/provider/local_provider.cpp src/provider/resolvers.cpp \
-          src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
-          src/scene/scene_service.cpp src/scene/scene_change_tracker.cpp \
-          src/matter_engine.cpp \
-          src/refine_controller.cpp \
-          src/async_bake.cpp \
-          src/bake_trace.cpp \
-          src/resolve_cache.cpp \
-          src/terrain_field.cpp \
-          src/terrain_mesher.cpp \
-          src/seam_weld.cpp \
-          src/sector_streamer.cpp \
-          src/animation/ozz_adapter.cpp \
-          src/animation/ozz_bake.cpp \
-          src/animation/animation_ir.cpp src/animation/animation_validate.cpp src/animation/animation_binding_bake.cpp src/animation/animation_budget.cpp \
-          src/animation/anim_asset.cpp src/animation/anim_bundle.cpp src/animation/animation_asset_store.cpp src/animation/animation_runtime_asset.cpp src/animation/animation_store.cpp src/animation/animation_evaluator.cpp src/animation/animation_systems.cpp src/animation/animation_world_queries.cpp src/animation/animation_controllers.cpp src/animation/animation_targets.cpp \
-          src/render/animation_rigid_bridge.cpp src/render/animation_skin_bridge.cpp src/render/vk_animation_skinning.cpp src/render/vk_animation_bounds.cpp \
-          src/streaming/sector_streaming_coordinator.cpp \
-          src/event/dispatch_context.cpp src/event/subscription.cpp src/event/event_hub.cpp src/event/command.cpp \
-          src/event/property.cpp \
-          src/util/json_doc.cpp \
-          src/props/props.cpp src/props/props_file.cpp \
-          src/props/draw_overrides.cpp
+ME3_CPP = $(call manifest_engine_paths,$(call manifest_sources,$(MANIFEST_DIR)/engine-core.sources,all))
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterEditor
 # need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
 # minus mesh_retopo.cpp (handled separately via EXTRA_RETOPO_CPP when AR is present).
-MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
-          $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
-          $(MSL_DIR)/src/mesh_smooth.cpp \
-          $(MSL_DIR)/src/mesh_transform.cpp \
-          $(MSL_DIR)/src/blas_manager.cpp $(SQL_DIR)/src/bvh.cpp \
-          $(SQL_DIR)/src/bvh_analyzer.cpp \
-          $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \
-          $(MSL_DIR)/src/meshing_algorithm.cpp \
-          $(MSL_DIR)/src/marching_cubes_algorithm.cpp \
-          $(MSL_DIR)/src/oriented_cube_algorithm.cpp \
-          $(MSL_DIR)/src/vertex_ao.cpp \
-          $(MSL_DIR)/src/occupancy.cpp $(MSL_DIR)/src/tlas_manager.cpp \
-          $(MSL_DIR)/src/part_asset.cpp \
-          $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp \
-          $(MCL_DIR)/src/mesh_charting.cpp \
-          $(EXTRA_RETOPO_CPP)
+SURFACE_MANIFEST_ALL = $(call manifest_sources,$(MANIFEST_DIR)/matter-surface.sources,all)
+MSL_CPP = $(filter %.cpp,$(call manifest_engine_paths,$(SURFACE_MANIFEST_ALL))) $(EXTRA_RETOPO_CPP)
 
 # MSL C sources: compiled via gcc to keep extern "C" symbols unmangled.
 # spatial_hash.c and mem_pool.c are compiled from their source-of-truth libs
 # (SpatialQueryLib / MemoryLib) rather than from copies under MatterSurfaceLib.
-MSL_C   = $(MSL_DIR)/src/surface.c \
-          $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
-          $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
+MSL_C   = $(filter $(MSL_DIR)/src/surface.c $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c,$(call manifest_engine_paths,$(SURFACE_MANIFEST_ALL)))
 MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o spatial_hash.o \
             mem_pool.o material_registry.o fat_primitive.o)
 
@@ -312,8 +255,7 @@ $(OBJDIR) build:
 # dir, so a collision can now be introduced by a source that this list never
 # mentions. Checking only the archive's half would leave exactly the silent drop
 # this guard exists to prevent.
-ME3_GUARD_EXTRA  = $(BC7ENC_DIR)/bc7enc.cpp $(BC7ENC_DIR)/rgbcx.cpp \
-                   $(PROFILE_DIR)/src/profile.cpp
+ME3_GUARD_EXTRA  = $(BC7ENC_CPP) $(PROFILE_CPP)
 ME3_ALL_STEMS    = $(basename $(notdir $(ME3_CPP) $(MSL_CPP) $(MSL_C) \
                      $(QJS_C) $(FLECS_C) $(ME3_GUARD_EXTRA)))
 VIEWER_ALL_STEMS = $(basename $(notdir $(VIEWER_CPP) $(MSL_CPP) $(MSL_C) \
@@ -368,6 +310,15 @@ GLSLC ?= glslc
 # shaders_gen/embedded_shaders.h) instead of keeping its own copy, so there
 # is only ever one list to update when a shader is added.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
+         build/shaders_vk/gpu_mesh_scan_add.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_count.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_scatter.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_sort.comp.spv \
+         build/shaders_vk/gpu_mesh_field.comp.spv \
+         build/shaders_vk/gpu_mesh_classify.comp.spv \
+         build/shaders_vk/gpu_mesh_compact.comp.spv \
+         build/shaders_vk/gpu_mesh_emit.comp.spv \
          build/shaders_vk/atmosphere_transmittance.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \
          build/shaders_vk/atmosphere_sky_view.comp.spv \
@@ -380,7 +331,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/visibility_id.frag.spv \
          build/shaders_vk/raster.vert.spv \
          build/shaders_vk/raster_skin.vert.spv \
+         build/shaders_vk/raster_water.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
+         build/shaders_vk/water_forward.frag.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv \
          build/shaders_vk/display_transform.frag.spv \
@@ -415,6 +368,19 @@ build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
 
+build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
+    build/shaders_vk/gpu_mesh_scan_add.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_count.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_scatter.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_sort.comp.spv \
+    build/shaders_vk/gpu_mesh_field.comp.spv \
+    build/shaders_vk/gpu_mesh_classify.comp.spv \
+    build/shaders_vk/gpu_mesh_compact.comp.spv \
+    build/shaders_vk/gpu_mesh_emit.comp.spv: shaders_vk/gpu_mesh_common.glsl
+
+build/shaders_vk/gpu_mesh_classify.comp.spv \
+    build/shaders_vk/gpu_mesh_emit.comp.spv: shaders_vk/gpu_mesh_mc_tables.glsl
+
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
 
@@ -433,7 +399,16 @@ build/shaders_vk/raster_skin.vert.spv: shaders_vk/raster.vert shaders_vk/materia
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_SKINNED_VERTEX_INPUT $< -o $@
 
+build/shaders_vk/raster_water.vert.spv: shaders_vk/raster.vert shaders_vk/material_common.glsl
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_WATER_ANIMATION_VERTEX_INPUT $< -o $@
+
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
+
+build/shaders_vk/water_forward.frag.spv: \
+    shaders_vk/material_common.glsl shaders_vk/water_surface.glsl \
+    shaders_vk/water_screen_space.glsl shaders_vk/environment_common.glsl \
+    shaders_vk/cloud_shadow_common.glsl
 
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
@@ -518,6 +493,7 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
 # above -- an unmasked reader just fails its bounds test and drops a material
 # feature, with nothing on screen that says "stale build".
 build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
+    build/shaders_vk/raster_water.vert.spv \
     build/shaders_vk/gbuffer.frag.spv \
     build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
@@ -530,7 +506,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src
+vpath %.cpp src src/animation src/render src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
@@ -555,17 +531,17 @@ $(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
 $(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
 	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
-$(OBJDIR)/profile.o: $(PROFILE_DIR)/src/profile.cpp | $(OBJDIR)
+$(OBJDIR)/profile.o: $(PROFILE_CPP) | $(OBJDIR)
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -MMD -MP
 
 # Vendored BC encoders. Always -O2 (an -O0 bc7enc is ~30x slower, which would
 # show up directly as world-connect stall time) and -w: these are unmodified
 # upstream sources, so their warnings are not this project's to fix or to read
 # past. Explicit rules, and $(BC7ENC_DIR) is deliberately off vpath.
-$(OBJDIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(OBJDIR)
+$(OBJDIR)/bc7enc.o: $(filter %/bc7enc.cpp,$(BC7ENC_CPP)) | $(OBJDIR)
 	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR) -MMD -MP
 
-$(OBJDIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(OBJDIR)
+$(OBJDIR)/rgbcx.o: $(filter %/rgbcx.cpp,$(BC7ENC_CPP)) | $(OBJDIR)
 	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR) -MMD -MP
 
 # EXTRA_CFLAGS changes are invisible to make's dependency graph (objects look
@@ -708,17 +684,7 @@ VIEWER_CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
 # MATTER_VULKAN_VIEWER, which $(LIB) deliberately omits. $(VIEWER_CPP) is
 # otherwise $(ME3_CPP) verbatim -- so adding an engine source to ME3_CPP is
 # still the single action that puts it in both.
-VIEWER_ONLY_CPP = src/render/vk_context.cpp src/render/vk_resources.cpp \
-                  src/render/vk_pipeline.cpp src/render/vk_scene_renderer.cpp \
-                  src/render/vk_volumetrics.cpp src/render/vk_emitter_gather.cpp \
-                  src/render/vk_instance_cache.cpp \
-                  src/render/vulkan_only_compat.cpp \
-                  src/render/streamline_bridge.cpp \
-                  src/render/tileset_bake_vk.cpp \
-                  src/render/dynamic_instance_slots.cpp \
-                  src/render/vt_compositor.cpp src/render/vt_enrich.cpp \
-                  src/render/vt_residency.cpp src/render/vt_stub_filler.cpp \
-                  src/ecs/scene_registry.cpp src/ecs/dynamic_scene_bridge.cpp
+VIEWER_ONLY_CPP = $(call manifest_engine_paths,$(call manifest_sources,$(MANIFEST_DIR)/engine-viewer.sources,all))
 
 VIEWER_CPP = $(ME3_CPP) $(VIEWER_ONLY_CPP)
 
@@ -765,11 +731,11 @@ $(VIEWER_OBJDIR)/%.o: %.cpp | $(VIEWER_OBJDIR)
 # $(OBJDIR) rules do -- unmodified upstream sources whose warnings are not this
 # project's to read past. -w only silences diagnostics, so the object is
 # identical to the one MatterEditor used to produce under its -Wall flags.
-$(VIEWER_OBJDIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(VIEWER_OBJDIR)
+$(VIEWER_OBJDIR)/bc7enc.o: $(filter %/bc7enc.cpp,$(BC7ENC_CPP)) | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) -I$(BC7ENC_DIR) -w -MMD -MP
-$(VIEWER_OBJDIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(VIEWER_OBJDIR)
+$(VIEWER_OBJDIR)/rgbcx.o: $(filter %/rgbcx.cpp,$(BC7ENC_CPP)) | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) -I$(BC7ENC_DIR) -w -MMD -MP
-$(VIEWER_OBJDIR)/profile.o: $(PROFILE_DIR)/src/profile.cpp | $(VIEWER_OBJDIR)
+$(VIEWER_OBJDIR)/profile.o: $(PROFILE_CPP) | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
 
 # C sources. -DNDEBUG and the section flags match what MatterEditor passed these

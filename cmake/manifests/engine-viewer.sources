@@ -1,0 +1,21 @@
+# MatterEngine3 sources enabled only in the Vulkan viewer archive.
+MatterEngine3/src/render/vk_context.cpp|all
+MatterEngine3/src/render/vk_resources.cpp|all
+MatterEngine3/src/render/water_field_vk_resources.cpp|all
+MatterEngine3/src/render/water_animation_gpu.cpp|all
+MatterEngine3/src/render/vk_pipeline.cpp|all
+MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp|all
+MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp|all
+MatterEngine3/src/render/vk_scene_renderer.cpp|all
+MatterEngine3/src/render/vk_volumetrics.cpp|all
+MatterEngine3/src/render/vk_emitter_gather.cpp|all
+MatterEngine3/src/render/vk_instance_cache.cpp|all
+MatterEngine3/src/render/vulkan_only_compat.cpp|all
+MatterEngine3/src/render/streamline_bridge.cpp|all
+MatterEngine3/src/render/tileset_bake_vk.cpp|all
+MatterEngine3/src/render/dynamic_instance_slots.cpp|all
+MatterEngine3/src/render/vt_compositor.cpp|all
+MatterEngine3/src/render/vt_enrich.cpp|all
+MatterEngine3/src/render/vt_residency.cpp|all
+MatterEngine3/src/render/vt_stub_filler.cpp|all
+MatterEngine3/src/ecs/dynamic_scene_bridge.cpp|all
