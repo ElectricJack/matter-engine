@@ -70,7 +70,7 @@ ends onto one command registry.
 
 | Verb | Grammar | Effect |
 |---|---|---|
-| `agent` | `agent <v1 request JSON>` | Versioned, bounded request/result envelope. Dispatches typed agent operations through the existing ticketed `CommandRegistry`; writes one terminal JSON record to `MATTER_AGENT_RESULT_FILE`. See `agent-protocol.md`. |
+| `agent` | `agent <v1 request JSON>` | Versioned, bounded request/result envelope. Dispatches typed agent operations through the existing ticketed `CommandRegistry`; writes one terminal JSON record to `MATTER_AGENT_RESULT_FILE`. Commands today: `agent.commands` / `agent.help` / `agent.schema` (discovery) and `scene.list_objects` / `scene.get_object` (bounded scene enumeration and exact object inspection with typed, kind-scoped IDs). See `agent-protocol.md`. |
 | `cam` | `cam ex ey ez tx ty tz` (6 floats) | Sets camera eye/target immediately. |
 | `shot` | `shot <path>` | **Blocking.** Settles 3 frames (`instances_drawn > 0` gated), writes the PNG, then writes `<path>.done`. No later FIFO line dispatches until the write completes (§ Timeline semantics below) — a bounded 30s deadman (§ shot deadman) prevents a world that never settles from hanging the timeline forever. |
 | `shot_now` | `shot_now <abs .png>` | **Blocking**, same as `shot` (landed alongside it for consistency — neither spelling needs a trailing `wait_frames` to be safe to follow with another timeline line). Queued via `FifoPresentSequencer`; captured on the next **presented** frame with no settle wait. Path must be an absolute, filesystem-safe `.png` path (`fifo_safe_absolute_png_path` rejects reserved Windows names, `..`, control chars, etc). Also writes `<path>.done`. Covered by the same shot deadman as `shot`. |

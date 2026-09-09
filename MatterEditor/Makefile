@@ -1140,6 +1140,23 @@ build/test_agent_protocol.exe: tests/test_agent_protocol.cpp \
 run-test-agent-protocol: build/test_agent_protocol.exe
 	./build/test_agent_protocol.exe
 
+# Bounded scene enumeration + exact object inspection (scene.list_objects /
+# scene.get_object). scene_inventory.cpp is engine-free by design, so the
+# ordering, paging, id-namespace and availability rules are testable here with
+# no session, bake or renderer.
+build/test_scene_inventory.exe: tests/test_scene_inventory.cpp \
+        src/scene_inventory.cpp src/scene_inventory.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_scene_inventory.cpp src/scene_inventory.cpp \
+	    src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-scene-inventory
+run-test-scene-inventory: build/test_scene_inventory.exe
+	./build/test_scene_inventory.exe
+
 # Camera orbit / move / turn math (issue a4203d22 parts 1-2). Pure CPU: no
 # ImGui context, no window, no session -- camera_orbit.cpp exists precisely
 # so this math is reachable without any of them. camera_controller.cpp comes

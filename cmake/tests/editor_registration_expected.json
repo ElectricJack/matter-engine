@@ -179,6 +179,8 @@
     "scene.create_entity",
     "scene.delete_entity",
     "scene.duplicate_entity",
+    "scene.get_object",
+    "scene.list_objects",
     "scene.reparent_entity",
     "viewer.reload",
     "viewer.reveal_part",

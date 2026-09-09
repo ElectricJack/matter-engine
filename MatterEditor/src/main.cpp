@@ -200,6 +200,7 @@
 #include "wireframe_controls.h"
 #include "session_binding.h"
 #include "scene_model_adapter.h"
+#include "scene_inventory.h"
 #include "viewer_commands.h"
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
@@ -2711,6 +2712,29 @@ int main() {
                 false, viewer::agent::Status::UnsupportedCommand,
                 "protocol v1 is request/result only; event subscription is unsupported"};
         }});
+    // The two scene reads (scene_inventory.h). Both stay available before the
+    // first bake finishes: `context.scene.ready` already tells a caller the
+    // world is still filling in, and answering "nothing yet" is more useful
+    // than refusing. Argument TYPES are checked by the descriptor; ranges and
+    // enum spellings are checked at dispatch so they report invalid_input.
+    agent_protocol.add_command({
+        "scene.list_objects",
+        "List scene objects with typed ids, ordered by (kind, id)",
+        {{"kinds", "array", false,
+          "Subset of [\"entity\",\"baked_root\"]; omitted means both"},
+         {"name_contains", "string", false,
+          "Case-insensitive substring of the object name; ids are never searched"},
+         {"offset", "integer", false, "Rows to skip within the matched set"},
+         {"limit", "integer", false, "Rows to return, 1 through 200 (default 100)"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "scene.get_object",
+        "Inspect one object by typed id: naming, placement, visibility, "
+        "selection, provenance availability and supported operations",
+        {{"object", "object_id", true,
+          "{kind,id} pair from scene.list_objects; entity and baked_root ids "
+          "are separate namespaces"}},
+        "object", false, {}});
 
     auto reg_agent_commands =
         registry.must_register_handler<viewer::AgentCommands>(
@@ -2731,6 +2755,182 @@ int main() {
             return viewer::AgentSchema::Result::succeeded(
                 agent_protocol.schema(command.command));
         });
+
+    // --- scene.list_objects / scene.get_object (scene_inventory.h) ----------
+    // The editor names two populations that are NOT one list: authored
+    // entities (EditorModel rows, authored-id hashes or runtime ids) and baked roots
+    // (part-graph roots, content-hash ids). This snapshot joins them without
+    // merging their id namespaces, and is rebuilt per request on the app lane
+    // — caching it would let a rebake or a world switch be answered from a
+    // dead copy, which is exactly the failure the typed ids exist to prevent.
+    // all_rows() rather than rows(): the outliner's search box must not
+    // silently narrow a programmatic listing.
+    auto build_scene_inventory = [&]() {
+        std::vector<viewer::inventory::EntityRow> entity_rows;
+        entity_rows.reserve(editor_model.all_rows().size());
+        for (const viewer::HierarchyRow& row : editor_model.all_rows()) {
+            viewer::inventory::EntityRow out;
+            out.id = row.id.value;
+            out.parent_id = row.parent_id.value;
+            out.name = row.name;
+            out.depth = row.depth;
+            out.child_count = row.child_count;
+            out.component_names = row.component_names;
+            entity_rows.push_back(std::move(out));
+        }
+
+        std::vector<viewer::inventory::RootRow> root_rows;
+        if (session) {
+            part_graph_snapshot::Snapshot graph;
+            // False while the current session has published nothing; an empty
+            // root list is then the honest answer, not a stale one.
+            if (session->graph_snapshot(graph)) {
+                for (const auto& [module_name, node] : graph.nodes) {
+                    // Non-root nodes only exist composed inside other parts and
+                    // have no world instance to name — the same rule
+                    // scene_tree_panel.cpp and reveal_part.cpp apply.
+                    if (!node.is_root) continue;
+                    viewer::inventory::RootRow out;
+                    out.resolved_hash = node.resolved_hash;
+                    out.module = node.module.empty() ? module_name : node.module;
+                    out.source_path = node.source_path;
+                    out.params_json = node.params_json;
+                    root_rows.push_back(std::move(out));
+                }
+            }
+        }
+
+        viewer::inventory::SelectionInput selection;
+        const viewer::SelectedObject* primary = selection_set.primary();
+        for (const viewer::SelectedObject& item : selection_set.items()) {
+            viewer::agent::ObjectIdentity identity;
+            identity.kind = item.kind == viewer::SelectedObject::BakedRoot
+                                ? viewer::agent::ObjectIdentity::Kind::BakedRoot
+                                : viewer::agent::ObjectIdentity::Kind::Entity;
+            identity.id = item.id;
+            if (primary && *primary == item)
+                selection.primary_index = static_cast<int>(selection.items.size());
+            selection.items.push_back(identity);
+        }
+
+        return viewer::inventory::build_snapshot(entity_rows, root_rows, selection,
+                                                 editor_model.revision());
+    };
+
+    auto reg_scene_list_objects =
+        registry.must_register_handler<viewer::SceneListObjects>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SceneListObjects& command) {
+                viewer::AgentPayload payload;
+                viewer::inventory::ListQuery query;
+                std::string error;
+                // Re-parsed rather than trusted: the dispatch site validated an
+                // identical copy, and a handler that assumes its input was
+                // checked elsewhere is one refactor from not being.
+                if (!viewer::inventory::parse_list_query(command.arguments, query,
+                                                         error)) {
+                    payload.status = viewer::agent::Status::InvalidInput;
+                    payload.message = error;
+                    return viewer::SceneListObjects::Result::succeeded(
+                        std::move(payload));
+                }
+                const viewer::inventory::Snapshot snapshot = build_scene_inventory();
+                payload.value = viewer::inventory::list_result_json(
+                    snapshot, query,
+                    viewer::inventory::list_objects(snapshot, query));
+                return viewer::SceneListObjects::Result::succeeded(std::move(payload));
+            });
+
+    auto reg_scene_get_object =
+        registry.must_register_handler<viewer::SceneGetObject>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SceneGetObject& command) {
+                const bool is_entity =
+                    command.object.kind ==
+                    viewer::agent::ObjectIdentity::Kind::Entity;
+                const viewer::inventory::Snapshot snapshot = build_scene_inventory();
+                viewer::AgentPayload payload;
+                const viewer::inventory::Entry* entry =
+                    viewer::inventory::find_object(snapshot, command.object);
+                if (!entry) {
+                    // A deleted entity, a root a rebake replaced, or an id that
+                    // is only valid in the OTHER kind's namespace. All three are
+                    // ordinary answers, and all three name the revision they are
+                    // true at so a caller can tell them from a stale question.
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no such object at this scene revision";
+                    payload.value = viewer::inventory::missing_result_json(
+                        snapshot, command.object,
+                        is_entity
+                            ? "no authored entity carries this id in the current "
+                              "session"
+                            : "no baked root with this content hash is in the "
+                              "current part graph");
+                    return viewer::SceneGetObject::Result::succeeded(
+                        std::move(payload));
+                }
+
+                viewer::inventory::Detail detail;
+                detail.entry = *entry;
+                detail.operations = viewer::inventory::default_operations(
+                    command.object.kind, entry->source_path.available);
+
+                if (!session) {
+                    detail.placement.reason = "no world session is open";
+                    detail.visibility.reason = "no world session is open";
+                } else {
+                    // One shared implementation with the selection outline and
+                    // the pick raycast (selection_bounds.h), so the box an agent
+                    // reads is the box the user sees.
+                    const viewer::SelectedObject target{
+                        is_entity ? viewer::SelectedObject::Entity
+                                  : viewer::SelectedObject::BakedRoot,
+                        command.object.id};
+                    viewer::SelectionBounds bounds{};
+                    bool resolved = false;
+                    viewer::bounds_for_objects(&target, 1, *session, &bounds,
+                                               &resolved);
+                    if (resolved) {
+                        detail.placement.available = true;
+                        std::copy(bounds.world_matrix, bounds.world_matrix + 16,
+                                  detail.world_matrix);
+                        std::copy(bounds.local_min, bounds.local_min + 3,
+                                  detail.local_min);
+                        std::copy(bounds.local_max, bounds.local_max + 3,
+                                  detail.local_max);
+                    } else {
+                        detail.placement.reason =
+                            is_entity
+                                ? "this entity is in the scene rows but has no "
+                                  "resolvable transform in the live ECS"
+                                : "this baked root is in the part graph but has "
+                                  "no placed instance in the current world";
+                    }
+
+                    if (!is_entity) {
+                        detail.visibility.reason =
+                            "baked roots carry no authored visibility flag; "
+                            "on-screen presence is decided by LOD and culling";
+                    } else {
+                        const flecs::entity e = find_scene_entity(
+                            session->ecs(),
+                            matter::scene::SceneEntityId{command.object.id});
+                        if (e.is_valid() && e.has<matter::scene::PartInstance>()) {
+                            detail.visibility.available = true;
+                            detail.visible =
+                                e.get<matter::scene::PartInstance>().visible;
+                        } else {
+                            detail.visibility.reason =
+                                "this entity places no part, so it carries no "
+                                "authored visibility flag";
+                        }
+                    }
+                }
+
+                payload.value =
+                    viewer::inventory::detail_result_json(snapshot, detail);
+                return viewer::SceneGetObject::Result::succeeded(std::move(payload));
+            });
 
     // ---- Registered viewer commands (S I.11 migration map) ------------------
     // Handlers live where the poll-site code lived (this main loop / the lab
@@ -3464,8 +3664,14 @@ int main() {
                     if (!begun.accepted) continue;
 
                     const std::string request_id = begun.request.request_id;
+                    // One ticket->terminal bridge for every agent command. The
+                    // registry only distinguishes Success / StaleScope / failed,
+                    // which is the whole protocol status for the metadata
+                    // commands but not for a scene READ, where "no such object"
+                    // is a successful query with a not_found answer. The
+                    // projection is what each command contributes on Success.
                     auto attach_agent_ticket =
-                        [&](auto ticket) {
+                        [&](auto ticket, auto to_terminal) {
                             const uint64_t ticket_id = ticket.id();
                             if (!agent_protocol.attach_ticket(request_id, ticket_id)) {
                                 agent_protocol.reject_accepted(
@@ -3476,25 +3682,87 @@ int main() {
                             }
                             ticket.then(
                                 app_lane,
-                                [&, request_id, ticket_id](const auto& result) {
+                                [&, request_id, ticket_id, to_terminal](
+                                    const auto& result) {
                                     viewer::agent::Status status =
                                         viewer::agent::Status::ExecutionFailure;
+                                    matter::jsondoc::Value payload;
+                                    std::string message = result.error;
                                     if (result.status ==
                                         matter::evt::CommandStatus::Success)
-                                        status = viewer::agent::Status::Ok;
+                                        to_terminal(result, status, payload, message);
                                     else if (result.status ==
                                              matter::evt::CommandStatus::StaleScope)
                                         status = viewer::agent::Status::StaleRevision;
-                                    matter::jsondoc::Value payload;
-                                    if (result.value) payload = *result.value;
                                     agent_protocol.complete(
                                         request_id, ticket_id, status,
-                                        std::move(payload), result.error);
+                                        std::move(payload), message);
                                 });
+                        };
+                    // agent.commands / agent.help / agent.schema: the handler
+                    // answered, so the answer is ok.
+                    const auto metadata_terminal =
+                        [](const auto& result, viewer::agent::Status& status,
+                           matter::jsondoc::Value& payload, std::string&) {
+                            status = viewer::agent::Status::Ok;
+                            if (result.value) payload = *result.value;
+                        };
+                    // scene.list_objects / scene.get_object: the handler carries
+                    // its own protocol status back in the AgentPayload.
+                    const auto payload_terminal =
+                        [](const auto& result, viewer::agent::Status& status,
+                           matter::jsondoc::Value& payload, std::string& message) {
+                            if (!result.value) return;  // stays execution_failure
+                            status = result.value->status;
+                            payload = result.value->value;
+                            message = result.value->message;
                         };
 
                     if (begun.request.command == "agent.commands") {
-                        attach_agent_ticket(registry.dispatch(viewer::AgentCommands{}));
+                        attach_agent_ticket(registry.dispatch(viewer::AgentCommands{}),
+                                            metadata_terminal);
+                    } else if (begun.request.command == "scene.list_objects") {
+                        // Range/enum validation happens HERE so a bad limit or
+                        // an unknown kind is invalid_input rather than a handler
+                        // failure; the descriptor only checked JSON types.
+                        viewer::inventory::ListQuery query;
+                        std::string query_error;
+                        if (!viewer::inventory::parse_list_query(
+                                begun.request.arguments, query, query_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                query_error);
+                        } else {
+                            viewer::SceneListObjects command;
+                            command.arguments = begun.request.arguments;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        }
+                    } else if (begun.request.command == "scene.get_object") {
+                        // `object` is a REQUIRED object_id, so the descriptor has
+                        // already validated its shape (and rejected a duplicated
+                        // key as missing); this re-parse is what turns it into
+                        // the typed identity the command carries.
+                        const matter::jsondoc::Value* requested =
+                            begun.request.arguments.find("object");
+                        viewer::agent::ObjectIdentity object;
+                        std::string object_error;
+                        if (!requested ||
+                            !viewer::agent::parse_object_identity(
+                                *requested, object, object_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                object_error.empty()
+                                    ? "object must be {\"kind\",\"id\"}"
+                                    : object_error);
+                        } else {
+                            viewer::SceneGetObject command;
+                            command.object = object;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        }
                     } else {
                         const matter::jsondoc::Value* requested =
                             begun.request.arguments.find("command");
@@ -3507,11 +3775,13 @@ int main() {
                         } else if (begun.request.command == "agent.help") {
                             viewer::AgentHelp command;
                             command.command = target;
-                            attach_agent_ticket(registry.dispatch(std::move(command)));
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                metadata_terminal);
                         } else if (begun.request.command == "agent.schema") {
                             viewer::AgentSchema command;
                             command.command = target;
-                            attach_agent_ticket(registry.dispatch(std::move(command)));
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                metadata_terminal);
                         } else {
                             // Available descriptors must have a typed registry
                             // route. Treat a missing route as an implementation
