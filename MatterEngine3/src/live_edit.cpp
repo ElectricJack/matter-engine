@@ -1,3 +1,22 @@
+// MatterEngine3/src/live_edit.cpp
+//
+// The dev live-edit rebuild pass (declared in live_edit.h). One tick does:
+// drain the watcher -> debounce -> map changed FILES to changed PARTS via the
+// graph's reverse map -> widen to the upward cone (those parts plus all their
+// transitive ancestors, because a parent's bake embeds its children) -> topo
+// order children-before-parents -> re-resolve and re-bake each under the dev
+// time budget -> re-flatten every affected root's subtree.
+//
+// All the real work is delegated through the interfaces in
+// live_edit_interfaces.h (GraphResolver, Baker, Flattener, ErrorSink), which
+// is what lets the whole ordering be tested with no engine behind it.
+//
+// FAIL-CLOSED, AND NOT TRANSACTIONAL. The first failed bake or flatten stops
+// the pass immediately and reports through the sink; the artifacts already
+// rebuilt in this pass stay rebuilt and the ones after it keep their last-good
+// output. Recovery is by retrying on the next file event, not by rollback.
+//
+// Everything here runs on whatever thread calls tick(); there is no locking.
 #include "live_edit.h"
 
 namespace live_edit {
@@ -17,6 +36,10 @@ std::set<PartId> LiveEditSession::changed_parts(const std::set<std::string>& pat
     return out;
 }
 
+// One rebuild pass over `paths`. An empty result is a normal outcome: paths
+// that map to no part (a non-part file) produce a default report with
+// `succeeded` still true. On failure the report is PARTIAL -- `rebaked` and
+// `reflattened` list what completed before the stop, in the order it happened.
 RebuildReport LiveEditSession::run_rebuild(const std::set<std::string>& paths) {
     RebuildReport rep;
     // 1. Map changed files -> directly-changed parts (SP-3 reverse map).
@@ -33,6 +56,21 @@ RebuildReport LiveEditSession::run_rebuild(const std::set<std::string>& paths) {
     // 4. Re-resolve + bake each in order under the dev budget (SP-2).
     for (const auto& p : order) {
         ResolvedHash h = g_.reresolve(p);
+        // An empty hash is reresolve's documented failure return -- unknown
+        // module, unreadable source, or a child that did not resolve. Stop on
+        // it here rather than handing "" to the baker: the baker can only say
+        // "invalid resolved hash ''" and names ITSELF as the culprit, which
+        // points a reader at the bake when the resolve is what broke. A Baker
+        // that did not happen to validate the string would be worse still --
+        // it would publish an artifact under an empty hash.
+        if (h.empty()) {
+            LiveEditError e{LiveEditError::Cause::ResolveFailed, p,
+                            "live-edit: could not re-resolve " + p, ""};
+            rep.succeeded = false;
+            rep.errors.push_back(e);
+            sink_.report(e);
+            return rep;                    // stop; last-good kept downstream
+        }
         BakeOutcome o = b_.bake(p, h, cfg_.bake_budget_ms);
         if (!o.ok) {                       // fail-closed
             rep.succeeded = false;
@@ -56,6 +94,12 @@ RebuildReport LiveEditSession::rebuild(const std::set<std::string>& paths) {
     return run_rebuild(paths);
 }
 
+// The debounce window is measured from the LATEST event seen, not from the
+// first, so a burst of saves keeps deferring the rebuild until the tree has
+// been quiet for `cfg_.debounce_ms`. Pending paths accumulate across ticks and
+// are consumed as one coalesced set, so a file touched several times inside
+// the window is rebuilt once. Returns a default (empty, successful) report on
+// every tick that does not fire.
 RebuildReport LiveEditSession::tick() {
     // 1. Drain newly observed events into the pending debounce set.
     std::vector<FileEvent> evs;

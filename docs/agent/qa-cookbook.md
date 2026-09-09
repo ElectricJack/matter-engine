@@ -10,27 +10,27 @@ See `docs/agent/control-surface.md` for the full FIFO verb table and env var
 reference these recipes exercise, and `docs/agent/issue-system.md` for the
 issue-report/replay recipes (5).
 
-## 1. Build the engine lib
+## 1. Configure and build the MSVC engine graph
 
-```bash
-export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
-make -C MatterEngine3
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_engine_headless
 ```
 
-`platform.mk` (included by every Makefile here) now exports `TMP`/`TEMP`
-automatically — no need to pass them on the command line. Expect
-`build/libmatter_engine3.a` plus a regenerated embedded-shader/SPIR-V header on
-exit code 0. **Check the exit code, not the output for the string "error"** —
-see the Traps section.
+The wrapper selects the pinned Visual Studio 2022 x64 environment and the
+repository's CMake/Ninja preset. From WSL, use
+`./tools/build-windows-from-wsl.sh RelWithDebInfo matter_engine_headless`.
+**Check the exit code, not the output for the string "error"** — see the Traps
+section.
 
 ## 2. Build the Windows editor
 
-```bash
-make -C MatterEditor windows
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor
 ```
 
-Expect `build/windows/editor.exe`. Requires `editor.exe` not to already be
-running (file lock).
+Expect `MatterEditor/build/windows-msvc/editor.exe`. Requires `editor.exe` not
+to already be running (file lock). The former
+`make -C MatterEditor windows` path is MinGW rollback-only.
 
 ## 3. One-shot screenshot of a world
 
@@ -42,7 +42,7 @@ MATTER_SCREENSHOT="C:/tmp/shot.png" \
 MATTER_SCREENSHOT_SETTLE=90 \
 TMP="C:/Users/webde/AppData/Local/Temp" \
 TEMP="C:/Users/webde/AppData/Local/Temp" \
-  ./build/windows/editor.exe
+  ./build/windows-msvc/editor.exe
 ```
 
 Expect the process to bake, settle 90 frames (streamed worlds need far more
@@ -74,7 +74,8 @@ quit
 EOF
 
 python MatterEngine3/tools/drive.py --world meadow --timeline /tmp/shots.txt \
-    --out-dir C:/tmp/drive-out
+    --out-dir C:/tmp/drive-out \
+    --editor MatterEditor/build/windows-msvc/editor.exe
 ```
 
 Expect exit 0, `C:/tmp/current-cost.png` + `current-cost.png.done` on disk,
@@ -93,6 +94,22 @@ need something outside a plain timeline. On Windows, `MATTER_CMD_FIFO` is a
 polled plain file, not a real FIFO — `mkfifo`/blocking-open semantics only
 apply on Linux; `drive.py` and `viewer_shots.sh` both handle the platform
 difference for you.
+
+## 4a. Structured agent request
+
+Launch the editor with both `MATTER_CMD_FIFO=<commands.txt>` and
+`MATTER_AGENT_RESULT_FILE=<results.jsonl>`, then issue a discoverable request:
+
+```bash
+python tools/matter_agent.py agent.commands \
+  --cmd-file C:/tmp/matter-commands.txt \
+  --result-file C:/tmp/matter-results.jsonl
+```
+
+Expect exactly one terminal JSON object on stdout. Client diagnostics go to
+stderr, editor logs stay on its stdout/stderr, and the shared result file is
+JSONL only. See `docs/agent/agent-protocol.md` for help/schema calls, expected
+revision guards, status codes and bounds.
 
 ## 5. Replay an issue shot and diff
 
@@ -119,14 +136,15 @@ per-shot gates).
 
 ## 6. Run the Vulkan smoke gate
 
-```bash
-make -C MatterEngine3/tests vulkan-smoke
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests
+MatterEditor/tools/smoke_vulkan_faults.ps1 `
+    -TestPath MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe `
+    -TimeoutMilliseconds 30000
 ```
 
-This delegates to `make -C MatterEditor vulkan-smoke`, which builds
-`vulkan_smoke_tests.exe`/`vulkan_compat_tests.exe` and drives
-`MatterEditor/tools/smoke_vulkan_faults.ps1 -TimeoutMilliseconds 30000`, which
-runs the smoke exe **12 times**, once per `MATTER_VK_SMOKE_MODE` value, each
+The fault harness runs the smoke exe **12 times**, once per
+`MATTER_VK_SMOKE_MODE` value, each
 under a per-mode timeout (30 s from the Makefile's override, except `rt`
 90 s and `rt-transmission` 45 s, which raise their own floor): the two
 Streamline-proxy-missing fault modes, `rt`, `rt-transmission`, `rt-disabled`,
@@ -136,9 +154,9 @@ Streamline-proxy-missing fault modes, `rt`, `rt-transmission`, `rt-disabled`,
 
 To run a single mode directly (faster iteration while chasing one failure):
 
-```bash
-cd MatterEditor
-MATTER_VK_SMOKE_MODE=vt-enrich ./build/windows/vulkan_smoke_tests.exe
+```powershell
+$env:MATTER_VK_SMOKE_MODE='vt-enrich'
+& MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe
 ```
 
 The smoke exe supports more modes than the 12-mode gate exercises (e.g.
@@ -177,7 +195,7 @@ MATTER_PERF_WARMUP_SECONDS=5 \
 MATTER_PERF_SAMPLE_SECONDS=20 \
 TMP="C:/Users/webde/AppData/Local/Temp" \
 TEMP="C:/Users/webde/AppData/Local/Temp" \
-  ./build/windows/editor.exe
+  ./build/windows-msvc/editor.exe
 ```
 
 All three `MATTER_PERF_*` vars **must be set together** — setting any subset is
@@ -194,7 +212,7 @@ MATTER_WORLD=StreamMountain \
 MATTER_CAM_PATH=../MatterEngine3/tools/streammountain_flythrough.path \
 MATTER_CAM_PATH_EXIT=1 \
 MATTER_CAM_PATH_WARMUP=30 \
-  ./build/windows/editor.exe
+  ./build/windows-msvc/editor.exe
 ```
 
 Consumes one pose per **rendered frame** (frame-indexed, not wall-clock) from
@@ -206,9 +224,21 @@ fixtures live in `MatterEngine3/tools/` (`streammountain_flythrough.path`,
 example that also enables `MATTER_SEAM_TRACE` and polls
 `WorldSession::seam_weld_status()` at the end.
 
-## 10. Which `MatterEngine3/tests` run-* targets run fully on Windows
+## 10. Windows CPU CTest gate
 
-Per `CLAUDE.md` and the `tests/Makefile` comments: targets that link
+The canonical Windows CPU gate is the MSVC `cpu` label rather than a manually
+maintained list of Make targets:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' `
+    --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo `
+    -L cpu --output-on-failure
+```
+
+### MinGW rollback target inventory
+
+For rollback diagnosis only, the old `tests/Makefile` targets that link
 `-lGL -lX11 -ldl -lrt` (Linux-only libs) fail at *link* time on Windows —
 compilation (the syntax/semantic check) still succeeds, so a green `g++`
 compile does not imply the binary runs. Targets that don't depend on raylib/GL
@@ -233,7 +263,7 @@ Run one directly, e.g.:
 make -C MatterEngine3/tests run-world-definition GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
-`vulkan-smoke` and `run-vt-compositor` are special-cased: they delegate to
+`vulkan-smoke` and `run-vt-compositor` are special-cased in the rollback graph: they delegate to
 `MatterEditor`'s cross-build rules (recipe 6) because the Vulkan/GLFW link line
 lives there, not in this Makefile.
 
@@ -249,11 +279,83 @@ which has its own module resolution and wouldn't see one), so a plain
 `node file.mjs` dies with "is a CommonJS module" — the `--experimental-default-type=module`
 flag (or `--experimental-detect-module` on Node ≥ 20.10) is required every time.
 
+## 12. RiverFloatLab visual playtest
+
+The visual-first floating-body slice has two native Node scene-contract tests
+and an opt-in PhysX MSVC editor build:
+
+```powershell
+node projects/world_demo/tests/river_hydrology_scene_tests.mjs
+node projects/world_demo/tests/river_float_lab_scene_tests.mjs
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor `
+    -EnablePhysx -PhysxRoot $physxRoot -CudaRoot $cudaRoot
+```
+
+Before a cold visual run, resolve the cache root and verify the deletion target
+is exactly `projects/world_demo/.cache/RiverFloatLab`; never clear the project
+cache broadly. Launch only `MatterEditor/build/windows-msvc/editor.exe` with
+`MATTER_WORLD=RiverFloatLab`, wait for `bake.finished`, and enter Play. A live
+review window should remain visible and open; do not set `MATTER_HIDE_UI` or put
+`quit` in its FIFO.
+
+This recipe is a visual playtest, not the automated traversal acceptance gate.
+The body CSV/diagnostics seam, marker-order assertions, and the dedicated
+`river_float_physics.timeline`/PowerShell runner remain deferred until that
+read-only control surface exists. Do not infer or fabricate those results from
+screenshots.
+
+## 13. Raster-water forward-optics acceptance
+
+After building the native MSVC editor, compare the forward raster-water path
+against the committed-date local baseline with one five-camera RiverFloatLab
+capture and matched 1, 10, and 16 shadow-sample performance runs:
+
+```powershell
+$baseline = (Resolve-Path 'build/qa/raster-water-forward-2026-08-29/baseline').Path
+$candidate = (New-Item -ItemType Directory -Force `
+    'build/qa/raster-water-forward-2026-08-29/candidate').FullName
+& MatterEngine3/tools/run_raster_water_forward_acceptance.ps1 `
+    -BaselineDir $baseline -OutputDir $candidate
+```
+
+The runner exits nonzero if a screenshot or its completion sidecar is missing
+or empty, if Vulkan validation/water-decode/steady-allocation counters are
+nonzero, if the copied HDR-plus-depth payload is not exactly 12 logical bytes
+per internal pixel, or if any matched timing exceeds its allowed regression.
+It writes the five native-size PNGs under `<candidate>/screenshots/`, the
+three performance JSON files at the candidate root, and complete run logs in
+the sibling `capture/` and `run-*/` directories. Visual acceptance still
+requires opening all five PNGs at native size and checking the criteria in
+`docs/findings/raster-water-forward-optics-acceptance-2026-08-29.md`.
+
+## 14. Animated-water section-handoff acceptance
+
+Build the PhysX-enabled MSVC editor, then give the Stage 1 runner a new or
+empty output directory:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor `
+    -EnablePhysx -PhysxRoot $physxRoot -CudaRoot $cudaRoot
+& MatterEngine3/tools/run_water_mesh_continuity_acceptance.ps1 `
+    -Stage Stage1 `
+    -OutputDir build/qa/water-mesh-continuity-2026-08-29/stage1
+```
+
+The runner isolates its RiverFloatLab project and cache, performs a cold bake,
+an unchanged warm bake, and a fixture-only downstream edit, then runs the
+native Vulkan gates and the strict Stage 1 comparator. It retains hydrology
+traces, a JSON summary, and 20 `section-handoff` PNG/`.done` pairs: frames
+`0,7,15,22,29` in normal, geometry-normal, foam-driver, and identity views.
+Passing the comparator is necessary but not sufficient: inspect every retained
+PNG at native size and record the visual verdict in
+`docs/findings/animated-water-section-continuity-acceptance-2026-08-29.md`.
+Task 10 remains blocked unless that finding says `handoffVisualGate: pass`.
+
 ---
 
 ## Traps
 
-- **The TEMP incantation — now automatic for `make`.** MSYS2's `make` used to
+- **Rollback-only TEMP behavior.** MSYS2's `make` used to
   clobber the Windows `TEMP` env var, so GCC failed with "Cannot create
   temporary file in C:\WINDOWS\" unless you passed `TMP=`/`TEMP=` explicitly on
   every `make` invocation. `platform.mk` (included by every Makefile in this

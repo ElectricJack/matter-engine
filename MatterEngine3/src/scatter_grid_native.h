@@ -1,6 +1,8 @@
 #ifndef MATTER_SCATTER_GRID_NATIVE_H
 #define MATTER_SCATTER_GRID_NATIVE_H
 
+// MatterEngine3/src/scatter_grid_native.h
+//
 // The scatter candidate grid, natively — the exact algorithm behind
 // __candidatesInRect / __planCandidates.
 //
@@ -35,16 +37,41 @@
 // Nothing here is game-specific — (seed, kind, minDist, rect) in, deterministic
 // points out — which is what makes it engine code rather than ecology.
 
+// Consumers: MatterEngine3/src/dsl_bindings.cpp (the __candidatesInRect and
+// __planCandidates JS bindings the scatter DSL calls) and
+// MatterEngine3/tests/scatter_grid_bench.cpp.  Header-only and dependency-free
+// — no engine headers, no allocation, no global or static state — so every
+// function here is pure and callable from any thread.
+//
+// Conventions:
+//   - `seed` and `kind` are the scatter family's identity.  Changing either
+//     reshuffles every placement of that family everywhere.
+//   - `min_dist` is the grid pitch in world units, and is simultaneously the
+//     minimum spacing sg_survives enforces.
+//   - (cx, cz) are signed integer cell indices; cell cx covers
+//     [cx*min_dist, (cx+1)*min_dist) on X, and negative cells are ordinary.
+//     There is no origin and no extent — the grid is infinite and a rect merely
+//     selects a range of cells, which is why two neighbouring sectors agree
+//     exactly on the placements they share.
 #include <cstdint>
 
 namespace scatter_grid {
 
+// One mixing round, bit-for-bit the JS `mix(h, c)`.  `c` is a per-use salt —
+// callers pass a different fixed constant for each output channel — and `c | 1u`
+// forces it odd.  Every operation is uint32 wraparound on purpose: that is what
+// Math.imul and `>>> 0` do on the JS side.
 inline uint32_t sg_mix(uint32_t h, uint32_t c) {
     h = (h ^ (h >> 15)) * (c | 1u);
     h ^= h + (h ^ (h >> 7)) * (h | 61u);
     return h ^ (h >> 14);
 }
 
+// Per-cell root hash.  Everything a cell's candidate needs is derived from this
+// single value, so one candidate costs seven sg_mix rounds in total (two here,
+// five in sg_cell_candidate).  The (uint32_t) casts on cx/cz reproduce the
+// two's-complement wraparound JS applies to negative indices, so negative cells
+// hash identically in both languages.
 inline uint32_t sg_base_hash(uint32_t seed, uint32_t kind,
                              int32_t cx, int32_t cz) {
     uint32_t h = seed ^ (kind * 374761393u);
@@ -53,10 +80,23 @@ inline uint32_t sg_base_hash(uint32_t seed, uint32_t kind,
     return h;
 }
 
+// Hash -> [0, 1) as a double: exactly h / 2^32, as in the JS.  Never reaches 1.
 inline double sg_unit(uint32_t h) { return (double)h / 4294967296.0; }
 
+// The single point a grid cell proposes, before neighbour rejection.  Fully
+// determined by (seed, kind, cx, cz, min_dist) — no state, no ordering, no
+// dependence on which sector asked.
 struct SgCandidate {
+    // x, z  position in world units, same frame as the rect the caller scans:
+    //       the cell origin plus a jitter confined to the middle half of the
+    //       cell (0.25 .. 0.75 of min_dist on each axis).
+    // rot   yaw in radians, 0 .. 2*pi.
+    // u, v  two further independent uniform [0, 1) draws, unused here and left
+    //       for the caller to spend on scale / species / tint.
     double x, z, rot, u, v;
+    // Rejection priority: the raw cell hash.  HIGHER wins; exact ties are broken
+    // by cell index inside sg_survives, never by iteration order — which is what
+    // makes the outcome independent of who evaluates the cell.
     uint32_t pri;
 };
 
@@ -78,6 +118,12 @@ inline SgCandidate sg_cell_candidate(uint32_t seed, uint32_t kind,
 // Neighbour-priority rejection: an exact min-distance guarantee that is
 // order-independent, so a candidate's fate is the same from any sector that
 // happens to look at it. Identical rule and identical tie-break to the JS.
+// Returns true if the candidate is kept.  Recomputes all eight neighbouring
+// candidates from scratch on every call — nothing is cached, which is the
+// nine-times-over recomputation the COST SHAPE note above measures.  Only the
+// 3x3 neighbourhood is examined: a candidate two cells away cannot be closer
+// than min_dist, because the jitter keeps every point inside the middle half of
+// its own cell.
 inline bool sg_survives(uint32_t seed, uint32_t kind, int32_t cx, int32_t cz,
                         double min_dist, const SgCandidate& c) {
     for (int dz = -1; dz <= 1; ++dz)

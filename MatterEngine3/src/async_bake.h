@@ -1,4 +1,23 @@
 #pragma once
+// MatterEngine3/src/async_bake.h
+//
+// The two queues that connect the engine's app/GL thread to its bake worker
+// thread, running in opposite directions:
+//
+//   * CommandQueue -- requester (app/editor) to worker. Bake commands, with
+//     supersession: a new full bake cancels the one in flight and everything
+//     queued behind it.
+//   * GpuJobQueue  -- worker to app/GL thread. Work that must run on the thread
+//     owning the graphics context, either fire-and-forget (post) or waited on
+//     (run_blocking).
+//
+// Both are torn down through shut_down(). Nothing is ever silently abandoned:
+// a dropped, superseded or shut-down item completes as cancelled through its
+// CancelToken, and every parked run_blocking waiter is released, so no producer
+// can be left blocked on a queue that no longer has a consumer.
+//
+// Nothing here touches GL/Vulkan itself -- it only decides which thread runs
+// what, and when.
 // Phase B async-bake primitives. Kernel-internal — NOT part of the matter/ API.
 //
 // E2 (event-system.md §II.1): GpuJobQueue and CommandQueue are now thin
@@ -25,6 +44,13 @@
 
 namespace matter_async {
 
+// One-shot, monotonic cancel flag shared between whoever requested a piece of
+// work and whoever runs it. Only ever goes false -> true; there is no reset, so
+// a cancelled token stays cancelled for the life of the request. Always held
+// through shared_ptr: the requester keeps one to cancel with, the queued
+// Command/GpuJob keeps one to poll. Relaxed atomics are deliberate -- the flag
+// is a polled hint, and the queue's own mutex supplies the ordering that matters
+// for the payload it guards.
 struct CancelToken {
     std::atomic<bool> cancelled{false};
     void cancel() { cancelled.store(true, std::memory_order_relaxed); }
@@ -33,7 +59,7 @@ struct CancelToken {
 
 // One unit of GL-thread work. fn returns false + fills err on failure.
 struct GpuJob {
-    std::string name;
+    std::string name;  // shown by the [gpu-job] slow-job log; "(unnamed)" if empty
     std::function<bool(std::string& err)> fn;
     std::shared_ptr<CancelToken> token;  // if set and cancelled, job is skipped (fails "cancelled")
 };
@@ -43,6 +69,11 @@ struct GpuJob {
 // non-dropping). post→push; run_blocking→Channel::run_blocking + a result slot;
 // pump→Channel::pump (progress guarantee + time budget preserved);
 // shut_down→Channel::shut_down; idle→Channel::empty.
+// Threading: post() is safe from any thread. run_blocking() is safe from any
+// thread EXCEPT the pump thread -- calling it there waits on yourself and
+// deadlocks, which debug builds turn into an immediate abort
+// (assert_off_gl_thread in async_bake.cpp). pump() is single-consumer: the
+// app/GL thread only.
 class GpuJobQueue {
 public:
     void post(GpuJob job);                              // fire-and-forget
@@ -70,7 +101,20 @@ private:
     Chan ch_{Chan::Policy{/*capacity=*/0, matter::evt::OnFull::RejectNewest}};
 };
 
+// What the bake worker is being asked to do. The kind also selects the queue
+// policy applied by CommandQueue::push:
+//   BakeAll    - full bake; supersedes everything queued and in flight.
+//   Reload     - reload then bake; supersedes exactly like BakeAll.
+//   RebakeCone - incremental rebake driven by `changed_files`; queues FIFO and
+//                supersedes nothing.
+//   Shutdown   - cancel everything and end the consumer loop (pop returns
+//                false). Never delivered as a command; it is handled inside
+//                push().
 enum class CommandKind { BakeAll, Reload, RebakeCone, Shutdown };
+// One request handed to the bake worker. Built by the producer and consumed by
+// the single worker thread. Callers leave `token` null -- CommandQueue::push
+// creates it, stores it in the command, and returns it, so the producer's copy
+// and the worker's copy are the same token.
 struct Command {
     CommandKind kind = CommandKind::BakeAll;
     std::vector<std::string> changed_files;   // RebakeCone only
@@ -90,6 +134,8 @@ struct Command {
 // channel (now cancelled) and are skipped when popped, so the consumer sees
 // exactly the same command stream as the original clear-the-queue design. Every
 // displaced command completes as cancelled via its CancelToken.
+// Threading: push() and shut_down() are safe from any thread; pop() and
+// pop_wait() are single-consumer, the bake worker thread only.
 class CommandQueue {
 public:
     std::shared_ptr<CancelToken> push(Command c);

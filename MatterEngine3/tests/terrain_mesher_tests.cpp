@@ -1,12 +1,18 @@
 // MatterEngine3/tests/terrain_mesher_tests.cpp — Task 5: native surface nets
 #include "check.h"
 #include "../src/terrain_field.h"
+#include "../src/terrain_river_overlay.h"
+#include "../src/hydrology/river_geometry.h"
 #include "../src/terrain_mesher.h"
 #include "../src/bake_mode.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <vector>
 
 using namespace terrain_field;
 using namespace terrain_mesher;
@@ -33,6 +39,101 @@ static size_t count_tris(const SectorMesh& m, P pred) {
     return n;
 }
 
+static bool every_nondegenerate_triangle_faces_its_normals(
+    const SectorMesh& mesh, size_t& scanned) {
+    bool outward = true;
+    scanned = 0;
+    for (const auto& bucket : mesh.buckets) {
+        CHECK(bucket.positions.size() == bucket.normals.size(),
+              "terrain positions and normals have matching triangle soup sizes");
+        CHECK(bucket.positions.size() % 9 == 0,
+              "terrain triangle soup contains complete triangles");
+        for (size_t offset = 0; offset + 8 < bucket.positions.size(); offset += 9) {
+            const double ax = bucket.positions[offset + 0];
+            const double ay = bucket.positions[offset + 1];
+            const double az = bucket.positions[offset + 2];
+            const double ux = double(bucket.positions[offset + 3]) - ax;
+            const double uy = double(bucket.positions[offset + 4]) - ay;
+            const double uz = double(bucket.positions[offset + 5]) - az;
+            const double vx = double(bucket.positions[offset + 6]) - ax;
+            const double vy = double(bucket.positions[offset + 7]) - ay;
+            const double vz = double(bucket.positions[offset + 8]) - az;
+            const double cx = uy * vz - uz * vy;
+            const double cy = uz * vx - ux * vz;
+            const double cz = ux * vy - uy * vx;
+            const double area2 = cx * cx + cy * cy + cz * cz;
+            if (area2 > 0.0) {
+                ++scanned;
+                const double nx = double(bucket.normals[offset + 0]) +
+                                  double(bucket.normals[offset + 3]) +
+                                  double(bucket.normals[offset + 6]);
+                const double ny = double(bucket.normals[offset + 1]) +
+                                  double(bucket.normals[offset + 4]) +
+                                  double(bucket.normals[offset + 7]);
+                const double nz = double(bucket.normals[offset + 2]) +
+                                  double(bucket.normals[offset + 5]) +
+                                  double(bucket.normals[offset + 8]);
+                const double dot = cx * nx + cy * ny + cz * nz;
+                if (dot < 0.0) outward = false;
+            }
+        }
+    }
+    return outward;
+}
+
+static size_t zero_area_triangle_count(const SectorMesh& mesh) {
+    size_t zeros = 0;
+    for (const auto& bucket : mesh.buckets) {
+        for (size_t offset = 0; offset + 8 < bucket.positions.size(); offset += 9) {
+            const double ax = bucket.positions[offset + 0];
+            const double ay = bucket.positions[offset + 1];
+            const double az = bucket.positions[offset + 2];
+            const double ux = double(bucket.positions[offset + 3]) - ax;
+            const double uy = double(bucket.positions[offset + 4]) - ay;
+            const double uz = double(bucket.positions[offset + 5]) - az;
+            const double vx = double(bucket.positions[offset + 6]) - ax;
+            const double vy = double(bucket.positions[offset + 7]) - ay;
+            const double vz = double(bucket.positions[offset + 8]) - az;
+            const double cx = uy * vz - uz * vy;
+            const double cy = uz * vx - ux * vz;
+            const double cz = ux * vy - uy * vx;
+            if (cx * cx + cy * cy + cz * cz > 0.0) continue;
+            ++zeros;
+        }
+    }
+    return zeros;
+}
+
+struct TriangleOccurrence {
+    size_t matches = 0;
+    size_t bucket_index = 0;
+    uint32_t material = 0;
+    size_t triangle_index = 0;
+};
+
+static TriangleOccurrence find_ravine_plateau_mate(const SectorMesh& mesh) {
+    constexpr std::array<float, 9> expected = {
+        61.5f, 44.0f, 0.5f,
+        61.7f, 44.0138016f, 0.3f,
+        61.3f, 44.0247993f, 0.3f,
+    };
+    TriangleOccurrence found{};
+    for (size_t bucket_index = 0; bucket_index < mesh.buckets.size();
+         ++bucket_index) {
+        const auto& bucket = mesh.buckets[bucket_index];
+        for (size_t offset = 0; offset + 8 < bucket.positions.size(); offset += 9) {
+            if (!std::equal(expected.begin(), expected.end(),
+                            bucket.positions.begin() + offset))
+                continue;
+            ++found.matches;
+            found.bucket_index = bucket_index;
+            found.material = bucket.material;
+            found.triangle_index = offset / 9;
+        }
+    }
+    return found;
+}
+
 int main() {
     // THIS SUITE PINS THE WELDER PATH, so it names that path rather than
     // inheriting whichever is default.
@@ -50,6 +151,110 @@ int main() {
     // than re-pinning a second set of bytes.
     bake_mode::forced_contour_seams() = 0;
 
+    // The mesher must consume the same overlaid FieldRuntime surface as direct
+    // field queries; the overlay is terrain, not a hidden wall/dam mesh.
+    {
+        matter::RiverNetworkDefinition network{};
+        network.cell_size_m = 1.0f;
+        network.seed = 77u;
+        matter::RiverDefinition river{};
+        river.name = "main";
+        river.inlet = {{0.0f, 12.0f, 8.0f}, 1.0f};
+        river.curve = {{0.0f, 12.0f, 8.0f}, {16.0f, 11.0f, 8.0f},
+                       {32.0f, 10.0f, 8.0f}};
+        river.channel_profile = {{0.0f, 6.0f, 2.0f, 0.35f},
+                                 {32.0f, 6.0f, 2.0f, 0.35f}};
+        network.rivers.push_back(river);
+        hydrology::RiverGeometry geometry{};
+        std::string error;
+        CHECK(hydrology::build_river_geometry(network, "main", geometry, error),
+              error.c_str());
+        std::shared_ptr<const RiverHeightOverlay> overlay;
+        CHECK(RiverHeightOverlay::build(geometry, overlay, error),
+              error.c_str());
+        FieldProgram program;
+        CHECK(FieldProgram::parse(
+                  "const 20\nconst 0.5\nconst 0.2\n"
+                  "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n",
+                  program, error), error.c_str());
+        FieldRuntime field(std::move(program), overlay);
+        SectorMesh mesh;
+        CHECK(mesh_sector(field, 0, 0, 0, 16.0f, -8.0f, 32.0f,
+                          mesh, nullptr, error), error.c_str());
+        float minimum_y = std::numeric_limits<float>::infinity();
+        for (const auto& bucket : mesh.buckets)
+            for (std::size_t i = 1; i < bucket.positions.size(); i += 3)
+                minimum_y = std::min(minimum_y, bucket.positions[i]);
+        CHECK(minimum_y < 13.0f,
+               "terrain meshing carves the shared river overlay below the base field");
+    }
+    // A production-representative steep rounded-V carve over the same broad
+    // grade/noise/ridge shape used by RiverFloatLab makes individual
+    // surface-nets quads strongly nonplanar and sometimes collapses one or both
+    // halves. Both seam modes must omit exact zero-area triangles while retaining
+    // the nonzero mate that spans the plateau edge of a half-collapsed quad.
+    {
+        matter::RiverNetworkDefinition network{};
+        network.cell_size_m = 0.5f;
+        network.seed = 0x52495645u;
+        matter::RiverDefinition river{};
+        river.name = "main";
+        river.inlet = {{0.0f, 72.0f, 0.0f}, 600.0f};
+        river.curve = {{0.0f, 72.0f, 0.0f}, {32.0f, 67.0f, 18.0f},
+                       {70.0f, 61.0f, -22.0f}, {106.0f, 56.0f, 8.0f},
+                       {111.0f, 44.0f, 5.0f}, {121.0f, 44.0f, 2.0f},
+                       {136.0f, 44.0f, -3.0f}, {148.0f, 44.0f, 0.0f},
+                       {184.0f, 38.0f, -24.0f}};
+        river.channel_profile = {{0.0f, 14.0f, 8.0f, 0.18f},
+                                 {100.0f, 18.0f, 7.5f, 0.10f},
+                                 {120.0f, 26.0f, 8.0f, -0.08f},
+                                 {150.0f, 34.0f, 8.0f, 0.05f},
+                                 {250.0f, 22.0f, 8.0f, 0.20f}};
+        network.rivers.push_back(river);
+        hydrology::RiverGeometry geometry{};
+        std::string error;
+        CHECK(hydrology::build_river_geometry(network, "main", geometry, error),
+              error.c_str());
+        std::shared_ptr<const RiverHeightOverlay> overlay;
+        CHECK(RiverHeightOverlay::build(geometry, overlay, error), error.c_str());
+        FieldProgram program;
+        CHECK(FieldProgram::parse(
+                  "input wx\nconst -0.15\nmul r0 r1\nconst 78\nadd r2 r3\n"
+                  "noise2 49 0.0052631579 4 0.5 2\nconst 22\nmul r5 r6\n"
+                  "add r4 r7\nridge2 81 0.0125 3 0.52 2\nconst 1\n"
+                  "add r9 r10\nconst 0.5\nmul r11 r12\npow r13 1.75\n"
+                  "const 30\nmul r14 r15\nadd r8 r16\nconst 0.5\n"
+                  "height r17\nmoisture r18\nrelief r18\n"
+                  "seaLevel -100\nbiome 0.65 0.35\n",
+                  program, error), error.c_str());
+        FieldRuntime field(std::move(program), overlay);
+        for (int contour_seams = 0; contour_seams <= 1; ++contour_seams) {
+            bake_mode::forced_contour_seams() = contour_seams;
+            SectorMesh mesh;
+            CHECK(mesh_sector_tiled(field, 1, 0, 0, 2, 64.0f,
+                                    mesh, nullptr, error), error.c_str());
+            size_t scanned = 0;
+            const bool outward =
+                every_nondegenerate_triangle_faces_its_normals(mesh, scanned);
+            CHECK(scanned > 0,
+                  "steep rounded-V overlay fixture emits nondegenerate terrain");
+            CHECK(outward,
+                  "every steep rounded-V triangle faces its emitted normals");
+            CHECK(zero_area_triangle_count(mesh) == 0,
+                  "steep rounded-V terrain emits no exact zero-area triangles");
+            const TriangleOccurrence mate = find_ravine_plateau_mate(mesh);
+            CHECK(mate.matches == 1,
+                  "half-collapsed ravine quad retains its exact ordered nonzero mate");
+            if (mate.matches == 1) {
+                CHECK(mate.bucket_index == 0 && mate.material == 0,
+                      "ravine mate remains in its original material bucket");
+                const size_t expected_triangle = contour_seams ? 0 : 18;
+                CHECK(mate.triangle_index == expected_triangle,
+                      "ravine mate retains its deterministic emission occurrence");
+            }
+        }
+        bake_mode::forced_contour_seams() = 0;
+    }
     // --- flat field, rung 0: counts, height, orientation -------------------
     {
         FieldRuntime f = make(kFlat5);
@@ -1111,21 +1316,23 @@ int main() {
             float S, y0, y1;
             unsigned long long mesh, rec;
         };
-        // Recorded from the pre-band build. DO NOT re-record to make a failure
-        // go away -- see the note above.
+        // Recorded from the pre-band build at the current mesher semantic
+        // version. DO NOT re-record to make a band-related failure go away --
+        // see the note above. The version-3 values differ only for fixtures that
+        // contained collapsed triangles, which the producer now omits.
         static const Pin kPins[] = {
             {"flat rung0",       0,  0,  0,  0,  16.0f,  -64.0f, 192.0f,
              0xf365ecbc92387da2ULL, 0x30e41a9fde0d546aULL},
             {"flat rung2 (3,-2)",0,  3, -2,  2,  16.0f,  -64.0f, 192.0f,
              0x50d71bf78f1283aaULL, 0xf933a0523773e7aaULL},
             {"noise coarse L2",  1,  0,  0, -3, 512.0f, -300.0f, 300.0f,
-             0x94b8bb96f2e6bd14ULL, 0x43b395d3b009718cULL},
+             0xdb5762c30dfb1400ULL, 0x43b395d3b009718cULL},
             {"noise fine L2",    1,  2,  0, -2, 256.0f, -300.0f, 300.0f,
-             0xaee3860b7951bd1bULL, 0xc918717a908ded36ULL},
+             0x74997d3f0eab559fULL, 0xc918717a908ded36ULL},
             {"cave rung0 (1,1)", 2,  1,  1,  0,  64.0f, -128.0f, 192.0f,
-             0x75518d8f48d68a54ULL, 0x3a13b481acc73546ULL},
+             0xa1ea20ec9a6c3ab7ULL, 0x3a13b481acc73546ULL},
             {"cave rung-1(-3,2)",2, -3,  2, -1, 128.0f, -128.0f, 192.0f,
-             0x654236bd591865a9ULL, 0x7a22b1626ce78d5fULL},
+             0x0cbc4e2e5e0117adULL, 0x7a22b1626ce78d5fULL},
         };
         FieldRuntime ff = make(kFlat5), fn = make(kNoise), fc = make(kCave);
         int pinned = 0;

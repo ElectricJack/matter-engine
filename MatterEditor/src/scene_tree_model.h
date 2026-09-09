@@ -4,6 +4,8 @@
 #include "matter/world_session.h"
 #include "part_graph_snapshot.h"
 
+// MatterEditor/src/scene_tree_model.h
+//
 // App-side model of the session's baked-root graph, split from
 // scene_tree_panel.h so the staleness policy is linkable without ImGui —
 // MatterEngine3/tests/async_bake_tests.cpp drives it across a real world
@@ -11,11 +13,22 @@
 
 namespace viewer {
 
+// Per-panel state for the Scene tree, owned by the ViewerUI and living across
+// frames (not persisted to disk). It carries two things that look unrelated
+// but are not: the two filter widgets, and the cached copy of the session's
+// baked-root graph that draw_scene_tree walks. The `cached_*` pair is written
+// only by `sync_scene_tree_graph_cache` / `reset_scene_tree_graph_cache`
+// below — the draw code reads it and never refreshes it itself.
+//
+// The tree has TWO selection channels, kept mutually exclusive by convention
+// rather than by construction: `selected_root_hash` for baked roots, and the
+// EditorModel's own entity selection for ECS rows. scene_tree_panel.cpp clears
+// one whenever it sets the other.
 struct SceneTreeState {
-    char filter_text[256] = {};
+    char filter_text[256] = {};  // ImGui InputText buffer; case-insensitive substring
     int filter_mode = 0;  // 0=All, 1=Entities, 2=Roots
-    uint64_t cached_graph_gen = 0;
-    part_graph_snapshot::Snapshot cached_snapshot;
+    uint64_t cached_graph_gen = 0;  // session->graph_generation() the cache was taken at
+    part_graph_snapshot::Snapshot cached_snapshot;  // whole-graph copy, refreshed by generation
     // Selected baked-root hash (0 = no root selected)
     uint64_t selected_root_hash = 0;
 };

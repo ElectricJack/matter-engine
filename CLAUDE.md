@@ -19,7 +19,7 @@ MatterEngine2 follows a modular architecture where:
 
 The root directory contains:
 
-- `third_party/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, ozz-animation, flecs, Vulkan-Headers)
+- `third_party/` - Vendored third-party dependencies (raylib, imgui, ImGuizmo, box3d, quickjs-ng, autoremesher_core, ozz-animation, flecs, bc7enc, Vulkan-Headers)
 - `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `MathLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`, `AssetStoreLib`, `ProfileLib`
 - `platform.mk` - Shared build config every project's Makefile includes: TMP/TEMP export, GLSLC default, top-level `-j` parallelism, ccache detection (see "Toolchain" below)
 - `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs the headless test suites
@@ -85,10 +85,41 @@ To create a new project that builds on existing ones:
 
 ## Building Projects
 
-### Toolchain (Windows / MSYS2 UCRT64)
+### Toolchain (Windows / MSVC 2022)
 
-The project builds with GCC from MSYS2's UCRT64 environment. The compiler lives at
-`C:\msys64\ucrt64\bin\g++.exe`. MSYS2's `/usr/bin/make` is used as the build driver.
+The canonical Windows editor and test build uses x64 MSVC v143 through the
+repository's CMake/Ninja presets. Do not enter a Developer Command Prompt or
+guess tool paths: the wrapper resolves the supported Visual Studio 2022
+instance, Windows SDK, Vulkan SDK, native Python, CMake, and Ninja, then enters
+`VsDevCmd.bat` itself.
+
+From native PowerShell:
+
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_dist
+tools/check-windows-msvc-package.ps1 -DistPath MatterEditor/build/dist/world_demo
+```
+
+From an Ubuntu/WSL agent, keep the checkout on a mounted Windows filesystem and
+use WSL interop to drive the same native toolchain:
+
+```bash
+./tools/build-windows-from-wsl.sh RelWithDebInfo matter_editor
+./tools/build-windows-from-wsl.sh RelWithDebInfo matter_dist
+```
+
+The editor link output is `MatterEditor/build/windows-msvc/editor.exe`; the
+checked distribution is `MatterEditor/build/dist/world_demo/`. The latter is
+the artifact to hand to a user or launch with developer PATH entries removed.
+
+### MinGW rollback build (not the Windows default)
+
+The former MSYS2/UCRT64 Make path remains temporarily for rollback and matched
+diagnosis only. New Windows product work and acceptance results must use the
+MSVC wrappers above. The compiler lives at `C:\msys64\ucrt64\bin\g++.exe` and
+MSYS2's `/usr/bin/make` remains its build driver until a separate cleanup
+commit removes that rollback path.
 
 Every project's Makefile (and every `tests/` sub-Makefile) starts with
 `include ../platform.mk` (or `../../platform.mk` one level deeper). That file
@@ -110,13 +141,13 @@ now handles two things that used to be the caller's job:
 ```bash
 export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
 
-# Build kernel library
+# Rollback-only: build kernel library
 make -C MatterEngine3
 
-# Build editor (Windows target)
+# Rollback-only: build the former MinGW editor
 make -C MatterEditor windows
 
-# Run tests (pass GRAPHICS= on Windows since it's unset)
+# Rollback-only: run an old Make-driven test
 make -C MatterEngine3/tests run-world-definition GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
@@ -215,7 +246,7 @@ cd MatterEditor
 MATTER_WORLD=StreamMountain MATTER_SCREENSHOT="C:/tmp/shot.png" \
 MATTER_SCREENSHOT_SETTLE=90 \
 TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp" \
-./build/windows/editor.exe
+./build/windows-msvc/editor.exe
 ```
 
 (`platform.mk`'s TMP/TEMP export only covers `make` recipes — direct exe
@@ -318,24 +349,42 @@ Current projects and their relationships. Dependencies run one way only:
      header carries the equivalence proof; `make -C MatterEngine3/tests run-lod-distance`
      asserts it. Do not add a second projected-size comparison — that duplication is what
      the Representation migration exists to remove (docs/lod-vt-redesign-2026-08-04.md)
-   - Build: `make -C MatterEngine3` → `build/libmatter_engine3.a` + embedded shader/SPIR-V headers
-   - Tests: `make -C MatterEngine3/tests run-*` (headless) and GPU suites with `GALLIUM_DRIVER=d3d12`
+   - Canonical Windows build/tests: root MSVC CMake graph through
+     `tools/build-windows.ps1`; the Make targets remain Unix/rollback tools
+   - Unix/rollback Make builds distinguish the headless archive from
+     `build/libmatter_engine3_viewer.a`: the editor links the viewer archive,
+     compiled with the editor flags and Vulkan sources. Rebuild the editor
+     target after engine-source changes; a headless-only build is not enough.
 
 7. **MatterEditor** - Interactive editor application linking the kernel library
-   - Dependencies: MatterEngine3 (libmatter_engine3.a), MatterSurfaceLib, raylib (headers
-     only — see below), Dear ImGui, QuickJS-ng, Box3d, optionally autoremesher_core
+   - Dependencies: MatterEngine3 (`libmatter_engine3_viewer.a`, built by
+     MatterEngine3's `viewer-lib` target which this Makefile invokes),
+     MatterSurfaceLib, raylib (headers only — see below), Dear ImGui,
+     QuickJS-ng, Box3d, optionally autoremesher_core
    - **Vulkan-only.** The GL/raylib rendering and windowing path was deleted
      outright (Phase 5a); `windows`/`linux` are Vulkan+GLFW targets and the
      link step asserts no OpenGL import survives in the binary. `raylib`
      headers remain an include-path dependency only (POD BLAS/Tri types)
-   - Build: `make -C MatterEditor` → `build/linux/editor` (or `make -C MatterEditor windows` →
-     `build/windows/editor.exe`); always launched from the MatterEditor/ working directory
-   - Packaging: `make -C MatterEditor dist` (optionally `PROJECT=<name>`, default `world_demo`)
-     → `build/dist/<PROJECT>/` — the exe plus `projects/<PROJECT>/` (minus `.cache`/`backup`),
-     ready to zip and hand off; shaders are embedded in the exe, not copied
+   - Canonical Windows build:
+     `tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor` →
+     `build/windows-msvc/editor.exe`; launch from the `MatterEditor/` working directory
+   - Packaging: the root `matter_dist` target → `build/dist/<PROJECT>/` —
+     checked exe/PDB, project files (minus generated caches), notices, and
+     `build_features.json`, ready to zip and hand off; shaders are embedded
+   - Unix/rollback builds use `make -C MatterEditor linux` (or the legacy
+     Windows Make target); the native MSVC CMake build above is canonical.
 
 8. **libs/MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
-   - No consumers today; kept for the voxel-box-imposter work
+   - No dependencies. One header + one `.cpp`, compiled from source by consumers
+   - Consumed by MatterEngine3: `MatterEngine3/Makefile` compiles
+     `$(MCL_DIR)/src/mesh_charting.cpp` (in `MSL_CPP`) into BOTH
+     `libmatter_engine3.a` and the editor's `libmatter_engine3_viewer.a`, and
+     it rides in `COMMON_MSL_BLAS_SRC` in `MatterEngine3/tests/Makefile`
+   - The live consumer is `lod_bake.cpp`'s `build_chart_rung()` — the WP-A chart
+     build behind chart-space virtual texturing: `build_adjacency` →
+     `segment_charts` → `chart_average_normals` → `plane_basis` →
+     `pack_charts_paged`. `make -C MatterEngine3/tests run-chart-atlas` is its gate
+   - Own tests: `make -C libs/MeshChartingLib/tests run`
 
 9. **libs/AssetStoreLib** - MatterStore: content-addressed blobs in append-only packs
    - Dependencies: MemoryLib only. No engine headers, no raylib, no Vulkan

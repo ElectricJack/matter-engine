@@ -43,10 +43,58 @@
 namespace matter {
 namespace evt {
 
+// Outcome of a push. Queued and Coalesced both mean "the item is in the
+// queue and will be delivered"; RejectedFull and ShutDown both mean it
+// never will be, and any run_blocking latch attached to it has already
+// been failed. Coalesced additionally means an older item carrying the
+// same coalesce_key was replaced in place (dropped() counts it).
 enum class PushResult { Queued, Coalesced, RejectedFull, ShutDown };
+
+// Outcome of a blocking/timed pop. Item = `out` was assigned; Timeout and
+// ShutDown both leave `out` untouched. Timeout is a normal outcome, not an
+// error; ShutDown is terminal (the channel never yields another item).
 enum class WaitResult { Item, Timeout, ShutDown };
+
+// What a push does when the queue is already at Policy::capacity. This is
+// the one lossiness knob, chosen explicitly per channel (and optionally
+// per push) so overflow behaviour is never a silent default:
+//   RejectNewest   - refuse the new item, return RejectedFull, count it in
+//                    rejected(). Nothing already queued is disturbed.
+//   DropOldest     - evict the front item (failing its latch), enqueue the
+//                    new one, return Queued. Counted in dropped().
+//   CoalesceNewest - replace the queued item with the same
+//                    PushOptions::coalesce_key, keeping its queue slot so
+//                    FIFO order among distinct keys is preserved. Requires
+//                    a coalesce_key; with no key already queued the push
+//                    is rejected rather than clobbering an unrelated
+//                    entry.
+//   BlockProducer  - block the calling thread until there is room or the
+//                    channel shuts down. Never call this from the consumer
+//                    thread: Channel has no thread registry and cannot
+//                    detect that deadlock itself.
 enum class OnFull { RejectNewest, DropOldest, CoalesceNewest, BlockProducer };
 
+// A bounded-or-unbounded FIFO of `T` with an explicit overflow policy.
+//
+// Ownership / lifetime: non-copyable and non-movable (it owns a mutex and
+// two condition variables, and producers hold raw references to it). The
+// owning subsystem should call shut_down() in its teardown order before
+// destroying the channel; the destructor's drain is a safety net, not the
+// intended path.
+//
+// Threading: many producers (push / run_blocking, any thread) and exactly
+// one logical consumer (try_pop / wait_pop / wait_pop_for / pump /
+// pump_one). Under a non-NDEBUG build the first thread to call a pop-side
+// method is recorded and a second one asserts. empty(), dropped() and
+// rejected() are callable from any thread.
+//
+// Delivery vs. handling: the channel knows only whether an item reached a
+// consumer, never whether the consumer's work succeeded. `T` itself must
+// carry any success/failure the producer cares about.
+//
+// Cost: every operation takes one mutex; there are no lock-free paths, by
+// design. CoalesceNewest is O(queue length) because it scans for the
+// matching key.
 template <class T>
 class Channel {
 public:
@@ -129,6 +177,10 @@ public:
     // Pop side — single consumer thread.
     // ------------------------------------------------------------------
 
+    // Non-blocking. Returns false when the queue is empty (a normal
+    // outcome, not an error) and leaves `out` untouched; on true, the item
+    // is move-assigned into `out` and any run_blocking producer parked on
+    // it is released with ok=true. Consumer thread only.
     bool try_pop(T& out) {
         std::unique_lock<std::mutex> lock(m_);
         check_consumer_thread_locked();
@@ -142,6 +194,10 @@ public:
         return true;
     }
 
+    // Blocks until an item arrives or the channel shuts down. Returns
+    // ShutDown (with `out` untouched) once shut_down() has run and the
+    // queue is drained -- that is the loop-exit signal for a consumer
+    // thread. Consumer thread only.
     WaitResult wait_pop(T& out) {
         std::unique_lock<std::mutex> lock(m_);
         check_consumer_thread_locked();
@@ -156,6 +212,9 @@ public:
         return WaitResult::Item;
     }
 
+    // As wait_pop, but gives up after `timeout` and returns Timeout. Note
+    // the two non-Item results mean different things: Timeout is
+    // retryable, ShutDown is terminal. Consumer thread only.
     WaitResult wait_pop_for(T& out, std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(m_);
         check_consumer_thread_locked();
@@ -248,6 +307,11 @@ public:
     uint64_t rejected() const { return rejected_.load(std::memory_order_relaxed); }
 
 private:
+    // One-shot completion latch for a run_blocking() push. Heap-allocated
+    // and shared between the blocked producer and whoever finally resolves
+    // the entry (consumer, evictor, or shutdown drain), so it stays alive
+    // even if the queue entry is destroyed first. `ok` is the "was it
+    // delivered" answer, not "did the work succeed".
     struct Latch {
         std::mutex m;
         std::condition_variable cv;
@@ -378,6 +442,12 @@ private:
     void check_consumer_thread_locked() {}
 #endif
 
+    // m_ guards policy_ (read-only after construction), q_ and shut_down_.
+    // cv_not_empty_ wakes blocked poppers (and is notified by every
+    // enqueue and by shut_down); cv_not_full_ wakes BlockProducer pushers
+    // (notified by every dequeue and by shut_down). The two counters are
+    // atomics so dropped()/rejected() can be read without the lock; both
+    // are monotonic for the life of the channel and never reset.
     Policy policy_;
     mutable std::mutex m_;
     std::condition_variable cv_not_empty_;

@@ -1,10 +1,100 @@
+// MatterEngine3/src/matter_engine.cpp
+//
+// THE ENGINE FACADE. Everything MatterEditor can ask the engine to do arrives
+// here: this file implements the whole public API declared in
+// matter/engine_context.h and matter/world_session.h and fans it out to the
+// subsystems below. Nothing outside this file talks to the provider, the part
+// store, the streamer or the renderer directly.
+//
+// Two objects, both PIMPL:
+//
+//   EngineContext   process-level. Holds the cache root (canonicalised to an
+//                   absolute path), the BORROWED VulkanDevice and the shader
+//                   override directory, and registers the calling thread as THE
+//                   GL/app thread. Sessions are opened from it.
+//   WorldSession    one loaded world. Owns the bake worker thread, the sector
+//                   bake pool, the provider, the PartStore, the Vulkan scene
+//                   renderer, the ECS/scene layer, the event hub, the streaming
+//                   ledger and the seam-weld pool. `WorldSession::Impl` is where
+//                   nearly all of this file's state lives.
+//
+// Subsystems it drives (each has its own header; look there for detail):
+//   local_provider.h            script host, part graph, bake plan (worker)
+//   part_store.h                artifact decode, LOD ladder, residency
+//   render/vk_scene_renderer.h  Vulkan: parts, instances, cull, RT, VT, DLSS
+//   streaming/sector_streaming_coordinator.h   which sectors are wanted
+//   terrain_field.h             the world's field / surfaces() / habitat() tapes
+//   seam_weld.h                 cross-level seam geometry (pool lives here)
+//   world_tracer.h              lazy CPU BVH behind raycast()/instance_info()
+//   refine_controller.h         camera-driven closed-world tile refinement
+//   matter/event/event_hub.h    typed bake/stream events; poll_event() is a shim
+//
+// THREADING — three kinds of thread, and the rules are not symmetric:
+//
+//   App/GL thread   the thread that called EngineContext::create (registered
+//                   there; assert_gl_thread() guards it). It must own tick(),
+//                   render(), pump_gpu_jobs(), finish_vulkan_frame(),
+//                   poll_event() and every accessor/query below. EVERY GpuJob
+//                   body runs on it, inside pump_gpu_jobs().
+//   Bake worker     one per session, started lazily by request_bake()/reload().
+//                   Runs the command queue (execute_bake, publish_pipeline,
+//                   install_world, execute_rebake_cone) and, in its idle slots,
+//                   one refine or one sector-streaming step. It owns the
+//                   streaming Coordinator single-threadedly and reaches GPU,
+//                   store and world state ONLY through gpu_jobs (post() =
+//                   fire-and-forget FIFO, run_blocking() = barrier).
+//   Bake pool       MATTER_STREAM_WORKERS executors running
+//                   bake_and_stage_sector: script bake, LOD-ladder staging and
+//                   the VkScenePart prebuild, all off the render thread. Only
+//                   the worker dispatches to it, and anything that tears down a
+//                   bake input (world_field, provider, streaming profile) must
+//                   quiesce_bake_pool() first.
+//
+// LIFECYCLE
+//   EngineContext::create(desc) -> open_world(desc) -> request_bake()
+//   per frame, on the app thread: tick() -> render(cam, frame, opts) ->
+//     pump_gpu_jobs(budget) -> finish_vulkan_frame(serial, presented), with
+//     poll_event() drained for progress and errors.
+//   ~WorldSession runs a fixed shutdown protocol (see the destructor): cancel
+//   commands, drain GPU jobs, join the worker, terminal streaming teardown,
+//   close the hub, then release the renderer and the store.
+//
+// BUILD CONFIGURATIONS. MatterEditor compiles this TU with
+// MATTER_VULKAN_VIEWER; MatterEngine3's own kernel build does not, and there
+// every rendering entry point compiles to a stub returning an error string (see
+// the #ifndef block near the end). Bake, streaming and query code is shared.
+//
+// CONVENTIONS
+//   * Transforms are ROW-MAJOR float[16]; translation is at [3], [7], [11] --
+//     never [12..14]. Several loops here depend on that.
+//   * Distances are world metres. Sector tile coordinates (tx, ty, tz) are in
+//     units of the LEVEL-0 tile size S_0 (`world_sector_size`); a level-L tile
+//     is S_0 << L across.
+//   * A SectorRequest's `rung` is a PACKED VARIANT (scatter detail tier +
+//     terrain LOD), not a mesh resolution -- decode with matter_stream::variant_*.
+//   * Instance ids are CONTENT-DERIVED, never allocation counters; see
+//     sector_instance_id() for why that is load-bearing.
+//
+// SHARP EDGES
+//   * Every state.apply() in this file must be followed by
+//     `tracer_dirty = true; tracer.reset();` -- WorldTracer holds raw PartStore
+//     pointers, so a released part would dangle.
+//   * gpu_jobs.pump()'s budget bounds how many jobs START, never how long one
+//     takes; a single expensive publish still blows the frame.
+//   * The MATTER_* env vars read here (MATTER_STREAM_*, MATTER_VT_*,
+//     MATTER_SEAM_*, MATTER_NESTED_SECTORS, MATTER_VOLUMETRIC_SECTORS, ...) are
+//     A/B kill switches; each is documented at its read site.
+//   * This file is far too large to hold in one's head. Navigate by the
+//     `// ---------` section dividers.
+//
 // matter_engine.cpp — Stage 2b facade: EngineContext / WorldSession over the
 // in-process viewer pipeline. Implements the public API in matter/engine_context.h
 // and matter/world_session.h. The logic is relocated verbatim from viewer/main.cpp
 // (same constants, same ordering, same comments) so that switching main.cpp to this
 // facade in Task 6 produces pixel-identical screenshots.
 //
-// Task 7 will implement raycast/instance_count/instance_info (currently stubs).
+// raycast / instance_count / instance_info are implemented at the bottom of
+// this file, over the lazily built WorldTracer BVH.
 
 #include "profile.h"
 #include "matter/engine_context.h"
@@ -27,6 +117,8 @@
 #include "bake_trace.h"        // Bake Lab: per-session stage-span collector
 #include "bake_trace_names.h"
 #include "ecs/ecs_runtime.h"
+#include "ecs/physics_context.h"
+#include "ecs/river_float_system.h"
 #include "ecs/dynamic_scene_bridge.h"
 #include "ecs/bridge_error_hub.h"  // I.11: hub-backed BridgeErrorSink adapter
 #include "ecs/streaming_systems.h"
@@ -45,6 +137,9 @@
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
 #ifdef MATTER_VULKAN_VIEWER
 #include "matter/vulkan_device.h"
+#include "hydrology/hydrology_artifact.h"
+#include "render/gpu_meshing/water_scene_part.h"
+#include "render/water_mesh_animation_playback.h"
 #include "render/vk_instance_cache.h"
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
@@ -77,6 +172,15 @@ namespace viewer { struct VkScenePart; }
 // Runtime-owned sector streaming coordinator and world profile.
 #include "streaming/sector_streaming_coordinator.h"
 #include "terrain_field.h"
+#include "terrain_river_overlay.h"
+#include "terrain_collision/terrain_collision_artifact.h"
+#include "terrain_mesher.h"
+#include "bake_mode.h"
+#include "hydrology/river_geometry.h"
+#include "hydrology/river_runtime_internal.h"
+#if defined(MATTER_ENABLE_PHYSX)
+#include "hydrology/physx_runtime.h"
+#endif
 // Volumetric-sectors M0-WP3b: the runtime cross-level seam welder. Pure
 // geometry (see seam_weld.h); this file supplies the two WeldSide lookups over
 // the drawn sector map and owns the resulting weld pool.
@@ -110,6 +214,7 @@ namespace viewer { struct VkScenePart; }
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -120,6 +225,21 @@ namespace matter {
 // Used as the FileWatcher argument for LiveEditSession constructed on the
 // worker thread (which uses rebuild(paths) directly, never tick()).
 namespace {
+// ---------------------------------------------------------------------------
+// File-local helpers
+//
+// Everything in this anonymous namespace is engine-internal: the animation
+// debug snapshot copy, the surfaces()-tape classifier used by the Vulkan part
+// builders, the streaming profile assembly, and small streaming predicates.
+// None of it is reachable from outside this translation unit.
+// ---------------------------------------------------------------------------
+
+// Copy a committed animation asset into the editor-facing debug snapshot,
+// VALIDATING as it goes: joints must be parent-before-child, sockets and target
+// chains must index existing joints, and skin influences must be 4-wide with
+// weights summing to exactly 65535. Returns false (leaving `out` default) on any
+// violation or on an ABI/ozz tag mismatch, so a malformed rig shows nothing
+// rather than a plausible-looking wrong rig.
 bool copy_animation_debug_asset(
     const viewer::LoadedPart& loaded,
     const animation::DecodedAnimationRuntimeAsset& decoded,
@@ -327,6 +447,21 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------
+// Streaming profile assembly
+// ---------------------------------------------------------------------------
+
+// Build the streamer's Config for one world, layering three sources in this
+// order: engine defaults, the world script's authored settings, then the
+// MATTER_STREAM_* / MATTER_NESTED_SECTORS / MATTER_VOLUMETRIC_SECTORS env
+// overrides. The editor's LOD Settings overrides are applied LATER, by
+// install_world, over the result of this function -- so anything derived from
+// the band table here would read a table a later override can still replace.
+//
+// It also refuses modes it cannot honour (volumetric without nesting, an
+// inverted Y extent) with a stderr line rather than silently correcting them,
+// and warns when the authored reach overflows the 20-bit packed sector
+// coordinate. `sector_size` is S_0, the level-0 tile size, in world metres.
 matter_stream::Config make_streaming_profile(
     float sector_size,
     const matter::WorldSettings& world_settings) {
@@ -625,15 +760,47 @@ static BakeErrorCode classify_error(const std::string& err) {
 // ---------------------------------------------------------------------------
 // EngineContext::Impl — minimal engine-level state shared by all sessions.
 // ---------------------------------------------------------------------------
+// Process/device-level state, shared by every session opened from this context.
+// Created only by EngineContext::create and outlives every WorldSession (each
+// session holds a non-owning pointer to it in `Impl::engine`).
 struct EngineContext::Impl {
-    std::string cache_root;
-    bool gl46 = false;
-    VulkanDevice* render_device = nullptr;
+    std::string cache_root;   // absolute; every bake artifact path is relative to it
+    bool gl46 = false;        // vestigial GL-era capability flag; nothing reads it
+    VulkanDevice* render_device = nullptr;  // BORROWED from the host app; null = headless
 };
 
 // ---------------------------------------------------------------------------
 // WorldSession::Impl — per-world session state (mirrors main.cpp locals).
 // ---------------------------------------------------------------------------
+// All of one loaded world's state. Created by EngineContext::open_world and
+// destroyed by ~WorldSession, which runs a fixed teardown protocol before the
+// members are released (see the destructor).
+//
+// THREE THREADS TOUCH THIS STRUCT, and which one owns a member is the single
+// most important thing to know about it:
+//
+//   * App/GL thread     the renderer members (vk_*), the resident sector ledger
+//                       (sector_map, sector_tile_index, seam_welds, weld_parts),
+//                       `state`, `store`, the tracer, the scene service/tracker
+//                       and the draw-override resolver. Every GpuJob body runs
+//                       here, so a member mutated inside a job is app-thread
+//                       state even when the job was posted by the worker.
+//   * Bake worker       the provider, the command/bake pipeline members, the
+//                       refine controller, the world field / surfaces / habitat
+//                       tapes and the streaming Coordinator.
+//   * Bake pool         only request-local data plus the atomics below; it reads
+//                       world_field / sector sources / the profile, whose
+//                       teardown is fenced by quiesce_bake_pool().
+//
+// Cross-thread members carry their own note: a mutex (focus_mutex, seed_mutex,
+// streaming_lod_mutex, graph_snapshot_mutex, draw_override_mutex,
+// streaming_status_mutex, publication_completion_mutex), an atomic, or a
+// thread-safe channel (gpu_jobs, commands, hub_).
+//
+// DECLARATION ORDER IS LOAD-BEARING in two places: `hub_` is declared before the
+// async-bake members that emit into it so it outlives them, and the scene
+// service/tracker after `ecs_runtime` and `hub_` so they destruct first (members
+// destroy in reverse declaration order). Both are documented at their fields.
 struct WorldSession::Impl {
     EngineContext::Impl* engine = nullptr;   // non-owning
     AnimationService animation_service;
@@ -689,6 +856,42 @@ struct WorldSession::Impl {
     std::unique_ptr<viewer::PartStore>      store;
 #ifdef MATTER_VULKAN_VIEWER
     std::unique_ptr<viewer::VkSceneRenderer> vk_scene;
+    // Acceptance-only cached GPU water. This is populated only by the
+    // explicit absolute-path environment hook and never invokes the mesher.
+    std::shared_ptr<const viewer::VkScenePart> gpu_mesher_acceptance_part;
+    viewer::VkSceneInstance gpu_mesher_acceptance_instance{};
+    // Normal authored-water publication.  The visual mesh is already in
+    // world space, so its single renderer instance is always identity.  The
+    // The immutable publication record below keeps replacement safe across
+    // render and bake threads.
+    struct AuthoredFluidRenderBinding {
+        std::shared_ptr<const viewer::VkScenePart> part;
+        viewer::VkSceneInstance instance{};
+        viewer::PackedWaterField water_field{};
+        std::uint32_t water_material_id = 0u;
+        hydrology::HydrologyNetworkArtifact animation_manifest{};
+        std::filesystem::path animation_cache_root;
+    };
+    std::shared_ptr<const AuthoredFluidRenderBinding>
+        failed_fluid_debug_binding;
+    // Render-thread projection of the latest immutable authored publication.
+    // The pointer identity gates GPU uploads; the binding is restored on the
+    // part every frame so a force-LOD release/re-registration cannot lose it.
+    std::shared_ptr<const AuthoredFluidRenderBinding>
+        vk_authored_fluid_render_binding;
+    viewer::WaterFieldBinding vk_authored_water_field_binding{};
+    viewer::WaterMeshAnimationPlayback vk_water_animation_playback;
+    viewer::WaterAnimationFrameSelection vk_water_animation_selection;
+    std::vector<std::uint32_t> vk_water_animation_proxy_indices;
+    std::uint64_t vk_water_animation_generation = 0u;
+    std::uint64_t vk_water_animation_next_generation = 1u;
+    bool vk_water_animation_active = false;
+    float vk_water_animation_publish_ms = 0.0f;
+    std::uint64_t vk_water_animation_compressed_cpu_bytes = 0u;
+    std::uint64_t vk_water_animation_peak_activation_cpu_bytes = 0u;
+    std::uint64_t vk_water_animation_gpu_bytes_per_slot = 0u;
+    std::atomic<float> water_animation_time_seconds{0.0f};
+    viewer::WaterDiagnosticSettings vk_water_diagnostic_settings{};
     viewer::VulkanInstanceCache vk_instance_cache;
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
@@ -719,6 +922,35 @@ struct WorldSession::Impl {
     // instances_dirty even when the resolved instance set itself is unchanged.
     bool vk_hide_children_applied_ = false;
 #endif
+    struct AuthoredFluidPublication
+        : matter::detail::RiverRuntimePublicationIdentity {
+        std::shared_ptr<const matter::RiverRuntimeBinding> runtime;
+#ifdef MATTER_VULKAN_VIEWER
+        std::shared_ptr<const AuthoredFluidRenderBinding> render;
+#endif
+    };
+    std::shared_ptr<matter::detail::RiverRuntimePublicationSlot>
+        authored_fluid_publication_slot = std::make_shared<
+            matter::detail::RiverRuntimePublicationSlot>();
+
+    std::shared_ptr<const AuthoredFluidPublication>
+    load_authored_fluid_publication() const noexcept {
+        for (;;) {
+            const auto identity =
+                matter::detail::RiverRuntimeBindingAccess::load(
+                    authored_fluid_publication_slot);
+            if (!identity) return {};
+            const auto publication = std::static_pointer_cast<
+                const AuthoredFluidPublication>(identity);
+            if (publication->runtime &&
+                matter::detail::RiverRuntimeBindingAccess::matches(
+                    *publication->runtime, authored_fluid_publication_slot,
+                    identity) &&
+                matter::detail::RiverRuntimeBindingAccess::load(
+                    authored_fluid_publication_slot) == identity)
+                return publication;
+        }
+    }
     lod_select::PartLodTable                lods;
 
     // Sky clear color: derived from tone-mapped sky_color in bake_once().
@@ -747,6 +979,29 @@ struct WorldSession::Impl {
         std::numeric_limits<float>::infinity()};
 
     std::atomic<bool> connected{false};
+    // Serializes full-request token cancellation with the complete hydrology
+    // commit (provider artifact, status, accepted flag, and terminal event).
+    // Recursive keeps immediate event subscribers free to query/request again.
+    mutable std::recursive_mutex hydrology_generation_mutex;
+    mutable std::mutex hydrology_status_mutex;
+    matter::HydrologyStatus hydrology_status_copy{};
+    std::function<void()> test_fluid_before_publication_hook;
+    std::function<void()> test_fluid_during_publication_hook;
+    std::function<void()> test_fluid_after_publication_hook;
+
+    // Full-bake collision publication is generation-linearized with request
+    // supersession. Candidate construction remains on the bake worker; the
+    // only crossing into Box3D is the app-thread publication job.
+    mutable std::recursive_mutex terrain_collision_generation_mutex;
+    mutable std::mutex terrain_collision_status_mutex;
+    matter::TerrainCollisionStatus terrain_collision_status_copy{};
+    TerrainCollisionBuildTestCallback test_terrain_collision_build_callback;
+    std::function<void()> test_terrain_collision_publication_hook;
+    std::function<void()> test_terrain_collision_before_build_hook;
+    TerrainCollisionCandidateObserver
+        test_terrain_collision_candidate_observer;
+    std::atomic<bool>
+        test_terrain_collision_failure_record_bad_alloc{false};
 
     // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
     // progress is emitted here as typed events (matter/events/*.h). Declared
@@ -832,8 +1087,25 @@ struct WorldSession::Impl {
     void publish_graph_snapshot();
 
     // A request owns one fixed completion slot before sector bake begins.
-    // max_inflight is 16; twice that capacity leaves room for acknowledgements
-    // retained across a coordinator generation transition without allocating.
+    // max_inflight defaults to 64 (see make_streaming_profile); this pool is
+    // twice that, which leaves room for acknowledgements retained across a
+    // coordinator generation transition without allocating.
+    // The life of one completion slot. A slot is claimed BEFORE the sector bake
+    // starts and is only freed once the publication has been either committed
+    // and acknowledged to the streamer, or rolled back — which is what makes a
+    // failed bake, a failed publish and a torn-down session all converge on the
+    // same cleanup path instead of leaking a sector's resources.
+    //
+    //   Free      unclaimed.
+    //   Reserved  claimed by the worker's dispatch loop; no artifact yet.
+    //   Posted    the bake produced an artifact and a publish job is queued.
+    //   Running   the publish job is executing on the app/GL thread.
+    //   Retry     the slot needs another rollback/acknowledge attempt; drained by
+    //             retry_publication_completions() from pump_gpu_jobs().
+    //
+    // Transitions are all taken under publication_completion_mutex and every
+    // mutator is noexcept: this is the path that has to work when something else
+    // has already failed.
     enum class PublicationCompletionState : uint8_t {
         Free,
         Reserved,
@@ -1052,6 +1324,7 @@ struct WorldSession::Impl {
     // --- Phase B: async bake worker helpers (defined below) ------------------
     // Start the worker thread if not already running.
     void ensure_worker_started();
+    void enqueue_full_bake(matter_async::CommandKind kind);
     // Worker thread entry point.
     void worker_loop();
     // Existing provider/live-edit polling, called after each valid ECS tick.
@@ -1061,6 +1334,8 @@ struct WorldSession::Impl {
     void reconcile_runtime_animation_skinning();
     // Execute one BakeAll/Reload command. Called only on the worker thread.
     void execute_bake(matter_async::Command& cmd, bool is_reload);
+    void run_authored_fluid_bake_after_world_load(
+        const std::shared_ptr<matter_async::CancelToken>& token);
     // Execute a RebakeCone command. Called only on the worker thread.
     void execute_rebake_cone(matter_async::Command& cmd);
     // Phase C Task 6: execute one camera-driven refine step.
@@ -1071,7 +1346,24 @@ struct WorldSession::Impl {
     // Phase C Task 9: install world-kind field, set world binding on host_baker,
     // install sector child assets. Called from execute_bake after install_graph
     // succeeds when provider->world_module() is non-empty.
+    enum class TerrainCollisionPublicationAction { Keep, Clear, Replace };
+    using TerrainCollisionCandidateOwner =
+        std::shared_ptr<const terrain_collision::TerrainCollisionCandidate>;
+    using TerrainCollisionCandidateSlot =
+        std::shared_ptr<TerrainCollisionCandidateOwner>;
+    struct TerrainCollisionPublication {
+        TerrainCollisionPublicationAction action =
+            TerrainCollisionPublicationAction::Clear;
+        TerrainCollisionCandidateSlot candidate_slot;
+        std::function<void()> test_publication_hook;
+        TerrainCollisionCandidateObserver test_candidate_observer;
+    };
+    void record_terrain_collision_failure_noexcept(
+        const char* code, const char* message,
+        std::string* error_out = nullptr) noexcept;
     bool install_world(const std::shared_ptr<matter_async::CancelToken>& token,
+                       TerrainCollisionPublication& terrain_collision,
+                       bool& terrain_collision_failed,
                        std::string& err);
     // WP-F: posted (as a GpuJob) when install_world compiles a surfaces()
     // tape whose hash differs from the previous generation's — re-evaluates
@@ -1180,6 +1472,10 @@ struct WorldSession::Impl {
         // into a fresh store and hold it resident for the session (no eviction
         // path releases non-sector loaded_ entries).
         bool prewarm_child_catalog = false;
+        // Cone/refine publication keeps the accepted terrain. Every full bake
+        // explicitly overrides this with Clear or a generation-local Replace.
+        TerrainCollisionPublication terrain_collision{
+            TerrainCollisionPublicationAction::Keep, {}, {}, {}};
     };
 
     // Shared publish flow: steps 4-8 (reset job → reconcile → per-part publish
@@ -1187,7 +1483,7 @@ struct WorldSession::Impl {
     // `new_manifest` is consumed (moved in) by the reset job.
     void publish_pipeline(const std::shared_ptr<matter_async::CancelToken>& token,
                           viewer::WorldManifest new_manifest,
-                          const PublishPipelineParams& p);
+                          PublishPipelineParams p);
 
     // --- Task 10: live-edit watcher state (app thread only) ------------------
     bool enable_live_edit = false;
@@ -1230,6 +1526,9 @@ struct WorldSession::Impl {
     // World-kind field runtime (owned; lives for the session generation).
     // Null for closed-world sessions or before install completes.
     std::unique_ptr<terrain_field::FieldRuntime> world_field;
+    std::shared_ptr<const terrain_field::RiverHeightOverlay>
+        world_river_height_overlay;
+    hydrology::RiverGeometry world_river_geometry;
 
     // WP-F: compiled surfaces() classifier tape (null when the world defines
     // no surfaces()). Feeds sector registrations (ensure_vulkan_part's
@@ -2480,10 +2779,48 @@ void WorldSession::Impl::set_authored_sun(const matter::WorldSettings& settings)
     has_world_cloud_shadows = true;
 }
 
+// ---------------------------------------------------------------------------
+// Bake worker thread and sector bake pool
+//
+// One worker per session executes commands (BakeAll / Reload / RebakeCone /
+// Shutdown) and, in its idle slots, one refine or one sector-streaming step.
+// With MATTER_STREAM_WORKERS > 1 it dispatches sector bakes to a pool of
+// executors instead of running them inline; the pool holds no shared mutable
+// state and results funnel back through the publication-completion ledger,
+// gpu_jobs and the event hub either way.
+// ---------------------------------------------------------------------------
+
 void WorldSession::Impl::ensure_worker_started() {
     if (worker.joinable()) return;
     worker_exited.store(false, std::memory_order_release);
     worker = std::thread([this] { worker_loop(); });
+}
+
+void WorldSession::Impl::enqueue_full_bake(matter_async::CommandKind kind) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        hydrology_generation_mutex);
+    std::lock_guard<std::recursive_mutex> terrain_generation_lock(
+        terrain_collision_generation_mutex);
+#ifdef MATTER_VULKAN_VIEWER
+    std::atomic_store_explicit(
+        &failed_fluid_debug_binding,
+        std::shared_ptr<const AuthoredFluidRenderBinding>{},
+        std::memory_order_release);
+#endif
+    {
+        std::lock_guard<std::mutex> status_lock(hydrology_status_mutex);
+        hydrology_status_copy = {};
+    }
+    {
+        std::lock_guard<std::mutex> status_lock(
+            terrain_collision_status_mutex);
+        terrain_collision_status_copy = {};
+        terrain_collision_status_copy.state =
+            matter::TerrainCollisionState::Building;
+    }
+    matter_async::Command command;
+    command.kind = kind;
+    commands.push(std::move(command));
 }
 
 // Lazily spawn the sector-bake executor pool. Worker-thread only, so the
@@ -2739,6 +3076,8 @@ void WorldSession::Impl::worker_loop() {
                     // The old profile has been cleared and every tagged app
                     // eviction completed before private field destruction.
                     world_field.reset();
+                    world_river_height_overlay.reset();
+                    world_river_geometry = {};
                     world_initial_load_done = false;
                 }
                 bake_active.store(true, std::memory_order_release);
@@ -2861,6 +3200,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         ev.message = msg;
         hub_.emit(std::move(ev));
     };
+    TerrainCollisionPublication terrain_publication{};
 
     // 2) Build a fresh provider and install the part graph --------------------
     // The provider is per-command: on_part is wired to emit BakePartDone with
@@ -2906,6 +3246,21 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             return false;
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
+    };
+    cfg.vk_particle_visual_bake = [this](
+        const gpu_meshing::ParticleJob& job,
+        gpu_meshing::MeshResult& result, gpu_meshing::Stats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) -> bool {
+        if (!vk_scene) {
+            result = {};
+            stats = {};
+            error.code = gpu_meshing::ErrorCode::Unavailable;
+            error.message = "vk_particle_visual_bake: Vulkan renderer not active";
+            return false;
+        }
+        return vk_scene->build_particle_visual(job, result, stats, error,
+                                               control);
     };
     // Vulkan hardware-RT .gtex bake (vulkan-rt-gtex-bake.md §I.7, V4): binds
     // run_tileset_deferred's bake-capable arm to the renderer. Runs on the
@@ -3013,6 +3368,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
                     set_authored_fog(provider->world_settings().fog);
                     set_authored_sun(provider->world_settings());
+                    run_authored_fluid_bake_after_world_load(token);
 
                     {
                         MATTER_LOGI("resolve", "resolve cache: hit %016llx\n",
@@ -3034,9 +3390,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                         pp_rc.fault_hook            = cfg.test_fault_hook;
                         pp_rc.load_msg_include_hash = true;
                         pp_rc.provider_ref          = provider;
+                        pp_rc.terrain_collision     =
+                            std::move(terrain_publication);
                         {
                             BAKE_SPAN(bake_trace::kSpanPublish);
-                            publish_pipeline(token, std::move(cached_manifest), pp_rc);
+                            publish_pipeline(token, std::move(cached_manifest),
+                                             std::move(pp_rc));
                         }
                         double publish_ms_rc = std::chrono::duration<double, std::milli>(
                             clk_t::now() - t_publish_start_rc).count();
@@ -3098,6 +3457,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     if (!provider->world_module().empty()) {
         auto t_world_start = clk_t::now();
         std::string werr;
+        bool terrain_collision_failed = false;
         world_initial_load_done = false;  // reset for this generation
         // MATTER_STREAM_FILL_PROFILE: time the disc fill from the end of
         // install_world to the first all-holes-filled step, so the summary
@@ -3109,10 +3469,29 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         stream_fill_sectors = 0;
         stream_fill_steps = 0;
         stream_fill_step_ms = 0.0;
-        if (!install_world(token, werr)) {
+        if (!install_world(token, terrain_publication,
+                           terrain_collision_failed, werr)) {
             MATTER_LOGE("install_world", "install_world: %s\n", werr.c_str());
-            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(werr),
-                       "install", werr);
+            if (terrain_collision_failed && !is_cancelled()) {
+                matter_async::GpuJob disconnect_job;
+                disconnect_job.name = "bake.terrain-collision.failure";
+                disconnect_job.token = token;
+                disconnect_job.fn = [this](std::string&) {
+                    matter_async::assert_gl_thread(
+                        "bake.terrain-collision.failure");
+                    connected.store(false, std::memory_order_release);
+                    return true;
+                };
+                std::string ignored;
+                gpu_jobs.run_blocking(std::move(disconnect_job), ignored);
+            }
+            emit_error(
+                is_cancelled() ? BakeErrorCode::Cancelled
+                               : terrain_collision_failed
+                                     ? BakeErrorCode::Internal
+                                     : classify_error(werr),
+                terrain_collision_failed ? "terrain-collision" : "install",
+                werr);
             return;
         }
         double world_ms = std::chrono::duration<double, std::milli>(
@@ -3125,6 +3504,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // the default zero-density settings for their entire session.
         set_authored_fog(provider->world_settings().fog);
         set_authored_sun(provider->world_settings());
+        run_authored_fluid_bake_after_world_load(token);
 
         // World-kind sessions use an empty manifest; sectors are streamed.
         viewer::WorldManifest empty_manifest;
@@ -3138,9 +3518,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         pp.load_msg_include_hash = true;
         pp.provider_ref          = provider;
         pp.prewarm_child_catalog = true;   // streaming path only (install_world ran)
+        pp.terrain_collision     = std::move(terrain_publication);
         {
             BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
-            publish_pipeline(token, std::move(empty_manifest), pp);
+            publish_pipeline(token, std::move(empty_manifest), std::move(pp));
             // publish_pipeline replaces PartStore — re-apply transient scratch dir
             // and the W3 bake observer (both are per-construction state on the
             // fresh PartStore instance).
@@ -3196,6 +3577,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     set_authored_fog(provider->world_settings().fog);
     set_authored_sun(provider->world_settings());
+    run_authored_fluid_bake_after_world_load(token);
 
     // Phase C Task 17: save resolve cache after a successful full install+compose.
     // Write to temp + rename (atomic). Non-fatal on failure (no cache next warm launch).
@@ -3227,9 +3609,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     pp.fault_hook            = cfg.test_fault_hook;
     pp.load_msg_include_hash = true;
     pp.provider_ref          = provider;  // shared_ptr extends lifetime through publish
+    pp.terrain_collision     = std::move(terrain_publication);
     {
         BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
-        publish_pipeline(token, std::move(new_manifest), pp);
+        publish_pipeline(token, std::move(new_manifest), std::move(pp));
     }
     double publish_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_publish_start).count();
@@ -3237,6 +3620,346 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         clk_t::now() - t_bake_start).count();
     MATTER_LOGI("bake-timing", "install=%.0fms compose=%.0fms publish=%.0fms total=%.0fms\n",
             install_ms, compose_ms, publish_ms, total_ms);
+}
+
+void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
+    const std::shared_ptr<matter_async::CancelToken>& token) {
+    if (!provider || !provider->authored_fluid_requested()) {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        if (token && token->is_cancelled()) return;
+        std::lock_guard<std::mutex> status_lock(hydrology_status_mutex);
+        hydrology_status_copy = {};
+        return;
+    }
+
+    {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        if (token && token->is_cancelled()) return;
+        std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+        hydrology_status_copy = {};
+        hydrology_status_copy.state = matter::HydrologyState::Baking;
+        hydrology_status_copy.progress = 0.0f;
+    }
+    viewer::FluidBakeRunContext context{};
+    context.callbacks.cancelled = [token] {
+        return token && token->is_cancelled();
+    };
+    context.callbacks.progress = [this, token](
+        const hydrology::FluidBakeProgress& progress) {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        if (token && token->is_cancelled()) return;
+        {
+            std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+            hydrology_status_copy.state = matter::HydrologyState::Baking;
+            hydrology_status_copy.completed_steps = progress.completed_steps;
+            hydrology_status_copy.progress = progress.total_steps == 0u
+                ? -1.0f
+                : static_cast<float>(progress.completed_steps) /
+                      static_cast<float>(progress.total_steps);
+        }
+        events::BakePartDone event;
+        event.done = static_cast<int>(std::min<std::uint32_t>(
+            progress.completed_steps,
+            static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
+        event.total = static_cast<int>(std::min<std::uint32_t>(
+            progress.total_steps,
+            static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
+        event.phase = "hydrology";
+        hub_.emit(std::move(event));
+    };
+    if (world_field) {
+        context.terrain = [this](float x, float z, float& height) {
+            if (!world_field) return false;
+            height = world_field->height_at(x, z);
+            return std::isfinite(height);
+        };
+        context.terrain_revision = world_field->hash();
+    }
+
+    matter::HydrologyStatus result{};
+    hydrology::FluidBakeError error{};
+    hydrology::HydrologyNetworkBakeResult network_result{};
+    const bool accepted = provider->run_authored_fluid_bake(
+        context, result, error, network_result);
+    bool publication_accepted = accepted;
+    std::shared_ptr<const matter::RiverRuntimeBinding> runtime_binding;
+    std::shared_ptr<AuthoredFluidPublication> publication_candidate;
+    if (accepted) {
+        try {
+            publication_candidate =
+                std::make_shared<AuthoredFluidPublication>();
+        } catch (const std::bad_alloc&) {
+            publication_accepted = false;
+        }
+        const matter::detail::RiverRuntimeBuildInput runtime_input{
+            network_result.manifest.payload_digest,
+            network_result.manifest.runtime_field_digest,
+            network_result.manifest.presentation_field_digest,
+            &network_result.products,
+            authored_fluid_publication_slot,
+            publication_candidate};
+        runtime_binding = matter::detail::RiverRuntimeBindingAccess::build(
+            runtime_input);
+        if (!runtime_binding) {
+            publication_accepted = false;
+            error = {hydrology::FluidBakeCode::ProductFailure,
+                     "accepted authored water produced no valid runtime field"};
+            result.state = matter::HydrologyState::Invalid;
+            result.failure_reason = error.message;
+        }
+    }
+#ifdef MATTER_VULKAN_VIEWER
+    std::uint32_t water_material_id = 7u;
+    const matter::WaterSurfaceDefinition* water_surface = nullptr;
+    if (provider->river_network() &&
+        provider->river_network()->water_surface) {
+        water_surface = &*provider->river_network()->water_surface;
+        water_material_id = water_surface->material_id;
+    }
+    viewer::PackedWaterField packed_water_field;
+    if (publication_accepted) {
+        viewer::WaterFieldError field_error{};
+        if (!viewer::pack_water_field(
+                {network_result.products.gameplay_layout,
+                 &network_result.products.gameplay_field,
+                 &network_result.products.presentation_field,
+                 network_result.manifest.runtime_field_digest,
+                 network_result.manifest.presentation_field_digest,
+                 water_surface},
+                packed_water_field, field_error)) {
+            publication_accepted = false;
+            error = {hydrology::FluidBakeCode::ProductFailure,
+                     field_error.message.empty()
+                         ? "accepted authored water produced no GPU flow field"
+                         : field_error.message};
+            result.state = matter::HydrologyState::Invalid;
+            result.failure_reason = error.message;
+        }
+    }
+    std::shared_ptr<const viewer::VkScenePart> authored_part;
+    viewer::VkSceneInstance authored_instance{};
+    if (publication_accepted) {
+        std::uint64_t instance_id = 0u;
+        gpu_meshing::Error render_error{};
+        if (!gpu_meshing::build_water_scene_part(
+                network_result.products.visual_mesh,
+                network_result.manifest.payload_digest, water_material_id,
+                authored_part,
+                instance_id, render_error) || !authored_part) {
+            publication_accepted = false;
+            error = {hydrology::FluidBakeCode::ProductFailure,
+                     render_error.message.empty()
+                         ? "accepted authored water produced no renderable mesh"
+                         : render_error.message};
+            result.state = matter::HydrologyState::Invalid;
+            result.failure_reason = error.message;
+        } else {
+            authored_instance.part_hash = authored_part->part_hash;
+            authored_instance.object_to_world = viewer::mat4_identity();
+            authored_instance.instance_id = instance_id;
+            authored_instance.ray_traced = false;
+        }
+    }
+    std::shared_ptr<const viewer::VkScenePart> failed_debug_part;
+    viewer::VkSceneInstance failed_debug_instance{};
+    if (!accepted &&
+        !network_result.failed_debug_visual.positions.empty()) {
+        std::uint64_t instance_id = 0u;
+        gpu_meshing::Error render_error{};
+        if (gpu_meshing::build_water_scene_part(
+                network_result.failed_debug_visual,
+                network_result.failed_debug_visual.content_digest,
+                water_material_id,
+                failed_debug_part, instance_id, render_error) &&
+            failed_debug_part) {
+            failed_debug_instance.part_hash = failed_debug_part->part_hash;
+            failed_debug_instance.object_to_world = viewer::mat4_identity();
+            failed_debug_instance.instance_id = instance_id;
+            failed_debug_instance.ray_traced = false;
+        } else {
+            failed_debug_part.reset();
+        }
+    }
+#endif
+#ifdef MATTER_VULKAN_VIEWER
+    std::shared_ptr<const AuthoredFluidRenderBinding>
+        failed_debug_binding_candidate;
+#endif
+    try {
+        if (publication_accepted) {
+            publication_candidate->runtime = std::move(runtime_binding);
+#ifdef MATTER_VULKAN_VIEWER
+            auto render = std::make_shared<AuthoredFluidRenderBinding>();
+            render->part = std::move(authored_part);
+            render->instance = authored_instance;
+            render->water_field = std::move(packed_water_field);
+            render->water_material_id = water_material_id;
+            render->animation_manifest = network_result.manifest;
+            render->animation_cache_root = cfg.cache_root;
+            publication_candidate->render = std::move(render);
+#endif
+        }
+#ifdef MATTER_VULKAN_VIEWER
+        if (!publication_accepted && failed_debug_part) {
+            auto failed = std::make_shared<AuthoredFluidRenderBinding>();
+            failed->part = std::move(failed_debug_part);
+            failed->instance = failed_debug_instance;
+            failed_debug_binding_candidate = std::move(failed);
+        }
+#endif
+    } catch (const std::bad_alloc&) {
+        publication_candidate.reset();
+#ifdef MATTER_VULKAN_VIEWER
+        failed_debug_binding_candidate.reset();
+#endif
+        publication_accepted = false;
+        error = {hydrology::FluidBakeCode::ProductFailure,
+                 "authored water publication allocation failed"};
+        result.state = matter::HydrologyState::Invalid;
+        result.failure_reason = error.message;
+    }
+    std::function<void()> before_publication_hook;
+    std::function<void()> during_publication_hook;
+    std::function<void()> after_publication_hook;
+    {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        before_publication_hook = test_fluid_before_publication_hook;
+        during_publication_hook = test_fluid_during_publication_hook;
+        after_publication_hook = test_fluid_after_publication_hook;
+    }
+    if (before_publication_hook) before_publication_hook();
+    {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            hydrology_generation_mutex);
+        if (!token || !token->is_cancelled()) {
+            if (publication_accepted)
+                provider->commit_accepted_fluid_network(
+                    std::move(network_result));
+            if (publication_accepted) {
+                if (during_publication_hook) during_publication_hook();
+                matter::detail::RiverRuntimeBindingAccess::publish(
+                    authored_fluid_publication_slot,
+                    std::move(publication_candidate));
+#ifdef MATTER_VULKAN_VIEWER
+                std::atomic_store_explicit(
+                    &failed_fluid_debug_binding,
+                    std::shared_ptr<const AuthoredFluidRenderBinding>{},
+                    std::memory_order_release);
+#endif
+            }
+#ifdef MATTER_VULKAN_VIEWER
+            if (!publication_accepted && failed_debug_binding_candidate) {
+                const auto prior = load_authored_fluid_publication();
+                if (!prior) {
+                    std::atomic_store_explicit(
+                        &failed_fluid_debug_binding,
+                        std::move(failed_debug_binding_candidate),
+                        std::memory_order_release);
+                    MATTER_LOGI(
+                        "hydrology",
+                        "UNACCEPTED DEBUG WATER: finite terminal-failure snapshot rendered; no artifact, cache, CPU mesh, or gameplay product was published\n");
+                }
+            }
+#endif
+            {
+                std::lock_guard<std::mutex> lock(hydrology_status_mutex);
+                hydrology_status_copy = result;
+            }
+            if (publication_accepted) {
+                events::BakePartDone event;
+                event.done = static_cast<int>(result.completed_sections);
+                event.total = static_cast<int>(result.total_sections);
+                event.phase = "hydrology";
+                hub_.emit(std::move(event));
+            } else if (!error.message.empty()) {
+                events::BakeError event;
+                event.code =
+                    (error.code == hydrology::FluidBakeCode::ProductFailure ||
+                     error.code == hydrology::FluidBakeCode::DeviceLost)
+                    ? BakeErrorCode::GpuError
+                    : BakeErrorCode::Internal;
+                event.phase = "hydrology";
+                event.message = error.message;
+                hub_.emit(std::move(event));
+                MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
+                            error.message.c_str());
+            }
+        }
+    }
+    if (after_publication_hook) after_publication_hook();
+}
+
+void WorldSession::Impl::record_terrain_collision_failure_noexcept(
+    const char* code, const char* message, std::string* error_out) noexcept {
+    const auto prepare_fallback = [](matter::TerrainCollisionStatus& status) {
+        status = {};
+        status.state = matter::TerrainCollisionState::Failed;
+        // Both fit the std::string small buffer on supported toolchains, so a
+        // diagnostic-allocation failure can still publish a coherent snapshot.
+        status.failure_code = "collision-fail";
+        status.failure_message = "build failure";
+    };
+
+    try {
+        matter::TerrainCollisionStatus failed{};
+        prepare_fallback(failed);
+        try {
+            matter::TerrainCollisionStatus precise{};
+            precise.state = matter::TerrainCollisionState::Failed;
+            if (test_terrain_collision_failure_record_bad_alloc.exchange(
+                    false, std::memory_order_acq_rel)) {
+                throw std::bad_alloc{};
+            }
+            precise.failure_code = code && code[0] != '\0'
+                ? code : "collision-fail";
+            precise.failure_message = message && message[0] != '\0'
+                ? message : "build failure";
+            failed = std::move(precise);
+        } catch (...) {
+            // Keep the already-complete fallback snapshot.
+        }
+
+        if (error_out) {
+            try {
+                *error_out = failed.failure_message;
+            } catch (...) {
+                try {
+                    *error_out = "build failure";
+                } catch (...) {
+                }
+            }
+        }
+        MATTER_LOGE("terrain-collision", "%s: %s\n",
+                    failed.failure_code.c_str(),
+                    failed.failure_message.c_str());
+        std::lock_guard<std::mutex> status_lock(
+            terrain_collision_status_mutex);
+        using std::swap;
+        swap(terrain_collision_status_copy, failed);
+    } catch (...) {
+        // The supported fallback path above is allocation-free. This last
+        // containment guard prevents an exotic library/mutex exception from
+        // escaping into the generic worker catch.
+        if (error_out) {
+            try {
+                *error_out = "build failure";
+            } catch (...) {
+            }
+        }
+        try {
+            matter::TerrainCollisionStatus failed{};
+            prepare_fallback(failed);
+            std::lock_guard<std::mutex> status_lock(
+                terrain_collision_status_mutex);
+            using std::swap;
+            swap(terrain_collision_status_copy, failed);
+        } catch (...) {
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3257,8 +3980,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 void WorldSession::Impl::publish_pipeline(
     const std::shared_ptr<matter_async::CancelToken>& token,
     viewer::WorldManifest new_manifest,
-    const PublishPipelineParams& p)
+    PublishPipelineParams p)
 {
+    static_assert(
+        std::is_nothrow_swappable_v<matter::TerrainCollisionStatus>,
+        "collision status commit must remain non-throwing");
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
 
     auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
@@ -3274,6 +4000,386 @@ void WorldSession::Impl::publish_pipeline(
     };
 
     const std::string& pfx = p.job_prefix;
+    TerrainCollisionPublication collision_publication =
+        std::move(p.terrain_collision);
+    TerrainCollisionCandidateSlot candidate_slot =
+        std::move(collision_publication.candidate_slot);
+    const bool observed_candidate = candidate_slot && *candidate_slot;
+    const std::weak_ptr<
+        const terrain_collision::TerrainCollisionCandidate> candidate_weak =
+            observed_candidate ? *candidate_slot
+                               : TerrainCollisionCandidateOwner{};
+    TerrainCollisionCandidateObserver candidate_observer =
+        std::move(collision_publication.test_candidate_observer);
+    std::function<void()> publication_hook =
+        std::move(collision_publication.test_publication_hook);
+    const TerrainCollisionPublicationAction collision_action =
+        collision_publication.action;
+    const auto release_and_observe_candidate = [&]() noexcept {
+        if (candidate_slot) candidate_slot->reset();
+        if (observed_candidate && candidate_observer) {
+            try {
+                candidate_observer(candidate_weak);
+            } catch (...) {
+                MATTER_LOGE(
+                    "terrain-collision",
+                    "test candidate observer threw before visual reset\n");
+            }
+        }
+    };
+    const auto disconnect_collision_failure = [&]() noexcept {
+        try {
+            matter_async::GpuJob disconnect_job;
+            disconnect_job.fn = [this](std::string&) {
+                matter_async::assert_gl_thread(
+                    "terrain-collision.failure-disconnect");
+                connected.store(false, std::memory_order_release);
+                return true;
+            };
+            std::string ignored;
+            gpu_jobs.run_blocking(std::move(disconnect_job), ignored);
+        } catch (...) {
+        }
+    };
+    const auto emit_collision_error_noexcept =
+        [&](const std::string& message) noexcept {
+            try {
+                if (message.empty()) {
+                    emit_error(
+                        BakeErrorCode::Internal, "terrain-collision",
+                        "terrain collision publication failed");
+                } else {
+                    emit_error(BakeErrorCode::Internal, "terrain-collision",
+                               message);
+                }
+            } catch (...) {
+            }
+        };
+
+    // Terrain collision is the first app-thread publication for a full bake.
+    // It must succeed before any visual reset can expose the generation, and
+    // cone/refine publication deliberately arrives as Keep.
+    if (collision_action !=
+        TerrainCollisionPublicationAction::Keep) {
+        if (is_cancelled()) {
+            release_and_observe_candidate();
+            emit_error(BakeErrorCode::Cancelled, "terrain-collision",
+                       "cancelled");
+            return;
+        }
+        std::string collision_error;
+        bool collision_ok = false;
+        std::shared_ptr<std::atomic<bool>> collision_failure_routed;
+        try {
+            collision_failure_routed =
+                std::make_shared<std::atomic<bool>>(false);
+            matter_async::GpuJob collision_job;
+            collision_job.name = pfx + ".terrain-collision";
+            collision_job.token = token;
+            collision_job.fn = [this, candidate_slot,
+                                publication_hook =
+                                    std::move(publication_hook),
+                                collision_action, token,
+                                collision_failure_routed](
+                                    std::string& error) mutable {
+                struct CandidateSlotReset {
+                    TerrainCollisionCandidateSlot* slot = nullptr;
+                    ~CandidateSlotReset() {
+                        if (slot && *slot) (*slot)->reset();
+                    }
+                } candidate_slot_reset{&candidate_slot};
+
+                struct InstalledLogSnapshot {
+                    std::uint64_t generation_key = 0;
+                    std::uint64_t geometry_key = 0;
+                    float cell_size_m = 0.0f;
+                    std::int8_t rung = 0;
+                    std::uint32_t region_count = 0;
+                    std::uint32_t sector_count = 0;
+                    std::uint32_t non_empty_tile_count = 0;
+                    std::uint32_t empty_tile_count = 0;
+                    std::uint64_t triangle_count = 0;
+                    std::uint64_t unique_vertex_count = 0;
+                    std::uint64_t artifact_bytes = 0;
+                    std::uint64_t box3d_retained_bytes = 0;
+                    double cold_build_ms = 0.0;
+                    double cache_load_ms = 0.0;
+                    double validation_ms = 0.0;
+                    double install_ms = 0.0;
+                };
+                const auto log_installed_noexcept = [](
+                    const InstalledLogSnapshot& status) noexcept {
+                    try {
+                        MATTER_LOGI(
+                            "terrain-collision",
+                            "installed generation=%016llx geometry=%016llx "
+                            "cell=%.3f rung=%d regions=%u sectors=%u "
+                            "nonempty=%u empty=%u triangles=%llu "
+                            "vertices=%llu artifact=%llu box3d=%llu "
+                            "build=%.2fms cache=%.2fms validation=%.2fms "
+                            "install=%.2fms\n",
+                            static_cast<unsigned long long>(
+                                status.generation_key),
+                            static_cast<unsigned long long>(
+                                status.geometry_key),
+                            status.cell_size_m,
+                            static_cast<int>(status.rung),
+                            status.region_count, status.sector_count,
+                            status.non_empty_tile_count,
+                            status.empty_tile_count,
+                            static_cast<unsigned long long>(
+                                status.triangle_count),
+                            static_cast<unsigned long long>(
+                                status.unique_vertex_count),
+                            static_cast<unsigned long long>(
+                                status.artifact_bytes),
+                            static_cast<unsigned long long>(
+                                status.box3d_retained_bytes),
+                            status.cold_build_ms, status.cache_load_ms,
+                            status.validation_ms, status.install_ms);
+                    } catch (...) {
+                        // Box3D and Installed status are already committed.
+                        // Diagnostic sinks cannot roll that transaction back.
+                    }
+                };
+                const auto set_cancelled_error_noexcept = [&error]() noexcept {
+                    try {
+                        error = "cancelled";
+                    } catch (...) {
+                    }
+                };
+                const auto route_failure_noexcept =
+                    [this, &error, &collision_failure_routed](
+                        const char* code, const char* message) noexcept {
+                    connected.store(false, std::memory_order_release);
+                    record_terrain_collision_failure_noexcept(
+                        code, message, &error);
+                    collision_failure_routed->store(
+                        true, std::memory_order_release);
+                    return false;
+                };
+
+                try {
+                    // This is an app/GL/physics-owner job even though it does
+                    // no rendering. The label is a literal so affinity checking
+                    // itself cannot allocate inside the queued transaction.
+                    matter_async::assert_gl_thread(
+                        "terrain-collision.publication");
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+                    if (publication_hook) publication_hook();
+
+                    std::lock_guard<std::recursive_mutex> generation_lock(
+                        terrain_collision_generation_mutex);
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+
+                    auto& physics_context =
+                        physics::detail::context(ecs_runtime.world());
+                    if (collision_action ==
+                        TerrainCollisionPublicationAction::Clear) {
+                        matter::TerrainCollisionStatus disabled_status{};
+                        bool cleared = false;
+                        {
+                            // Acquire every fallible synchronization/resource
+                            // before the owner-thread clear commit.
+                            std::lock_guard<std::mutex> status_lock(
+                                terrain_collision_status_mutex);
+                            physics_context.clear_terrain_collision();
+                            const auto physics_status =
+                                physics_context.terrain_collision_stats();
+                            if (physics_status.installation_key == 0 &&
+                                physics_status.shape_count == 0) {
+                                using std::swap;
+                                swap(terrain_collision_status_copy,
+                                     disabled_status);
+                                cleared = true;
+                            }
+                        }
+                        if (cleared) return true;
+                        return route_failure_noexcept(
+                            "install-failed",
+                            "terrain collision clear was rejected by physics");
+                    }
+                    if (!candidate_slot || !*candidate_slot) {
+                        return route_failure_noexcept(
+                            "install-failed",
+                            "terrain collision replacement has no candidate");
+                    }
+
+                    matter::TerrainCollisionStatus installed_status{};
+                    InstalledLogSnapshot log_status{};
+                    bool installed = false;
+                    {
+                        // Preparing/copying status and acquiring its mutex are
+                        // pre-commit. Once Box3D returns success, only numeric
+                        // assignments, noexcept swaps/destruction, and the
+                        // contained diagnostic call remain.
+                        std::lock_guard<std::mutex> status_lock(
+                            terrain_collision_status_mutex);
+                        installed_status = terrain_collision_status_copy;
+                        installed_status.state =
+                            matter::TerrainCollisionState::Installed;
+                        installed_status.failure_code.clear();
+                        installed_status.failure_message.clear();
+                        const auto install_start =
+                            std::chrono::steady_clock::now();
+                        installed =
+                            physics_context.replace_terrain_collision(
+                                **candidate_slot, error);
+                        // Box3D retained private mesh bytes (or rejected the
+                        // transaction); release generation geometry now.
+                        candidate_slot->reset();
+                        if (installed) {
+                            installed_status.install_ms =
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() -
+                                    install_start)
+                                    .count();
+                            const auto physics_status =
+                                physics_context.terrain_collision_stats();
+                            installed_status.box3d_retained_bytes =
+                                physics_status.retained_bytes;
+
+                            log_status.generation_key =
+                                installed_status.generation_key;
+                            log_status.geometry_key =
+                                installed_status.geometry_key;
+                            log_status.cell_size_m =
+                                installed_status.cell_size_m;
+                            log_status.rung = installed_status.rung;
+                            log_status.region_count =
+                                installed_status.region_count;
+                            log_status.sector_count =
+                                installed_status.sector_count;
+                            log_status.non_empty_tile_count =
+                                installed_status.non_empty_tile_count;
+                            log_status.empty_tile_count =
+                                installed_status.empty_tile_count;
+                            log_status.triangle_count =
+                                installed_status.triangle_count;
+                            log_status.unique_vertex_count =
+                                installed_status.unique_vertex_count;
+                            log_status.artifact_bytes =
+                                installed_status.artifact_bytes;
+                            log_status.box3d_retained_bytes =
+                                installed_status.box3d_retained_bytes;
+                            log_status.cold_build_ms =
+                                installed_status.cold_build_ms;
+                            log_status.cache_load_ms =
+                                installed_status.cache_load_ms;
+                            log_status.validation_ms =
+                                installed_status.validation_ms;
+                            log_status.install_ms =
+                                installed_status.install_ms;
+
+                            using std::swap;
+                            swap(terrain_collision_status_copy,
+                                 installed_status);
+                        }
+                    }
+                    if (!installed) {
+                        return route_failure_noexcept(
+                            "install-failed",
+                            error.empty()
+                                ? "terrain collision install failed"
+                                : error.c_str());
+                    }
+
+                    // This path is deliberately non-escaping: committed Box3D
+                    // state and Installed status cannot be converted into a
+                    // publication failure by a diagnostic sink.
+                    log_installed_noexcept(log_status);
+                    return true;
+                } catch (const std::bad_alloc&) {
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+                    return route_failure_noexcept(
+                        "allocation-failed",
+                        "terrain collision publication allocation failed");
+                } catch (const std::exception& exception) {
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+                    return route_failure_noexcept(
+                        "build-exception", exception.what());
+                } catch (...) {
+                    if (token && token->is_cancelled()) {
+                        set_cancelled_error_noexcept();
+                        return false;
+                    }
+                    return route_failure_noexcept(
+                        "build-exception",
+                        "unknown terrain collision publication failure");
+                }
+            };
+            collision_ok = gpu_jobs.run_blocking(
+                std::move(collision_job), collision_error);
+        } catch (const std::bad_alloc&) {
+            release_and_observe_candidate();
+            record_terrain_collision_failure_noexcept(
+                "allocation-failed",
+                "terrain collision publication setup allocation failed",
+                &collision_error);
+            disconnect_collision_failure();
+            emit_collision_error_noexcept(collision_error);
+            return;
+        } catch (const std::exception& exception) {
+            release_and_observe_candidate();
+            record_terrain_collision_failure_noexcept(
+                "build-exception", exception.what(), &collision_error);
+            disconnect_collision_failure();
+            emit_collision_error_noexcept(collision_error);
+            return;
+        } catch (...) {
+            release_and_observe_candidate();
+            record_terrain_collision_failure_noexcept(
+                "build-exception",
+                "unknown terrain collision publication setup failure",
+                &collision_error);
+            disconnect_collision_failure();
+            emit_collision_error_noexcept(collision_error);
+            return;
+        }
+
+        // The queue may signal run_blocking before destroying its local Entry.
+        // Empty the shared slot first; any retained lambda owns only that empty
+        // indirection when the worker resumes.
+        release_and_observe_candidate();
+        if (!collision_ok) {
+            const bool failure_already_routed =
+                collision_failure_routed &&
+                collision_failure_routed->load(std::memory_order_acquire);
+            if (!failure_already_routed && is_cancelled()) {
+                emit_error(BakeErrorCode::Cancelled, "terrain-collision",
+                           "cancelled");
+                return;
+            }
+            if (!failure_already_routed) {
+                record_terrain_collision_failure_noexcept(
+                    "publication-failed",
+                    collision_error.empty()
+                        ? "terrain collision publication failed"
+                        : collision_error.c_str(),
+                    &collision_error);
+                disconnect_collision_failure();
+            }
+            emit_collision_error_noexcept(collision_error);
+            return;
+        }
+        if (is_cancelled()) {
+            emit_error(BakeErrorCode::Cancelled, "terrain-collision",
+                       "cancelled");
+            return;
+        }
+    }
 
     // 4) GL reset job: recreate raster + composer + PartStore on the GL thread.
     struct ResetOutput {
@@ -4118,8 +5224,11 @@ void WorldSession::Impl::execute_refine_step() {
 // ---------------------------------------------------------------------------
 bool WorldSession::Impl::install_world(
     const std::shared_ptr<matter_async::CancelToken>& token,
+    TerrainCollisionPublication& terrain_publication,
+    bool& terrain_collision_failed,
     std::string& err)
 {
+    terrain_collision_failed = false;
     const std::string& wmod = provider->world_module();
     if (wmod.empty()) { err = "install_world: no world module"; return false; }
 
@@ -4147,7 +5256,22 @@ bool WorldSession::Impl::install_world(
         err = "install_world: FieldProgram::parse failed: " + perr;
         return false;
     }
-    world_field = std::make_unique<terrain_field::FieldRuntime>(std::move(prog));
+    hydrology::RiverGeometry installed_river_geometry{};
+    std::shared_ptr<const terrain_field::RiverHeightOverlay> installed_overlay;
+    if (!provider->build_river_height_overlay(
+            installed_river_geometry, installed_overlay, perr)) {
+        err = "install_world: river terrain overlay failed: " + perr;
+        return false;
+    }
+    if (installed_overlay && !prog.is_heightfield) {
+        err = "install_world: river terrain overlay requires a heightfield "
+              "field program; general 3D density is unsupported in this slice";
+        return false;
+    }
+    world_field = std::make_unique<terrain_field::FieldRuntime>(
+        std::move(prog), installed_overlay);
+    world_river_geometry = std::move(installed_river_geometry);
+    world_river_height_overlay = std::move(installed_overlay);
 
     // 3b. WP-F: parse the surfaces() tape -> SurfaceRuntime (optional).
     //     Fail-closed on a malformed tape or an unknown material handle; a
@@ -4247,6 +5371,210 @@ bool WorldSession::Impl::install_world(
     world_volumetric_sectors =
         runtime_profile.volumetric_sectors && runtime_profile.nested_sectors;
     world_profile = runtime_profile;
+
+    // Build the immutable collision candidate from the already-installed
+    // FieldRuntime and the retained provider definition. This deliberately
+    // does not evaluate the World module a second time: install_graph owns the
+    // authored definition, while this worker phase owns only canonicalization
+    // and cache/build work.
+    terrain_publication = {};
+    const auto set_cancelled_error = [&err]() noexcept {
+        try {
+            err = "cancelled";
+        } catch (...) {
+        }
+    };
+    const auto fail_terrain_collision =
+        [this, token, &terrain_collision_failed, &err](
+            const char* code, const char* message) noexcept {
+            if (token && token->is_cancelled()) return;
+            // Routing is independent of diagnostic preparation/publication.
+            terrain_collision_failed = true;
+            record_terrain_collision_failure_noexcept(
+                code, message, &err);
+        };
+
+    try {
+        TerrainCollisionBuildTestCallback test_builder;
+        std::function<void()> before_build_hook;
+        std::function<void()> publication_hook;
+        TerrainCollisionCandidateObserver candidate_observer;
+        const auto& collision_definition = provider->terrain_collision();
+        {
+            std::lock_guard<std::recursive_mutex> generation_lock(
+                terrain_collision_generation_mutex);
+            if (token && token->is_cancelled()) {
+                set_cancelled_error();
+                return false;
+            }
+            publication_hook = test_terrain_collision_publication_hook;
+            candidate_observer =
+                test_terrain_collision_candidate_observer;
+            if (collision_definition) {
+                test_builder = test_terrain_collision_build_callback;
+                before_build_hook = test_terrain_collision_before_build_hook;
+            }
+        }
+
+        if (collision_definition) {
+            {
+                std::lock_guard<std::recursive_mutex> generation_lock(
+                    terrain_collision_generation_mutex);
+                if (token && token->is_cancelled()) {
+                    set_cancelled_error();
+                    return false;
+                }
+                std::lock_guard<std::mutex> status_lock(
+                    terrain_collision_status_mutex);
+                terrain_collision_status_copy = {};
+                terrain_collision_status_copy.state =
+                    matter::TerrainCollisionState::Building;
+            }
+            if (before_build_hook) before_build_hook();
+
+            terrain_collision::SourceIdentity source{};
+            source.field_hash = world_field->hash();
+            source.overlay_hash = world_field->height_overlay()
+                ? world_field->height_overlay()->hash() : 0u;
+            source.bake_mode_salt = bake_mode::salt();
+            source.mesher_semantic_version = terrain_mesher::kSemanticVersion;
+            source.geometry_format_version = 1u;
+
+            terrain_collision::CanonicalDefinition canonical{};
+            std::string collision_error;
+            if (!terrain_collision::canonicalize(
+                    *collision_definition, world_sector_size, source,
+                    canonical, collision_error)) {
+                fail_terrain_collision(
+                    "canonicalization-failed",
+                    collision_error.empty()
+                        ? "terrain collision canonicalization failed"
+                        : collision_error.c_str());
+                return false;
+            }
+            {
+                std::lock_guard<std::recursive_mutex> generation_lock(
+                    terrain_collision_generation_mutex);
+                if (token && token->is_cancelled()) {
+                    set_cancelled_error();
+                    return false;
+                }
+                std::lock_guard<std::mutex> status_lock(
+                    terrain_collision_status_mutex);
+                terrain_collision_status_copy = {};
+                terrain_collision_status_copy.state =
+                    matter::TerrainCollisionState::Building;
+                terrain_collision_status_copy.generation_key =
+                    canonical.installation_key;
+                terrain_collision_status_copy.geometry_key =
+                    canonical.geometry_key;
+                terrain_collision_status_copy.cell_size_m =
+                    canonical.cell_size_m;
+                terrain_collision_status_copy.rung = canonical.rung;
+                terrain_collision_status_copy.region_count =
+                    static_cast<std::uint32_t>(canonical.regions.size());
+                terrain_collision_status_copy.sector_count =
+                    static_cast<std::uint32_t>(canonical.sectors.size());
+            }
+
+            terrain_collision::TerrainCollisionCandidate candidate{};
+            const std::function<bool()> cancelled = [token] {
+                return token && token->is_cancelled();
+            };
+            const bool built = test_builder
+                ? test_builder(*world_field, canonical, cfg.cache_root,
+                               cancelled, candidate, collision_error)
+                : terrain_collision::load_or_build_candidate(
+                      *world_field, canonical, cfg.cache_root, cancelled,
+                      candidate, collision_error);
+            if (cancelled()) {
+                set_cancelled_error();
+                return false;
+            }
+            if (!built) {
+                fail_terrain_collision(
+                    "build-failed",
+                    collision_error.empty()
+                        ? "terrain collision candidate build failed"
+                        : collision_error.c_str());
+                return false;
+            }
+
+            TerrainCollisionCandidateOwner accepted_candidate =
+                std::make_shared<
+                    const terrain_collision::TerrainCollisionCandidate>(
+                        std::move(candidate));
+            if (candidate_observer) candidate_observer(accepted_candidate);
+            {
+                std::lock_guard<std::recursive_mutex> generation_lock(
+                    terrain_collision_generation_mutex);
+                if (token && token->is_cancelled()) {
+                    set_cancelled_error();
+                    return false;
+                }
+                std::lock_guard<std::mutex> status_lock(
+                    terrain_collision_status_mutex);
+                auto& status = terrain_collision_status_copy;
+                status.state = matter::TerrainCollisionState::CandidateReady;
+                status.generation_key = accepted_candidate->installation_key;
+                status.geometry_key = accepted_candidate->geometry_key;
+                status.non_empty_tile_count = 0;
+                for (const auto& tile : accepted_candidate->tiles) {
+                    if (!tile.vertices.empty() || !tile.indices.empty())
+                        ++status.non_empty_tile_count;
+                }
+                status.empty_tile_count = static_cast<std::uint32_t>(
+                    accepted_candidate->tiles.size()) -
+                    status.non_empty_tile_count;
+                status.triangle_count =
+                    accepted_candidate->stats.triangle_count;
+                status.unique_vertex_count =
+                    accepted_candidate->stats.unique_vertex_count;
+                status.artifact_bytes =
+                    accepted_candidate->stats.artifact_bytes;
+                status.cold_build_ms = accepted_candidate->stats.cold_build_ms;
+                status.cache_load_ms = accepted_candidate->stats.cache_load_ms;
+                status.validation_ms =
+                    accepted_candidate->stats.validation_ms;
+                status.failure_code.clear();
+                status.failure_message.clear();
+            }
+            terrain_publication.action =
+                TerrainCollisionPublicationAction::Replace;
+            terrain_publication.candidate_slot =
+                std::make_shared<TerrainCollisionCandidateOwner>(
+                    std::move(accepted_candidate));
+        }
+        terrain_publication.test_publication_hook =
+            std::move(publication_hook);
+        terrain_publication.test_candidate_observer =
+            std::move(candidate_observer);
+    } catch (const std::bad_alloc&) {
+        if (token && token->is_cancelled()) {
+            set_cancelled_error();
+            return false;
+        }
+        fail_terrain_collision(
+            "allocation-failed",
+            "terrain collision setup/build allocation failed");
+        return false;
+    } catch (const std::exception& exception) {
+        if (token && token->is_cancelled()) {
+            set_cancelled_error();
+            return false;
+        }
+        fail_terrain_collision("build-exception", exception.what());
+        return false;
+    } catch (...) {
+        if (token && token->is_cancelled()) {
+            set_cancelled_error();
+            return false;
+        }
+        fail_terrain_collision(
+            "build-exception",
+            "unknown terrain collision setup/build exception");
+        return false;
+    }
     {
         char hbuf[32];
         std::snprintf(hbuf, sizeof(hbuf), "%016llx",
@@ -6810,6 +8138,19 @@ void WorldSession::Impl::flush_deferred_eviction_for(const SectorKey& key) {
     apply_sector_evictions(forced, ignored, DeferMode::None);
 }
 
+// ---------------------------------------------------------------------------
+// Publication-completion ledger
+//
+// The fixed-capacity slot table that tracks every in-flight sector publication
+// from dispatch to acknowledgement. Every function here is noexcept and takes
+// publication_completion_mutex, because this is the machinery that has to keep
+// working while something else is failing: a slot is reserved on the worker,
+// marked with its artifact by the bake, driven to Running by the publish job on
+// the app thread, and finally either committed (acknowledged to the streamer) or
+// rolled back (world state, GPU, store and transient artifact released).
+// A slot stuck in Retry is retried from pump_gpu_jobs() until it settles.
+// ---------------------------------------------------------------------------
+
 WorldSession::Impl::PublicationCompletion*
 WorldSession::Impl::reserve_publication_completion(
     const std::shared_ptr<viewer::LocalProvider>& provider_ref) noexcept {
@@ -7191,6 +8532,13 @@ bool WorldSession::Impl::clear_streaming_profile(
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot publication — worker state mirrored for app-thread readers
+// ---------------------------------------------------------------------------
+
+// Copy the coordinator's status into the mutex-guarded mirror the editor reads
+// (WorldSession::streaming_status) and into Flecs. App thread; called from
+// tick() and pump_gpu_jobs().
 void WorldSession::Impl::publish_streaming_snapshot() {
     const streaming::detail::Snapshot snapshot =
         ecs_runtime.streaming_coordinator().snapshot();
@@ -8680,6 +10028,21 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
     };
+    cfg.vk_particle_visual_bake = [this](
+        const gpu_meshing::ParticleJob& job,
+        gpu_meshing::MeshResult& result, gpu_meshing::Stats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) -> bool {
+        if (!vk_scene) {
+            result = {};
+            stats = {};
+            error.code = gpu_meshing::ErrorCode::Unavailable;
+            error.message = "vk_particle_visual_bake: Vulkan renderer not active";
+            return false;
+        }
+        return vk_scene->build_particle_visual(job, result, stats, error,
+                                               control);
+    };
     // V4: same vk_tileset_bake wiring as execute_bake above — including the
     // device-capability gate, so a non-RT GPU takes the load-only arm here too
     // rather than failing the cone rebuild. See the comment at the execute_bake
@@ -8764,7 +10127,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     pp.verbose_reset_log     = false;
     pp.fault_hook            = {};
     pp.load_msg_include_hash = false;
-    publish_pipeline(token, std::move(new_manifest), pp);
+    publish_pipeline(token, std::move(new_manifest), std::move(pp));
 }
 
 // ---------------------------------------------------------------------------
@@ -8814,10 +10177,44 @@ bool WorldSession::Impl::ensure_tracer() const {
             const viewer::LoadedPart* lp = store->find(hash);
             if (!lp) return false;   // not resident -> let the disk path try
             // Coarsest rung: the same level the artifact path selects, and the
-            // cheapest geometry that still bounds the part correctly.
-            if (!lp->lod_blas.empty()) {
-                if (const auto* e = store->blas().get_entry(lp->lod_blas.back()))
-                    out.entries.push_back(e);
+            // cheapest geometry that still bounds the part correctly -- but
+            // NOT a billboard rung. Since M2.5 terminal impostors, the last
+            // whole-part rung merges every cluster's billboard quad (see
+            // `legacy_impostor` in part_store.cpp's flat ladder build), so it
+            // is two coplanar triangles per cluster that only become a picture
+            // once the vertex stage turns them to face the camera. Tracing
+            // that is what impostor::is_billboard_rung's docstring warns every
+            // ladder-as-GEOMETRY consumer about, and the query API was one of
+            // the consumers that never asked: on projects/primitive_demo it
+            // reduced the whole Gallery to 8 triangles lying in the plane
+            // z = 0, so every WorldSession::raycast missed.
+            //
+            // Scope of the damage, since it is narrower than it looks: the
+            // four queries below (raycast / instance_count / instance_info /
+            // the tracer-backed pick) are the only consumers of this path.
+            // MatterEditor's viewport picking is NOT affected -- it uses the
+            // GPU identity buffer (`pick_at_pixel`) and falls back to a
+            // ray-OBB test against `part_bounds`, which is built from
+            // `LoadedPart::clusters` AABBs and never touches this ladder.
+            // The canonical predicate only recognises a SINGLE
+            // cluster's rung (exactly 2 triangles), so the merged whole-part
+            // rung is tested the equivalent way: all-billboard, no mesh left.
+            // A mixed rung (only some clusters earned an impostor) is kept --
+            // its real geometry still traces.
+            const auto rung_is_all_billboards =
+                [](const BLASManager::BLASEntry* e) {
+                    if (!e || e->triangles.empty()) return false;
+                    if (e->tri_extra.size() != e->triangles.size()) return false;
+                    for (const auto& x : e->tri_extra)
+                        if (!(x.uv0.x >= impostor::kQuadMarker)) return false;
+                    return true;
+                };
+            for (size_t rung = lp->lod_blas.size(); rung-- > 0; ) {
+                const auto* e = store->blas().get_entry(lp->lod_blas[rung]);
+                if (!e) continue;
+                if (rung > 0 && rung_is_all_billboards(e)) continue;
+                out.entries.push_back(e);
+                break;
             }
             // A resident part's lod_blas carries only its OWN geometry, so a
             // compositional part still needs its children expanded -- exactly
@@ -8932,9 +10329,41 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     }
     {
         namespace fs = std::filesystem;
-        simpl->cfg = viewer::LocalProviderConfig::for_project(
+#if defined(MATTER_ENABLE_PHYSX)
+        simpl->cfg = viewer::make_engine_local_provider_config(
+            desc.project_dir, desc.world_name,
+            desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "", [] {
+                return std::make_shared<hydrology::PhysxRuntime>();
+            });
+#else
+        simpl->cfg = viewer::make_engine_local_provider_config(
             desc.project_dir, desc.world_name,
             desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
+#endif
+#if defined(MATTER_VULKAN_VIEWER) && defined(_WIN32)
+        if (impl_->render_device) {
+            VkPhysicalDeviceIDProperties id_properties{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+            VkPhysicalDeviceProperties2 properties{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            properties.pNext = &id_properties;
+            vkGetPhysicalDeviceProperties2(
+                impl_->render_device->physical_device(), &properties);
+            simpl->cfg.fluid_renderer_device.vendor_id =
+                properties.properties.vendorID;
+            simpl->cfg.fluid_renderer_device.device_id =
+                properties.properties.deviceID;
+            simpl->cfg.fluid_renderer_device.driver_version =
+                properties.properties.driverVersion;
+            if (id_properties.deviceLUIDValid == VK_TRUE) {
+                static_assert(VK_LUID_SIZE == 8,
+                              "fluid adapter identity assumes the Vulkan LUID width");
+                std::memcpy(simpl->cfg.fluid_renderer_device.luid.data(),
+                            id_properties.deviceLUID, VK_LUID_SIZE);
+                simpl->cfg.fluid_renderer_device.luid_valid = true;
+            }
+        }
+#endif
         // At least ONE object root must exist. Requiring the project tier
         // specifically would reject a scene that carries all of its own
         // objects and shares nothing -- which is a legitimate, and in fact the
@@ -9007,12 +10436,102 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
 
 #ifdef MATTER_VULKAN_VIEWER
     if (impl_->render_device) {
+        std::string water_diagnostic_error;
+        if (!viewer::parse_water_diagnostic_settings(
+                std::getenv("MATTER_WATER_CAPTURE_FRAME"),
+                std::getenv("MATTER_WATER_DIAGNOSTIC_VIEW"),
+                simpl->vk_water_diagnostic_settings,
+                water_diagnostic_error)) {
+            err = "open_world: " + water_diagnostic_error;
+            return nullptr;
+        }
         simpl->vk_scene =
             std::make_unique<viewer::VkSceneRenderer>(*impl_->render_device);
+        simpl->vk_scene->set_water_diagnostic_view(
+            simpl->vk_water_diagnostic_settings.view);
+        if (const char* raw =
+                std::getenv("MATTER_GPU_MESHER_ACCEPTANCE_ARTIFACT")) {
+            const std::filesystem::path path(raw);
+            gpu_meshing::Error acceptance_error{};
+            if (!path.is_absolute()) {
+                MATTER_LOGE("gpu-mesher",
+                            "acceptance artifact path must be absolute: %s\n",
+                            raw);
+            } else {
+                std::ifstream stream(path, std::ios::binary | std::ios::ate);
+                std::streamoff size = -1;
+                if (stream) size = static_cast<std::streamoff>(stream.tellg());
+                constexpr std::streamoff kMaximumAcceptanceBytes =
+                    512ll * 1024ll * 1024ll;
+                if (size <= 0 || size > kMaximumAcceptanceBytes) {
+                    MATTER_LOGE("gpu-mesher",
+                                "could not open bounded acceptance artifact: %s\n",
+                                raw);
+                } else {
+                    try {
+                        stream.seekg(0, std::ios::beg);
+                        std::vector<std::uint8_t> bytes(
+                            static_cast<std::size_t>(size));
+                        stream.read(reinterpret_cast<char*>(bytes.data()),
+                                    static_cast<std::streamsize>(size));
+                        hydrology::HydrologyArtifact artifact{};
+                        std::uint64_t instance_id = 0;
+                        if (!stream ||
+                            !hydrology::deserialize_artifact(
+                                bytes, artifact, acceptance_error) ||
+                            !gpu_meshing::build_water_scene_part(
+                                artifact.visual_mesh, artifact.payload_digest,
+                                7u,
+                                simpl->gpu_mesher_acceptance_part, instance_id,
+                                acceptance_error)) {
+                            MATTER_LOGE(
+                                "gpu-mesher",
+                                "acceptance artifact rejected (%s): %s\n",
+                                raw,
+                                acceptance_error.message.empty()
+                                    ? "read failed"
+                                    : acceptance_error.message.c_str());
+                            simpl->gpu_mesher_acceptance_part.reset();
+                        } else if (simpl->gpu_mesher_acceptance_part) {
+                            simpl->gpu_mesher_acceptance_instance.part_hash =
+                                simpl->gpu_mesher_acceptance_part->part_hash;
+                            simpl->gpu_mesher_acceptance_instance
+                                .object_to_world = viewer::mat4_mul(
+                                viewer::mat4_translation(
+                                    {6.449f, 42.15f, 2.716f}),
+                                viewer::mat4_rotation_y(1.17227388f));
+                            simpl->gpu_mesher_acceptance_instance.instance_id =
+                                instance_id;
+                            simpl->gpu_mesher_acceptance_instance.ray_traced =
+                                false;
+                            MATTER_LOGI(
+                                "gpu-mesher",
+                                "loaded cached acceptance water: %zu vertices, "
+                                "%zu triangles (%s)\n",
+                                artifact.visual_mesh.positions.size() / 3u,
+                                artifact.visual_mesh.indices.size() / 3u, raw);
+                        }
+                    } catch (const std::bad_alloc&) {
+                        simpl->gpu_mesher_acceptance_part.reset();
+                        MATTER_LOGE(
+                            "gpu-mesher",
+                            "acceptance artifact host allocation failed: %s\n",
+                            raw);
+                    }
+                }
+            }
+        }
     }
 #endif
 
-
+    river_float::install_runtime_binding(
+        simpl->ecs_runtime.world(), simpl.get(),
+        [](const void* opaque) noexcept
+            -> std::shared_ptr<const RiverRuntimeBinding> {
+            const auto* session = static_cast<const WorldSession::Impl*>(opaque);
+            const auto publication = session->load_authored_fluid_publication();
+            return publication ? publication->runtime : nullptr;
+        });
     return std::unique_ptr<WorldSession>(new WorldSession(std::move(simpl)));
 }
 
@@ -9031,6 +10550,9 @@ const flecs::world& WorldSession::ecs() const {
     return impl_->ecs_runtime.world();
 }
 
+// Overwrite `camera`'s position/target with the world script's authored camera.
+// Returns false — leaving `camera` untouched — when no world is open or the
+// script authored none, which is the normal case for most worlds.
 bool WorldSession::apply_authored_camera(CameraDesc& camera) const {
     if (!impl_->provider) return false;
     const WorldCameraSettings& authored =
@@ -9057,7 +10579,19 @@ WorldSession::~WorldSession() {
     auto& coordinator = impl_->ecs_runtime.streaming_coordinator();
     const flecs::entity_t owner = coordinator.intended_owner();
     if (owner != 0) coordinator.detach(owner);
-    impl_->commands.shut_down();
+    {
+        std::lock_guard<std::recursive_mutex> generation_lock(
+            impl_->hydrology_generation_mutex);
+        river_float::clear_runtime_binding(impl_->ecs_runtime.world());
+        matter::detail::RiverRuntimeBindingAccess::publish(
+            impl_->authored_fluid_publication_slot, {});
+        {
+            std::lock_guard<std::mutex> status_lock(
+                impl_->hydrology_status_mutex);
+            impl_->hydrology_status_copy = {};
+        }
+        impl_->commands.shut_down();
+    }
 
     // Give cancellation and FIFO clear a fixed number of full queue drains.
     // If the worker is still blocked, queue shutdown releases run_blocking;
@@ -9084,6 +10618,17 @@ WorldSession::~WorldSession() {
         impl_->gpu_jobs.pump(1e9);
         std::string ignored;
         impl_->retry_publication_completions(ignored);
+    }
+
+    // The app thread owns Box3D. Clear only after the worker is joined and
+    // every blocking publication job is unblocked/drained, while the ECS
+    // physics context is still alive.
+    physics::detail::context(impl_->ecs_runtime.world())
+        .clear_terrain_collision();
+    {
+        std::lock_guard<std::mutex> status_lock(
+            impl_->terrain_collision_status_mutex);
+        impl_->terrain_collision_status_copy = {};
     }
 
     // One non-allocating, no-throw whole-owner fallback attempts every release
@@ -9127,6 +10672,110 @@ void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {
     impl_->cfg.test_fault_hook = std::move(hook);
 }
 
+void WorldSession::set_test_fluid_bake_dependencies(
+    FluidBakeBackendTestFactory backend_factory,
+    FluidVisualBakeTestCallback visual_bake) {
+    impl_->cfg.fluid_bake_backend_factory = std::move(backend_factory);
+    impl_->cfg.vk_particle_visual_bake = std::move(visual_bake);
+}
+
+void WorldSession::set_test_fluid_renderer_luid(
+    const std::array<std::uint8_t, 8>& luid) {
+    impl_->cfg.fluid_renderer_device.luid = luid;
+    impl_->cfg.fluid_renderer_device.luid_valid = true;
+    impl_->cfg.fluid_renderer_device.vendor_id = 0x10deu;
+    impl_->cfg.fluid_renderer_device.device_id = 1u;
+    impl_->cfg.fluid_renderer_device.driver_version = 1u;
+}
+
+void WorldSession::set_test_fluid_before_publication_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
+    impl_->test_fluid_before_publication_hook = std::move(hook);
+}
+
+void WorldSession::set_test_fluid_after_publication_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
+    impl_->test_fluid_after_publication_hook = std::move(hook);
+}
+
+void WorldSession::set_test_fluid_during_publication_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
+    impl_->test_fluid_during_publication_hook = std::move(hook);
+}
+
+void WorldSession::set_test_terrain_collision_build_callback(
+    TerrainCollisionBuildTestCallback callback) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->terrain_collision_generation_mutex);
+    impl_->test_terrain_collision_build_callback = std::move(callback);
+}
+
+void WorldSession::set_test_terrain_collision_before_build_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->terrain_collision_generation_mutex);
+    impl_->test_terrain_collision_before_build_hook = std::move(hook);
+}
+
+void WorldSession::set_test_terrain_collision_candidate_observer(
+    TerrainCollisionCandidateObserver observer) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->terrain_collision_generation_mutex);
+    impl_->test_terrain_collision_candidate_observer = std::move(observer);
+}
+
+void WorldSession::set_test_terrain_collision_failure_record_bad_alloc(
+    bool enabled) noexcept {
+    impl_->test_terrain_collision_failure_record_bad_alloc.store(
+        enabled, std::memory_order_release);
+}
+
+bool WorldSession::connected_for_test() const noexcept {
+    return impl_->connected.load(std::memory_order_acquire);
+}
+
+bool WorldSession::has_pending_gpu_jobs_for_test() const {
+    return !impl_->gpu_jobs.idle();
+}
+
+void WorldSession::set_test_terrain_collision_publication_hook(
+    std::function<void()> hook) {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->terrain_collision_generation_mutex);
+    impl_->test_terrain_collision_publication_hook = std::move(hook);
+}
+
+bool WorldSession::has_accepted_fluid_artifact_for_test() const {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
+    return static_cast<bool>(impl_->load_authored_fluid_publication());
+}
+
+std::shared_ptr<const RiverRuntimeBinding>
+WorldSession::river_runtime_binding() const noexcept {
+    const auto publication = impl_->load_authored_fluid_publication();
+    return publication ? publication->runtime : nullptr;
+}
+
+HydrologyStatus WorldSession::hydrology_status() const {
+    std::lock_guard<std::recursive_mutex> generation_lock(
+        impl_->hydrology_generation_mutex);
+    std::lock_guard<std::mutex> lock(impl_->hydrology_status_mutex);
+    return impl_->hydrology_status_copy;
+}
+
+TerrainCollisionStatus WorldSession::terrain_collision_status() const {
+    std::lock_guard<std::mutex> lock(
+        impl_->terrain_collision_status_mutex);
+    return impl_->terrain_collision_status_copy;
+}
+
 void WorldSession::set_test_animation_raster_range_resolver(
     AnimationRasterRangeResolver resolver) {
     impl_->animation_raster_range_resolver = std::move(resolver);
@@ -9142,15 +10791,23 @@ void WorldSession::set_bake_focus(const float pos[3]) {
     impl_->focus[2] = pos[2];
 }
 
+// ---------------------------------------------------------------------------
+// Bake commands — all ASYNCHRONOUS
+//
+// Each of these enqueues one command and returns immediately; the worker thread
+// executes it and reports progress as events (poll_event / the hub). Pushing a
+// command SUPERSEDES any in-flight one: CommandQueue::push cancels the running
+// token and clears anything still pending, so the older bake unwinds at its next
+// cancellation checkpoint. Nothing here is safe to call from the worker.
+// ---------------------------------------------------------------------------
+
 void WorldSession::request_bake() {
     // Phase B: enqueue a BakeAll command and return immediately. The worker
     // executes the pipeline; progress arrives via poll_event() and GL work
     // runs in pump_gpu_jobs() on the app/GL thread. Supersession is handled
     // inside CommandQueue::push (cancels in-flight token + clears pending).
     impl_->ensure_worker_started();
-    matter_async::Command c;
-    c.kind = matter_async::CommandKind::BakeAll;
-    impl_->commands.push(std::move(c));
+    impl_->enqueue_full_bake(matter_async::CommandKind::BakeAll);
 }
 
 void WorldSession::reload() {
@@ -9158,9 +10815,7 @@ void WorldSession::reload() {
     // worker will additionally reset the GPU culler at the top of execute_bake
     // (mirroring old reload() semantics).
     impl_->ensure_worker_started();
-    matter_async::Command c;
-    c.kind = matter_async::CommandKind::Reload;
-    impl_->commands.push(std::move(c));
+    impl_->enqueue_full_bake(matter_async::CommandKind::Reload);
 }
 
 void WorldSession::regenerate(uint64_t world_seed) {
@@ -9178,17 +10833,21 @@ void WorldSession::regenerate(uint64_t world_seed) {
         impl_->seed_root_params_json = buf;
     }
     impl_->ensure_worker_started();
-    matter_async::Command c;
-    c.kind = matter_async::CommandKind::Reload;
-    impl_->commands.push(std::move(c));
+    impl_->enqueue_full_bake(matter_async::CommandKind::Reload);
 }
 
+// Sea level in world metres, from the most recent world eval. False means this
+// session has no world field (a closed, non-streamed world), not an error.
 bool WorldSession::sea_level(float& out) const {
     if (impl_->world_sea_level == std::numeric_limits<float>::lowest()) return false;
     out = impl_->world_sea_level;
     return true;
 }
 
+// Deep-COPY the worker's part-graph snapshot under graph_snapshot_mutex. False
+// while the session is disconnected or before the first successful install
+// (generation 0) — both normal, not errors. Poll graph_generation() first if you
+// only need to know whether it moved: this copies the whole graph.
 bool WorldSession::graph_snapshot(part_graph_snapshot::Snapshot& out) const {
     if (!impl_->connected) return false;
     std::lock_guard<std::mutex> lock(impl_->graph_snapshot_mutex);
@@ -9590,6 +11249,19 @@ void WorldSession::Impl::reconcile_runtime_animation_skinning() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-frame app-thread entry points
+// ---------------------------------------------------------------------------
+
+// Advance the world one frame's worth of simulation, on the app thread, BEFORE
+// render(). It steps the ECS (fixed steps + interpolation per TickDesc),
+// reconciles animation instances and skinning against the part store, polls the
+// provider and the live-edit watcher, mirrors the streaming status, and flushes
+// the scene-delta tracker.
+//
+// An INVALID tick (ecs_runtime rejected the step) is not an error: the counter
+// is bumped and the status/scene flush still run, so edits made through
+// SceneService before the tick still publish their deltas.
 void WorldSession::tick(const TickDesc& desc) {
     const ecs_runtime::TickResult result = impl_->ecs_runtime.tick(desc);
     if (result.invalid) {
@@ -9601,6 +11273,21 @@ void WorldSession::tick(const TickDesc& desc) {
         impl_->scene_tracker_.flush();
         return;
     }
+#ifdef MATTER_VULKAN_VIEWER
+    // Cosmetic water follows unscaled presentation time, so pausing or slowing
+    // gameplay does not freeze the river shader. Keep the clock bounded to
+    // preserve float phase precision during long editor sessions.
+    const float water_delta = desc.presentation_delta_seconds != 0.0f
+        ? desc.presentation_delta_seconds
+        : desc.frame_delta_seconds;
+    if (std::isfinite(water_delta) && water_delta >= 0.0f) {
+        const float current = impl_->water_animation_time_seconds.load(
+            std::memory_order_relaxed);
+        impl_->water_animation_time_seconds.store(
+            std::fmod(current + water_delta, 4096.0f),
+            std::memory_order_relaxed);
+    }
+#endif
     impl_->stats.ecs_fixed_steps += result.fixed_steps;
     impl_->stats.ecs_dropped_steps += result.dropped_steps;
     impl_->reconcile_runtime_animation();
@@ -9715,6 +11402,25 @@ struct VulkanDiagnosticMaterialOverride {
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+// LoadedPart -> VkScenePart: conversion and registration
+//
+// Three functions, one job, split so the expensive half can leave the render
+// thread:
+//   build_vulkan_part      pure CPU conversion (vertex repack, chart/VT
+//                          declaration, surfaces()-tape argmax, cluster
+//                          packing). No renderer, no GPU state -- a streaming
+//                          executor runs it during the bake.
+//   register_vulkan_part   the two renderer calls for a part a worker prebuilt.
+//   ensure_vulkan_part     build + register in one go, for callers that have
+//                          only a LoadedPart. App/GL thread.
+//
+// All three early-out on `registered_part_slot(part_hash) >= 0`, so re-calling
+// them for an already-registered part is cheap. `drawable == false` with a true
+// return means "nothing to draw" (no meshes/vertices/clusters), which is a
+// normal outcome, not a failure.
+// ---------------------------------------------------------------------------
 
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash, const viewer::LoadedPart& loaded,
@@ -10237,6 +11943,31 @@ bool register_vulkan_part(viewer::VkSceneRenderer& renderer,
 
 } // anonymous namespace
 
+// ---------------------------------------------------------------------------
+// WorldSession::render — the per-frame render-thread pipeline
+// ---------------------------------------------------------------------------
+//
+// Records one frame into the caller's already-begun VulkanFrame. App/GL thread
+// only, and the single longest function in this file; it runs in four phases,
+// each of which is timed into FrameStats and into ProfileLib's render lane:
+//
+//   resolve  SectorLodResolver turns world state + the LOD table into the set of
+//            source instances for this camera (activation radius, per-sector LOD).
+//   build    expand each source into renderer instances (memoised per source in
+//            VulkanInstanceCache), register any part the expansion needs, refresh
+//            the temporal mirror, materials, lighting/atmosphere and the dynamic
+//            ECS bridge, then prepare_frame.
+//   draw     service the VT demand requests, record cull+render, seal animation
+//            skinning, record overlay lines, composite to the swapchain.
+//   stats    scrape cull/VT/DLSS/RT/volumetrics counters into FrameStats.
+//
+// Returns false with `err` set on a renderer failure; every such path first
+// discards the temporal attempt so the next frame is not reprojected against a
+// frame that never presented. Two non-failure early-outs return true after only
+// clearing to the sky colour: no connected world, or no drawable instances.
+//
+// The caller MUST pair every call with finish_vulkan_frame(frame.serial,
+// presented) once the submission's fate is known.
 bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                           const RenderOptions& opts, std::string& err) {
     err.clear();
@@ -10249,6 +11980,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         err = "WorldSession received an invalid VulkanFrame";
         return false;
     }
+    impl_->vk_scene->collect_water_fields(impl_->vk_skin_completed_serial);
+    impl_->vk_scene->collect_water_animation(
+        impl_->vk_skin_completed_serial);
+    const float live_water_animation_time_seconds =
+        impl_->water_animation_time_seconds.load(std::memory_order_relaxed);
+    const double water_presentation_time_seconds =
+        impl_->vk_water_diagnostic_settings.capture_frame_enabled
+            ? viewer::water_capture_time_seconds(
+                  impl_->vk_water_diagnostic_settings)
+            : static_cast<double>(live_water_animation_time_seconds);
+    impl_->vk_scene->set_water_animation_time(
+        static_cast<float>(water_presentation_time_seconds));
     impl_->vk_scene->set_geometry_debug_view(opts.geometry_debug_view);
     impl_->vk_scene->set_wireframe(opts.wireframe);
     impl_->vk_scene->set_impostor_parallax(opts.impostor_parallax);
@@ -10379,10 +12122,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             -> const viewer::TemporalFrame& {
             // By reference: valid until the next begin(), which only happens
             // next frame. Copying it out cost ~8 MB per streaming frame.
+            viewer::TemporalInvalidation invalidation{};
+            invalidation.camera_cut = frame.swapchain_recreated;
             const viewer::TemporalFrame& temporal = impl_->vk_temporal.begin(
                 unjittered, internal_extent, frame.extent, temporal_instances,
                 temporal_jitter_enabled && !temporal_instances.empty(),
-                {.camera_cut = frame.swapchain_recreated});
+                invalidation);
             impl_->vk_temporal_serial = frame.serial;
             impl_->vk_temporal_token = temporal.attempt_token;
             return temporal;
@@ -10610,12 +12355,15 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                 sizeof(root_transform.m));
                     std::memcpy(relative.m, node.rel_transform,
                                 sizeof(relative.m));
-                    expanded.push_back(
-                        {node.part_hash,
-                         viewer::mat4_mul(root_transform, relative),
-                         viewer::temporal_instance_id(
-                             source.stable_id, node.part_hash,
-                             static_cast<uint32_t>(node_index + 1))});
+                    viewer::VkSceneInstance instance;
+                    instance.part_hash = node.part_hash;
+                    instance.object_to_world =
+                        viewer::mat4_mul(root_transform, relative);
+                    instance.instance_id = viewer::temporal_instance_id(
+                        source.stable_id, node.part_hash,
+                        static_cast<uint32_t>(node_index + 1));
+                    instance.ray_traced = node.ray_traced;
+                    expanded.push_back(instance);
                 }
             } else {
                 bool drawable = false;
@@ -10629,6 +12377,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                         source.stable_id, source.part_hash, 0);
                     std::memcpy(instance.object_to_world.m, source.transform,
                                 sizeof(instance.object_to_world.m));
+                    instance.ray_traced = matter::resolve_ray_traced(
+                        matter::RayTracingOverride::Inherit,
+                        root->render_policy.ray_traced);
                     expanded.push_back(instance);
                 }
             }
@@ -10639,7 +12390,274 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->vk_instance_cache.store(resolved, std::move(rebuilt));
         impl_->vk_instance_cache.prune_sources(resolved);
     }
-    const auto& instances = impl_->vk_instance_cache.instances();
+    const auto& cached_instances = impl_->vk_instance_cache.instances();
+    std::vector<viewer::VkSceneInstance> acceptance_instances;
+    const std::vector<viewer::VkSceneInstance>* instance_view =
+        &cached_instances;
+    if (impl_->gpu_mesher_acceptance_part) {
+        if (impl_->vk_scene->ensure_part(
+                *impl_->gpu_mesher_acceptance_part, err) < 0)
+            return false;
+        acceptance_instances = cached_instances;
+        acceptance_instances.push_back(
+            impl_->gpu_mesher_acceptance_instance);
+        instance_view = &acceptance_instances;
+    }
+    const auto authored_fluid_publication =
+        impl_->load_authored_fluid_publication();
+    const auto authored_fluid_binding = authored_fluid_publication
+        ? authored_fluid_publication->render : nullptr;
+    std::uint32_t authored_water_proxy_instance_index = UINT32_MAX;
+    const std::uint64_t water_retire_after_serial =
+        frame.serial +
+        std::max<std::uint64_t>(frame.frame_slot_count, 1u);
+    const auto disable_water_mesh_animation =
+        [this, water_retire_after_serial](const char* reason) {
+            if (impl_->vk_scene->water_animation_generation() != 0u)
+                impl_->vk_scene->clear_water_animation(
+                    water_retire_after_serial);
+            impl_->vk_water_animation_playback = {};
+            impl_->vk_water_animation_selection = {};
+            impl_->vk_water_animation_proxy_indices.clear();
+            impl_->vk_water_animation_generation = 0u;
+            impl_->vk_water_animation_active = false;
+            impl_->vk_water_animation_publish_ms = 0.0f;
+            impl_->vk_water_animation_compressed_cpu_bytes = 0u;
+            impl_->vk_water_animation_peak_activation_cpu_bytes = 0u;
+            impl_->vk_water_animation_gpu_bytes_per_slot = 0u;
+            if (reason && reason[0] != '\0')
+                MATTER_LOGW(
+                    "hydrology",
+                    "water mesh animation fell back to the accepted static surface: %s\n",
+                    reason);
+        };
+    if (authored_fluid_binding && authored_fluid_binding->part) {
+        if (impl_->vk_scene->ensure_part(*authored_fluid_binding->part, err) < 0)
+            return false;
+        if (authored_fluid_binding !=
+            impl_->vk_authored_fluid_render_binding) {
+            const std::uint64_t retire_after_serial =
+                frame.serial + std::max<std::uint64_t>(
+                                   frame.frame_slot_count, 1u);
+            const viewer::WaterFieldBinding* replacing =
+                impl_->vk_authored_water_field_binding.valid()
+                    ? &impl_->vk_authored_water_field_binding
+                    : nullptr;
+            viewer::WaterFieldBinding published{};
+            viewer::WaterFieldError field_error{};
+            if (!impl_->vk_scene->publish_water_field(
+                    authored_fluid_binding->water_field, replacing,
+                    retire_after_serial, published, field_error)) {
+                err = field_error.message.empty()
+                    ? "failed to publish authored water field"
+                    : field_error.message;
+                return false;
+            }
+            impl_->vk_authored_water_field_binding = published;
+            const auto& manifest =
+                authored_fluid_binding->animation_manifest;
+            const bool animation_authored =
+                !manifest.section_animations.empty() ||
+                !manifest.handoff_animations.empty();
+            bool animation_activated = false;
+            std::string animation_error;
+            if (animation_authored) {
+                try {
+                    const auto animation_publish_start =
+                        std::chrono::steady_clock::now();
+                    std::filesystem::path animation_cache_root =
+                        authored_fluid_binding->animation_cache_root;
+                    if (const char* force_failure = std::getenv(
+                            "MATTER_WATER_ANIMATION_FORCE_LOAD_FAILURE");
+                        force_failure && std::strcmp(force_failure, "1") == 0)
+                        animation_cache_root /=
+                            "__qa_forced_missing_animation_artifacts__";
+                    viewer::WaterMeshAnimationPlayback candidate_playback{};
+                    viewer::WaterAnimationFallback fallback{};
+                    if (!viewer::activate_water_mesh_animation_playback(
+                            manifest,
+                            animation_cache_root,
+                            authored_fluid_binding->water_material_id,
+                            frame.frame_slot_count,
+                            700ull * 1024ull * 1024ull,
+                            candidate_playback, fallback)) {
+                        animation_error = fallback.message.empty()
+                            ? "compressed animation activation failed"
+                            : fallback.message;
+                    } else {
+                        const viewer::WaterAnimationPlaybackCapacity measured =
+                            candidate_playback.maximum_frame_capacity();
+                        viewer::WaterAnimationGpuCapacity capacity{
+                            measured.packed_vertex_bytes,
+                            measured.decoded_vertex_count,
+                            measured.index_bytes,
+                            measured.draw_count};
+                        viewer::WaterAnimationFrameSelection selection =
+                            candidate_playback.make_selection();
+                        std::vector<std::uint32_t> proxy_indices(
+                            measured.draw_count, UINT32_MAX);
+                        std::uint64_t generation =
+                            impl_->vk_water_animation_next_generation;
+                        if (generation <=
+                            impl_->vk_scene->water_animation_generation())
+                            generation =
+                                impl_->vk_scene->water_animation_generation() +
+                                1u;
+                        viewer::WaterAnimationGpuError gpu_error{};
+                        if (generation == 0u ||
+                            !impl_->vk_scene->publish_water_animation(
+                                generation, frame.frame_slot_count, capacity,
+                                water_retire_after_serial, gpu_error)) {
+                            animation_error = gpu_error.message.empty()
+                                ? "Vulkan animation resource publication failed"
+                                : gpu_error.message;
+                        } else {
+                            const std::uint64_t compressed_cpu_bytes =
+                                candidate_playback.compressed_bytes();
+                            const std::uint64_t peak_activation_cpu_bytes =
+                                candidate_playback
+                                    .peak_activation_cpu_bytes();
+                            const std::uint64_t gpu_bytes_per_slot =
+                                capacity.gpu_bytes_per_slot();
+                            impl_->vk_water_animation_playback =
+                                std::move(candidate_playback);
+                            impl_->vk_water_animation_selection =
+                                std::move(selection);
+                            impl_->vk_water_animation_proxy_indices =
+                                std::move(proxy_indices);
+                            impl_->vk_water_animation_generation = generation;
+                            impl_->vk_water_animation_next_generation =
+                                generation + 1u;
+                            impl_->vk_water_animation_active = true;
+                            impl_->vk_water_animation_publish_ms =
+                                static_cast<float>(std::chrono::duration<
+                                    double, std::milli>(
+                                        std::chrono::steady_clock::now() -
+                                        animation_publish_start)
+                                                       .count());
+                            impl_->vk_water_animation_compressed_cpu_bytes =
+                                compressed_cpu_bytes;
+                            impl_->vk_water_animation_peak_activation_cpu_bytes =
+                                peak_activation_cpu_bytes;
+                            impl_->vk_water_animation_gpu_bytes_per_slot =
+                                gpu_bytes_per_slot;
+                            animation_activated = true;
+                            MATTER_LOGI(
+                                "hydrology",
+                                "water mesh animation activated: generation=%llu draws=%u compressed=%.1f MiB slot=%.1f MiB\n",
+                                static_cast<unsigned long long>(generation),
+                                measured.draw_count,
+                                static_cast<double>(
+                                    impl_->vk_water_animation_playback
+                                        .compressed_bytes()) /
+                                    (1024.0 * 1024.0),
+                                static_cast<double>(
+                                    capacity.gpu_bytes_per_slot()) /
+                                    (1024.0 * 1024.0));
+                        }
+                    }
+                } catch (const std::bad_alloc&) {
+                    animation_error =
+                        "water animation runtime allocation failed";
+                }
+            }
+            if (!animation_activated)
+                disable_water_mesh_animation(
+                    animation_authored ? animation_error.c_str() : nullptr);
+            impl_->vk_authored_fluid_render_binding =
+                authored_fluid_binding;
+        }
+        if (!impl_->vk_scene->set_part_water_field_binding(
+                authored_fluid_binding->part->part_hash,
+                impl_->vk_authored_water_field_binding, err))
+            return false;
+        if (instance_view != &acceptance_instances)
+            acceptance_instances = cached_instances;
+        authored_water_proxy_instance_index =
+            static_cast<std::uint32_t>(acceptance_instances.size());
+        viewer::VkSceneInstance water_instance =
+            authored_fluid_binding->instance;
+        gpu_meshing::set_water_scene_animation_active(
+            water_instance, impl_->vk_water_animation_active);
+        acceptance_instances.push_back(water_instance);
+        instance_view = &acceptance_instances;
+    } else if (impl_->vk_authored_water_field_binding.valid()) {
+        viewer::WaterFieldError field_error{};
+        const std::uint64_t retire_after_serial =
+            frame.serial +
+            std::max<std::uint64_t>(frame.frame_slot_count, 1u);
+        if (!impl_->vk_scene->release_water_field(
+                impl_->vk_authored_water_field_binding,
+                retire_after_serial, field_error)) {
+            err = field_error.message.empty()
+                ? "failed to release authored water field"
+                : field_error.message;
+            return false;
+        }
+        impl_->vk_authored_water_field_binding = {};
+        impl_->vk_authored_fluid_render_binding.reset();
+        disable_water_mesh_animation(nullptr);
+    }
+    const auto failed_fluid_debug_binding = std::atomic_load_explicit(
+        &impl_->failed_fluid_debug_binding, std::memory_order_acquire);
+    if (failed_fluid_debug_binding && failed_fluid_debug_binding->part) {
+        if (impl_->vk_scene->ensure_part(
+                *failed_fluid_debug_binding->part, err) < 0)
+            return false;
+        if (instance_view != &acceptance_instances)
+            acceptance_instances = cached_instances;
+        acceptance_instances.push_back(
+            failed_fluid_debug_binding->instance);
+        instance_view = &acceptance_instances;
+    }
+    if (impl_->vk_water_animation_active) {
+        std::string animation_frame_error;
+        bool prepared =
+            authored_water_proxy_instance_index != UINT32_MAX &&
+            authored_water_proxy_instance_index <
+                acceptance_instances.size() &&
+            impl_->vk_scene->water_animation_generation() ==
+                impl_->vk_water_animation_generation;
+        if (prepared) {
+            std::fill(
+                impl_->vk_water_animation_proxy_indices.begin(),
+                impl_->vk_water_animation_proxy_indices.end(),
+                authored_water_proxy_instance_index);
+            viewer::WaterAnimationFallback fallback{};
+            prepared = impl_->vk_water_animation_playback.select(
+                water_presentation_time_seconds,
+                frame.frame_slot,
+                impl_->vk_water_animation_selection, fallback);
+            if (!prepared)
+                animation_frame_error = fallback.message.empty()
+                    ? "30 Hz frame selection failed"
+                    : fallback.message;
+        } else {
+            animation_frame_error =
+                "animation generation or static proxy mapping became stale";
+        }
+        if (prepared) {
+            viewer::WaterAnimationGpuError gpu_error{};
+            prepared = impl_->vk_scene->prepare_water_animation_frame(
+                impl_->vk_water_animation_generation, frame.frame_slot,
+                impl_->vk_water_animation_selection,
+                impl_->vk_water_animation_proxy_indices, gpu_error);
+            if (!prepared)
+                animation_frame_error = gpu_error.message.empty()
+                    ? "GPU frame upload/decode preparation failed"
+                    : gpu_error.message;
+        }
+        if (!prepared) {
+            disable_water_mesh_animation(animation_frame_error.c_str());
+            if (authored_water_proxy_instance_index <
+                acceptance_instances.size())
+                gpu_meshing::set_water_scene_animation_active(
+                    acceptance_instances[
+                        authored_water_proxy_instance_index],
+                    false);
+        }
+    }
+    const auto& instances = *instance_view;
     if (instances.empty()) {
         impl_->stats.instances_resolved = 0;
         const bool rt_available =
@@ -10669,6 +12687,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // (The reverse is not true — a rebuild that reproduces the same set still
     // bumps — which only costs a redundant rebuild here.)
     const uint64_t expansion = impl_->vk_instance_cache.expansion_count();
+    // Whether the mirror below actually re-projected this frame. The GPU-pick
+    // reverse map is a projection of the SAME span and is rebuilt on exactly
+    // the same frames, so it reads this rather than re-testing the counter:
+    // the mirror assigns vk_temporal_instances_expansion = expansion on the
+    // only path where they differ, so by the time the pick map is reached the
+    // two are always equal and a counter test there is unconditionally true.
+    bool instance_span_rebuilt = false;
     {
         // O(instances) rebuild, gated on the expansion counter above -- so this
         // is either ~free or the full projection, never in between. The counter
@@ -10678,6 +12703,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         if (impl_->vk_temporal_instances_expansion != expansion ||
             impl_->vk_temporal_instances.size() != instances.size()) {
             PROFILE_COUNT("build.mirror_rebuilds", 1);
+            instance_span_rebuilt = true;
             impl_->vk_temporal_instances.clear();
             impl_->vk_temporal_instances.reserve(instances.size());
             for (size_t index = 0; index < instances.size(); ++index) {
@@ -10707,8 +12733,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         }
     }
     // GPU pick reverse map: token → part_hash for the expanded instance set.
-    // Gated on the expansion counter so it only rebuilds when instances change.
-    if (impl_->vk_temporal_instances_expansion == expansion) {
+    // Rebuilt on exactly the frames the temporal mirror above re-projected,
+    // since both are projections of the same `instances` span. Skipping it
+    // otherwise is what keeps a steady-state frame off an O(instances) run of
+    // hash inserts.
+    if (instance_span_rebuilt) {
+        PROFILE_COUNT("build.pick_map_rebuilds", 1);
         impl_->pick_token_to_part_hash.clear();
         impl_->pick_token_to_part_hash.reserve(instances.size());
         for (const auto& inst : instances) {
@@ -10758,6 +12788,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                             drawable, err))
                         continue;
                     if (!drawable) continue;
+                }
+                if (c.kind == render::DynamicSlotChangeKind::Bind ||
+                    c.kind == render::DynamicSlotChangeKind::Transform) {
+                    const uint64_t policy_part_hash = c.policy_part_hash != 0
+                        ? c.policy_part_hash
+                        : c.part_hash;
+                    const viewer::LoadedPart* policy_part =
+                        impl_->store->get_or_load(policy_part_hash);
+                    if (!policy_part) continue;
+                    c.ray_traced = matter::resolve_ray_traced(
+                        c.ray_tracing_override,
+                        policy_part->render_policy.ray_traced);
                 }
                 valid.push_back(std::move(c));
             }
@@ -11150,6 +13192,35 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_vol_density_ms      = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolDensity);
     impl_->stats.gpu_vol_scatter_ms      = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolScatter);
     impl_->stats.gpu_vol_integrate_ms    = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolIntegrate);
+    impl_->stats.gpu_water_animation_ms  =
+        impl_->vk_scene->gpu_zone_last_ms(
+            viewer::VkSceneRenderer::kGpuZoneWaterDecode) +
+        impl_->vk_scene->gpu_zone_last_ms(
+            viewer::VkSceneRenderer::kGpuZoneWaterDraw);
+    impl_->stats.gpu_water_forward_ms =
+        impl_->vk_scene->gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneWaterDraw);
+    impl_->stats.gpu_water_direct_draw_ms =
+        impl_->vk_scene->gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw);
+    impl_->stats.water_forward_width = impl_->vk_scene->raster_width();
+    impl_->stats.water_forward_height = impl_->vk_scene->raster_height();
+    impl_->stats.water_forward_image_bytes =
+        impl_->vk_scene->water_forward_image_bytes();
+    impl_->stats.water_animation_publish_ms =
+        impl_->vk_water_animation_publish_ms;
+    impl_->stats.water_animation_compressed_cpu_bytes =
+        impl_->vk_water_animation_compressed_cpu_bytes;
+    impl_->stats.water_animation_peak_activation_cpu_bytes =
+        impl_->vk_water_animation_peak_activation_cpu_bytes;
+    impl_->stats.water_animation_gpu_bytes_per_slot =
+        impl_->vk_water_animation_gpu_bytes_per_slot;
+    impl_->stats.water_animation_uploads =
+        impl_->vk_scene->water_animation_upload_count();
+    impl_->stats.water_animation_decode_dispatches =
+        impl_->vk_scene->water_animation_decode_dispatch_count();
+    impl_->stats.water_animation_steady_state_allocations =
+        impl_->vk_scene->water_animation_steady_state_allocation_count();
     const matter::FroxelGridDimensions vol_dimensions = impl_->vk_scene->volumetrics_dimensions();
     impl_->stats.vol_grid_w = vol_dimensions.width;
     impl_->stats.vol_grid_h = vol_dimensions.height;
@@ -11169,6 +13240,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     return true;
 }
 
+// Close out the frame render() recorded: commit or discard its temporal history,
+// animation visibility and dynamic-instance bookkeeping. Call it exactly once per
+// render(), on the app thread, with `presented` telling the truth about the
+// submission — a discarded frame must not be reprojected against.
+// A serial that does not match the frame render() opened is ignored silently.
 void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
     if (!impl_ || frame_serial != impl_->vk_temporal_serial ||
         impl_->vk_temporal_token == 0) {
@@ -11254,9 +13330,12 @@ bool WorldSession::readback_swapchain_rgba8(
 }
 #endif
 
-void WorldSession::render(const CameraDesc&, int, int, const RenderOptions&) {
-    // The Windows milestone artifact intentionally contains no legacy GL path.
-}
+// Deliberately empty in EVERY build configuration (note it sits outside the
+// MATTER_VULKAN_VIEWER #if above). Phase 5a deleted the GL renderer this
+// overload drove, and nothing replaced it: no pixels are produced and
+// frame_stats() is not touched. See the declaration in matter/world_session.h
+// for why the entry point still exists.
+void WorldSession::render(const CameraDesc&, int, int, const RenderOptions&) {}
 
 bool WorldSession::poll_event(Event& out) {
     // E3 compat shim (event-system.md S I.11 / S II.4 item 6): the worker/GL
@@ -11284,6 +13363,14 @@ const FrameStats& WorldSession::frame_stats() const {
     return impl_->stats;
 }
 
+// Snapshot every live animated instance (rig, pose, targets, skin influences) for
+// the editor's animation panel.
+//
+// FALSE MEANS "NOT COHERENT RIGHT NOW", not "error": it is returned whenever two
+// bindings disagree about an asset's identity, an asset is not resident, or a
+// pose's array sizes do not match the rig. `out` is only assigned on success, so
+// a caller should keep showing its previous snapshot and retry next frame.
+// True with an empty vector means there is nothing animated.
 bool WorldSession::animation_debug_snapshots(
     std::vector<AnimationDebugInstanceSnapshot>& out) const {
     out.clear();
@@ -11410,11 +13497,24 @@ AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Status mirrors and world-authored defaults
+//
+// Read from the app thread while the worker writes the originals, so each of
+// these returns a COPY taken under the mutex that guards its mirror. The
+// world_* accessors answer "what did the world script author?" and return false
+// when the world declared nothing — the editor uses that to decide whether to
+// seed its own live override groups, so false must not be treated as an error.
+// ---------------------------------------------------------------------------
+
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {
     std::lock_guard<std::mutex> lock(impl_->streaming_status_mutex);
     return impl_->streaming_status_copy;
 }
 
+// Aggregate the live seam-weld pool plus the session's cumulative seam counters.
+// O(live pairs) — it walks every weld record — and it reads app-thread state
+// (seam_welds, weld_parts) without a lock, so call it from the app thread only.
 WorldSession::SeamWeldStatus WorldSession::seam_weld_status() const {
     SeamWeldStatus out{};
     const Impl& impl = *impl_;
@@ -11549,6 +13649,15 @@ props::DynamicGroup* WorldSession::draw_overrides() {
     return impl_->draw_overrides_group.get();
 }
 
+// THE app-thread service call. Every GpuJob the worker posted — bake publishes,
+// sector publishes, evictions, VT reclassification — actually executes inside
+// this call, so a frame loop that stops calling it stops all bake and streaming
+// progress even though the worker keeps running.
+//
+// `ms_budget` bounds how many jobs START, never how long one takes: the queue
+// guarantees each job it begins runs to completion, so one expensive publish can
+// still overrun the frame. It also retries any stuck publication completions and
+// republishes the streaming snapshot.
 void WorldSession::pump_gpu_jobs(float ms_budget) {
     impl_->gpu_jobs.pump((double)ms_budget);
     std::string completion_error;
@@ -11569,6 +13678,15 @@ void WorldSession::pump_gpu_jobs(float ms_budget) {
 // ---------------------------------------------------------------------------
 // Query API — backed by a lazily built CPU BVH (WorldTracer).
 // ---------------------------------------------------------------------------
+// All four queries below go through ensure_tracer(), which REBUILDS the CPU BVH
+// whenever world state has changed since the last query — and every sector
+// publish, eviction, weld change and refine swap marks it dirty. So the first
+// query after any world change is O(world) and allocating, while repeats are
+// cheap; do not call these per-frame on a streaming world. Seam welds are
+// excluded from the tracer by design (they have no PartStore artifact).
+//
+// False from any of them means "no world connected, or the tracer could not be
+// built (nothing loaded yet)", which is a normal state rather than an error.
 bool WorldSession::raycast(const float origin[3], const float dir[3],
                            float max_t, RayHit& out) {
     if (!impl_->connected) return false;
@@ -11635,25 +13753,15 @@ bool WorldSession::instance_info_by_hash(uint64_t hash, InstanceInfo& out) {
     return true;
 }
 
-uint32_t WorldSession::root_instance_count() const {
-    if (!impl_->connected) return 0;
-    return static_cast<uint32_t>(impl_->state.entries().size());
-}
-
-bool WorldSession::root_instance_info(uint32_t idx, InstanceInfo& out) const {
-    if (!impl_->connected) return false;
-    const auto& entries = impl_->state.entries();
-    if (idx >= entries.size()) return false;
-    const auto& entry = entries[idx];
-    out.part_hash = entry.part_hash;
-    std::memcpy(out.transform, entry.transform, sizeof(out.transform));
-    out.module_name = nullptr;
-    if (!entry.module.empty())
-        out.module_name = entry.module.c_str();
-    return true;
-}
-
 #ifdef MATTER_VULKAN_VIEWER
+// Resolve the instance under a cursor position through the renderer's ID buffer:
+// cursor pixels are rescaled from the framebuffer to the raster extent, the token
+// is read back from the GPU, and it is resolved first against the dynamic-entity
+// bridge and then against the static token -> part_hash map render() maintains.
+//
+// Performs a GPU READBACK, so this is a click-time call, not a per-frame one.
+// False covers every miss: empty pixel, no world, or a token this frame's map
+// does not know.
 bool WorldSession::pick_at_pixel(float cursor_x, float cursor_y,
                                  int fb_width, int fb_height,
                                  PickIdentity& out) {
@@ -11699,6 +13807,11 @@ bool WorldSession::pick_at_pixel(float, float, int, int, PickIdentity& out) {
 #endif
 
 #ifdef MATTER_VULKAN_VIEWER
+// Stage debug lines for the NEXT render() call, which draws them and clears the
+// buffer — so the editor must resubmit every frame it wants them. `vertex_data`
+// is copied: interleaved {x, y, z, r, g, b, a} per vertex, drawn as a LINE_LIST
+// with depth testing. Fewer than two vertices (or a null pointer) clears the
+// overlay instead of drawing.
 void WorldSession::submit_overlay_lines(const float* vertex_data,
                                         uint32_t vertex_count) {
     if (!vertex_data || vertex_count < 2) {
@@ -11714,6 +13827,11 @@ void WorldSession::submit_overlay_lines(const float* vertex_data,
 void WorldSession::submit_overlay_lines(const float*, uint32_t) {}
 #endif
 
+// Object-space AABB of a RESIDENT part, in world metres, as the union of its
+// cluster bounds. Uses PartStore::find, so it never triggers a load: false means
+// the part is not resident (or a clusterless part has no bound radius either),
+// never "not on disk". A clusterless part falls back to a cube of its bound
+// radius, which is conservative rather than tight.
 bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
     if (!impl_->store) return false;
     const auto* lp = impl_->store->find(part_hash);

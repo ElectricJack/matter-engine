@@ -1,3 +1,21 @@
+// MatterEngine3/src/live_edit_prod.cpp
+//
+// The production live-edit seams (declared in live_edit_prod.h). Everything
+// here is graph bookkeeping over `part_graph_snapshot::Snapshot` plus two
+// delegations: ScriptHost for resolve/bake, part_flatten for the root
+// subtree.
+//
+// Conventions worth knowing before reading
+//   - live_edit::PartId is a MODULE NAME, and live_edit::ResolvedHash is the
+//     uint64 hash rendered as a DECIMAL STRING. ProdBaker parses it back with
+//     strtoull, so "" (every failure path in reresolve) parses to 0 and is
+//     rejected there as an invalid hash -- failures propagate as a failed
+//     bake, never as a silent skip.
+//   - Sources are re-read from disk on every call; nothing is cached between
+//     passes, which is the point (the file just changed).
+//   - Errors are returned, not thrown or logged, except for two fprintf
+//     diagnostics that accompany a returned failure.
+//
 // Task 9: production live-edit seam implementations.
 // ProdGraphResolver / ProdBaker / ProdFlattener wrap the snapshot recorded at
 // install time and drive the real ScriptHost + part_flatten pipeline.
@@ -47,6 +65,9 @@ ProdGraphResolver::ProdGraphResolver(part_graph_snapshot::Snapshot& snap,
     , exact_shared_paths_(true)
 {}
 
+// `path` must match the snapshot's by_file keys byte for byte -- there is no
+// normalization of separators or case here. Returns empty for a file the graph
+// does not know, which the session treats as "not a part, nothing to do".
 std::vector<live_edit::PartId>
 ProdGraphResolver::parts_for_file(const std::string& path) {
     // 1. Direct by-file lookup.
@@ -75,6 +96,9 @@ ProdGraphResolver::parts_for_file(const std::string& path) {
     return {};
 }
 
+// Reverse-edge traversal, de-duplicated. `p` itself is NOT included. The
+// result is in traversal order, not topological order -- callers that need
+// child-before-parent ordering run topo_order over the resulting set.
 std::vector<live_edit::PartId>
 ProdGraphResolver::ancestors(const live_edit::PartId& p) {
     // BFS over reverse edges (parents_of).
@@ -117,6 +141,10 @@ ProdGraphResolver::topo_order(const std::set<live_edit::PartId>& subset) {
     return result;
 }
 
+// Walks upward from every changed part and collects the nodes flagged
+// is_root, stopping there (a root is not walked past). A changed part with no
+// root above it contributes nothing, so nothing re-flattens for it -- which is
+// correct: geometry that no root subtree contains is not on screen.
 std::vector<live_edit::PartId>
 ProdGraphResolver::roots_over(const std::set<live_edit::PartId>& changed) {
     // Walk up from each changed part until we hit is_root nodes.
@@ -141,6 +169,15 @@ ProdGraphResolver::roots_over(const std::set<live_edit::PartId>& changed) {
     return std::vector<live_edit::PartId>(roots_set.begin(), roots_set.end());
 }
 
+// MUTATES THE SNAPSHOT. Re-reads the part's source from disk, folds it with
+// the children's CURRENT snapshot hashes through ScriptHost, writes the new
+// hash back onto the node, and returns it as a decimal string.
+//
+// Returns "" for every failure -- unknown module, unreadable source, a child
+// that is not resolved yet, or a host hash of 0 -- and in that case the node
+// keeps its old hash. Because the caller rebuilds children before parents,
+// the write-back is what lets a parent fold the child hash produced moments
+// earlier in the same pass.
 live_edit::ResolvedHash
 ProdGraphResolver::reresolve(const live_edit::PartId& p) {
     auto it = snap_.nodes.find(p);
@@ -197,6 +234,14 @@ ProdBaker::ProdBaker(part_graph_snapshot::Snapshot& snap,
     , parts_dir_(std::move(parts_dir))
 {}
 
+// `budget_ms` is accepted and IGNORED: the dev time budget was retired, so
+// BakeOptions.time_budget_ms stays 0 (unbounded) and Cause::BudgetExceeded is
+// never produced here.
+//
+// After the bake it re-checks that ScriptHost agreed with the hash the caller
+// resolved (`h`); a mismatch means the resolve and the bake read different
+// source or different children, and is reported as a failure rather than
+// letting an artifact be published under a hash nothing will look up.
 live_edit::BakeOutcome
 ProdBaker::bake(const live_edit::PartId& p,
                 const live_edit::ResolvedHash& h,
@@ -288,6 +333,11 @@ ProdFlattener::ProdFlattener(part_graph_snapshot::Snapshot& snap,
     , abs_cache_root_(std::move(abs_cache_root))
 {}
 
+// Flattens the root's subtree from the cache root, using the hash currently on
+// the snapshot node -- so the caller must have re-resolved and re-baked the
+// cone first, or this flattens the previous revision. A root missing from the
+// snapshot, or one whose hash is still 0 (never resolved), is a FlattenFailed
+// error rather than a silent no-op.
 live_edit::BakeOutcome
 ProdFlattener::reflatten(const live_edit::PartId& root) {
     auto it = snap_.nodes.find(root);

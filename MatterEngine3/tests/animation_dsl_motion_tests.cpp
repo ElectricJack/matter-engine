@@ -48,7 +48,14 @@ void test_generate_cannot_author_geometry() {
 }
 void test_generate_cannot_mutate_terrain_or_join_cursor() {
     script_host::ScriptHost terrain_host;
-    const auto terrain = bake("this.beginRig('r'); this.root('root'); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.generate(phase=>{this.terrainVolume(0,0,0);}); this.endClip();", terrain_host);
+    // The terrain verb is `terrainVolumeTiled`. The column verb `terrainVolume`
+    // was commented out of BOTH part_base.js.h and dsl_bindings.cpp on
+    // 2026-08-12 (volumetric-sectors M2, "COLUMN PATH COMMENTED OUT") so that
+    // calling it raises a ReferenceError instead of silently baking a column --
+    // which is exactly what this case used to catch: a TypeError, not the
+    // generate guard. j_terrainVolumeTiled carries that guard, and carries it
+    // ahead of its "no world bound" check, which is the ordering asserted here.
+    const auto terrain = bake("this.beginRig('r'); this.root('root'); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.generate(phase=>{this.terrainVolumeTiled(0,0,0,0);}); this.endClip();", terrain_host);
     CHECK(!terrain.error.ok && terrain.error.message.find("geometry authoring is forbidden") != std::string::npos,
           "generate rejects terrain output before terrain world validation");
     script_host::ScriptHost join_host;
@@ -106,11 +113,24 @@ void test_imported_motion_source_span_preserves_module() {
 void test_animated_rig_gallery_source_bakes() {
     // world_demo moved from MatterEngine3/examples/ to the top-level projects/
     // tree; this test runs from MatterEngine3/tests, hence the extra "..".
-    const std::filesystem::path source_path =
-        std::filesystem::path("..") / ".." / "projects" / "world_demo" / "objects" /
-        "AnimatedRigGallery.js";
-    std::ifstream input(source_path, std::ios::binary);
-    CHECK(input.good(), "animated gallery source is present beside the world-demo objects");
+    //
+    // Object lookup is a SEARCH PATH, not one directory: a scene owns its own
+    // objects/ over the shared project tier (ebd226d6, "one folder per scene").
+    // AnimatedRigGallery.js moved into scenes/AnimatedRigGallery/objects/ then,
+    // while Crate.js -- the child this bake resolves -- stayed in the shared
+    // tier, so a single-directory lookup can no longer find both.
+    const std::filesystem::path roots[] = {
+        std::filesystem::path("..") / ".." / "projects" / "world_demo" / "scenes" /
+            "AnimatedRigGallery" / "objects",
+        std::filesystem::path("..") / ".." / "projects" / "world_demo" / "objects",
+    };
+    std::ifstream input;
+    for (const auto& root : roots) {
+        input.open(root / "AnimatedRigGallery.js", std::ios::binary);
+        if (input.good()) break;
+        input.clear();
+    }
+    CHECK(input.good(), "animated gallery source is present on the world-demo object search path");
     if (!input.good()) return;
     const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     script_host::ScriptHost host;

@@ -1,6 +1,41 @@
 #include "animation/animation_evaluator.h"
 #include "animation/animation_math.h"
 
+// MatterEngine3/src/animation/animation_evaluator.cpp
+//
+// Implementation of `AnimationEvaluator` plus the free helpers declared in
+// `animation_evaluator.h`.
+//
+// Layout of this file
+// -------------------
+// 1. An anonymous namespace of pure helpers: quaternion normalize/slerp,
+//    transform lerp, row-major matrix multiply, the graph validator
+//    (`valid`), the budget check, clip-time wrapping, and root-motion
+//    accumulation across loop boundaries.
+// 2. The exported free functions: `emit_crossed_markers`,
+//    `root_motion_delta`, `interpolate_fixed_control`, `sample_graph_input`.
+// 3. `AnimationEvaluator::State` and the member functions.
+//
+// Conventions
+// -----------
+// - `Mat4f` is ROW-major: `m[y*4 + x]`, translation at `m[3]`, `m[7]`, `m[11]`.
+//   The local `multiply` follows that; do not mix it with MathLib's `Mat4`.
+// - Quaternion products go through `quaternion_multiply` from
+//   `animation_math.h`. That header explains at length why the animation tree
+//   does not delegate to MathLib here: the term ordering is frozen against the
+//   animation determinism hashes. Do not open-code a Hamilton product.
+// - Clip times are seconds of GRAPH time (already multiplied by
+//   `RuntimeGraphClip::rate`) held in a float that keeps accumulating, which
+//   is why the loop-boundary tests below scale their tolerance with magnitude.
+//
+// Failure model
+// -------------
+// Every publish path solves into a back buffer and flips only on complete
+// success, so a rejected request leaves the previously published snapshot
+// live. Rejections are counted into `stats_` by `AnimationFallbackReason`.
+//
+// Threading: no locks anywhere in this file. One evaluator, one thread.
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -10,6 +45,9 @@ namespace matter::animation {
 namespace {
 constexpr uint16_t kNoIndex = UINT16_MAX;
 
+// Packs a handle into the `states_` map key. Both halves matter: a recycled
+// slot with a newer generation is a different instance and must not inherit
+// the old one's pose buffers or graph clock.
 uint64_t key(AnimatorInstanceHandle h) { return (uint64_t(h.slot_index) << 32u) | h.generation; }
 float clamp01(float v) { return std::max(0.0f, std::min(1.0f, v)); }
 Float3 lerp(Float3 a, Float3 b, float t) {
@@ -87,6 +125,20 @@ bool valid_value_type(AnimationValueType type) {
     }
     return false;
 }
+// Structural validation of a compiled graph. This is the whole contract the
+// evaluator relies on afterwards, so it is deliberately exhaustive rather than
+// trusting the baker; it re-runs on every `evaluate` call so malformed
+// hot-reload data cannot become active through any path.
+//
+// It proves, in order: the skeleton and inverse-bind array agree and are
+// within the hard caps; every input has a real type and cadence; every clip
+// has a finite non-negative duration and in-range markers; dependencies point
+// strictly backwards (which is also what makes the single forward pass in
+// `evaluate` correct) and no Fixed node depends on a Frame node; each node
+// kind carries exactly the fields it is allowed; and finally that additive
+// (bind-relative) poses and normal poses never mix on any path.
+//
+// O(nodes + clips*markers). Cheap enough to repeat per evaluation.
 bool valid(const AnimationEvaluationDefinition& d) {
     if(!d.skeleton || d.skeleton->joint_count()==0 || d.skeleton->joint_count()>AnimationBudgetConfig::kHardMaxJointsPerAsset || d.inverse_bind_model.size()!=d.skeleton->joint_count() || d.nodes.empty() || d.nodes.size()>AnimationBudgetConfig::kHardMaxGraphNodes) return false;
     for(const RuntimeGraphInput& input:d.inputs) if(!valid_value_type(input.type) || !valid_cadence(input.cadence)) return false;
@@ -155,6 +207,9 @@ bool valid(const AnimationEvaluationDefinition& d) {
     }
     return controller_count<=AnimationBudgetConfig::kHardMaxControllerNodes && d.nodes.back().kind==RuntimeGraphNodeKind::Output;
 }
+// Per-asset budget check, separate from `valid` because it is policy rather
+// than structure: the same graph is legal but may be inadmissible under a
+// tightened `AnimationBudgetConfig`.
 bool within_budget(const AnimationEvaluationDefinition& d,
                    const AnimationBudgetConfig& budget) {
     if (!d.skeleton || d.skeleton->joint_count() > budget.max_joints_per_asset ||
@@ -164,6 +219,9 @@ bool within_budget(const AnimationEvaluationDefinition& d,
         if (node.kind == RuntimeGraphNodeKind::NativeController) ++controllers;
     return controllers <= budget.max_controller_nodes;
 }
+// Graph time (seconds) -> normalized 0-1 sample ratio for Ozz. Looping clips
+// wrap (negative times wrap forward); non-looping clips clamp at both ends. A
+// zero-or-negative duration yields 0.
 float clip_ratio(const RuntimeGraphClip& clip,float time) {
     if(clip.duration<=0) return 0;
     if(clip.loop) { time=std::fmod(time,clip.duration); if(time<0) time+=clip.duration; }
@@ -184,6 +242,15 @@ float clip_ratio(const RuntimeGraphClip& clip,float time) {
 // wants, so it says so rather than leaving it to the rounding.
 enum class LoopEdge { Interior, CycleStart, CycleEnd };
 
+// Samples joint 0 (the root track) of a clip at `time` seconds.
+//
+// `edge` overrides how a time that sits exactly on a cycle boundary is
+// resolved -- see `LoopEdge` above for why fmod cannot decide that. Returns an
+// identity transform when the clip has no duration or the Ozz sample fails,
+// which the callers treat as "no root travel" rather than an error.
+//
+// Note the local named `ratio` holds absolute clip TIME until the final
+// division by `duration`; only the value passed to `sample` is a ratio.
 AnimationTransform sample_root(const RuntimeGraphClip& clip, float time,
                                LoopEdge edge = LoopEdge::Interior) {
     AnimationTransform root{};
@@ -203,6 +270,10 @@ AnimationTransform sample_root(const RuntimeGraphClip& clip, float time,
     return locals[0];
 }
 
+// Negates a root-motion delta: negated translation and conjugated rotation.
+// Used to answer a backwards time window by walking it forwards and flipping
+// the result, so forwards and backwards playback cannot drift apart. Scale is
+// intentionally left at its default -- root motion never consumes scale.
 AnimationTransform inverse_delta(const AnimationTransform& value) {
     AnimationTransform inverse{};
     inverse.translation = {-value.translation.x, -value.translation.y, -value.translation.z};
@@ -240,6 +311,18 @@ AnimationTransform forward_clip_root_delta(const RuntimeGraphClip& clip, float p
     // boundary always means the cycle START, so resolve it that way rather than
     // letting fmod round it to the far end and report a cycle of travel lost.
     bool cursor_on_boundary = on_loop_boundary(previous, clip.duration);
+    // Work cap, and the one place this function can return a WRONG answer
+    // rather than a partial one the caller can detect: a window spanning more
+    // than kMaxSegments whole cycles stops early and the shortfall is
+    // indistinguishable from a complete walk (the return type has no error
+    // channel). The window is one fixed step of GRAPH time, i.e.
+    // `fixed_delta_seconds * clip.rate`, so this bites only when
+    // `fixed_delta * rate > 4096 * duration` -- unreachable at rate 1 with a
+    // second-long clip, but reachable for a very short clip driven at a very
+    // large authored `rate`. Deliberately NOT converted into an evaluation
+    // failure: `evaluate` would then reject that instance on every tick
+    // forever (the window is a constant per-tick delta, so it never shrinks),
+    // freezing the animator instead of merely under-reporting its travel.
     constexpr uint32_t kMaxSegments = 4096;
     for (uint32_t segment = 0; cursor < current && segment < kMaxSegments; ++segment) {
         const float boundary = cursor_on_boundary
@@ -261,11 +344,15 @@ AnimationTransform forward_clip_root_delta(const RuntimeGraphClip& clip, float p
     return accumulated;
 }
 
+// Total root travel over the half-open window (previous, current], in
+// root-track space. Handles reverse windows by inverting a forward walk.
 AnimationTransform clip_root_delta(const RuntimeGraphClip& clip, float previous, float current) {
     return current >= previous ? forward_clip_root_delta(clip, previous, current)
                                : inverse_delta(forward_clip_root_delta(clip, current, previous));
 }
 
+// Blends two root-motion deltas at `t`. Scale is forced to identity because a
+// delta has no meaningful scale component.
 AnimationTransform weighted_delta(const AnimationTransform& a, const AnimationTransform& b, float t) {
     return {lerp(a.translation, b.translation, t), slerp(a.rotation, b.rotation, t), {1.0f, 1.0f, 1.0f}};
 }
@@ -357,6 +444,17 @@ bool sample_graph_input(const AnimationEvaluationDefinition& definition,
     return true;
 }
 
+// All mutable state for one animator instance.
+//
+// `pose[2]` is the publish double buffer: `front_slot` is what `view` points
+// into and what readers may see; the other slot is scratch for the call in
+// progress. Before the first publish (`has_snapshot == false`) both roles are
+// the same slot, so the first solve writes in place.
+//
+// `initialized` distinguishes "never ticked" from "ticked": on the first fixed
+// tick `previous_fixed_time` is snapped to `current_fixed_time` so alpha-zero
+// interpolation cannot invent a pose that never played.
+// `last_fixed_tick` starts at UINT64_MAX so any real tick id counts as new.
 struct AnimationEvaluator::State {
     struct DefinitionShape {
         const AnimationEvaluationDefinition* definition = nullptr;
@@ -397,6 +495,21 @@ bool AnimationEvaluator::set_budget_config(const AnimationBudgetConfig& config) 
     return true;
 }
 
+// Solves and publishes one fixed sample for every admissible request.
+//
+// Takes its vector BY VALUE because it sorts in place: by visibility class,
+// then descending explicit priority, then slot index -- a stable order, so a
+// truncated batch drops the least important work rather than an arbitrary
+// slice. Budget is then charged first-come in that order.
+//
+// Returns true only when EVERY request was published. A false return is
+// normal, not fatal: rejected instances keep their previous snapshot and the
+// reason is counted in `stats_`. A first pass detects instances appearing
+// twice in one batch with disagreeing definition shapes and rejects all of
+// their requests, so a conflicting batch cannot half-apply.
+//
+// Per admitted request this allocates a pose vector per graph node and an Ozz
+// sample context per clip, so cost scales with graph size, not just joints.
 bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> requests) {
     std::stable_sort(requests.begin(),requests.end(),[](const auto&a,const auto&b){ if(a.visibility_class!=b.visibility_class)return a.visibility_class<b.visibility_class; if(a.explicit_priority!=b.explicit_priority)return a.explicit_priority>b.explicit_priority; return a.instance.slot_index<b.instance.slot_index; });
     const auto shape_for=[](const AnimationEvaluationRequest& request) { return State::DefinitionShape{request.definition,request.definition->skeleton,uint32_t(request.definition->skeleton->joint_count())}; };
@@ -404,8 +517,13 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
     std::map<uint64_t,State::DefinitionShape> batch_shapes;
     std::set<uint64_t> conflicting_instances;
     bool all=true;
+    // First pass: conflict detection ONLY. An inadmissible request is skipped
+    // here without touching `all` or `stats_`, because the second pass below
+    // re-tests exactly these conditions and is the single place that both
+    // clears `all` and records the specific `AnimationFallbackReason`.
+    // Rejecting here as well would double-count the fallback.
     for(const auto& request:requests) {
-        if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition) || !within_budget(*request.definition,budget_.limits)) { all=false; continue; }
+        if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition) || !within_budget(*request.definition,budget_.limits)) continue;
         const uint64_t instance_key=key(request.instance); const State::DefinitionShape shape=shape_for(request);
         const auto [it,inserted]=batch_shapes.emplace(instance_key,shape);
         if(!inserted && !same_shape(it->second,shape)) conflicting_instances.insert(instance_key);
@@ -530,6 +648,10 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
     return all;
 }
 
+// Returns the live view for an instance, or a default-constructed (all-empty)
+// snapshot when the instance is unknown or has not published yet. The views
+// point into evaluator-owned storage and are invalidated by the next publish
+// for this instance or by `forget`.
 AnimationPoseSnapshot AnimationEvaluator::snapshot(AnimatorInstanceHandle instance) const { const auto it=states_.find(key(instance)); return it==states_.end()||!it->second||!it->second->has_snapshot?AnimationPoseSnapshot{}:it->second->view; }
 
 bool AnimationEvaluator::fixed_clock(AnimatorInstanceHandle instance, float& previous, float& current) const {
@@ -651,6 +773,17 @@ bool AnimationEvaluator::fixed_root_motion(AnimatorInstanceHandle instance,
     out=it->second->fixed_root_motion;
     return true;
 }
+// Applies IK/target corrections on top of the currently published pose and
+// republishes through the back buffer.
+//
+// Requires an existing snapshot solved against this exact `definition` and
+// `targets.size() == target_states.size()`; chains must be mutually exclusive.
+// Weights are validated to be finite and in [0,1] before any solve runs. On
+// any failure the front buffer is untouched, so the previous pose stays live.
+//
+// This is a frame-cadence correction, not a new temporal sample: the graph's
+// prior fixed model pose is carried forward verbatim so motion vectors keep
+// measuring fixed-to-fixed motion.
 bool AnimationEvaluator::solve_targets(AnimatorInstanceHandle instance,
                                        const AnimationEvaluationDefinition& definition,
                                        const std::vector<CanonicalTarget>& targets,
@@ -719,6 +852,10 @@ bool AnimationEvaluator::validate_checkpoint(AnimatorInstanceHandle instance,
            checkpoint.fixed_previous_skin_palette.size()==joints;
 }
 
+// Replaces an instance's state wholesale with a validated checkpoint,
+// discarding whatever was there. Any snapshot previously handed out for this
+// instance is invalidated. A checkpoint with empty pose vectors restores an
+// uninitialized instance rather than failing.
 bool AnimationEvaluator::restore_checkpoint(AnimatorInstanceHandle instance,
                                             const AnimationEvaluationDefinition& definition,
                                             const AnimatorCheckpoint& checkpoint) {
@@ -749,6 +886,10 @@ bool AnimationEvaluator::restore_checkpoint(AnimatorInstanceHandle instance,
     states_[key(instance)]=std::move(replacement);
     return true;
 }
+// Destroys all state for an instance, freeing the pose buffers. Every
+// `AnimationPoseSnapshot` previously returned for this instance dangles
+// afterwards. Erasing an unknown instance is a no-op. This is the only way
+// entries leave `states_`.
 void AnimationEvaluator::forget(AnimatorInstanceHandle instance) { states_.erase(key(instance)); }
 
 } // namespace matter::animation

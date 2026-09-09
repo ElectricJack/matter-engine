@@ -107,6 +107,15 @@ struct VtSurfaceLane {
     float curv_radius = 0.0f; // meaningful when input_code == -1
 };
 
+// Result of the field-lane scan. The first `count` entries of `lanes` are
+// valid, in first-appearance op order — that ordering is the whole contract,
+// because the producer and the compositor's packer both derive lane indices by
+// re-running this scan over the same canonical text.
+//
+// `overflow` is not just a flag: vt_scan_surface_lanes STOPS at the offending
+// op, so `lanes` is PARTIAL whenever it is set. A caller must fail mode-3
+// promotion (vt_pack_surface_tape does, leaving the part on mode 2) rather
+// than use a truncated lane table.
 struct VtSurfaceLaneScan {
     uint32_t count = 0;
     VtSurfaceLane lanes[kVtMaxSurfaceLanes]{};

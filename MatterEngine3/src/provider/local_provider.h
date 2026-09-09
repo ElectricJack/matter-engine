@@ -1,12 +1,62 @@
 #ifndef VIEWER_LOCAL_PROVIDER_H
 #define VIEWER_LOCAL_PROVIDER_H
 
+// MatterEngine3/src/provider/local_provider.h
+//
+// The in-process WorldProvider: turns a project on disk (JS object modules plus
+// a world script) into a WorldManifest of placed part instances, baking every
+// part it needs into a persistent content-addressed cache under
+// <project>/.cache/<world>/.
+//
+// How it fits
+// -----------
+// - Implements the `WorldProvider` interface from `world_source.h`, and is the
+//   only implementation today (a NetworkProvider would sit beside it).
+// - Sits above the script host (`script_host::ScriptHost`, QuickJS) and the
+//   part graph (`part_graph::PartGraph` / `HostBaker`), and below the publish
+//   pipeline in `MatterEngine3/src/matter_engine.cpp`, which drives it.
+// - Owns the detail-tileset slot LRU (`tileset::DetailSlotBinder`) and is what
+//   binds materials to `.gtex` atlas slots in the material registry.
+//
+// Lifecycle / call order
+// ----------------------
+// Two ways to drive it:
+//   sync   connect() == install_graph(BakePolicy::All) + compose_world()
+//          + eager per-root flatten + FlatInstanceRef expansion
+//          + run_tileset_deferred(). Used by tests and gallery_bake; on
+//          success the world is fully prepared.
+//   async  install_graph(BakePolicy::RootsOnly) -> compose_world() -> per-part
+//          ensure_part_baked() / ensure_part_flattened() from the publish
+//          loop -> run_tileset_deferred() after BakeFinished.
+// A warm run may substitute restore_from_cache() for install_graph().
+// compose_world() and every accessor of an `abs_*` path require one of those
+// two to have succeeded first — prepare_paths() runs inside them.
+//
+// Conventions and gotchas
+// -----------------------
+// - Transforms are row-major `float[16]` throughout (matching
+//   part_asset::ChildInstance and the TLAS DrawInstance layout).
+// - No member here is mutex-guarded. install_graph() and restore_from_cache()
+//   reset every member, so callers must serialize them against everything
+//   else; ensure_part_baked() is documented as safe from the bake worker only
+//   because the ScriptHost is idle once install_graph() has returned.
+// - MATTER_HAVE_SCRIPT_HOST gates every path that evaluates JS: without it
+//   install_graph(), ensure_part_baked(), run_tileset_deferred() and
+//   restore_from_cache() fail with an error string instead of doing partial
+//   work.
+// - The tileset phase is deliberately off the bake critical path (Task 15):
+//   its box3d settle is slow enough to dominate a cold world load.
+
 #include "world_source.h"
 #include "world_lights.h"
 #include "part_store.h"
 #include "part_graph.h"           // PartGraph, InstallResult, ChildRequest
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
 #include "matter/world_definition.h"
+#include "matter/gpu_visual_meshing.h"
+#include "hydrology/physx_fluid_bake.h"
+#include "hydrology/authored_fluid_request.h"
+#include "hydrology/hydrology_handoff_products.h"
 #include "tileset_slot_allocator.h"  // LRU detail-tileset slot pool (chart-VT C3)
 #include "detail_bake_plan.h"        // DetailBakeRequest / plan_detail_bakes
 
@@ -15,11 +65,13 @@
 #endif
 
 #include <cmath>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -33,8 +85,36 @@ struct SettledTorus;
 struct BakeInputs;
 }
 
+namespace hydrology { struct RiverGeometry; }
+namespace terrain_field { class RiverHeightOverlay; }
+
 namespace viewer {
 
+using FluidBakeBackendFactory =
+    std::function<std::shared_ptr<hydrology::IFluidBakeBackend>()>;
+
+struct FluidDeviceIdentity {
+    std::array<std::uint8_t, 8> luid{};
+    bool luid_valid = false;
+    std::uint32_t vendor_id = 0;
+    std::uint32_t device_id = 0;
+    std::uint32_t driver_version = 0;
+};
+
+// Everything LocalProvider needs to open one world of one project: where the
+// scripts live, where the cache goes, and the optional callbacks the host binds
+// to receive progress and to marshal GPU work.
+//
+// Normally built by for_project() below, which derives every directory from the
+// project root and picks the scene-vs-flat layout, then moved into the
+// provider's constructor. Every std::function member is optional: null means
+// "this capability is not available here" rather than an error, and each one
+// documents what its own null selects.
+//
+// Path fields need not be absolute — the provider absolutizes them into its own
+// abs_* members in prepare_paths(). cache_root is the exception worth knowing:
+// for_project() absolutizes it eagerly because downstream writers compose
+// output paths straight from it (see the comment in for_project's body).
 struct LocalProviderConfig {
     std::string project_dir;
     // The PROJECT-WIDE object tier: objects shared by every scene. Changing a
@@ -54,6 +134,11 @@ struct LocalProviderConfig {
     std::string project_shared_lib_dir;
     std::string engine_shared_lib_dir;
 
+    // Build a config for <project_dir>/scenes/<world_name>/<world_name>.js when
+    // that scene script exists, else for the legacy
+    // <project_dir>/worlds/<world_name>.js layout. The scene SCRIPT existing is
+    // what selects the layout, not the scenes/ directory. Probes the filesystem
+    // for existence only; creates nothing.
     static LocalProviderConfig for_project(
         const std::string& project_dir,
         const std::string& world_name,
@@ -161,6 +246,23 @@ struct LocalProviderConfig {
                        bool dump_png,
                        std::string& err)> vk_tileset_bake;
 
+    // Renderer-owned Vulkan particle-water visual bake.  LocalProvider routes
+    // the accepted snapshot through gpu_run to this callback before it can
+    // publish an artifact. It is deliberately null in headless mode; coarse
+    // CPU collision/query output never substitutes for the required visual.
+    std::function<bool(const gpu_meshing::ParticleJob& job,
+                       gpu_meshing::MeshResult& result,
+                       gpu_meshing::Stats& stats,
+                       gpu_meshing::Error& error,
+                       const gpu_meshing::BuildControl& control)>
+        vk_particle_visual_bake;
+
+    // Task 7 authored-fluid dependencies. The factory remains dormant until
+    // an imperative river network explicitly selects the PhysX backend and a
+    // semantic cache miss reaches the worker-owned solver phase.
+    FluidBakeBackendFactory fluid_bake_backend_factory;
+    FluidDeviceIdentity fluid_renderer_device{};
+
     // Task 7: OOM/error injection hook for testing skip-and-continue.
     // Fired once per part processed (install bake + fetch/load); `part_index` is the
     // 0-based index within the current phase's part list. May throw to inject an error
@@ -182,6 +284,17 @@ struct LocalProviderConfig {
     // rebuilds operate on a diff of changed files, not a full root-params change).
     std::string root_params_json;
 };
+
+// Builds the shipped engine-to-provider configuration, including the request
+// assembly seam. The backend factory stays lazy: dry/default-off worlds never
+// create a PhysX runtime. Passing an empty factory yields a stable
+// BackendUnavailable request while preserving the dry world and introduces no
+// PhysX/CUDA link dependency.
+LocalProviderConfig make_engine_local_provider_config(
+    const std::string& project_dir,
+    const std::string& world_name,
+    const std::string& engine_shared_lib_dir,
+    FluidBakeBackendFactory backend_factory = {});
 
 inline LocalProviderConfig LocalProviderConfig::for_project(
     const std::string& project_dir_value,
@@ -236,19 +349,48 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     return cfg;
 }
 
+// The world script's output reshaped into what the provider consumes: four
+// index-parallel arrays over the manifest roots (the request, its placement
+// transform, and its `expand` / `tileset` flags) plus the runtime light block
+// and the settings. Produced by adapt_world_definition() from a
+// matter::WorldDefinition; LocalProvider indexes all four with one root index,
+// so they must stay the same length.
 struct ProviderWorldDefinition {
     std::vector<part_graph::ChildRequest> roots;
     std::vector<matter::Mat4f> root_transforms;
     std::vector<bool> expand_flags;
     std::vector<bool> tileset_flags;
+    std::vector<hydrology::AuthoredFluidCollider> fluid_colliders;
     world_lights::WorldLights lights;
     matter::WorldSettings settings;
+    std::optional<matter::HydrologyWorldSettings> hydrology;
+    std::optional<matter::RiverNetworkDefinition> river_network;
+    std::optional<matter::TerrainCollisionDefinition> terrain_collision;
 };
 
+inline std::optional<matter::HydrologyWorldSettings>
+adapt_hydrology_definition(const matter::WorldDefinition& definition) {
+    return definition.hydrology;
+}
+
+inline std::optional<matter::RiverNetworkDefinition>
+adapt_river_network_definition(const matter::WorldDefinition& definition) {
+    return definition.river_network;
+}
+
+inline std::optional<matter::TerrainCollisionDefinition>
+adapt_terrain_collision_definition(const matter::WorldDefinition& definition) {
+    return definition.terrain_collision;
+}
+
+// The sizing half of a world's settings, split out so the streaming/bake side
+// can bind a world without carrying the whole WorldSettings. apply() writes the
+// three numbers into a world binding; the two flags deliberately do NOT travel
+// with them — see each flag's own comment for why.
 struct ProceduralWorldProfile {
-    float sector_size = 16.0f;
-    float y_min = -64.0f;
-    float y_max = 192.0f;
+    float sector_size = 16.0f;   // level-0 tile edge, world units
+    float y_min = -64.0f;        // world-space vertical extent of the streamed
+    float y_max = 192.0f;        // region (see volumetric_sectors below)
     // Nested sector LOD: sector_size above is S_0, the LEVEL 0 tile, and a
     // streamed request may be a coarser level whose tile is S_0 << level. The
     // flag does not reach `apply` -- a world binding still gets one size, and
@@ -271,6 +413,9 @@ struct ProceduralWorldProfile {
     }
 };
 
+// Choose which WorldSettings the sizing comes from: the authored settings under
+// the project/scene layout, the legacy settings otherwise. The two flags ride
+// along from whichever one won.
 inline ProceduralWorldProfile select_procedural_world_profile(
     bool project_layout,
     const matter::WorldSettings& authored,
@@ -280,6 +425,13 @@ inline ProceduralWorldProfile select_procedural_world_profile(
             selected.nested_sectors, selected.volumetric_sectors};
 }
 
+// Convert a loaded matter::WorldDefinition into the provider's view of it.
+// Three conversions worth knowing, all of them one-way:
+//   - spot cone angles arrive in DEGREES and are stored as the COSINE of the
+//     half-angle (cos_inner / cos_outer);
+//   - light intensity is folded into the colour rather than kept separately;
+//   - light directions are normalized here, except a direction shorter than
+//     1e-8 which is passed through untouched.
 inline ProviderWorldDefinition adapt_world_definition(
     const matter::WorldDefinition& definition) {
     ProviderWorldDefinition out;
@@ -293,9 +445,22 @@ inline ProviderWorldDefinition adapt_world_definition(
         out.root_transforms.push_back(root.transform);
         out.expand_flags.push_back(root.expand);
         out.tileset_flags.push_back(root.tileset);
+        if (root.fluid_collider.shape !=
+            matter::WorldFluidColliderShape::None) {
+            hydrology::AuthoredFluidCollider collider{};
+            collider.id = root.id;
+            collider.object_to_world = root.transform;
+            collider.shape = root.fluid_collider;
+            collider.revision =
+                hydrology::authored_fluid_collider_revision(collider);
+            out.fluid_colliders.push_back(std::move(collider));
+        }
     }
 
     out.settings = definition.settings;
+    out.hydrology = adapt_hydrology_definition(definition);
+    out.river_network = adapt_river_network_definition(definition);
+    out.terrain_collision = adapt_terrain_collision_definition(definition);
     out.lights.sun_dir[0] = definition.settings.sun_direction.x;
     out.lights.sun_dir[1] = definition.settings.sun_direction.y;
     out.lights.sun_dir[2] = definition.settings.sun_direction.z;
@@ -334,12 +499,65 @@ inline ProviderWorldDefinition adapt_world_definition(
     return out;
 }
 
+// The in-process WorldProvider for one opened world. Owns the ScriptHost, the
+// file module resolver and the shared HostBaker for that world, plus the
+// detail-tileset slot LRU and the bookkeeping that binds materials to slots.
+//
+// Constructed and destroyed by the engine facade (matter_engine.cpp), one per
+// opened world; a re-open builds a fresh instance. Neither copyable nor
+// movable in practice (it holds unique_ptrs to the host and baker).
+//
+// Threading: nothing here is internally synchronized. install_graph() and
+// restore_from_cache() reset every member, so they must not overlap anything
+// else. ensure_part_baked() / ensure_part_flattened() are called from the bake
+// worker only after install_graph() has returned, when the ScriptHost is idle.
+//
 // Drives the SP-3 install path over a persistent content-addressed cache and
 // scatters the example world (terrain/trees/grass) into a WorldManifest. Same
 // interface as a future NetworkProvider.
 class LocalProvider : public WorldProvider {
 public:
     explicit LocalProvider(LocalProviderConfig cfg);
+
+    // Product assembly seam for a completed PhysX bake.  The existing
+    // renderer callback is marshalled via cfg_.gpu_run here; worker lifecycle
+    // scheduling deliberately remains with the later orchestration task.
+    bool build_accepted_fluid_artifact(
+        const hydrology::FluidBakeOutput& output,
+        const hydrology::PhysxFluidBake::ProductBuildSettings& settings,
+        const hydrology::TerrainHeightSampler& terrain,
+        hydrology::HydrologyArtifact& artifact,
+        hydrology::FluidBakeError& error,
+        hydrology::PhysxFluidBake::ProductBuildTimings* timings = nullptr) const;
+
+    const std::optional<hydrology::HydrologyNetworkBakeResult>&
+    accepted_fluid_network() const {
+        return accepted_fluid_network_;
+    }
+
+    void commit_accepted_fluid_network(
+        hydrology::HydrologyNetworkBakeResult result) {
+        accepted_fluid_network_ = std::move(result);
+    }
+
+    bool authored_fluid_requested() const;
+
+    // Called from WorldSession's existing bake worker after the authored world
+    // and terrain field are ready. Cache lookup, lazy backend creation, solver,
+    // renderer handoff, atomic save/reopen, and publication are one guarded
+    // lifecycle. A false return never invalidates the dry world.
+    bool run_authored_fluid_bake(const FluidBakeRunContext& context,
+                                 matter::HydrologyStatus& status,
+                                 hydrology::FluidBakeError& error,
+                                 hydrology::HydrologyNetworkBakeResult& result);
+
+    // Kept as the one-section execution primitive while the network overload
+    // coordinates multiple requests and publishes only the complete manifest.
+    bool run_authored_fluid_bake(const FluidBakeRunContext& context,
+                                 matter::HydrologyStatus& status,
+                                 hydrology::FluidBakeError& error,
+                                 hydrology::HydrologyArtifact& artifact,
+                                 gpu_meshing::MeshResult& failed_debug_visual);
 
     // connect() == install_graph() + compose_world() with unchanged external behavior.
     bool connect(WorldManifest& out, std::string& err) override;
@@ -406,12 +624,25 @@ public:
         std::function<bool()> is_cancelled,
         std::string& err);
 
+    // Which part hashes in `manifest` the store still needs: the ones freshly
+    // baked this session (on disk, not yet in memory) and the ones the store
+    // has neither in memory nor on disk. Deduplicated, in manifest order.
+    // Cheap — it probes the store, it does not read part payloads.
     std::vector<uint64_t> reconcile(const WorldManifest& manifest,
                                     const PartStore& store) override;
+    // Load the wanted parts into `store`. LocalProvider already wrote them to
+    // the cache during install, so this is a load, not a download. Skip-and-
+    // continue: a part that fails to load is recorded in fetch_failed() and the
+    // loop goes on, so a `true` return does NOT mean every part is resident —
+    // inspect fetch_failed(). `err` is left untouched (no fatal path today).
     bool fetch_parts(const std::vector<uint64_t>& want,
                      PartStore& store, std::string& err) override;
     bool poll_deltas(WorldDelta& out) override;   // LocalProvider: always false (static world)
 
+    // Tallies for the current session: reset at install_graph() entry, then
+    // bumped by install-phase bakes and by demand bakes from
+    // ensure_part_baked() alike. baked_tileset_count_ counts detail tilesets
+    // that reached a bound slot, whether freshly baked or served from cache.
     int baked_count() const { return baked_count_; }
     int hit_count()   const { return hit_count_; }
     int baked_tileset_count() const { return baked_tileset_count_; }
@@ -462,6 +693,23 @@ public:
     const matter::WorldSettings& world_settings() const {
         return world_settings_;
     }
+    const std::optional<matter::HydrologyWorldSettings>& hydrology_settings() const {
+        return hydrology_settings_;
+    }
+    const std::optional<matter::RiverNetworkDefinition>& river_network() const {
+        return river_network_;
+    }
+    const std::optional<matter::TerrainCollisionDefinition>& terrain_collision() const {
+        return terrain_collision_;
+    }
+    // Build the canonical first-section geometry and its immutable terrain
+    // overlay together. The provider owns the authored network; callers own
+    // the resulting shared overlay and must pass that exact instance to the
+    // world's sole FieldRuntime.
+    bool build_river_height_overlay(
+        hydrology::RiverGeometry& geometry,
+        std::shared_ptr<const terrain_field::RiverHeightOverlay>& overlay,
+        std::string& error) const;
     // World.props declarations (property-system S9). Empty when the world
     // declares none. Runtime tunables only — nothing here reaches a bake key.
     const std::vector<matter::WorldPropSpec>& world_prop_specs() const {
@@ -524,6 +772,13 @@ private:
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
     std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
     std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
+    std::optional<matter::HydrologyWorldSettings> hydrology_settings_;
+    std::optional<matter::RiverNetworkDefinition> river_network_;
+    std::optional<matter::TerrainCollisionDefinition> terrain_collision_;
+    std::vector<hydrology::AuthoredFluidCollider> authored_fluid_colliders_;
+    std::optional<hydrology::HydrologyNetworkBakeResult>
+        accepted_fluid_network_;
+    std::optional<hydrology::HydrologyArtifact> accepted_fluid_artifact_;
     std::vector<FetchFailed> fetch_failed_; // Task 7 fix: per-part load failures from fetch_parts()
     part_graph_snapshot::Snapshot graph_snapshot_;  // Task 9: live-edit graph snapshot
 

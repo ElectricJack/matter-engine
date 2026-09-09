@@ -4,17 +4,26 @@
 #include "material_common.glsl"
 #include "impostor_common.glsl"
 
+#ifdef MATTER_WATER_ANIMATION_VERTEX_INPUT
+// Animated water remains in its 12-byte artifact ABI on the GPU. Decode in the
+// vertex stage so a changed frame needs two transfer copies, not a 28-byte
+// compute expansion followed by another full-buffer read.
+layout(location = 0) in uvec3 in_water_packed;
+const vec4 in_tint = vec4(1.0);
+const vec4 in_surface = vec4(0.0, 0.0, 1.0, 1.0);
+#else
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_tint;
 layout(location = 3) in vec4 in_surface;
 layout(location = 4) in uint in_material_index;
+#endif
 // The C2 skin raster specialization supplies this attribute from
 // animation_skin.comp's previous output. The default static specialization
 // keeps the legacy five-attribute contract and uses in_position below.
 #ifdef MATTER_SKINNED_VERTEX_INPUT
 layout(location = 5) in vec3 in_previous_position;
-#else
+#elif !defined(MATTER_WATER_ANIMATION_VERTEX_INPUT)
 // Warp field (VT Phase 2): warped ground coordinate + frozen frame,
 // terrain-sector vertices only (zeros elsewhere; su == 0 means "no warp").
 // The skinned specialization's VkSkinVertex carries no warp data — animated
@@ -58,6 +67,9 @@ layout(location = 11) flat out uint out_selected_lod;
 // only when the impostor branch runs.
 layout(location = 12) flat out vec3 out_model_basis_x;
 layout(location = 13) flat out vec3 out_model_basis_y;
+layout(location = 15) flat out uint out_water_binding_slot;
+layout(location = 16) flat out uint out_water_generation;
+layout(location = 17) flat out uint out_water_diagnostic_identity;
 
 layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 world_to_clip;
@@ -76,6 +88,10 @@ struct DrawTransform {
     uint instance_token;
     uint vt_slot;
     uint selected_lod;
+    uint water_binding_slot;
+    uint water_generation;
+    uint water_pad0;
+    uint water_pad1;
 };
 
 // Shared with gbuffer.frag. Direct (non-indirect) draws have no cull-written
@@ -91,13 +107,23 @@ layout(push_constant) uniform RasterDebugPushConstants {
     // raster.vert and in RasterDebugPushConstants (vk_scene_renderer.h); the
     // three must stay identical.
     uint impostor_parallax_enabled;
+    uint water_diagnostic_identity;
+    uint water_padding1;
+    uint water_padding2;
+    vec4 water_bounds_min;
+    vec4 water_bounds_extent;
+    uint water_material_index;
+    uint water_padding3;
+    uint water_padding4;
+    uint water_padding5;
 } debug_push;
 
 layout(set = 1, binding = 3, std430) readonly buffer DrawTransforms {
     DrawTransform transforms[];
 };
 
-#ifndef MATTER_SKINNED_VERTEX_INPUT
+#if !defined(MATTER_SKINNED_VERTEX_INPUT) && \
+    !defined(MATTER_WATER_ANIMATION_VERTEX_INPUT)
 // Octahedral decode, the exact inverse of warp_field.cpp's oct_encode.
 vec3 warp_oct_decode(vec2 e) {
     vec3 v = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
@@ -123,7 +149,45 @@ vec3 warp_oct_decode(vec2 e) {
 //               part's atlas is uploaded to a layer pair
 //   tint.b    : this impostor's ordinal within the part (pre-patch identity)
 
+#ifdef MATTER_WATER_ANIMATION_VERTEX_INPUT
+float unpack_water_snorm16(uint bits) {
+    int value = int(bits & 0xffffu);
+    if (value >= 32768) value -= 65536;
+    return max(-1.0, float(value) / 32767.0);
+}
+
+float water_sign_not_zero(float value) {
+    return value < 0.0 ? -1.0 : 1.0;
+}
+
+vec3 decode_water_octahedral(uint packed_x, uint packed_y) {
+    vec3 normal = vec3(unpack_water_snorm16(packed_x),
+                       unpack_water_snorm16(packed_y), 0.0);
+    normal.z = 1.0 - abs(normal.x) - abs(normal.y);
+    if (normal.z < 0.0) {
+        float old_x = normal.x;
+        normal.x = (1.0 - abs(normal.y)) * water_sign_not_zero(old_x);
+        normal.y = (1.0 - abs(old_x)) * water_sign_not_zero(normal.y);
+    }
+    float length_squared = dot(normal, normal);
+    return length_squared > 1.0e-16
+               ? normal * inversesqrt(length_squared)
+               : vec3(0.0, 1.0, 0.0);
+}
+#endif
+
 void main() {
+#ifdef MATTER_WATER_ANIMATION_VERTEX_INPUT
+    const vec3 water_unorm =
+        vec3(float(in_water_packed.x & 0xffffu),
+             float(in_water_packed.x >> 16u),
+             float(in_water_packed.y & 0xffffu)) / 65535.0;
+    const vec3 in_position = debug_push.water_bounds_min.xyz +
+                             debug_push.water_bounds_extent.xyz * water_unorm;
+    const vec3 in_normal = decode_water_octahedral(
+        in_water_packed.y >> 16u, in_water_packed.z);
+    const uint in_material_index = debug_push.water_material_index;
+#endif
     // gl_InstanceIndex already includes VkDrawIndirectCommand::firstInstance.
     // Adding gl_BaseInstance would index the Task 7 transform array twice.
     DrawTransform draw = transforms[gl_InstanceIndex];
@@ -346,7 +410,15 @@ void main() {
     out_selected_lod = debug_push.direct_lod_valid != 0u
                            ? debug_push.direct_lod
                            : draw.selected_lod;
-#ifdef MATTER_SKINNED_VERTEX_INPUT
+    out_water_binding_slot = draw.water_binding_slot;
+    out_water_generation = draw.water_generation;
+#ifdef MATTER_WATER_ANIMATION_VERTEX_INPUT
+    out_water_diagnostic_identity = debug_push.water_diagnostic_identity;
+#else
+    out_water_diagnostic_identity = 0u;
+#endif
+#if defined(MATTER_SKINNED_VERTEX_INPUT) || \
+    defined(MATTER_WATER_ANIMATION_VERTEX_INPUT)
     // Animated props carry no warp field; su == 0 selects the world-XZ
     // fallback in gbuffer.frag.
     out_warp_uv_scales = vec4(0.0);

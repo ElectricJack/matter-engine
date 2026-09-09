@@ -5,6 +5,43 @@
 // The host reads globalThis.__world_ops (array of op-line strings),
 // globalThis.__surface_ops / __surface_mats (the surfaces() classifier tape)
 // and globalThis.__world_class (the authored class) after eval.
+//
+// MatterEngine3/src/world_base.js.h
+//
+// How it fits. This is one of THREE JS preludes in the engine, and they are not
+// interchangeable:
+//   - part_base.js.h              — the PART-bake context
+//   - world_base.js.h (this file) — the WORLD field/tape-compilation context
+//   - an inline prelude in src/script/world_definition_loader.cpp — the
+//     world-definition load pass
+// A world's source is evaluated in more than one of them (the loader pass
+// registers materials; this pass compiles `field()`), so a global a shared-lib
+// module reaches for must exist in every prelude that can see that module, or
+// world load dies with a bare ReferenceError naming the missing symbol. The
+// ScriptProfile no-ops at the top of the literal exist for exactly that reason.
+//
+// How it is used. `ScriptHost::eval_world` (src/script_host.cpp) installs the
+// native `__material_handle` binding FIRST, then evaluates this string into a
+// fresh QuickJS context, then the world source, then calls the authored class's
+// `field()` / `surfaces()` / `habitat()`. Nothing here executes on its own: the
+// recorder classes only APPEND op lines to the `globalThis.__*_ops` arrays, and
+// the host reads those arrays back afterwards and compiles them natively
+// (`FieldProgram::parse` / `SurfaceProgram::parse` in src/terrain_field.*).
+//
+// Op tapes and registers. A "register" is just a position in an op array: op
+// line N produces register rN. That is why each tape owns a separate array
+// (`__world_ops`, `__surface_ops`, `__habitat_ops`) — sharing one would make a
+// tape renumber another's registers. `__tape_ops` selects which array `__semit`
+// is currently recording into, and `__surfaceArg(targetOps)` sets it.
+//
+// GOTCHA, and it is the sharp one: the op text these recorders emit becomes the
+// canonical program text, whose hash gates sector re-bakes. Changing what an
+// existing authoring call emits — even an extra, semantically inert op line —
+// re-bakes every streamed world that uses it. That constraint is why
+// `heightToDensity` is lazy and why `worldX/Y/Z` are memoised; see those blocks.
+//
+// This header declares a `static` pointer, so every TU that includes it gets its
+// own copy of the pointer; only src/script_host.cpp includes it today.
 static const char* kWorldBaseJS = R"JS(
 // ScriptProfile no-ops. This context installs no __dsl_* bindings, so there is
 // nothing here to time -- but a shared-lib module that carries prof() calls for
@@ -26,6 +63,13 @@ function __reg(v) {
   if (v instanceof DensityNode) return v.__3d().r;
   return __emit('const ' + (+v));
 }
+// One value in the FIELD program: a handle on the op line that produced it.
+// `r` is that line's index in globalThis.__world_ops. Nodes are immutable —
+// every method emits a NEW op line and returns a new node, so reusing a node in
+// several expressions costs nothing extra, but each method CALL costs an op
+// against the program budget (see the 96-op note on worldX below).
+// Operands may be a FieldNode, a DensityNode, or a plain number (__reg turns
+// the last into a `const` line).
 class FieldNode {
   constructor(r) { this.r = r; }
   add(o)  { return new FieldNode(__emit('add r' + this.r + ' r' + __reg(o))); }
@@ -239,6 +283,14 @@ function __swarp(w) {
   if (w === undefined) return '';
   return ' ' + (w.seed >>> 0) + ' ' + (+w.freq) + ' ' + (+w.amp);
 }
+)JS"
+// Keep each raw literal below MSVC's individual string-literal size limit.
+R"JS(// The tape equivalent of FieldNode: a handle on an op line in whichever tape
+// __tape_ops currently selects (surfaces() or habitat()). Same immutability and
+// same numeric-operand promotion, but a DIFFERENT op array and a slightly
+// different vocabulary — `fract` exists here and not in the field program, and
+// the noise ops come in part-local and world-anchored (`*World`) pairs because a
+// tape is evaluated per part variant while a field program is always world.
 class SurfaceNode {
   constructor(r) { this.r = r; }
   add(o)  { return new SurfaceNode(__semit('add r' + this.r + ' r' + __sreg(o))); }
@@ -293,7 +345,8 @@ function __surfaceArg(targetOps) {
     // 3D fbm noise over PART-LOCAL (x, y, z) — varies along vertical surfaces
     // where the 2D pair smears into stripes. `warp` = {seed, freq, amp}
     // optionally domain-warps the op's own sample point (organic boundary
-    // shapes) — one op, no stateful warp2 in the tape.
+    // shapes) — one op, no stateful warp2 in the tape.)JS"
+R"JS(
     noise3(seed, freq, octaves, gain, lacunarity, warp) {
       if (octaves === undefined) octaves = 3;
       if (gain === undefined) gain = 0.5;
@@ -448,5 +501,11 @@ function defineMaterial(name, spec) {
                         'shared-lib module the world imports), not inside field()');
   return handle;
 }
+// Base class an authored world extends (`class MyWorld extends World`).
+// Deliberately empty: it inherits no behaviour and defines no members. It exists
+// so the authored source has a name to extend and so the host can identify the
+// world class it must read back out of globalThis.__world_class. Everything the
+// host calls — field(), surfaces(), habitat(), static params — is declared on
+// the subclass itself.
 class World {}
 )JS";

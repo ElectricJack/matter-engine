@@ -1,4 +1,5 @@
 #include "check.h"
+#include "gpu_visual_mesher_vk_tests.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -9,9 +10,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,6 +34,9 @@
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/water_field_vk.h"
+#include "render/water_mesh_animation_playback.h"
+#include "render/vt_residency.h"
 #include "render/vk_volumetrics.h"
 #include "render/vk_atmosphere.h"
 #include "render/vk_cloud_shadows.h"
@@ -45,6 +51,1361 @@
 
 namespace {
 
+constexpr std::uint32_t kWaterForwardArtifactMaterial = 4u;
+constexpr std::uint32_t kWaterForwardAuthoredMaterial = 19u;
+
+struct WaterForwardPlaybackFixture {
+    std::filesystem::path root;
+    viewer::WaterMeshAnimationPlayback playback;
+    viewer::WaterMeshAnimationPlayback provenance_playback;
+};
+
+bool make_water_forward_playback_fixture(
+    WaterForwardPlaybackFixture& fixture, std::string& message) {
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    fixture.root = std::filesystem::temp_directory_path() /
+        ("matter-water-forward-smoke-" + std::to_string(stamp));
+
+    hydrology::WaterMeshAnimation animation{};
+    animation.frames_per_second = 30u;
+    animation.phase_offset_frames = 15u;
+    animation.duration_seconds = 1.0f;
+    animation.frames.resize(30u);
+    for (auto& mesh : animation.frames) {
+        mesh.positions = {
+            -0.75f, -0.75f, -2.0f,
+             0.75f, -0.75f, -2.0f,
+             0.0f,   1.5f,  -2.0f};
+        mesh.normals = {0.0f, 1.0f, 0.0f,
+                        0.0f, 1.0f, 0.0f,
+                        0.0f, 1.0f, 0.0f};
+        mesh.indices = {0u, 1u, 2u};
+        mesh.material = kWaterForwardArtifactMaterial;
+        mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+    }
+
+    constexpr std::uint64_t kSemantic = UINT64_C(0x77666d73656d);
+    constexpr std::uint64_t kPrimary = UINT64_C(0x77667072696d);
+    hydrology::WaterMeshAnimationArtifact artifact{};
+    gpu_meshing::Error artifact_error{};
+    if (!hydrology::pack_water_mesh_animation_artifact(
+              {"forward-water", kSemantic, kPrimary, 0u, 0.2f,
+               {{0.0f, 0.0f, 0.0f}, 0.2f, 1u}},
+            animation, artifact, artifact_error)) {
+        message = artifact_error.message;
+        return false;
+    }
+
+    hydrology::HydrologyNetworkArtifact manifest{};
+    manifest.state = hydrology::HydrologyNetworkState::Ready;
+    manifest.section_animations = {{
+        "forward-water", "hydrology/animations/forward-water.mhwa",
+        kSemantic, kPrimary, 0u, 30u, 30u, artifact.payload_digest}};
+    if (!hydrology::save_water_mesh_animation_artifact_immutable(
+            fixture.root / manifest.section_animations.front().relative_path,
+            artifact, artifact_error)) {
+        message = artifact_error.message;
+        return false;
+    }
+    if (!hydrology::load_water_mesh_animation_artifact(
+            fixture.root / manifest.section_animations.front().relative_path,
+            artifact, artifact_error)) {
+        message = artifact_error.message;
+        return false;
+    }
+    manifest.section_animations.front().payload_digest =
+        artifact.payload_digest;
+
+    viewer::WaterAnimationFallback fallback{};
+    if (!viewer::activate_water_mesh_animation_playback(
+            manifest, fixture.root, kWaterForwardAuthoredMaterial,
+            2u, 64u * 1024u * 1024u,
+            fixture.playback, fallback)) {
+        message = fallback.message;
+        return false;
+    }
+    if (!viewer::activate_water_mesh_animation_playback(
+            manifest, fixture.root, kWaterForwardArtifactMaterial,
+            2u, 64u * 1024u * 1024u,
+            fixture.provenance_playback, fallback)) {
+        message = fallback.message;
+        return false;
+    }
+    return true;
+}
+
+viewer::VkScenePart known_raster_triangle(uint64_t hash,
+                                          uint32_t material_index = 7u);
+viewer::VkScenePart water_forward_background_triangle(uint64_t hash,
+                                                       uint32_t material_index);
+bool close3(matter::Float3 actual, matter::Float3 expected, float epsilon);
+
+viewer::PackedWaterField make_water_forward_field_fixture(
+    std::uint64_t digest, bool wet = true, float depth_m = 1.5f,
+    bool whitewater = true) {
+    hydrology::GameplayFieldLayout layout{};
+    layout.origin_m = {-2.0f, 0.0f, -3.0f};
+    layout.cell_size_m = 0.5f;
+    layout.width = 8u;
+    layout.depth = 4u;
+    const std::size_t cell_count =
+        static_cast<std::size_t>(layout.width) * layout.depth;
+    const std::vector<hydrology::GameplaySample> gameplay(
+        cell_count, wet ? hydrology::GameplaySample{
+                              0.0f, depth_m, 2.0f, 0.0f, 0.5f, true}
+                        : hydrology::GameplaySample{});
+    const std::vector<hydrology::PresentationSample> presentation(
+        cell_count,
+        wet && whitewater ? hydrology::PresentationSample{
+                  0.0f, 0.0f, 0.90f, 0.95f, 0.85f,
+                  hydrology::RiverFeature::Rapid, true}
+            : wet ? hydrology::PresentationSample{
+                        0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                        hydrology::RiverFeature::Calm, true}
+                  : hydrology::PresentationSample{});
+    matter::WaterSurfaceDefinition surface{};
+    surface.material_id = kWaterForwardAuthoredMaterial;
+    surface.optics.shallow_absorption = {0.03f, 0.015f, 0.008f};
+    surface.optics.deep_absorption = {0.18f, 0.055f, 0.025f};
+    surface.optics.scattering_color = {0.08f, 0.22f, 0.24f};
+    surface.optics.shallow_distance_m = 8.0f;
+    surface.optics.deep_distance_m = 2.5f;
+    surface.optics.scattering_distance_m = 7.0f;
+    surface.optics.anisotropy = 0.35f;
+    surface.optics.ior = 1.333f;
+    surface.wave_bands = {
+        {7.5f, 0.16f, 0.8f, 0.35f},
+        {1.6f, 0.24f, 1.4f, 0.75f},
+        {0.28f, 0.08f, 2.1f, 0.20f},
+    };
+    if (!whitewater) {
+        for (auto& wave : surface.wave_bands) wave.normal_amplitude = 0.0f;
+    }
+    surface.foam = {0.30f, 2.0f, 2.5f, 0.7f,
+                    0.55f, 1.4f, 0.72f, 0.6f};
+    surface.appearance_hash = UINT64_C(0x7761746572667764);
+    viewer::PackedWaterField packed;
+    viewer::WaterFieldError error;
+    CHECK(viewer::pack_water_field(
+              {layout, &gameplay, &presentation, digest, digest + 1u,
+               &surface},
+              packed, error),
+          error.message.c_str());
+    return packed;
+}
+
+viewer::PackedWaterField make_water_upload_fixture(std::uint64_t digest) {
+    hydrology::GameplayFieldLayout layout{};
+    layout.origin_m = {-3.0f, 0.0f, 7.0f};
+    layout.cell_size_m = 0.25f;
+    layout.width = 2u;
+    layout.depth = 1u;
+    const std::vector<hydrology::GameplaySample> gameplay{
+        {5.0f, 1.5f, 2.0f, -0.5f, 0.25f, true},
+        {5.1f, 1.6f, 2.5f, -0.6f, 0.5f, true}};
+    const std::vector<hydrology::PresentationSample> presentation{
+        {0.1f, 0.2f, 0.3f, 0.4f, 0.5f,
+         hydrology::RiverFeature::Rapid, true},
+        {0.2f, 0.1f, 0.6f, 0.7f, 0.8f,
+         hydrology::RiverFeature::Impact, true}};
+    viewer::PackedWaterField packed;
+    viewer::WaterFieldError error;
+    CHECK(viewer::pack_water_field(
+              {layout, &gameplay, &presentation, digest, digest + 1u},
+              packed, error),
+          error.message.c_str());
+    return packed;
+}
+
+void run_water_field_upload_path(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::string error;
+    CHECK(renderer.init(error),
+          error.empty() ? "water field: initialize renderer" : error.c_str());
+    if (!error.empty()) return;
+
+    viewer::WaterFieldError field_error;
+    viewer::WaterFieldBinding first;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x101u), nullptr, 0u, first,
+              field_error),
+          field_error.message.c_str());
+    CHECK(first.valid(), "water field: publish returns a stable slot generation");
+    CHECK(renderer.test_water_field_image_view(first, 0u) != VK_NULL_HANDLE &&
+              renderer.test_water_field_image_view(first, 1u) != VK_NULL_HANDLE &&
+              renderer.test_water_field_image_view(first, 2u) != VK_NULL_HANDLE &&
+              renderer.test_water_field_image_view(first, 3u) != VK_NULL_HANDLE,
+          "water field: one occupied slot owns all four sampled images");
+    CHECK(renderer.test_water_field_sampler(0u) != VK_NULL_HANDLE &&
+              renderer.test_water_field_sampler(0u) ==
+                  renderer.test_water_field_sampler(1u) &&
+              renderer.test_water_field_sampler(2u) !=
+                  renderer.test_water_field_sampler(0u) &&
+              renderer.test_water_field_sampler(3u) ==
+                  renderer.test_water_field_sampler(0u),
+          "water field: continuous channels are linear and classification is nearest");
+    const auto first_record = renderer.test_water_field_gpu_record(first.slot);
+    CHECK(first_record.extent_generation[2] == first.generation &&
+              first_record.extent_generation[3] == 1u &&
+              first_record.runtime_digest[0] == 0x101u,
+          "water field: descriptor record matches the uploaded generation");
+
+    const VkImageView old_view =
+        renderer.test_water_field_image_view(first, 0u);
+    viewer::WaterFieldBinding replacement;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x202u), &first, 4u, replacement,
+              field_error),
+          field_error.message.c_str());
+    CHECK(replacement.slot == first.slot &&
+              replacement.generation > first.generation &&
+              renderer.test_water_field_image_view(first, 0u) == VK_NULL_HANDLE &&
+              renderer.test_water_field_image_view(replacement, 0u) !=
+                  old_view,
+          "water field: replacement swaps complete resources and rejects stale handles");
+    const auto replacement_record =
+        renderer.test_water_field_gpu_record(replacement.slot);
+    CHECK(replacement_record.extent_generation[2] == replacement.generation &&
+              replacement_record.runtime_digest[0] == 0x202u,
+          "water field: replacement publishes image and record as one generation");
+
+    viewer::WaterFieldBinding second;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x303u), nullptr, 0u, second,
+              field_error),
+          field_error.message.c_str());
+    CHECK(second.slot != replacement.slot && second.generation != 0u,
+          "water field: a second same-material river receives a distinct slot");
+    viewer::VkScenePart first_part = known_raster_triangle(0x701u, 7u);
+    viewer::VkScenePart second_part = known_raster_triangle(0x702u, 7u);
+    first_part.water_field_binding = replacement;
+    first_part.raster_water_surface = true;
+    second_part.water_field_binding = second;
+    CHECK(renderer.ensure_part(first_part, error) >= 0 &&
+              renderer.ensure_part(second_part, error) >= 0,
+          error.empty() ? "water field: register two bound river parts"
+                        : error.c_str());
+    CHECK(renderer.part_is_raster_water(first_part.part_hash) &&
+              !renderer.part_is_raster_water(second_part.part_hash),
+          "water field: registered ranges retain exact water classification");
+    const matter::Mat4f identity = viewer::mat4_identity();
+    CHECK(renderer.update_instances(
+              {{first_part.part_hash, identity, 0x711u},
+               {second_part.part_hash, identity, 0x712u}}, error),
+          error.empty() ? "water field: bind two river instances"
+                        : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 2.0f, 5.0f};
+    camera.target = {0.0f, 0.0f, 0.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 50.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 320u, 200u, matrices, error),
+          error.empty() ? "water field: build frame matrices" : error.c_str());
+    CHECK(renderer.dispatch_culling(matrices, camera.position, 1.0f, error),
+          error.empty() ? "water field: dispatch explicit binding transport"
+                        : error.c_str());
+    std::vector<viewer::WaterFieldBinding> raster_bindings;
+    CHECK(renderer.readback_draw_water_bindings(raster_bindings, error),
+          error.empty() ? "water field: read raster binding transport"
+                        : error.c_str());
+    const auto transported = [&raster_bindings](viewer::WaterFieldBinding wanted) {
+        return std::any_of(
+            raster_bindings.begin(), raster_bindings.end(),
+            [wanted](viewer::WaterFieldBinding actual) {
+                return actual.slot == wanted.slot &&
+                       actual.generation == wanted.generation;
+            });
+    };
+    CHECK(transported(replacement) && transported(second),
+          "water field: same-material raster draws preserve distinct field identities");
+
+    viewer::WaterFieldBinding rebound;
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x404u), &replacement, 5u, rebound,
+              field_error),
+          field_error.message.c_str());
+    CHECK(renderer.set_part_water_field_binding(first_part.part_hash, rebound,
+                                                error),
+          error.empty() ? "water field: rebind an already registered river part"
+                        : error.c_str());
+    CHECK(renderer.update_instances(
+              {{first_part.part_hash, identity, 0x711u},
+               {second_part.part_hash, identity, 0x712u}}, error) &&
+              renderer.dispatch_culling(matrices, camera.position, 1.0f,
+                                        error) &&
+              renderer.readback_draw_water_bindings(raster_bindings, error),
+          error.empty() ? "water field: transport a replacement field binding"
+                        : error.c_str());
+    CHECK(transported(rebound) && transported(second) &&
+              !transported(replacement),
+          "water field: registered parts atomically adopt replacement generations");
+    matter::VulkanRayTracingSettings rt_settings{};
+    rt_settings.enabled = true;
+    rt_settings.max_distance = 100.0f;
+    renderer.set_ray_tracing_settings(rt_settings);
+    matter::VulkanGiSettings gi_settings{};
+    gi_settings.enabled = 1u;
+    gi_settings.samples_per_pixel = 1u;
+    gi_settings.max_bounces = 1u;
+    renderer.set_gi_settings(gi_settings);
+    renderer.set_visibility_reduce(true);
+    renderer.set_test_device_limits(
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(), UINT32_MAX, UINT32_MAX);
+    matter::VulkanFrame frame{};
+    const bool prepared = vulkan.begin_frame(frame, error) &&
+        renderer.prepare_frame(frame, matrices, camera.position, 1.0f, error);
+    const bool recorded = prepared &&
+        renderer.record_cull_and_render(frame, matrices, camera.position, 1.0f,
+                                        error) &&
+        renderer.record_composite_to_swapchain(frame, error);
+    const auto opaque_ranges = renderer.test_recorded_draw_ranges();
+    const auto unlimited_id_ranges =
+        renderer.test_recorded_visibility_id_ranges();
+    CHECK(recorded && opaque_ranges.size() == 1u &&
+              !opaque_ranges[0].raster_water_surface,
+          "water field: opaque recording keeps one ordinary range and zero water ranges");
+    CHECK(unlimited_id_ranges.size() == 1u && opaque_ranges.size() == 1u &&
+              unlimited_id_ranges[0].first_command ==
+                  opaque_ranges[0].first_command &&
+              unlimited_id_ranges[0].command_count ==
+                  opaque_ranges[0].command_count &&
+              !unlimited_id_ranges[0].raster_water_surface,
+          "water field: unlimited visibility-ID iteration terminates on the opaque range after water");
+    const bool ended = recorded && vulkan.end_frame(frame, error);
+    renderer.finish_ray_tracing_frame(frame.serial, ended);
+    vulkan.wait_idle();
+    CHECK(ended,
+          error.empty() ? "water field: prepare descriptor frame"
+                        : error.c_str());
+
+    renderer.set_test_device_limits(
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(), UINT32_MAX, 3u);
+    matter::VulkanFrame capped_frame{};
+    const bool capped_recorded = vulkan.begin_frame(capped_frame, error) &&
+        renderer.prepare_frame(capped_frame, matrices, camera.position, 1.0f,
+                               error) &&
+        renderer.record_cull_and_render(capped_frame, matrices,
+                                        camera.position, 1.0f, error) &&
+        renderer.record_composite_to_swapchain(capped_frame, error);
+    const auto capped_id_ranges =
+        renderer.test_recorded_visibility_id_ranges();
+    const bool capped_ended =
+        capped_recorded && vulkan.end_frame(capped_frame, error);
+    renderer.finish_ray_tracing_frame(capped_frame.serial, capped_ended);
+    vulkan.wait_idle();
+    std::uint32_t capped_id_commands = 0u;
+    for (const viewer::PartCommandRange& range : capped_id_ranges)
+        capped_id_commands += range.command_count;
+    CHECK(capped_ended && opaque_ranges.size() == 1u &&
+              capped_id_ranges.size() > 1u &&
+              capped_id_ranges.front().first_command ==
+                  opaque_ranges[0].first_command &&
+              capped_id_commands == opaque_ranges[0].command_count &&
+              std::all_of(
+                  capped_id_ranges.begin(), capped_id_ranges.end(),
+                  [](const viewer::PartCommandRange& range) {
+                      return range.command_count != 0u &&
+                             range.command_count <= 3u &&
+                             !range.raster_water_surface;
+                  }),
+          error.empty()
+              ? "water field: capped visibility-ID iteration splits opaque commands and excludes water"
+              : error.c_str());
+    renderer.clear_test_device_limits(error);
+    CHECK(error.empty(), "water field: restore physical device limits");
+    CHECK(renderer.test_water_field_descriptors_match(
+              frame.frame_slot, rebound),
+          "water field: raster and RT descriptor arrays name one complete generation");
+    if (vulkan.ray_tracing_available()) {
+        const auto& rt_records = renderer.test_last_rt_geometry_records();
+        const auto traced = [&rt_records](std::uint64_t hash,
+                                          viewer::WaterFieldBinding wanted) {
+            return std::any_of(
+                rt_records.begin(), rt_records.end(),
+                [hash, wanted](const viewer::RtGeometryDebugRecord& record) {
+                    return record.part_hash == hash &&
+                           record.water_binding_slot == wanted.slot &&
+                           record.water_generation == wanted.generation;
+                });
+        };
+        CHECK(traced(first_part.part_hash, rebound) &&
+                  traced(second_part.part_hash, second),
+              "water field: RT records preserve the same two distinct identities");
+    }
+    CHECK(vulkan.validation_error_count() == 0u,
+          "water field: immutable uploads produce no Vulkan validation errors");
+}
+
+void run_water_animation_activation_path(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::string error;
+    CHECK(renderer.init(error),
+          error.empty() ? "water animation: initialize renderer"
+                        : error.c_str());
+    if (!error.empty()) return;
+
+    viewer::WaterFieldError field_error{};
+    viewer::WaterFieldBinding field{};
+    CHECK(renderer.publish_water_field(
+              make_water_upload_fixture(0x5151u), nullptr, 0u, field,
+              field_error),
+          field_error.message.c_str());
+    viewer::VkScenePart proxy_part =
+        known_raster_triangle(0x5741544552414e49ull, 7u);
+    proxy_part.water_field_binding = field;
+    proxy_part.raster_water_surface = true;
+    CHECK(renderer.ensure_part(proxy_part, error) >= 0,
+          error.empty() ? "water animation: register static proxy"
+                        : error.c_str());
+    matter::VulkanRayTracingSettings rt_settings{};
+    rt_settings.enabled = true;
+    rt_settings.max_distance = 100.0f;
+    renderer.set_ray_tracing_settings(rt_settings);
+
+    viewer::VkSceneInstance proxy{};
+    proxy.part_hash = proxy_part.part_hash;
+    proxy.object_to_world = viewer::mat4_identity();
+    proxy.instance_id = 0x5741544552ull;
+    proxy.ray_traced = false;
+    proxy.rt_proxy_only = false;
+    CHECK(renderer.update_instances({proxy}, error),
+          error.empty() ? "water animation: stage accepted static fallback"
+                        : error.c_str());
+
+    const std::array<hydrology::PackedWaterAnimationVertex, 3> vertices{{
+        {0u, 0u, 0u},
+        {65535u, 0u, 0u},
+        {0xffff0000u, 0u, 0u},
+    }};
+    const std::array<std::uint32_t, 3> indices{{0u, 1u, 2u}};
+    viewer::WaterAnimationFrameSelection selection{};
+    selection.frame_index = 0u;
+    selection.upload_required = true;
+    selection.draws.push_back({
+        "smoke-water", false, 0u, 7u,
+        {{-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}},
+        {reinterpret_cast<const std::uint8_t*>(vertices.data()),
+         reinterpret_cast<const std::uint8_t*>(indices.data()),
+         vertices.size() * sizeof(vertices[0]),
+         indices.size() * sizeof(indices[0]),
+         static_cast<std::uint32_t>(vertices.size()),
+         static_cast<std::uint32_t>(indices.size())}});
+    const viewer::WaterAnimationGpuCapacity capacity{
+        vertices.size() * sizeof(vertices[0]), vertices.size(),
+        indices.size() * sizeof(indices[0]), 1u};
+    viewer::WaterAnimationGpuError animation_error{};
+    CHECK(renderer.publish_water_animation(
+              11u, 2u, capacity, 0u, animation_error),
+          animation_error.message.c_str());
+    renderer.set_test_device_limits(
+        std::numeric_limits<VkDeviceSize>::max(),
+        std::numeric_limits<VkDeviceSize>::max(),
+        capacity.packed_vertex_bytes - 1u, UINT32_MAX, UINT32_MAX);
+    CHECK(!renderer.publish_water_animation(
+              12u, 2u, capacity, 0u, animation_error) &&
+              renderer.water_animation_generation() == 11u,
+          "water animation: rejected GPU capacity preserves the live generation");
+    renderer.clear_test_device_limits(error);
+    CHECK(error.empty(), "water animation: restore physical device limits");
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(
+              camera, 320u, 200u, matrices, error),
+          error.empty() ? "water animation: build frame matrices"
+                        : error.c_str());
+
+    std::vector<viewer::DrawCommand> commands;
+    CHECK(renderer.dispatch_culling(
+              matrices, camera.position, 1.0f, error) &&
+              renderer.readback_commands(commands, error),
+          error.empty() ? "water animation: inspect accepted static fallback"
+                        : error.c_str());
+    std::uint32_t static_fallback_instances = 0u;
+    for (const viewer::DrawCommand& command : commands)
+        static_fallback_instances += command.instance_count;
+    CHECK(renderer.part_is_raster_water(proxy_part.part_hash) &&
+              static_fallback_instances == 1u && !proxy.ray_traced,
+          "water animation: accepted proxy owns one forward-eligible static range");
+
+    matter::VulkanFrame frame{};
+    CHECK(vulkan.begin_frame(frame, error),
+          error.empty() ? "water animation: begin animated frame"
+                        : error.c_str());
+    if (frame.command_buffer != VK_NULL_HANDLE) {
+        CHECK(renderer.prepare_water_animation_frame(
+                  11u, frame.frame_slot, selection, {0u}, animation_error),
+              animation_error.message.c_str());
+        proxy.rt_proxy_only = true;
+        CHECK(renderer.update_instances({proxy}, error),
+              error.empty() ? "water animation: upload suppressed proxy"
+                            : error.c_str());
+        CHECK(renderer.dispatch_culling(
+                  matrices, camera.position, 1.0f, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? "water animation: inspect suppressed cull"
+                            : error.c_str());
+        CHECK(std::none_of(
+                  commands.begin(), commands.end(),
+                  [](const viewer::DrawCommand& command) {
+                      return command.instance_count != 0u;
+                  }),
+              "water animation: RT proxy contributes no static raster draw");
+        CHECK(!proxy.ray_traced,
+              "water animation: active direct stays raster-only");
+        const std::uint64_t tlas_builds_before =
+            renderer.rt_tlas_build_count();
+        const bool recorded = renderer.prepare_frame(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_cull_and_render(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        const bool ended = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, ended);
+        renderer.finish_dynamic_frame(frame.serial);
+        CHECK(ended,
+              error.empty() ? "water animation: record direct animated draw"
+                            : error.c_str());
+        CHECK(renderer.test_recorded_draw_ranges().empty(),
+              "water animation: classified static water is absent from opaque recording");
+        const std::uint32_t raster_direct_draws =
+            renderer.test_recorded_water_draw_count();
+        CHECK(raster_direct_draws == 1u,
+              "water animation: command recording issues exactly one direct indexed draw");
+        std::printf("water animation raster direct draws: %u\n",
+                    raster_direct_draws);
+        vulkan.wait_idle();
+
+        if (vulkan.ray_tracing_available()) {
+            CHECK(renderer.water_animation_decode_dispatch_count() == 0u,
+                  "water animation: active raster draw performs no RT vertex decode");
+            CHECK(renderer.test_last_rt_blas_build_count() == 0u,
+                  "water animation: active raster draw builds no BLAS");
+            CHECK(renderer.rt_tlas_build_count() == tlas_builds_before,
+                  "water animation: active raster draw inserts no TLAS instance");
+            const auto& rt_records =
+                renderer.test_last_rt_geometry_records();
+            const std::size_t water_rt_records = std::count_if(
+                rt_records.begin(), rt_records.end(),
+                [&proxy_part](const viewer::RtGeometryDebugRecord& record) {
+                    return record.part_hash == proxy_part.part_hash;
+                });
+            CHECK(water_rt_records == 0u,
+                  "water animation: active raster draw publishes no RT proxy record");
+            std::printf(
+                "water animation RT counters: decode=%llu blas=%u "
+                "tlas_before=%llu tlas_after=%llu records=%zu\n",
+                static_cast<unsigned long long>(
+                    renderer.water_animation_decode_dispatch_count()),
+                renderer.test_last_rt_blas_build_count(),
+                static_cast<unsigned long long>(tlas_builds_before),
+                static_cast<unsigned long long>(
+                    renderer.rt_tlas_build_count()),
+                water_rt_records);
+        }
+
+        renderer.clear_water_animation(frame.serial + 2u);
+        CHECK(renderer.water_animation_generation() == 0u,
+              "water animation: fallback clears the dynamic generation first");
+        proxy.rt_proxy_only = false;
+        proxy.ray_traced = false;
+        CHECK(renderer.update_instances({proxy}, error) &&
+                  renderer.dispatch_culling(
+                      matrices, camera.position, 1.0f, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? "water animation: restore static proxy raster"
+                            : error.c_str());
+        CHECK(std::any_of(
+                  commands.begin(), commands.end(),
+                  [](const viewer::DrawCommand& command) {
+                      return command.instance_count != 0u;
+                  }),
+              "water animation: fallback immediately restores static raster");
+        std::uint32_t fallback_raster_placements = 0u;
+        for (const viewer::DrawCommand& command : commands)
+            fallback_raster_placements += command.instance_count;
+        std::vector<viewer::VkSceneRenderer::RtInstance>
+            fallback_rt_instances;
+        CHECK(fallback_raster_placements == 1u &&
+                  renderer.fill_rt_instances(fallback_rt_instances) == 0u,
+              "water animation: fallback has one raster placement and no RT instance");
+        CHECK(!proxy.ray_traced,
+              "water animation: accepted static fallback remains raster-only");
+        std::printf(
+            "water animation fallback counters: raster=%u rt_instances=%zu "
+            "decode=%llu\n",
+            fallback_raster_placements, fallback_rt_instances.size(),
+            static_cast<unsigned long long>(
+                renderer.water_animation_decode_dispatch_count()));
+        renderer.collect_water_animation(frame.serial + 2u);
+
+        CHECK(renderer.publish_water_animation(
+                  12u, 2u, capacity, frame.serial + 2u, animation_error) &&
+                  renderer.water_animation_generation() == 12u,
+              animation_error.message.empty()
+                  ? "water animation: later valid generation reactivates"
+                  : animation_error.message.c_str());
+        CHECK(!renderer.prepare_water_animation_frame(
+                  11u, frame.frame_slot, selection, {0u}, animation_error) &&
+                  renderer.water_animation_generation() == 12u,
+              "water animation: stale preparation cannot mutate a live generation");
+        CHECK(renderer.dispatch_culling(
+                  matrices, camera.position, 1.0f, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? "water animation: inspect rejected direct fallback"
+                            : error.c_str());
+        std::uint32_t rejected_fallback_instances = 0u;
+        for (const viewer::DrawCommand& command : commands)
+            rejected_fallback_instances += command.instance_count;
+        CHECK(rejected_fallback_instances == 1u &&
+                  renderer.part_is_raster_water(proxy_part.part_hash) &&
+                  !proxy.ray_traced,
+              "water animation: rejected direct restores one raster-only static water range");
+        renderer.clear_water_animation(frame.serial + 4u);
+        renderer.collect_water_animation(frame.serial + 4u);
+    }
+    CHECK(vulkan.validation_error_count() == 0u,
+          "water animation: activation, draw, fallback, and retirement have no validation errors");
+}
+
+void run_water_forward_path(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::string error;
+    CHECK(renderer.water_forward_image_bytes() == 0u,
+          "water forward: preservation memory is zero before images exist");
+    CHECK(renderer.init(error),
+          error.empty() ? "water forward: initialize renderer" : error.c_str());
+    if (!error.empty()) return;
+
+    matter::VulkanRayTracingSettings raster_only{};
+    raster_only.enabled = false;
+    renderer.set_ray_tracing_settings(raster_only);
+    matter::VulkanGiSettings gi{};
+    gi.enabled = 0u;
+    renderer.set_gi_settings(gi);
+
+    std::vector<MaterialGpuRecord> materials(
+        kWaterForwardAuthoredMaterial + 1u);
+    materials[2].base_roughness[0] = 0.55f;
+    materials[2].base_roughness[1] = 0.18f;
+    materials[2].base_roughness[2] = 0.08f;
+    materials[2].base_roughness[3] = 0.65f;
+    materials[2].metal_opacity_spec_coat[1] = 1.0f;
+    materials[2].scattering_shape[3] = 1.0f;
+    materials[kWaterForwardArtifactMaterial].base_roughness[0] = 0.5f;
+    materials[kWaterForwardArtifactMaterial].base_roughness[1] = 0.5f;
+    materials[kWaterForwardArtifactMaterial].base_roughness[2] = 0.5f;
+    materials[kWaterForwardArtifactMaterial].base_roughness[3] = 1.0f;
+    auto& water_material = materials[kWaterForwardAuthoredMaterial];
+    water_material.base_roughness[0] = 0.06f;
+    water_material.base_roughness[1] = 0.22f;
+    water_material.base_roughness[2] = 0.38f;
+    water_material.base_roughness[3] = 0.20f;
+    water_material.metal_opacity_spec_coat[1] = 1.0f;
+    water_material.scattering_shape[3] = 1.0f;
+    water_material.flags_misc[0] = MATERIAL_WATER_SURFACE;
+    CHECK(renderer.update_materials(materials, 1u, 1u, error),
+          error.empty() ? "water forward: upload materials" : error.c_str());
+
+    const viewer::VkScenePart background =
+        water_forward_background_triangle(0x77666267626b67ull, 2u);
+    CHECK(renderer.ensure_part(background, error) >= 0,
+          error.empty() ? "water forward: register opaque background"
+                        : error.c_str());
+    viewer::VkSceneInstance background_instance{};
+    background_instance.part_hash = background.part_hash;
+    background_instance.object_to_world = viewer::mat4_identity();
+    background_instance.instance_id = 0x6261636bull;
+    background_instance.ray_traced = false;
+    CHECK(renderer.update_instances({background_instance}, error),
+          error.empty() ? "water forward: stage opaque-only baseline"
+                        : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 20.0f;
+    viewer::FrameMatrices matrices{};
+
+    const auto finish_frame = [&](matter::VulkanFrame& frame,
+                                  const char* label) {
+        const bool recorded = renderer.prepare_frame(
+                                  frame, matrices, camera.position, 1.0f,
+                                  error) &&
+            renderer.record_cull_and_render(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        const bool ended = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, ended);
+        renderer.finish_dynamic_frame(frame.serial);
+        CHECK(ended, error.empty() ? label : error.c_str());
+        vulkan.wait_idle();
+        return ended;
+    };
+
+    matter::VulkanFrame baseline_frame{};
+    CHECK(vulkan.begin_frame(baseline_frame, error),
+          error.empty() ? "water forward: begin opaque baseline"
+                        : error.c_str());
+    CHECK(viewer::build_frame_matrices(camera, baseline_frame.extent.width,
+                                       baseline_frame.extent.height, matrices,
+                                       error),
+          error.empty() ? "water forward: build frame matrices"
+                        : error.c_str());
+    if (!finish_frame(baseline_frame,
+                      "water forward: render opaque baseline"))
+        return;
+    const VkExtent2D raster_extent = renderer.test_opaque_extent();
+    const std::uint64_t expected_forward_image_bytes =
+        static_cast<std::uint64_t>(raster_extent.width) *
+        static_cast<std::uint64_t>(raster_extent.height) * 12u;
+    CHECK(renderer.water_forward_image_bytes() ==
+              expected_forward_image_bytes,
+          "water forward: preservation images report exactly twelve logical bytes per raster pixel");
+    CHECK(renderer.test_gpu_zone_written(
+              baseline_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDraw) == 0u,
+          "water forward: a frame without eligible water leaves the forward timing zone unwritten");
+    CHECK(renderer.test_gpu_zone_written(
+              baseline_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) == 0u,
+          "water forward: a frame without animated water leaves the direct timing zone unwritten");
+    const uint32_t center_x = raster_extent.width / 2u;
+    const uint32_t center_y = raster_extent.height / 2u;
+    const uint32_t control_x = raster_extent.width / 8u;
+    const uint32_t control_y = raster_extent.height * 3u / 4u;
+    viewer::VkRasterPixel baseline_center{};
+    viewer::VkRasterPixel baseline_control{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         baseline_center, error) &&
+              renderer.readback_raster_pixel(control_x, control_y,
+                                             baseline_control, error),
+          error.empty() ? "water forward: read opaque controls"
+                        : error.c_str());
+
+    viewer::WaterFieldError field_error{};
+    viewer::WaterFieldBinding field{};
+    CHECK(renderer.publish_water_field(
+              make_water_forward_field_fixture(0x7766u), nullptr, 0u, field,
+              field_error),
+          field_error.message.c_str());
+    viewer::VkScenePart proxy = known_raster_triangle(
+        0x776670726f7879ull, kWaterForwardAuthoredMaterial);
+    proxy.water_field_binding = field;
+    proxy.raster_water_surface = true;
+    CHECK(renderer.ensure_part(proxy, error) >= 0,
+          error.empty() ? "water forward: register static water fallback"
+                        : error.c_str());
+    viewer::VkSceneInstance proxy_instance{};
+    proxy_instance.part_hash = proxy.part_hash;
+    proxy_instance.object_to_world = viewer::mat4_identity();
+    proxy_instance.instance_id = 0x7761746572ull;
+    proxy_instance.ray_traced = false;
+    proxy_instance.rt_proxy_only = true;
+    CHECK(renderer.update_instances({background_instance, proxy_instance},
+                                    error),
+          error.empty() ? "water forward: stage active proxy ownership"
+                        : error.c_str());
+
+    WaterForwardPlaybackFixture playback_fixture{};
+    std::string playback_error;
+    if (!make_water_forward_playback_fixture(
+            playback_fixture, playback_error)) {
+        CHECK(false, playback_error.c_str());
+        return;
+    }
+    viewer::WaterAnimationFallback playback_fallback{};
+    std::vector<viewer::DecodedWaterAnimationVertex> provenance_vertices;
+    std::vector<std::uint32_t> provenance_indices;
+    CHECK(playback_fixture.playback.decode_frame_for_test(
+              0u, 0u, provenance_vertices, provenance_indices,
+              playback_fallback) &&
+              provenance_vertices.size() == 3u &&
+              provenance_indices == std::vector<std::uint32_t>({0u, 1u, 2u}) &&
+              std::all_of(provenance_vertices.begin(),
+                          provenance_vertices.end(),
+                          [](const auto& vertex) {
+                              return vertex.material_index ==
+                                  kWaterForwardArtifactMaterial;
+                          }),
+          playback_fallback.message.empty()
+              ? "water forward: decoded artifact keeps legacy material 4"
+              : playback_fallback.message.c_str());
+    viewer::WaterAnimationFrameSelection selection =
+        playback_fixture.playback.make_selection();
+    const viewer::WaterAnimationPlaybackCapacity measured =
+        playback_fixture.playback.maximum_frame_capacity();
+    const viewer::WaterAnimationGpuCapacity capacity{
+        measured.packed_vertex_bytes, measured.decoded_vertex_count,
+        measured.index_bytes, measured.draw_count};
+    viewer::WaterAnimationGpuError animation_error{};
+    CHECK(renderer.publish_water_animation(71u, 2u, capacity, 0u,
+                                           animation_error),
+          animation_error.message.c_str());
+
+    matter::VulkanFrame mismatch_frame{};
+    CHECK(vulkan.begin_frame(mismatch_frame, error),
+          error.empty() ? "water forward: begin provenance mismatch frame"
+                        : error.c_str());
+    CHECK(playback_fixture.provenance_playback.select(
+              0.0, mismatch_frame.frame_slot, selection,
+              playback_fallback) &&
+              renderer.prepare_water_animation_frame(
+                  71u, mismatch_frame.frame_slot, selection, {1u},
+                  animation_error),
+          !playback_fallback.message.empty()
+              ? playback_fallback.message.c_str()
+              : animation_error.message.c_str());
+    if (!finish_frame(mismatch_frame,
+                      "water forward: render provenance mismatch"))
+        return;
+    viewer::VkRasterPixel mismatch_center{};
+    const bool read_mismatch = renderer.readback_raster_pixel(
+        center_x, center_y, mismatch_center, error);
+    std::printf(
+        "water forward mismatch: reactivity=%.4f material=%u "
+        "artifact=%u authored=%u\n",
+        mismatch_center.reactivity, mismatch_center.material_index,
+        kWaterForwardArtifactMaterial, kWaterForwardAuthoredMaterial);
+    CHECK(read_mismatch &&
+              mismatch_center.material_index ==
+                  kWaterForwardArtifactMaterial &&
+              mismatch_center.reactivity == 0.0f,
+          error.empty()
+              ? "water forward: field identity rejects artifact material 4"
+              : error.c_str());
+
+    matter::VulkanFrame active_frame{};
+    CHECK(vulkan.begin_frame(active_frame, error),
+          error.empty() ? "water forward: begin active frame"
+                        : error.c_str());
+    CHECK(playback_fixture.playback.select(
+              1.0 / 30.0, active_frame.frame_slot, selection,
+              playback_fallback) &&
+              renderer.prepare_water_animation_frame(
+                  71u, active_frame.frame_slot, selection, {1u},
+                  animation_error),
+          !playback_fallback.message.empty()
+              ? playback_fallback.message.c_str()
+              : animation_error.message.c_str());
+    if (!finish_frame(active_frame,
+                      "water forward: render active direct water"))
+        return;
+    const viewer::WaterForwardObservation active =
+        renderer.test_water_forward_observation();
+    CHECK(renderer.test_gpu_zone_written(
+              active_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDraw) == 3u,
+          "water forward: preservation and forward draw write one complete timestamp pair");
+    CHECK(renderer.test_gpu_zone_written(
+              active_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) == 3u,
+          "water forward: animated direct draws write their nested timestamp pair");
+    CHECK(active.static_draws == 0u && active.direct_draws == 1u,
+          "water forward: active direct draw exclusively owns water visibility");
+    CHECK(active.copied_opaque_hdr && active.copied_opaque_depth &&
+              active.wrote_depth && active.wrote_velocity &&
+              active.wrote_reactivity && active.wrote_identity,
+          "water forward: active pass preserves opaque inputs and writes every final lane");
+
+    viewer::VkRasterPixel active_center{};
+    viewer::VkRasterPixel active_control{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         active_center, error) &&
+              renderer.readback_raster_pixel(control_x, control_y,
+                                             active_control, error),
+          error.empty() ? "water forward: read active water outputs"
+                        : error.c_str());
+    std::printf(
+        "water forward active: hdr=%.4f/%.4f/%.4f depth=%.5f "
+        "velocity=%.4f/%.4f reactivity=%.4f material=%u token=%u\n",
+        active_center.hdr.x, active_center.hdr.y, active_center.hdr.z,
+        active_center.depth, active_center.velocity.x,
+        active_center.velocity.y, active_center.reactivity,
+        active_center.material_index, active_center.instance_token);
+    const auto finite_hdr = [](const viewer::VkRasterPixel& pixel) {
+        return std::isfinite(pixel.hdr.x) && std::isfinite(pixel.hdr.y) &&
+               std::isfinite(pixel.hdr.z) && std::isfinite(pixel.hdr.w);
+    };
+    const auto hdr_luma = [](const viewer::VkRasterPixel& pixel) {
+        return 0.2126f * pixel.hdr.x + 0.7152f * pixel.hdr.y +
+               0.0722f * pixel.hdr.z;
+    };
+    CHECK(finite_hdr(active_center) && hdr_luma(active_center) > 0.01f,
+          "water forward: composited water HDR is finite and non-black");
+    CHECK(!close3({active_center.hdr.x, active_center.hdr.y,
+                   active_center.hdr.z},
+                  {0.06f, 0.22f, 0.38f}, 1.0e-2f) &&
+              !close3({active_center.hdr.x, active_center.hdr.y,
+                       active_center.hdr.z},
+                      {baseline_center.hdr.x, baseline_center.hdr.y,
+                       baseline_center.hdr.z}, 1.0e-2f),
+          "water forward: optics differ from raw water color and opaque source");
+    CHECK(active_center.depth > baseline_center.depth &&
+              std::isfinite(active_center.velocity.x) &&
+              std::isfinite(active_center.velocity.y) &&
+              active_center.reactivity > 0.0f,
+          "water forward: water wins reversed-Z and writes finite temporal rejection");
+    CHECK(active_center.material_index == kWaterForwardAuthoredMaterial &&
+              active_center.instance_token ==
+                  viewer::vulkan_history_token(proxy_instance.instance_id),
+          "water forward: direct water writes unmasked material and proxy identity");
+    CHECK(std::memcmp(&baseline_control.hdr, &active_control.hdr,
+                      sizeof(baseline_control.hdr)) == 0 &&
+              baseline_control.depth == active_control.depth &&
+              baseline_control.material_index == active_control.material_index &&
+              baseline_control.instance_token == active_control.instance_token,
+          "water forward: load-preserving pass leaves neighboring opaque pixels byte-identical");
+
+    viewer::WaterFieldBinding dry_field{};
+    CHECK(renderer.publish_water_field(
+              make_water_forward_field_fixture(0x7788u, false), &field,
+              active_frame.serial + 8u, dry_field, field_error) &&
+              renderer.set_part_water_field_binding(proxy.part_hash,
+                                                    dry_field, error),
+          !field_error.message.empty() ? field_error.message.c_str()
+                                       : error.c_str());
+    matter::VulkanFrame dry_fringe_frame{};
+    CHECK(vulkan.begin_frame(dry_fringe_frame, error),
+          error.empty() ? "water forward: begin field-fringe fallback frame"
+                        : error.c_str());
+    CHECK(playback_fixture.playback.select(
+              1.0 / 30.0, dry_fringe_frame.frame_slot, selection,
+              playback_fallback) &&
+              renderer.prepare_water_animation_frame(
+                  71u, dry_fringe_frame.frame_slot, selection, {1u},
+                  animation_error),
+          !playback_fallback.message.empty()
+              ? playback_fallback.message.c_str()
+              : animation_error.message.c_str());
+    if (!finish_frame(dry_fringe_frame,
+                      "water forward: render field-fringe fallback"))
+        return;
+    viewer::VkRasterPixel dry_fringe_center{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         dry_fringe_center, error),
+          error.empty() ? "water forward: read field-fringe fallback"
+                        : error.c_str());
+    std::printf("water forward dry fringe: hdr=%.4f/%.4f/%.4f\n",
+                dry_fringe_center.hdr.x, dry_fringe_center.hdr.y,
+                dry_fringe_center.hdr.z);
+    CHECK(!close3({dry_fringe_center.hdr.x, dry_fringe_center.hdr.y,
+                   dry_fringe_center.hdr.z},
+                  {0.06f, 0.22f, 0.38f}, 1.0e-2f) &&
+              dry_fringe_center.material_index ==
+                  kWaterForwardAuthoredMaterial,
+          "water forward: a mesh fragment without nearby flow data still uses water optics instead of raw albedo");
+
+    renderer.set_water_diagnostic_view(
+        viewer::WaterDiagnosticView::Identity);
+    matter::VulkanFrame identity_frame{};
+    CHECK(vulkan.begin_frame(identity_frame, error),
+          error.empty() ? "water forward: begin identity diagnostic frame"
+                        : error.c_str());
+    CHECK(playback_fixture.playback.select(
+              1.0 / 30.0, identity_frame.frame_slot, selection,
+              playback_fallback) &&
+              renderer.prepare_water_animation_frame(
+                  71u, identity_frame.frame_slot, selection, {1u},
+                  animation_error),
+          !playback_fallback.message.empty()
+              ? playback_fallback.message.c_str()
+              : animation_error.message.c_str());
+    if (!finish_frame(identity_frame,
+                      "water forward: render identity diagnostic"))
+        return;
+    viewer::VkRasterPixel identity_center{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         identity_center, error),
+          error.empty() ? "water forward: read identity diagnostic"
+                        : error.c_str());
+    std::printf("water forward identity: hdr=%.4f/%.4f/%.4f\n",
+                identity_center.hdr.x, identity_center.hdr.y,
+                identity_center.hdr.z);
+    CHECK(close3({identity_center.hdr.x, identity_center.hdr.y,
+                  identity_center.hdr.z},
+                 {0.25642633f, 0.74545455f, 0.33793103f}, 2.0e-3f),
+          "water forward: direct identity selects the stable artifact hash color");
+    renderer.set_water_diagnostic_view(viewer::WaterDiagnosticView::None);
+
+    renderer.clear_water_animation(active_frame.serial + 2u);
+    proxy_instance.rt_proxy_only = false;
+    CHECK(renderer.update_instances({background_instance, proxy_instance},
+                                    error),
+          error.empty() ? "water forward: restore static fallback"
+                        : error.c_str());
+    matter::VulkanFrame fallback_frame{};
+    CHECK(vulkan.begin_frame(fallback_frame, error),
+          error.empty() ? "water forward: begin static fallback frame"
+                        : error.c_str());
+    if (!finish_frame(fallback_frame,
+                      "water forward: render static fallback water"))
+        return;
+    const viewer::WaterForwardObservation fallback =
+        renderer.test_water_forward_observation();
+    CHECK(fallback.static_draws == 1u && fallback.direct_draws == 0u,
+          "water forward: accepted immutable fallback uses one static range");
+    CHECK(renderer.gpu_zone_last_ms(
+              viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) > 0.0f,
+          "water forward: the completed animated frame exposes a nonzero direct-draw measurement");
+    CHECK(renderer.test_gpu_zone_written(
+              fallback_frame.frame_slot,
+              viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) == 0u,
+          "water forward: static-only water leaves the direct timing pair unwritten");
+    CHECK(fallback.copied_opaque_hdr && fallback.copied_opaque_depth &&
+              fallback.wrote_depth && fallback.wrote_velocity &&
+              fallback.wrote_reactivity && fallback.wrote_identity,
+          "water forward: static fallback uses the same complete optics pass");
+    viewer::VkRasterPixel fallback_center{};
+    CHECK(renderer.readback_raster_pixel(center_x, center_y,
+                                         fallback_center, error) &&
+              fallback_center.material_index ==
+                  kWaterForwardAuthoredMaterial &&
+              fallback_center.instance_token ==
+                  viewer::vulkan_history_token(proxy_instance.instance_id),
+          error.empty() ? "water forward: static fallback writes final identity"
+                        : error.c_str());
+    bool static_timing_frames_ok = true;
+    for (std::uint32_t resolve_index = 0u;
+         resolve_index != active_frame.frame_slot_count + 1u;
+         ++resolve_index) {
+        matter::VulkanFrame static_timing_frame{};
+        if (!vulkan.begin_frame(static_timing_frame, error) ||
+            !finish_frame(static_timing_frame,
+                          "water forward: resolve static-only timing")) {
+            static_timing_frames_ok = false;
+            break;
+        }
+    }
+    CHECK(static_timing_frames_ok &&
+              renderer.gpu_zone_last_ms(
+                  viewer::VkSceneRenderer::kGpuZoneWaterDirectDraw) == 0.0f,
+          error.empty()
+              ? "water forward: every rotating frame slot resolves static-only direct-draw time to zero"
+              : error.c_str());
+    renderer.collect_water_animation(active_frame.serial + 2u);
+    std::filesystem::remove_all(playback_fixture.root);
+    CHECK(vulkan.validation_error_count() == 0u,
+          "water forward: active and fallback frames have no validation errors");
+}
+
+void run_water_material_lookup_overlap_path(matter::VulkanDevice& vulkan) {
+    CHECK(vulkan.ray_tracing_available(),
+          vulkan.ray_tracing_unavailable_reason().empty()
+              ? "water material overlap: native ray tracing is available"
+              : vulkan.ray_tracing_unavailable_reason().c_str());
+    if (!vulkan.ray_tracing_available()) return;
+
+    const auto render_case = [&](bool dry_first, viewer::VkRasterPixel& pixel) {
+        viewer::VkSceneRenderer renderer(vulkan);
+        std::string error;
+        if (!renderer.init(error)) {
+            CHECK(false, error.empty()
+                             ? "water material overlap: initialize renderer"
+                             : error.c_str());
+            return false;
+        }
+
+        matter::VulkanRayTracingSettings rt{};
+        rt.enabled = true;
+        rt.max_distance = 20.0f;
+        renderer.set_ray_tracing_settings(rt);
+        matter::VulkanGiSettings gi{};
+        gi.enabled = 1u;
+        gi.max_bounces = 1u;
+        gi.samples_per_pixel = 1u;
+        gi.denoiser_iterations = 0u;
+        gi.diffuse_multiplier = 0.0f;
+        gi.reflection_multiplier = 0.0f;
+        gi.max_reflection_roughness = 0.02f;
+        gi.transmission_multiplier = 1.0f;
+        gi.scattering_multiplier = 0.0f;
+        renderer.set_gi_settings(gi);
+
+        std::vector<MaterialGpuRecord> materials(
+            kWaterForwardAuthoredMaterial + 1u);
+        auto& background_material = materials[2u];
+        background_material.base_roughness[0] = 0.8f;
+        background_material.base_roughness[1] = 0.7f;
+        background_material.base_roughness[2] = 0.6f;
+        background_material.base_roughness[3] = 1.0f;
+        background_material.metal_opacity_spec_coat[1] = 1.0f;
+        background_material.scattering_shape[3] = 1.0f;
+        auto& water_material = materials[kWaterForwardAuthoredMaterial];
+        water_material.base_roughness[0] = 0.06f;
+        water_material.base_roughness[1] = 0.22f;
+        water_material.base_roughness[2] = 0.38f;
+        water_material.base_roughness[3] = 0.02f;
+        water_material.metal_opacity_spec_coat[1] = 1.0f;
+        water_material.scattering_shape[3] = 1.0f;
+        water_material.transmission[0] = 1.0f;
+        water_material.transmission[1] = 1.333f;
+        water_material.transmission[2] = 0.25f;
+        water_material.transmission[3] = 100.0f;
+        water_material.absorption_pad[0] = 1.0f;
+        water_material.absorption_pad[1] = 1.0f;
+        water_material.absorption_pad[2] = 1.0f;
+        water_material.flags_misc[0] = MATERIAL_WATER_SURFACE;
+        if (!renderer.update_materials(materials, 1u, 1u, error)) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+
+        const viewer::VkScenePart background =
+            water_forward_background_triangle(0x77666f766c6267ull, 2u);
+        const viewer::VkScenePart probe = known_raster_triangle(
+            0x77666f766c7072ull, kWaterForwardAuthoredMaterial);
+        if (renderer.ensure_part(background, error) < 0 ||
+            renderer.ensure_part(probe, error) < 0) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+        viewer::VkSceneInstance background_instance{};
+        background_instance.part_hash = background.part_hash;
+        background_instance.object_to_world = viewer::mat4_identity();
+        background_instance.instance_id = 0x77666f766c6269ull;
+        background_instance.ray_traced = true;
+        viewer::VkSceneInstance probe_instance{};
+        probe_instance.part_hash = probe.part_hash;
+        probe_instance.object_to_world = viewer::mat4_identity();
+        probe_instance.instance_id = 0x77666f766c7069ull;
+        probe_instance.ray_traced = false;
+        if (!renderer.update_instances(
+                {background_instance, probe_instance}, error)) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+
+        viewer::WaterFieldError field_error{};
+        viewer::WaterFieldBinding dry_binding{};
+        if (dry_first && !renderer.publish_water_field(
+                             make_water_forward_field_fixture(
+                                 0x77666f766c6472ull, false, 0.0f, false),
+                             nullptr, 0u, dry_binding, field_error)) {
+            CHECK(false, field_error.message.c_str());
+            return false;
+        }
+        viewer::WaterFieldBinding wet_binding{};
+        if (!renderer.publish_water_field(
+                make_water_forward_field_fixture(
+                    0x77666f766c7765ull, true, 8.0f, false),
+                nullptr, 0u, wet_binding, field_error)) {
+            CHECK(false, field_error.message.c_str());
+            return false;
+        }
+        CHECK(!dry_first ||
+                  (dry_binding.slot < wet_binding.slot &&
+                   dry_binding.generation != 0u &&
+                   wet_binding.generation != 0u),
+              "water material overlap: dry record precedes wet record");
+
+        matter::CameraDesc camera{};
+        camera.position = {0.0f, 0.0f, 0.0f};
+        camera.target = {0.0f, 0.0f, -1.0f};
+        camera.up = {0.0f, 1.0f, 0.0f};
+        camera.vertical_fov_radians = 1.57079632679f;
+        camera.near_plane = 0.1f;
+        camera.far_plane = 20.0f;
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+        viewer::FrameMatrices matrices{};
+        const bool recorded = viewer::build_frame_matrices(
+                                  camera, frame.extent.width,
+                                  frame.extent.height, matrices, error) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        const bool ended = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, ended);
+        renderer.finish_dynamic_frame(frame.serial);
+        if (!ended) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+        vulkan.wait_idle();
+        if (!renderer.readback_raster_pixel(
+                frame.extent.width / 2u, frame.extent.height / 2u,
+                pixel, error)) {
+            CHECK(false, error.c_str());
+            return false;
+        }
+        return true;
+    };
+
+    viewer::VkRasterPixel wet_only{};
+    viewer::VkRasterPixel dry_then_wet{};
+    const bool rendered = render_case(false, wet_only) &&
+                          render_case(true, dry_then_wet);
+    const float overlap_delta =
+        std::fabs(wet_only.hdr.x - dry_then_wet.hdr.x) +
+        std::fabs(wet_only.hdr.y - dry_then_wet.hdr.y) +
+        std::fabs(wet_only.hdr.z - dry_then_wet.hdr.z);
+    std::printf(
+        "water material overlap: wet=%.4f/%.4f/%.4f "
+        "dry-then-wet=%.4f/%.4f/%.4f delta=%.5f\n",
+        wet_only.hdr.x, wet_only.hdr.y, wet_only.hdr.z,
+        dry_then_wet.hdr.x, dry_then_wet.hdr.y, dry_then_wet.hdr.z,
+        overlap_delta);
+    CHECK(rendered && overlap_delta < 0.001f &&
+              wet_only.material_index == kWaterForwardAuthoredMaterial &&
+              dry_then_wet.material_index == kWaterForwardAuthoredMaterial,
+          "water material overlap: an earlier dry rectangle cannot hide a later same-material field with wet support");
+    CHECK(vulkan.validation_error_count() == 0u,
+          "water material overlap: two-record RT lookup has no validation errors");
+}
+
+void run_render_eligibility_acceptance_path(matter::VulkanDevice& vulkan) {
+    CHECK(vulkan.ray_tracing_available(),
+          vulkan.ray_tracing_unavailable_reason().empty()
+              ? "render eligibility: native ray tracing is available"
+              : vulkan.ray_tracing_unavailable_reason().c_str());
+    if (!vulkan.ray_tracing_available()) return;
+
+    struct Counts {
+        std::uint32_t raster_placements = 0u;
+        std::size_t rt_instances = 0u;
+        std::size_t rt_records = 0u;
+        std::uint32_t blas_builds = 0u;
+        std::uint64_t tlas_before = 0u;
+        std::uint64_t tlas_after = 0u;
+    };
+
+    const auto run_case = [&](std::uint64_t part_hash,
+                              const std::vector<viewer::VkSceneInstance>&
+                                  instances,
+                              const char* label) {
+        Counts counts{};
+        std::string error;
+        viewer::VkSceneRenderer renderer(vulkan);
+        CHECK(renderer.init(error), error.empty() ? label : error.c_str());
+        if (!error.empty()) return counts;
+
+        std::vector<MaterialGpuRecord> materials(8);
+        materials[7].metal_opacity_spec_coat[1] = 1.0f;
+        materials[7].scattering_shape[3] = 1.0f;
+        CHECK(renderer.update_materials(materials, 1u, 1u, error) &&
+                  renderer.ensure_part(
+                      known_raster_triangle(part_hash), error) >= 0 &&
+                  renderer.update_instances(instances, error),
+              error.empty() ? label : error.c_str());
+        if (!error.empty()) return counts;
+
+        matter::VulkanRayTracingSettings rt{};
+        rt.enabled = true;
+        rt.max_distance = 100.0f;
+        renderer.set_ray_tracing_settings(rt);
+
+        matter::CameraDesc camera{};
+        camera.position = {0.0f, 0.0f, 0.0f};
+        camera.target = {0.0f, 0.0f, -1.0f};
+        camera.up = {0.0f, 1.0f, 0.0f};
+        camera.vertical_fov_radians = 1.57079632679f;
+        camera.near_plane = 0.1f;
+        camera.far_plane = 10.0f;
+        viewer::FrameMatrices matrices{};
+        CHECK(viewer::build_frame_matrices(
+                  camera, 320u, 200u, matrices, error),
+              error.empty() ? label : error.c_str());
+
+        std::vector<viewer::DrawCommand> commands;
+        CHECK(renderer.dispatch_culling(
+                  matrices, camera.position, 1.0f, error) &&
+                  renderer.readback_commands(commands, error),
+              error.empty() ? label : error.c_str());
+        for (const viewer::DrawCommand& command : commands)
+            counts.raster_placements += command.instance_count;
+
+        std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
+        counts.rt_instances = renderer.fill_rt_instances(rt_instances);
+        counts.tlas_before = renderer.rt_tlas_build_count();
+
+        matter::VulkanFrame frame{};
+        const bool began = vulkan.begin_frame(frame, error);
+        const bool recorded = began &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(
+                frame, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        counts.rt_records = renderer.test_last_rt_geometry_records().size();
+        counts.blas_builds = renderer.test_last_rt_blas_build_count();
+        const bool submitted = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, submitted);
+        CHECK(submitted, error.empty() ? label : error.c_str());
+        vulkan.wait_idle();
+        counts.tlas_after = renderer.rt_tlas_build_count();
+        return counts;
+    };
+
+    constexpr std::uint64_t kPartHash = 0x454c494749424c45ull;
+    viewer::VkSceneInstance false_instance{};
+    false_instance.part_hash = kPartHash;
+    false_instance.object_to_world = viewer::mat4_identity();
+    false_instance.instance_id = 0x46414c5345ull;
+    false_instance.ray_traced = false;
+    const Counts false_only = run_case(
+        kPartHash, {false_instance},
+        "render eligibility: record false-only synthetic scene");
+    CHECK(false_only.raster_placements == 1u &&
+              false_only.rt_instances == 0u && false_only.rt_records == 0u &&
+              false_only.blas_builds == 0u &&
+              false_only.tlas_after == false_only.tlas_before,
+          "render eligibility: false-only instance stays raster-visible and performs no RT work");
+    std::printf(
+        "render eligibility false-only: raster=%u rt_instances=%zu "
+        "records=%zu blas=%u tlas_before=%llu tlas_after=%llu\n",
+        false_only.raster_placements, false_only.rt_instances,
+        false_only.rt_records, false_only.blas_builds,
+        static_cast<unsigned long long>(false_only.tlas_before),
+        static_cast<unsigned long long>(false_only.tlas_after));
+
+    viewer::VkSceneInstance traced_instance = false_instance;
+    traced_instance.object_to_world.m[12] = 0.35f;
+    traced_instance.instance_id = 0x54525545ull;
+    traced_instance.ray_traced = true;
+    false_instance.object_to_world.m[12] = -0.35f;
+    const Counts mixed = run_case(
+        kPartHash, {false_instance, traced_instance},
+        "render eligibility: record mixed shared-part synthetic scene");
+    CHECK(mixed.raster_placements == 2u && mixed.rt_instances == 1u &&
+              mixed.rt_records == 1u && mixed.blas_builds == 1u &&
+              mixed.tlas_after == mixed.tlas_before + 1u,
+          "render eligibility: mixed shared part keeps both raster placements and builds one eligible RT record/BLAS");
+    std::printf(
+        "render eligibility mixed: raster=%u rt_instances=%zu records=%zu "
+        "blas=%u tlas_before=%llu tlas_after=%llu\n",
+        mixed.raster_placements, mixed.rt_instances, mixed.rt_records,
+        mixed.blas_builds,
+        static_cast<unsigned long long>(mixed.tlas_before),
+        static_cast<unsigned long long>(mixed.tlas_after));
+
+    CHECK(vulkan.validation_error_count() == 0u,
+          "render eligibility: false-only and mixed scenes have no Vulkan validation errors");
+}
+
 void test_atmosphere_timing_contract() {
     using Renderer = viewer::VkSceneRenderer;
     CHECK(Renderer::kGpuZoneTotal == 0 && Renderer::kGpuZoneVolumetrics == 9 &&
@@ -54,9 +1415,13 @@ void test_atmosphere_timing_contract() {
               Renderer::kGpuZoneCloudShadows == 13 &&
               Renderer::kGpuZoneVolDensity == 14 &&
               Renderer::kGpuZoneVolScatter == 15 &&
-              Renderer::kGpuZoneVolIntegrate == 16 &&
-              Renderer::kGpuZoneCount == 17,
+              Renderer::kGpuZoneVolIntegrate == 16,
           "atmosphere timings append five exact GPU zones");
+    CHECK(Renderer::kGpuZoneWaterDecode == 17 &&
+              Renderer::kGpuZoneWaterDraw == 18 &&
+              Renderer::kGpuZoneWaterDirectDraw == 19 &&
+              Renderer::kGpuZoneCount == 20,
+          "water animation timings append direct draw without renumbering existing GPU zones");
 
     std::array<uint32_t, 3> boundaries{};
     viewer::VolumetricPassBoundary boundary =
@@ -68,6 +1433,37 @@ void test_atmosphere_timing_contract() {
     boundary(viewer::VolumetricPass::Integrate, true);
     CHECK((boundaries == std::array<uint32_t, 3>{1, 1, 1}),
           "atmosphere timings retain one typed boundary for each froxel pass");
+}
+
+void test_water_forward_perf_evidence_contract() {
+    matter::FrameStats stats{};
+    stats.gpu_water_forward_ms = 1.25f;
+    stats.gpu_water_direct_draw_ms = 0.375f;
+    stats.water_animation_publish_ms = 8.5f;
+    stats.water_animation_compressed_cpu_bytes = 123456789u;
+    stats.water_animation_peak_activation_cpu_bytes = 234567890u;
+    stats.water_animation_gpu_bytes_per_slot = 345678901u;
+    stats.water_forward_width = 320u;
+    stats.water_forward_height = 180u;
+    stats.water_forward_image_bytes = 691200u;
+    std::ostringstream json;
+    matter::append_water_forward_perf_json(json, stats);
+    CHECK(json.str() ==
+              ",\"gpu_water_forward_ms\":1.25"
+              ",\"gpu_water_direct_draw_ms\":0.375"
+              ",\"water_forward_width\":320"
+              ",\"water_forward_height\":180"
+              ",\"water_forward_image_bytes\":691200"
+              ",\"water_animation_publish_ms\":8.5"
+              ",\"water_animation_compressed_cpu_bytes\":123456789"
+              ",\"water_animation_peak_activation_cpu_bytes\":234567890"
+              ",\"water_animation_gpu_bytes_per_slot\":345678901",
+          "water forward: perf JSON publishes full/direct timing and distinct runtime memory lanes");
+    CHECK(viewer::vk_scene_detail::water_forward_image_bytes_for_extent(
+              320u, 180u) == 691200u &&
+              viewer::vk_scene_detail::water_forward_image_bytes_for_extent(
+                  UINT32_MAX, UINT32_MAX) == 0u,
+          "water forward: logical preservation byte accounting is exact and overflow-safe");
 }
 
 void test_atmosphere_acceptance_fifo_parser_and_present_sequencer() {
@@ -171,6 +1567,24 @@ void test_atmosphere_acceptance_fifo_parser_and_present_sequencer() {
               third.completed_waits[0].count == 3u &&
               third.completed_waits[0].frame_serial == 3u,
           "wait_frames completes on the third successful present only");
+}
+
+void test_screenshot_completion_marker_is_nonempty() {
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("matter-screenshot-marker-" + std::to_string(stamp));
+    const auto marker = root / "capture.png.done";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    CHECK(!ec, "create screenshot completion marker fixture");
+    CHECK(viewer::write_screenshot_completion_marker(marker.string()),
+          "write screenshot completion marker");
+    CHECK(std::filesystem::is_regular_file(marker),
+          "screenshot completion marker exists");
+    CHECK(std::filesystem::file_size(marker, ec) > 0u && !ec,
+          "screenshot completion marker is nonempty");
+    std::filesystem::remove_all(root, ec);
 }
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
@@ -470,6 +1884,17 @@ static void test_vulkan_lighting_override_contract() {
     CHECK(clean.emission_multiplier == 1.0f,
           "invalid emission override uses default");
     CHECK(clean.exposure_ev == -2.0f, "invalid exposure uses default");
+
+    // "Uses default" means the STRUCT's default, for every field. sun and sky
+    // used to fall back to a hard-coded 1.0 while the struct ships 1.67/0.77,
+    // so a single NaN re-lit the scene at a brightness nothing had authored.
+    matter::VulkanLightingOverrides nan_gains{};
+    nan_gains.sun_multiplier = std::numeric_limits<float>::quiet_NaN();
+    nan_gains.sky_multiplier = std::numeric_limits<float>::quiet_NaN();
+    const auto clean_gains = viewer::sanitize_vulkan_lighting_overrides(nan_gains);
+    CHECK(clean_gains.sun_multiplier == defaults.sun_multiplier &&
+              clean_gains.sky_multiplier == defaults.sky_multiplier,
+          "invalid sun/sky overrides fall back to the struct defaults");
     CHECK(std::fabs(viewer::vulkan_exposure_scale(-2.0f) - 0.25f) < 1e-6f,
           "-2 EV maps to quarter exposure");
 
@@ -1711,11 +3136,17 @@ void run_vulkan_temporal_tests() {
               "post-reset candidate commits");
     };
     expect_one_reset({120, 80}, {}, {moved_object}, "resize resets temporal history");
-    expect_one_reset({120, 80}, {.camera_cut = true}, {moved_object},
+    viewer::TemporalInvalidation camera_cut{};
+    camera_cut.camera_cut = true;
+    expect_one_reset({120, 80}, camera_cut, {moved_object},
                      "camera cut resets temporal history");
-    expect_one_reset({120, 80}, {.world_reload = true}, {moved_object},
+    viewer::TemporalInvalidation world_reload{};
+    world_reload.world_reload = true;
+    expect_one_reset({120, 80}, world_reload, {moved_object},
                      "world reload resets temporal history");
-    expect_one_reset({120, 80}, {.renderer_reset = true}, {moved_object},
+    viewer::TemporalInvalidation renderer_reset{};
+    renderer_reset.renderer_reset = true;
+    expect_one_reset({120, 80}, renderer_reset, {moved_object},
                      "renderer recovery resets temporal history");
 
     // A newcomer id is a per-instance event, not a global cut: it enters with
@@ -1776,11 +3207,11 @@ void run_vulkan_temporal_tests() {
           "instance returning after a presented clear frame starts fresh "
           "without a global reset");
 
-    // 288 is the historical block; + 16 (vis_params) + 64 (cull_world_to_clip)
-    // is the M4 occlusion ID pass's appendix. Appended, never inserted, so the
-    // shaders that declare only the prefix keep every std140 offset they had.
+    // 288 is the historical block; + 16 (water animation), + 16 (vis_params),
+    // and + 64 (cull_world_to_clip) form the appended presentation/occlusion
+    // tail. The shared cull and visibility declarations keep this exact order.
     CHECK(viewer::vk_scene_detail::frame_constants_size_for_test() ==
-              288 + 16 + 64,
+              288 + 16 + 16 + 64,
           "C++ FrameConstants matches final std140 uvec4 padding and size");
 }
 
@@ -1984,7 +3415,7 @@ viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                uint32_t first_index);
 
 viewer::VkScenePart known_raster_triangle(uint64_t hash,
-                                          uint32_t material_index = 7u) {
+                                          uint32_t material_index) {
     viewer::VkScenePart part = fixed_part(
         hash, {-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}, 0);
     const matter::Float3 normal{0.0f, 1.0f, 0.0f};
@@ -2003,6 +3434,24 @@ viewer::VkScenePart known_raster_triangle(uint64_t hash,
     // and indices". Callers used to patch this in locally one fixture at a
     // time; supply the triangle's own list here so every fixture is renderable.
     part.indices = {0, 1, 2};
+    return part;
+}
+
+viewer::VkScenePart water_forward_background_triangle(
+    uint64_t hash, uint32_t material_index) {
+    viewer::VkScenePart part = fixed_part(
+        hash, {-4.0f, -4.0f, -3.0f}, {4.0f, 4.0f, -3.0f}, 0u);
+    const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+    const matter::Float4 tint{0.55f, 0.18f, 0.08f, 0.0f};
+    part.vertices = {
+        {{-4.0f, -4.0f, -3.0f}, normal, tint,
+         {0.0f, 0.0f, 1.0f, 1.0f}, material_index, {}},
+        {{4.0f, -4.0f, -3.0f}, normal, tint,
+         {0.0f, 0.0f, 1.0f, 1.0f}, material_index, {}},
+        {{0.0f, 4.0f, -3.0f}, normal, tint,
+         {0.0f, 0.0f, 1.0f, 1.0f}, material_index, {}},
+    };
+    part.indices = {0u, 1u, 2u};
     return part;
 }
 
@@ -2095,6 +3544,8 @@ void run_rt_lod_payload_contract_tests() {
 void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
+    CHECK(sizeof(viewer::WaterForwardConstants) == 128u,
+          "water forward constants ABI");
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
     matter::VulkanGiSettings scaled_gi{};
@@ -2171,8 +3622,9 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                         : error.c_str());
 
     const matter::Mat4f identity = identity_matrix();
-    CHECK(renderer.update_instances({{900, identity, 111},
-                                     {901, identity, 222}}, error),
+    std::vector<viewer::VkSceneInstance> policy_instances{
+        {900, identity, 111}, {901, identity, 222}};
+    CHECK(renderer.update_instances(policy_instances, error),
           error.empty() ? "upload raster instances" : error.c_str());
 
     matter::CameraDesc camera{};
@@ -2187,6 +3639,17 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "build raster frame matrices" : error.c_str());
     CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
           error.empty() ? "dispatch raster culling" : error.c_str());
+    std::vector<viewer::VkSceneRenderer::RtInstance> policy_rt_instances;
+    CHECK(renderer.fill_rt_instances(policy_rt_instances) == 2,
+          "static instances initially participate in RT");
+    policy_instances[0].ray_traced = false;
+    CHECK(renderer.update_instances(policy_instances, error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "apply static RT policy-only update" : error.c_str());
+    policy_rt_instances.clear();
+    CHECK(renderer.fill_rt_instances(policy_rt_instances) == 1 &&
+              policy_rt_instances[0].part_hash == 901,
+          "static RT policy-only update refreshes RT membership");
     std::vector<viewer::DrawCommand> raster_commands;
     CHECK(renderer.readback_commands(raster_commands, error),
           error.empty() ? "read raster indirect commands" : error.c_str());
@@ -2199,6 +3662,64 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "known triangle uses nonzero firstInstance transform region");
     CHECK(renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render G-buffer and composite" : error.c_str());
+
+    CHECK(renderer.test_water_forward_static_pipeline() != VK_NULL_HANDLE &&
+              renderer.test_water_forward_direct_pipeline() != VK_NULL_HANDLE &&
+              renderer.test_water_forward_pipeline_layout() != VK_NULL_HANDLE,
+          "static and direct water forward pipelines share a complete ABI");
+    CHECK(renderer.test_water_forward_descriptor_set(0u) != VK_NULL_HANDLE,
+          "water forward descriptor set is allocated per frame slot");
+    CHECK(renderer.test_opaque_hdr_format() ==
+              VK_FORMAT_R16G16B16A16_SFLOAT,
+          "preserved opaque HDR format");
+    CHECK(renderer.test_opaque_depth_format() == VK_FORMAT_D32_SFLOAT,
+          "preserved opaque depth format");
+    CHECK(renderer.test_opaque_extent().width == width &&
+              renderer.test_opaque_extent().height == height,
+          "preserved opaque resources match raster extent");
+    CHECK((renderer.test_hdr_usage() & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0u &&
+              (renderer.test_depth_usage() &
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0u,
+          "main HDR and depth support opaque preservation copies");
+    constexpr VkImageUsageFlags required_opaque_usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    CHECK(renderer.test_opaque_hdr_usage() == required_opaque_usage &&
+              renderer.test_opaque_depth_usage() == required_opaque_usage,
+          "preserved opaque resources have only sampled/copy-destination usage");
+    const viewer::WaterForwardConstants forward_constants =
+        renderer.test_water_forward_constants(0u);
+    CHECK(forward_constants.viewport_refraction.x == float(width) &&
+              forward_constants.viewport_refraction.y == float(height) &&
+              forward_constants.viewport_refraction.z == 24.0f &&
+              forward_constants.viewport_refraction.w == 0.75f,
+          "water forward viewport and refraction constants");
+    CHECK(forward_constants.reflection_controls.x == 24.0f &&
+              forward_constants.reflection_controls.y == 2.0f &&
+              forward_constants.reflection_controls.z == 0.25f &&
+              forward_constants.reflection_controls.w == 80.0f,
+          "water forward reflection constants");
+    CHECK(forward_constants.diagnostics[0] == 0u &&
+              forward_constants.diagnostics[1] == 0u &&
+              forward_constants.diagnostics[2] == 0u &&
+              forward_constants.diagnostics[3] == 0u,
+          "water forward diagnostics are off and zero-filled by default");
+    renderer.set_water_diagnostic_view(
+        viewer::WaterDiagnosticView::Identity);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "render identity diagnostic constants"
+                        : error.c_str());
+    const viewer::WaterForwardConstants identity_constants =
+        renderer.test_water_forward_constants(0u);
+    CHECK(identity_constants.diagnostics[0] == 1u &&
+              identity_constants.diagnostics[1] == 0u &&
+              identity_constants.diagnostics[2] == 0u &&
+              identity_constants.diagnostics[3] == 0u,
+          "selected identity view reaches the GPU UBO with reserved words zero");
+    renderer.set_water_diagnostic_view(viewer::WaterDiagnosticView::None);
+    const VkImage opaque_hdr_at_initial_extent =
+        renderer.test_opaque_hdr_image();
+    const VkImage opaque_depth_at_initial_extent =
+        renderer.test_opaque_depth_image();
 
     const viewer::VkRasterAttachments attachments =
         renderer.raster_attachments();
@@ -2226,6 +3747,25 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(attachments.extent.width == width &&
               attachments.extent.height == height,
           "raster attachment extent");
+
+    scaled_gi.trace_scale = 0.75f;
+    renderer.set_gi_settings(scaled_gi);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "rebuild only trace-scale raster targets"
+                        : error.c_str());
+    CHECK(renderer.test_opaque_hdr_image() == opaque_hdr_at_initial_extent &&
+              renderer.test_opaque_depth_image() ==
+                  opaque_depth_at_initial_extent,
+          "preserved opaque images survive non-extent target recreation");
+    scaled_gi.trace_scale = 0.5f;
+    renderer.set_gi_settings(scaled_gi);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "restore half-scale raster targets"
+                        : error.c_str());
+    CHECK(renderer.test_opaque_hdr_image() == opaque_hdr_at_initial_extent &&
+              renderer.test_opaque_depth_image() ==
+                  opaque_depth_at_initial_extent,
+          "preserved opaque images survive trace-scale round trip");
 
     viewer::VkRasterPixel center{};
     viewer::VkRasterPixel lower_right_inside{};
@@ -3239,8 +4779,10 @@ void run_vt_path(matter::VulkanDevice& vulkan) {
     // Keep the physical pool to a single array layer; the production default
     // (8192 pages, ~0.9 GB) is pointless for a 2-chart fixture.
 #ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
     _putenv_s("MATTER_VT_POOL_PAGES", "256");
 #else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
 #endif
     std::string error;
@@ -3701,8 +5243,10 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
 #ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
     _putenv_s("MATTER_VT_POOL_PAGES", "256");
 #else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
 #endif
     std::string error;
@@ -4098,14 +5642,97 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
 // (MATTER_VK_TEST_FORCE_RT_UNAVAILABLE, the existing rt-unavailable pattern) and
 // runs the same fixture: no enricher loads, nothing is ever queued, and every
 // probe reads unoccluded tier-1 content — today's behaviour, unchanged.
+void test_vt_variant_context_storage_lifetime(matter::VulkanDevice& vulkan) {
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    _putenv_s("MATTER_VT_MAX_VARIANTS", "16");
+    _putenv_s("MATTER_VT_INDIRECTION_MB", "1");
+    _putenv_s("MATTER_VT_MESH_BUDGET_MB", "4");
+#else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+    setenv("MATTER_VT_MAX_VARIANTS", "16", 1);
+    setenv("MATTER_VT_INDIRECTION_MB", "1", 1);
+    setenv("MATTER_VT_MESH_BUDGET_MB", "4", 1);
+#endif
+    std::string error;
+    vt::VtResidency residency;
+    CHECK(residency.init(vulkan, error),
+          error.empty() ? "vt lifetime: residency init" : error.c_str());
+    if (!residency.available()) return;
+
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w = 128;
+    atlas.atlas_h = 128;
+    atlas.tri_order = {0};
+    atlas.charts.resize(1);
+    atlas.charts[0].rect_w = 128;
+    atlas.charts[0].rect_h = 128;
+    atlas.charts[0].texels_per_meter = 4.0f;
+    atlas.charts[0].tri_count = 1;
+
+    const float positions[] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                               0.0f, 1.0f, 0.0f};
+    const float normals[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                             0.0f, 0.0f, 1.0f};
+    const float surface_uvs[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    const float material_table[] = {0.8f, 0.7f, 0.6f, 0.5f};
+    const uint32_t material_ids[] = {0u, 0u, 0u};
+    const uint32_t indices[] = {0u, 1u, 2u};
+    const uint8_t tint_rgba[] = {255u, 255u, 255u, 0u,
+                                 255u, 255u, 255u, 0u,
+                                 255u, 255u, 255u, 0u};
+    const uint8_t surface_weights[] = {255u, 255u, 255u};
+    const uint32_t surface_materials[] = {0u};
+    const uint16_t surface_lanes[] = {0u, 0u, 0u};
+    vt::VtPartContext context{};
+    context.positions = positions;
+    context.normals = normals;
+    context.surface_uvs = surface_uvs;
+    context.material_table = material_table;
+    context.material_count = 1;
+    context.material_stride = 4;
+    context.material_ids = material_ids;
+    context.tint_rgba = tint_rgba;
+    context.vertex_count = 3;
+    context.indices = indices;
+    context.triangle_count = 1;
+    context.surface_weights = surface_weights;
+    context.surface_materials = surface_materials;
+    context.surface_material_count = 1;
+    context.surface_tape_hash = 0x1234u;
+    context.surface_tape_text = "return material(0);";
+    context.surface_lanes = surface_lanes;
+    context.surface_lane_count = 1;
+
+    std::vector<uint32_t> slots;
+    for (uint64_t i = 0; i < 12; ++i) {
+        context.variant_hash = 0x9100u + i;
+        const uint32_t slot = residency.register_variant(
+            context.variant_hash, 0, atlas, context);
+        CHECK(slot != vt::kVtNoSlot,
+              "vt lifetime: registration survives vector growth");
+        if (slot != vt::kVtNoSlot) slots.push_back(slot);
+    }
+    for (const uint32_t slot : slots) {
+        CHECK(residency.context_storage_owned_for_test(slot),
+              "vt lifetime: context pointers remain owned after growth");
+    }
+    residency.shutdown();
+}
+
 void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
+    test_vt_variant_context_storage_lifetime(vulkan);
     const bool rt = vulkan.ray_tracing_available();
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
 #ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
     _putenv_s("MATTER_VT_POOL_PAGES", "256");
     _putenv_s("MATTER_VT_ENRICH_PER_FRAME", "2");
 #else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
     setenv("MATTER_VT_ENRICH_PER_FRAME", "2", 1);
 #endif
@@ -4513,8 +6140,10 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 320;
     constexpr uint32_t height = 200;
 #ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_MB", "0");
     _putenv_s("MATTER_VT_POOL_PAGES", "256");
 #else
+    setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
 #endif
     std::string error;
@@ -5391,6 +7020,17 @@ static void rt_scenario_visibility_classification(
         matter::VulkanDevice& vulkan,
         std::string& error) {
     {
+        CHECK(std::string(viewer::viewer_render_path_status_label(
+                              viewer::ViewerRenderPathStatus::Raster)) ==
+                      "Vulkan raster" &&
+                  std::string(viewer::viewer_render_path_status_label(
+                              viewer::ViewerRenderPathStatus::NativeRt)) ==
+                      "native RT" &&
+                  std::string(viewer::viewer_render_path_status_label(
+                              viewer::ViewerRenderPathStatus::
+                                  NativeRtUnavailable)) ==
+                      "native RT unavailable",
+              "viewer debug render-path label reports the active path");
         const auto aligned_triangle = [](uint64_t hash, float z,
                                          uint32_t material_index) {
             viewer::VkScenePart part = known_raster_triangle(hash,
@@ -5407,12 +7047,14 @@ static void rt_scenario_visibility_classification(
         const auto trace_visibility = [&](uint64_t hash_base,
                                           MaterialGpuRecord blocker,
                                           uint32_t layer_count,
-                                          bool test_reclassification) {
+                                          bool test_reclassification,
+                                          uint32_t receiver_flags) {
             VisibilityResult result{};
             viewer::VkSceneRenderer visibility(vulkan);
             std::vector<MaterialGpuRecord> materials(2);
             materials[0].metal_opacity_spec_coat[1] = 1.0f;
             materials[0].scattering_shape[3] = 1.0f;
+            materials[0].flags_misc[0] = receiver_flags;
             materials[1] = blocker;
             if (!visibility.update_materials(materials, 1, 1, error) ||
                 visibility.ensure_part(
@@ -5573,15 +7215,18 @@ static void rt_scenario_visibility_classification(
         cap_glass.base_roughness[2] = 1.0f;
         cap_glass.transmission[0] = 1.0f;
         const VisibilityResult opaque_visibility =
-            trace_visibility(940, opaque, 1, true);
+            trace_visibility(940, opaque, 1, true, 0u);
         const VisibilityResult cutout_visibility =
-            trace_visibility(950, cutout, 1, false);
+            trace_visibility(950, cutout, 1, false, 0u);
         const VisibilityResult glass_visibility =
-            trace_visibility(960, glass, 2, false);
+            trace_visibility(960, glass, 2, false, 0u);
         const VisibilityResult colored_visibility =
-            trace_visibility(970, colored_glass, 1, false);
+            trace_visibility(970, colored_glass, 1, false, 0u);
         const VisibilityResult capped_visibility =
-            trace_visibility(980, cap_glass, 32, false);
+            trace_visibility(980, cap_glass, 32, false, 0u);
+        const VisibilityResult water_receiver_visibility =
+            trace_visibility(990, opaque, 1, false,
+                             MATERIAL_WATER_SURFACE);
         std::printf("aligned visibility: opaque=%.5f cutout=%.5f "
                     "glass=%.5f colored=%.5f/%.5f/%.5f\n",
                     opaque_visibility.visibility.x,
@@ -5610,6 +7255,9 @@ static void rt_scenario_visibility_classification(
         CHECK(capped_visibility.counters.capped_rays > 0 &&
                   capped_visibility.counters.any_hit_layers >= 32,
               "pathological transparent stack terminates at 32 layers");
+        CHECK(close3(water_receiver_visibility.visibility,
+                     {1.0f, 1.0f, 1.0f}, 1e-6f),
+              "water receiver keeps primary RT visibility neutral");
         CHECK(opaque_visibility.format ==
                   VK_FORMAT_R16G16B16A16_SFLOAT,
               "visibility target preserves RGB in a float format");
@@ -5736,11 +7384,20 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
     uint32_t& retry_x                 = ctx.retry_x;
     uint32_t& retry_y                 = ctx.retry_y;
 
-    const uint64_t immediate_before = matter::immediate_submit_count();
-    CHECK(renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
-                                 error) &&
-              renderer.record_cull_and_render(
-                  frame, matrices, camera.position, 1.0f, error) &&
+    const bool first_prepared = renderer.prepare_frame(
+        frame, matrices, camera.position, 1.0f, error);
+    CHECK(first_prepared && vulkan.validation_error_count() == 0,
+          error.empty() ? "prepare native RT frame without validation errors"
+                        : error.c_str());
+    // prepare_frame may settle deferred asset uploads created by ensure_part;
+    // the frame-recording contract begins after that explicit preparation.
+    const uint64_t immediate_before_record = matter::immediate_submit_count();
+    const bool first_recorded = first_prepared && renderer.record_cull_and_render(
+        frame, matrices, camera.position, 1.0f, error);
+    CHECK(first_recorded && vulkan.validation_error_count() == 0,
+          error.empty() ? "record native RT frame without validation errors"
+                        : error.c_str());
+    CHECK(first_recorded &&
               renderer.record_composite_to_swapchain(frame, error),
           error.empty() ? "record BLAS TLAS native shadow trace"
                         : error.c_str());
@@ -5770,7 +7427,7 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
               "native RT frame observes direct-shadow and diffuse-GI dispatches");
         CHECK(renderer.test_composite_uses_gi_temporal(),
               "same-frame composite descriptor samples accumulated GI output");
-        CHECK(matter::immediate_submit_count() == immediate_before,
+        CHECK(matter::immediate_submit_count() == immediate_before_record,
               "native RT frame records without immediate submit");
         CHECK(vulkan.end_frame(frame, error),
               error.empty() ? "submit native RT frame" : error.c_str());
@@ -5839,6 +7496,21 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
                       0.002f,
               error.empty()
                   ? "GPU temporal shader reprojects X and top-left Y and accumulates moments"
+                  : error.c_str());
+
+        auto reactive_temporal = temporal_fixture;
+        reactive_temporal.velocity = {};
+        reactive_temporal.history_patch_pixel =
+            reactive_temporal.output_pixel;
+        reactive_temporal.reactivity = 1.0f;
+        reactive_temporal.previous_radiance = {0.9f, 0.1f, 0.1f, 1.0f};
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                  reactive_temporal, temporal_result, error) &&
+                  temporal_result.history_length <= 2u &&
+                  close4(temporal_result.radiance,
+                         reactive_temporal.raw, 0.003f),
+              error.empty()
+                  ? "reactive whitewater replaces stale temporal radiance"
                   : error.c_str());
 
         const auto gpu_rejection = [&](viewer::GiTemporalGpuFixture changed,
@@ -8306,28 +9978,66 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
         // count is saturated and can only fall. It asserted
         // rough_lit >= mirror_lit, which no widening could ever satisfy.
         //
-        // What this fixture can show, and what a broken GGX normalization would
-        // break, is the pair of invariants below: reflected energy over the
-        // receiver is conserved as roughness goes 0.02 -> 0.65, while the
-        // radiance stops being uniform across it. The sharp lobe reflects the
-        // same patch of the target from every receiver pixel (peak == mean,
-        // p/m == 1.0); the wide lobe integrates a different slice per pixel, so
-        // per-pixel radiance scatters (p/m ~ 2.6) even though the mean holds.
+        // The physical sky is directionally varying, so this first fixture
+        // measures lobe broadening only. The controlled uniform-radiance
+        // enclosure below measures energy conservation independently; mixing
+        // the two made a valid rough lobe fail whenever it sampled bright sky.
         CHECK(std::isfinite(rough_metal_stats.second.x) &&
                   std::isfinite(rough_metal_stats.second.y) &&
                   std::isfinite(rough_metal_stats.second.z) &&
                   // the wide lobe must not go dark over the receiver
                   rough_metal_stats.first * 2u >= mirror_receiver_total &&
-                  // energy conserved, not amplified or swallowed
-                  rough_mean > mirror_mean * 0.5 &&
-                  rough_mean < mirror_mean * 1.5 &&
                   // sharp lobe uniform across the receiver, wide lobe not
                   mirror_peak <= mirror_mean * 1.05 &&
                   rough_peak > rough_mean * 1.5,
-              "rough metal spreads the reflected lobe and conserves finite energy");
+              "rough metal spreads the reflected lobe with finite energy");
+
+        const MaterialGpuRecord physical_target = gi_materials[0];
+        viewer::VkSceneLighting uniform_lighting = ctx.lighting;
+        uniform_lighting.atmosphere_sources.authored_display_sky_chroma_rgb = {};
+        uniform_lighting.atmosphere_sources.authored_irradiance_chroma_rgb = {};
+        uniform_lighting.atmosphere_sources.sun_multiplier = 0.0f;
+        renderer.set_lighting(uniform_lighting);
+        gi_materials[0].emission_strength[0] = 1.0f;
+        gi_materials[0].emission_strength[1] = 0.02f;
+        gi_materials[0].emission_strength[2] = 0.02f;
+        gi_materials[0].emission_strength[3] = 1.0f;
+        gi_materials[1].base_roughness[3] = 0.02f;
+        CHECK(renderer.ensure_part(rt_horizontal_part(
+                  926, 2.0f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f),
+                  error) >= 0 &&
+                  renderer.update_materials(gi_materials, 12, 1, error) &&
+                  renderer.update_instances(
+                      {{920, identity_matrix()}, {925, identity_matrix()},
+                       {926, identity_matrix()}}, error) &&
+                  render_temporal_control(311),
+              error.empty() ? "render uniform-radiance mirror fixture"
+                            : error.c_str());
+        specular_coverage();
+        const double uniform_mirror_mean = receiver_mean_energy;
+        gi_materials[1].base_roughness[3] = 0.65f;
+        CHECK(renderer.update_materials(gi_materials, 13, 1, error) &&
+                  render_temporal_control(312),
+              error.empty() ? "render uniform-radiance rough-metal fixture"
+                            : error.c_str());
+        const auto uniform_rough_stats = specular_coverage();
+        const double uniform_rough_mean = receiver_mean_energy;
+        CHECK(uniform_rough_stats.first > 0u &&
+                  std::isfinite(uniform_rough_mean) &&
+                  uniform_mirror_mean > 0.0 &&
+                  uniform_rough_mean > uniform_mirror_mean * 0.5 &&
+                  uniform_rough_mean < uniform_mirror_mean * 1.5,
+              "rough metal conserves finite energy under uniform incident radiance");
+
+        gi_materials[0] = physical_target;
+        renderer.release_part(926);
+        renderer.set_lighting(ctx.lighting);
         gi_materials[1].metal_opacity_spec_coat[0] = 0.0f;
         gi_materials[1].base_roughness[3] = 0.35f;
-        CHECK(renderer.update_materials(gi_materials, 12, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 14, 1, error) &&
+                  renderer.update_instances(
+                      {{920, identity_matrix()}, {925, identity_matrix()}},
+                      error) &&
                   render_temporal_control(306),
               error.empty() ? "render untinted dielectric baseline"
                             : error.c_str());
@@ -8335,7 +10045,7 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
         gi_materials[1].specular_tint_coat_roughness[0] = 0.01f;
         gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[2] = 0.01f;
-        CHECK(renderer.update_materials(gi_materials, 13, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 15, 1, error) &&
                   render_temporal_control(307),
               error.empty() ? "render tinted dielectric fixture"
                             : error.c_str());
@@ -8351,7 +10061,7 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
         gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[2] = 1.0f;
         gi_materials[1].base_roughness[3] = 0.8f;
-        CHECK(renderer.update_materials(gi_materials, 14, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 16, 1, error) &&
                   render_temporal_control(308),
               error.empty() ? "render rough dielectric F0 fixture"
                             : error.c_str());
@@ -8364,7 +10074,7 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
         gi_materials[1].specular_tint_coat_roughness[1] = 0.05f;
         gi_materials[1].specular_tint_coat_roughness[2] = 0.05f;
         gi_materials[1].metal_opacity_spec_coat[3] = 0.0f;
-        CHECK(renderer.update_materials(gi_materials, 15, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 17, 1, error) &&
                   render_temporal_control(309),
               error.empty() ? "render clearcoat-off red-base fixture"
                             : error.c_str());
@@ -8379,7 +10089,7 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
                   : error.c_str());
         gi_materials[1].metal_opacity_spec_coat[3] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[3] = 0.08f;
-        CHECK(renderer.update_materials(gi_materials, 16, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 18, 1, error) &&
                   render_temporal_control(310),
               error.empty() ? "render clearcoat second-lobe fixture"
                             : error.c_str());
@@ -8701,7 +10411,8 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
 
     // Shared scene builder so the legacy-walk renderer sees the same world.
     const auto build_scene = [&](viewer::VkSceneRenderer& renderer,
-                                 bool with_foliage) {
+                                 bool with_foliage,
+                                 bool with_sun_blocker = false) {
         CHECK(renderer.ensure_part(rt_trans_quad(7801, -2.4f, 2.4f, -1.4f,
                                                  1.4f, -2.0f, 1.0f, kGlass),
                                    error) >= 0,
@@ -8752,6 +10463,21 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
                   error.empty() ? "rt-transmission: foliage card"
                                 : error.c_str());
             instances.push_back({7804, identity_matrix()});
+        }
+        if (with_sun_blocker) {
+            // Center-pixel wall hit is (0, 0, -6). Its center sun ray crosses
+            // z=-4 near (-0.44, 0.89), safely away from the camera/refraction
+            // ray. The 0.5 m blocker fully covers that center ray, but only a
+            // fraction of the 15.84-degree sun cone used by the regression
+            // below. A one-ray transmission shadow is therefore black while a
+            // correctly sampled transmission shadow lands in its penumbra.
+            CHECK(renderer.ensure_part(rt_trans_quad(
+                                           7805, -0.69f, -0.19f,
+                                           0.64f, 1.14f, -4.0f, 1.0f, kDark),
+                                       error) >= 0,
+                  error.empty() ? "rt-transmission: sun blocker"
+                                : error.c_str());
+            instances.push_back({7805, identity_matrix()});
         }
         CHECK(renderer.update_instances(instances, error),
               error.empty() ? "rt-transmission: upload instances"
@@ -9024,7 +10750,47 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
     CHECK(byte_identical,
           "rt-transmission: sub-threshold roughness is byte-identical to smooth");
 
-    // --- (4) composite fallback guard (black-glass regression) -------------
+    // --- (4) enlarged-sun penumbra reaches transmitted direct light --------
+    // Regression for RiverFloatLab's duplicate-looking shadow sets: the
+    // primary sun-visibility pass used the authored sample count and sun cone,
+    // but hit_radiance_sunlit() behind glass/water traced one center ray. Keep
+    // every stochastic input fixed and vary only the authored shadow samples.
+    // The center blocker covers the hard ray and only part of the enlarged
+    // cone, so a correctly sampled transmitted shadow must become brighter.
+    author(0.0f, 0.85f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    build_scene(renderer, false, true);
+    lighting.sun_angular_diameter_deg = 15.84f;
+    rt_enabled.samples = 1;
+    renderer.set_lighting(lighting);
+    renderer.set_ray_tracing_settings(rt_enabled);
+    render_frame(renderer, true, fixed_index + 1);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel hard_sun_center{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, hard_sun_center, error),
+          error.c_str());
+    rt_enabled.samples = 10;
+    renderer.set_ray_tracing_settings(rt_enabled);
+    render_frame(renderer, true, fixed_index + 1);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel sampled_sun_center{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, sampled_sun_center, error),
+          error.c_str());
+    const float hard_sun_luminance =
+        rt_trans_luminance(hard_sun_center.raw_transmission);
+    const float sampled_sun_luminance =
+        rt_trans_luminance(sampled_sun_center.raw_transmission);
+    std::printf("rt-transmission sun penumbra: hard=%.5f sampled=%.5f\n",
+                hard_sun_luminance, sampled_sun_luminance);
+    CHECK(sampled_sun_luminance > hard_sun_luminance + 0.01f,
+          "rt-transmission: enlarged sun samples soften the riverbed shadow");
+    lighting.sun_angular_diameter_deg = matter::kSunAngularDiameterDefaultDeg;
+    rt_enabled.samples = 1;
+    renderer.set_lighting(lighting);
+    renderer.set_ray_tracing_settings(rt_enabled);
+
+    // --- (5) composite fallback guard (black-glass regression) -------------
     // RT off => the transmission lane is cleared, coverage < 0.01, and the
     // composite takes the material fallback branch. A zeroed absorptionColor
     // must behave exactly like a clear (white) one.
@@ -9058,7 +10824,7 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
           "rt-transmission: the fallback guard treats black absorption as clear");
     renderer.set_ray_tracing_settings(rt_enabled);
 
-    // --- (5) alpha-tested occluders in the walk + cost --------------------
+    // --- (6) alpha-tested occluders in the walk + cost --------------------
     // Default (two-mask) walk: the failing alpha-test card is skipped, so the
     // center pixel still transmits the gray wall.
     author(0.0f, 0.05f, {1.0f, 1.0f, 1.0f});
@@ -9145,8 +10911,14 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
 
     std::string error;
     rt_scenario_surface_query(vulkan, properties, error);
+    CHECK(vulkan.validation_error_count() == 0,
+          "surface-query scenario has no Vulkan validation errors");
     rt_scenario_blas_pinning(vulkan, error);
+    CHECK(vulkan.validation_error_count() == 0,
+          "BLAS-pinning scenario has no Vulkan validation errors");
     rt_scenario_visibility_classification(vulkan, error);
+    CHECK(vulkan.validation_error_count() == 0,
+          "visibility-classification scenario has no Vulkan validation errors");
 
     // Shared state for all renderer-based scenarios.
     viewer::VkSceneRenderer renderer(vulkan);
@@ -9180,16 +10952,28 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                       receiver_min_visibility, receiver_max_visibility};
 
     rt_scenario_shadow_contract(ctx);
+    CHECK(vulkan.validation_error_count() == 0,
+          "shadow-contract scenario has no Vulkan validation errors");
 
     matter::VulkanFrame frame{};
     CHECK(vulkan.begin_frame(frame, error),
           error.empty() ? "begin native RT frame" : error.c_str());
     if (frame.command_buffer != VK_NULL_HANDLE) {
         rt_scenario_first_frame_and_blas_lifecycle(ctx, frame);
+        CHECK(vulkan.validation_error_count() == 0,
+              "native first-frame/BLAS scenario has no Vulkan validation errors");
         rt_scenario_atrous_denoising(ctx);
+        CHECK(vulkan.validation_error_count() == 0,
+              "A-trous fixture has no Vulkan validation errors");
         rt_scenario_gi_history_resets(ctx);
+        CHECK(vulkan.validation_error_count() == 0,
+              "GI history scenario has no Vulkan validation errors");
         rt_scenario_secondary_sun_visibility(ctx);
+        CHECK(vulkan.validation_error_count() == 0,
+              "secondary-sun scenario has no Vulkan validation errors");
         rt_scenario_mirror_specular(ctx);
+        CHECK(vulkan.validation_error_count() == 0,
+              "mirror-specular scenario has no Vulkan validation errors");
         rt_scenario_baked_ao_and_gi_disable(ctx);
     }
 
@@ -10348,6 +12132,9 @@ void run_display_transform_tests(matter::VulkanDevice& vulkan) {
 void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize Vulkan frame-record renderer"
+                        : error.c_str());
     const matter::Mat4f identity = identity_matrix();
     const viewer::VkScenePart first = known_raster_triangle(972);
     const viewer::VkScenePart second = known_raster_triangle(973);
@@ -10360,9 +12147,25 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "stage two active Vulkan raster parts" : error.c_str());
 
     const FixedCullScene scene = make_fixed_cull_scene();
+    matter::VulkanFrame warmup{};
+    CHECK(vulkan.begin_frame(warmup, error),
+          error.empty() ? "begin complete Vulkan warmup frame"
+                        : error.c_str());
+    if (warmup.command_buffer == VK_NULL_HANDLE) return;
+    CHECK(renderer.prepare_frame(warmup, scene.frame, scene.eye, 1.0f, error) &&
+              renderer.record_cull_and_render(
+                  warmup, scene.frame, scene.eye, 1.0f, error) &&
+              renderer.record_composite_to_swapchain(warmup, error) &&
+              vulkan.end_frame(warmup, error),
+          error.empty()
+              ? "warm a complete Vulkan frame before steady immediate-submit baseline"
+              : error.c_str());
+    renderer.finish_ray_tracing_frame(warmup.serial, true);
+    vulkan.wait_idle();
+
     matter::VulkanFrame frame{};
     CHECK(vulkan.begin_frame(frame, error),
-          error.empty() ? "begin asynchronous Vulkan record frame"
+          error.empty() ? "begin complete steady Vulkan record frame"
                         : error.c_str());
     if (frame.command_buffer == VK_NULL_HANDLE) return;
     bool dlss_output_evaluated = false;
@@ -10421,13 +12224,22 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     dlss_temporal.reset = true;
     dlss_temporal.attempt_token = 100;
     renderer.set_temporal_frame(dlss_temporal);
-    CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error),
-          error.empty() ? "prepare asynchronous Vulkan record frame"
-                        : error.c_str());
     const uint64_t immediate_before = matter::immediate_submit_count();
+    // Deliberate test-only mutation hook: CI/review can prove the guard is
+    // capable of going RED without changing production renderer code.
+    if (std::getenv("MATTER_VK_TEST_MUTATE_IMMEDIATE_SUBMIT")) {
+        std::string mutation_error;
+        (void)matter::submit_immediate(vulkan, nullptr, nullptr,
+                                       mutation_error,
+                                       matter::ImmediateSubmitPhase::compute_dispatch);
+    }
+    CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error),
+          error.empty() ? "prepare complete steady Vulkan record frame"
+                        : error.c_str());
     CHECK(renderer.record_cull_and_render(frame, scene.frame, scene.eye, 1.0f,
                                           error),
-          error.empty() ? "record Vulkan cull and raster" : error.c_str());
+          error.empty() ? "record complete steady Vulkan cull and raster"
+                        : error.c_str());
     CHECK(renderer.record_composite_to_swapchain(frame, error) &&
               dlss_output_evaluated && dlss_input_is_linear_hdr &&
               renderer.active_dlss_mode() == matter::DlssMode::Quality,
@@ -10452,7 +12264,7 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     CHECK(vulkan.readback_swapchain_rgba8(frame, dlss_composite_rgba, error),
           error.empty() ? "queue fake DLSS output readback" : error.c_str());
     CHECK(matter::immediate_submit_count() == immediate_before,
-          "production Vulkan record path performs no immediate submissions");
+          "complete steady Vulkan frame performs no immediate submissions");
     // Adjacent parts now COALESCE into one multi-draw (record_raster), so the
     // recorded count is no longer one-per-part. The property this test has
     // always been about survives and is asserted directly: commands are grouped
@@ -11964,7 +13776,9 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 
 int main() {
     test_atmosphere_timing_contract();
+    test_water_forward_perf_evidence_contract();
     test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
+    test_screenshot_completion_marker_is_nonempty();
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     const bool animation_skin_only = startup_smoke_mode &&
         (std::string(startup_smoke_mode) == "animation-skin" ||
@@ -12052,6 +13866,64 @@ int main() {
         CHECK(vulkan->multi_draw_indirect_enabled(),
               "multiDrawIndirect is enabled on the logical device");
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        if (smoke_mode && std::string(smoke_mode) == "waterfall-mesher") {
+            const char* report =
+                std::getenv("MATTER_WATERFALL_QUALITY_REPORT");
+            g_failures += run_gpu_visual_mesher_waterfall_quality(
+                *vulkan, report ? std::filesystem::path(report)
+                                : std::filesystem::path{});
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "gpu-mesher") {
+            g_failures += run_gpu_visual_mesher_pure_vk_tests();
+            g_failures += run_gpu_visual_mesher_vk_tests(*vulkan);
+            g_failures += run_gpu_visual_mesher_acceptance(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "water-field") {
+            run_water_field_upload_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "water-animation") {
+            run_render_eligibility_acceptance_path(*vulkan);
+            run_water_animation_activation_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "water-forward") {
+            run_water_forward_path(*vulkan);
+            run_water_material_lookup_overlap_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "rt-unavailable") {
             run_forced_ray_tracing_unavailable_path(*vulkan);
             std::printf("validation errors: %u\n",

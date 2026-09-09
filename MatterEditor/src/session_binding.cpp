@@ -1,3 +1,21 @@
+// MatterEditor/src/session_binding.cpp
+//
+// Implementation of the world-switch epoch lifecycle. The ORDERING CONTRACT —
+// which is the entire reason this class exists — is written out step by step
+// in session_binding.h; the numbered comments in `replace` below are that same
+// sequence, and the two must not diverge.
+//
+// Everything here runs on the app thread, and the heavy operations
+// (`replace`, `reload`) run only at main.cpp's post-frame seam, never inside
+// an ImGui draw — destroying a session mid-draw would pull the world out from
+// under panels that are already holding pointers into it. The command handlers
+// record intent (`request_switch` / `request_reload`) and return immediately;
+// the seam applies it.
+//
+// This class owns the epoch and the bridge subscriptions. It does NOT own the
+// session: `session_` is a reference to main.cpp's slot, which is where the
+// unique_ptr actually lives.
+
 #include "session_binding.h"
 
 #include "matter/event/event_hub.h"
@@ -27,6 +45,13 @@ SessionBinding::~SessionBinding() {
     registry_.close_active_scope();
 }
 
+// Start a fresh ActiveSession command-scope epoch: a new (session id,
+// generation) pair becomes the registry's active scope, which is what makes
+// every ticket issued against the previous epoch complete StaleScope instead
+// of mutating the new world. Ids and generations only ever increase, so an old
+// token can never be mistaken for a current one. Must follow a matching
+// close_active_scope; `initialize` and step 4 of `replace` are the only
+// callers.
 void SessionBinding::open_epoch() {
     current_session_id_ = next_session_id_++;
     ++current_generation_;
@@ -41,6 +66,9 @@ void SessionBinding::quiesce_bridge() {
     bridge_subs_.clear();
 }
 
+// Drop the old bridge subscriptions and build a fresh set against the CURRENT
+// session's hub. Safe to call with no session or no builder — it then just
+// leaves the editor unsubscribed, which is the correct state between worlds.
 void SessionBinding::rebuild_bridge() {
     bridge_subs_.clear();
     if (build_bridge_ && session_) build_bridge_(session_->events(), bridge_subs_);

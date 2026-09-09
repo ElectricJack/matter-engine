@@ -11,8 +11,12 @@ exact build commands:
 
 ```bash
 export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
-make -C MatterEditor windows TMP="C:/Users/<you>/AppData/Local/Temp" TEMP="C:/Users/<you>/AppData/Local/Temp"
+make -C MatterEditor windows
 ```
+
+(`platform.mk` derives and exports `TMP`/`TEMP` from `LOCALAPPDATA` itself, so
+the `TMP=... TEMP=...` prefix this command used to need is no longer required
+for `make`. Direct `editor.exe` launches still need it — see CLAUDE.md.)
 
 `windows` is `.DEFAULT_GOAL` in `MatterEditor/Makefile`, so a bare `make -C
 MatterEditor` also builds it. Output: `build/windows/editor.exe`. Links no
@@ -67,11 +71,16 @@ confirmed against a package manager here).
 
 ### What this reuses vs. adds
 
-- **Reuses, unmodified**: the same `APP_SRC` / `WIN_ME3_CPP` / `WIN_MSL_CPP`
-  / `WIN_PIPELINE_C` / `IMGUI_SRC_WIN` source lists the Windows target
-  compiles. These were never actually Windows-specific — see the "Linux
-  Vulkan target (Phase 5b)" comment block in `MatterEditor/Makefile` for the
-  full reasoning (the `WIN_` prefix is historical).
+- **Reuses, unmodified**: the same `WIN_ALL_CPP_SRC` (`APP_SRC` +
+  `IMGUI_SRC_WIN`) source list the Windows target compiles —
+  `LINUX_ALL_CPP_SRC = $(WIN_ALL_CPP_SRC)` verbatim. These were never actually
+  Windows-specific; see the "Linux Vulkan target (Phase 5b)" comment block in
+  `MatterEditor/Makefile` (the `WIN_` prefix is historical). The engine itself
+  is no longer compiled here at all: the hand-maintained `WIN_ME3_CPP` /
+  `WIN_MSL_CPP` / `WIN_PIPELINE_C` copies of MatterEngine3's source lists were
+  deleted, and both targets now link an archive MatterEngine3's own
+  `viewer-lib` target builds (`libmatter_engine3_viewer.a` /
+  `libmatter_engine3_viewer_linux.a`).
 - **Adds**: a Vulkan-only GLFW build for X11 (mirrors
   `src/glfw_vulkan_only_context.c`'s Win32/WGL-stub approach in
   `src/glfw_vulkan_only_context_x11.c`, stubbing the GLX entry points GLFW's
@@ -102,7 +111,7 @@ when `<vulkan/vulkan_win32.h>` is pulled in (which only happens when
 `#ifdef _WIN32` is a hard compile error on Linux, not a runtime gap. Tracing
 what actually *uses* that capability found nothing: it is unimplemented
 CUDA/OptiX external-memory/semaphore interop
-(`docs/superpowers/specs/2026-07-13-vulkan-temporal-foundation-design.md`),
+(`docs/deprecated/superpowers/specs/2026-07-13-vulkan-temporal-foundation-design.md`),
 with no `vkGetMemoryWin32HandleKHR` / `vkImportSemaphoreWin32HandleKHR` call
 anywhere in this repo. The fix gates all three spots to `_WIN32` (byte-for-byte
 identical on Windows) and simply drops the requirement on Linux rather than

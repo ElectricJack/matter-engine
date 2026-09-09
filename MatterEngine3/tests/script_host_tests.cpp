@@ -10,6 +10,8 @@ extern "C" {
 #include "../src/triangle_emit.hpp"   // complete TriangleBuildBuffer for G4/G8 tests
 #include "csg_lowering.h"
 #include "part_asset_v2.h"
+#include "matter/render_eligibility.h"
+#include "part_render_policy.h"
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include <sys/stat.h>
@@ -544,6 +546,67 @@ static void test_place_child_roundtrip() {
     BakeResult pr2 = host.bake_source(parent_src, "{}", {}, kids, 1, names);
     CHECK(pr2.error.ok && pr2.resolved_hash == pr.resolved_hash,
           "parent re-bake is deterministic");
+}
+
+static void test_ray_tracing_policy_authoring_roundtrip() {
+    using matter::RayTracingOverride;
+    using namespace script_host;
+
+    CHECK(matter::resolve_ray_traced(RayTracingOverride::Inherit, true),
+          "ray-traced inherit preserves a true part default");
+    CHECK(!matter::resolve_ray_traced(RayTracingOverride::Inherit, false),
+          "ray-traced inherit preserves a false part default");
+    CHECK(!matter::resolve_ray_traced(RayTracingOverride::Disabled, true),
+          "ray-traced disabled overrides a true part default");
+    CHECK(matter::resolve_ray_traced(RayTracingOverride::Enabled, false),
+          "ray-traced enabled overrides a false part default");
+
+    ScriptHost host;
+    const char* leaf_src =
+        "class Leaf extends Part { build(p) {} }";
+    const BakeResult leaf = host.bake_source(leaf_src, "{}", {});
+    CHECK(leaf.error.ok, "ray-traced policy leaf bakes");
+
+    const char* parent_src =
+        "class Parent extends Part { build(p) {"
+        "  this.rayTraced(false);"
+        "  this.placeChild('Leaf');"
+        "  this.placeChild('Leaf', null, { rayTraced: false });"
+        "  this.placeChild('Leaf', null, { rayTraced: true });"
+        "} }";
+    const uint64_t child_hashes[1] = {leaf.resolved_hash};
+    const std::string child_names[1] = {"Leaf"};
+    const BakeResult parent = host.bake_source(
+        parent_src, "{}", {}, child_hashes, 1, child_names);
+    CHECK(parent.error.ok, "ray-traced parent bakes");
+
+    matter::PartRenderPolicy policy;
+    const bool loaded = matter::load_part_render_policy(
+        part_asset::cache_path_resolved(parent.resolved_hash),
+        parent.resolved_hash, 3, policy);
+    CHECK(loaded, "ray-traced policy RNDR section reloads");
+    CHECK(!policy.ray_traced, "ray-traced part default round-trips as false");
+    CHECK(policy.child_overrides.size() == 3,
+          "ray-traced policy retains one override per child placement");
+    if (policy.child_overrides.size() == 3) {
+        CHECK(policy.child_overrides[0] == RayTracingOverride::Inherit,
+              "omitted child rayTraced inherits");
+        CHECK(policy.child_overrides[1] == RayTracingOverride::Disabled,
+              "false child rayTraced disables the placement");
+        CHECK(policy.child_overrides[2] == RayTracingOverride::Enabled,
+              "true child rayTraced enables the placement");
+    }
+
+    const BakeResult bad_default = host.bake_source(
+        "class Bad extends Part { build(p) { this.rayTraced(1); } }",
+        "{}", {});
+    CHECK(!bad_default.error.ok, "rayTraced rejects a non-boolean part default");
+
+    const BakeResult bad_child = host.bake_source(
+        "class BadChild extends Part { build(p) {"
+        " this.placeChild('Leaf', null, { rayTraced: 1 }); } }",
+        "{}", {}, child_hashes, 1, child_names);
+    CHECK(!bad_child.error.ok, "placeChild rayTraced rejects a non-boolean override");
 }
 
 // --- Phase 2 DSL-completeness gaps (G3..G8) ---------------------------------
@@ -2295,6 +2358,7 @@ int main() {
     test_eval_requires_deterministic();
     test_eval_requires_does_not_build();
     test_place_child_roundtrip();
+    test_ray_tracing_policy_authoring_roundtrip();
     test_g3_session_scoped_op_verbs();
     test_g4_tint_cursor();
     test_g5_lookat();

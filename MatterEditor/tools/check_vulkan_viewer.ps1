@@ -205,8 +205,9 @@ Require-Text $runtimeSmoke 'Vulkan material diagnostic:' 'bake-to-RasterMeshData
 Require-Text $runtimeSmoke 'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL' 'rendered packed-material override'
 Require-Text $runtimeSmoke 'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT' 'non-default prior packed-material slot'
 Require-Text $runtimeSmoke 'seeded ground tileset material 8 prior packed slot 2' 'prior-slot seed assertion'
+Require-Text $runtimeSmoke 'applied ground tileset slot 0 to material 8' 'packed-slot override assertion'
 Require-Text $runtimeSmoke 'restored ground tileset material 8 to packed slot 2' 'exact packed-slot restoration assertion'
-Require-Text $runtimeSmoke 'did not exercise the rendered packed-material warning' 'end-to-end texture warning assertion'
+Require-Text $runtimeSmoke 'did not exercise the rendered packed-material override' 'end-to-end texture override assertion'
 Require-Text $runtimeSmoke 'did not restore the exact packed prior material slot' 'diagnostic exact restoration assertion'
 Require-Text $runtimeSmoke 'Get-FileHash' 'PNG hash assertion'
 Require-Text $main 'CreateFile' 'Windows command file reader'
@@ -247,6 +248,8 @@ Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash
 }
 Require-Text $main 'end_to_end_cadence' 'end-to-end performance metric label'
 Require-Text $main 'perf_frame_cadence_ms' 'end-to-end performance frame sample'
+Require-Text $main 'perf: static geometry stable' 'performance sampling waits for completed terrain streaming'
+Require-Text $main 'GLFW_DECORATED, GLFW_FALSE' 'headless performance framebuffer is not clipped by window chrome'
 Forbid-Text $main 'perf_frame_times.push_back(stats.frame_ms)' 'CPU-only render timing sample'
 $perfFrameStart = $main.IndexOf('const auto perf_frame_start = std::chrono::steady_clock::now();')
 $pollEvents = $main.IndexOf('glfwPollEvents();')
@@ -278,6 +281,35 @@ if ($recordStart -lt 0 -or $recordEnd -lt $recordStart) {
 } else {
     $recordPath = $vkScene.Substring($recordStart, $recordEnd - $recordStart)
     Forbid-Text $recordPath 'submit_immediate(' 'production Vulkan world-render submission'
+}
+
+# The runtime guard must baseline before a complete post-warmup frame path.
+# A baseline placed after prepare_frame() cannot see regressions introduced by
+# lazy per-frame resource work and is therefore not an acceptance test.
+$frameRecordStart = $vkSmoke.IndexOf('void run_frame_record_tests(')
+$frameRecordEnd = $vkSmoke.IndexOf('void run_', $frameRecordStart + 1)
+if ($frameRecordStart -lt 0 -or $frameRecordEnd -lt $frameRecordStart) {
+    $failures.Add('could not isolate Vulkan frame-record immediate-submit test')
+} else {
+    $frameRecordTest = $vkSmoke.Substring(
+        $frameRecordStart, $frameRecordEnd - $frameRecordStart)
+    Require-Text $frameRecordTest 'MATTER_VK_TEST_MUTATE_IMMEDIATE_SUBMIT' `
+        'reproducible immediate-submit RED mutation hook'
+    $warmup = $frameRecordTest.IndexOf(
+        'warm a complete Vulkan frame before steady immediate-submit baseline')
+    $baseline = $frameRecordTest.IndexOf(
+        'const uint64_t immediate_before = matter::immediate_submit_count();')
+    $steadyPrepare = $frameRecordTest.IndexOf(
+        'prepare complete steady Vulkan record frame')
+    $steadyRecord = $frameRecordTest.IndexOf(
+        'record complete steady Vulkan cull and raster')
+    $guard = $frameRecordTest.IndexOf(
+        'complete steady Vulkan frame performs no immediate submissions')
+    if ($warmup -lt 0 -or $baseline -lt $warmup -or
+        $steadyPrepare -lt $baseline -or $steadyRecord -lt $steadyPrepare -or
+        $guard -lt $steadyRecord) {
+        $failures.Add('immediate-submit test must warm a complete frame, baseline, then measure prepare + record')
+    }
 }
 
 # Vulkan-only compatibility must own CPU cleanup and may not pretend unsupported

@@ -37,6 +37,11 @@
 # Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
 include ../platform.mk
 
+# Canonical, repository-relative inventories shared with the CMake migration.
+MANIFEST_DIR = ../cmake/manifests
+manifest_sources = $(shell awk -F'|' '!/^[[:space:]]*#/ && NF == 2 && ($$2 == "all" || $$2 == "$(2)") { print $$1 }' "$(1)")
+manifest_editor_paths = $(foreach manifest_path,$(1),$(if $(filter MatterEditor/%,$(manifest_path)),$(patsubst MatterEditor/%,%,$(manifest_path)),../$(manifest_path)))
+
 JOBS ?= $(shell nproc)
 MAKEFLAGS += -j$(JOBS)
 
@@ -194,7 +199,13 @@ ar-core:
 # this repository's normal dev environment -- see MatterEditor/README.md for
 # what `linux` has and has not been checked against (no Linux machine
 # available where it was written).
-APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/part_workbench_iso.cpp src/reveal_part.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/camera_orbit.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/property_editor.cpp src/editor_props.cpp src/gizmo.cpp src/os_open.cpp
+EDITOR_MANIFEST_WINDOWS = $(call manifest_sources,$(MANIFEST_DIR)/editor.sources,windows)
+EDITOR_MANIFEST_LINUX = $(call manifest_sources,$(MANIFEST_DIR)/editor.sources,linux)
+VENDOR_MANIFEST_WINDOWS = $(call manifest_sources,$(MANIFEST_DIR)/vendor.sources,windows)
+VENDOR_MANIFEST_LINUX = $(call manifest_sources,$(MANIFEST_DIR)/vendor.sources,linux)
+APP_SRC = $(call manifest_editor_paths,$(filter MatterEditor/src/%.cpp,$(EDITOR_MANIFEST_WINDOWS)))
+EDITOR_GLFW_WINDOWS_C = $(call manifest_editor_paths,$(filter MatterEditor/src/%.c,$(EDITOR_MANIFEST_WINDOWS)))
+EDITOR_GLFW_LINUX_C = $(call manifest_editor_paths,$(filter MatterEditor/src/%.c,$(EDITOR_MANIFEST_LINUX)))
 
 # ---- Engine sources: NOT compiled here any more --------------------------
 # WIN_ME3_CPP (~127 MatterEngine3 sources), WIN_MSL_CPP (~22 MatterSurfaceLib /
@@ -214,18 +225,16 @@ APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_deb
 #
 # What is still compiled here is what is genuinely the editor's: APP_SRC, the
 # ImGui/ImGuizmo/GLFW UI layer, and the standalone test exes further down.
-FLECS_C = $(FLECS_DIR)/flecs.c
+FLECS_C = $(call manifest_editor_paths,$(filter third_party/flecs/flecs.c,$(VENDOR_MANIFEST_WINDOWS)))
+BC7ENC_CPP = $(call manifest_editor_paths,$(filter third_party/bc7enc/%.cpp,$(VENDOR_MANIFEST_WINDOWS)))
 
-IMGUI_CORE_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
-            $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp \
-            $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
-IMGUIZMO_SRC = $(IMGUIZMO_PATH)/ImGuizmo.cpp
+IMGUI_CORE_SRC = $(call manifest_editor_paths,$(filter third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp third_party/imgui/backends/imgui_impl_glfw.cpp,$(VENDOR_MANIFEST_WINDOWS)))
+IMGUIZMO_SRC = $(call manifest_editor_paths,$(filter third_party/ImGuizmo/ImGuizmo.cpp,$(VENDOR_MANIFEST_WINDOWS)))
 # IMGUI_SRC_LINUX (imgui_impl_opengl3.cpp backend) retired with the Linux GL
 # viewer above. Phase 5b's `linux` target below reuses IMGUI_SRC_WIN as-is
 # (the Vulkan+GLFW imgui backend, not actually Windows-specific despite the
 # name) rather than reintroducing an OpenGL3 one -- see LINUX_ALL_CPP_SRC.
-IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
-            $(IMGUI_PATH)/backends/imgui_impl_vulkan.cpp
+IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) $(call manifest_editor_paths,$(filter third_party/imgui/backends/imgui_impl_vulkan.cpp,$(VENDOR_MANIFEST_WINDOWS)))
 
 # ---- Per-object lists (one .o per TU, in a platform build dir, so `make -j`
 # can compile them concurrently). Basenames are unique across all source dirs,
@@ -465,11 +474,7 @@ $(WIN_FEATURES): vulkan-preflight
 # Standalone GLFW archive for Vulkan smoke tests.  Keep this separate from
 # raylib's GLFW objects so the existing OpenGL viewer path is unchanged.
 GLFW_SRC_DIR = ../third_party/raylib/src/external/glfw/src
-GLFW_WIN_SRC = context.c egl_context.c init.c input.c monitor.c null_init.c \
-               null_joystick.c null_monitor.c null_window.c osmesa_context.c \
-               platform.c vulkan.c win32_init.c win32_joystick.c \
-               win32_module.c win32_monitor.c win32_thread.c win32_time.c \
-               win32_window.c window.c
+GLFW_WIN_SRC = $(filter-out window.c,$(notdir $(filter third_party/raylib/src/external/glfw/src/%.c,$(VENDOR_MANIFEST_WINDOWS)))) window.c
 # Kept under obj/glfw/ alongside every other Windows object, consistent with
 # the rest of the obj/ split above.
 GLFW_WIN_OBJ = $(addprefix $(W_OBJ_DIR)/glfw/,$(GLFW_WIN_SRC:.c=.o))
@@ -481,7 +486,7 @@ $(W_OBJ_DIR)/glfw/%.o: $(GLFW_SRC_DIR)/%.c
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
 	    -I../third_party/raylib/src/external/glfw/include
 
-$(W_OBJ_DIR)/glfw/glfw_vulkan_only_context.o: src/glfw_vulkan_only_context.c
+$(W_OBJ_DIR)/glfw/glfw_vulkan_only_context.o: $(EDITOR_GLFW_WINDOWS_C)
 	@mkdir -p $(dir $@)
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
 	    -I$(GLFW_SRC_DIR) -I../third_party/raylib/src/external/glfw/include
@@ -659,6 +664,16 @@ build/windows/vulkan_compat_tests.exe: \
 # + VulkanDevice with validation), but a deliberately minimal TU list: the
 # compositor is standalone by contract, so the exe proves it links against
 # nothing beyond the device layer.
+#
+# ProfileLib is NOT optional here even though it looks like an extra: vt_
+# compositor.cpp does an unconditional `#include "profile.h"`. Without
+# -I$(PROFILE_DIR)/include that resolves to MSYS2's unrelated
+# /ucrt64/include/profile.h, which defines none of the PROFILE_* macros -- so
+# the TU compiled far enough to die on "'PROFILE_SCOPE' was not declared in
+# this scope" rather than on a missing header, and this target had been
+# unbuildable for as long as those zones have existed. ProfileLib is not
+# header-only, so profile.cpp is on the source list too (same as
+# vulkan_smoke_tests.exe above).
 build/windows/vt_compositor_tests.exe: \
         $(ME3_DIR)/tests/vt_compositor_tests.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
@@ -671,6 +686,7 @@ build/windows/vt_compositor_tests.exe: \
         $(ME3_DIR)/src/render/vk_context.cpp \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/streamline_bridge.cpp \
+        $(PROFILE_DIR)/src/profile.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vt_compositor_tests.cpp \
@@ -679,6 +695,7 @@ build/windows/vt_compositor_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
+	    $(PROFILE_DIR)/src/profile.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -Wno-unused-parameter \
@@ -690,6 +707,7 @@ build/windows/vt_compositor_tests.exe: \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I$(ME3_DIR)/src/render \
 	    -I$(ME3_DIR)/tests \
+	    -I$(PROFILE_DIR)/include \
 	    -I$(FLECS_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
@@ -715,9 +733,9 @@ $(W_CPP_OBJ): $(W_OBJ_DIR)/%.o: %.cpp | $(W_OBJ_DIR)
 $(W_FLECS_OBJ): $(W_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_OBJ_DIR)
 	$(WIN_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
 WIN_BC7ENC_COMPILE = $(WIN_CXX) -c $< -o $@ -std=c++17 -O2 -DNDEBUG -w -I$(BC7ENC_DIR) -ffunction-sections -fdata-sections -MMD -MP
-$(W_OBJ_DIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(W_OBJ_DIR)
+$(W_OBJ_DIR)/bc7enc.o: $(filter %/bc7enc.cpp,$(BC7ENC_CPP)) | $(W_OBJ_DIR)
 	$(WIN_BC7ENC_COMPILE)
-$(W_OBJ_DIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(W_OBJ_DIR)
+$(W_OBJ_DIR)/rgbcx.o: $(filter %/rgbcx.cpp,$(BC7ENC_CPP)) | $(W_OBJ_DIR)
 	$(WIN_BC7ENC_COMPILE)
 
 # Order-only: the headers must exist before shader_source.cpp / the vt_*/vk_*
@@ -935,12 +953,7 @@ $(L_DIR) $(L_OBJ_DIR):
 # -lX11 below is still required because x11_window.c calls Xlib functions
 # like XCreateWindow directly, not through a dlopen'd pointer) -- there is no
 # Linux package manager here to confirm any of this against a real install.
-GLFW_LINUX_SRC = context.c egl_context.c init.c input.c monitor.c null_init.c \
-                 null_joystick.c null_monitor.c null_window.c osmesa_context.c \
-                 platform.c vulkan.c window.c \
-                 x11_init.c x11_monitor.c x11_window.c xkb_unicode.c \
-                 linux_joystick.c \
-                 posix_module.c posix_poll.c posix_thread.c posix_time.c
+GLFW_LINUX_SRC = $(notdir $(filter third_party/raylib/src/external/glfw/src/%.c,$(VENDOR_MANIFEST_LINUX)))
 GLFW_LINUX_OBJ = $(addprefix $(L_OBJ_DIR)/glfw/,$(GLFW_LINUX_SRC:.c=.o))
 GLFW_LINUX_OBJ += $(L_OBJ_DIR)/glfw/glfw_vulkan_only_context_x11.o
 GLFW_LINUX_LIB = $(L_DIR)/libglfw3.a
@@ -950,7 +963,7 @@ $(L_OBJ_DIR)/glfw/%.o: $(GLFW_SRC_DIR)/%.c
 	$(LINUX_CC) -c $< -o $@ -D_GLFW_X11 \
 	    -I../third_party/raylib/src/external/glfw/include
 
-$(L_OBJ_DIR)/glfw/glfw_vulkan_only_context_x11.o: src/glfw_vulkan_only_context_x11.c
+$(L_OBJ_DIR)/glfw/glfw_vulkan_only_context_x11.o: $(EDITOR_GLFW_LINUX_C)
 	@mkdir -p $(dir $@)
 	$(LINUX_CC) -c $< -o $@ -D_GLFW_X11 \
 	    -I$(GLFW_SRC_DIR) -I../third_party/raylib/src/external/glfw/include
@@ -1111,6 +1124,21 @@ build/test_selection_set.exe: tests/test_selection_set.cpp src/selection_set.cpp
 .PHONY: run-test-selection-set
 run-test-selection-set: build/test_selection_set.exe
 	./build/test_selection_set.exe
+
+# Versioned agent request/result contract. Pure CPU and filesystem only; the
+# production adapter attaches these envelopes to CommandRegistry tickets in
+# main.cpp, while this target tests hostile input and lifecycle semantics.
+build/test_agent_protocol.exe: tests/test_agent_protocol.cpp \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_agent_protocol.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-agent-protocol
+run-test-agent-protocol: build/test_agent_protocol.exe
+	./build/test_agent_protocol.exe
 
 # Camera orbit / move / turn math (issue a4203d22 parts 1-2). Pure CPU: no
 # ImGui context, no window, no session -- camera_orbit.cpp exists precisely

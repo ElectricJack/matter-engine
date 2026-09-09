@@ -1,0 +1,586 @@
+# PhysX PBD fluid-bake integration — design
+
+**Date:** 2026-08-22
+**Status:** approved; implementation in progress (P0 control passed 2026-08-23)
+**Order:** specification 3 of 3; implementation begins only after both
+`2026-08-22-windows-msvc-build-migration-design.md` reaches its migration
+acceptance gate and `2026-08-22-gpu-visual-meshing-foundation-design.md`
+reaches its fluid-prerequisite acceptance gate
+**Goal:** integrate NVIDIA PhysX's existing GPU PBD fluid implementation into
+MatterEngine's hydrology bake, in-process, and prove that it can fill and flow
+through the authored 100+ metre, approximately 15% ravine. MatterEngine owns
+terrain authoring, bake orchestration, stopping rules, artifacts, meshing, and
+rendering; PhysX owns all fluid simulation mathematics.
+
+## 1. Product constraints
+
+These are fixed by the gameplay and prior investigation:
+
+1. Water is baked during level construction and is static during gameplay.
+   Runtime terrain or players do not modify the solved water.
+2. Gameplay is navigating rapids. The bake must provide a convincing visual
+   surface and a velocity/depth field for buoyancy and current forces; it does
+   not need engineering-grade hydraulic predictions.
+3. No Matter-authored fluid solver is permitted. Integration code may marshal
+   particles, collision geometry, emitters, sensors, and results, but it may not
+   replace or modify PhysX's PBD constraint solve.
+4. No secondary process is launched. The solver runs in the editor process.
+5. The first accepted scope is one upstream section. The section begins at the
+   authored inlet, is contained by terrain plus a generated virtual dam, and
+   stops when the authored fill sensor remains wet for the required stable-step
+   count.
+6. The fluid domain boundary may cull work but may not act as a hidden wall.
+   Terrain, boulders, and the explicit virtual dam are the only containing
+   collision geometry.
+7. The current CPU mesher remains available for query/collision output. The GPU
+   visual mesher from specification 2 produces the high-resolution water mesh.
+8. PhysX's isosurface extractor is not used.
+
+## 2. Why PhysX PBD
+
+PhysX 5 exposes `PxPBDParticleSystem`, GPU particle buffers, fluid phases, PBD
+fluid materials, particle/rigid collision, final GPU positions and velocities,
+and optional diffuse particles. NVIDIA ships `SnippetPBF` and
+`SnippetPBFMultiMat` as setup references. PBD is designed for stable,
+visually plausible particle dynamics at real-time-oriented timesteps, which
+matches a game-content bake better than restarting another hydraulics project.
+
+The spike treats the unmodified `SnippetPBF` behavior as its control. If the
+official example does not build and run first, no Matter integration work
+starts.
+
+## 3. Dependency and native integration architecture
+
+### 3.1 External source checkout
+
+The PhysX repository stays outside the MatterEngine repository. A small tracked
+lock file records the exact upstream URL, commit, SDK version, supported CUDA
+version, and expected binary-interface version. The build receives the checkout
+through `MATTER_PHYSX_ROOT`; it never clones or updates dependencies implicitly.
+
+The repository remains buildable without PhysX. Hydrology authoring, Linux, and
+CPU meshing tests do not acquire a CUDA or PhysX dependency. The Windows editor
+uses the MSVC toolchain established by the migration prerequisite whether or
+not PhysX is enabled.
+
+### 3.2 In-process native adapter
+
+MatterEditor, MatterEngine3, the adapter, and PhysX are built with the pinned
+MSVC 2022 toolchain. A Matter-owned adapter is compiled as an ordinary internal
+engine target and links the official static PhysX core, foundation, common,
+cooking, and extension libraries through CMake:
+
+```text
+external PhysX checkout + integrations/physx_adapter sources
+                           │ pinned MSVC/CUDA + CMake
+                           ▼
+MatterEngine PhysxRuntime adapter linked into editor.exe
+                           │ same process
+                           ▼
+hydrology bake worker + staged PhysX runtime DLLs
+```
+
+The adapter contains all PhysX headers and types behind a private implementation
+boundary; public Matter headers expose only Matter-owned types. Static core
+linking keeps editor startup independent of optional PhysX DLL discovery.
+PhysX's redistributable GPU module and any runtime dependencies proven by the
+pinned build's import graph are staged beside `editor.exe`; the GPU module is
+loaded and initialized only when a PhysX bake is requested. There is no Matter
+bridge DLL, solver executable, command line, GenCase, or temporary worker
+process.
+
+For the pinned Windows build, the staged dynamic closure is exactly
+`PhysXGpu_64.dll`; its recursive import graph requires only Windows System32's
+`KERNEL32.dll` and NVIDIA driver's `nvcuda.dll`. The package includes the
+upstream PhysX license and CUDA EULA as separately hashed files and as entries
+in `THIRD_PARTY_NOTICES.txt`. The manifest marks both `physx` and `cuda` true,
+and the checker rejects alternate/extra PhysX runtime aliases. An opt-in PhysX
+distribution also requires exactly one explicitly selected accepted `.mhyd`
+under the packaged `world_demo/.cache/RiverHydrology/hydrology` tree; ordinary
+source `.cache` directories remain excluded, so stale or rejected artifacts
+cannot enter the package accidentally.
+
+### 3.3 Adapter responsibilities
+
+The adapter may:
+
+- create/release PhysX foundation, CUDA manager, physics, cooking, scene, PBD
+  particle system, material, phases, and buffers;
+- cook and install Matter-provided triangle collision meshes;
+- copy initial particles and activate additional inlet particles;
+- step `PxScene::simulate`/fetch in batches;
+- evaluate inexpensive fill-sensor reductions;
+- report progress, memory, particle, exclusion, and timing counters;
+- copy the final positions and velocities to Matter-owned host buffers; and
+- catch all C++ exceptions and translate PhysX error callbacks to stable Matter
+  status codes.
+
+It may not change PhysX kernels, fluid constraints, neighbor search, collision
+resolution, or timestep integration.
+
+### 3.4 Licensing and distribution
+
+The dependency lock records every PhysX source, static library, and GPU runtime
+staged into the build. The editor staging and `dist` targets copy all required
+runtime DLLs plus the corresponding upstream license and notice files. An
+editor recipient does not install PhysX, CUDA Toolkit, Visual Studio, CMake, or
+Python. The package preflight tests the runtime from a process environment with
+developer tool paths removed. Shipping static water artifacts never requires
+the game runtime to contain PhysX.
+
+## 4. Internal adapter interface
+
+The adapter exposes a narrow Matter-owned C++ interface. The exact spelling is
+finalized in the implementation plan, but the semantic contract is:
+
+```cpp
+namespace matter::hydrology {
+
+class PhysxRuntime {
+public:
+    static RuntimeInfo probe();
+    BakeResult run(const PhysxBakeInput&, ProgressSink&, CancellationToken&);
+};
+
+} // namespace matter::hydrology
+```
+
+`PhysxRuntime` uses a private implementation so PhysX headers, compiler defines,
+CUDA types, and ownership rules do not leak into engine consumers. Inputs and
+outputs use Matter-owned value/container types. The adapter owns every PhysX
+object through explicit release-aware RAII and converts exceptions and callbacks
+to `BakeResult`; exceptions do not escape the bake-worker boundary.
+
+`run` is synchronous on the hydrology bake worker. Progress callbacks occur on
+that same worker and may only publish engine events or inspect cancellation.
+They never call the renderer or UI.
+
+## 5. Matter-side bake components
+
+### 5.1 `PhysxRuntime`
+
+The native adapter validates the compiled and staged PhysX versions, owns the
+foundation/CUDA/physics lifetime, and creates per-bake sessions. Missing or
+mismatched runtime DLLs are reported as `backend unavailable`, not as a
+world-loader error. Worlds without a requested fluid bake never initialize the
+GPU runtime.
+
+### 5.2 `PhysxFluidBake`
+
+A pure orchestration component converts a `RiverNetworkDefinition`, generated
+`RiverGeometry`, terrain collision mesh, and bake settings into adapter inputs.
+It owns the semantic key, progress mapping, cancellation, final validation, and
+artifact assembly. It contains no fluid-force or pressure calculation.
+
+### 5.3 `HydrologyArtifact`
+
+The artifact is persistent and versioned independently from terrain parts. It
+contains:
+
+- schema and backend contract versions;
+- river-network canonical hash and terrain/river-geometry revisions;
+- PhysX SDK, adapter, PBD settings, and GPU provenance;
+- section bounds, inlet definitions, virtual-dam definition, and sensor result;
+- completed steps, simulated seconds, peak/active/excluded particle counts,
+  memory high-water mark, and wall time;
+- final particle snapshot for debug/optional rebake diagnostics;
+- high-resolution visual mesh generated by the GPU visual mesher;
+- coarse CPU query mesh;
+- sampled height, depth, and velocity fields; and
+- payload digest and explicit acceptance status.
+
+Debug particle data may be stripped from a shipping artifact after visual and
+gameplay products have been generated. The accepted mesh and gameplay fields
+remain self-contained; runtime gameplay does not load PhysX.
+
+## 6. Terrain and obstacle collision input
+
+The first-section bounds come from the generated river geometry plus a dry
+margin, not from a hard-coded fixed box. Matter's CPU terrain mesher samples the
+same `FieldRuntime` and river height overlay used by rendering, at an authored
+collision voxel size. Relevant sector buckets are combined into a world-space,
+indexed triangle mesh and cooked by PhysX.
+
+Collision input includes:
+
+- the carved terrain surface and banks;
+- authored/generated boulders intersecting the section;
+- an upstream backing surface only if required to prevent particles escaping
+  behind the inlet emitter; and
+- the generated downstream virtual dam.
+
+The section AABB and PhysX broadphase bounds have a dry collar. They are not
+represented by colliders. A particle reaching the collar is deterministically
+quarantined and is thereafter excluded from the fill sensor and every particle,
+mesh, and gameplay product; it is never reflected by an invisible box.
+Non-finite state remains an immediate hard failure. The cumulative quarantine
+budget is `min(128, max(8, ceil(0.0001 * emitted_particle_count)))`. Exceeding
+that budget is an escape failure. The adapter logs the first eight stable ids
+and first-crossing coordinates, and the artifact records emitted count,
+quarantine count, and budget. A policy-version change invalidates the semantic
+cache identity.
+
+Before fluid work starts, a collision-only fixture drops probe particles above
+the ravine and verifies that they settle on the rendered terrain within one
+collision voxel. This catches axis, scale, winding, cooking, and transform
+errors independently from fluid behavior.
+
+## 7. Initial fluid and inlet behavior
+
+### 7.1 Particle scale
+
+Particle spacing is an authored bake-quality parameter constrained by the
+channel width, boulder scale, GPU memory, and PhysX offset relationships. The
+adapter derives rest/contact offsets and particle mass using the same formulas
+as `SnippetPBF`; Matter does not invent alternative PBD parameterization.
+
+The first ravine spike sweeps a small declared set of particle spacings rather
+than tuning arbitrary forces. Each result records its complete PBD settings.
+
+After the initial spacing sweep demonstrated that larger particles alone do not
+add water, the user approved a bounded volume sweep. Particle spacing controls
+discretization and the volume represented by each particle; inlet flow controls
+the total emitted water volume. Increasing spacing while preserving flow emits
+fewer, larger-volume particles but does not deepen the river by itself.
+
+Task 8's approved final sweep fixes physical and product resolution at the
+coarsest candidate-A settings and varies inlet flow only:
+
+| Candidate | inlet flow | volume over 64 s | particle spacing | product radius | visual voxel | visual blend | coarse voxel |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| F4 | 4 m³/s | 256 m³ | 0.30 m | 0.195 m | 0.150 m | 0.075 m | 0.60 m |
+| F8 | 8 m³/s | 512 m³ | 0.30 m | 0.195 m | 0.150 m | 0.075 m | 0.60 m |
+| F12 | 12 m³/s | 768 m³ | 0.30 m | 0.195 m | 0.150 m | 0.075 m | 0.60 m |
+
+All three retain the official SnippetPBF-derived offsets and mass, density
+1000 kg/m³, 1/120 s fixed step, four solver iterations, 96 neighbours, 256-step
+batches, the 64 s emission window, one-million-particle cap, 100 m virtual dam,
+and unchanged PBD mathematics. The oriented acceptance sensor is 8 m long,
+6 by 1 by 3 cells, 6 m high, requires 80% broad occupancy for 32 consecutive
+steps, and requires one particle per cell. Stop at the first flow that passes
+all numerical gates and visibly forms a connected, substantial rapids surface;
+numerical sensor acceptance alone is insufficient. No other values are swept.
+
+Observed Task 8 results on the RTX 4090 (driver 610.74), using PhysX 5.6.1
+commit `5ca9f472105a90d70d957c243cb0ef36fe251a9f` and CUDA 12.8.61:
+
+| Candidate | terminal result | step | oriented sensor max/final | emitted/final/peak | escaped/budget | solver wall |
+|---|---|---:|---:|---:|---:|---:|
+| F4 | `SensorNotReached` | 65,536 | 0.333333 / 0.333333 | 2,264 / 2,264 / 2,264 | 0 / 8 | 167.534303 s |
+| F8 | `EscapedParticles` | 23,552 | 0.666667 / 0.666667 | 4,528 / 4,519 / 4,528 | 9 / 8 | 151.508028 s |
+| F12 | `EscapedParticles` | 4,096 | 0.000000 / 0.000000 | 3,622 / 3,611 / 3,622 | 11 / 8 | 27.384693 s |
+
+All three finite terminal snapshots rendered only through the unaccepted debug
+path. F4 was visually thin and disconnected; F8 widened the curve sheet but
+still left the inlet-to-dam path and sensor/dam view disconnected; F12 failed
+near the inlet before reaching the downstream sensor. F8/F12 first-N escape
+coordinates cluster at the same source-side validation boundary near
+`(-10.960, 42.266, -4.735)`, and increased flow crosses the budget earlier.
+No setting is selected. The declared sweep is exhausted, and any inlet or
+source-geometry change requires a separate explicit design ruling; the escape,
+finite, sensor, capacity, and visual-connectivity gates remain unchanged.
+
+### 7.2 Emitters
+
+The input model accepts one or more emitters so later tributaries do not require
+an interface change. Each emitter includes stable id, position/orientation, cross
+section, flow rate, initial velocity, start time, and optional stop time. The
+first acceptance scene uses the authored main-river inlet only.
+
+Flow rate is converted deterministically into particle activation over time.
+Fractional carry is retained between steps so long-term emitted volume matches
+the authored flow. Newly active particles receive inlet velocity and density;
+they are not teleported from already active water.
+
+No downstream outflow is present in the first section. The virtual dam is the
+explicit completion boundary. Sequential removal of that dam and generation of
+the next section's inlet belongs to a later specification.
+
+## 8. Run loop and completion
+
+1. Validate backend, GPU, collision mesh, section bounds, PBD settings, particle
+   capacity, emitter capacity, and sensor before creating a scene.
+2. Create the scene and PBD system using the `SnippetPBF` reference setup.
+3. Activate initial inlet particles and advance fixed simulation steps.
+4. Activate each emitter's owed particles before each step.
+5. After `batch_steps`, fetch counters and evaluate:
+   - cancellation;
+   - non-finite particle data;
+   - PhysX-reported/excluded particles;
+   - dry-collar quarantine count and budget;
+   - particle and memory caps; and
+   - fill-sensor wet fraction.
+6. The sensor is complete only after its wet fraction meets
+   `crest_wet_fraction` for `stable_wet_steps` consecutive solver steps.
+7. Stop successfully at sensor completion while the quarantine count is within
+   budget. Stop invalid at `max_steps`, capacity exhaustion, quarantine budget
+   overflow, non-finite state, unrecoverable PhysX error, or device loss.
+8. Copy the final particle positions/velocities once and destroy the PhysX
+   session after all Matter products have been generated or copied.
+
+This is a fill-to-completion bake, not an inlet/outlet equilibrium solve. It
+implements the virtual-dam workflow chosen for sequential river construction.
+
+## 9. Fill sensor
+
+The sensor is a thin volume immediately upstream of the virtual dam crest. Its
+wet fraction is the fraction of horizontal sensor cells that contain at least
+the configured minimum particle contribution, not simply a global particle
+count. That prevents a narrow jet from falsely completing a broad section.
+
+The volume is represented by an explicit local frame: world-space origin, unit
+longitudinal and lateral XZ axes, and longitudinal/vertical/lateral extents.
+Horizontal resolution X bins along the channel and Z bins across it. The
+rotated volume's world-axis AABB is retained only for validation and diagnostic
+display; neither the CPU reference nor CUDA occupancy kernel bins that AABB.
+The resolved frame participates in the sensor semantic revision, and invalid
+non-unit/non-orthogonal frames are rejected before backend allocation.
+
+The adapter evaluates the occupancy reduction from device particle positions and
+returns only counts per batch. This small CUDA reduction is data plumbing, not
+fluid simulation. A CPU reference evaluates recorded snapshots in tests.
+
+The artifact records the maximum, final, and stable-window wet fractions plus
+the step at which completion was first and finally observed.
+
+## 10. Result conversion
+
+### 10.1 Visual mesh
+
+Final fluid particles are converted to the particle-water job defined by the GPU
+visual-meshing specification. PhysX positions and a chosen render radius become
+Matter particle samples; PhysX's isosurface API is not created or called. The
+result uses the existing glass/water material.
+
+### 10.2 CPU query mesh
+
+The same snapshot is deterministically downsampled by stable particle id or
+meshed at a coarser voxel size through MatterSurfaceLib. This produces selection,
+ray-query, fallback, and optional hull input. It is not used as the boat's
+detailed water collision model.
+
+### 10.3 Gameplay fields
+
+Matter bins the final particles into a section-local regular field and records:
+
+- surface height;
+- water depth above terrain;
+- occupancy/wet mask;
+- volume-weighted velocity; and
+- optional rapid intensity derived from velocity magnitude and local variation.
+
+Empty samples are explicitly invalid rather than zero-current water. Runtime
+queries interpolate valid neighbors and fail outside the wet mask.
+
+## 11. Determinism and caching
+
+PhysX GPU PBD is treated as numerically reproducible within tolerance, not
+promised byte-identical across devices or driver versions. Matter must not hide
+that limitation.
+
+- The semantic cache key is derived from all inputs and contract versions.
+- An accepted artifact is immutable and reused without rerunning PhysX.
+- Same-machine repeat bakes compare sensor completion, wet envelope, volume,
+  surface distance, and velocity statistics within declared tolerances.
+- Particle arrays are sorted or consumed by stable particle id before Matter
+  conversion so GPU scheduling order cannot churn downstream artifacts.
+- The Matter GPU mesher itself retains its same-device byte-repeatability gate.
+- Cross-device output is validated geometrically/statistically, not bytewise.
+
+Changing PhysX version, adapter version, PBD material/offset/iteration settings,
+particle spacing, terrain revision, network hash, dam/sensor settings, or
+Matter-mesher contract invalidates the artifact.
+The sensor identity includes its resolved longitudinal/lateral frame, so a
+curved-reach orientation or frame-policy change cannot reuse an AABB-era cache.
+
+## 12. GPU coexistence and editor behavior
+
+PhysX owns a CUDA context on the same selected NVIDIA adapter used by Vulkan.
+On Windows the adapter and renderer compare the CUDA device identity with Vulkan's
+device LUID before allocating the full particle buffers; a mismatch is a hard
+bake error rather than an implicit cross-adapter copy.
+The first integration performs no CUDA/Vulkan memory or semaphore interop. This
+keeps the failure and lifetime boundary small:
+
+1. PhysX runs on the hydrology bake worker.
+2. The editor displays progress but may experience GPU contention during the
+   explicit bake.
+3. PhysX finishes and copies the final snapshot to host.
+4. Matter releases or idles the PhysX scene.
+5. The Vulkan GPU mesher runs through the normal renderer job seam.
+
+The bake UI reports that an offline GPU bake is active. Runtime rendering must
+remain responsive enough to show cancellation and status, but the first spike
+does not promise background gameplay while the content bake saturates the GPU.
+
+CUDA/Vulkan external-memory sharing is allowed only as a later optimization
+with a separate design and measurement proving the final copy is significant.
+
+## 13. Error and fallback policy
+
+Stable error categories include:
+
+- required PhysX GPU runtime DLL missing or version mismatch;
+- PhysX or CUDA GPU unavailable;
+- selected CUDA/Vulkan adapters do not identify the same physical GPU;
+- PhysX initialization/cooking/scene failure;
+- collision probe mismatch;
+- particle, neighbor, memory, or output capacity exceeded;
+- excluded, escaped, or non-finite particles;
+- sensor not reached before `max_steps`;
+- cancellation or superseded world generation;
+- Matter CPU/GPU meshing failure; and
+- CUDA or Vulkan device loss.
+
+A failed fluid bake never prevents the dry terrain world from loading. It sets
+`HydrologyStatus::Invalid`, retains logs and counters, and renders no result as
+accepted water. A CPU visual fallback may aid diagnosis but is labeled fallback
+and does not convert a failed simulation into `Ready`.
+
+For terminal `SensorNotReached` or quarantine-budget failures that retain a
+finite host snapshot, the normal editor may pass that snapshot through the
+existing Matter GPU visual mesher and material 4 as transient
+`UNACCEPTED DEBUG WATER`. This path publishes no accepted artifact, cache,
+gameplay field, CPU query mesh, or `Ready` state. Non-finite/device/runtime
+failures are never rendered, and cancellation or stale generations cannot
+publish even a debug part.
+
+## 14. Verification sequence
+
+### P0 — dependency and official control
+
+- Resolve the pinned external checkout without network mutation.
+- Build the official supported PhysX configuration. The native Matter adapter
+  begins only after this control passes.
+- Run unmodified `SnippetPBF` on the target RTX GPU.
+- Record PhysX/CUDA versions, adapter identity, particle count, steps, timing,
+  and final finite-state checks.
+
+Failure stops the integration. Matter code is not changed to compensate for a
+broken official control.
+
+Measured P0 control on 2026-08-23:
+
+- upstream repository tag `107.3-physx-5.6.1`, detached commit
+  `5ca9f472105a90d70d957c243cb0ef36fe251a9f`;
+- unmodified `SnippetPBF` release build using MSVC `19.44.35211`, CUDA NVCC
+  `12.8.61`, and the upstream generator-selected Windows SDK `10.0.28000.0`;
+- NVIDIA GeForce RTX 4090, driver `610.74`;
+- the snippet's source configuration of 900,000 particles
+  (`50 * 600 * 30`) at `0.1` particle spacing;
+- 59–61 rendered FPS during the observed control, approximately 80% GPU
+  utilization, and 6,158 MiB GPU memory used; and
+- screenshot `MatterEditor/build/baselines/msvc/physx-p0/snippet-pbf.png`.
+
+This is control provenance, not Matter's integration toolchain. The adapter
+build remains pinned to Matter's Windows SDK `10.0.26100.0` and must pass the
+runtime/header checks before P1 can be accepted.
+
+### P1 — adapter conformance
+
+- compiled/header/runtime PhysX version agreement;
+- create/destroy loop with leak checks;
+- PhysX error and C++ exception translation;
+- cancellation between batches;
+- too-small output capacity reports required size without overwrite;
+- one triangle, one box, and one sloped-ramp collision fixtures; and
+- final positions/velocities match the official reference setup within
+  tolerance.
+
+### P2 — Matter chute
+
+- Export a short, steep Matter terrain chute.
+- Drop and release a bounded water volume.
+- Verify terrain containment, downhill center-of-mass movement, finite
+  particles, and no hidden-domain-wall contacts.
+- Convert the result through both Matter meshers and render the existing glass
+  material.
+
+### P3 — authored ravine
+
+Use `RiverHydrology.js` from the current branch:
+
+- at least 100 metres from inlet to virtual dam;
+- approximately 15% overall fall with reach variation;
+- variable-width rounded-V channel;
+- terrain walls larger than the fluid domain's dry collar; and
+- no domain-edge containment.
+
+The acceptance run must:
+
+- reach the fill sensor before `max_steps`;
+- keep every accepted particle finite and within the dry collar, keep the
+  deterministic quarantine within budget, and show no connected leak;
+- show a connected wet path from inlet through the principal curve to the dam;
+- produce nonzero downstream velocity through the curve;
+- produce visual and gameplay artifacts without capacity truncation;
+- complete within five wall-clock minutes on the reference RTX 4090 at a
+  declared particle spacing and no more than two million active particles; and
+- produce screenshots from overview, curve, downstream, and low river angles.
+
+If the official PBD solver cannot meet these gates after a bounded sweep of
+documented PhysX settings and particle spacing, the spike ends with a negative
+recommendation. Matter does not respond by modifying the solver mathematics.
+
+### P4 — cache and lifecycle
+
+- second load is an artifact cache hit and performs no PhysX or GPU meshing;
+- terrain/network/PBD/mesher version changes each invalidate the key;
+- cancellation leaves no publishable partial artifact;
+- world reload cannot publish an old generation; and
+- editor shutdown releases CUDA, PhysX, and adapter resources without device
+  loss.
+
+## 15. Expected source layout
+
+Implementation planning may refine filenames, but responsibilities remain:
+
+- `integrations/physx_adapter/` — native MSVC/CUDA adapter implementation with
+  PhysX types confined to private translation units;
+- `tools/deps/physx.lock.json` — pinned external dependency identity;
+- `MatterEngine3/src/hydrology/physx_runtime.*` — lifetime, version validation,
+  status translation, and the private PhysX implementation boundary;
+- `MatterEngine3/src/hydrology/physx_fluid_bake.*` — Matter orchestration,
+  collision input, emitters, sensor, validation, and result conversion;
+- `MatterEngine3/src/hydrology/hydrology_artifact.*` — versioned persistence;
+- `MatterEngine3/include/matter/hydrology.h` — status visible to engine/editor
+  consumers;
+- `MatterEngine3/tests/physx_adapter_contract_tests.cpp` — fake adapter and
+  orchestration tests that run without PhysX;
+- `MatterEngine3/tests/physx_fluid_integration_tests.cpp` — GPU-tagged control,
+  chute, and ravine gates;
+- the Windows CMake targets and staging script — opt-in PhysX build followed by
+  complete runtime and notice staging into `build/windows` and `dist`; and
+- `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js` — the authored
+  acceptance world, with solver-quality parameters added through the imperative
+  build DSL rather than hidden environment values.
+
+## 16. Non-goals for this specification
+
+- runtime-changing water;
+- two-way boat-to-water interaction;
+- replacing Box3D rigid gameplay physics;
+- modifying PhysX PBD kernels or constraints;
+- engineering-grade discharge or flood prediction;
+- full sequential multi-section river baking;
+- tributary acceptance beyond preserving a multi-emitter interface;
+- PhysX isosurface extraction;
+- CUDA/Vulkan zero-copy interop; and
+- GPU terrain meshing, which is Phase 2 of specification 2.
+
+## 17. References
+
+- PhysX PBD particle-system guide and `SnippetPBF` references:
+  <https://nvidia-omniverse.github.io/PhysX/physx/5.4.0/docs/ParticleSystem.html>
+- PhysX particle buffers and diffuse particle support:
+  <https://nvidia-omniverse.github.io/PhysX/physx/5.4.0/docs/ParticleSystem.html#particle-buffers>
+- PhysX repository and license:
+  <https://github.com/NVIDIA-Omniverse/PhysX>
+- Windows MSVC prerequisite:
+  `docs/superpowers/specs/2026-08-22-windows-msvc-build-migration-design.md`
+- GPU meshing prerequisite:
+  `docs/superpowers/specs/2026-08-22-gpu-visual-meshing-foundation-design.md`
+- River authoring contracts:
+  `MatterEngine3/include/matter/river_network.h`
+- Current acceptance world:
+  `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js`

@@ -1,4 +1,4 @@
-// End-to-end MatterEngine3 example world: terrain, trees, and grass.
+// End-to-end MatterEngine3 example world over the committed Demo scene.
 //
 // Drives the WHOLE pipeline on committed assets under
 // ../../projects/world_demo (objects + scenes/Demo/Demo.js) and the shared script
@@ -14,10 +14,11 @@
 //
 // The DSL cannot place children at transforms (only `static requires` declares
 // child *kinds*), so world layout is built here in C++: a synthetic root part
-// whose world_flatten child rows scatter terrain tiles, trees, and grass.
+// whose world_flatten child rows scatter every root the manifest names.
 //
 // Headless and GL-free for the host/CPU steps (raylib is linked only for the
-// Tri<->mesh bridge). Bakes into a fresh /tmp sandbox so the repo stays clean.
+// Tri<->mesh bridge). Bakes into a fresh scratch sandbox (see test_sandbox.h)
+// so the repo cache stays clean.
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
 #include "part_asset_v2.h"     // cache_path_resolved, load_v2, ChildInstance
@@ -34,8 +35,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 #include <map>
@@ -43,6 +42,7 @@
 #include <unistd.h>
 
 #include "portable_realpath.h"
+#include "test_sandbox.h"
 
 using namespace part_graph;
 
@@ -62,12 +62,6 @@ struct Rng64 {
     }
 };
 
-static std::string read_file(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    std::ostringstream ss; ss << in.rdbuf();
-    return ss.str();
-}
-
 // Row-major translate matrix into a part_asset/world_flatten transform[16].
 static void set_translate(float m[16], float x, float y, float z) {
     for (int i = 0; i < 16; ++i) m[i] = 0.0f;
@@ -84,16 +78,17 @@ int main() {
     printf("shared-lib: %s\n", shared_lib.c_str());
 
     // --- Fresh sandbox; bake writes the RELATIVE "parts/<hash>.part", so chdir. ---
-    const std::string sandbox = "/tmp/me3_example_world";
-    system(("rm -rf " + sandbox).c_str());
-    system(("mkdir -p " + sandbox + "/parts").c_str());
+    const std::string sandbox = make_sandbox("sandbox/me3_example_world");
     if (chdir(sandbox.c_str()) != 0) { printf("FAIL: chdir sandbox\n"); return 1; }
 
     // --- SP-2/SP-3/SP-7 wiring. set_shared_lib_root enables `import` resolution. ---
+    // Object lookup is a SEARCH PATH, not a single directory: a scene's own
+    // objects/ shadows the shared tier (Demo's roots live in
+    // scenes/Demo/objects/). The hash pass below walks the same list.
+    const std::vector<std::string> object_dirs{project + "/scenes/Demo/objects", objects};
     script_host::ScriptHost host;
     host.set_shared_lib_root(shared_lib);
-    FileModuleResolver resolver(host, std::vector<std::string>{
-        project + "/scenes/Demo/objects", objects});
+    FileModuleResolver resolver(host, object_dirs);
     HostBaker baker(host, ".");            // parts_dir_ is PARENT of parts/ (== cwd)
     PartGraph graph(resolver, baker);
 
@@ -120,19 +115,25 @@ int main() {
     if (!ir.ok) { printf("FAIL: install: %s\n", ir.error.c_str()); return 1; }
     printf("[install] baked %zu artifact(s), %d cache hit(s)\n", ir.baked.size(), ir.hits);
 
-    // --- Resolve each module's content hash (the host is the hash authority). ---
+    // --- Resolve each module's content hash. The INSTALL is the authority:
+    // root_hashes is child-folded, so an assembler root (TreeGallery declares
+    // `static requires`) does not hash to what its own source alone hashes to.
+    // Re-deriving it here with resolve_hash(source, "{}") only ever matched
+    // leaf modules and missed the cache for every root with children. ---
     std::map<std::string, uint64_t> hash_of;
-    for (auto& r : roots) {
-        std::string src = read_file(objects + "/" + r.module + ".js");
-        if (src.empty()) { printf("FAIL: missing schema %s\n", r.module.c_str()); return 1; }
-        uint64_t h = host.resolve_hash(src, "{}");
-        if (h == 0) { printf("FAIL: resolve_hash %s\n", r.module.c_str()); return 1; }
-        hash_of[r.module] = h;
-        printf("[hash] %-8s -> %016llx\n", r.module.c_str(), (unsigned long long)h);
+    for (size_t i = 0; i < roots.size(); ++i) {
+        const uint64_t h = (i < ir.root_hashes.size()) ? ir.root_hashes[i] : 0;
+        if (h == 0) {
+            printf("FAIL: install produced no resolved hash for %s\n", roots[i].module.c_str());
+            return 1;
+        }
+        hash_of[roots[i].module] = h;
+        printf("[hash] %-14s -> %016llx\n", roots[i].module.c_str(), (unsigned long long)h);
     }
 
     // --- SP-1 + SP-4: load each baked part, derive LOD levels + a bound radius. ---
     lod_select::PartLodTable lod_table;
+    size_t loaded_content = 0;
     for (auto& kv : hash_of) {
         const std::string& mod = kv.first;
         uint64_t h = kv.second;
@@ -150,6 +151,14 @@ int main() {
         std::vector<Tri> tris;
         for (const auto& e : blas.get_entries())
             tris.insert(tris.end(), e->triangles.begin(), e->triangles.end());
+
+        // Demo's roots are either assemblers (TreeGallery places 8 Trees, so
+        // its own triangle list is empty and the content is in the child rows)
+        // or pure particle emitters (ChimneySmoke/WaterfallMist carry neither
+        // triangles nor children by design), so this is counted across the
+        // world instead of asserted per root -- but a run where NOTHING loads
+        // back with geometry or children is a bake that produced nothing.
+        loaded_content += tris.size() + children.size();
 
         // Bound radius = half the AABB diagonal (drives projected-size LOD math).
         float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
@@ -172,11 +181,22 @@ int main() {
         printf("[lod]  %-8s radius=%.3f tris=%zu  levels:", mod.c_str(), radius, tris.size());
         for (const auto& L : lods) {
             thresholds.push_back(L.screen_size_threshold);
-            size_t n = lod_blas.get_entries()[L.blas_indices[0]]->triangles.size();
+            // A geometry-less root (ChimneySmoke and WaterfallMist are particle
+            // assemblers) bakes rungs with no BLAS entry at all, so the index
+            // list can legitimately be empty — indexing it blindly aborts.
+            size_t n = 0;
+            if (!L.blas_indices.empty() &&
+                L.blas_indices[0] < lod_blas.get_entries().size())
+                n = lod_blas.get_entries()[L.blas_indices[0]]->triangles.size();
             printf(" [thr=%.4f tris=%zu]", L.screen_size_threshold, n);
         }
         printf("\n");
         lod_table[h] = lod_select::PartLod{ radius, thresholds };
+    }
+
+    if (loaded_content == 0) {
+        printf("FAIL: every root loaded back empty (no triangles, no children)\n");
+        return 1;
     }
 
     // --- SP-4 world_flatten: build a world by scattering instances in C++. ---
@@ -191,22 +211,25 @@ int main() {
         wg[kWorldRoot].push_back(c);
     };
 
-    const int kTileGrid = 3;        // 3x3 terrain tiles
+    const int kTileGrid = 3;        // 3x3 grid footprint
     const float kTile   = 8.0f;     // one tile spans 8 world units
     const float kSpan   = kTileGrid * kTile;
 
-    // Terrain grid.
-    for (int i = 0; i < kTileGrid; ++i)
-        for (int j = 0; j < kTileGrid; ++j)
-            place(hash_of["Terrain"], i * kTile, 0.0f, j * kTile);
-
-    // Scatter trees and grass over the terrain footprint (deterministic seed).
+    // Scatter every root the manifest actually named. The Demo world's root
+    // list is authored data and HAS changed (it used to be Terrain/Tree/Grass;
+    // it is TreeGallery/ChimneySmoke/WaterfallMist today), so hardcoding module
+    // names here silently placed hash 0 for each one and left the scatter
+    // testing nothing.
     Rng64 rng(0xC0FFEEu);
-    const int kTrees = 24, kGrass = 120;
-    for (int n = 0; n < kTrees; ++n)
-        place(hash_of["Tree"], rng.range(0, kSpan), 1.0f, rng.range(0, kSpan));
-    for (int n = 0; n < kGrass; ++n)
-        place(hash_of["Grass"], rng.range(0, kSpan), 0.6f, rng.range(0, kSpan));
+    const int kPerRoot = 32;
+    for (const auto& kv : hash_of) {
+        for (int i = 0; i < kTileGrid; ++i)
+            for (int j = 0; j < kTileGrid; ++j)
+                place(kv.second, i * kTile, 0.0f, j * kTile);
+        for (int n = 0; n < kPerRoot; ++n)
+            place(kv.second, rng.range(0, kSpan), 1.0f, rng.range(0, kSpan));
+    }
+    if (hash_of.empty()) { printf("FAIL: manifest resolved no roots\n"); return 1; }
 
     world_flatten::FlattenLimits lim;
     std::vector<world_flatten::FlatInstance> flat;
@@ -215,8 +238,8 @@ int main() {
         printf("FAIL: flatten: %s\n", ferr.c_str());
         return 1;
     }
-    printf("\n[world] flattened %zu instances (%d terrain + %d trees + %d grass)\n",
-           flat.size(), kTileGrid * kTileGrid, kTrees, kGrass);
+    printf("\n[world] flattened %zu instances (%zu roots x (%d grid + %d scattered))\n",
+           flat.size(), hash_of.size(), kTileGrid * kTileGrid, kPerRoot);
 
     // --- SP-4 sector_grid: bin instances into a fixed-pitch grid. ---
     sector_grid::SectorGrid grid(16.0f);

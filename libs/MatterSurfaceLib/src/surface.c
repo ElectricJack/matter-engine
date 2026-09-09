@@ -1,3 +1,64 @@
+// libs/MatterSurfaceLib/src/surface.c
+//
+// Marching-cubes isosurfacing of an implicit field. This file is the whole
+// implementation behind `../include/surface.h`; read that header first for the
+// public contract, this comment for how it is delivered.
+//
+// Pipeline (`GenerateMeshInternal`, which every public entry point funnels into):
+//
+//   1. Grid setup. `Bounds.divisionPow` gives gridSize = 2^divisionPow SAMPLES
+//      per axis, so there are (gridSize-1)^3 cubes and the sample pitch is
+//      size / (gridSize-1).
+//   2. Spatial hash. Additive particles are binned at cell size
+//      `particleRadius*2.5 + blendWidth*4` — the same value used as the query
+//      radius, so a field sample touches a ~3^3 bucket neighbourhood. Carve and
+//      clip sets get their own hashes.
+//   3. Field fill. One `CalculateScalarAndMaterial` (legacy single union) or
+//      `CalculateScalarStaged` (ordered CSG / fat primitives) call per sample,
+//      writing a scalar and a material id per grid point.
+//   4. Marching cubes. Per cube: classify corners, interpolate the crossed
+//      edges, dedupe shared edge vertices through a 1M-entry open-addressed
+//      hash keyed by global edge coordinate, emit triangles from `triTable`.
+//   5. Normals. The accumulated face normals are OVERWRITTEN by
+//      `compute_surface_normals_impl` — the analytic SDF gradient, which depends
+//      only on world position and is therefore continuous across independently
+//      meshed cells. This is why neighbouring tiles do not show shading seams,
+//      and why anything that later moves vertices (simplification) must
+//      re-run `ComputeSurfaceNormals`.
+//
+// Sign and isovalue convention. The field is a signed distance: NEGATIVE inside,
+// POSITIVE outside, and a corner counts as inside when `scalar < isovalue`. The
+// isovalue is not 0 but a small NEGATIVE adaptive offset that grows as the cell
+// size outgrows the particle radius, which fattens the surface at coarse LODs
+// so thin features do not evaporate.
+//
+// Scratch and threading. All reusable buffers live in `SurfaceScratch` — one
+// per thread. The scratch-taking entry points (`GenerateMeshWithScratch`,
+// `GenerateMeshStaged`, `ComputeSurfaceNormalsWithScratch`, `ProbeFieldScalar`)
+// are safe to call concurrently on DISTINCT scratches. The legacy entry points
+// (`GenerateMesh`, `ComputeSurfaceNormals`) share one process-wide
+// `g_defaultScratch` and are therefore NOT thread-safe.
+//
+// Ownership. The returned `Mesh` owns its vertices/normals/indices/colors,
+// allocated with `RL_MALLOC`; the caller frees them. The spatial hashes and the
+// memory pool belong to the scratch and are freed by `DestroySurfaceScratch` —
+// never free them from a caller.
+//
+// Hard caps worth knowing before diagnosing "missing geometry":
+//  - 128 neighbours per field sample (`sh_query_radius_nearest`), and 128 per
+//    carve/clip hash query — a saturated carve/clip query falls back to the
+//    full linear scan, but a saturated ADDITIVE query silently truncates.
+//  - 65535 vertices per mesh (16-bit indices). Over that, generation fails
+//    loudly and returns an empty mesh.
+//  - 100 linear probes in the edge hash before deduplication is skipped for
+//    that edge.
+//  - 64 CSG stages (`STAGE_CAP`) and 128 spheres bucketed per stage.
+//  - Edge keys pack six 10-bit coordinates, so grids beyond 1024 per axis alias.
+//
+// Performance instrumentation here predates the engine profiler: the
+// `TIMER_START`/`TIMER_END` macros compile to nothing unless
+// `ENABLE_PERFORMANCE_TIMING` is set to 1 below, and then print to stdout.
+
 #include "../include/surface.h"
 #include "spatial_hash.h"
 #include "../include/fat_primitive.h"   // FatPrim, primitive_sdf (typed iso-primitives)
@@ -73,6 +134,11 @@ typedef struct {
 } Triangle;
 
 // Memory pool for reusing buffers across mesh generations
+// Owned by exactly one `SurfaceScratch`; freed only by `CleanupMemoryPool`.
+// Buffers only ever GROW (1.5x, or straight to the requested size) and are
+// never shrunk or released between meshings, so a scratch's high-water mark is
+// its steady-state footprint. Capacities are tracked separately per buffer
+// group because the three groups grow on different triggers.
 typedef struct {
     // Scalar field buffers
     float*   scalarField;
@@ -93,6 +159,16 @@ typedef struct {
     size_t hashTableCapacity;
 } MemoryPool;
 
+// Per-thread reusable context for the mesher: the buffer pool plus three cached
+// spatial hashes (additive particles, carve particles, clip particles). Created
+// by `CreateSurfaceScratch`, destroyed by `DestroySurfaceScratch`, and never
+// shared between threads.
+//
+// The additive `hash` is refilled on every call, so it cannot go stale. The
+// carve/clip hashes are guarded only by IDENTITY — the array pointer and the
+// count. Mutating carve/clip particle POSITIONS in place while keeping the same
+// pointer and count leaves those hashes stale; hand the mesher a different
+// array (or a different count) when the contents change.
 struct SurfaceScratch {
     MemoryPool   pool;
     SpatialHash* hash;          // reused across cells; NULL until first use (Task 2)
@@ -111,7 +187,13 @@ struct SurfaceScratch {
     float        clip_max_radius;
 };
 
-// Legacy single-threaded API delegates here. Lazily created; freed by SurfaceLibCleanup.
+// Legacy single-threaded API delegates here. Lazily created on first use and
+// never destroyed: nothing in the tree frees it, so it lives for the life of
+// the process. That is a bounded, one-time allocation, not a growing leak, but
+// it does mean the legacy (non-scratch) entry points keep their pool and hashes
+// resident forever, and that they are NOT safe to call from more than one
+// thread. Callers that need a bounded lifetime or thread safety must own their
+// own SurfaceScratch (CreateSurfaceScratch / DestroySurfaceScratch).
 static SurfaceScratch* g_defaultScratch = NULL;
 
 // Memory pool management functions
@@ -211,6 +293,11 @@ typedef struct {
 } GridCell;
 
 // Volume data structure for marching cubes algorithm
+// `gridSize` counts SAMPLE POINTS per axis (2^divisionPow), so the cube loop
+// runs to gridSize-1 and `cellSize` is the volume extent divided by gridSize-1.
+// `scalarField`/`materialField` are gridSize^3 arrays indexed by
+// `GetScalarFieldIndex`; they are borrowed from the scratch pool (or malloc'd
+// when memory reuse is off) and are not owned by this struct.
 typedef struct {
     int     gridSize;       // Number of grid cells in each dimension
     int     totalCells;     // Total number of cells in the volume
@@ -219,13 +306,6 @@ typedef struct {
     float*  scalarField;    // Scalar field values at grid points
     int*    materialField;  // Material IDs at grid points
 } VolumeData;
-
-// Vertex structure for isosurface mesh
-typedef struct {
-    MtVec3 position;
-    MtVec3 normal;
-    int     materialId;
-} IsosurfaceVertex;
 
 // Local function declarations
 static ScalarMaterialPair CalculateScalarAndMaterial(MtVec3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr);
@@ -280,11 +360,6 @@ static SurfaceScratch* DefaultScratch(void) {
 // Public API wrapper function using default configuration
 Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
     MeshGenerationConfig config = GetDefaultMeshConfig();
-    return GenerateMeshInternal(DefaultScratch(), particles, particleRadius, particleCount, volume, blendWidth, config, NULL, NULL, 0, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
-}
-
-// Public API function with custom configuration
-Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
     return GenerateMeshInternal(DefaultScratch(), particles, particleRadius, particleCount, volume, blendWidth, config, NULL, NULL, 0, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
 }
 
@@ -352,11 +427,6 @@ void ComputeSurfaceNormalsWithScratch(SurfaceScratch* scratch, Mesh* mesh, Parti
 }
 
 SpatialHash* SurfaceScratchHash(SurfaceScratch* scratch) { return scratch ? scratch->hash : NULL; }
-
-// Cleanup function to release memory pool resources
-void SurfaceLibCleanup(void) {
-    if (g_defaultScratch) { DestroySurfaceScratch(g_defaultScratch); g_defaultScratch = NULL; }
-}
 
 // Ensure scratch->hash holds exactly `particles` at `cellSize`, reusing storage
 // when possible. Recreates only when cellSize changes (the AABB query is correct
@@ -562,6 +632,19 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
 }
 
 // Internal mesh generation function with configuration
+// The single implementation every public generator funnels into; see the file
+// header for the five-stage pipeline and the hard caps.
+//
+// Returns a zeroed `Mesh` (vertexCount 0, NULL pointers) on every failure path:
+// pool growth OOM, spatial-hash creation failure, or the 65535-vertex limit.
+// Callers must treat an empty mesh as "no geometry", not as an assertion
+// failure. Emits nothing for a fully-inside or fully-outside volume, which is
+// the common case for most cells in a large bake.
+//
+// `config.enableMemoryReuse` selects scratch-pool buffers over per-call
+// malloc/free; `config.enableEdgeDeduplication` selects the shared-edge vertex
+// hash (off = every crossed edge emits its own vertex, so the mesh is larger
+// and unwelded). The scratch's spatial hash is deliberately NOT destroyed here.
 static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
     TIMER_START(total);
     const int useStaged = field_needs_staging(stages, fatCount);
@@ -775,8 +858,26 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
         } else {
             edgeKeys = (unsigned long long*)malloc(hashTableSize * sizeof(unsigned long long));
             globalEdgeVertexIndices = (int*)malloc(hashTableSize * sizeof(int));
+
+            // 8 MB + 4 MB in one go, and the init loop below writes both
+            // immediately -- so this must be checked like every other
+            // allocation here, not assumed. Nothing has been written into the
+            // mesh buffers yet, so bailing just frees what this !memory-reuse
+            // path allocated and returns the empty mesh.
+            if (!edgeKeys || !globalEdgeVertexIndices) {
+                printf("Failed to allocate memory for edge hash table\n");
+                free(edgeKeys);
+                free(globalEdgeVertexIndices);
+                free(data.scalarField);
+                free(data.materialField);
+                free(vertices);
+                free(normals);
+                free(materials);
+                free(triangles);
+                return mesh;
+            }
         }
-        
+
         // Initialize hash table to indicate no entries
         for (int i = 0; i < hashTableSize; i++) {
             edgeKeys[i] = 0;  // 0 means no edge stored
@@ -790,6 +891,11 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     // Adaptive isosurface threshold based on cell size relative to particle radius
     // At higher LOD levels (larger cells), use a more negative isovalue to expand the surface
     // This prevents meshes from becoming too thin when cell resolution decreases
+    // The offset is 0 while the cell is no larger than the particle radius, so
+    // the fine-LOD contour is the plain zero level set; it grows linearly with
+    // the excess ratio beyond that. Because the isovalue shifts with resolution,
+    // two LODs of the same field do NOT contour the same surface — that offset
+    // is part of why LOD rungs need their own error bounds.
     float cellSizeRatio = fmaxf(data.cellSize.x, fmaxf(data.cellSize.y, data.cellSize.z)) / particleRadius;
     float adaptiveOffset = fmaxf(0.0f, (cellSizeRatio - 1.0f) * particleRadius * 0.3f);
     const float isovalue = -adaptiveOffset; // More negative = larger surface at low LOD
@@ -1397,7 +1503,15 @@ static ScalarMaterialPair CalculateScalarStaged(
                                              searchRadius, (void**)nearby, 128);
 
     // Per-stage accumulation of additive-sphere distances (bucketed by stage).
-    // STAGE_CAP bounds stack use; deeper stages fold via the field below.
+    // STAGE_CAP bounds stack use (STAGE_CAP*128 floats of stageVals below).
+    //
+    // WARNING: stages past the cap are not folded, they are DISCARDED. The
+    // clamp below lowers stageCount, and the `st >= stageCount` guard in the
+    // gather loop then remaps every particle authored into a dropped stage onto
+    // stage 0 -- so a Difference in stage 70 silently becomes part of stage 0's
+    // union. No diagnostic is emitted. Authoring more than STAGE_CAP ordered CSG
+    // stages on one merge group is therefore not supported; raise the cap (and
+    // the stack cost with it) or reject the input upstream before relying on it.
     enum { STAGE_CAP = 64 };
     if (stageCount > STAGE_CAP) stageCount = STAGE_CAP;
     float stageVals[STAGE_CAP][128];
@@ -1415,17 +1529,16 @@ static ScalarMaterialPair CalculateScalarStaged(
         float f = sqrtf(dx*dx + dy*dy + dz*dz) - pp->radius;
         if (f < bestF) { bestF = f; result.materialId = pp->materialId; }
 
-        // Resolve this particle's stage. particleStage is parallel to the hash's
-        // backing Particle array, so index = pp - particles base. We instead read
-        // it via the index encoded by the hash lookup is unavailable; the caller
-        // guarantees particleStage indexing matches pointer order from a single
-        // contiguous array, so recover the index by pointer arithmetic against the
-        // first found is unsafe. Use stage tag from the FieldStages map keyed by
-        // pointer offset supplied by the caller's particle base.
+        // Resolve this particle's stage. The spatial hash hands back the raw
+        // `&particles[i]` pointers it was given and carries no index, so the
+        // index is recovered by pointer arithmetic against the caller-supplied
+        // base: `stages->particleStage` is parallel to that one contiguous
+        // array. The caller must therefore pass `_particleBase`/`_particleCount`
+        // describing the exact array it inserted; the range check below is what
+        // keeps a mismatched base from indexing out of bounds (it falls back to
+        // stage 0 rather than reading garbage).
         int st = 0;
         if (stages && stages->particleStage && stages->stageCount > 1) {
-            // Pointer-difference against the caller's contiguous particle array.
-            // The hash stores &particles[i]; particleStage is indexed identically.
             long idx = (long)(pp - (Particle*)stages->_particleBase);
             if (idx >= 0 && idx < stages->_particleCount) st = stages->particleStage[idx];
         }
@@ -1481,6 +1594,10 @@ static ScalarMaterialPair CalculateScalarStaged(
 }
 
 // Calculate the cube index for marching cubes algorithm
+// Bit i is set when corner i is INSIDE, i.e. `scalar < isovalue` (strictly
+// less: a corner sitting exactly on the isovalue counts as outside). The
+// resulting 0-255 index is the row into `edgeTable`/`triTable`; 0 and 255 mean
+// a wholly outside / wholly inside cube with no triangles.
 static int CalculateCubeIndex(GridCell cell, float isovalue) {
     int cubeIndex = 0;
     
@@ -1497,8 +1614,22 @@ static int CalculateCubeIndex(GridCell cell, float isovalue) {
 }
 
 // Interpolate between two vertices based on isovalue
+// Linear crossing point along the edge. The three epsilon early-outs snap to an
+// endpoint when the isovalue is effectively at that endpoint, or when the two
+// endpoint values are indistinguishable (which would otherwise divide by ~0).
+// Snapping is what makes the crossing on a SHARED edge identical from both
+// adjoining cubes, which the edge-key dedup relies on for a welded mesh.
 static MtVec3 VertexInterpolation(MtVec3 v1, float val1, MtVec3 v2, float val2, float isovalue) {
     MtVec3 result;
+
+    // An empty spatial-hash query deliberately uses +INFINITY as the outside
+    // field value. A coarse cell may straddle that sentinel and a finite inside
+    // sample. Handle both edge orientations explicitly: the generic quotient
+    // is otherwise inf/inf in one direction and emits a NaN vertex. Snapping to
+    // the finite endpoint also preserves the result the opposite orientation
+    // already produced under IEEE arithmetic.
+    if (isinf(val1) && val1 > 0.0f && isfinite(val2)) return v2;
+    if (isfinite(val1) && isinf(val2) && val2 > 0.0f) return v1;
     
     if (fabs(isovalue - val1) < 0.00001f) return v1;
     if (fabs(isovalue - val2) < 0.00001f) return v2;
@@ -1604,6 +1735,14 @@ static EdgeEndpoints GetEdgeEndpoints(int x, int y, int z, int edgeIndex) {
 }
 
 // Generate a unique key for an edge
+// Identifies a cube edge by its two GLOBAL grid endpoints, sorted
+// lexicographically so both cubes sharing the edge produce the same key — that
+// is what welds the mesh across cube boundaries.
+//
+// Packing: six 10-bit fields, so coordinates must stay under 1024 per axis;
+// beyond that keys alias and unrelated edges are welded together. Callers treat
+// key 0 as "invalid" and skip the edge; the only input that would produce 0 is
+// an edge whose two endpoints are both the origin, which cannot occur.
 unsigned long long GetEdgeKey(int x, int y, int z, int edgeIndex) {
     // Get the endpoints of the edge in global grid coordinates
     EdgeEndpoints endpoints = GetEdgeEndpoints(x, y, z, edgeIndex);
@@ -1645,6 +1784,11 @@ unsigned long long GetEdgeKey(int x, int y, int z, int edgeIndex) {
 }
 
 // Utility function to create color based on material ID
+// A DEBUG palette of 8 saturated colors cycled by `materialId % 8` (negative
+// ids wrap positively) — it is not the material registry's albedo and carries
+// no shading meaning. `GenerateMeshInternal` writes it into `mesh.colors` so
+// the material id survives into the vertex stream; consumers that need real
+// material data should read the id, not the color.
 Color GetMaterialColor(int materialId) {
     // Predefined colors for different materials
     Color colors[] = {
@@ -1665,90 +1809,4 @@ Color GetMaterialColor(int materialId) {
     if (index < 0) index += colorCount;
     
     return colors[index];
-}
-
-// Convert raylib Mesh to BVH Triangle array with per-vertex normals
-BVHTriangle* ConvertMeshToBVHTriangles(Mesh mesh, int* triangleCount) {
-    if (!mesh.vertices || !mesh.normals || !mesh.indices || mesh.triangleCount == 0) {
-        *triangleCount = 0;
-        return NULL;
-    }
-    
-    *triangleCount = mesh.triangleCount;
-    BVHTriangle* bvhTriangles = (BVHTriangle*)malloc(mesh.triangleCount * sizeof(BVHTriangle));
-    if (!bvhTriangles) {
-        *triangleCount = 0;
-        return NULL;
-    }
-    
-    // Convert each triangle
-    for (int i = 0; i < mesh.triangleCount; i++) {
-        BVHTriangle* tri = &bvhTriangles[i];
-        
-        // Get vertex indices for this triangle
-        int idx0 = mesh.indices[i * 3 + 0];
-        int idx1 = mesh.indices[i * 3 + 1];
-        int idx2 = mesh.indices[i * 3 + 2];
-        
-        // Set vertices
-        tri->v0.x = mesh.vertices[idx0 * 3 + 0];
-        tri->v0.y = mesh.vertices[idx0 * 3 + 1];
-        tri->v0.z = mesh.vertices[idx0 * 3 + 2];
-        
-        tri->v1.x = mesh.vertices[idx1 * 3 + 0];
-        tri->v1.y = mesh.vertices[idx1 * 3 + 1];
-        tri->v1.z = mesh.vertices[idx1 * 3 + 2];
-        
-        tri->v2.x = mesh.vertices[idx2 * 3 + 0];
-        tri->v2.y = mesh.vertices[idx2 * 3 + 1];
-        tri->v2.z = mesh.vertices[idx2 * 3 + 2];
-        
-        // Set per-vertex normals
-        tri->n0.x = mesh.normals[idx0 * 3 + 0];
-        tri->n0.y = mesh.normals[idx0 * 3 + 1];
-        tri->n0.z = mesh.normals[idx0 * 3 + 2];
-        
-        tri->n1.x = mesh.normals[idx1 * 3 + 0];
-        tri->n1.y = mesh.normals[idx1 * 3 + 1];
-        tri->n1.z = mesh.normals[idx1 * 3 + 2];
-        
-        tri->n2.x = mesh.normals[idx2 * 3 + 0];
-        tri->n2.y = mesh.normals[idx2 * 3 + 1];
-        tri->n2.z = mesh.normals[idx2 * 3 + 2];
-        
-        // Compute centroid
-        tri->centroid.x = (tri->v0.x + tri->v1.x + tri->v2.x) / 3.0f;
-        tri->centroid.y = (tri->v0.y + tri->v1.y + tri->v2.y) / 3.0f;
-        tri->centroid.z = (tri->v0.z + tri->v1.z + tri->v2.z) / 3.0f;
-        
-        // Compute face normal using cross product
-        Vec3 edge1 = {tri->v1.x - tri->v0.x, tri->v1.y - tri->v0.y, tri->v1.z - tri->v0.z};
-        Vec3 edge2 = {tri->v2.x - tri->v0.x, tri->v2.y - tri->v0.y, tri->v2.z - tri->v0.z};
-        
-        tri->normal.x = edge1.y * edge2.z - edge1.z * edge2.y;
-        tri->normal.y = edge1.z * edge2.x - edge1.x * edge2.z;
-        tri->normal.z = edge1.x * edge2.y - edge1.y * edge2.x;
-        
-        // Normalize face normal
-        float length = sqrtf(tri->normal.x * tri->normal.x + 
-                            tri->normal.y * tri->normal.y + 
-                            tri->normal.z * tri->normal.z);
-        if (length > 0.0001f) {
-            tri->normal.x /= length;
-            tri->normal.y /= length;
-            tri->normal.z /= length;
-        }
-        
-        // Set default material ID
-        tri->material_id = 0;
-    }
-    
-    return bvhTriangles;
-}
-
-// Free BVH triangle array
-void FreeBVHTriangles(BVHTriangle* triangles) {
-    if (triangles) {
-        free(triangles);
-    }
 }

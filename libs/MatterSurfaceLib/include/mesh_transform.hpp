@@ -1,6 +1,44 @@
 #ifndef MSL_MESH_TRANSFORM_HPP
 #define MSL_MESH_TRANSFORM_HPP
 
+// libs/MatterSurfaceLib/include/mesh_transform.hpp
+//
+// TriEx reprojection. Once a mesh transformation has replaced the triangle
+// set — simplify, smooth, retopo — the new triangles carry no material, tint,
+// UV, AO or shading normals. This header carries those attributes across from
+// the original mesh to the transformed one.
+//
+// Where it sits: MatterSurfaceLib's mesh-transformation pipeline, on top of
+// `mesh_indexed.hpp`. MatterEngine3's LOD bake is the main consumer: every
+// rung of a part's ladder is a decimated mesh that must still shade like the
+// authored source.
+//
+// Two ways in:
+//   - `reproject_triex(source, target, normals)` — one-shot. Rebuilds every
+//     source-side acceleration structure on each call.
+//   - `ReprojectSource` + `reproject_triex(index, target)` — build the
+//     source-side work once and reuse it across a whole LOD ladder. Output is
+//     identical; only the redundant per-call work is skipped. Prefer this
+//     whenever more than one target shares a source.
+//
+// Picking a normals mode is a correctness decision, not a quality dial: see
+// `ReprojectNormals` below. Retopo wants `SmoothTarget`; LOD rungs want
+// `SampleSource`.
+//
+// Gotchas:
+//   - Attribute matching is nearest-source-triangle by centroid through a
+//     uniform spatial hash. It is a heuristic: a target triangle spanning
+//     several differently-materialled source triangles inherits exactly one
+//     donor's attributes.
+//   - `source.triex` must be populated and parallel to the source triangles,
+//     or the call is a no-op that *clears* `target.triex` (and
+//     `ReprojectSource::valid()` reports false). Check rather than assume the
+//     attributes arrived.
+//   - `ReprojectSource` holds a reference to its source mesh; see its own
+//     comment for the lifetime rule.
+//   - Pure CPU, no GL. Safe on worker threads provided the source mesh is not
+//     mutated concurrently.
+
 #include "mesh_indexed.hpp"
 
 #include <cstdint>
@@ -50,6 +88,14 @@ enum class ReprojectNormals {
 // Holds a REFERENCE to `source`: it must outlive the index and must not be
 // mutated while the index is in use. `valid()` is false when the source has no
 // usable parallel TriEx, matching the free function's early-out.
+//
+// Cost shape: construction is the expensive half — centroids, the centroid
+// hash, and in SampleSource mode the triangle-AABB overlap grid — while each
+// per-target call is comparatively cheap. That asymmetry is the reason to
+// hoist one of these out of a rung loop.
+//
+// Because it stores a reference member it is not assignable: build one where
+// it is needed rather than keeping a long-lived instance and reseating it.
 class ReprojectSource {
 public:
     ReprojectSource(const MeshIndexed& source_in, ReprojectNormals normals_in);

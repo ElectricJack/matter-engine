@@ -99,6 +99,11 @@ public:
     using TraceSink = std::function<void(const char* prop_name, bool immediate)>;
 
     PropertyScheduler() = default;
+    // Does NOT flush pending dirty properties -- anything set but not yet
+    // flushed is simply discarded. It only drops the raw-pointer
+    // registries; a Property that outlives its scheduler is a lifetime bug
+    // this cannot repair (see property.cpp), so keep the scheduler alive
+    // longer than every Property that names it.
     ~PropertyScheduler();
 
     PropertyScheduler(const PropertyScheduler&) = delete;
@@ -109,6 +114,9 @@ public:
     // Claim the calling thread as the owner. Idempotent for the same thread;
     // re-claiming from a different thread is a fail-fast configuration bug.
     void claim();
+    // Claim on behalf of another thread (test setup, or a worker that is
+    // configured before it starts). Same rule as claim(): re-claiming with
+    // a different id is a fail-fast configuration bug.
     void claim(std::thread::id owner);
     bool claimed() const { return owner_claimed_; }
     std::thread::id owner() const { return owner_; }
@@ -128,9 +136,13 @@ public:
     void unregister_property(detail::PropertyBase* p);
     void mark_dirty(detail::PropertyBase* p);
     void clear_dirty(detail::PropertyBase* p);
+    // Routes an affinity violation to evt::fail_fast (all builds, not an
+    // assert), naming `op` in the message. A scheduler that was never
+    // claim()ed accepts calls from any thread -- claiming is what turns
+    // the affinity contract on.
     void assert_owner(const char* op) const;
-    void trace(const char* prop_name, bool immediate) const {
-        if (trace_sink_) trace_sink_(prop_name, immediate);
+    void trace(const char* prop_name, bool immediate_delivery) const {
+        if (trace_sink_) trace_sink_(prop_name, immediate_delivery);
     }
 
 private:
@@ -159,6 +171,11 @@ private:
 template <class T>
 class Property : public detail::PropertyBase {
 public:
+    // `scheduler` is held by reference and must outlive the property;
+    // `name` is stored as the bare pointer (it appears in trace records),
+    // so pass a string literal or another pointer that outlives the
+    // property, never a temporary's c_str(). Registers with the scheduler,
+    // which asserts owner-thread affinity.
     Property(PropertyScheduler& scheduler, const char* name, T initial = T{})
         : scheduler_(scheduler), value_(std::move(initial)) {
         prop_name = name;
@@ -172,6 +189,9 @@ public:
     Property(Property&&) = delete;
     Property& operator=(Property&&) = delete;
 
+    // Owner thread only. The reference is into the property's own storage:
+    // the next set()/set_now() overwrites it, so do not hold it across a
+    // mutation or a flush.
     const T& get() const {
         scheduler_.assert_owner("Property::get");
         return value_;
@@ -202,6 +222,12 @@ public:
     // Prime-on-bind (S I.9): the callback fires immediately with the current
     // value, then on every subsequent flush delivery. Returns an RAII
     // Subscription; destroying it stops future delivery (logical unsubscribe).
+    // Owner thread only. `cb` is invoked synchronously before bind()
+    // returns (the prime), and that priming call counts toward the
+    // subscription's delivery_count(). Dropping the returned Subscription
+    // only clears the observer's active bit; the entry itself is compacted
+    // out lazily at the next delivery, so an unsubscribed callback is
+    // skipped but its captured state stays alive until then.
     [[nodiscard]] Subscription bind(const char* name, std::function<void(const T&)> cb) {
         scheduler_.assert_owner("Property::bind");
         auto block = std::make_shared<SubscriptionBlock>();
@@ -223,8 +249,8 @@ private:
         std::function<void(const T&)> cb;
     };
 
-    void deliver(bool immediate) {
-        scheduler_.trace(prop_name, immediate);
+    void deliver(bool immediate_delivery) {
+        scheduler_.trace(prop_name, immediate_delivery);
         // Snapshot the value so every observer in THIS delivery sees one
         // consistent value; a set() from a callback mutates value_ but its
         // delivery is deferred to the next flush (edit-loop termination).

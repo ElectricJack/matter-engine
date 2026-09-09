@@ -1,0 +1,51 @@
+#version 450
+
+#include "gpu_mesh_common.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer ParamsBuffer {
+    uvec4 params;
+};
+layout(std430, binding = 1) readonly buffer InputBuffer {
+    uint values[];
+} inputBuffer;
+layout(std430, binding = 2) writeonly buffer OutputBuffer {
+    uint values[];
+} outputBuffer;
+layout(std430, binding = 3) writeonly buffer BlockSumsBuffer {
+    uint values[];
+} blockSumsBuffer;
+
+shared uint scratch[256];
+
+void main() {
+    const uint lane = gl_LocalInvocationID.x;
+    const uint element = gl_GlobalInvocationID.x;
+    scratch[lane] = element < params.x ? inputBuffer.values[element] : 0u;
+    barrier();
+
+    for (uint offset = 1u; offset < 256u; offset <<= 1u) {
+        const uint index = (lane + 1u) * offset * 2u - 1u;
+        if (index < 256u) scratch[index] += scratch[index - offset];
+        barrier();
+    }
+
+    if (lane == 255u) {
+        blockSumsBuffer.values[gl_WorkGroupID.x] = scratch[255u];
+        scratch[255u] = 0u;
+    }
+    barrier();
+
+    for (uint offset = 128u; offset > 0u; offset >>= 1u) {
+        const uint index = (lane + 1u) * offset * 2u - 1u;
+        if (index < 256u) {
+            const uint left = scratch[index - offset];
+            scratch[index - offset] = scratch[index];
+            scratch[index] += left;
+        }
+        barrier();
+    }
+
+    if (element < params.x) outputBuffer.values[element] = scratch[lane];
+}

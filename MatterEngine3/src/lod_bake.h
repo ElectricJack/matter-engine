@@ -1,4 +1,41 @@
 #pragma once
+// MatterEngine3/src/lod_bake.h
+//
+// Builds a part's LOD ladder: for each rung, decimate the mesh, carry the
+// per-triangle TriEx across the decimation, optionally build that rung's
+// chart-space VT atlas, and register the geometry as a BLAS. The returned
+// LodLevels is part_asset's authoritative shape (aliased, not mirrored), so
+// what gets selected at runtime is exactly what was serialized.
+//
+// TWO LADDERS, deliberately different
+//   bake_lods           props and authored parts. Targets are KEEP-RATIOS.
+//   bake_terrain_lods   streamed terrain sectors. Targets are error bounds
+//                       relative to the part's bound radius, skirt triangles
+//                       are dropped past rung 0, coarse rungs cascade, and
+//                       rungs below TerrainBakeTargets::first_rung are skipped
+//                       outright. The long note above that function explains
+//                       why the keep-ratio ladder is wrong for terrain.
+//
+// Callers. script_host bakes into a PER-PART BLASManager (where a level's
+// absolute blas_indices value is also the part-local index it serializes);
+// PartStore re-bakes the terrain ladder at sector load time against the shared
+// manager, where absolute indices are NOT stable and `out_handles` is the
+// value to keep. part_flatten runs its own ladder and only borrows the pieces.
+//
+// Optional out-parameters (`observer`, `out_handles`, `chart_opts`,
+// `out_charts`) all default to null, so an existing call site is unchanged by
+// their existence. When supplied, out_handles and out_charts receive exactly
+// one entry per BAKED rung, in ladder order, parallel to the returned levels.
+//
+// Anything that fails inside a rung fails CLOSED to the previous behaviour:
+// a degenerate simplifier result falls back to the input mesh, and a chart
+// build that fails leaves the rung with an empty chart table and legacy UVs.
+//
+// Environment knobs read by the implementation: MATTER_LOD_BAKE_PROFILE
+// (per-rung timing to stderr), MATTER_LOD_CASCADE=0 (terrain cascade
+// kill-switch), MATTER_VT_UNIFY (one parameterisation per part),
+// MATTER_VT_CHART_LOG (one line per charted rung).
+
 #include "tri.h"            // Tri, make_float3
 #include "blas_manager.hpp" // BLASManager
 #include "part_asset_v2.h"  // SP-1 LodLevel/LodLevels (authoritative shape)
@@ -152,6 +189,11 @@ bool unify_parameterisation_enabled();
 // projected-size scale (bound_radius / distance) used by lod_select: a finer
 // level demands a LARGER projected size to be chosen. Index 0 is the finest.
 struct BakeTargets {
+    // Both vectors are indexed by rung and MUST be the same length:
+    // bake_lods loops over keep_ratio and reads threshold[lvl] for the same
+    // index, unchecked. keep_ratio is a fraction of the INPUT triangle count
+    // (>= 0.999 means "no decimation, use the input as-is"); threshold is the
+    // rung's projected-size switch value, fine to coarse.
     std::vector<float> keep_ratio = {1.0f, 0.1f, 0.01f};
     std::vector<float> threshold  = {0.20f, 0.05f, 0.0125f};
 };
@@ -275,6 +317,11 @@ struct TerrainBakeTargets {
     // else. Raise them again if bake time or triangle counts demand it, but
     // prefer coarsening a terrain BAND first -- that is the axis that keeps
     // the surface's shape.
+    // As in BakeTargets, these two are indexed by rung and must be the same
+    // length -- bake_terrain_lods loops over eps_ratio and reads
+    // threshold[lvl] unchecked. eps_ratio is a FRACTION of bound_radius (the
+    // absolute world-space QEM bound is eps_ratio[lvl] * bound_radius);
+    // threshold is the projected-size switch value for that rung.
     std::vector<float> eps_ratio = {0.0f, 0.004f, 0.012f};
     std::vector<float> threshold  = {0.20f, 0.05f, 0.0125f};
 

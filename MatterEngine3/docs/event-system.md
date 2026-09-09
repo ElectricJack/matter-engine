@@ -5,7 +5,7 @@
 - **Target:** new public `MatterEngine3/include/matter/event/` interfaces plus `MatterEngine3/src/event/` implementations (hub, transport, observable models, command layer) + incremental migration of existing signaling sites in `matter_engine.cpp`, `async_bake.h`, MatterEditor, and the ECS bridge
 - **Baseline:** `34213f65` (feature/bake-lab)
 - **Status:** Spec — design settled after adversarial review (topology, the five original questions, and the seven implementation-contract corrections resolved in §II.3–II.4); Part II milestones ready to sequence; implementation not started
-- **Relation:** builds on the observability tooling from [bake-lab.md](bake-lab.md) (BakeTrace spans, Timeline flamegraph) for the event inspector; respects [part-workbench.md](part-workbench.md)'s `BakeObserver` (W3) as a shipping seam that later re-expresses on this system.
+- **Relation:** builds on the observability tooling from [bake-lab.md](../../docs/deprecated/MatterEngine3/bake-lab.md) (BakeTrace spans, Timeline flamegraph) for the event inspector; respects [part-workbench.md](part-workbench.md)'s `BakeObserver` (W3) as a shipping seam that later re-expresses on this system.
 
 ---
 

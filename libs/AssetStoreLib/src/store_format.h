@@ -41,6 +41,21 @@
  *            u32 key length, key bytes padded to 4,
  *            u64 hash lo, u64 hash hi, u64 size, u64 last access, u32 kind, u32 reserved
  *     end  u32  crc32 over everything preceding
+ *
+ * Path: libs/AssetStoreLib/src/store_format.h. Internal: blob_store.cpp and
+ * ref_table.cpp are its only readers, and none of it is visible through
+ * ../include/asset_store.h.
+ *
+ * Versioning is deliberately blunt. A kFormatVersion mismatch fails the open
+ * outright (BlobStore::Impl::load_index, RefTable::Impl::load) -- there is no
+ * migration path, because the store is a cache and re-baking is always
+ * available. Bump the constant and every store on disk stops being readable,
+ * which is the intended effect.
+ *
+ * The record header is written on every append and is what would let a pack be
+ * rebuilt by scanning, but no code reads it back: reads seek straight to the
+ * payload offset the index names and verify the payload CRC only. It is
+ * belt-and-braces for a repair tool that does not exist yet.
  */
 #ifndef ASSET_STORE_FORMAT_H
 #define ASSET_STORE_FORMAT_H
@@ -65,9 +80,18 @@ static const size_t kIndexEntryBytes = 40;
  * parser cheerfully read the tick as an entry's key length.) */
 static const size_t kRefsHeaderBytes = 24;
 
+/* Every record is padded up to an 8-byte boundary, which means every payload
+ * offset in a pack is 8-aligned. ReadBatch leans on that: it allocates a
+ * coalesced chunk beginning at a payload offset, so each payload inside the
+ * chunk inherits the arena's alignment. */
 static inline uint64_t align_up8(uint64_t v) { return (v + 7ull) & ~7ull; }
 
 /* --- little-endian scalar put/get, byte at a time --- */
+
+/* Byte at a time is not an oversight: it makes every access both
+ * endianness-independent and alignment-safe, so no structure above is ever
+ * cast over a buffer and no packing pragma is needed anywhere. These are the
+ * only functions that touch a format field. */
 
 static inline void put_u32(uint8_t* p, uint32_t v) {
     p[0] = (uint8_t)(v);        p[1] = (uint8_t)(v >> 8);

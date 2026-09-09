@@ -1,3 +1,47 @@
+// MatterEngine3/src/props/props.cpp
+//
+// Implementation of matter::props — the schema-over-existing-structs property
+// system. Read matter/props.h first for the design and the bind/baseline
+// lifecycle; this file is where all of it happens.
+//
+// WHAT IS IN HERE, top to bottom:
+//   * JSON encode/decode of one described field (`encode_field`/`decode_field`)
+//     and the non-finite guard that keeps a NaN out of a saved scope file.
+//   * One shared text parser: `parse_and_set` backs the env layer, the FIFO
+//     `set` command and anything else that sets a field from a string.
+//     `format_value` is its round-trip partner.
+//   * `Binding` / `Registry`: a Binding pairs one Group schema with one live
+//     instance plus a baseline copy and an optional draft copy.
+//   * The typed accessors: every get_*/set_* just reinterprets the bytes at
+//     `Desc::offset`. There is NO runtime type checking — passing a Desc that
+//     does not describe the instance is undefined behaviour, and the schema
+//     macros in the header exist to make that impossible by construction.
+//   * copy/compare/reset, RequiresReload drafts, the env layer, persistence.
+//   * `DynamicGroup`: a group built at runtime (script-declared world tunables,
+//     the draw-override panel) whose "struct" is a synthetic buffer of uniform
+//     lanes rather than a real C++ type.
+//
+// TWO CONVENTIONS THAT RUN THROUGH THE WHOLE FILE:
+//   1. Every `set_*` returns TRUE ONLY WHEN THE VALUE CHANGED, after clamping.
+//      Setting a field to what it already holds returns false and does not mark
+//      the binding dirty. This equality suppression is what stops
+//      panel -> engine -> panel feedback loops.
+//   2. Non-finite floats are refused at the setter and skipped at the encoder.
+//      json_doc would emit a bare `nan`/`inf` token that its own parser rejects,
+//      so one poisoned field would corrupt the entire scope file on the next
+//      load.
+//
+// PERSISTENCE IS SPARSE and measured against the BASELINE: `save_scope` writes
+// only fields that differ from the baseline captured at
+// `Registry::capture_baseline`, erases keys that have gone back to their
+// baseline, and drops a group's object entirely once it is empty. Fields that
+// are ReadOnly, NoSerialize, or currently forced by an environment variable are
+// never written. Capturing the baseline too early (before the world/JS layer has
+// written its authored values) makes everything look modified — see the header.
+//
+// THREADING: nothing here locks. Registry, bindings, the env pass and the
+// persistence helpers are all app-thread state.
+
 #include "matter/props.h"
 #include "matter/log.h"
 
@@ -324,6 +368,11 @@ bool parse_and_set(Binding& b, const Desc& d, const char* raw) {
     return true;
 }
 
+// Renders a field as the text `parse_and_set` accepts back — used by the FIFO
+// `get`, the inspector and diagnostics. Enums format as their label when the
+// index is in range and as the raw number otherwise. Floats use "%.6g", so this
+// is a human-readable rendering, not a bit-exact round trip. Returns "" for a
+// null instance.
 std::string format_value(const void* instance, const Desc& d) {
     if (!instance) return {};
     char buf[128];
@@ -367,6 +416,11 @@ std::string format_value(const void* instance, const Desc& d) {
     return {};
 }
 
+// Resolves a fully qualified "group.path.field" string against the registry,
+// splitting at the LAST dot — group paths are themselves dotted
+// ("render.mything"), so only the final component is the field name. Both
+// outputs are set only on success and point into registry/schema storage, so
+// they live as long as the binding and its Group do.
 bool resolve_field(Registry& r, const char* full_path, Binding*& binding,
                    const Desc*& desc) {
     if (!full_path) return false;
@@ -433,6 +487,13 @@ void Binding::free_instance(void* p) const {
     ::operator delete(p, group_align(*schema_));
 }
 
+// Takes a NON-OWNING pointer to the caller's live instance and a reference to
+// its schema; both must outlive the Binding. Allocates and default-constructs a
+// BASELINE copy immediately, so "reset to default" and the sparse save have
+// something to measure against even before capture_baseline() overwrites it with
+// the authored state. A schema that cannot be instantiated (no struct_size or no
+// construct hook) simply leaves baseline_ null, and the reset/diff helpers then
+// no-op rather than crashing.
 Binding::Binding(BindingId id, const Group& schema, void* instance, Scope scope)
     : id_(id), schema_(&schema), instance_(instance), scope_(scope) {
     env_forced_.assign(schema.field_count, 0);
@@ -444,6 +505,9 @@ Binding::~Binding() {
     free_instance(baseline_);
 }
 
+// Lazily allocates the RequiresReload draft — a full copy of the live instance
+// that edits land in until they are applied at the next reconnect. Returns null,
+// and stays draft-less, when the schema declares no copy-assign hook.
 void* Binding::ensure_draft() {
     if (draft_) return draft_;
     if (!instance_ || !schema_) return nullptr;
@@ -458,6 +522,11 @@ void Binding::discard_draft() {
     draft_ = nullptr;
 }
 
+// Snapshots the instance's CURRENT values as the baseline. Call this once, AFTER
+// the world/JS layer has written its authored values and before the user can
+// edit — everything that "modified", sparse save and reset-to-default mean is
+// measured from this moment. Copies field by field through the typed accessors,
+// so undescribed members are deliberately not captured.
 void Binding::capture_baseline() {
     if (!baseline_ || !instance_) return;
     for (uint32_t i = 0; i < schema_->field_count; ++i)
@@ -468,6 +537,12 @@ void Binding::capture_baseline() {
 // Registry
 // ---------------------------------------------------------------------------
 
+// Registers one live instance against a schema and returns its handle, or
+// kInvalidBinding for a null instance or a pathless group. Ids are monotonic and
+// never reused, so a handle to an unbound binding stays invalid rather than
+// silently resolving to a later one. The registry stores the Binding by
+// unique_ptr, so Binding* returned by get()/find()/at() stay valid until that
+// binding is unbound.
 BindingId Registry::bind(const Group& schema, void* instance, Scope scope) {
     if (!instance || !schema.path) return kInvalidBinding;
     const BindingId id = next_id_++;
@@ -475,6 +550,10 @@ BindingId Registry::bind(const Group& schema, void* instance, Scope scope) {
     return id;
 }
 
+// Destroys the binding (and its baseline/draft copies) and compacts the vector,
+// which INVALIDATES index-based `at()` positions of every later binding —
+// BindingId handles are unaffected. Unknown ids are ignored. Unbind before the
+// described instance is destroyed; the Binding holds a bare pointer to it.
 void Registry::unbind(BindingId id) {
     for (size_t i = 0; i < bindings_.size(); ++i) {
         if (bindings_[i]->id() == id) {
@@ -513,6 +592,16 @@ const Binding* Registry::find(const char* group_path) const {
 // Typed accessors
 // ---------------------------------------------------------------------------
 
+// The typed accessors. Every one of these reinterprets the bytes at
+// `instance + d.offset` as the type the call names: there is no runtime check
+// that `d` actually describes `instance`, and a mismatch is undefined behaviour.
+// Callers always obtain the Desc from the same Group they bound the instance
+// with, which is what makes that safe.
+//
+// The setters share one contract: clamp to the Desc's range (and enums to the
+// label count), then return TRUE ONLY IF THE STORED VALUE CHANGED. `set_float`
+// and `set_float3` additionally refuse non-finite input outright, returning
+// false without writing anything.
 float get_float(const void* instance, const Desc& d) { return as<float>(instance, d); }
 int32_t get_int(const void* instance, const Desc& d) { return as<int32_t>(instance, d); }
 uint32_t get_uint(const void* instance, const Desc& d) { return as<uint32_t>(instance, d); }
@@ -629,6 +718,9 @@ int32_t get_enum(const Binding& b, const Desc& d) { return get_enum(b.instance()
 void get_float3(const Binding& b, const Desc& d, float out[3]) { get_float3(b.instance(), d, out); }
 std::string get_string(const Binding& b, const Desc& d) { return get_string(b.instance(), d); }
 
+// Binding-taking overloads of every setter: same value semantics as the raw
+// pointer form, plus marking the binding dirty when (and only when) the value
+// actually changed.
 #define MATTER_PROPS_BINDING_SET(fn, argtype)                       \
     bool fn(Binding& b, const Desc& d, argtype v) {                 \
         if (!fn(b.instance(), d, v)) return false;                  \
@@ -651,6 +743,9 @@ MATTER_PROPS_BINDING_SET(set_string, const std::string&)
 // Field copy / compare / reset
 // ---------------------------------------------------------------------------
 
+// Copies one described field between two instances of the SAME group. Assignment
+// per type rather than memcpy, because a String field is a real std::string.
+// Neither pointer may be null and both must be laid out by `d`'s group.
 void copy_field(void* dst, const void* src, const Desc& d) {
     switch (d.type) {
         case Type::Float:  as<float>(dst, d) = as<float>(src, d); break;
@@ -736,6 +831,10 @@ bool has_pending_draft(const Binding& b) {
     return false;
 }
 
+// Commits a RequiresReload draft onto the live instance and discards the draft.
+// Returns whether any DESCRIBED field actually changed; the assignment itself is
+// whole-struct, so undescribed members come across too even though only the
+// described ones are diffed. False with no side effect when there is no draft.
 bool apply_draft(Binding& b) {
     void* d = b.draft();
     if (!d || !b.instance()) return false;
@@ -807,6 +906,18 @@ void apply_env(Registry& r) {
 // Persistence
 // ---------------------------------------------------------------------------
 
+// Sparse save of every binding in `scope` into an existing `doc`, which is
+// MERGED INTO, not replaced — keys belonging to other scopes, other groups, or
+// to a future version of the schema survive untouched, which is what makes it
+// safe to call on a file written by another build.
+//
+// Per field: skipped entirely if ReadOnly, NoSerialize, or currently forced by
+// an env var; written when it differs from the baseline; ERASED from the
+// document when it matches the baseline again (so reverting a value removes it
+// from the file rather than pinning the default). A non-finite value is skipped
+// with a warning and whatever the file already held is kept. A group object is
+// only materialized once some field needs it, and removed again if it ends up
+// empty.
 void save_scope(const Registry& r, Scope scope, Value& doc) {
     if (doc.kind != Value::Kind::Object) {
         doc = Value();
@@ -860,6 +971,11 @@ void save_scope(const Registry& r, Scope scope, Value& doc) {
     }
 }
 
+// Applies one group's saved values from a scope document. Absent keys keep the
+// current value — the file is a sparse overlay, not a full state. A value whose
+// JSON kind does not match the field type is warned about and skipped, leaving
+// the field as it was, so a schema change never wedges a load. Env-forced,
+// ReadOnly and NoSerialize fields are skipped, mirroring save_scope.
 void load_group(Binding& b, const Value& doc) {
     if (doc.kind != Value::Kind::Object) return;
     const Value* groups = doc.find("groups");
@@ -886,6 +1002,10 @@ void load_scope(Registry& r, Scope scope, const Value& doc) {
     }
 }
 
+// Diagnostic dump of every field, in every scope, that differs from its
+// baseline, keyed by group path. Overwrites `out`. Unlike save_scope this
+// ignores scope, ReadOnly/NoSerialize and env-forcing — it answers "what is not
+// at its default right now", not "what would be persisted".
 void dump_modified(const Registry& r, Value& out) {
     out = Value();
     out.kind = Value::Kind::Object;
@@ -945,6 +1065,10 @@ void DynamicGroup::copy_thunk(void* ctx, void* dst, const void* src) {
     static_cast<const DynamicGroup*>(ctx)->copy_values(dst, src);
 }
 
+// Initializes a value buffer: every lane set to its declared default, with
+// String lanes placement-NEW'd (they are real std::strings living in the
+// buffer). The whole buffer is zeroed first so lane padding is deterministic.
+// Must be paired with destruct_values, or the String lanes leak.
 void DynamicGroup::construct_values(void* p) const {
     // Zero first so every lane's padding tail is deterministic; a memcmp of two
     // buffers is then meaningful even though nothing here relies on it.
@@ -1022,6 +1146,8 @@ DynamicGroup::~DynamicGroup() {
     }
 }
 
+// Field index by name, or -1 when there is no such field. Linear scan; the field
+// counts here are panel-sized (tens), not thousands.
 int32_t DynamicGroup::index_of(const char* name) const {
     if (!name) return -1;
     for (size_t i = 0; i < descs_.size(); ++i)
@@ -1076,6 +1202,12 @@ std::string DynamicGroup::format(uint32_t index) const {
     return format_value(values_, descs_[index]);
 }
 
+// Binds this group's own value buffer into a registry. Idempotent: a group that
+// is already bound returns its existing handle and ignores `r`, so it can never
+// end up bound to two registries. Every DynamicGroup that is bound MUST be
+// unbind_from()'d before it is destroyed — the destructor salvages the case by
+// unbinding and complaining on stderr, because the Binding holds bare pointers
+// into this object's Desc array, its interned strings and its value buffer.
 BindingId DynamicGroup::bind_into(Registry& r, Scope scope) {
     if (binding_ != kInvalidBinding) return binding_;
     const BindingId id = r.bind(group_, values_, scope);
@@ -1096,6 +1228,10 @@ void DynamicGroup::unbind_from(Registry& r) {
 DynamicGroupBuilder::DynamicGroupBuilder(std::string path, std::string label)
     : path_(std::move(path)), label_(std::move(label)) {}
 
+// Appends one field spec. Rejects an empty name, a name already declared on this
+// builder, and an Enum with no labels — writing the reason into `error` when one
+// is supplied and latching the builder into a failed state, so a later build()
+// returns null rather than silently producing a partial group.
 bool DynamicGroupBuilder::add(DynamicField field, std::string* error) {
     auto reject = [&](const std::string& why) {
         ok_ = false;
@@ -1113,6 +1249,15 @@ bool DynamicGroupBuilder::add(DynamicField field, std::string* error) {
     return true;
 }
 
+// Finalizes the group: interns every string the Descs point at (into a deque, so
+// the pointers stay valid as more are added), lays the fields out one uniform
+// lane apiece, wires the ctx construct/destruct/copy thunks, and allocates and
+// constructs the value buffer.
+//
+// Returns null — building nothing — if any add() failed, or if the path or the
+// field list is empty. CONSUMES the builder's field list, so a builder is
+// single-use. Enum defaults are clamped into the label range here so a combo
+// can never read past its label array.
 std::unique_ptr<DynamicGroup> DynamicGroupBuilder::build() {
     if (!ok_ || path_.empty() || fields_.empty()) return nullptr;
 

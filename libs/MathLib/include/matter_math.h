@@ -23,6 +23,46 @@
 // the same "no raylib/GL/Vulkan" constraint, so including it here does not
 // weaken this header's own promise.
 
+// ---------------------------------------------------------------------------
+// STATUS UPDATE — the "additive-only" note above is now history
+//
+// "Nothing in the engine calls into this header yet" described Phase 1 only;
+// it no longer describes the tree. matter_math.h is included today by
+// libs/MatterSurfaceLib's cell.h, cell_visitor.h, cluster.h, lattice.h and
+// particle_culling.h, and by MatterEngine3's src/dsl_state.h and
+// src/mat_math.h; matter_math_c.h by MatterSurfaceLib's particle.h,
+// fat_primitive.h and surface.h. `-I../libs/MathLib/include` is on the
+// include path of MatterEngine3, MatterEditor and both test Makefiles. The
+// phase narrative above is kept as the record of WHY the types look the way
+// they do, not as a description of who calls them.
+//
+// HOW TO USE
+//   - Header-only and dependency-free (`<cmath>`/`<cstddef>` plus the C POD
+//     header beside it). There is nothing to link: add
+//     `-I<repo>/libs/MathLib/include` and include this file.
+//   - MathLib is a LEAF of the dependency graph. It must never gain an
+//     engine, raylib, GL or Vulkan include, because MatterSurfaceLib — and
+//     therefore everything above it — pulls this in from public headers.
+//   - Tests: `make -C libs/MathLib/tests test` builds and runs
+//     mathlib_tests.cpp (which includes the TRS cross-check against
+//     MatterEngine3/src/ecs/transform_math.h's formula);
+//     `make -C libs/MathLib/tests c-smoke` compiles matter_math_c.h with
+//     `gcc -std=c99` to prove it is still valid C.
+//
+// CONVENTIONS AT A GLANCE (each is derived in full further down)
+//   - Mat4 is ROW-MAJOR: element (row, col) lives at `m[row*4 + col]`,
+//     translation at m[3]/m[7]/m[11].
+//   - Column-vector algebra: v' = M * v, so multiply(a, b) applies `b` first.
+//   - Angles are RADIANS everywhere.
+//   - Vectors carry no unit and no coordinate frame; the caller ascribes
+//     both.
+//   - `Mat4{}` is IDENTITY, not zero — call zero() when you want zero.
+//
+// THREADING: every entry point here is pure — no globals, no statics, no
+// allocation, no I/O — so all of it is callable from any thread, bake
+// workers included, with no synchronisation.
+// ---------------------------------------------------------------------------
+
 #include <cmath>
 #include <cstddef>
 
@@ -34,6 +74,19 @@ namespace mm {
 // Types
 // ---------------------------------------------------------------------------
 
+// Vec2/Vec3/Vec4 are plain aggregates: no constructors, no operator
+// overloads, brace-initialized (`Vec3{1, 2, 3}`), and default-initialized to
+// all-zero. Arithmetic lives in free functions further down
+// (add/sub/scale_vec/dot/cross/length/normalize) and only Vec3 has any — Vec2
+// is carried purely as data, and Vec4 exists mainly as the homogeneous
+// coordinate transform() consumes and produces.
+//
+// No unit and no coordinate frame is implied by the type: whether a Vec3 is
+// metres of world space, a sector-local offset or a direction is the caller's
+// contract, not this header's. All three are layout-compatible with
+// matter_math_c.h's MtVec2/MtVec3/MtVec4 — static_asserted below — and
+// matter_math_c.h's header records the same equivalence for raylib's
+// Vector2/Vector3/Vector4.
 struct Vec2 {
     float x = 0.0f, y = 0.0f;
 };
@@ -405,6 +458,13 @@ inline Mat4 multiply(const Mat4& a, const Mat4& b) {
     return result;
 }
 
+// v' = m * v, using whatever w the caller supplies: points want w = 1,
+// directions w = 0, and transform_point()/transform_vector() below are the
+// named wrappers for exactly those two cases.
+//
+// The returned w is the raw fourth row (`m[12..15] · v`); nothing here
+// performs a perspective divide, so the output of a projection matrix must
+// be divided by `.w` by the caller before it means anything in NDC.
 inline Vec4 transform(const Mat4& m, const Vec4& v) {
     return {
         m.m[0] * v.x + m.m[1] * v.y + m.m[2] * v.z + m.m[3] * v.w,
@@ -428,6 +488,22 @@ inline Vec3 transform_vector(const Mat4& m, const Vec3& v) {
 
 // ---------------------------------------------------------------------------
 // Builders
+//
+// Every builder starts from `Mat4{}` — which is IDENTITY, not zero (see the
+// Mat4 comment above) — and then overwrites only the elements it changes, so
+// the entries a builder does not touch are the identity's, never garbage and
+// never zero. That is deliberate: it is what makes each builder a complete
+// transform on its own rather than a partial matrix needing fix-up.
+//
+// Angles are RADIANS. rotation_x/y/z() use the standard right-handed
+// convention: a positive angle turns counter-clockwise about that axis, seen
+// from the axis's positive end looking back toward the origin. rotation_axis()
+// with a unit (1,0,0) / (0,1,0) / (0,0,1) reduces exactly to the matching one
+// (verified in tests/mathlib_tests.cpp).
+//
+// They compose under multiply(), which applies its RIGHT operand first:
+// `multiply(translation(t), rotation_y(a))` rotates and then translates.
+// from_trs() below does the whole translate * rotate * scale in one step.
 // ---------------------------------------------------------------------------
 
 inline Mat4 translation(const Vec3& t) {
@@ -595,6 +671,9 @@ inline Vec3 sub(const Vec3& a, const Vec3& b) {
     return {a.x - b.x, a.y - b.y, a.z - b.z};
 }
 
+// Scales a Vec3 by a scalar. Named `scale_vec` rather than `scale` because
+// `scale(const Vec3&)` / `scale(float)` above are the MATRIX builders — an
+// unqualified `scale(v, 2.0f)` does not resolve to either of them.
 inline Vec3 scale_vec(const Vec3& a, float s) {
     return {a.x * s, a.y * s, a.z * s};
 }
@@ -611,6 +690,12 @@ inline float length(const Vec3& a) {
     return std::sqrt(dot(a, a));
 }
 
+// Returns the ZERO vector — not the input, not a NaN — when `a` is non-finite
+// or shorter than 1e-6 (the guard is `dot(a, a) > 1e-12`). So the result of
+// this function is NOT guaranteed to be unit length, and callers must not
+// assume it is: rotation_axis() above rejects a non-unit axis precisely
+// because a collapsed one silently degrades its Rodrigues form into a uniform
+// SCALE matrix instead of a rotation.
 inline Vec3 normalize(const Vec3& a) {
     const float length_squared = dot(a, a);
     if (!(length_squared > 1e-12f) || !std::isfinite(length_squared)) {

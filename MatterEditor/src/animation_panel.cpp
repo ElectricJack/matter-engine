@@ -1,3 +1,33 @@
+// MatterEditor/src/animation_panel.cpp
+//
+// ImGui rendering for the Part Workbench's animation tabs, declared in
+// animation_panel.h. All of the decision-making -- which rows exist, whether a
+// gizmo may be dragged, what an empty panel means -- lives in
+// AnimationPanelModel (animation_panel_model.h) and is covered headlessly by
+// MatterEditor/tests/test_animation_panel_model.cpp. Keep it that way: logic
+// added here is logic that cannot be tested without a draw context.
+//
+// Structure. draw_animation_panel draws the status banner and the bake
+// diagnostics unconditionally, then -- only when the model is Ready -- the
+// instance selector and a six-tab bar (Rig, Skin, Clips, Graph, Targets,
+// Render). Clips and Graph are deliberate placeholders: the debug snapshot
+// carries rig, skin, target and pose data only.
+//
+// The panel is observational except for the Targets tab, whose inline editor
+// writes through the caller-supplied AnimationTargetWriter. Every write is
+// forwarded to the engine and the engine's verdict is displayed; a rejection
+// (one-driver arbitration, or a non-finite value) is shown rather than
+// swallowed, which is the whole point of the tab.
+//
+// UI state that is NOT in the model is held in function-local `static`
+// variables -- `editing` in draw_targets_tab and `state` in draw_target_editor.
+// These are process-wide, not per-panel and not per-model, so at most one
+// target editor can be open anywhere in the editor at a time. draw_target_editor
+// re-seeds itself whenever the edited target or the animator changes, which is
+// what stops a stale buffer being written to a different target.
+//
+// Render thread only (ImGui), between NewFrame and Render.
+
 #include "animation_panel.h"
 
 #include "imgui.h"
@@ -10,6 +40,9 @@
 namespace viewer {
 namespace {
 
+// The panel's empty/failure states. Drawn first and also drawn when the model is
+// not Ready, so an engine-side query failure is never silently just an empty
+// panel.
 void draw_status_banner(const AnimationPanelModel& model) {
     switch (model.status()) {
     case AnimationPanelStatus::QueryFailed:
@@ -32,6 +65,9 @@ void draw_status_banner(const AnimationPanelModel& model) {
                            model.rejected_snapshot_count());
 }
 
+// Hidden entirely when there is at most one animator: a combo with a single
+// entry is noise. Instances are labelled by index because the debug snapshot
+// carries no authored instance name.
 void draw_instance_selector(AnimationPanelModel& model) {
     if (model.instance_count() <= 1) return;
     ImGui::SetNextItemWidth(220.0f);
@@ -106,6 +142,9 @@ void draw_target_editor(const AnimationTargetRow& row,
         matter::AnimationTransform value{};
         bool last_write_rejected = false;
     };
+    // Function-local static: ONE editor buffer for the whole process, not one
+    // per row and not one per panel. Safe only because of the re-seed below,
+    // which keys on the target index plus the animator slot.
     static EditState state;
 
     // Re-seed whenever the edited target (or the animator) changes, so a stale
@@ -145,6 +184,10 @@ void draw_targets_tab(AnimationPanelModel& model, const AnimationTargetWriter& w
         ImGui::TextDisabled("This animator declares no targets.");
         return;
     }
+    // Which target row has its editor open; UINT16_MAX = none. Also a
+    // process-wide static, so only one editor is open at a time. Switching
+    // animators carries the raw index over, and the lookup below drops it when
+    // no such row exists in the new selection.
     static uint16_t editing = UINT16_MAX;
     if (ImGui::BeginTable("##anim_targets", 6,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -242,6 +285,9 @@ void draw_diagnostics(const AnimationPanelModel& model) {
     }
 }
 
+// A tab's visible label paired with the AnimationTab the model should record
+// while it is open. The kTabs table in draw_animation_panel is the single place
+// tab order is defined.
 struct TabSpec {
     const char* label;
     AnimationTab tab;

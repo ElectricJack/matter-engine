@@ -55,6 +55,7 @@
 #include "matter/vulkan_device.h"
 #include "render/vk_resources.h"
 #include "render/vt_compositor.h"
+#include "render/vt_enrich.h"
 // P2 (texel-rate tape, weight-seam mode 3): CPU tape runtime + the shared
 // lane scan / GpuSurfOp packing the compositor uses.
 #include "render/vt_surface_tape.h"
@@ -957,6 +958,36 @@ chart_atlas::ChartEntry make_chart(V3 origin, V3 t, V3 b, uint32_t rx,
 }  // namespace
 
 int main() {
+    {
+        const float positions[] = {
+            0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+        };
+        const uint32_t valid_indices[] = {0u, 1u, 2u};
+        const uint32_t invalid_indices[] = {0u, 1u, UINT32_MAX};
+        vt::VtPartContext ctx{};
+        ctx.positions = positions;
+        ctx.vertex_count = 3;
+        ctx.indices = valid_indices;
+        ctx.triangle_count = 1;
+        CHECK(vt::vt_enrich_mesh_validation(ctx) ==
+                  vt::VtEnrichMeshValidation::Valid,
+              "tier-2 accepts an in-range triangle index stream");
+        ctx.indices = invalid_indices;
+        CHECK(vt::vt_enrich_mesh_validation(ctx) ==
+                  vt::VtEnrichMeshValidation::OutOfRangeIndex,
+              "tier-2 rejects sentinel/out-of-range triangle indices");
+        ctx.indices = nullptr;
+        CHECK(vt::vt_enrich_mesh_validation(ctx) ==
+                  vt::VtEnrichMeshValidation::MissingGeometry,
+              "tier-2 distinguishes missing geometry from malformed indices");
+        ctx.indices = valid_indices;
+        ctx.triangle_count = 0;
+        CHECK(vt::vt_enrich_mesh_validation(ctx) ==
+                  vt::VtEnrichMeshValidation::MissingGeometry,
+              "tier-2 reports an empty triangle stream as missing geometry");
+    }
 #ifdef MATTER_VK_TEST_LAYER_PATH
     SetDllDirectoryA(MATTER_VK_TEST_LAYER_PATH);
     SetEnvironmentVariableA("VK_LAYER_PATH", MATTER_VK_TEST_LAYER_PATH);

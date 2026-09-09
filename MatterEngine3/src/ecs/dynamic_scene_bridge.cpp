@@ -1,3 +1,27 @@
+// MatterEngine3/src/ecs/dynamic_scene_bridge.cpp
+//
+// Implementation of DynamicSceneBridge (see dynamic_scene_bridge.h for the role
+// and the per-frame contract).
+//
+// The shape of a frame:
+//   1. reconcile() queries flecs twice — once for plain PartInstance roots, once
+//      for AnimationRigidBinding entities — building one `desired` list of
+//      render::DynamicInstanceInput. Both queries funnel their transform through
+//      the same `previous_for` helper so motion vectors stay consistent.
+//   2. `desired` is sorted by key and checked for duplicates; a duplicate is the
+//      one fatal error this function has.
+//   3. Every desired input is upserted into the slot table; entries tracked last
+//      frame but absent now release their slot and are erased, and stale motion
+//      records are dropped with them.
+//   4. collect_animation_skinning() then reads the slots reconcile() just
+//      established, so it MUST run after reconcile() in the same frame.
+//
+// Invariants worth knowing:
+//   - The bridge never mutates the ECS world. Errors go out through the
+//     BridgeErrorSink and it is the caller's job to apply them.
+//   - Component reads are value copies into pure adapters: AnimationRigidBridge
+//     and AnimationSkinBridge never see flecs at all.
+//   - All flecs access is single-threaded, on whichever thread drives the frame.
 #include "dynamic_scene_bridge.h"
 
 #include <algorithm>
@@ -6,6 +30,11 @@
 namespace matter::scene {
 namespace {
 
+// The instance key of an entity's ROOT draw. A DynamicInstanceKey is
+// (entity id, entity generation, sub-index); sub-index 0 is the root, and an
+// animation expansion produces the nonzero ones for the same entity. The
+// generation is part of the key on purpose: a recycled entity id gets a fresh
+// key rather than inheriting the dead entity's slot.
 render::DynamicInstanceKey root_key(SceneEntityId id) {
     return {id.value, id.generation, 0};
 }
@@ -22,11 +51,30 @@ void DynamicSceneBridge::set_animation_pose_snapshots(
     skin_bridge_.set_snapshots(snapshots);
 }
 
+// Fold a 64-bit entity id into the 32-bit token the renderer can carry through
+// its history buffer, avoiding 0 because that value means "no pick". The fold is
+// lossy, so distinct entities CAN share a token; resolve_pick returns the first
+// tracked entity that matches.
 uint32_t DynamicSceneBridge::fold_pick_token(uint64_t value) {
     uint32_t folded = static_cast<uint32_t>(value) ^ static_cast<uint32_t>(value >> 32);
     return folded != 0 ? folded : 1u;
 }
 
+// Rebuild this frame's dynamic instance set from the ECS world.
+//
+// Returns false only for a duplicate instance key — a programming error in key
+// assignment, reported through `error`. Everything else that can go wrong (a
+// part that will not resolve, the slot table running out of capacity) is
+// per-entity and goes to the sink while the rest of the frame proceeds.
+//
+// Side effects beyond the slot table: entries in tracked_ and entity_motion_ are
+// created for what is present and erased for what is not, so an entity that
+// disappears for one frame loses its motion history and comes back with a zero
+// motion vector.
+//
+// `render_frame_serial` must be the serial that will actually be submitted:
+// animated records require a pose published for exactly this serial. Plain
+// dynamic parts ignore it.
 bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& sink,
                                    std::string& error, uint64_t render_frame_serial) {
     error.clear();
@@ -34,6 +82,16 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
     std::unordered_set<render::DynamicInstanceKey, render::DynamicInstanceKeyHash> seen_entities;
     std::unordered_map<render::DynamicInstanceKey, Mat4f, render::DynamicInstanceKeyHash> frame_previous;
 
+    // Motion-vector source: returns the entity's PREVIOUS world matrix and
+    // records `current` as the new one. Not a pure query — it mutates
+    // entity_motion_ and marks the entity as seen this frame, which is what
+    // keeps its motion record from being pruned below.
+    //
+    // Idempotent within a frame: frame_previous memoises the answer, so the
+    // second query (rigid bindings) sees the same "previous" as the first
+    // (PartInstance roots) instead of overwriting it with this frame's matrix.
+    // An entity seen for the first time reports current as its own previous,
+    // i.e. zero motion rather than a smear from the origin.
     const auto previous_for = [this, &seen_entities, &frame_previous](SceneEntityId id, const Mat4f& current) {
         const render::DynamicInstanceKey key = root_key(id);
         const auto same_frame = frame_previous.find(key);
@@ -77,7 +135,12 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
         const bool rigid_only = rigid && rigid->asset && !has_skin && !asset_has_skin;
         const Mat4f previous = previous_for(id, wt.matrix);
         if (part.visible && !rigid_only && part.part_hash != 0) {
-            desired.push_back({root_key(id), part.part_hash, wt.matrix, previous, part.casts_shadow});
+            render::DynamicInstanceInput input{
+                root_key(id), part.part_hash, wt.matrix, previous,
+                part.casts_shadow};
+            input.policy_part_hash = part.part_hash;
+            input.ray_tracing_override = part.ray_traced;
+            desired.push_back(input);
         }
     });
 
@@ -90,6 +153,10 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
         const Mat4f previous = previous_for(id, wt.matrix);
         render::AnimationRigidExpansion expansion{root_key(id), wt.matrix, previous,
                                                    render_frame_serial, binding};
+        if (part) {
+            expansion.policy_part_hash = part->part_hash;
+            expansion.ray_tracing_override = part->ray_traced;
+        }
         if (!rigid_bridge_.expand(expansion, desired) && binding.asset && sink.on_error) {
             sink.on_error(id, PartInstanceError{PartInstanceErrorCode::PartUnavailable,
                                                 binding.asset->identity});
@@ -141,6 +208,20 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
 
 std::vector<render::DynamicSlotChange> DynamicSceneBridge::drain() { return slots_.drain(); }
 
+// Gather this frame's skinning work. Must run AFTER reconcile() in the same
+// frame: it resolves each entity through tracked_, and a skinned entity with no
+// live slot is treated as a failure rather than skipped.
+//
+// Failure semantics are deliberately asymmetric, and both halves matter:
+//   - `out` is left completely unchanged on failure, so the renderer can never
+//     receive a torn subset of a scene generation's skin work;
+//   - `active_bounds` is appended to EVEN ON FAILURE, carrying every dynamic
+//     slot generation examined before the failure, so the renderer can evict
+//     stale bounds before culling an empty queue.
+// `render_frame_serial` of 0 is rejected outright.
+//
+// const in signature only in the sense that it touches no bridge state — it does
+// append to both caller-supplied vectors.
 bool DynamicSceneBridge::collect_animation_skinning(
     flecs::world& world, std::vector<viewer::VkSkinSubmission>& out,
     std::vector<viewer::VkAnimationBoundsInstance>& active_bounds,
@@ -205,23 +286,59 @@ bool DynamicSceneBridge::collect_animation_skinning(
 void DynamicSceneBridge::finish_frame(uint64_t completed_serial) { slots_.finish_frame(completed_serial); }
 uint32_t DynamicSceneBridge::active_count() const { return slots_.active_count(); }
 
+// Map a renderer pick token back to a scene entity. Linear over every tracked
+// instance, because the token is a lossy fold of the entity id (see
+// fold_pick_token) and distinct entities CAN share one.
+//
+// On a collision the LOWEST (entity id, generation) wins. That tiebreak is the
+// whole point of scanning to the end instead of returning the first hit:
+// tracked_ is an unordered_map, so a first-hit answer would depend on bucket
+// order and could name a different entity from one frame to the next — the
+// selection would flicker between two entities while the user held a stable
+// pick. It is still an arbitrary choice between the two, but a STABLE one.
+//
+// A default-constructed ScenePick (kind == None) means no live slot matched.
 ScenePick DynamicSceneBridge::resolve_pick(uint32_t instance_token) const {
+    bool found = false;
+    uint64_t best_id = 0;
+    uint32_t best_generation = 0;
     for (const auto& pair : tracked_) {
         const auto& key = pair.first;
         if (!pair.second.slot.valid() || fold_pick_token(key.entity_id) != instance_token) continue;
-        return {ScenePickKind::DynamicEntity, {key.entity_id, key.entity_generation}, UINT32_MAX};
+        if (!found || key.entity_id < best_id ||
+            (key.entity_id == best_id && key.entity_generation < best_generation)) {
+            best_id = key.entity_id;
+            best_generation = key.entity_generation;
+            found = true;
+        }
     }
-    return {};
+    if (!found) return {};
+    return {ScenePickKind::DynamicEntity, {best_id, best_generation}, UINT32_MAX};
 }
 
+// Distinct scene entities with at least one tracked instance, sorted ascending
+// by (id, generation). O(instances log instances) and allocates — fine for an
+// editor/debug query, not for a per-frame path.
+//
+// The sort does double duty: it makes the dedup a linear adjacent-unique pass
+// instead of the quadratic find_if it used to be, and it gives the result a
+// deterministic order. tracked_ is an unordered_map, so the raw iteration order
+// varies with bucket layout and would reshuffle the list between frames.
 std::vector<SceneEntityId> DynamicSceneBridge::scene_entities() const {
     std::vector<SceneEntityId> out;
-    for (const auto& pair : tracked_) {
-        const SceneEntityId id{pair.first.entity_id, pair.first.entity_generation};
-        if (std::find_if(out.begin(), out.end(), [&id](SceneEntityId value) {
-            return value.value == id.value && value.generation == id.generation;
-        }) == out.end()) out.push_back(id);
-    }
+    out.reserve(tracked_.size());
+    for (const auto& pair : tracked_)
+        out.push_back({pair.first.entity_id, pair.first.entity_generation});
+    std::sort(out.begin(), out.end(), [](SceneEntityId a, SceneEntityId b) {
+        if (a.value != b.value) return a.value < b.value;
+        return a.generation < b.generation;
+    });
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](SceneEntityId a, SceneEntityId b) {
+                              return a.value == b.value &&
+                                     a.generation == b.generation;
+                          }),
+              out.end());
     return out;
 }
 

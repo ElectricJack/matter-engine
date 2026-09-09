@@ -1,3 +1,66 @@
+// MatterEngine3/src/sector_streamer.cpp
+//
+// The terrain streaming SELECTOR. Given one anchor position per tick it
+// decides which terrain tiles should exist, in which variant, and in what
+// order to bake them. It is pure bookkeeping: no threads, no GPU resources, no
+// file or network I/O, and no knowledge of what a bake actually does.
+// sector_streamer.h carries the design rationale (variant packing, the retired
+// edge mask, the nested key format, staged refinement); this file is the
+// mechanism.
+//
+// Where it sits
+// -------------
+// Owned and driven by streaming/sector_streaming_coordinator.h, itself driven
+// from matter_engine.cpp. The coordinator does everything this class refuses
+// to know about: it turns a SectorRequest into a bake job, reports the outcome
+// through on_published()/on_failed(), and drains take_evictions() to unpublish.
+// Every value crossing that boundary is a plain (tx, ty, tz, rung) tuple.
+//
+// Threading and call order
+// ------------------------
+// SINGLE-THREADED. Nothing here takes a lock, and update() rewrites `sectors_`
+// in place, so every method must be called from the coordinator's own thread.
+// The intended per-tick order is
+//
+//     update(anchor)                       // recompute the desired map
+//     while (next_request(&r)) ...         // launch bakes, up to max_inflight
+//     on_published(...) / on_failed(...)   // as results land
+//     take_evictions()                     // unpublish what update() retired
+//
+// Nothing enforces it: calling next_request() without a preceding update()
+// simply re-serves the stale desired map.
+//
+// Two selection modes, one class
+// ------------------------------
+//   - UNIFORM (Config::nested_sectors off) -- update(): a single grid of
+//     `sector_size` tiles, a desired scatter rung per ring radius, and an
+//     optional terrain-LOD ladder folded in afterwards by
+//     assign_terrain_lods().
+//   - NESTED (nested_sectors on) -- update_nested(): a quadtree, or an OCTREE
+//     under `volumetric_sectors`, descended from the coarsest level. Tile size
+//     doubles with the level, and the authored terrain bands are reinterpreted
+//     as level radii rather than replaced.
+// The constructor decides which is live and may force flags OFF (a band table
+// that resolves no level ladder disables nesting, and disabling nesting
+// disables volumetric sectors); config() reports what it settled on.
+//
+// Units and conventions
+// ---------------------
+// All radii, sizes and hysteresis are world METRES. `SectorState::dist` is
+// always an XZ distance -- it grades the scatter tier, which is a horizontal
+// notion. Only tile_near_dist() gains a y term, and only under
+// `volumetric_sectors`; anchor y is stored on every path and read nowhere else.
+//
+// Rungs are OPAQUE ints across the public boundary. With the terrain ladder on
+// they are packed variants (scatter tier + terrain LOD + a marker bit),
+// compared for identity and decoded only through the variant_* helpers in the
+// header. -1 uniformly means "none": not desired, nothing resident, nothing in
+// flight.
+//
+// Diagnostics: MATTER_STREAM_NO_EVICT, MATTER_STREAM_NO_STAGING and
+// MATTER_STREAM_NO_LATERAL are read once each at the top of this file. All
+// three are test / A-B-measurement only, and each self-reports to stderr when
+// it fires.
 #include "sector_streamer.h"
 #include "matter/log.h"
 #include <cmath>
@@ -136,6 +199,10 @@ SectorStreamer::SectorStreamer(Config cfg)
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Anchor to the CENTRE of a uniform-grid sector, in metres. XZ only: the
+// anchor's altitude is deliberately not part of it, for the reason the
+// header's tile_centre_dist note gives -- this distance grades scatter tiers,
+// and scatter is vegetation standing on the surface, a horizontal notion.
 float SectorStreamer::sector_dist(int64_t tx, int64_t tz) const {
     float cx = (float(tx) + 0.5f) * cfg_.sector_size;
     float cz = (float(tz) + 0.5f) * cfg_.sector_size;
@@ -143,6 +210,12 @@ float SectorStreamer::sector_dist(int64_t tx, int64_t tz) const {
     return std::sqrt(dx * dx + dz * dz);
 }
 
+// The first ring whose radius covers `d` (rings are innermost-first, so this
+// is a coarsening walk outwards). -1 means "past every ring", which in the
+// UNIFORM path means the sector is not desired at all. The nested path never
+// calls this; it grades scatter with nested_scatter_tier(), which CLAMPS to
+// the coarsest tier instead of refusing, because there residency is bounded by
+// the terrain bands rather than by the rings.
 int SectorStreamer::desired_rung_for_dist(float d) const {
     for (const auto& ring : cfg_.rings)
         if (d <= ring.radius) return ring.rung;
@@ -691,6 +764,98 @@ bool SectorStreamer::coarser_resident_beside(int level, int64_t tx, int64_t ty,
     return false;
 }
 
+bool SectorStreamer::resident_level_conflict_beside(
+        int level, int64_t tx, int64_t ty, int64_t tz) const {
+    if (!cfg_.nested_sectors) return false;
+
+    // Work in level-0 tile coordinates.  A level-L tile is the integer box
+    // [t*2^L,(t+1)*2^L), so every face-neighbour probe below is exact for
+    // negative coordinates too (signed right shift is the nesting convention
+    // used everywhere else in this file).
+    const int64_t scale = int64_t{1} << level;
+    const int64_t lo[3] = {tx * scale, ty * scale, tz * scale};
+    const int64_t hi[3] = {(tx + 1) * scale, (ty + 1) * scale,
+                           (tz + 1) * scale};
+    const int axes = cfg_.volumetric_sectors ? 3 : 2;
+
+    // The coarsest resident covering a probe tile is what the engine draws;
+    // finer residency under a transition parent is parked and must not create
+    // a false dependency here.
+    const auto drawn_over = [&](int probe_level, int64_t px, int64_t py,
+                                int64_t pz, int& drawn_level,
+                                int64_t& dx, int64_t& dy, int64_t& dz) {
+        drawn_level = -1;
+        for (int up = probe_level; up <= max_level(); ++up) {
+            const int sh = up - probe_level;
+            const int64_t ux = px >> sh;
+            const int64_t uy = cfg_.volumetric_sectors ? (py >> sh) : kFlatTy;
+            const int64_t uz = pz >> sh;
+            const auto it = sectors_.find(nested_key(up, ux, uy, uz));
+            if (it == sectors_.end() ||
+                (it->second.resident_rung < 0 &&
+                 it->second.inflight_rung < 0))
+                continue;
+            drawn_level = up;
+            dx = ux;
+            dy = uy;
+            dz = uz;
+        }
+        return drawn_level >= 0;
+    };
+
+    for (int other = 0; other <= max_level(); ++other) {
+        if (std::abs(other - level) < 2) continue;
+        const int64_t other_scale = int64_t{1} << other;
+        for (int axis_i = 0; axis_i < axes; ++axis_i) {
+            const int axis = cfg_.volumetric_sectors
+                ? axis_i
+                : (axis_i == 0 ? 0 : 2); // column path: x and z only
+            const int u = (axis + 1) % 3;
+            const int v = (axis + 2) % 3;
+            for (int side = 0; side < 2; ++side) {
+                const int64_t boundary = side == 0 ? lo[axis] : hi[axis];
+                // A coarser cell can touch this face only when the candidate's
+                // boundary is also one of its boundaries.  Otherwise that cell
+                // is the candidate's own ancestor, handled by footprint
+                // staging/parking rather than by lateral scheduling.
+                if (other > level && boundary % other_scale != 0) continue;
+                int64_t fixed = boundary >> other;
+                if (side == 0) --fixed;
+                const int64_t ulo = lo[u] >> other;
+                const int64_t uhi = (hi[u] - 1) >> other;
+                const int64_t vlo = lo[v] >> other;
+                const int64_t vhi = (hi[v] - 1) >> other;
+                for (int64_t a = ulo; a <= uhi; ++a)
+                    for (int64_t b = vlo; b <= vhi; ++b) {
+                        int64_t p[3] = {0, kFlatTy, 0};
+                        p[axis] = fixed;
+                        p[u] = a;
+                        p[v] = b;
+                        int drawn = -1;
+                        int64_t dx = 0, dy = 0, dz = 0;
+                        if (!drawn_over(other, p[0], p[1], p[2], drawn,
+                                        dx, dy, dz))
+                            continue;
+                        if (std::abs(drawn - level) < 2) continue;
+                        // An ancestor covering the candidate and the probe is
+                        // not a lateral neighbour.  The candidate may still be
+                        // requested; engine-side transition parking keeps that
+                        // ancestor drawn until the replacement group is ready.
+                        if (drawn > level) {
+                            const int sh = drawn - level;
+                            if ((tx >> sh) == dx &&
+                                (!cfg_.volumetric_sectors || (ty >> sh) == dy) &&
+                                (tz >> sh) == dz)
+                                continue;
+                        }
+                        return true;
+                    }
+            }
+        }
+    }
+    return false;
+}
+
 int SectorStreamer::resident_level_over(int level, int64_t tx, int64_t ty,
                                         int64_t tz) const {
     // Walk this tile and then its ancestors -- the same ancestor chain
@@ -730,10 +895,13 @@ int SectorStreamer::resident_level_over(int level, int64_t tx, int64_t ty,
 }
 
 void SectorStreamer::restrict_levels() {
-    // Cardinal-adjacent desired tiles must differ by at most one level: that is
-    // the premise the edge-mask snap relies on, and the mesher has no wider
-    // stitch. Monotone (only splits, levels bounded), so the fixpoint is
-    // iteration-order independent, exactly like the uniform 2:1 balance pass.
+    // Cardinal-adjacent desired tiles must differ by at most one level: the
+    // runtime seam welder (seam_weld.h) resolves exactly one level of
+    // difference, and the mesher has no wider stitch. (Before the edge mask was
+    // retired this same 2:1 premise was what the mask's snap relied on; the
+    // constraint outlived the mask.) Monotone (only splits, levels bounded), so
+    // the fixpoint is iteration-order independent, exactly like the uniform 2:1
+    // balance pass.
     //
     // With the default band table this is a no-op by construction -- every
     // annulus is wider than one tile of the coarser level -- but bands are
@@ -872,6 +1040,7 @@ void SectorStreamer::scan_footprint(int level, int64_t tx, int64_t ty,
 
 void SectorStreamer::update_nested(float anchor_x, float anchor_y,
                                    float anchor_z) {
+    request_level_holds_.clear();
     last_anchor_x_ = anchor_x;
     last_anchor_y_ = anchor_y;   // stored, never read in M1 (see the header)
     last_anchor_z_ = anchor_z;
@@ -1008,6 +1177,25 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_y,
 // update()
 // ---------------------------------------------------------------------------
 
+// One tick of the selector. Delegates wholesale to update_nested() when
+// nesting is on; what follows is the UNIFORM-grid path, in four phases whose
+// order is load-bearing:
+//
+//   1. reset every tracked sector's desired_rung to -1, age its cooldown, and
+//      refresh its distance against the new anchor;
+//   2. scan the square of tiles covering the outer ring + hysteresis and set
+//      desired_rung from the ring table, inserting entries for tiles not yet
+//      tracked;
+//   3. apply demotion hysteresis, queue evictions, and prune entries that are
+//      neither desired, resident, in flight nor cooling down -- this pruning
+//      is what stops `sectors_` growing without bound as the anchor travels;
+//   4. assign_terrain_lods(), which must see the FINAL desired scatter tiers
+//      and only the surviving entries, and which repacks desired_rung as a
+//      variant.
+//
+// Phase 2 costs one distance evaluation per finest-grid cell over the whole
+// disc -- around 100k at StreamMountain's reach. That number is the reason the
+// nested path exists; see the note in update_nested().
 void SectorStreamer::update(float anchor_x, float anchor_y, float anchor_z) {
     if (cfg_.nested_sectors) {
         update_nested(anchor_x, anchor_y, anchor_z);
@@ -1118,9 +1306,10 @@ void SectorStreamer::update(float anchor_x, float anchor_y, float anchor_z) {
     for (uint64_t k : to_erase) sectors_.erase(k);
 
     // Terrain LOD ladder: assign per-sector heightfield LODs, balance to 2:1
-    // cardinal adjacency, compute edge masks, and repack desired_rung as a
-    // variant. Must run after the scatter hysteresis/eviction pass so it
-    // sees the final desired scatter tiers and the surviving entries.
+    // cardinal adjacency, and repack desired_rung as a variant (scatter tier +
+    // this tile's own terrain LOD; there is no edge mask any more -- see
+    // sector_streamer.h). Must run after the scatter hysteresis/eviction pass
+    // so it sees the final desired scatter tiers and the surviving entries.
     if (cfg_.terrain_lod_enabled) assign_terrain_lods();
 }
 
@@ -1139,31 +1328,56 @@ bool SectorStreamer::next_request(SectorRequest& out) {
     // invisible frontier baked. Distance is what the eye ranks by; a hole
     // only outranks an upgrade when they are at comparable range.
     uint64_t best_k = 0;
-    float best_score = std::numeric_limits<float>::max();
-    bool found = false;
+    for (;;) {
+        float best_score = std::numeric_limits<float>::max();
+        bool found = false;
 
-    for (auto& [k, st] : sectors_) {
-        if (st.inflight_rung >= 0) continue;      // already in flight
-        if (st.cooldown > 0) continue;             // cooling down
-        if (st.desired_rung < 0) continue;        // not desired
-        if (st.desired_rung == st.resident_rung) continue; // satisfied
+        for (auto& [k, st] : sectors_) {
+            if (st.inflight_rung >= 0) continue;      // already in flight
+            if (st.cooldown > 0) continue;             // cooling down
+            if (st.desired_rung < 0) continue;        // not desired
+            if (st.desired_rung == st.resident_rung) continue; // satisfied
+            if (request_level_holds_.count(k) != 0) continue;
 
-        const bool is_hole = (st.resident_rung < 0);
-        // The hole bonus is one tile width, so in nested mode it is the tile's
-        // OWN width -- a 2 km level-5 hole should not outrank a 64 m one by the
-        // margin a level-0 width would give it.
-        const float width = cfg_.nested_sectors
-            ? level_size(st.desired_level < 0 ? 0 : st.desired_level)
-            : cfg_.sector_size;
-        float score = is_hole ? st.dist - width : st.dist;
-        if (score < best_score) {
-            best_score = score;
-            best_k = k;
-            found = true;
+            const bool is_hole = (st.resident_rung < 0);
+            // The hole bonus is one tile width, so in nested mode it is the tile's
+            // OWN width -- a 2 km level-5 hole should not outrank a 64 m one by the
+            // margin a level-0 width would give it.
+            const float width = cfg_.nested_sectors
+                ? level_size(st.desired_level < 0 ? 0 : st.desired_level)
+                : cfg_.sector_size;
+            float score = is_hole ? st.dist - width : st.dist;
+            if (score < best_score) {
+                best_score = score;
+                best_k = k;
+                found = true;
+            }
         }
-    }
 
-    if (!found) return false;
+        if (!found) return false;
+
+        // Desired 2:1 balance is not enough during an asynchronous cold/merge
+        // fill: the intermediate desired tile may still be baking while an old
+        // resident two levels away remains drawn.  Probe only the winning
+        // candidate, then memoize a hold for this update's residency snapshot.
+        // The intermediate desired tile is necessarily within one level of
+        // both sides, so it remains eligible and removes the dependency on a
+        // later update (strict progress, no mutual wait).  This is request
+        // staging, not visibility parking: no completed geometry is hidden.
+        // The cold/merge defect this closes is specific to the octree: the
+        // column streamer's established lateral-staging A/B contract remains
+        // the rollback/failability probe for its older refinement-only rule.
+        if (cfg_.volumetric_sectors && lateral_staging_active()) {
+            int level = 0;
+            int64_t tx = 0, ty = 0, tz = 0;
+            nested_unkey(best_k, level, tx, ty, tz);
+            if (resident_level_conflict_beside(level, tx, ty, tz)) {
+                request_level_holds_.insert(best_k);
+                continue;
+            }
+        }
+        break;
+    }
 
     auto& st = sectors_.at(best_k);
     int level; int64_t tx, ty, tz;
@@ -1253,6 +1467,13 @@ const std::vector<Eviction>& SectorStreamer::peek_evictions() const noexcept {
     return evictions_;
 }
 
+// Drop the first `count` evictions -- and only after the destination has
+// accepted every one of them. `source` must be THE vector peek_evictions()
+// handed back: the check is pointer identity (`&source != &evictions_`), not a
+// value comparison, so a caller that committed against a COPY fails loudly
+// here instead of silently discarding evictions the real queue still owes.
+// Returns false without modifying anything on either that mismatch or a
+// `count` past the end.
 bool SectorStreamer::commit_evictions(
     const std::vector<Eviction>& source,
     size_t count) noexcept {
@@ -1265,6 +1486,14 @@ bool SectorStreamer::commit_evictions(
 // clear()
 // ---------------------------------------------------------------------------
 
+// Full reroll: every resident tile is APPENDED to the eviction queue (the
+// queue is not emptied first, so anything already pending survives) and all
+// tracked state is dropped -- residency, cooldowns and inflight markers alike.
+//
+// Bakes already in flight are NOT cancelled; the streamer simply forgets them,
+// so their on_published() finds no entry, returns false, and the caller
+// discards the artifact. `inflight_` is reset to 0, so the whole request
+// budget is available again on the very next tick.
 void SectorStreamer::clear() {
     for (auto& [k, st] : sectors_) {
         if (st.resident_rung >= 0) {
@@ -1281,6 +1510,9 @@ void SectorStreamer::clear() {
 // Accessors
 // ---------------------------------------------------------------------------
 
+// O(tracked sectors): there is no running total, so this walks the entire map
+// on every call. Fine for a per-frame HUD line or a test assertion; do not put
+// it inside a loop that is already iterating sectors.
 size_t SectorStreamer::resident_count() const {
     size_t n = 0;
     for (const auto& [k, st] : sectors_)

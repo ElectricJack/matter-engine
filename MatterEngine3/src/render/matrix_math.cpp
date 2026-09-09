@@ -1,3 +1,23 @@
+// MatterEngine3/src/render/matrix_math.cpp
+//
+// Implementation of the CPU matrix toolkit declared in matrix_math.h. That
+// header carries the storage/handedness conventions and the failure contract;
+// this file only adds notes on how each routine is actually computed.
+//
+// Everything is a pure function over matter::Mat4f / Float3 / Float4. The
+// anonymous-namespace helpers exist so this translation unit depends on no
+// vector library at all — matter::Float3 is a bare POD with no operators, and
+// pulling in libs/MathLib here would drag a second vector family into the
+// render path's lowest layer.
+//
+// Numerical notes:
+//   - `normalize` fails SOFT: a squared length at or below
+//     kLengthEpsilonSquared, or a non-finite one, returns {0,0,0}. Nothing
+//     reports that, so a degenerate look_at_rh basis propagates silently.
+//   - `mat4_inverse` runs in DOUBLE precision with partial pivoting and
+//     rejects non-finite inputs, pivots and results, including a result that
+//     only becomes non-finite once narrowed back to float.
+
 #include "matrix_math.h"
 
 #include <algorithm>
@@ -22,6 +42,9 @@ matter::Float3 cross(matter::Float3 a, matter::Float3 b) {
             a.x * b.y - a.y * b.x};
 }
 
+// Returns the zero vector for anything shorter than the epsilon or non-finite,
+// instead of dividing by ~0. Callers here (look_at_rh) do not check, so a
+// degenerate basis is the observable consequence.
 matter::Float3 normalize(matter::Float3 value) {
     const float length_squared = dot(value, value);
     if (!(length_squared > kLengthEpsilonSquared) ||
@@ -35,6 +58,11 @@ matter::Float3 normalize(matter::Float3 value) {
 
 } // namespace
 
+// The index arithmetic used throughout this file follows matter::Mat4f's
+// row-major storage: element (row, column) is m[row * 4 + column], the
+// diagonal is m[0], m[5], m[10], m[15], and the translation column is m[3],
+// m[7], m[11]. Mat4f value-initializes to all zeros, so each builder below
+// only writes the terms it needs.
 matter::Mat4f mat4_identity() {
     matter::Mat4f identity{};
     identity.m[0] = 1.0f;
@@ -117,6 +145,12 @@ matter::Mat4f perspective_rh_zo_reversed(float fovy, float aspect,
     return projection;
 }
 
+// Gauss-Jordan elimination on a 4x8 [M | I] augmented matrix, carried in
+// double so a near-singular world-to-clip matrix still inverts usefully.
+// Partial pivoting picks the largest-magnitude pivot in each column. The
+// result is assembled into a local `candidate` and only assigned to `inverse`
+// on full success, so a false return never leaves the caller's matrix half
+// written.
 bool mat4_inverse(const matter::Mat4f& matrix, matter::Mat4f& inverse) {
     double augmented[4][8]{};
     for (int row = 0; row < 4; ++row) {
@@ -216,11 +250,26 @@ matter::Float3 project_ndc(const matter::Mat4f& matrix, matter::Float3 point) {
     return {clip.x * inverse_w, clip.y * inverse_w, clip.z * inverse_w};
 }
 
+// Deliberately the same body as project_ndc: transform, then divide by w. The
+// perspective divide is what unprojection needs too, since clip_to_world is a
+// full projective inverse. The separate name exists so call sites read in the
+// direction they mean.
 matter::Float3 unproject_ndc(const matter::Mat4f& clip_to_world,
                              matter::Float3 point) {
     return project_ndc(clip_to_world, point);
 }
 
+// Gribb-Hartmann plane extraction for the zero-to-one depth convention. With
+// clip = M * v, each clip-space inequality becomes a row combination of M:
+// -w <= x  ->  row3 + row0 (left), x <= w -> row3 - row0 (right), likewise
+// rows 1 for bottom/top, and for ZO depth 0 <= z -> row2 alone (slot 4) and
+// z <= w -> row3 - row2 (slot 5). `row_i` here is read column by column out of
+// the row-major array, which is why the loop indexes m[column], m[4+column],
+// m[8+column], m[12+column].
+//
+// The second loop divides each plane by the length of its xyz, so the stored w
+// is a signed distance in world metres rather than an arbitrary scale — a zero
+// or non-finite length means the matrix was degenerate and the function bails.
 bool extract_frustum_planes_zo(const matter::Mat4f& world_to_clip,
                                float planes[6][4]) {
     for (int column = 0; column < 4; ++column) {

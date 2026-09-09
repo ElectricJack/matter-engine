@@ -1,11 +1,61 @@
 #ifndef SURFACE_H
 #define SURFACE_H
 
+// libs/MatterSurfaceLib/include/surface.h
+//
+// The public C API of MatterSurfaceLib's isosurface mesher. Given an array of
+// `Particle` spheres it samples a smooth-min (metaball) union-of-spheres
+// signed field over the grid described by `Bounds` and marching-cubes it into
+// a mesh, optionally folding in ordered CSG stages, non-sphere "fat"
+// primitives, subtractive carve particles and foreign clip particles.
+//
+// How it fits:
+//  - Implemented in `src/surface.c` -- real C, hence the `extern "C"` block
+//    and the plain-C `MtVec3` / `Particle` types.
+//  - The marching-cubes branch of `meshing_algorithm.h` calls in here;
+//    `cell.cpp` / `cluster.cpp` drive it per merge group; MatterEngine3's bake
+//    pipeline sits above that.
+//  - It does NOT touch the GPU. `Mesh` and `Color` are raylib POD types only
+//    (the GL/raylib render path is deleted); a `Mesh` here is a CPU vertex /
+//    index buffer that the BLAS packer later consumes.
+//
+// Threading and scratch:
+//  - There is no global state. Concurrency is expressed through
+//    `SurfaceScratch`: create ONE per worker thread with
+//    `CreateSurfaceScratch()`, reuse it across calls, and destroy it with
+//    `DestroySurfaceScratch()`. It owns the reusable memory pool and the
+//    particle spatial hash.
+//  - `GenerateMeshWithScratch` / `GenerateMeshStaged` / `ProbeFieldScalar` and
+//    the `...WithScratch` normal pass all take that scratch; the plain
+//    `GenerateMesh` / `ComputeSurfaceNormals` entry points are the same
+//    algorithms without the reuse. Geometry is byte-identical either way.
+//  - `SurfaceScratchHash()` exposes the hash the last scratch-based mesh build
+//    produced so downstream per-triangle nearest-particle lookups can reuse it
+//    instead of rebuilding.
+//
+// Conventions and gotchas:
+//  - `particleRadius` is a REFERENCE radius (the maximum effective radius in
+//    the set) used only to size the spatial-hash search; each particle's own
+//    `.radius` is what the field actually integrates. Passing something
+//    smaller than the true maximum silently loses geometry.
+//  - `blendWidth` (and `carveBlend`) are fillet widths in the same length
+//    units as the radii; 0 means a hard union / hard subtraction.
+//  - Every optional feature has a documented "pass NULL, 0" form that is
+//    byte-identical to the path without it. That is deliberate -- it is what
+//    lets new features ship without invalidating existing bakes -- so preserve
+//    it when extending these signatures.
+//  - Shading normals from `ComputeSurfaceNormals` are the analytic field
+//    gradient, which depends only on world position and is therefore
+//    continuous across independently meshed cells. Any pass that moves
+//    vertices or recomputes normals from face geometry (e.g. mesh
+//    simplification) must be followed by re-running it, or shading seams
+//    appear at cell boundaries.
+
 // Phase 4 (Step 3) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
 // Bounds and ProbeFieldScalar's `point` param moved off raylib's Vector3 onto
 // matter_math_c.h's MtVec3. raylib.h stays included -- Mesh/Color (GenerateMesh's
-// return type, GetMaterialColor, ConvertMeshToBVHTriangles) are out of scope for
-// this phase (Mesh migration is deferred; see the Phase 4 brief).
+// return type, GetMaterialColor) are out of scope for this phase (Mesh migration
+// is deferred; see the Phase 4 brief).
 #include "raylib.h"
 #include "matter_math_c.h"   // MtVec3
 #include "particle.h"
@@ -13,20 +63,14 @@
 #include "csg_stages.h"      // FieldStages (ordered CSG)
 #include <stdbool.h>
 
-// Forward declaration for BVH Triangle
-typedef struct {
-    float x, y, z;
-} Vec3;
-
-typedef struct {
-    Vec3 v0, v1, v2;      // Triangle vertices
-    Vec3 n0, n1, n2;      // Per-vertex normals
-    Vec3 centroid;        // Pre-computed centroid for faster BVH building
-    Vec3 normal;          // Face normal (computed from vertices)
-    int  material_id;     // Material identifier
-} BVHTriangle;
-
-
+// The sampling volume for one mesh build. `center` and `size` are in the same
+// space as the `Particle` positions handed to the same call (cluster-local for
+// the cell mesher, world space for a probe), and `divisionPow` sets the grid
+// resolution to 2^divisionPow per axis -- so it, together with `size`, fixes
+// the sampled cell size and hence the smallest feature the mesher can resolve
+// (`MeshContext::voxel` in `meshing_algorithm.h` is the derived figure).
+// Raising `divisionPow` by one multiplies field-evaluation cost by roughly
+// eight.
 // Bounds structure defining the volume for isosurface generation
 typedef struct {
     MtVec3 center;
@@ -34,6 +78,10 @@ typedef struct {
     int     divisionPow;  // Resolution = 2^divisionPow
 } Bounds;
 
+// Legacy tuning flags. Note that no function declared in this header accepts a
+// `MeshGenerationConfig` -- `GetDefaultMeshConfig()` is its only producer, and
+// the behaviour it describes is fixed inside `src/surface.c`. Kept for source
+// compatibility; do not expect setting these to change anything.
 // Mesh generation configuration options
 typedef struct {
     bool enableEdgeDeduplication;  // Enable/disable edge deduplication (saves memory but may have duplicate vertices)
@@ -108,8 +156,6 @@ float ProbeFieldScalar(SurfaceScratch* scratch, Particle* particles, float parti
 // (byte-identical to the uncarved path).
 Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
-// Enhanced API function with configuration options
-Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
 // Recompute per-vertex shading normals in place as the analytic SDF gradient of
 // the (smooth-min) union-of-spheres field. With blendWidth 0 each normal is the
@@ -128,8 +174,6 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
 // Create default configuration
 MeshGenerationConfig GetDefaultMeshConfig(void);
 
-// Cleanup function to release memory pool resources
-void SurfaceLibCleanup(void);
 
 // Utility function to create color based on material ID
 Color GetMaterialColor(int materialId);
@@ -137,11 +181,7 @@ Color GetMaterialColor(int materialId);
 // Utility function to generate unique edge key for marching cubes
 unsigned long long GetEdgeKey(int x, int y, int z, int edgeIndex);
 
-// Convert raylib Mesh to BVH Triangle array with per-vertex normals
-BVHTriangle* ConvertMeshToBVHTriangles(Mesh mesh, int* triangleCount);
 
-// Free BVH triangle array
-void FreeBVHTriangles(BVHTriangle* triangles);
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,11 @@
 #pragma once
 
+// MatterEditor/src/part_workbench_iso.h
+//
+// Two pure string functions: no state, no I/O, no engine or ImGui
+// dependencies, so they are callable from any thread and are directly
+// unit-testable (MatterEditor/tests/test_workbench_actions.cpp).
+
 // The Part Workbench's synthetic isolation world (part-workbench.md W2),
 // extracted from part_workbench.cpp so the exact world text is headless-
 // testable. The generation rules here are behavior, not formatting: the

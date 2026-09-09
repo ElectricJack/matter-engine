@@ -162,3 +162,6 @@ issues
 MatterEditor/profile_trace.json
 MatterEditor/vulkan_device_fault.log
 *.nv-gpudmp
+
+# Native CI transcripts and JUnit output.
+/artifacts/ci/

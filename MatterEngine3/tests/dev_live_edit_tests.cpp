@@ -347,6 +347,36 @@ static void test_unmapped_file_is_noop() {
     CHECK(r.succeeded, "no-op is a success, not a failure");
 }
 
+// A graph whose reresolve fails for one named part, the way ProdGraphResolver
+// does when the source will not open or a child has no hash yet.
+struct UnresolvableGraph : FakeGraph {
+    PartId broken;
+    ResolvedHash reresolve(const PartId& p) override {
+        return p == broken ? ResolvedHash{} : FakeGraph::reresolve(p);
+    }
+};
+
+static void test_resolve_failure_stops_before_the_baker() {
+    std::printf("[test_resolve_failure_stops_before_the_baker]\n");
+    UnresolvableGraph g;
+    g.broken = "leaf";
+    g.file_to_parts["/w/leaf.js"] = {"leaf"};
+    g.parents["leaf"] = {"root"};
+    g.roots["leaf"] = {"root"};
+    FakeWatcher w; RecBaker b; RecFlattener f; RecSink s;
+    LiveEditSession sess(w, g, b, f, s, LiveEditConfig{150, 0});
+    w.set_now_ms(1000); w.push("/w/leaf.js"); w.advance_ms(200);
+    auto r = sess.tick();
+    CHECK(!r.succeeded, "a failed re-resolve fails the pass closed");
+    CHECK(b.baked.empty(), "the baker is never called with an empty hash");
+    CHECK(f.roots.empty(), "no re-flatten -> last-good world kept");
+    CHECK(r.errors.size() == 1 &&
+              r.errors[0].cause == LiveEditError::Cause::ResolveFailed &&
+              r.errors[0].part == "leaf",
+          "the error names ResolveFailed and the part that would not resolve");
+    CHECK(s.errs.size() == 1, "the error reaches the sink exactly once");
+}
+
 int main() {
     std::printf("=== dev_live_edit_tests ===\n");
     test_fake_watcher_roundtrip();
@@ -360,6 +390,7 @@ int main() {
     test_shared_module_fanout_rebake();
     test_fail_closed_then_retry();
     test_budget_abort_fail_closed();
+    test_resolve_failure_stops_before_the_baker();
 #ifdef __linux__
     test_real_inotify_temp_dir();
     test_e2e_real_watch_to_rebuild();

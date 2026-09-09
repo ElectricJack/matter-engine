@@ -54,6 +54,7 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "terrain_field.h"   // kMaxSurfaceMaterials (the source of truth)
 #include "vt_types.h"
 
 namespace vt {
@@ -84,6 +85,24 @@ struct VtCompositorMaterial {
     int detail_slot = -1;                          // -1 = no detail tileset
 };
 
+// The tier-1 page filler itself. Behind its pimpl it owns every Vulkan object
+// the two compute passes need: both pipelines and their layouts, the
+// descriptor pool and sampler, the neutral dummy tileset image, the global
+// material/params buffers, the shared tape-op arena, the ring of per-batch
+// transient resources, and the cache of per-(variant, rung) chart/triangle
+// buffers.
+//
+// Lifetime: instances come only from create() — the constructor is private
+// and the type is neither copyable nor assignable. Everything it owns is
+// destroyed in ~VtCompositor, and nothing internally tracks GPU completion,
+// so the device must be idle with respect to work this compositor recorded
+// before the destructor runs. The VkDevice/VkPhysicalDevice handles passed to
+// create() are BORROWED and must outlive the compositor.
+//
+// Threading: there is no locking anywhere in the implementation. Treat an
+// instance as owned by the single thread that records fill() into command
+// buffers, and make every other call (set_tilesets / set_materials /
+// set_weight_mode / invalidate_part / stats) from that same thread.
 class VtCompositor final : public VtPageFiller {
   public:
     // 128 payload + 4 border on each side.
@@ -117,23 +136,38 @@ class VtCompositor final : public VtPageFiller {
         kSurfaceTape = 2,        // WP-F: per-vertex tape weights (auto-selected)
         kSurfaceTapeGpu = 3,     // P2: per-texel GPU tape (auto-selected)
     };
-    // Per-vertex tape weights packed into the GPU triangle stream, 8 u8
-    // columns per vertex — must equal terrain_field::kMaxSurfaceMaterials.
-    static constexpr uint32_t kMaxSurfaceMaterials = 8;
+    // Per-vertex tape weights packed into the GPU triangle stream, one u8
+    // column per material. DERIVED from terrain_field's constant rather than
+    // restated: the two silently disagreeing mis-decodes every tape weight.
+    static constexpr uint32_t kMaxSurfaceMaterials =
+        static_cast<uint32_t>(terrain_field::kMaxSurfaceMaterials);
 
     // pipeline_cache may be VK_NULL_HANDLE. Fail-closed: nullptr + err.
     static std::unique_ptr<VtCompositor> create(VkDevice device,
                                                 VkPhysicalDevice physical_device,
                                                 VkPipelineCache pipeline_cache,
                                                 std::string& err);
+    // Destroys every Vulkan object the compositor owns. Nothing here waits on
+    // a fence, so the device must already be idle with respect to fills this
+    // compositor recorded.
     ~VtCompositor() override;
     VtCompositor(const VtCompositor&) = delete;
     VtCompositor& operator=(const VtCompositor&) = delete;
 
     // slots beyond `count` (up to kMaxDetailSlots) unbind to the dummy.
+    // Also republishes the params UBO (each slot's tile_size_m and
+    // texels_per_meter, clamped to >= 1e-4) and rewrites binding 4 of EVERY
+    // ring's descriptor set in place — hence the "device idle w.r.t. prior
+    // fills" rule in the caller contract above. The image views are borrowed
+    // and must stay alive until they are replaced. Returns false (with `err`
+    // set) only when `count` exceeds kMaxDetailSlots.
     bool set_tilesets(const VtTilesetSlotViews* slots, uint32_t count,
                       std::string& err);
     // materials beyond `count` (up to kMaxMaterials) reset to defaults.
+    // Rewrites the whole host-visible material table (all kMaxMaterials rows)
+    // through its persistent mapping, so it carries the same idle requirement
+    // as set_tilesets. A detail_slot outside [0, kMaxDetailSlots) is stored as
+    // -1, i.e. "no detail tileset, use the scalar albedo/ORM fallback".
     void set_materials(const VtCompositorMaterial* materials, uint32_t count);
     // Test hook feeding the shader's weight seam (see WeightMode).
     void set_weight_mode(WeightMode mode, uint32_t debug_mat_a = 0,
@@ -142,14 +176,44 @@ class VtCompositor final : public VtPageFiller {
                          float debug_blend_width_m = 1.0f);
 
     // Drop the cached GPU chart/mesh buffers for a variant (all rungs). Call
-    // on part unload / content-key change. Device must be idle w.r.t. fills.
+    // on part unload / content-key change.
+    //
+    // The device does NOT have to be idle, and that is the point. Nothing is
+    // destroyed in place: matching entries are moved to the retire list of the
+    // most recent batch's ring and freed only when that ring comes round
+    // again, which buys the same kMaxBatchesInFlight window the one-shot mesh
+    // entries use. So the call is safe with earlier frames' command buffers
+    // still executing, and it is used that way — from drain_vt_invalidations()
+    // inside vt_begin_frame(), on the render thread. Freeing in place is what
+    // produced VUID-vkFreeDescriptorSets-pDescriptorSets-00309 and
+    // VK_ERROR_DEVICE_LOST; see the long comment on
+    // VtCompositor::invalidate_part in vt_compositor.cpp.
     void invalidate_part(uint64_t variant_hash);
 
     // VtPageFiller. Requests with a null atlas/part_context or an
     // out-of-range destination are skipped (fail-closed, counted in stats).
+    //
+    // Records only — no submit, no wait, no fence. Each call takes the next
+    // slot of the internal kMaxBatchesInFlight ring and, in taking it,
+    // destroys the resources retired the last time that slot was used. That
+    // is what turns the "submit in record order, at most kMaxBatchesInFlight
+    // unretired" contract above into a correctness requirement rather than a
+    // suggestion.
+    //
+    // At most 256 requests are recorded per call; requests past that, and
+    // pages whose candidate list would overrun the internal candidate buffer,
+    // are skipped and counted in Stats::requests_skipped like every other
+    // fail-closed path. A recorded request gets VtFillRequest::mark_filled()
+    // called on it while the copies are recorded; a skipped one does not, and
+    // the residency layer uses that flag to decide whether to map the page's
+    // indirection entry — an unmapped entry beats one pointing at
+    // never-written pool memory, which decodes to black.
     void fill(VkCommandBuffer cmd, const VtFillRequest* batch,
               size_t count) override;
 
+    // Monotonic lifetime counters; nothing resets them. They are incremented
+    // while fill() RECORDS, so pages_filled counts pages whose copies were
+    // recorded, not pages the GPU has finished writing.
     struct Stats {
         uint64_t pages_filled = 0;
         uint64_t requests_skipped = 0;

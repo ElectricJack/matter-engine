@@ -194,6 +194,29 @@ static void test_dispatch_ticket_then_and_wait() {
 }
 
 // ===========================================================================
+// A default-constructed (or moved-from) ticket has no state. Every observer
+// on it must answer "nothing to see" rather than dereference null — wait()
+// and then() used to be the two that did not check.
+// ===========================================================================
+static void test_invalid_ticket_is_inert() {
+    printf("[test_invalid_ticket_is_inert]\n");
+    matter::evt::CommandTicket<CreateEntity::Result> t;
+    CHECK(!t.valid(), "a default-constructed ticket is invalid");
+    CHECK(t.id() == 0, "an invalid ticket carries no id");
+    CHECK(!t.ready(), "an invalid ticket is never ready");
+    CHECK(t.status() == CommandStatus::Pending, "an invalid ticket reports Pending");
+
+    CreateEntity::Result r = t.wait();
+    CHECK(!r.value.has_value(),
+          "wait() on an invalid ticket returns a default result, not a crash");
+
+    bool ran = false;
+    t.then(lane::app, [&](const CreateEntity::Result&) { ran = true; });
+    CHECK(!ran, "then() on an invalid ticket drops the callback, not a crash");
+    printf("ok invalid_ticket_is_inert\n");
+}
+
+// ===========================================================================
 // 3. all-build duplicate-handler rejection (RELEASE path).
 // ===========================================================================
 static void test_duplicate_handler_all_build() {
@@ -472,6 +495,38 @@ static void test_history_sink_inverse_coalesce() {
 }
 
 // ===========================================================================
+// Runtime diagnostics must observe the live registry, not command-name strings
+// that merely happen to be linked into the executable.  The snapshot is sorted
+// for deterministic machine-readable output and drops registrations after the
+// RAII handle is released.
+// ===========================================================================
+static void test_registered_handler_name_snapshot_tracks_live_registry() {
+    printf("[test_registered_handler_name_snapshot_tracks_live_registry]\n");
+    Hub hub;
+    CommandRegistry reg(hub);
+
+    Registration create = reg.must_register_handler<CreateEntity>(
+        CommandScope::App, lane::app, [](const CreateEntity&) {
+            return CreateEntity::Result::succeeded(CreateReceipt{1});
+        });
+    Registration remove = reg.must_register_handler<DeleteEntity>(
+        CommandScope::App, lane::app, [](const DeleteEntity&) {
+            return DeleteEntity::Result::succeeded(1);
+        });
+
+    const std::vector<std::string> both = reg.registered_handler_names();
+    CHECK(both == std::vector<std::string>({"test.create_entity",
+                                            "test.delete_entity"}),
+          "registered handler snapshot is sorted and contains live handlers");
+
+    create.reset();
+    const std::vector<std::string> after_release =
+        reg.registered_handler_names();
+    CHECK(after_release == std::vector<std::string>({"test.delete_entity"}),
+          "registered handler snapshot excludes released registrations");
+}
+
+// ===========================================================================
 // 8. Concurrency smoke: many threads dispatch while one worker pumps; every
 //    ticket completes exactly once (Success), none left pending.
 // ===========================================================================
@@ -542,11 +597,13 @@ static void test_concurrent_dispatch() {
 int main() {
     test_execute_typed_result();
     test_dispatch_ticket_then_and_wait();
+    test_invalid_ticket_is_inert();
     test_duplicate_handler_all_build();
     test_scope_epochs_stale();
     test_ticket_exactly_once_all_outcomes();
     test_hub_notifications();
     test_history_sink_inverse_coalesce();
+    test_registered_handler_name_snapshot_tracks_live_registry();
     test_concurrent_dispatch();
 
     if (g_failures == 0) {

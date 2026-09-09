@@ -1,3 +1,28 @@
+// MatterEditor/src/animation_panel_model.cpp
+//
+// Implementation of AnimationPanelModel (animation_panel_model.h): turns the
+// engine's animation debug snapshots into the flat row vectors the Part
+// Workbench animation tabs render. No ImGui, no engine mutation, no I/O -- which
+// is what lets MatterEditor/tests/test_animation_panel_model.cpp cover it
+// headlessly.
+//
+// The three behaviours worth knowing, all in update():
+//
+//   - A failed query (`query_ok == false`) clears the rows and sets a status
+//     DISTINCT from "nothing is animated", so an engine failure cannot be
+//     mistaken for an idle scene.
+//   - Validation is all-or-nothing per snapshot. One bad index or non-finite
+//     value rejects the whole snapshot and bumps `rejected_`; nothing partially
+//     trusted ever reaches a draw, because the drawing code indexes several of
+//     these arrays unchecked.
+//   - Selection is restored by the asset's resolved hash rather than by index,
+//     so a refresh -- or a reload that removes an earlier animator -- keeps the
+//     same rig selected. Falls back to index 0 when that hash is gone.
+//
+// rebuild_rows() is the only writer of the row vectors and runs on every
+// update() and every accepted select_instance(); it invalidates every reference
+// the accessors previously handed out.
+
 #include "animation_panel_model.h"
 
 #include <algorithm>
@@ -70,6 +95,8 @@ void AnimationPanelModel::select_instance(std::size_t index) {
     rebuild_rows();
 }
 
+// 0 means "nothing selected". update() also treats 0 as "no previous selection
+// to restore", so the two uses of the sentinel agree.
 uint64_t AnimationPanelModel::selected_resolved_hash() const {
     if (selected_ >= instances_.size()) return 0;
     return instances_[selected_].asset.resolved_hash;
@@ -80,6 +107,8 @@ bool AnimationPanelModel::selected_visible() const {
     return instances_[selected_].visible;
 }
 
+// A default-constructed (invalid) handle when nothing is selected. Anything on
+// the write path must check valid() -- a default handle names no animator.
 matter::AnimatorInstanceHandle AnimationPanelModel::selected_animator() const {
     if (selected_ >= instances_.size()) return {};
     return instances_[selected_].pose.instance;

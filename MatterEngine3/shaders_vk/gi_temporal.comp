@@ -26,6 +26,7 @@ layout(r32ui, set = 0, binding = 17) uniform writeonly uimage2D outRejection;
 layout(set = 0, binding = 18) uniform sampler2D rawAux;
 layout(set = 0, binding = 19) uniform sampler2D previousAux;
 layout(rg16f, set = 0, binding = 20) uniform writeonly image2D outAux;
+layout(set = 0, binding = 21) uniform sampler2D reactivityTex;
 
 layout(push_constant) uniform TemporalConstants {
     uvec2 temporalExtent;
@@ -76,6 +77,8 @@ void main() {
     float depth = texelFetch(depthTex, sourcePixel, 0).r;
     vec3 normal = normalize(texelFetch(normalTex, sourcePixel, 0).xyz);
     uvec2 identity = texelFetch(identityTex, sourcePixel, 0).rg;
+    float reactivity = clamp(texelFetch(reactivityTex, sourcePixel, 0).r,
+                             0.0, 1.0);
     vec2 velocity = texelFetch(velocityTex, sourcePixel, 0).xy *
                     vec2(pc.temporalExtent) / vec2(pc.gbufferExtent);
     ivec2 previousPixel = ivec2(round(vec2(pixel) - velocity));
@@ -143,9 +146,12 @@ void main() {
         vec2 oldMoments = texelFetch(previousMoments, previousPixel, 0).rg;
         uint maxHistory = pc.signalMode == 0u ? 32u :
             uint(round(mix(4.0, 16.0, clamp(aux.y, 0.0, 1.0))));
+        maxHistory = max(1u, uint(round(mix(float(maxHistory), 2.0,
+                                           reactivity))));
         historyLength = min(maxHistory,
             texelFetch(previousHistory, previousPixel, 0).r + 1u);
-        float alpha = max(1.0 / float(historyLength), 0.05);
+        float alpha = mix(max(1.0 / float(historyLength), 0.05), 1.0,
+                          reactivity);
         accumulated = mix(oldRadiance, raw, alpha);
         firstMoment = mix(oldMoments.x, firstMoment, alpha);
         secondMoment = mix(oldMoments.y, secondMoment, alpha);

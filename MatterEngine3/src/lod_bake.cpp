@@ -1,3 +1,32 @@
+// MatterEngine3/src/lod_bake.cpp
+//
+// Implementation of the LOD ladder bake declared in lod_bake.h -- read that
+// header first for the two ladders' contracts and their optional outputs.
+//
+// Per rung, both ladders run the same four steps in this order:
+//   1. DECIMATE. QEM edge collapse through MatterSurfaceLib's MeshIndexed
+//      pipeline, always with lock_boundary=true so an open mesh's rim polyline
+//      is bitwise identical at every rung (this is what keeps neighbouring
+//      terrain sectors watertight at any LOD pairing).
+//   2. REPROJECT TriEx. Always from the FULL-RES source, never from a coarser
+//      rung, so material/tint/UV/normal error cannot compound down the ladder.
+//      The ReprojectSource index is built once per call and reused, because
+//      building it per rung is what once made a sector's ladder cost seconds.
+//   3. CHART (optional). chart_rung_unified is the single funnel through which
+//      every ladder charts a rung -- build the first rung's parameterisation,
+//      adopt it for the coarser ones when MATTER_VT_UNIFY is on.
+//   4. REGISTER the geometry as a BLAS and record the level.
+//
+// Threading. Both entry points are called concurrently from streaming workers.
+// They own no shared mutable state except the ladder_census counters, which
+// are relaxed atomics; the cascade kill-switch is a function-local static
+// (initialized once, thread-safely) rather than a per-rung getenv precisely
+// because getenv races a concurrent setenv.
+//
+// Determinism. Chart segmentation, the counting sorts and the
+// nearest-base-triangle search all break ties on the lower index, so two cold
+// bakes of the same mesh produce the same tables and UVs.
+//
 #include <memory>
 #include <cstdlib>
 #include <cstdio>
@@ -112,14 +141,12 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 
 // ---- Chart-space virtual texturing (WP-A) ----------------------------------
 //
-// Charts a single rung mesh: normal-cone segmentation (MeshChartingLib),
-// per-chart planar projection at `texels_per_meter`, page-aligned shelf pack
-// (kVtPagePayload grid, kChartGutterTexels gutters, clamped to kVtMaxAtlasDim
-// by halving the density), then atlas UVs written into triex.uv0/1/2
-// normalized [0,1] over the atlas. Purely a TriEx.uv rewrite — positions,
-// normals, materials, tint, AO are untouched, and downstream vertex welding
-// (indexed_part_geometry keys on the UV) performs the vertex split between
-// charts automatically.
+// Three functions in source order: the MATTER_VT_UNIFY switch, the
+// chart_rung_unified funnel every ladder charts through, and the two things it
+// picks between — apply_chart_rung (adopt a base rung's parameterisation) and
+// build_chart_rung (segment and pack a fresh one). Each carries its own
+// contract; read build_chart_rung's for what a chart table actually is.
+
 bool unify_parameterisation_enabled() {
     // Read per call, NOT cached in a static — the same choice impostors_
     // enabled() makes in part_flatten, and for the same reason: a static
@@ -192,8 +219,30 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     return true;
 }
 
-// M6: adopt rep 0's chart table for a coarser rung. See the header for why
-// this needs no texel transfer — the parameterisation is analytic.
+// M6: adopt rep 0's chart table for a coarser rung, so every rung of a ladder
+// shares one parameterisation (same charts, same atlas, same plane bases) and
+// the VT resolve can sample any rung through the same UV space. No texels are
+// transferred — the parameterisation is analytic (see the header): a chart's
+// UV is a plane projection through ChartEntry's tangent/bitangent/origin, so
+// adopting is a matter of deciding WHICH chart each coarse triangle belongs
+// to, then evaluating the same projection.
+//
+// Four stages, in source order:
+//   1. Recover rep 0's per-triangle chart id by inverting the counting sort
+//      build_chart_rung wrote into first_tri/tri_count/tri_order (the table
+//      stays the single authority; no parallel array is plumbed through).
+//   2. Hash rep 0's triangle centroids into a uniform grid (~1 tri/cell).
+//   3. Classify each coarse triangle by its nearest base centroid (ring
+//      search over the grid, ties to the lower index so two cold bakes
+//      agree) and inherit that triangle's chart id.
+//   4. Copy the base's charts/atlas verbatim, rebuild this rung's own
+//      tri_order + per-chart ranges by counting sort, and write chart UVs
+//      into triex — arithmetically identical to build_chart_rung's write.
+//
+// Returns false with `out` empty when the base table is inconsistent with
+// base_tris (ranges out of bounds, unassigned triangles) or any lookup finds
+// no base triangle within the 64-ring search; the caller then falls back to
+// charting the rung from scratch. Only triex's UVs are written.
 bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       const std::vector<Tri>& base_tris,
                       const chart_atlas::ChartAtlasRung& base,
@@ -359,6 +408,16 @@ bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     return true;
 }
 
+// Builds a rung's chart atlas from scratch: normal-cone segmentation
+// (MeshChartingLib) -> per-chart plane basis and planar extents -> page-
+// aligned shelf pack, halving the density until it fits kVtMaxAtlasDim (floor
+// 1/64 texel per metre) -> chart-grouped tri_order -> chart UVs written into
+// triex.uv0/1/2, normalized [0,1] over the atlas.
+//
+// Only the UVs of `triex` are written; positions, normals, materials, tint and
+// AO are untouched, and the downstream indexed weld (which keys on the UV)
+// performs the vertex split between charts on its own. Returns false with
+// `out` empty and `triex` unmodified for a mesh it cannot chart.
 bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       float texels_per_meter, float cone_deg,
                       chart_atlas::ChartAtlasRung& out) {
@@ -496,6 +555,28 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     return true;
 }
 
+// The selection threshold for rung `lvl`. BakeTargets/TerrainBakeTargets both
+// document `threshold` as being the same length as the ratio vector that drives
+// the ladder loop, and every caller in the tree uses the defaults, which are.
+// A caller that gets it wrong used to read past the end of the vector; reuse
+// the coarsest declared threshold instead. (An entirely empty threshold vector
+// yields 0.0f, which lod_select reads as "eligible at any projected size" —
+// the finest-rung clamp already makes that the practical outcome.)
+static float rung_threshold(const std::vector<float>& threshold, size_t lvl) {
+    if (threshold.empty()) return 0.0f;
+    return threshold[lvl < threshold.size() ? lvl : threshold.size() - 1];
+}
+
+// The prop/authored-part ladder. One iteration per entry in
+// targets.keep_ratio, pushing exactly one LodLevel (and one handle, and one
+// chart table when asked) per rung, so the outputs stay parallel and
+// equal-length. Rung 0 with keep_ratio >= 0.999 registers the caller's own
+// triangles with no copy and no decimation.
+//
+// The linear scan that turns the returned BLASHandle back into an absolute
+// index is O(entries) per rung and exists only because register_triangles may
+// DEDUPLICATE and hand back an existing handle -- pre-recording entries.size()
+// would be off by N in that case.
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BLASManager& blas, const std::vector<TriEx>* triex,
                     BakeObserver* observer,
@@ -653,7 +734,7 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                 t_decimate, t_reproject, t_register, t_indexscan);
         }
         LodLevel L;
-        L.screen_size_threshold = targets.threshold[lvl];
+        L.screen_size_threshold = rung_threshold(targets.threshold, lvl);
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
         if (out_charts) out_charts->push_back(std::move(rung_charts));
@@ -710,6 +791,10 @@ uint64_t split_us(std::chrono::steady_clock::time_point& mark) {
 }
 }  // namespace
 
+// A snapshot of the process-wide counters. The fields are loaded independently
+// with relaxed ordering, so the result is an aggregate rather than a coherent
+// instant; it is monotonic, so a reader that wants "cost since last frame"
+// takes the difference of two calls.
 LadderCensus ladder_census() {
     LadderCensus c;
     for (size_t i = 0; i < kMaxCensusRungs; ++i) {
@@ -989,7 +1074,7 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                 cascaded ? " cascaded" : "");
         }
         LodLevel L;
-        L.screen_size_threshold = targets.threshold[lvl];
+        L.screen_size_threshold = rung_threshold(targets.threshold, lvl);
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
         if (out_charts) out_charts->push_back(std::move(rung_charts));

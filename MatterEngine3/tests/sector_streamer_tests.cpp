@@ -1,6 +1,7 @@
 // MatterEngine3/tests/sector_streamer_tests.cpp
 #include "check.h"
 #include "../src/sector_streamer.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1618,6 +1619,125 @@ int main() {
                                {1024.0f, 2}, {2048.0f, 1}, {4096.0f, 0} };
         base.y_min = -1024.0f;
         base.y_max = 1024.0f;
+
+        // A cold streamed world can still contain a local merge: the nearest
+        // fine tile may publish first, then remain drawn while the balanced
+        // desired map asks for its level-2 replacement.  A farther cold
+        // level-3 tile touching that transition must not be dispatched until
+        // the level-2 bridge is resident.  Otherwise completion order alone
+        // briefly draws a 3<->1 face even though the settled desired map is
+        // perfectly 2:1 balanced.  RiverHydrology exposed exactly this with
+        // one request in flight, so keep the fixture at its authored bands,
+        // extent, and camera rather than using the broad defaults below.
+        {
+            Config c;
+            c.sector_size = 64.0f;
+            c.terrain_lod_enabled = true;
+            c.terrain_bands = {{96.0f, 5}, {192.0f, 4},
+                               {384.0f, 3}, {640.0f, 2}};
+            c.nested_sectors = true;
+            c.volumetric_sectors = true;
+            c.y_min = -32.0f;
+            c.y_max = 112.0f;
+            c.max_inflight = 12;
+            SectorStreamer river(c);
+
+            using Tile = std::tuple<int, long long, long long, long long>;
+            std::map<Tile, int> resident;
+            auto live_gap_count = [&]() {
+                struct Cube {
+                    int level;
+                    long long x0, y0, z0, x1, y1, z1;
+                };
+                std::vector<Cube> all;
+                for (const auto& [tile, rung] : resident) {
+                    const auto [level, tx, ty, tz] = tile;
+                    const long long size = 1ll << level;
+                    all.push_back({level, tx * size, ty * size, tz * size,
+                                  (tx + 1) * size, (ty + 1) * size,
+                                  (tz + 1) * size});
+                }
+                std::vector<Cube> drawn;
+                for (size_t i = 0; i < all.size(); ++i) {
+                    bool covered = false;
+                    for (size_t j = 0; j < all.size(); ++j) {
+                        if (all[j].level <= all[i].level) continue;
+                        if (all[j].x0 <= all[i].x0 && all[j].x1 >= all[i].x1 &&
+                            all[j].y0 <= all[i].y0 && all[j].y1 >= all[i].y1 &&
+                            all[j].z0 <= all[i].z0 && all[j].z1 >= all[i].z1) {
+                            covered = true;
+                            break;
+                        }
+                    }
+                    if (!covered) drawn.push_back(all[i]);
+                }
+                long long gaps = 0;
+                const auto overlap = [](long long a0, long long a1,
+                                        long long b0, long long b1) {
+                    return std::max(a0, b0) < std::min(a1, b1);
+                };
+                for (size_t i = 0; i < drawn.size(); ++i)
+                    for (size_t j = i + 1; j < drawn.size(); ++j) {
+                        const Cube& a = drawn[i];
+                        const Cube& b = drawn[j];
+                        const bool face =
+                            ((a.x1 == b.x0 || b.x1 == a.x0) &&
+                             overlap(a.y0, a.y1, b.y0, b.y1) &&
+                             overlap(a.z0, a.z1, b.z0, b.z1)) ||
+                            ((a.y1 == b.y0 || b.y1 == a.y0) &&
+                             overlap(a.x0, a.x1, b.x0, b.x1) &&
+                             overlap(a.z0, a.z1, b.z0, b.z1)) ||
+                            ((a.z1 == b.z0 || b.z1 == a.z0) &&
+                             overlap(a.x0, a.x1, b.x0, b.x1) &&
+                             overlap(a.y0, a.y1, b.y0, b.y1));
+                        if (face && std::abs(a.level - b.level) >= 2) ++gaps;
+                    }
+                return gaps;
+            };
+
+            long long gap_samples = 0;
+            int quiet = 0;
+            for (int tick = 0; tick < 2000 && quiet < 12; ++tick) {
+                river.update(10.0f, 86.0f, 76.0f);
+                std::vector<SectorRequest> batch;
+                SectorRequest q;
+                while (batch.size() < 12 && river.next_request(q))
+                    batch.push_back(q);
+                std::sort(batch.begin(), batch.end(),
+                          [](const SectorRequest& a, const SectorRequest& b) {
+                              return variant_level(a.rung) >
+                                     variant_level(b.rung);
+                          });
+                if (!batch.empty()) {
+                    quiet = 0;
+                    for (const SectorRequest& done : batch) {
+                        if (river.on_published(done.tx, done.ty, done.tz,
+                                               done.rung)) {
+                            resident[{variant_level(done.rung), done.tx,
+                                      done.ty, done.tz}] = done.rung;
+                        }
+                        gap_samples += live_gap_count();
+                    }
+                } else {
+                    ++quiet;
+                }
+                for (const Eviction& e : river.take_evictions()) {
+                    const Tile tile{variant_level(e.rung), e.tx, e.ty, e.tz};
+                    const auto it = resident.find(tile);
+                    if (it != resident.end() && it->second == e.rung)
+                        resident.erase(it);
+                }
+            }
+            printf("  RiverHydrology cold/merge: %zu resident, %lld "
+                   "drawn multi-level face samples\n",
+                   resident.size(), gap_samples);
+            CHECK(!resident.empty() && quiet >= 12,
+                  "RiverHydrology cold/merge fixture reaches a quiescent, "
+                  "non-empty resident set");
+            CHECK(gap_samples == 0,
+                  "RiverHydrology cold/merge scheduling never draws a face "
+                  "whose resident levels differ by two or more");
+        }
 
         // Drive one settle and return the full desired set as (level,tx,ty,tz).
         auto settle = [](Config cfg, float ax, float ay, float az) {

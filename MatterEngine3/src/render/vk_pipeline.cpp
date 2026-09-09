@@ -1,3 +1,25 @@
+// MatterEngine3/src/render/vk_pipeline.cpp
+//
+// Implementation of the one-shot compute-pipeline helper declared in
+// vk_pipeline.h. Three things worth knowing before editing:
+//
+//   OWNERSHIP. The Vulkan objects live in detail::VkComputePipelineAllocation,
+//   a DeviceLifetimeControl (vk_device_internal.h). VkComputePipelineResource
+//   holds the same handles for convenience but destroys them itself ONLY when
+//   there is no allocation yet — the failure paths inside
+//   create_compute_pipeline(), which return before the allocation is built.
+//
+//   SUBMISSION. dispatch_compute() goes through submit_immediate() with
+//   ImmediateSubmitPhase::compute_dispatch: a private command buffer, a
+//   submit, and a blocking wait, entirely outside the frame loop. The
+//   keep-alive list it passes is what protects the pipeline and its buffers if
+//   the device cannot prove that submission finished.
+//
+//   BARRIERS. record_dispatch() ends with a deliberately conservative pair of
+//   memory barriers (shader-write -> all-commands, and shader-write -> host
+//   read), so a caller can immediately either read the result back on the host
+//   or use it in any later stage without adding its own synchronization.
+
 #include "vk_pipeline.h"
 
 #include <algorithm>
@@ -14,6 +36,13 @@
 namespace matter {
 namespace detail {
 
+// The device-registered owner of a compute pipeline's Vulkan objects. Its
+// release runs either from its own destructor (the resource was dropped) or
+// from the device's teardown walk (the device went first), so
+// release_device_objects() nulls every handle and is safe to run twice; and it
+// destroys nothing at all when live_device() reports VK_NULL_HANDLE, which is
+// how an intentionally leaked device avoids being touched. The descriptor SET
+// is not destroyed here — it dies with its pool.
 struct VkComputePipelineAllocation final : DeviceLifetimeControl {
     explicit VkComputePipelineAllocation(
         std::shared_ptr<DeviceAccessToken> device_access)
@@ -60,6 +89,13 @@ struct DispatchRecord {
     uint32_t z;
 };
 
+// submit_immediate() recording callback: bind the pipeline (and its descriptor
+// set, if the shader has one), dispatch, then insert two memory barriers that
+// make every shader write visible to all later commands AND to a host read.
+// That is heavier than most dispatches need — it exists so callers of
+// dispatch_compute() never have to reason about synchronization at all.
+// `user_data` is the DispatchRecord below, borrowed for the duration of the
+// call only.
 void record_dispatch(VkCommandBuffer command_buffer, void* user_data) {
     const auto& dispatch = *static_cast<const DispatchRecord*>(user_data);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -89,6 +125,11 @@ void record_dispatch(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdPipelineBarrier2(command_buffer, &dependency);
 }
 
+// The std430 storage-buffer layout the transform_probe.comp shader reads and
+// writes: a packed mat4, the input vector, and the vector the shader produces.
+// The static_asserts below pin every offset — if one of them fires, the CPU
+// struct and the GLSL block have drifted and the probe would be comparing
+// garbage rather than proving the packing.
 struct alignas(16) TransformProbeData {
     viewer::GpuMat4 matrix;
     matter::Float4 input;
@@ -128,6 +169,12 @@ VkComputePipelineResource& VkComputePipelineResource::operator=(
     return *this;
 }
 
+// Releases whatever this resource owns and returns it to the empty state.
+// Prefers dropping the `lifetime` allocation (which does the destroying, and
+// correctly does nothing when the device is already gone); the direct
+// vkDestroy* branch is only reached by a half-built resource from a failed
+// create_compute_pipeline(). Called by the destructor and by move-assignment,
+// so it must stay safe on an already-empty resource.
 void VkComputePipelineResource::reset() {
     if (lifetime) {
         lifetime.reset();
@@ -150,6 +197,13 @@ void VkComputePipelineResource::reset() {
     referenced_buffers.clear();
 }
 
+// Builds everything into a local `candidate` and only moves it into `output`
+// once every step has succeeded — so an early error return destroys the
+// partial pipeline through candidate's destructor and leaves the caller's
+// object untouched. The descriptor pool is sized by summing descriptorCount
+// per descriptor type across `bindings`, with maxSets = 1: exactly one set is
+// ever allocated from it. The shader module is transient and destroyed as soon
+// as the pipeline is created.
 bool create_compute_pipeline(
     VulkanDevice& vulkan, std::string_view embedded_spirv_name,
     const std::vector<VkDescriptorSetLayoutBinding>& bindings,
@@ -279,6 +333,11 @@ void write_storage_buffer_descriptor(VkComputePipelineResource& pipeline,
     }
 }
 
+// Blocking one-shot dispatch. The dependency list handed to submit_immediate()
+// is the pipeline's own allocation plus every distinct buffer allocation bound
+// into its descriptor set, deduplicated — those are exactly the objects the
+// GPU may still be reading if completion turns out to be unprovable, in which
+// case the device retains them rather than freeing them underneath it.
 bool dispatch_compute(VulkanDevice& vulkan,
                       VkComputePipelineResource& pipeline,
                       uint32_t group_count_x, uint32_t group_count_y,

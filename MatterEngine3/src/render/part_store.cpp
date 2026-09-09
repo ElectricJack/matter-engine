@@ -1,3 +1,39 @@
+// MatterEngine3/src/render/part_store.cpp
+//
+// Implementation of PartStore (part_store.h). FOUR load paths land in this
+// file, and knowing which one ran explains most questions about a part's
+// contents:
+//
+//   1. get_or_load() -> load_flat(): a bake-time flattened `<hash>.flat.part`
+//      (v3 clustered, or legacy v2). Uses the artifact's stored per-cluster
+//      ladders directly, resolves the terminal impostor rung against its
+//      `.fimp` sidecar, and leaves `children` empty. The collapsed path that
+//      authored props take.
+//   2. get_or_load() -> read_coherent_snapshot() -> the partitioned-animation
+//      branch: an ANLK-linked artifact whose skin and rigid streams stay
+//      separate. It registers straight into the shared manager, so it is NOT
+//      stageable off-thread.
+//   3. get_or_load() -> stage_from_snapshot() -> commit_staged(): the ordinary
+//      compositional part, ladder re-baked from LOD0.
+//   4. stage_load() / stage_from_bake() on a streaming worker, then
+//      commit_staged() on the owning thread. The same stage_from_snapshot body
+//      as (3), split so the expensive half runs off the render thread.
+//
+// One rule shapes the code: everything expensive (artifact decode, QEM
+// decimation, TriEx reprojection, BVH build, chart bake, warp solve) runs
+// against a PRIVATE BLASManager, and the only shared-state step is
+// commit_staged()'s bounded adopt-and-insert. The comments through this file
+// record the measurements that forced that split — see
+// docs/sector-bake-time-findings-2026-07-30.md.
+//
+// Diagnostics. This file still reports through printf/fprintf rather than the
+// repo's matter/log.h. Two env vars gate the noisy ones — MATTER_FLAT_GATE_LOG
+// (why a flat artifact was rejected) and MATTER_PARTSTORE_PROFILE (the
+// flat-path timing split) — and the same questions are answerable from the
+// PROFILE_COUNT counters partstore.flat_ok / flat_reject / flat_relinked /
+// flat_no_snapshot and expansion.coldload without per-item stderr, which has
+// measurably distorted this engine's own profiling before.
+
 #include "part_store.h"
 #include "profile.h"
 #include "animation/anim_bundle.h"
@@ -22,6 +58,7 @@
 #include <functional>
 #include <memory>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 #include <sys/stat.h>
 
@@ -49,6 +86,13 @@ static void release_loaded_part_blas(BLASManager& blas, const LoadedPart& lp) {
     }
 }
 
+// Structural precondition for an INDEXED mesh: positive vertex count, a
+// non-empty index list that is a multiple of three, every channel present at
+// its exact per-vertex stride, and every index in range. Used wherever a mesh
+// is about to be sliced or re-triangulated so a malformed stream fails closed
+// instead of reading out of bounds. Note it REQUIRES surface_uvs, material_ids
+// and baked_ao, so a mesh built without them counts as invalid here even
+// though it would draw.
 static bool valid_indexed_mesh(const RasterMeshData& mesh) {
     if (mesh.vertex_count <= 0 || mesh.indices.empty() || mesh.indices.size() % 3 != 0)
         return false;
@@ -62,6 +106,10 @@ static bool valid_indexed_mesh(const RasterMeshData& mesh) {
                        [vertices](uint32_t index) { return index < vertices; });
 }
 
+// Append one source vertex to `out` across every channel. `out.material_ids`
+// grows exactly once per appended vertex, which is what lets
+// slice_rigid_segment_mesh use its size as the running output vertex count.
+// The warp channels are not carried across.
 static void append_indexed_vertex(const RasterMeshData& source, uint32_t old_index,
                                   RasterMeshData& out) {
     const size_t vertex = static_cast<size_t>(old_index);
@@ -79,6 +127,14 @@ static void append_indexed_vertex(const RasterMeshData& source, uint32_t old_ind
     out.baked_ao.push_back(source.baked_ao[vertex]);
 }
 
+// Carve the triangles named by `ranges` out of an indexed source mesh into a
+// new, compacted mesh, remapping indices so `out` holds only the vertices its
+// own triangles reference. Output triangle order follows `ranges` order rather
+// than source order.
+//
+// Fails closed — returns false, leaving `out` partially filled — for an
+// invalid source, an empty or inverted range, a range past the end, or two
+// ranges claiming the same triangle. Callers must discard `out` on false.
 static bool slice_rigid_segment_mesh(
         const RasterMeshData& source,
         const std::vector<matter::animation::BindingGeometryRange>& ranges,
@@ -111,6 +167,11 @@ static bool slice_rigid_segment_mesh(
     return out.vertex_count > 0 && !out.indices.empty();
 }
 
+// Deterministic content identity for one rigid segment carved out of a source
+// part: FNV-1a over a format tag, the source hash, the segment ordinal and the
+// mesh's own geometry signature. Stable across runs and processes, which is
+// what lets build_rigid_segment_subparts memoize a set and detect a repeat.
+// Never returns 0 — that value is reserved as "no part".
 static uint64_t rigid_subpart_hash(uint64_t source_hash, uint32_t segment_ordinal,
                                    const RasterMeshData& mesh) {
     uint64_t hash = 1469598103934665603ull;
@@ -130,7 +191,14 @@ static uint64_t rigid_subpart_hash(uint64_t source_hash, uint32_t segment_ordina
     return hash ? hash : 1ull;
 }
 
+// Half the AABB diagonal of the mesh's own vertices, in part-local metres —
+// the same definition LoadedPart::bound_radius uses everywhere else. An empty
+// mesh returns 0 rather than the NaN the seeded infinities would produce
+// (inf - inf): a zero radius reads as "a point", which every LOD and cull
+// consumer already handles, while a NaN radius poisons every comparison
+// downstream of it and fails no test on the way.
 static float subpart_bound_radius(const RasterMeshData& mesh) {
+    if (mesh.vertex_count <= 0) return 0.0f;
     float minimum[3] = {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()};
     float maximum[3] = {-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
     for (int index = 0; index != mesh.vertex_count; ++index) {
@@ -146,6 +214,12 @@ static float subpart_bound_radius(const RasterMeshData& mesh) {
     return 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+// Convert an indexed mesh back into the parallel Tri / TriEx arrays
+// BLASManager registers. Positions, normals, chart UVs and AO stay per-CORNER,
+// but the two per-triangle attributes are taken from the FIRST corner only:
+// `materialId` from material_ids[a] and `tint` from colors[a] (unpacked 0-255
+// to 0-1). A triangle whose corners disagree therefore inherits corner a's
+// material and tint. `centroid` is filled here because the BVH build needs it.
 static void mesh_to_triangles(const RasterMeshData& mesh, std::vector<Tri>& triangles,
                               std::vector<TriEx>& extras) {
     triangles.reserve(mesh.indices.size() / 3);
@@ -189,21 +263,33 @@ static void mesh_to_triangles(const RasterMeshData& mesh, std::vector<Tri>& tria
 // build_expansion, WorldComposer::compose, and the main.cpp TLAS-sizing walk.
 // ---------------------------------------------------------------------------
 
+using PolicyVisitor =
+    std::function<void(const viewer::LoadedPart*, uint64_t, const float[16],
+                       int, bool)>;
+
 static void walk_rec(uint64_t hash, const float parent_rel[16], int depth,
+                     matter::RayTracingOverride incoming_override,
                      const std::function<const viewer::LoadedPart*(uint64_t)>& getter,
-                     const std::function<void(const viewer::LoadedPart*, uint64_t,
-                                              const float[16], int)>& visitor) {
+                     const PolicyVisitor& visitor) {
     if (depth > 8) return;
     const viewer::LoadedPart* lp = getter(hash);
     if (!lp) return;
-    visitor(lp, hash, parent_rel, depth);
-    for (const auto& c : lp->children) {
+    const bool ray_traced = matter::resolve_ray_traced(
+        incoming_override, lp->render_policy.ray_traced);
+    visitor(lp, hash, parent_rel, depth, ray_traced);
+    for (size_t child_index = 0; child_index != lp->children.size(); ++child_index) {
+        const auto& c = lp->children[child_index];
         matter::Mat4f parent{};
         matter::Mat4f child{};
         std::memcpy(parent.m, parent_rel, sizeof parent.m);
         std::memcpy(child.m, c.transform, sizeof child.m);
         const matter::Mat4f rel = viewer::mat4_mul(parent, child);
-        walk_rec(c.child_resolved_hash, rel.m, depth + 1, getter, visitor);
+        const matter::RayTracingOverride child_override =
+            child_index < lp->render_policy.child_overrides.size()
+                ? lp->render_policy.child_overrides[child_index]
+                : matter::RayTracingOverride::Inherit;
+        walk_rec(c.child_resolved_hash, rel.m, depth + 1, child_override,
+                 getter, visitor);
     }
 }
 
@@ -212,7 +298,10 @@ void walk_part_tree(uint64_t root_hash,
         const std::function<void(const LoadedPart*, uint64_t,
                                  const float[16], int)>& visitor) {
     static const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    walk_rec(root_hash, kIdentity, 0, getter, visitor);
+    walk_rec(root_hash, kIdentity, 0, matter::RayTracingOverride::Inherit,
+             getter,
+             [&](const LoadedPart* lp, uint64_t hash, const float rel[16],
+                 int depth, bool) { visitor(lp, hash, rel, depth); });
 }
 
 // ---------------------------------------------------------------------------
@@ -222,13 +311,18 @@ void walk_part_tree(uint64_t root_hash,
 void build_expansion(uint64_t root_hash,
         const std::function<const LoadedPart*(uint64_t)>& getter,
         std::vector<ExpandedNode>& out) {
-    walk_part_tree(root_hash, getter,
-        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int depth) {
+    static const float kIdentity[16] =
+        {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    walk_rec(root_hash, kIdentity, 0, matter::RayTracingOverride::Inherit,
+        getter,
+        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int depth,
+            bool ray_traced) {
             if (lp->lod_mesh_data.empty()) return;
             ExpandedNode n;
             n.part_hash = hash;
             memcpy(n.rel_transform, rel, sizeof n.rel_transform);
             n.depth = depth;
+            n.ray_traced = ray_traced;
             out.push_back(n);
         });
 }
@@ -237,6 +331,25 @@ void build_expansion(uint64_t root_hash,
 
 PartStore::PartStore(std::string cache_root) : cache_root_(std::move(cache_root)) {}
 
+// Materialize each rigid segment of an already-loaded animated part as an
+// independent, immutable subpart, admitted to loaded_ under its own
+// deterministic hash (rigid_subpart_hash) and returned through `out_hashes`.
+//
+// Two sources, in preference order. An EXACT partition — the artifact carried
+// per-segment LOD streams in rigid_lod_mesh_data with matching thresholds — is
+// registered rung for rung. Otherwise LOD0 of the source is sliced by the
+// binding's authored triangle ranges and a fresh ladder is baked per slice.
+// LOD0 deliberately: the ranges name triangles in the undecimated stream, so
+// slicing a coarser rung would silently re-assign ownership.
+//
+// All-or-nothing. `admitted` plus the rollback lambda undo every insertion and
+// every shared-BLAS registration on any failure, so a false return leaves the
+// store exactly as it was found. The result is memoized per source hash in
+// rigid_subparts_: a repeat call with the same hash set returns the cached set,
+// and a hash colliding with the source or with an already-loaded part is
+// refused outright.
+//
+// Owning-thread only — it registers into the shared blas_ and mutates loaded_.
 bool PartStore::build_rigid_segment_subparts(
         uint64_t source_part_hash, const matter::animation::BindingBake& binding,
         std::vector<uint64_t>& out_hashes) {
@@ -367,11 +480,6 @@ bool PartStore::build_rigid_segment_subparts(
     return true;
 }
 
-std::string PartStore::disk_path(uint64_t part_hash) const {
-    // cache_path_resolved returns the RELATIVE "parts/<hash>.bundle"; prefix cache_root_.
-    return cache_root_ + "/" + part_asset::cache_path_resolved(part_hash);
-}
-
 // Task 2: resolve the actual disk path, checking scratch dir first, then cache.
 static std::string resolve_artifact_path(uint64_t part_hash, const std::string& scratch_dir,
                                          const std::string& cache_root) {
@@ -397,6 +505,83 @@ static std::string select_artifact_root(uint64_t part_hash, const std::string& s
         if (::stat(scratch_path.c_str(), &st) == 0) return scratch_dir;
     }
     return cache_root;
+}
+
+// A flat merges every drawable reached by the canonical part walk into one
+// renderer-facing drawable, so it can carry only one resolved RT eligibility.
+// Prove that value from canonical REP0+RNDR metadata before load_flat touches
+// the shared BLAS. Mixed, malformed, cyclic, or otherwise unprovable trees
+// fail closed to the compositional path, which retains per-node policy.
+static bool resolve_uniform_flat_render_policy(
+        const std::string& artifact_root, uint64_t root_hash,
+        const part_asset::StaticPartSnapshot& root_snapshot,
+        matter::PartRenderPolicy& flat_policy_out) {
+    struct CanonicalPolicyNode {
+        part_asset::StaticPartSnapshot snapshot;
+        matter::PartRenderPolicy policy;
+    };
+    std::unordered_map<uint64_t, std::unique_ptr<CanonicalPolicyNode>> cache;
+    std::unordered_set<uint64_t> active;
+    uint8_t eligibility_mask = 0;
+
+    const auto load_node = [&](uint64_t hash) -> CanonicalPolicyNode* {
+        const auto found = cache.find(hash);
+        if (found != cache.end()) return found->second.get();
+        auto node = std::make_unique<CanonicalPolicyNode>();
+        const std::string path =
+            artifact_root + "/" + part_asset::cache_path_resolved(hash);
+        if (hash == root_hash) {
+            node->snapshot = root_snapshot;
+        } else if (!part_asset::load_static_part_snapshot(
+                       path, hash, node->snapshot)) {
+            return nullptr;
+        }
+        if (!matter::load_part_render_policy(
+                path, hash, node->snapshot.children.size(), node->policy)) {
+            return nullptr;
+        }
+        CanonicalPolicyNode* result = node.get();
+        cache.emplace(hash, std::move(node));
+        return result;
+    };
+
+    std::function<bool(uint64_t, matter::RayTracingOverride, int)> walk;
+    walk = [&](uint64_t hash, matter::RayTracingOverride incoming, int depth) {
+        // Matches FlattenTargets::max_depth and walk_part_tree: nodes through
+        // depth 8 are included; deeper descendants are not in the flat.
+        if (depth > 8) return true;
+        if (!active.insert(hash).second) return false;
+        CanonicalPolicyNode* node = load_node(hash);
+        if (!node) {
+            active.erase(hash);
+            return false;
+        }
+        if (node->snapshot.has_geometry) {
+            const bool resolved = matter::resolve_ray_traced(
+                incoming, node->policy.ray_traced);
+            eligibility_mask |= resolved ? 0x2u : 0x1u;
+            if (eligibility_mask == 0x3u) {
+                active.erase(hash);
+                return false;
+            }
+        }
+        for (size_t index = 0; index != node->snapshot.children.size(); ++index) {
+            if (!walk(node->snapshot.children[index].child_resolved_hash,
+                      node->policy.child_overrides[index], depth + 1)) {
+                active.erase(hash);
+                return false;
+            }
+        }
+        active.erase(hash);
+        return true;
+    };
+
+    if (!walk(root_hash, matter::RayTracingOverride::Inherit, 0) ||
+        eligibility_mask == 0)
+        return false;
+    flat_policy_out = {};
+    flat_policy_out.ray_traced = eligibility_mask == 0x2u;
+    return true;
 }
 
 bool PartStore::has(uint64_t part_hash) const {
@@ -580,7 +765,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         // --- Step 1: Legacy whole-part view for the RT path (WorldComposer/TLAS). ---
         // IMPORTANT: lp.lod_mesh_data[0..max_lods-1] are the whole-part entries (parallel
         // to lp.lod_blas). Per-cluster mesh-data is appended AFTER these entries so that
-        // the RasterComposer's `lp.lod_mesh_data[level]` access remains correct.
+        // the whole-part `lp.lod_mesh_data[level]` access remains correct.
         //
         // Legacy level i = concatenation over clusters of level min(i, cluster.levels-1).
         //   When segmented: over COARSE clusters only (segment==1). That is the merged
@@ -921,12 +1106,17 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
         std::vector<part_asset::ChildInstance> candidate_children;
         part_asset::LodLevels candidate_lods;
         std::vector<part_asset::VolumeEmitter> candidate_emitters;
+        matter::PartRenderPolicy candidate_render_policy;
         std::optional<part_asset::PartAnimationLink> candidate_link;
         if (!part_asset::load_v2(path, part_hash, *candidate_scratch, candidate_tlas,
                                  candidate_children, candidate_lods, candidate_emitters,
                                  candidate_link)) {
             continue;
         }
+        if (!matter::load_part_render_policy(path, part_hash,
+                                             candidate_children.size(),
+                                             candidate_render_policy))
+            continue;
 
         matter::animation::AnimAsset candidate_animation;
         if (candidate_link) {
@@ -952,6 +1142,7 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
         out.children = std::move(candidate_children);
         out.lods_in = std::move(candidate_lods);
         out.emitters = std::move(candidate_emitters);
+        out.render_policy = std::move(candidate_render_policy);
         out.animation_link = candidate_link;
         if (candidate_link) out.loaded_animation = std::move(candidate_animation);
         coherent = true;
@@ -1021,11 +1212,12 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
 
     staged.lp.bound_radius = radius;
     staged.lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
+    staged.lp.render_policy = std::move(snapshot.render_policy);
     staged.lp.animation_asset = animation_asset;
     // Bake the ladder into a PRIVATE manager, then adopt it into the shared one
     // in a single bounded step.
     //
-    // This is the seam for getting the load off the app/GL thread. Everything
+    // This is the seam for getting the load off the app/render thread. Everything
     // above already works on a local `scratch`, so `staging` makes the whole
     // expensive stretch -- decimation, TriEx reprojection, BVH construction --
     // touch no shared state at all. What is left against blas_ is adopt_from:
@@ -1341,6 +1533,7 @@ bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
     out.children = baked.children;
     out.lods_in = baked.lods;
     out.emitters = baked.emitters;
+    out.render_policy = baked.render_policy;
     // No ANLK: BakedGeometry is retained only on the static save path, so the
     // artifact this stands in for carries no animation link either.
     out.animation_link.reset();
@@ -1479,6 +1672,10 @@ bool staged_parts_equal(const PartStore::StagedPart& a,
     if (!bitwise_equal(x.owned_blas, y.owned_blas))     return differ("owned_blas");
     // ChildInstance is padding-free by static_assert, so a flat memcmp is exact.
     if (!bitwise_equal(x.children, y.children))         return differ("children");
+    if (x.render_policy.ray_traced != y.render_policy.ray_traced)
+        return differ("render_policy.ray_traced");
+    if (x.render_policy.child_overrides != y.render_policy.child_overrides)
+        return differ("render_policy.child_overrides");
     if (!bitwise_equal(x.flat_refs, y.flat_refs))       return differ("flat_refs");
     if (x.animation_asset != y.animation_asset)         return differ("animation_asset");
 
@@ -1585,7 +1782,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         const std::string selected_root = select_artifact_root(part_hash, scratch_dir_, cache_root_);
         const std::string canonical_part =
             selected_root + "/" + part_asset::cache_path_resolved(part_hash);
-        uint64_t canonical_fingerprint = 0;
+        part_asset::StaticPartSnapshot canonical_snapshot;
         LoadedPart flat;
         // MATTER_FLAT_GATE_LOG: which admission gate rejects a written flat.
         // Fable's hypothesis is that installed variants are LINKED, so gate #1
@@ -1594,13 +1791,20 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         static const bool flat_gate_log =
             std::getenv("MATTER_FLAT_GATE_LOG") != nullptr;
         const bool snap_ok = part_asset::load_static_part_snapshot(
-            canonical_part, part_hash, canonical_fingerprint);
-        const bool flat_ok = snap_ok && load_flat(part_hash, selected_root, flat);
+            canonical_part, part_hash, canonical_snapshot);
+        matter::PartRenderPolicy flat_render_policy;
+        const bool policy_ok = snap_ok && resolve_uniform_flat_render_policy(
+            selected_root, part_hash, canonical_snapshot, flat_render_policy);
+        bool flat_loaded = false;
+        const bool flat_ok = policy_ok &&
+            (flat_loaded = load_flat(part_hash, selected_root, flat));
+        if (flat_ok) flat.render_policy = std::move(flat_render_policy);
         if (flat_gate_log && !flat_ok)
             MATTER_LOGD("flatgate",
-                         "%016llx REJECT snapshot=%d load_flat=%d\n",
+                         "%016llx REJECT snapshot=%d policy=%d load_flat=%d\n",
                          (unsigned long long)part_hash, snap_ok ? 1 : 0,
-                         snap_ok ? (flat_ok ? 1 : 0) : -1);
+                         snap_ok ? (policy_ok ? 1 : 0) : -1,
+                         policy_ok ? (flat_loaded ? 1 : 0) : -1);
         // Same question as MATTER_FLAT_GATE_LOG, as a counter rather than a
         // console line -- a rejection rate is what matters here, not each
         // individual hash, and per-item stderr has measurably distorted this
@@ -1637,7 +1841,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             const bool fingerprint_stable =
                 part_asset::load_static_part_snapshot(canonical_part, part_hash,
                                                       final_fingerprint) &&
-                final_fingerprint == canonical_fingerprint;
+                final_fingerprint == canonical_snapshot.fingerprint;
             // The SECOND way a flat is abandoned: it loaded fine, but the part
             // was replaced (a newly linked generation) between the two
             // snapshots, so this falls through to the coherent loader too.
@@ -1652,7 +1856,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 loaded_.emplace(part_hash, std::move(flat));
 
                 // MATTER_PARTSTORE_PROFILE: split the flat path. This function
-                // runs inside the stream.publish GpuJob on the app/GL thread,
+                // runs inside the stream.publish GpuJob on the app/render thread,
                 // where it measured 3-6 s per sector while the Vulkan
                 // registration next to it took 0.4 ms -- so the whole streaming
                 // stall lives in here and nothing said which part of it.
@@ -1685,10 +1889,11 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 loaded_[part_hash].expansion = std::move(exp);
                 return &loaded_[part_hash];
             }
-            // The decoded flat was never published. Undo every shared-BLAS
-            // registration before retrying the coherent Part path below.
-            release_loaded_part_blas(blas_, flat);
         }
+        // Track decode independently from every subsequent admission gate. A
+        // decoded flat that is not published must always surrender every
+        // shared-BLAS registration before the coherent fallback starts.
+        if (flat_loaded) release_loaded_part_blas(blas_, flat);
     }
 
     // Read a linked artifact as a bounded coherent snapshot (see
@@ -1750,6 +1955,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
 
         LoadedPart partitioned;
         partitioned.children = std::move(children);
+        partitioned.render_policy = std::move(snapshot_.render_policy);
         partitioned.animation_asset = animation_asset;
         partitioned.rigid_lod_mesh_data.resize(partition.rigid_segments.size());
         partitioned.rigid_lod_thresholds.reserve(level_count);

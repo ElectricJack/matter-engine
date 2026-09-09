@@ -1,5 +1,30 @@
 // terrain_mesher.cpp — naive surface-nets sector mesher.
 // Pure CPU; no JS, no GL.
+//
+// LAYOUT OF THIS FILE, in order:
+//   1. Emission helpers -- `bucket_for`, `push_tri` (into the mesh) and
+//      `band_bucket_for`, `push_band_tri` (into a seam overlap band).
+//   2. THE CANONICAL SHARED CONTOUR: `kCanonicalVoxel`, `contour_tangent_axes`,
+//      `ContourVert`/`Contour`, and `trace_contour`. Opt-in, gated by
+//      `bake_mode::contour_seams()`, Y-tiled path only.
+//   3. `mesh_sector_impl` -- the whole mesher. Density lattice fill, dual
+//      vertex placement, quad emission under the ownership rule, the optional
+//      constrained border, and the boundary-record / overlap-band export.
+//   4. `mesh_sector` / `mesh_sector_tiled` -- thin regime-selecting wrappers.
+//
+// READ THIS FIRST IF YOU ARE ABOUT TO EDIT ARITHMETIC. Adjacent tiles are
+// watertight because both compute a shared lattice coordinate as
+// `origin + (index - 1) * voxel` in double, which is provably exact and
+// therefore bitwise identical from either side. That derivation is written out
+// at `oy` inside `mesh_sector_impl` and everything else here rests on it.
+// Rewriting such an expression -- even into something algebraically equal --
+// can move a coordinate by an ulp, which opens a seam and invalidates every
+// cached tile. The column path's mesh and boundary bytes are pinned in
+// terrain_mesher_tests.cpp precisely so that mistake fails loudly.
+//
+// THREADING. No file-scope mutable state; every buffer is a local of
+// `mesh_sector_impl`. Concurrent meshing of different tiles against one
+// read-only `FieldRuntime` is what the bake workers do.
 
 #include "terrain_mesher.h"
 #include "bake_mode.h"
@@ -14,15 +39,29 @@ namespace terrain_mesher {
 
 namespace {
 
+// A dual vertex: one surface-nets vertex belonging to one lattice cell.
+//   p  position, in the mesh's own frame -- x/z tile-local always, y
+//      world-absolute on the column path and tile-local on the Y-tiled path
+//      (see `cv.p` in mesh_sector_impl). Metres.
+//   n  unit outward surface normal, from the negated density gradient.
+// Consumers that need world coordinates (the boundary record, the overlap
+// band) add the tile origin back on themselves.
 struct V3 { float x, y, z; };
 struct CellVert { V3 p; V3 n; };
 
+// Find or append the bucket for `mat`. Linear scan -- worlds have a handful of
+// materials, so this is cheaper than a map. The returned reference is
+// invalidated by the next call that appends a bucket; never hold it across one.
 MaterialBucket& bucket_for(SectorMesh& m, uint32_t mat) {
     for (auto& b : m.buckets) if (b.material == mat) return b;
     m.buckets.push_back(MaterialBucket{mat, {}, {}});
     return m.buckets.back();
 }
 
+// Append one triangle: 9 position floats and 9 normal floats, in exactly the
+// argument order given. Winding is the caller's decision and is preserved
+// verbatim -- callers pass the vertices pre-swapped (see `flip` in emit_quad,
+// and `push_oriented` for the contour border).
 void push_tri(MaterialBucket& b,
               const CellVert& a, const CellVert& c, const CellVert& d) {
     const CellVert* vs[3] = {&a, &c, &d};
@@ -34,6 +73,29 @@ void push_tri(MaterialBucket& b,
         b.normals.push_back(v->n.y);
         b.normals.push_back(v->n.z);
     }
+}
+
+void push_oriented_tri(MaterialBucket& b,
+                       const CellVert& a, const CellVert& c,
+                       const CellVert& d) {
+    const double ux = static_cast<double>(c.p.x) - a.p.x;
+    const double uy = static_cast<double>(c.p.y) - a.p.y;
+    const double uz = static_cast<double>(c.p.z) - a.p.z;
+    const double vx = static_cast<double>(d.p.x) - a.p.x;
+    const double vy = static_cast<double>(d.p.y) - a.p.y;
+    const double vz = static_cast<double>(d.p.z) - a.p.z;
+    const double cx = uy * vz - uz * vy;
+    const double cy = uz * vx - ux * vz;
+    const double cz = ux * vy - uy * vx;
+    // Surface-nets cell vertices can coincide along flat carved plateaus. Omit
+    // only the collapsed triangle so a nondegenerate mate from the same quad
+    // remains in its original material bucket and emission order.
+    if (cx == 0.0 && cy == 0.0 && cz == 0.0) return;
+    const double nx = static_cast<double>(a.n.x) + c.n.x + d.n.x;
+    const double ny = static_cast<double>(a.n.y) + c.n.y + d.n.y;
+    const double nz = static_cast<double>(a.n.z) + c.n.z + d.n.z;
+    if (cx * nx + cy * ny + cz * nz >= 0.0f) push_tri(b, a, c, d);
+    else                                     push_tri(b, a, d, c);
 }
 
 // --- overlap band (M0-WP7) -------------------------------------------------
@@ -144,6 +206,12 @@ struct ContourVert {
     double  pa = 0, pb = 0;   // interpolated world position, tangential coords
 };
 
+// One face plane's shared curve: a vertex soup plus the segments joining them,
+// as produced by `trace_contour`. Both are in the canonical lattice's terms,
+// so two tiles of different rungs touching this plane build identical
+// contents. `segs` holds index pairs into `verts`; a vertex is emitted once and
+// reused by every segment that touches it, which is what lets the bridge pass
+// below find the segments meeting at a vertex.
 struct Contour {
     std::vector<ContourVert> verts;
     std::vector<std::pair<int, int>> segs;   // indices into verts
@@ -839,8 +907,8 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
         MaterialBucket& b = bucket_for(out,
             uint32_t(field.material_at(wxc, wzc)));
         if (flip) std::swap(v10, v01);
-        push_tri(b, *v00, *v10, *v11);
-        push_tri(b, *v00, *v11, *v01);
+        push_oriented_tri(b, *v00, *v10, *v11);
+        push_oriented_tri(b, *v00, *v11, *v01);
     };
     // Ownership predicate: exactly [1..n], the lattice indices mapping to
     // sector-local [0, S). Integer comparison, no float precision gaps at
@@ -1226,11 +1294,7 @@ static bool mesh_sector_impl(const terrain_field::FieldRuntime& field,
                 MaterialBucket& bkt = bucket_for(out, uint32_t(field.material_at(
                     float(ox + (double(c3[0]) - 0.5) * v),
                     float(oz + (double(c3[2]) - 0.5) * v))));
-                const float nx = A.n.x + B.n.x + C.n.x;
-                const float ny = A.n.y + B.n.y + C.n.y;
-                const float nz = A.n.z + B.n.z + C.n.z;
-                if (cx * nx + cy * ny + cz * nz >= 0.0f) push_tri(bkt, A, B, C);
-                else                                     push_tri(bkt, A, C, B);
+                push_oriented_tri(bkt, A, B, C);
             };
 
             // THE ANCHOR, and why it is not simply `dual_at(ca, cb)`.

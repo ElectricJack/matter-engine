@@ -1,7 +1,57 @@
 #pragma once
+
+// MatterEngine3/include/matter/world_session.h
+//
+// The engine's primary public API. A WorldSession is ONE loaded world: it owns
+// the provider that bakes it, the part/render state that draws it, the Flecs
+// ECS world that simulates it, the event hub that reports on it, and the scene
+// service that edits it. MatterEditor is a client of this header; nothing
+// below it (MatterSurfaceLib, SpatialQueryLib, MemoryLib) knows it exists.
+//
+// LIFECYCLE. Create with EngineContext::open_world (matter/engine_context.h) —
+// the public constructor takes an already-built Impl and is internal. The
+// session is a pimpl, non-copyable, held by unique_ptr, and must be destroyed
+// before the VulkanDevice and the window it renders through. Two shapes exist:
+// a WORLD-KIND session (a streamed world, with sectors, terrain and a sea
+// level) and a CLOSED-WORLD session (an `expand`/`tileset` root inspected on
+// its own, e.g. the Part Workbench); several accessors below return false for
+// the closed kind and say so.
+//
+// TYPICAL FRAME, all on the app/main thread that owns the render device:
+//
+//     session.tick(tick_desc);              // provider deltas, ECS, commands
+//     session.pump_gpu_jobs(budget_ms);     // drain queued render-thread work
+//     while (session.poll_event(e)) { ... } // bake/stream progress
+//     session.render(cam, vulkan_frame, opts, err);
+//     session.finish_vulkan_frame(frame.serial, presented);
+//
+// request_bake() and reload() are ASYNCHRONOUS: they enqueue and return, and a
+// newer request supersedes an in-flight bake. Progress arrives as events. The
+// bake itself runs on worker threads; what lands back on this thread is the
+// publish work pump_gpu_jobs() drains.
+//
+// THREAD AFFINITY. Treat the whole class as app-thread-affine unless a method
+// says otherwise: poll_event(), events(), scene_service() and
+// scene_change_tracker() are explicitly single-consumer on that thread, and
+// render()/pump_gpu_jobs() need the render device. The documented exceptions
+// that may be called from any thread are set_bake_focus() and regenerate().
+//
+// REFERENCES RETURNED HERE (ecs(), events(), scene_service(),
+// scene_change_tracker(), frame_stats(), world_props(), draw_overrides()) point
+// into session-owned state and are valid only until the session is closed or
+// replaced — and the two DynamicGroup* may also be rebuilt at a world-kind
+// connect. Copy what you need to keep.
+//
+// CONVENTIONS. Distances are world metres, times in these structs are seconds
+// unless the field name ends in _ms, and every *_ms in FrameStats is
+// milliseconds. Errors are returned as bool + std::string&; no exception
+// crosses this boundary.
+
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -10,6 +60,9 @@
 #include "matter/render_debug.h"
 #include "matter/ecs.h"
 #include "matter/world_definition.h"
+#include "matter/hydrology.h"
+#include "matter/terrain_collision.h"
+#include "matter/river_runtime.h"
 #include "matter/streaming.h"
 #include "matter/sun_angles.h"  // kSunAngularDiameterDefaultDeg + the convention
 #include "matter/atmosphere_lighting.h"
@@ -23,9 +76,23 @@
 #include "bake_trace.h"   // bake_trace::Span — see last_bake_trace()
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
+namespace gpu_meshing {
+struct BuildControl;
+struct Error;
+struct MeshResult;
+struct ParticleJob;
+struct Stats;
+}
+namespace hydrology { class IFluidBakeBackend; }
+namespace terrain_field { class FieldRuntime; }
+namespace matter::detail { struct RiverRuntimeBuildInput; }
 namespace matter::evt { class Hub; }
 namespace matter::scene { class SceneService; class SceneChangeTracker; }
 namespace matter::props { class DynamicGroup; }
+namespace matter::terrain_collision {
+struct CanonicalDefinition;
+struct TerrainCollisionCandidate;
+}
 
 namespace matter {
 
@@ -39,7 +106,25 @@ struct AnimationRasterRange {
 };
 using AnimationRasterRangeResolver =
     std::function<bool(uint64_t part_hash, AnimationRasterRange& out)>;
+using FluidBakeBackendTestFactory =
+    std::function<std::shared_ptr<hydrology::IFluidBakeBackend>()>;
+using FluidVisualBakeTestCallback = std::function<bool(
+    const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
+    gpu_meshing::Stats&, gpu_meshing::Error&,
+    const gpu_meshing::BuildControl&)>;
+using TerrainCollisionBuildTestCallback = std::function<bool(
+    const terrain_field::FieldRuntime&,
+    const terrain_collision::CanonicalDefinition&,
+    const std::string&,
+    const std::function<bool()>&,
+    terrain_collision::TerrainCollisionCandidate&,
+    std::string&)>;
+using TerrainCollisionCandidateObserver = std::function<void(
+    std::weak_ptr<const terrain_collision::TerrainCollisionCandidate>)>;
 
+// What to open. Both `project_dir` and `world_name` are required — open_world
+// fails with an error rather than guessing — and the pointers must stay alive
+// only for the duration of the open_world call.
 struct WorldDesc {
     // Preferred project layout. open_world derives objects/, worlds/,
     // optional shared-lib/, and .cache/<world>/ from this root.
@@ -50,6 +135,11 @@ struct WorldDesc {
     bool enable_live_edit = false;  // watch schemas/shared-lib dirs, cone-rebake on save (Linux inotify; no-op elsewhere)
 };
 
+// Which renderer to run for a frame (RenderOptions::path). GpuDriven is the
+// Vulkan compute-cull + indirect raster path; Raytrace adds the ray-tracing
+// pipeline. Raytrace on a device without hardware ray tracing falls back rather
+// than failing — FrameStats::vk_rt_available / vk_rt_effective /
+// vk_rt_fallback_reason report what actually ran.
 enum class RenderPath { GpuDriven, Raytrace };
 // (ResolverKind is gone. There was a PassThrough resolver -- every world entry
 // emitted at LOD 0, no binning, no culling -- kept as a correctness reference
@@ -60,6 +150,12 @@ enum class RenderPath { GpuDriven, Raytrace };
 // anyone was tuning. SectorLod is a superset -- it emits the same instances,
 // then adds per-sector rung selection and inline-cutover child expansion -- so
 // there is nothing PassThrough could express that survives its removal.)
+// Requested DLSS preset (RenderOptions::dlss_mode). Native renders at output
+// resolution with no upscaling; the other three are Streamline presets at
+// successively smaller internal render resolutions. This is a REQUEST: the mode
+// that actually ran, the internal/output extents and the reason for any
+// downgrade come back in FrameStats::dlss_*. dlss_mode_name() below gives the
+// display string.
 enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
 
 // Public, renderer-type-free copy-out of the atmosphere snapshot that actually
@@ -81,6 +177,19 @@ struct ResolvedAtmospherePresentationStatus {
 
 const char* dlss_mode_name(DlssMode mode) noexcept;
 
+// Everything WorldSession::render needs beyond the camera and the frame: which
+// path to run, the debug/diagnostic switches, the LOD and culling budgets, and
+// the per-frame copies of the lighting/atmosphere/volumetrics/POM settings.
+//
+// Passed by const reference and consumed within the call — nothing here is
+// retained, so a caller may rebuild it every frame (the editor does).
+//
+// THE DEFAULTS ARE THE CONTRACT. A default-constructed RenderOptions is what
+// every non-editor caller uses (headless tests, the replay harness, the Part
+// Workbench), and it reproduces the world's authored look: the live overrides
+// are opt-in flags (use_fog_override, use_sun_override) and the Lab-only debug
+// knobs (force_lod, hide_child_instances) are inert at their defaults. Keep it
+// that way when adding a field, or replay diffs stop being comparable.
 struct RenderOptions {
     RenderPath   path     = RenderPath::GpuDriven;
     // Geometry-stage diagnostic. Applied while the G-buffer is written, unlike
@@ -194,6 +303,14 @@ struct RenderOptions {
     bool hide_child_instances = false;
 };
 
+// Timing for one WorldSession::tick. All three deltas are SECONDS.
+//
+// frame_delta_seconds is the (possibly time-scaled) frame delta that drives the
+// fixed-step accumulator; fixed_delta_seconds and max_fixed_steps bound how
+// much simulation one tick may run, and FrameStats::ecs_fixed_steps /
+// ecs_dropped_steps / ecs_invalid_ticks report what it actually did.
+// presentation_delta_seconds carries unscaled wall-clock time for cosmetic
+// cadence only. A default-constructed TickDesc is a valid zero-delta tick.
 struct TickDesc {
     float frame_delta_seconds = 0.0f;
     float fixed_delta_seconds = 1.0f / 60.0f;
@@ -221,6 +338,22 @@ struct TickDesc {
     float presentation_delta_seconds = 0.0f;
 };
 
+// The session's diagnostics snapshot, reachable through frame_stats(). Three
+// different kinds of number live here and mixing them up is the usual mistake:
+//
+//   * PER-FRAME values (the *_ms timings and the instance/cluster/triangle
+//     counters) describe the frame just recorded;
+//   * CUMULATIVE totals (the uint64 *_total and vk_* counters) only ever climb,
+//     so a rate means differencing two samples;
+//   * WORLD CENSUS values (instances_total, parts_baked, cache_hits) are
+//     refreshed by a bake or reload, not by a frame.
+//
+// CPU timings are measured on this thread; the gpu_*_ms lanes are GPU timer
+// queries smoothed as an EMA and read 0 both when the pass did not run this
+// frame and when the device has no usable timers — check gpu_timers_supported
+// before reading a 0 as "free". Whole feature blocks read 0/false when the
+// feature is inactive (vt_* when no chart-VT part is in the scene, vol_* when
+// volumetrics are off, dlss_* on Native).
 struct FrameStats {
     // per-frame timings (ms)
     float resolve_ms = 0, build_ms = 0, draw_ms = 0;
@@ -324,6 +457,28 @@ struct FrameStats {
     float gpu_vol_density_ms    = 0;
     float gpu_vol_scatter_ms    = 0;
     float gpu_vol_integrate_ms  = 0;
+    // Raw compatibility sum of the retired decode and forward-water lanes.
+    // The decode lane remains append-only but is now unwritten/zero, so this
+    // is the raw forward span. Kept raw for percentile capture.
+    float gpu_water_animation_ms = 0;
+    // EMA-smoothed preservation-copy plus forward-water span. The dimensions
+    // and bytes describe the two persistent screen-optics copies at the
+    // internal raster extent; bytes are logical texel payload, not heap use.
+    float gpu_water_forward_ms = 0;
+    // Nested inside gpu_water_forward_ms: only eligible animated direct draws.
+    // Static-only/no-water frames leave the GPU timestamp pair unwritten and
+    // report zero.
+    float gpu_water_direct_draw_ms = 0;
+    uint32_t water_forward_width = 0;
+    uint32_t water_forward_height = 0;
+    uint64_t water_forward_image_bytes = 0;
+    float water_animation_publish_ms = 0;
+    uint64_t water_animation_compressed_cpu_bytes = 0;
+    uint64_t water_animation_peak_activation_cpu_bytes = 0;
+    uint64_t water_animation_gpu_bytes_per_slot = 0;
+    uint64_t water_animation_uploads = 0;
+    uint64_t water_animation_decode_dispatches = 0;
+    uint64_t water_animation_steady_state_allocations = 0;
     uint32_t vol_grid_w = 0, vol_grid_h = 0, vol_grid_d = 0;
     uint64_t vol_memory_bytes = 0;
     uint64_t cloud_shadow_memory_bytes = 0;
@@ -341,12 +496,55 @@ struct FrameStats {
     uint64_t ecs_invalid_ticks = 0;
 };
 
+// Appends the stable forward-water evidence fragment used by perf JSON. Kept
+// beside FrameStats so the editor writer and its smoke test share one spelling
+// of the externally consumed keys.
+inline void append_water_forward_perf_json(std::ostream& output,
+                                           const FrameStats& stats) {
+    output << ",\"gpu_water_forward_ms\":"
+           << stats.gpu_water_forward_ms
+           << ",\"gpu_water_direct_draw_ms\":"
+           << stats.gpu_water_direct_draw_ms
+           << ",\"water_forward_width\":"
+           << stats.water_forward_width
+           << ",\"water_forward_height\":"
+           << stats.water_forward_height
+           << ",\"water_forward_image_bytes\":"
+           << stats.water_forward_image_bytes
+           << ",\"water_animation_publish_ms\":"
+           << stats.water_animation_publish_ms
+           << ",\"water_animation_compressed_cpu_bytes\":"
+           << stats.water_animation_compressed_cpu_bytes
+           << ",\"water_animation_peak_activation_cpu_bytes\":"
+           << stats.water_animation_peak_activation_cpu_bytes
+           << ",\"water_animation_gpu_bytes_per_slot\":"
+           << stats.water_animation_gpu_bytes_per_slot;
+}
+
+// One loaded world. See the file header for lifecycle, the frame loop, thread
+// affinity and the lifetime of the references handed out below.
+//
+// Roughly, the surface is: bake/reload control (request_bake, reload,
+// regenerate, set_bake_focus), the per-frame drive (tick, pump_gpu_jobs,
+// render, finish_vulkan_frame), world-authored settings read back for the
+// editor (world_fog, world_sun, world_atmosphere, world_volumetrics,
+// world_cloud_shadows, streaming_lod_config, apply_authored_camera), live
+// property groups the editor binds (world_props, draw_overrides), observation
+// (poll_event, events, frame_stats, streaming_status, seam_weld_status,
+// last_bake_trace, graph_snapshot), scene editing (ecs, scene_service,
+// scene_change_tracker) and CPU/GPU queries (raycast, instance_info,
+// part_bounds, pick_at_pixel, the LOD-inspector reads).
 class WorldSession {
 public:
-    ~WorldSession();   // releases session GL resources — destroy before CloseWindow
+    // Tears down the world, its provider and its render resources. Must run on
+    // the thread that owns the render device, and the VulkanDevice and the
+    // window must both still be alive at this point — the session releases GPU
+    // resources back to them here.
+    ~WorldSession();
 
     // Phase B: asynchronous — enqueues a bake and returns immediately. Progress
-    // arrives via poll_event(); GL-side work runs inside pump_gpu_jobs(). A new
+    // arrives via poll_event(); the GPU-side half of the work runs inside
+    // pump_gpu_jobs(), on the thread that owns the render device. A new
     // request_bake()/reload() supersedes (cancels) an in-flight bake.
     void request_bake();
 
@@ -358,8 +556,15 @@ public:
     flecs::world& ecs();
     const flecs::world& ecs() const;
 
-    // Resolve -> cull -> clear (kernel-derived sky color) -> draw into the
-    // currently bound framebuffer. Requires a live GL context on this thread.
+    // DOES NOTHING. This overload used to be the GL path (resolve -> cull ->
+    // clear -> draw into the currently bound framebuffer); Phase 5a deleted
+    // that renderer outright, and the definition in
+    // MatterEngine3/src/matter_engine.cpp is now an empty body in every build
+    // configuration — it draws no pixels and updates no frame_stats(). It is
+    // retained only so the two legacy test callers still compile
+    // (MatterEngine3/tests/api_tests.cpp, world_stream_tests.cpp, both of
+    // which already assert the no-op outcome). Everything else must use the
+    // VulkanFrame overload below.
     void render(const CameraDesc& cam, int fb_width, int fb_height,
                 const RenderOptions& opts);
 
@@ -391,9 +596,10 @@ public:
                                   std::vector<uint8_t>& rgba,
                                   std::string& err);
 
-    // Phase B: run queued GL-thread bake work for up to ms_budget milliseconds.
-    // Call once per frame on the thread that owns the GL context. Whole jobs
-    // only (no mid-job slicing); always makes progress when work is queued.
+    // Phase B: run queued render-thread bake work for up to ms_budget
+    // milliseconds. Call once per frame on the thread that owns the render
+    // device. Whole jobs only (no mid-job slicing); always makes progress when
+    // work is queued.
     void pump_gpu_jobs(float ms_budget);
 
     // ---- Streaming LOD configuration (editor LOD Settings panel) ----------
@@ -516,7 +722,7 @@ public:
     void set_streaming_lod_overrides(const StreamingLodConfig& overrides);
     void clear_streaming_lod_overrides();
 
-    // True when no GL-thread job is queued. Lets the caller widen the pump
+    // True when no render-thread job is queued. Lets the caller widen the pump
     // budget only while a streaming backlog exists (sector publishes are
     // ~1 ms each; a fixed small budget drains a 5,000-sector fill at a
     // handful per frame).
@@ -557,6 +763,9 @@ public:
     scene::SceneService& scene_service();
     scene::SceneChangeTracker& scene_change_tracker();
 
+    // Reference to session-owned stats that are updated IN PLACE by tick() and
+    // render() — copy it if you need a stable sample across frames, and see the
+    // FrameStats comment for which fields are per-frame, cumulative or census.
     const FrameStats& frame_stats() const;
     // Copies committed animation metadata and the latest immutable runtime
     // presentation state for every live ECS animation binding. An empty result
@@ -755,7 +964,8 @@ public:
     SeamWeldStatus seam_weld_status() const;
 
     // Phase B: asynchronous — enqueues a bake and returns immediately. Progress
-    // arrives via poll_event(); GL-side work runs inside pump_gpu_jobs(). A new
+    // arrives via poll_event(); the GPU-side half of the work runs inside
+    // pump_gpu_jobs(), on the thread that owns the render device. A new
     // request_bake()/reload() supersedes (cancels) an in-flight bake. Fail-closed:
     // on error a BakeError event is emitted and render() no-ops until a later
     // request_bake()/reload() succeeds (the old world is torn down before rebaking).
@@ -804,10 +1014,6 @@ public:
     bool instance_info(uint32_t idx, InstanceInfo& out);
     bool instance_info_by_hash(uint64_t part_hash, InstanceInfo& out);
 
-    // Lightweight root-entry iteration — reads directly from world state
-    // without building the CPU tracer. Safe to call while streaming.
-    uint32_t root_instance_count() const;
-    bool root_instance_info(uint32_t idx, InstanceInfo& out) const;
 
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
 
@@ -846,6 +1052,64 @@ public:
     // ScriptError/Internal). Null clears the hook.
     // NOT part of the stable public API — for kernel-internal tests only.
     void set_test_fault_hook(std::function<void(int)> hook);
+
+    // Task 6 kernel-internal integration seam. Installs only the external
+    // solver/renderer dependencies; request assembly, authored enablement,
+    // WorldSession scheduling, and publication remain the production path.
+    // Call before request_bake(). Not part of the stable public API.
+    void set_test_fluid_bake_dependencies(
+        FluidBakeBackendTestFactory backend_factory,
+        FluidVisualBakeTestCallback visual_bake);
+
+    // Test-only renderer identity seam used to prove CUDA/Vulkan mismatch
+    // rejection before solver allocation. Production reads the Vulkan LUID.
+    void set_test_fluid_renderer_luid(
+        const std::array<std::uint8_t, 8>& luid);
+
+    // Parks the bake worker after a fluid candidate has been prepared but
+    // before its generation-guarded publication commit. Test-only.
+    void set_test_fluid_before_publication_hook(std::function<void()> hook);
+    // Runs under the generation lock immediately before the single atomic
+    // CPU/render publication store. Test-only.
+    void set_test_fluid_during_publication_hook(std::function<void()> hook);
+    // Parks the worker after the commit-or-skip decision, before it can begin
+    // a queued replacement generation. Test-only.
+    void set_test_fluid_after_publication_hook(std::function<void()> hook);
+
+    // Narrow deterministic seam for the terrain-collision session behavior
+    // suite. Production uses the immutable artifact loader directly.
+    void set_test_terrain_collision_build_callback(
+        TerrainCollisionBuildTestCallback callback);
+    // Runs inside the app-thread publication job immediately before the
+    // owner-thread Box3D replacement/clear, outside the generation mutex.
+    // Test-only.
+    void set_test_terrain_collision_publication_hook(
+        std::function<void()> hook);
+    // Throws from this hook exercise collision-specific exception routing
+    // before canonicalization/builder invocation. Test-only.
+    void set_test_terrain_collision_before_build_hook(
+        std::function<void()> hook);
+    // Called once while the worker owns the immutable candidate and again
+    // after the blocking physics job, before visual reset. Test-only observer;
+    // callbacks must not throw.
+    void set_test_terrain_collision_candidate_observer(
+        TerrainCollisionCandidateObserver observer);
+    // One-shot allocation failure inside precise Failed-status preparation.
+    // Exercises the coherent short-diagnostic fallback. Test-only.
+    void set_test_terrain_collision_failure_record_bad_alloc(
+        bool enabled) noexcept;
+    // Narrow scheduling/state observations for deterministic cancellation and
+    // disconnect tests. Test-only.
+    bool connected_for_test() const noexcept;
+    bool has_pending_gpu_jobs_for_test() const;
+
+    // Observes the all-or-nothing accepted-product boundary after BakeFinished.
+    bool has_accepted_fluid_artifact_for_test() const;
+
+    HydrologyStatus hydrology_status() const;
+    TerrainCollisionStatus terrain_collision_status() const;
+    std::shared_ptr<const RiverRuntimeBinding> river_runtime_binding()
+        const noexcept;
 
     struct Impl;
     explicit WorldSession(std::unique_ptr<Impl> impl);   // internal; use open_world

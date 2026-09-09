@@ -1,9 +1,53 @@
+// MatterEngine3/src/ecs/scene_registry.cpp
+//
+// Two things live here, both serving the editable ("dynamic") scene:
+//
+// 1. THE COMPONENT SCHEMA. `s_descriptors` names every ECS component the
+//    inspector may show, and each entry points at a static array of
+//    FieldDescriptors carrying the member's byte offset, type, range and enum
+//    labels. Every offset comes from `offsetof` on the real struct (via the
+//    ME_FIELD_OFF / ME_COLLIDER_PROP_OFF macros), so a renamed or reordered
+//    member is a compile error rather than silent drift. The field_get_*/
+//    field_set_* accessors below read and write through those offsets, which is
+//    what lets the editor edit an arbitrary component without a per-component
+//    UI. `to_props_desc` converts a descriptor into the property system's
+//    `matter::props::Desc` where a props helper is wanted.
+//
+// 2. THE RECIPE PIPELINE. `validate` -> `validate_batch` -> `normalize` ->
+//    `instantiate` -> `bootstrap_transactional` turn the authored
+//    `RawEntityRecipe`s produced by the world-definition loader into live flecs
+//    entities. `bootstrap_transactional` is the one callers should use: it
+//    validates the entire batch BEFORE mutating anything, so a bad reload
+//    leaves the previous scene and generation counter untouched.
+//
+// JSON HANDLING. `components_json` is scanned by the hand-rolled
+// `extract_top_keys` / `extract_*_field` helpers further down, not by a real
+// parser — the world-definition loader already validated syntax, and these only
+// need to pull out top-level keys and scalar values. Legacy component helpers
+// leave defaults for absent or wrongly-shaped fields; CharacterController and
+// RiverFloatBody instead enforce their strict field and ownership contracts.
+// Do not reuse the legacy helpers on untrusted or unvalidated JSON.
+//
+// IDENTITY. `hash_authored_id` is FNV-1a over the authored id string with the
+// high bit cleared; the high bit is reserved for session-created ids. The
+// resulting `SceneEntityId::value` is stable across reloads while
+// `SceneEntityId::generation` identifies one incarnation, so a recycled id
+// cannot be mistaken for a GPU slot still retiring.
+//
+// THREADING. App-thread affine, like everything behind `matter/scene.h`. These
+// functions mutate a flecs world directly and take no locks.
+
 #include "scene_registry.h"
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/character.h"
 #include "matter/streaming.h"
+#include "matter/river_runtime.h"
+#include "river_float_system.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -13,8 +57,9 @@
 
 // Minimal JSON field extraction — operates on the canonical components_json
 // string from RawEntityRecipe. Full JSON parsing is NOT needed here; the
-// world_definition_loader already validated syntax. We only need to match
-// top-level component keys and their field values for type/range checking.
+// world_definition_loader already validated syntax. Legacy components use the
+// tolerant extraction helpers; character and river-float recipes additionally
+// perform their component-specific type, range and ownership validation.
 #include <sstream>
 
 namespace matter::scene {
@@ -76,7 +121,17 @@ constexpr FieldDescriptor fd_uint(const char* name, uint32_t offset, uint8_t sto
     return d;
 }
 
+constexpr FieldDescriptor fd_uint_range(const char* name, uint32_t offset,
+                                        uint8_t storage, float lo, float hi) {
+    FieldDescriptor d = fd_uint(name, offset, storage, FieldFlagNone);
+    d.range_min = lo;
+    d.range_max = hi;
+    d.has_range = true;
+    return d;
+}
+
 const char* const s_rigid_body_type_labels[] = {"Static", "Kinematic", "Dynamic"};
+const char* const s_ray_traced_labels[] = {"Inherit", "Raster only", "Ray traced"};
 
 }  // namespace
 
@@ -151,13 +206,41 @@ static const FieldDescriptor s_part_instance_fields[] = {
             sizeof(uint64_t), FieldReadOnly),
     fd("visible", FieldType::Bool, ME_FIELD_OFF(PartInstance, visible)),
     fd("casts_shadow", FieldType::Bool, ME_FIELD_OFF(PartInstance, casts_shadow)),
+    fd_enum("ray_traced", ME_FIELD_OFF(PartInstance, ray_traced),
+            sizeof(RayTracingOverride), s_ray_traced_labels, 3),
 };
 
-static const FieldDescriptor s_sector_streaming_fields[] = {};
+static const FieldDescriptor* const s_sector_streaming_fields = nullptr;
+
+static const FieldDescriptor s_river_float_fields[] = {
+    fd_float("effective_density_kg_m3", ME_FIELD_OFF(RiverFloatBody, effective_density_kg_m3), 0.0f, 2000.0f),
+    fd_float("displaced_volume_scale", ME_FIELD_OFF(RiverFloatBody, displaced_volume_scale), 0.0f, 4.0f),
+    fd_uint_range("probes_x", ME_FIELD_OFF(RiverFloatBody, probes_x), sizeof(std::uint8_t), 1.0f, 4.0f),
+    fd_uint_range("probes_y", ME_FIELD_OFF(RiverFloatBody, probes_y), sizeof(std::uint8_t), 1.0f, 4.0f),
+    fd_uint_range("probes_z", ME_FIELD_OFF(RiverFloatBody, probes_z), sizeof(std::uint8_t), 1.0f, 4.0f),
+    fd_float("probe_inset", ME_FIELD_OFF(RiverFloatBody, probe_inset), 0.0f, 0.49f),
+    fd_float("buoyancy_response", ME_FIELD_OFF(RiverFloatBody, buoyancy_response), 0.0f, 100.0f),
+    fd_float("longitudinal_drag", ME_FIELD_OFF(RiverFloatBody, longitudinal_drag), 0.0f, 100.0f),
+    fd_float("lateral_drag", ME_FIELD_OFF(RiverFloatBody, lateral_drag), 0.0f, 100.0f),
+    fd_float("vertical_drag", ME_FIELD_OFF(RiverFloatBody, vertical_drag), 0.0f, 100.0f),
+    fd_float("angular_damping", ME_FIELD_OFF(RiverFloatBody, angular_damping), 0.0f, 100.0f),
+    fd_float("max_force_per_probe_n", ME_FIELD_OFF(RiverFloatBody, max_force_per_probe_n), 0.001f, 1000000000.0f),
+    fd_float("max_total_force_n", ME_FIELD_OFF(RiverFloatBody, max_total_force_n), 0.001f, 1000000000.0f),
+    fd("diagnostic_color", FieldType::Float3, ME_FIELD_OFF(RiverFloatBody, diagnostic_color)),
+};
 
 // ---------------------------------------------------------------------------
 // Component descriptor table.
 // ---------------------------------------------------------------------------
+
+static const FieldDescriptor s_character_fields[] = {
+    fd_float("radius", ME_FIELD_OFF(character::CharacterController, radius), 0.05f, 5.0f),
+    fd_float("height", ME_FIELD_OFF(character::CharacterController, height), 0.2f, 5.0f),
+    fd_float("move_speed", ME_FIELD_OFF(character::CharacterController, move_speed), 0.0f, 50.0f),
+    fd_float("max_slope_cos", ME_FIELD_OFF(character::CharacterController, max_slope_cos), 0.0f, 1.0f),
+    fd_float("step_up_height", ME_FIELD_OFF(character::CharacterController, step_up_height), 0.0f, 2.0f),
+    fd_float("jump_speed", ME_FIELD_OFF(character::CharacterController, jump_speed), 0.0f, 50.0f),
+};
 
 static const ComponentDescriptor s_descriptors[] = {
     {ComponentKind::Transform, "LocalTransform", s_transform_fields, 3, false,
@@ -174,10 +257,14 @@ static const ComponentDescriptor s_descriptors[] = {
      sizeof(physics::BoxCollider), alignof(physics::BoxCollider)},
     {ComponentKind::ConvexHullCollider, "ConvexHullCollider", s_convex_hull_fields, 5, false,
      sizeof(physics::ConvexHullCollider), alignof(physics::ConvexHullCollider)},
-    {ComponentKind::PartInstance, "PartInstance", s_part_instance_fields, 3, false,
+    {ComponentKind::PartInstance, "PartInstance", s_part_instance_fields, 4, false,
      sizeof(PartInstance), alignof(PartInstance)},
     {ComponentKind::SectorStreaming, "SectorStreaming", s_sector_streaming_fields, 0, false,
      sizeof(streaming::SectorStreaming), alignof(streaming::SectorStreaming)},
+    {ComponentKind::RiverFloatBody, "RiverFloatBody", s_river_float_fields, 14, false,
+     sizeof(RiverFloatBody), alignof(RiverFloatBody)},
+    {ComponentKind::CharacterController, "CharacterController", s_character_fields, 6, false,
+     sizeof(character::CharacterController), alignof(character::CharacterController)},
 };
 
 static constexpr uint32_t s_descriptor_count = sizeof(s_descriptors) / sizeof(s_descriptors[0]);
@@ -192,7 +279,15 @@ static_assert(alignof(physics::ConvexHullCollider) <= kMaxComponentStructAlign,
               "kMaxComponentStructAlign too small");
 static_assert(alignof(ecs::LocalTransform) <= kMaxComponentStructAlign,
               "kMaxComponentStructAlign too small");
+static_assert(sizeof(RiverFloatBody) <= kMaxComponentStructSize,
+              "kMaxComponentStructSize too small for RiverFloatBody");
+static_assert(alignof(RiverFloatBody) <= kMaxComponentStructAlign,
+              "kMaxComponentStructAlign too small for RiverFloatBody");
+static_assert(sizeof(character::CharacterController) <= kMaxComponentStructSize);
+static_assert(alignof(character::CharacterController) <= kMaxComponentStructAlign);
 
+// Linear scan by exact name over the component table; null when the name is not
+// a component the schema knows about. `name` must not be null.
 const ComponentDescriptor* find_component(const char* name) {
     for (uint32_t i = 0; i < s_descriptor_count; ++i) {
         if (std::strcmp(s_descriptors[i].name, name) == 0)
@@ -397,6 +492,9 @@ bool to_props_desc(const FieldDescriptor& f, matter::props::Desc& out) {
 // given `{"PartInstance": {"part": "props/crate"}}` and key "PartInstance",
 // returns `{"part": "props/crate"}`. Returns "" if the key/value is not an
 // object.
+// NOTE: matches the FIRST occurrence of the quoted key anywhere in `json`,
+// including inside a nested object or a string value — safe here only because
+// the loader emits a flat one-level-per-component object.
 static std::string extract_component_value_json(const std::string& json,
                                                  const std::string& component_key) {
     size_t pos = json.find("\"" + component_key + "\"");
@@ -404,7 +502,7 @@ static std::string extract_component_value_json(const std::string& json,
     pos = json.find(':', pos);
     if (pos == std::string::npos) return "";
     ++pos;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
     if (pos >= json.size() || json[pos] != '{') return "";
 
     size_t start = pos;
@@ -461,6 +559,38 @@ static bool extract_float_array(const std::string& json, const std::string& fiel
     return true;
 }
 
+// Variable-length sibling of extract_float_array, for arrays whose length is
+// authored rather than fixed by the schema (today: ConvexHullCollider's point
+// cloud). Reads up to `max` floats and stops at the closing ']', reporting how
+// many landed in `count`. Returns false when the field is missing or is not an
+// array; a well-formed but over-long array fills `max` and is reported as
+// truncated by `count == max` -- the caller decides whether that is an error.
+static bool extract_float_array_upto(const std::string& json,
+                                     const std::string& field,
+                                     float* out, size_t max, size_t& count) {
+    count = 0;
+    size_t pos = json.find("\"" + field + "\"");
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    if (pos >= json.size() || json[pos] != '[') return false;
+    ++pos;
+    while (count < max) {
+        while (pos < json.size() &&
+               (json[pos] == ' ' || json[pos] == '\t' || json[pos] == ',' ||
+                json[pos] == '\n' || json[pos] == '\r')) ++pos;
+        if (pos >= json.size() || json[pos] == ']') break;
+        char* end = nullptr;
+        out[count] = std::strtof(json.c_str() + pos, &end);
+        if (end == json.c_str() + pos) break;   // not a number: stop cleanly
+        pos = end - json.c_str();
+        ++count;
+    }
+    return true;
+}
+
 static bool extract_float_field(const std::string& json, const std::string& field,
                                 float& out) {
     size_t pos = json.find("\"" + field + "\"");
@@ -497,6 +627,64 @@ static bool extract_bool_field(const std::string& json,
     return false;
 }
 
+static bool contains_field(const std::string& json, const char* field) {
+    return json.find(std::string("\"") + field + "\"") != std::string::npos;
+}
+
+static bool parse_river_float_body(const std::string& json,
+                                   RiverFloatBody& body,
+                                   std::string& invalid_field) {
+    auto read_float = [&](const char* authored, float& destination) {
+        if (!contains_field(json, authored)) return true;
+        float value = 0.0f;
+        if (!extract_float_field(json, authored, value) || !std::isfinite(value)) {
+            invalid_field = authored;
+            return false;
+        }
+        destination = value;
+        return true;
+    };
+    auto read_probe = [&](const char* authored, std::uint8_t& destination) {
+        if (!contains_field(json, authored)) return true;
+        float value = 0.0f;
+        if (!extract_float_field(json, authored, value) || !std::isfinite(value) ||
+            std::floor(value) != value || value < 0.0f || value > 255.0f) {
+            invalid_field = authored;
+            return false;
+        }
+        destination = static_cast<std::uint8_t>(value);
+        return true;
+    };
+    if (!read_float("effectiveDensityKgM3", body.effective_density_kg_m3) ||
+        !read_float("displacedVolumeScale", body.displaced_volume_scale) ||
+        !read_probe("probesX", body.probes_x) ||
+        !read_probe("probesY", body.probes_y) ||
+        !read_probe("probesZ", body.probes_z) ||
+        !read_float("probeInset", body.probe_inset) ||
+        !read_float("buoyancyResponse", body.buoyancy_response) ||
+        !read_float("longitudinalDrag", body.longitudinal_drag) ||
+        !read_float("lateralDrag", body.lateral_drag) ||
+        !read_float("verticalDrag", body.vertical_drag) ||
+        !read_float("angularDamping", body.angular_damping) ||
+        !read_float("maxForcePerProbeN", body.max_force_per_probe_n) ||
+        !read_float("maxTotalForceN", body.max_total_force_n)) return false;
+    if (contains_field(json, "diagnosticColor")) {
+        float color[3]{};
+        if (!extract_float_array(json, "diagnosticColor", color, 3) ||
+            !std::isfinite(color[0]) || !std::isfinite(color[1]) ||
+            !std::isfinite(color[2])) {
+            invalid_field = "diagnosticColor";
+            return false;
+        }
+        body.diagnostic_color = {color[0], color[1], color[2]};
+    }
+    if (!river_float::valid_river_float_body(body)) {
+        if (invalid_field.empty()) invalid_field = "settings";
+        return false;
+    }
+    return true;
+}
+
 static bool is_collider_kind(ComponentKind k) {
     return k == ComponentKind::SphereCollider ||
            k == ComponentKind::CapsuleCollider ||
@@ -504,6 +692,11 @@ static bool is_collider_kind(ComponentKind k) {
            k == ComponentKind::ConvexHullCollider;
 }
 
+// Returns the top-level keys of a JSON object, in document order, skipping over
+// each key's value (object, array, string, or bare token) so nested keys are
+// never reported. Returns an empty vector when `json` contains no '{' at all.
+// This is the only place the recipe pipeline learns which components a recipe
+// declares.
 static std::vector<std::string> extract_top_keys(const std::string& json) {
     std::vector<std::string> keys;
     size_t i = 0;
@@ -527,7 +720,7 @@ static std::vector<std::string> extract_top_keys(const std::string& json) {
             while (i < json.size() && json[i] != ':') ++i;
             if (i < json.size()) ++i;
             // skip the value (could be object, array, string, number, bool, null)
-            while (i < json.size() && json[i] == ' ') ++i;
+            while (i < json.size() && std::isspace(static_cast<unsigned char>(json[i]))) ++i;
             if (i < json.size()) {
                 if (json[i] == '{') {
                     int d = 1; ++i;
@@ -567,7 +760,7 @@ static std::vector<std::string> extract_top_keys(const std::string& json) {
 // Session-created IDs use the high bit set with a monotonic counter.
 // ---------------------------------------------------------------------------
 
-static uint64_t hash_authored_id(const std::string& id) {
+uint64_t hash_authored_id(const std::string& id) {
     uint64_t h = 14695981039346656037ULL;
     for (char c : id) {
         h ^= static_cast<uint64_t>(static_cast<uint8_t>(c));
@@ -580,6 +773,157 @@ static uint64_t hash_authored_id(const std::string& id) {
 // validate — checks a single RawEntityRecipe.
 // ---------------------------------------------------------------------------
 
+static void skip_json_space(const std::string& json, size_t& pos) {
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+}
+
+// This component only accepts finite JSON numbers, never numeric prefixes or
+// strings. Keep parsing scoped here so existing component semantics stay put.
+static bool read_character_number(const std::string& json, size_t& pos, float& out) {
+    skip_json_space(json, pos);
+    const size_t start = pos;
+    if (pos < json.size() && json[pos] == '-') ++pos;
+    if (pos >= json.size() || json[pos] < '0' || json[pos] > '9') return false;
+    if (json[pos] == '0') ++pos;
+    else while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') ++pos;
+    if (pos < json.size() && json[pos] == '.') {
+        const size_t digits = ++pos;
+        while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') ++pos;
+        if (pos == digits) return false;
+    }
+    if (pos < json.size() && (json[pos] == 'e' || json[pos] == 'E')) {
+        ++pos;
+        if (pos < json.size() && (json[pos] == '+' || json[pos] == '-')) ++pos;
+        const size_t digits = pos;
+        while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') ++pos;
+        if (pos == digits) return false;
+    }
+    out = std::strtof(json.c_str() + start, nullptr);
+    skip_json_space(json, pos);
+    return std::isfinite(out);
+}
+
+static bool parse_character(const std::string& json, character::CharacterController& out,
+                            std::string& field) {
+    field = "CharacterController";
+    size_t pos = 0;
+    skip_json_space(json, pos);
+    if (pos >= json.size() || json[pos++] != '{') return false;
+    std::unordered_set<std::string> seen;
+    skip_json_space(json, pos);
+    while (pos < json.size() && json[pos] != '}') {
+        if (json[pos++] != '"') return false;
+        const size_t start = pos;
+        while (pos < json.size() && json[pos] != '"') ++pos;
+        if (pos == json.size()) return false;
+        const std::string key = json.substr(start, pos++ - start);
+        field = "CharacterController." + key;
+        float* destination = nullptr;
+        float angle = 45;
+        if (key == "radius") destination = &out.radius;
+        else if (key == "height") destination = &out.height;
+        else if (key == "moveSpeed") destination = &out.move_speed;
+        else if (key == "maxSlopeAngleDeg") destination = &angle;
+        else if (key == "stepHeight") destination = &out.step_up_height;
+        else if (key == "jumpSpeed") destination = &out.jump_speed;
+        if (!destination || !seen.insert(key).second) return false;
+        skip_json_space(json, pos);
+        if (pos >= json.size() || json[pos++] != ':' ||
+            !read_character_number(json, pos, *destination)) return false;
+        if (*destination < 0 || ((key == "radius" || key == "height") && *destination == 0)) return false;
+        if (key == "maxSlopeAngleDeg") {
+            if (angle > 90) return false;
+            // Exact endpoint avoids a negative cosine from float pi roundoff.
+            out.max_slope_cos = angle == 90 ? 0.0f :
+                static_cast<float>(std::cos(static_cast<double>(angle) * 3.14159265358979323846 / 180.0));
+        }
+        if (pos >= json.size()) return false;
+        if (json[pos] == '}') break;
+        if (json[pos++] != ',') return false;
+        skip_json_space(json, pos);
+        if (pos >= json.size() || json[pos] == '}') return false;
+    }
+    if (pos >= json.size() || json[pos++] != '}') return false;
+    skip_json_space(json, pos);
+    if (pos != json.size()) return false;
+    if (out.height < 2 * out.radius) { field = "CharacterController.height"; return false; }
+    return character::valid_character_configuration(out);
+}
+
+static bool character_unit_scale(const std::string& transform_json) {
+    const auto key = transform_json.find("\"scale\"");
+    if (key == std::string::npos) return true;
+    size_t pos = transform_json.find(':', key);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    skip_json_space(transform_json, pos);
+    if (pos >= transform_json.size() || transform_json[pos++] != '[') return false;
+    for (int i = 0; i < 3; ++i) {
+        float value = 0;
+        if (!read_character_number(transform_json, pos, value) || value != 1) return false;
+        if (pos >= transform_json.size() || transform_json[pos++] != (i == 2 ? ']' : ',')) return false;
+    }
+    return true;
+}
+
+bool validate_character_component(flecs::entity entity,
+                                  const character::CharacterController& value,
+                                  std::string& error) {
+    if (!entity.is_valid() || !entity.is_alive()) error = "invalid character entity";
+    else if (!character::valid_character_configuration(value)) error = "invalid CharacterController configuration";
+    else if (entity.target(flecs::ChildOf).id() != 0) error = "CharacterController requires a root entity";
+    else if (entity.has<physics::RigidBody>() || entity.has<physics::PhysicsVelocity>() ||
+             entity.has<physics::SphereCollider>() || entity.has<physics::CapsuleCollider>() ||
+             entity.has<physics::BoxCollider>() || entity.has<physics::ConvexHullCollider>() ||
+             entity.has<RiverFloatBody>()) error = "CharacterController conflicts with physics ownership";
+    else {
+        const auto* transform = entity.try_get<ecs::LocalTransform>();
+        if (!transform || transform->scale.x != 1 || transform->scale.y != 1 || transform->scale.z != 1 ||
+            !std::isfinite(transform->translation.x) || !std::isfinite(transform->translation.y) ||
+            !std::isfinite(transform->translation.z)) error = "CharacterController requires a finite, unit-scale transform";
+        else return true;
+    }
+    return false;
+}
+
+static bool validate_character_recipe(const RawEntityRecipe& raw,
+                                      const std::vector<std::string>& keys,
+                                      RecipeError& err) {
+    if (std::find(keys.begin(), keys.end(), "CharacterController") == keys.end()) return true;
+    auto fail = [&](const std::string& field) {
+        err = {"invalid CharacterController field or ownership: " + field, raw.authored_id, field};
+        return false;
+    };
+    character::CharacterController controller;
+    std::string field;
+    if (!parse_character(extract_component_value_json(raw.components_json, "CharacterController"), controller, field)) return fail(field);
+    if (!raw.parent_authored_id.empty()) return fail("parent");
+    const std::string transform_json = extract_component_value_json(raw.components_json, "LocalTransform");
+    if (!character_unit_scale(transform_json)) return fail("LocalTransform.scale");
+    // Match instantiation's float conversion, including default/partial values:
+    // a finite authored JSON number may overflow the stored controller position.
+    Float3 translation{};
+    (void)extract_float_array(transform_json, "translation", &translation.x, 3);
+    if (!std::isfinite(translation.x) || !std::isfinite(translation.y) ||
+        !std::isfinite(translation.z)) return fail("LocalTransform.translation");
+    for (const auto& key : keys) {
+        const auto* desc = find_component(key.c_str());
+        if (!desc || is_collider_kind(desc->kind) || desc->kind == ComponentKind::RigidBody ||
+            desc->kind == ComponentKind::Velocity || desc->kind == ComponentKind::RiverFloatBody) return fail(key);
+    }
+    return true;
+}
+
+// Checks one recipe and, on success, fills `out` with the validated copy plus
+// the resolved `part_hash`. What it actually enforces: a non-empty authored_id,
+// that every top-level component key names a known component, that at most one
+// of them is a collider, and that a PartInstance's authored "part" module name
+// resolves through `resolve_part`. CharacterController and RiverFloatBody
+// additionally enforce their component-specific field and ownership contracts.
+//
+// Returns false with `err` describing the first problem (message, authored_id
+// and, where known, the offending field_path); `out` is then meaningless.
+// `resolve_part` may be null, in which case any recipe naming a part fails.
 bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
              const PartResolver& resolve_part) {
     if (raw.authored_id.empty()) {
@@ -591,6 +935,8 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
     auto keys = extract_top_keys(raw.components_json);
     int collider_count = 0;
     uint64_t resolved_part_hash = 0;
+
+    if (!validate_character_recipe(raw, keys, err)) return false;
 
     for (const auto& key : keys) {
         const ComponentDescriptor* desc = find_component(key.c_str());
@@ -622,6 +968,27 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
                 }
                 resolved_part_hash = hash;
             }
+            if (contains_field(comp_json, "rayTraced")) {
+                bool ray_traced = false;
+                if (!extract_bool_field(comp_json, "rayTraced", ray_traced)) {
+                    err.message = "invalid PartInstance rayTraced value";
+                    err.authored_id = raw.authored_id;
+                    err.field_path = "PartInstance.rayTraced";
+                    return false;
+                }
+            }
+        }
+        if (desc->kind == ComponentKind::RiverFloatBody) {
+            RiverFloatBody body{};
+            std::string field;
+            if (!parse_river_float_body(
+                    extract_component_value_json(raw.components_json, key),
+                    body, field)) {
+                err.message = "invalid RiverFloatBody field: " + field;
+                err.authored_id = raw.authored_id;
+                err.field_path = "RiverFloatBody." + field;
+                return false;
+            }
         }
     }
 
@@ -638,6 +1005,11 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
 // validate_batch — validates a set of recipes including cross-references.
 // ---------------------------------------------------------------------------
 
+// Per-recipe `validate` plus the three cross-recipe checks that only make sense
+// on a whole batch: duplicate authored ids, a parent_authored_id naming a
+// recipe that is not in the batch, and parent cycles. Clears and refills `out`;
+// on failure `out` is left holding the prefix that validated, so callers must
+// discard it (normalize() does).
 bool validate_batch(const std::vector<RawEntityRecipe>& recipes,
                     std::vector<EntityRecipe>& out,
                     RecipeError& err,
@@ -696,16 +1068,52 @@ bool validate_batch(const std::vector<RawEntityRecipe>& recipes,
 // instantiate — creates Flecs entities from validated recipes.
 // ---------------------------------------------------------------------------
 
+// Creates one flecs entity per recipe, sets its SceneEntityId, name and
+// components from `components_json`, then wires the ChildOf edges in a second
+// pass (so a parent may appear after its child in the array).
+//
+// MUTATES THE WORLD AS IT GOES: a mid-batch failure — a hash collision, an
+// unknown component, or an exhausted generation counter — leaves the entities
+// created so far in the world. Callers that need all-or-nothing must go through
+// `bootstrap_transactional`, which validates the whole batch first.
+//
+// Every entity gets a default `ecs::LocalTransform` before the JSON is applied,
+// so a recipe without one still has a transform. `gen` is incremented once, at
+// the end, on success only; the new generation is stamped on every entity.
 bool instantiate(flecs::world& world,
                  const EntityRecipe* recipes, uint32_t count,
                  SceneGeneration& gen, RecipeError& err) {
     if (count == 0) return true;
+
+    // EntityRecipe is public and direct callers need not have normalized it.
+    // Preflight every controller before creating any entities in this batch.
+    // Part resolution and the existing non-controller paths remain unchanged.
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& recipe = recipes[i];
+        const RawEntityRecipe raw{recipe.authored_id, recipe.display_name,
+                                  recipe.parent_authored_id, recipe.components_json};
+        if (!validate_character_recipe(raw, extract_top_keys(raw.components_json), err)) return false;
+    }
 
     std::unordered_map<std::string, flecs::entity> id_to_entity;
     std::unordered_set<uint64_t> used_hashes;
 
     for (uint32_t i = 0; i < count; ++i) {
         const auto& recipe = recipes[i];
+        RiverFloatBody parsed_river_float{};
+        bool has_river_float = false;
+        const std::string river_json = extract_component_value_json(
+            recipe.components_json, "RiverFloatBody");
+        if (!river_json.empty()) {
+            std::string field;
+            if (!parse_river_float_body(river_json, parsed_river_float, field)) {
+                err.message = "invalid RiverFloatBody field: " + field;
+                err.authored_id = recipe.authored_id;
+                err.field_path = "RiverFloatBody." + field;
+                return false;
+            }
+            has_river_float = true;
+        }
         uint64_t hash = hash_authored_id(recipe.authored_id);
 
         if (used_hashes.count(hash)) {
@@ -768,6 +1176,10 @@ bool instantiate(flecs::world& world,
                 if (extract_float_field(rj, "linearDamping", f)) rb.linear_damping = f;
                 if (extract_float_field(rj, "angularDamping", f)) rb.angular_damping = f;
                 if (extract_float_field(rj, "gravityScale", f)) rb.gravity_scale = f;
+                if (extract_float_field(rj, "sleepThreshold", f)) rb.sleep_threshold = f;
+                bool flag;
+                if (extract_bool_field(rj, "enableSleep", flag)) rb.enable_sleep = flag;
+                if (extract_bool_field(rj, "continuous", flag)) rb.continuous = flag;
                 e.set<physics::RigidBody>(rb);
                 break;
             }
@@ -788,6 +1200,8 @@ bool instantiate(flecs::world& world,
                 if (extract_float_field(sj, "density", f)) sc.properties.density = f;
                 if (extract_float_field(sj, "friction", f)) sc.properties.friction = f;
                 if (extract_float_field(sj, "restitution", f)) sc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(sj, "sensor", b)) sc.properties.sensor = b;
                 e.set<physics::SphereCollider>(sc);
                 break;
             }
@@ -801,6 +1215,8 @@ bool instantiate(flecs::world& world,
                 if (extract_float_field(cj, "density", f)) cc.properties.density = f;
                 if (extract_float_field(cj, "friction", f)) cc.properties.friction = f;
                 if (extract_float_field(cj, "restitution", f)) cc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(cj, "sensor", b)) cc.properties.sensor = b;
                 e.set<physics::CapsuleCollider>(cc);
                 break;
             }
@@ -809,16 +1225,44 @@ bool instantiate(flecs::world& world,
                 physics::BoxCollider bc{};
                 extract_float_array(bj, "center", &bc.center.x, 3);
                 extract_float_array(bj, "halfExtents", &bc.half_extents.x, 3);
+                float rot[4];
+                if (extract_float_array(bj, "rotation", rot, 4))
+                    bc.rotation = {rot[0], rot[1], rot[2], rot[3]};
                 float f;
                 if (extract_float_field(bj, "density", f)) bc.properties.density = f;
                 if (extract_float_field(bj, "friction", f)) bc.properties.friction = f;
                 if (extract_float_field(bj, "restitution", f)) bc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(bj, "sensor", b)) bc.properties.sensor = b;
                 e.set<physics::BoxCollider>(bc);
                 break;
             }
-            case ComponentKind::ConvexHullCollider:
-                e.set<physics::ConvexHullCollider>({});
+            case ComponentKind::ConvexHullCollider: {
+                std::string hj = extract_component_value_json(recipe.components_json, key);
+                physics::ConvexHullCollider hc{};
+                // `points` is a flat [x,y,z, x,y,z, ...] run, not an array of
+                // triples, matching how every other Float3 in this file is
+                // authored. The component's budget is a fixed 32 points, so a
+                // longer array is truncated rather than overflowing; the solver
+                // then hulls whatever arrived (or reports HullBuildFailed).
+                float pts[32 * 3];
+                size_t got = 0;
+                if (extract_float_array_upto(hj, "points", pts,
+                                             sizeof(pts) / sizeof(pts[0]), got)) {
+                    const size_t n = got / 3;   // ignore a trailing partial triple
+                    for (size_t i = 0; i < n; ++i)
+                        hc.points[i] = {pts[i * 3 + 0], pts[i * 3 + 1], pts[i * 3 + 2]};
+                    hc.point_count = static_cast<uint32_t>(n);
+                }
+                float f;
+                if (extract_float_field(hj, "density", f)) hc.properties.density = f;
+                if (extract_float_field(hj, "friction", f)) hc.properties.friction = f;
+                if (extract_float_field(hj, "restitution", f)) hc.properties.restitution = f;
+                bool b;
+                if (extract_bool_field(hj, "sensor", b)) hc.properties.sensor = b;
+                e.set<physics::ConvexHullCollider>(hc);
                 break;
+            }
             case ComponentKind::PartInstance: {
                 PartInstance pi{};
                 pi.part_hash = recipe.part_hash;
@@ -829,12 +1273,31 @@ bool instantiate(flecs::world& world,
                     part_json, "visible", pi.visible);
                 (void)extract_bool_field(
                     part_json, "casts_shadow", pi.casts_shadow);
+                bool ray_traced = false;
+                if (extract_bool_field(part_json, "rayTraced", ray_traced)) {
+                    pi.ray_traced = ray_traced
+                        ? RayTracingOverride::Enabled
+                        : RayTracingOverride::Disabled;
+                }
                 e.set<PartInstance>(pi);
                 break;
             }
             case ComponentKind::SectorStreaming:
                 e.add<streaming::SectorStreaming>();
                 break;
+            case ComponentKind::RiverFloatBody:
+                if (has_river_float) e.set<RiverFloatBody>(parsed_river_float);
+                break;
+            case ComponentKind::CharacterController: {
+                character::CharacterController controller;
+                std::string field;
+                if (!parse_character(extract_component_value_json(recipe.components_json, key), controller, field)) {
+                    err = {"invalid CharacterController field: " + field, recipe.authored_id, field};
+                    return false;
+                }
+                e.set<character::CharacterController>(controller);
+                break;
+            }
             }
         }
 
@@ -912,6 +1375,9 @@ bool bootstrap_transactional(flecs::world& world,
 // SceneModule — Flecs module registration with reflection metadata.
 // ---------------------------------------------------------------------------
 
+// Registers the scene components with flecs reflection so the inspector, the
+// JSON serializers and the script bindings can walk them by name. Import once
+// per world; it registers types only and creates no systems or entities.
 SceneModule::SceneModule(flecs::world& world) {
     world.module<SceneModule>();
 
@@ -919,10 +1385,16 @@ SceneModule::SceneModule(flecs::world& world) {
         .member("value", &SceneEntityId::value)
         .member("generation", &SceneEntityId::generation);
 
+    world.component<RayTracingOverride>()
+        .constant("Inherit", RayTracingOverride::Inherit)
+        .constant("Disabled", RayTracingOverride::Disabled)
+        .constant("Enabled", RayTracingOverride::Enabled);
+
     world.component<PartInstance>()
         .member("part_hash", &PartInstance::part_hash)
         .member("visible", &PartInstance::visible)
-        .member("casts_shadow", &PartInstance::casts_shadow);
+        .member("casts_shadow", &PartInstance::casts_shadow)
+        .member("ray_traced", &PartInstance::ray_traced);
 
     world.component<PartInstanceErrorCode>()
         .constant("None", PartInstanceErrorCode::None)

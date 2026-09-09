@@ -1,6 +1,84 @@
+// MatterEngine3/src/script/world_definition_loader.cpp — evaluates a world's
+// .js source in a throwaway QuickJS runtime and extracts a WorldDefinition.
+//
+// This is the entry point of world loading. EngineContext::open_world builds a
+// WorldLoadDesc (the world .js path, the two shared-lib directories, the world
+// seed, and the canonical params JSON) and calls load_world_definition(), which
+// returns the declarative half of the world: roots, lights, settings (sun/sky,
+// fog and cloud decks, atmosphere, camera, streaming rings/bands, volumetrics,
+// cloud shadows), script-declared materials, `static props` specs, and the raw
+// entity recipes. Everything downstream (part baking, streaming, rendering)
+// consumes the WorldDefinition; nothing re-enters this file.
+//
+// SCRIPT SURFACE. A world declares `class <Name> extends World` and its data as
+// class STATICS (roots, lights, fog, camera, streaming, props, ...), plus an
+// optional buildEntities() for imperative entity emission. Statics are read
+// straight off the class object; an authored constructor is deliberately
+// bypassed — buildEntities() is invoked on a bare object built from the class
+// prototype.
+//
+// THE THREE BOUND GLOBALS ARE PHASED, deliberately:
+//   defineMaterial(name, spec) — legal only while the module evaluates (module
+//     scope and class statics). Once the roots have been read it is swapped for
+//     a throwing stub: a material declared later cannot have its detail-tileset
+//     bake scheduled.
+//   getProp(name) — the mirror image. A throwing stub until `static props` has
+//     been extracted, then the real accessor. It is definition-time only and
+//     returns the DECLARED DEFAULT (see get_prop).
+//   entity(record) — bound on the buildEntities() receiver; appends to the
+//     __matter_entities global array.
+//
+// PRELUDE. `base_source` inside load_world_definition() is the THIRD JS prelude
+// in this engine, alongside part_base.js.h and world_base.js.h. Any global a
+// shared-lib module may touch at MODULE SCOPE must exist in all three or world
+// load dies on import with a bare ReferenceError. It also defines the empty
+// `class World` that `extends World` resolves against, and sets Math.random to
+// undefined — world definition has to be deterministic.
+//
+// MODULES. Imports are resolved BEFORE any evaluation: gather_modules() walks
+// the import graph transitively and reads every module into an in-memory
+// ModuleStore, and QuickJS's loader hook then serves only from that store.
+// Only `shared-lib/<name>` specifiers are legal (flat namespace, no
+// subdirectories, no `..`), and the project's shared-lib shadows the engine's.
+// A world that imports nothing is evaluated as a plain global script, which is
+// why the Promise intrinsic is added only on the module path.
+//
+// DETERMINISM AND SIDE EFFECTS. The one global side effect is the material
+// registry's DYNAMIC tail: MaterialRegistryResetDynamic() runs on entry and
+// defineMaterial() writes through immediately, so the handle a script sees is
+// the id the renderer will index and loading the same world twice yields the
+// same ids. Anything that reaches a content address (root params, entity
+// components) is serialized through canonical_json's key-sorted stringify, so
+// byte-equal authoring hashes byte-equally.
+//
+// ERROR REPORTING. Every failure routes through fail(), filling WorldLoadError
+// with the world path and the AUTHORED property path ("roots[2].transform[5]",
+// "fog.clouds[0].maxHeight"). Object specs are strict — an unknown key in a
+// material spec or a prop spec is an error, not a silently ignored typo. On any
+// failure `definition` is reset to empty, so a partial world never escapes.
+//
+// GOTCHAS.
+//   - Every JSValue taken here must be freed, and the failure paths free by
+//     hand rather than through a scope guard: a new early return has to release
+//     everything the success path would have.
+//   - number_value() accepts whatever JS_ToFloat64 accepts, strings included,
+//     and hands back NaN for them. Callers that care check std::isfinite
+//     themselves.
+//   - Extractor ORDER matters and is not alphabetical: extract_fog runs before
+//     extract_volumetrics (which folds the deprecated fog multipliers into the
+//     already-parsed FogSettings), and apply_legacy_height_layer runs after
+//     both, outside the extractor chain.
+//   - The runtime, the context, the module store and the LoadCollector all live
+//     only for the duration of one call. There is no long-lived world JS
+//     context anywhere in this engine.
+
 #include "world_definition_loader.h"
 #include "matter/log.h"
 
+#include "../hydrology/hydrology_settings.h"
+#include "../hydrology/river_network_builder.h"
+#include "../bake_mode.h"
+#include "../terrain_collision/terrain_collision_definition.h"
 #include "module_resolver.h"
 
 extern "C" {
@@ -13,6 +91,7 @@ extern "C" {
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -21,10 +100,19 @@ extern "C" {
 namespace matter {
 namespace {
 
+// Every shared-lib module source the world transitively imports, read from disk
+// up front by gather_modules() and keyed by CANONICAL specifier (no `.js`
+// suffix). It is handed to QuickJS as the module-loader opaque, so module
+// resolution during evaluation never touches the filesystem and can never pull
+// in a module the pre-pass did not vet. Lives on load_world_definition()'s
+// stack for the duration of the load.
 struct ModuleStore {
     std::map<std::string, std::string> sources;
 };
 
+// Strips a trailing `.js` so `shared-lib/foo` and `shared-lib/foo.js` are the
+// same key. Applied on the way into the store, on QuickJS's normalize hook and
+// on every lookup, so the three can never disagree.
 std::string canonical_specifier(std::string specifier) {
     if (specifier.size() >= 3 &&
         specifier.compare(specifier.size() - 3, 3, ".js") == 0) {
@@ -48,6 +136,17 @@ std::string join_path(const std::string& root, const std::string& leaf) {
     return root + ((last == '/' || last == '\\') ? "" : "/") + leaf;
 }
 
+// Reads every module the world transitively imports into `store`, before any JS
+// runs. Breadth-first over a worklist that grows as each module's own imports
+// are parsed, deduped by canonical specifier so an import cycle terminates.
+//
+// The specifier grammar is deliberately narrow and enforced here rather than at
+// evaluation time: `shared-lib/<name>` only — no other prefix, no subdirectory,
+// no `..`. Each name is looked up as `<name>.js` in desc.project_shared_lib_dir
+// first and desc.engine_shared_lib_dir second, so a project may shadow an
+// engine module. Any violation, or a module that resolves in neither directory,
+// returns false with an author-facing reason in `message`; the caller reports
+// it under the "imports" property path.
 bool gather_modules(const std::string& world_source,
                     const WorldLoadDesc& desc,
                     ModuleStore& store,
@@ -92,6 +191,18 @@ bool gather_modules(const std::string& world_source,
     return true;
 }
 
+// The two QuickJS module-loader hooks, installed together by
+// JS_SetModuleLoaderFunc with the ModuleStore as opaque.
+//
+// normalize_module ignores the importing module's name entirely — specifiers
+// are absolute `shared-lib/...` paths, never relative — and just canonicalizes.
+// The returned string must be allocated with js_malloc; QuickJS frees it.
+//
+// load_module compiles from the pre-gathered store and NEVER reads a file. A
+// specifier that gather_modules did not collect throws a ReferenceError rather
+// than being fetched, which is what makes the import allow-list actually
+// binding at runtime. Returning nullptr with an exception pending is the
+// documented failure form for this hook.
 char* normalize_module(JSContext* context, const char*, const char* name, void*) {
     const std::string canonical = canonical_specifier(name ? name : "");
     char* result = static_cast<char*>(js_malloc(context, canonical.size() + 1));
@@ -130,6 +241,13 @@ bool execute_jobs(JSRuntime* runtime, JSContext* context) {
     }
 }
 
+// Builds a deliberately MINIMAL context: JS_NewContextRaw plus exactly the
+// intrinsics a world definition is allowed to use. Notably absent are the host
+// facilities that would make a world non-deterministic or give it side effects
+// (no Date, no Proxy/Reflect, no host I/O of any kind); Math.random is then
+// removed by the prelude. Promise is added only for the module path, since
+// module evaluation and JS_ExecutePendingJob need it and a plain global script
+// does not.
 JSContext* new_world_context(JSRuntime* runtime, bool modules) {
     JSContext* context = JS_NewContextRaw(runtime);
     if (!context) return nullptr;
@@ -145,6 +263,10 @@ JSContext* new_world_context(JSRuntime* runtime, bool modules) {
     return context;
 }
 
+// Formats the context's pending exception as "message\nstack" (the stack is
+// appended only when it exists and differs from the message). CONSUMES the
+// exception — JS_GetException clears it — so call this exactly once per
+// failure, and only when one is actually pending.
 std::string exception_message(JSContext* context) {
     JSValue exception = JS_GetException(context);
     JSValue stack = JS_GetPropertyStr(context, exception, "stack");
@@ -162,6 +284,10 @@ std::string exception_message(JSContext* context) {
     return result;
 }
 
+// Fills `error` and returns false, so a validator can `return fail(...)` in one
+// line. `property_path` is the AUTHORED path the value came from, spelled the
+// way the script writes it ("roots[2].transform[5]"), which is what makes a
+// load failure actionable without a JS stack.
 bool fail(const WorldLoadDesc& desc,
           WorldLoadError& error,
           std::string property_path,
@@ -189,6 +315,12 @@ bool string_value(JSContext* context, JSValueConst value, std::string& output) {
     return true;
 }
 
+// Coerces via JS_ToFloat64, so it accepts far more than a JS number: a string
+// converts (yielding NaN for a non-numeric one) and only a throwing conversion
+// returns false. It does NOT reject NaN or infinity. Callers that need a real
+// number check std::isfinite on the result themselves — most of the extractors
+// below do, and the sun-angle site explains why the check was not pushed down
+// into here.
 bool number_value(JSContext* context, JSValueConst value, float& output) {
     double number = 0.0;
     if (JS_ToFloat64(context, &number, value) < 0) return false;
@@ -221,6 +353,12 @@ bool float3_array_value(JSContext* context, JSValueConst value, float output[3])
     return true;
 }
 
+// Stringifies `value` through the world context's canonicalizer closure (see
+// canonicalizer_source in load_world_definition): JSON with every object's keys
+// recursively sorted. Used for root params and entity components, whose strings
+// are hashed into content addresses — the sort is what makes two authorings
+// that differ only in key order produce the same address. Returns false when
+// the value is not JSON-serializable (a function, a cycle) or the call threw.
 bool canonical_json(JSContext* context,
                     JSValueConst canonicalizer,
                     JSValueConst value,
@@ -260,6 +398,12 @@ bool optional_number(JSContext* context,
     return ok;
 }
 
+// The `entity(record)` binding handed to buildEntities(). Appends the record to
+// the __matter_entities global array at its current length; extract_entities()
+// reads that array afterwards. It is defined on the instance as own,
+// non-writable and non-configurable, so an authored prototype cannot intercept
+// or suppress the append. The record is not validated here — extract_entities
+// does that, and reports failures with the authored index.
 JSValue append_entity(JSContext* context,
                       JSValueConst,
                       int argument_count,
@@ -304,7 +448,1140 @@ JSValue append_entity(JSContext* context,
 struct LoadCollector {
     std::vector<WorldMaterial>* materials = nullptr;
     const std::vector<WorldPropSpec>* props = nullptr;
+    std::unique_ptr<hydrology::RiverNetworkBuilder> river_builder;
+    std::optional<RiverNetworkDefinition> finished_river_network;
+    std::string river_error_path;
+    bool river_network_created = false;
+    bool river_network_built = false;
+    bool river_hydrology_active = false;
+    TerrainCollisionDefinition terrain_collision_settings{};
+    std::vector<TerrainCollisionRegion> terrain_collision_regions;
+    std::set<std::string> terrain_collision_ids;
+    std::string terrain_collision_error_path;
+    std::string terrain_collision_phase = "module scope";
+    float terrain_collision_sector_size_m = 0.0f;
+    bool terrain_collision_active = false;
+    bool terrain_collision_created = false;
+    bool terrain_collision_built = false;
 };
+
+struct RiverNetworkHandle {
+    LoadCollector* collector = nullptr;
+};
+
+struct RiverHandle {
+    LoadCollector* collector = nullptr;
+    std::size_t river = 0;
+};
+
+struct RiverSectionHandle {
+    LoadCollector* collector = nullptr;
+    std::size_t section = 0;
+};
+
+struct WaterSurfaceHandle {
+    LoadCollector* collector = nullptr;
+};
+
+JSClassID river_network_class_id = 0;
+JSClassID river_class_id = 0;
+JSClassID river_section_class_id = 0;
+JSClassID water_surface_class_id = 0;
+
+void river_network_finalizer(JSRuntime*, JSValueConst value) {
+    delete static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque(value, river_network_class_id));
+}
+
+void river_finalizer(JSRuntime*, JSValueConst value) {
+    delete static_cast<RiverHandle*>(JS_GetOpaque(value, river_class_id));
+}
+
+void river_section_finalizer(JSRuntime*, JSValueConst value) {
+    delete static_cast<RiverSectionHandle*>(
+        JS_GetOpaque(value, river_section_class_id));
+}
+
+void water_surface_finalizer(JSRuntime*, JSValueConst value) {
+    delete static_cast<WaterSurfaceHandle*>(
+        JS_GetOpaque(value, water_surface_class_id));
+}
+
+bool install_river_classes(JSRuntime* runtime) {
+    if (river_network_class_id == 0)
+        JS_NewClassID(runtime, &river_network_class_id);
+    if (river_class_id == 0) JS_NewClassID(runtime, &river_class_id);
+    if (river_section_class_id == 0)
+        JS_NewClassID(runtime, &river_section_class_id);
+    if (water_surface_class_id == 0)
+        JS_NewClassID(runtime, &water_surface_class_id);
+    const JSClassDef network_class = {
+        "MatterRiverNetwork", river_network_finalizer, nullptr, nullptr, nullptr};
+    const JSClassDef river_class = {
+        "MatterRiver", river_finalizer, nullptr, nullptr, nullptr};
+    const JSClassDef section_class = {
+        "MatterRiverSection", river_section_finalizer, nullptr, nullptr, nullptr};
+    const JSClassDef water_surface_class = {
+        "MatterWaterSurface", water_surface_finalizer, nullptr, nullptr, nullptr};
+    return (JS_IsRegisteredClass(runtime, river_network_class_id) ||
+            JS_NewClass(runtime, river_network_class_id, &network_class) == 0) &&
+           (JS_IsRegisteredClass(runtime, river_class_id) ||
+            JS_NewClass(runtime, river_class_id, &river_class) == 0) &&
+           (JS_IsRegisteredClass(runtime, river_section_class_id) ||
+            JS_NewClass(runtime, river_section_class_id, &section_class) == 0) &&
+           (JS_IsRegisteredClass(runtime, water_surface_class_id) ||
+            JS_NewClass(runtime, water_surface_class_id,
+                        &water_surface_class) == 0);
+}
+
+std::string error_path(const std::string& error) {
+    const std::size_t separator = error.find(':');
+    return separator == std::string::npos ? "hydrology" : error.substr(0, separator);
+}
+
+JSValue river_failure(JSContext* context, LoadCollector* collector,
+                      const std::string& error) {
+    if (collector) collector->river_error_path = error_path(error);
+    return JS_ThrowTypeError(context, "%s", error.c_str());
+}
+
+JSValue river_phase_failure(JSContext* context, LoadCollector* collector) {
+    return river_failure(
+        context, collector,
+        "hydrology.phase: river builders are only available inside hydrology()");
+}
+
+JSValue terrain_collision_failure(JSContext* context, LoadCollector* collector,
+                                  const std::string& path,
+                                  const std::string& message) {
+    if (collector) collector->terrain_collision_error_path = path;
+    return JS_ThrowTypeError(context, "%s", message.c_str());
+}
+
+JSValue terrain_collision_phase_failure(JSContext* context, LoadCollector* collector) {
+    const std::string phase = collector ? collector->terrain_collision_phase : "unknown";
+    return terrain_collision_failure(
+        context, collector, phase,
+        "terrainCollision() is only available inside collision(); active phase is " + phase);
+}
+
+bool terrain_collision_number(JSContext* context, JSValueConst value, float& output) {
+    if (!JS_IsNumber(value)) return false;
+    double number = 0.0;
+    if (JS_ToFloat64(context, &number, value) < 0 || !std::isfinite(number) ||
+        number < -std::numeric_limits<float>::max() ||
+        number > std::numeric_limits<float>::max()) {
+        return false;
+    }
+    output = static_cast<float>(number);
+    return true;
+}
+
+bool terrain_collision_float3(JSContext* context, JSValueConst value, Float3& output) {
+    std::uint32_t length = 0;
+    if (!array_length(context, value, length) || length != 3) return false;
+    float* coordinates[] = {&output.x, &output.y, &output.z};
+    for (std::uint32_t index = 0; index != 3; ++index) {
+        JSValue element = JS_GetPropertyUint32(context, value, index);
+        const bool ok = terrain_collision_number(context, element, *coordinates[index]);
+        JS_FreeValue(context, element);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+JSValue terrain_collision_region(JSContext* context, JSValueConst,
+                                 int argument_count, JSValueConst* arguments) {
+    LoadCollector* collector = static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector || !collector->terrain_collision_active)
+        return terrain_collision_phase_failure(context, collector);
+    if (collector->terrain_collision_built)
+        return terrain_collision_failure(context, collector, "terrainCollision.region",
+                                         "terrainCollision.region() cannot follow build()");
+    std::string id;
+    if (argument_count < 2 || !string_value(context, arguments[0], id) || id.empty()) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region.id",
+                                         "terrainCollision.region(id, bounds) requires a non-empty id");
+    }
+    if (!collector->terrain_collision_ids.insert(id).second) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region[" + id + "].id",
+                                         "terrainCollision.region ids must be unique");
+    }
+    if (!JS_IsObject(arguments[1]) || JS_IsArray(arguments[1])) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region[" + id + "]",
+                                         "terrainCollision.region(id, bounds) requires a bounds object");
+    }
+    Float3 min_m{};
+    Float3 max_m{};
+    JSValue min_value = JS_GetPropertyStr(context, arguments[1], "min");
+    const bool min_ok = terrain_collision_float3(context, min_value, min_m);
+    JS_FreeValue(context, min_value);
+    if (!min_ok) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region[" + id + "].min",
+                                         "terrainCollision.region[" + id + "].min must be three finite numbers");
+    }
+    JSValue max_value = JS_GetPropertyStr(context, arguments[1], "max");
+    const bool max_ok = terrain_collision_float3(context, max_value, max_m);
+    JS_FreeValue(context, max_value);
+    if (!max_ok) {
+        return terrain_collision_failure(context, collector, "terrainCollision.region[" + id + "].max",
+                                         "terrainCollision.region[" + id + "].max must be three finite numbers");
+    }
+    collector->terrain_collision_regions.push_back({std::move(id), min_m, max_m});
+    return JS_UNDEFINED;
+}
+
+JSValue terrain_collision_build(JSContext* context, JSValueConst,
+                                int, JSValueConst*) {
+    LoadCollector* collector = static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector || !collector->terrain_collision_active)
+        return terrain_collision_phase_failure(context, collector);
+    if (collector->terrain_collision_built)
+        return terrain_collision_failure(context, collector, "terrainCollision.build",
+                                         "terrainCollision.build() may only be called once");
+    if (collector->terrain_collision_regions.empty())
+        return terrain_collision_failure(context, collector, "terrainCollision.build",
+                                         "terrainCollision.build() requires at least one region");
+    collector->terrain_collision_settings.regions = collector->terrain_collision_regions;
+    terrain_collision::CanonicalDefinition canonical;
+    terrain_collision::SourceIdentity source{};
+    source.bake_mode_salt = bake_mode::salt();
+    std::string validation_error;
+    if (!terrain_collision::canonicalize(collector->terrain_collision_settings,
+                                         collector->terrain_collision_sector_size_m,
+                                         source, canonical, validation_error)) {
+        const std::size_t separator = validation_error.find(' ');
+        const std::string path = separator == std::string::npos
+            ? "terrainCollision.build" : validation_error.substr(0, separator);
+        return terrain_collision_failure(context, collector, path, validation_error);
+    }
+    collector->terrain_collision_built = true;
+    return JS_UNDEFINED;
+}
+
+JSValue terrain_collision_builder(JSContext* context, JSValueConst,
+                                  int argument_count, JSValueConst* arguments) {
+    LoadCollector* collector = static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector || !collector->terrain_collision_active)
+        return terrain_collision_phase_failure(context, collector);
+    if (collector->terrain_collision_created)
+        return terrain_collision_failure(context, collector, "terrainCollision",
+                                         "terrainCollision() may create only one builder");
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) || JS_IsArray(arguments[0])) {
+        return terrain_collision_failure(context, collector, "terrainCollision",
+                                         "terrainCollision(options) requires an options object");
+    }
+    float cell_size_m = 0.0f;
+    JSValue cell_size = JS_GetPropertyStr(context, arguments[0], "cellSize");
+    const bool cell_ok = terrain_collision_number(context, cell_size, cell_size_m);
+    JS_FreeValue(context, cell_size);
+    std::int8_t rung = 0;
+    if (!cell_ok || !terrain_collision::cell_size_to_rung(cell_size_m, rung)) {
+        return terrain_collision_failure(context, collector, "terrainCollision.cellSize",
+                                         "terrainCollision.cellSize must be one of the supported terrain rungs");
+    }
+    float friction = 0.7f;
+    float restitution = 0.0f;
+    JSValue friction_value = JS_GetPropertyStr(context, arguments[0], "friction");
+    const bool friction_ok = JS_IsUndefined(friction_value) ||
+                             terrain_collision_number(context, friction_value, friction);
+    JS_FreeValue(context, friction_value);
+    JSValue restitution_value = JS_GetPropertyStr(context, arguments[0], "restitution");
+    const bool restitution_ok = JS_IsUndefined(restitution_value) ||
+                                terrain_collision_number(context, restitution_value, restitution);
+    JS_FreeValue(context, restitution_value);
+    if (!friction_ok || friction < 0.0f || friction > 1.0f) {
+        return terrain_collision_failure(context, collector, "terrainCollision.friction",
+                                         "terrainCollision.friction must be finite and in [0, 1]");
+    }
+    if (!restitution_ok || restitution < 0.0f || restitution > 1.0f) {
+        return terrain_collision_failure(context, collector, "terrainCollision.restitution",
+                                         "terrainCollision.restitution must be finite and in [0, 1]");
+    }
+    collector->terrain_collision_settings = {};
+    collector->terrain_collision_settings.cell_size_m = cell_size_m;
+    collector->terrain_collision_settings.rung = rung;
+    collector->terrain_collision_settings.friction = friction;
+    collector->terrain_collision_settings.restitution = restitution;
+    collector->terrain_collision_created = true;
+    JSValue object = JS_NewObject(context);
+    JS_SetPropertyStr(context, object, "region",
+                      JS_NewCFunction(context, terrain_collision_region, "region", 2));
+    JS_SetPropertyStr(context, object, "build",
+                      JS_NewCFunction(context, terrain_collision_build, "build", 0));
+    return object;
+}
+
+bool required_float(JSContext* context, JSValueConst object, const char* key,
+                    float& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    double number = 0.0;
+    const bool ok = JS_IsNumber(value) &&
+                    JS_ToFloat64(context, &number, value) == 0 &&
+                    number >= -std::numeric_limits<float>::max() &&
+                    number <= std::numeric_limits<float>::max();
+    if (ok) output = static_cast<float>(number);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+bool required_uint32(JSContext* context, JSValueConst object, const char* key,
+                     std::uint32_t& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    double number = 0.0;
+    const bool ok = JS_IsNumber(value) &&
+                    JS_ToFloat64(context, &number, value) == 0 &&
+                    std::isfinite(number) && number >= 0.0 &&
+                    std::floor(number) == number &&
+                    number <= std::numeric_limits<std::uint32_t>::max();
+    if (ok) output = static_cast<std::uint32_t>(number);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+JSValue river_inlet(JSContext* context, JSValueConst this_value,
+                    int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
+    RiverInlet inlet{};
+    if (argument_count < 2 ||
+        !float3_value(context, arguments[0], inlet.position_m) ||
+        !JS_IsObject(arguments[1]) ||
+        !required_float(context, arguments[1], "flow", inlet.flow_m3s)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.inlet: inlet(position, {flow}) requires finite values");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_inlet(handle->river, inlet, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue river_curve(JSContext* context, JSValueConst this_value,
+                    int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
+    std::uint32_t count = 0;
+    std::vector<Float3> curve;
+    if (argument_count < 1 || !array_length(context, arguments[0], count))
+        return river_failure(context, handle->collector,
+                             "hydrology.curve: curve(points) requires an array");
+    curve.reserve(count);
+    for (std::uint32_t point = 0; point < count; ++point) {
+        JSValue value = JS_GetPropertyUint32(context, arguments[0], point);
+        Float3 position{};
+        const bool ok = float3_value(context, value, position);
+        JS_FreeValue(context, value);
+        if (!ok)
+            return river_failure(context, handle->collector,
+                                 "hydrology.curve: every point must contain three numbers");
+        curve.push_back(position);
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_curve(handle->river, curve, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue river_channel_profile(JSContext* context, JSValueConst this_value,
+                              int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
+    std::uint32_t count = 0;
+    std::vector<RiverChannelProfilePoint> profile;
+    if (argument_count < 1 || !array_length(context, arguments[0], count))
+        return river_failure(
+            context, handle->collector,
+            "hydrology.channelProfile: channelProfile(points) requires an array");
+    profile.reserve(count);
+    for (std::uint32_t index = 0; index < count; ++index) {
+        JSValue value = JS_GetPropertyUint32(context, arguments[0], index);
+        RiverChannelProfilePoint point{};
+        const bool ok = JS_IsObject(value) &&
+                        required_float(context, value, "at", point.distance_m) &&
+                        required_float(context, value, "width", point.width_m) &&
+                        required_float(context, value, "depth", point.depth_m) &&
+                        required_float(context, value, "asymmetry", point.asymmetry);
+        JS_FreeValue(context, value);
+        if (!ok)
+            return river_failure(
+                context, handle->collector,
+                "hydrology.channelProfile: every point requires at/width/depth/asymmetry");
+        profile.push_back(point);
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_channel_profile(
+            handle->river, profile, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue river_joins(JSContext* context, JSValueConst this_value,
+                    int, JSValueConst*) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
+    std::string error;
+    handle->collector->river_builder->reserve_join(handle->river, error);
+    return river_failure(context, handle->collector, error);
+}
+
+JSValue river_section(JSContext* context, JSValueConst this_value,
+                      int argument_count, JSValueConst* arguments);
+
+JSValue make_river_object(JSContext* context, LoadCollector* collector,
+                          std::size_t river) {
+    JSValue object = JS_NewObjectClass(context, river_class_id);
+    if (JS_IsException(object)) return object;
+    JS_SetOpaque(object, new RiverHandle{collector, river});
+    JS_SetPropertyStr(context, object, "inlet",
+                      JS_NewCFunction(context, river_inlet, "inlet", 2));
+    JS_SetPropertyStr(context, object, "curve",
+                      JS_NewCFunction(context, river_curve, "curve", 1));
+    JS_SetPropertyStr(
+        context, object, "channelProfile",
+        JS_NewCFunction(context, river_channel_profile, "channelProfile", 1));
+    JS_SetPropertyStr(context, object, "section",
+                      JS_NewCFunction(context, river_section, "section", 2));
+    JS_SetPropertyStr(context, object, "joins",
+                      JS_NewCFunction(context, river_joins, "joins", 1));
+    return object;
+}
+
+JSValue network_river(JSContext* context, JSValueConst this_value,
+                      int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque2(context, this_value, river_network_class_id));
+    if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
+    std::string name;
+    if (argument_count < 1 || !string_value(context, arguments[0], name))
+        return river_failure(context, handle->collector,
+                             "hydrology.river.name: river(name) requires a string");
+    std::size_t river = 0;
+    std::string error;
+    if (!handle->collector->river_builder->add_river(name, river, error))
+        return river_failure(context, handle->collector, error);
+    return make_river_object(context, handle->collector, river);
+}
+
+RiverSectionHandle* active_section_handle(JSContext* context,
+                                          JSValueConst this_value) {
+    auto* handle = static_cast<RiverSectionHandle*>(
+        JS_GetOpaque2(context, this_value, river_section_class_id));
+    if (!handle) return nullptr;
+    if (!handle->collector->river_hydrology_active) {
+        river_phase_failure(context, handle->collector);
+        return nullptr;
+    }
+    return handle;
+}
+
+JSValue section_emitters(JSContext* context, JSValueConst this_value,
+                         int argument_count, JSValueConst* arguments) {
+    RiverSectionHandle* handle = active_section_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    std::uint32_t count = 0;
+    if (argument_count < 1 || !array_length(context, arguments[0], count))
+        return river_failure(context, handle->collector,
+                             "hydrology.section.emitters: emitters requires an array of ids");
+    std::vector<std::string> ids;
+    ids.reserve(count);
+    for (std::uint32_t index = 0u; index < count; ++index) {
+        JSValue value = JS_GetPropertyUint32(context, arguments[0], index);
+        std::string id;
+        const bool ok = string_value(context, value, id);
+        JS_FreeValue(context, value);
+        if (!ok)
+            return river_failure(context, handle->collector,
+                                 "hydrology.section.emitters: every emitter id must be a string");
+        ids.push_back(std::move(id));
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_section_emitters(
+            handle->section, ids, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue section_waterfall(JSContext* context, JSValueConst this_value,
+                          int argument_count, JSValueConst* arguments) {
+    RiverSectionHandle* handle = active_section_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    RiverWaterfallDefinition waterfall{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "lipAt",
+                        waterfall.lip_distance_m) ||
+        !required_float(context, arguments[0], "landingAt",
+                        waterfall.landing_distance_m) ||
+        !required_float(context, arguments[0], "expectedDrop",
+                        waterfall.expected_drop_m))
+        return river_failure(context, handle->collector,
+                             "hydrology.section.waterfall: waterfall requires lipAt/landingAt/expectedDrop");
+    std::string error;
+    if (!handle->collector->river_builder->add_section_waterfall(
+            handle->section, waterfall, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue section_pool(JSContext* context, JSValueConst this_value,
+                     int argument_count, JSValueConst* arguments) {
+    RiverSectionHandle* handle = active_section_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    RiverPoolDefinition pool{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "from", pool.start_distance_m) ||
+        !required_float(context, arguments[0], "to", pool.end_distance_m) ||
+        !required_float(context, arguments[0], "fillLevel", pool.fill_level_m))
+        return river_failure(context, handle->collector,
+                             "hydrology.section.pool: pool requires from/to/fillLevel");
+    std::string error;
+    if (!handle->collector->river_builder->set_section_pool(
+            handle->section, pool, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue section_spillway(JSContext* context, JSValueConst this_value,
+                         int argument_count, JSValueConst* arguments) {
+    RiverSectionHandle* handle = active_section_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    RiverSpillwayDefinition spillway{};
+    JSValue id_value = argument_count > 0 && JS_IsObject(arguments[0])
+        ? JS_GetPropertyStr(context, arguments[0], "id") : JS_UNDEFINED;
+    const bool id_ok = string_value(context, id_value, spillway.id);
+    JS_FreeValue(context, id_value);
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) || !id_ok ||
+        !required_float(context, arguments[0], "at", spillway.distance_m) ||
+        !required_float(context, arguments[0], "width", spillway.width_m) ||
+        !required_float(context, arguments[0], "effectiveDepth",
+                        spillway.effective_depth_m) ||
+        !required_float(context, arguments[0], "overlap", spillway.overlap_m) ||
+        !required_float(context, arguments[0], "damOffset",
+                        spillway.dam_offset_m))
+        return river_failure(context, handle->collector,
+                             "hydrology.section.spillway: spillway requires id/at/width/effectiveDepth/overlap/damOffset");
+    std::string error;
+    if (!handle->collector->river_builder->set_section_spillway(
+            handle->section, spillway, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue section_after(JSContext* context, JSValueConst this_value,
+                      int argument_count, JSValueConst* arguments) {
+    RiverSectionHandle* handle = active_section_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    std::string upstream;
+    if (argument_count < 1 || !string_value(context, arguments[0], upstream))
+        return river_failure(context, handle->collector,
+                             "hydrology.section.after: after requires a section id");
+    std::string error;
+    if (!handle->collector->river_builder->add_section_after(
+            handle->section, upstream, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue section_from_spillway(JSContext* context, JSValueConst this_value,
+                              int argument_count, JSValueConst* arguments) {
+    RiverSectionHandle* handle = active_section_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    std::string upstream;
+    if (argument_count < 1 || !string_value(context, arguments[0], upstream))
+        return river_failure(context, handle->collector,
+                             "hydrology.section.fromSpillway: fromSpillway requires a section id");
+    std::string error;
+    if (!handle->collector->river_builder->add_section_from_spillway(
+            handle->section, upstream, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue make_section_object(JSContext* context, LoadCollector* collector,
+                            std::size_t section) {
+    JSValue object = JS_NewObjectClass(context, river_section_class_id);
+    if (JS_IsException(object)) return object;
+    JS_SetOpaque(object, new RiverSectionHandle{collector, section});
+    JS_SetPropertyStr(context, object, "emitters",
+                      JS_NewCFunction(context, section_emitters, "emitters", 1));
+    JS_SetPropertyStr(context, object, "waterfall",
+                      JS_NewCFunction(context, section_waterfall, "waterfall", 1));
+    JS_SetPropertyStr(context, object, "pool",
+                      JS_NewCFunction(context, section_pool, "pool", 1));
+    JS_SetPropertyStr(context, object, "spillway",
+                      JS_NewCFunction(context, section_spillway, "spillway", 1));
+    JS_SetPropertyStr(context, object, "after",
+                      JS_NewCFunction(context, section_after, "after", 1));
+    JS_SetPropertyStr(context, object, "fromSpillway",
+                      JS_NewCFunction(context, section_from_spillway,
+                                      "fromSpillway", 1));
+    return object;
+}
+
+JSValue river_section(JSContext* context, JSValueConst this_value,
+                      int argument_count, JSValueConst* arguments) {
+    RiverHandle* handle = static_cast<RiverHandle*>(
+        JS_GetOpaque2(context, this_value, river_class_id));
+    if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
+    std::string id;
+    float from_m = 0.0f;
+    float to_m = 0.0f;
+    float dry_margin_m = 0.0f;
+    if (argument_count < 2 || !string_value(context, arguments[0], id) ||
+        !JS_IsObject(arguments[1]) ||
+        !required_float(context, arguments[1], "from", from_m) ||
+        !required_float(context, arguments[1], "to", to_m) ||
+        !required_float(context, arguments[1], "dryMargin", dry_margin_m))
+        return river_failure(context, handle->collector,
+                             "hydrology.section: section requires id and from/to/dryMargin");
+    std::size_t section = 0u;
+    std::string error;
+    if (!handle->collector->river_builder->add_section(
+            handle->river, id, from_m, to_m, dry_margin_m, section, error))
+        return river_failure(context, handle->collector, error);
+    return make_section_object(context, handle->collector, section);
+}
+
+RiverNetworkHandle* active_network_handle(JSContext* context,
+                                          JSValueConst this_value) {
+    RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque2(context, this_value, river_network_class_id));
+    if (!handle) return nullptr;
+    if (!handle->collector->river_hydrology_active) {
+        river_phase_failure(context, handle->collector);
+        return nullptr;
+    }
+    return handle;
+}
+
+bool required_string(JSContext* context, JSValueConst object, const char* key,
+                     std::string& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    const bool ok = string_value(context, value, output);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+bool required_float3(JSContext* context, JSValueConst object, const char* key,
+                     Float3& output) {
+    JSValue value = JS_GetPropertyStr(context, object, key);
+    const bool ok = float3_value(context, value, output);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+WaterSurfaceHandle* active_water_surface_handle(JSContext* context,
+                                                 JSValueConst this_value) {
+    auto* handle = static_cast<WaterSurfaceHandle*>(
+        JS_GetOpaque2(context, this_value, water_surface_class_id));
+    if (!handle) return nullptr;
+    if (!handle->collector->river_hydrology_active) {
+        river_phase_failure(context, handle->collector);
+        return nullptr;
+    }
+    return handle;
+}
+
+JSValue water_surface_optics(JSContext* context, JSValueConst this_value,
+                             int argument_count, JSValueConst* arguments) {
+    WaterSurfaceHandle* handle =
+        active_water_surface_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    WaterOpticalDefinition optics{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        JS_IsArray(arguments[0]) ||
+        !required_float3(context, arguments[0], "shallowAbsorption",
+                         optics.shallow_absorption) ||
+        !required_float(context, arguments[0], "shallowDistance",
+                        optics.shallow_distance_m) ||
+        !required_float3(context, arguments[0], "deepAbsorption",
+                         optics.deep_absorption) ||
+        !required_float(context, arguments[0], "deepDistance",
+                        optics.deep_distance_m) ||
+        !required_float3(context, arguments[0], "scatteringColor",
+                         optics.scattering_color) ||
+        !required_float(context, arguments[0], "scatteringDistance",
+                        optics.scattering_distance_m) ||
+        !required_float(context, arguments[0], "anisotropy",
+                        optics.anisotropy) ||
+        !required_float(context, arguments[0], "ior", optics.ior)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.optics: optics requires shallowAbsorption/shallowDistance/deepAbsorption/deepDistance/scatteringColor/scatteringDistance/anisotropy/ior");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_water_optics(optics, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue water_surface_wave_band(JSContext* context, JSValueConst this_value,
+                                int argument_count, JSValueConst* arguments) {
+    WaterSurfaceHandle* handle =
+        active_water_surface_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    WaterWaveBandDefinition wave{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        JS_IsArray(arguments[0]) ||
+        !required_float(context, arguments[0], "wavelength", wave.wavelength_m) ||
+        !required_float(context, arguments[0], "amplitude", wave.normal_amplitude) ||
+        !required_float(context, arguments[0], "speed", wave.speed_multiplier) ||
+        !required_float(context, arguments[0], "response", wave.response)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.waveBand: waveBand requires wavelength/amplitude/speed/response");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->add_water_wave_band(wave, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue water_surface_foam(JSContext* context, JSValueConst this_value,
+                           int argument_count, JSValueConst* arguments) {
+    WaterSurfaceHandle* handle =
+        active_water_surface_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    WaterFoamDefinition foam{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        JS_IsArray(arguments[0]) ||
+        !required_float(context, arguments[0], "threshold", foam.threshold) ||
+        !required_float(context, arguments[0], "gain", foam.gain) ||
+        !required_float(context, arguments[0], "persistence", foam.persistence_s) ||
+        !required_float(context, arguments[0], "breakupScale", foam.breakup_scale_m) ||
+        !required_float(context, arguments[0], "roughnessGain", foam.roughness_gain) ||
+        !required_float(context, arguments[0], "scatteringGain", foam.scattering_gain) ||
+        !required_float(context, arguments[0], "transmissionLoss", foam.transmission_loss) ||
+        !required_float(context, arguments[0], "normalSoftening", foam.normal_softening)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.foam: foam requires threshold/gain/persistence/breakupScale/roughnessGain/scatteringGain/transmissionLoss/normalSoftening");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_water_foam(foam, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue water_surface_local_override(JSContext* context,
+                                     JSValueConst this_value,
+                                     int argument_count,
+                                     JSValueConst* arguments) {
+    WaterSurfaceHandle* handle =
+        active_water_surface_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    WaterLocalOverrideDefinition local{};
+    std::string shape;
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        JS_IsArray(arguments[0]) ||
+        !required_string(context, arguments[0], "shape", shape)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.waterSurface.localOverride.shape: shape must be 'sphere' or 'box'");
+    }
+    if (shape == "sphere") {
+        local.shape = WaterLocalOverrideDefinition::Shape::Sphere;
+        if (!required_float(context, arguments[0], "radius", local.radius_m))
+            return river_failure(context, handle->collector,
+                                 "hydrology.waterSurface.localOverride.radius: sphere radius is required");
+    } else if (shape == "box") {
+        local.shape = WaterLocalOverrideDefinition::Shape::Box;
+        if (!required_float3(context, arguments[0], "halfExtents",
+                             local.half_extents_m))
+            return river_failure(context, handle->collector,
+                                 "hydrology.waterSurface.localOverride.halfExtents: box halfExtents are required");
+    } else {
+        return river_failure(context, handle->collector,
+                             "hydrology.waterSurface.localOverride.shape: shape must be 'sphere' or 'box'");
+    }
+    if (!required_float3(context, arguments[0], "center", local.center_m) ||
+        !required_float(context, arguments[0], "foamMultiplier",
+                        local.foam_multiplier) ||
+        !required_float(context, arguments[0], "waveMultiplier",
+                        local.wave_multiplier) ||
+        !required_float(context, arguments[0], "thresholdOffset",
+                        local.threshold_offset)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.localOverride: localOverride requires center/foamMultiplier/waveMultiplier/thresholdOffset");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->add_water_local_override(local, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_water_surface(JSContext* context, JSValueConst this_value,
+                              int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    double material_number = 0.0;
+    if (argument_count < 1 || !JS_IsNumber(arguments[0]) ||
+        JS_ToFloat64(context, &material_number, arguments[0]) < 0 ||
+        !std::isfinite(material_number) || material_number < 0.0 ||
+        std::floor(material_number) != material_number ||
+        material_number > std::numeric_limits<std::uint32_t>::max()) {
+        return river_failure(context, handle->collector,
+                             "hydrology.waterSurface.material: material id must be a uint32");
+    }
+    const auto material_id = static_cast<std::uint32_t>(material_number);
+    const MaterialDef* material =
+        material_id < static_cast<std::uint32_t>(MaterialRegistryCount())
+            ? MaterialRegistryGet(static_cast<int>(material_id)) : nullptr;
+    if (!material ||
+        (material->surfaceFlags & MATERIAL_WATER_SURFACE) == 0u) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.waterSurface.material: material must declare waterSurface: true");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_water_material(material_id, error))
+        return river_failure(context, handle->collector, error);
+    JSValue object = JS_NewObjectClass(context, water_surface_class_id);
+    if (JS_IsException(object)) return object;
+    JS_SetOpaque(object, new WaterSurfaceHandle{handle->collector});
+    JS_SetPropertyStr(context, object, "optics",
+                      JS_NewCFunction(context, water_surface_optics, "optics", 1));
+    JS_SetPropertyStr(context, object, "waveBand",
+                      JS_NewCFunction(context, water_surface_wave_band,
+                                      "waveBand", 1));
+    JS_SetPropertyStr(context, object, "foam",
+                      JS_NewCFunction(context, water_surface_foam, "foam", 1));
+    JS_SetPropertyStr(context, object, "localOverride",
+                      JS_NewCFunction(context, water_surface_local_override,
+                                      "localOverride", 1));
+    return object;
+}
+
+JSValue network_backend(JSContext* context, JSValueConst this_value,
+                        int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    std::string name;
+    if (argument_count < 1 || !string_value(context, arguments[0], name) ||
+        (name != "physx" && name != "disabled")) {
+        return river_failure(context, handle->collector,
+                             "hydrology.backend: backend must be 'physx' or 'disabled'");
+    }
+    std::string error;
+    const matter::HydrologyBackend backend = name == "physx"
+        ? matter::HydrologyBackend::Physx
+        : matter::HydrologyBackend::Disabled;
+    if (!handle->collector->river_builder->set_backend(backend, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_pbd(JSContext* context, JSValueConst this_value,
+                    int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyPbdSettings settings{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "particleSpacing",
+                        settings.particle_spacing_m) ||
+        !required_float(context, arguments[0], "restDensity",
+                        settings.rest_density_kg_m3) ||
+        !required_float(context, arguments[0], "fixedStep",
+                        settings.fixed_step_seconds) ||
+        !required_uint32(context, arguments[0], "iterations",
+                         settings.solver_iterations) ||
+        !required_uint32(context, arguments[0], "maxNeighbors",
+                         settings.max_neighbors)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.pbd: pbd requires particleSpacing/restDensity/fixedStep/iterations/maxNeighbors");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_pbd(settings, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_mesh_animation(JSContext* context, JSValueConst this_value,
+                               int argument_count,
+                               JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyMeshAnimationProfile profile{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_uint32(context, arguments[0], "framesPerSecond",
+                         profile.frames_per_second) ||
+        !required_float(context, arguments[0], "duration",
+                        profile.duration_seconds) ||
+        !required_float(context, arguments[0], "phaseOffset",
+                        profile.phase_offset_seconds)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.meshAnimation: meshAnimation requires framesPerSecond/duration/phaseOffset");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_mesh_animation(profile, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_limits(JSContext* context, JSValueConst this_value,
+                       int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyBakeLimits limits{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_uint32(context, arguments[0], "batchSteps", limits.batch_steps) ||
+        !required_uint32(context, arguments[0], "maxSteps", limits.max_steps) ||
+        !required_uint32(context, arguments[0], "maxParticles", limits.max_particles)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.limits: limits requires batchSteps/maxSteps/maxParticles");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_limits(limits, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_emitter(JSContext* context, JSValueConst this_value,
+                        int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyEmitter emitter{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_string(context, arguments[0], "id", emitter.id) ||
+        !required_float3(context, arguments[0], "position", emitter.position_m) ||
+        !required_float3(context, arguments[0], "direction", emitter.direction) ||
+        !required_float3(context, arguments[0], "initialVelocity",
+                         emitter.initial_velocity_mps) ||
+        !required_float(context, arguments[0], "flow", emitter.flow_m3s) ||
+        !required_float(context, arguments[0], "radius", emitter.radius_m) ||
+        !required_float(context, arguments[0], "startTime", emitter.start_time_s) ||
+        !required_float(context, arguments[0], "stopTime", emitter.stop_time_s)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.emitter: emitter requires id/position/direction/initialVelocity/flow/radius/startTime/stopTime");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->add_emitter(emitter, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_escape_policy(JSContext* context, JSValueConst this_value,
+                              int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyEscapePolicy policy{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_uint32(context, arguments[0], "absoluteCount",
+                         policy.absolute_count) ||
+        !required_float(context, arguments[0], "ratio", policy.ratio)) {
+        return river_failure(
+            context, handle->collector,
+            "hydrology.escapePolicy: escapePolicy requires absoluteCount/ratio");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_escape_policy(policy, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_virtual_dam(JSContext* context, JSValueConst this_value,
+                            int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyVirtualDam dam{};
+    if (argument_count > 0 && JS_IsObject(arguments[0]) &&
+        has_property(context, arguments[0], "distance"))
+        return river_failure(context, handle->collector,
+                             "hydrology.virtualDam.distance: section spillways own dam distance");
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "height", dam.height_m) ||
+        !required_float(context, arguments[0], "thickness", dam.thickness_m)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.virtualDam: virtualDam requires height/thickness");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_virtual_dam(dam, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_bake_sequential(JSContext* context, JSValueConst this_value,
+                                int, JSValueConst*) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    std::string error;
+    if (!handle->collector->river_builder->set_bake_sequential(error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_fill_sensor(JSContext* context, JSValueConst this_value,
+                            int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyFillSensor sensor{};
+    Float3 resolution{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "upstreamOffset",
+                        sensor.upstream_offset_m) ||
+        !required_float(context, arguments[0], "length", sensor.length_m) ||
+        !required_float(context, arguments[0], "height", sensor.height_m) ||
+        !required_float3(context, arguments[0], "resolution", resolution) ||
+        !std::isfinite(resolution.x) || !std::isfinite(resolution.y) ||
+        !std::isfinite(resolution.z) || resolution.x < 0.0f ||
+        resolution.y < 0.0f || resolution.z < 0.0f ||
+        std::floor(resolution.x) != resolution.x ||
+        std::floor(resolution.y) != resolution.y ||
+        std::floor(resolution.z) != resolution.z ||
+        resolution.x > static_cast<float>(std::numeric_limits<std::uint32_t>::max()) ||
+        resolution.y > static_cast<float>(std::numeric_limits<std::uint32_t>::max()) ||
+        resolution.z > static_cast<float>(std::numeric_limits<std::uint32_t>::max()) ||
+        !required_float(context, arguments[0], "crestWetFraction",
+                        sensor.crest_wet_fraction) ||
+        !required_uint32(context, arguments[0], "stableWetSteps",
+                         sensor.stable_wet_steps) ||
+        !required_uint32(context, arguments[0], "minimumParticlesPerCell",
+                         sensor.minimum_particles_per_cell)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.fillSensor: fillSensor requires upstreamOffset/length/height/resolution/crestWetFraction/stableWetSteps/minimumParticlesPerCell");
+    }
+    sensor.resolution_x = static_cast<std::uint32_t>(resolution.x);
+    sensor.resolution_y = static_cast<std::uint32_t>(resolution.y);
+    sensor.resolution_z = static_cast<std::uint32_t>(resolution.z);
+    std::string error;
+    if (!handle->collector->river_builder->set_fill_sensor(sensor, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_quality(JSContext* context, JSValueConst this_value,
+                        int argument_count, JSValueConst* arguments) {
+    RiverNetworkHandle* handle = active_network_handle(context, this_value);
+    if (!handle) return JS_EXCEPTION;
+    matter::HydrologyQualitySettings quality{};
+    if (argument_count < 1 || !JS_IsObject(arguments[0]) ||
+        !required_float(context, arguments[0], "particleRadius",
+                        quality.particle_radius_m) ||
+        !required_float(context, arguments[0], "visualVoxel",
+                        quality.visual_voxel_m) ||
+        !required_float(context, arguments[0], "visualBlendWidth",
+                        quality.visual_blend_width_m) ||
+        !required_float(context, arguments[0], "coarseVoxel",
+                        quality.coarse_voxel_m) ||
+        !required_float(context, arguments[0], "gameplayCell",
+                        quality.gameplay_cell_m) ||
+        !required_uint32(context, arguments[0], "maxGridVertices",
+                         quality.max_grid_vertices) ||
+        !required_uint32(context, arguments[0], "maxMeshVertices",
+                         quality.max_mesh_vertices) ||
+        !required_uint32(context, arguments[0], "maxMeshIndices",
+                         quality.max_mesh_indices)) {
+        return river_failure(context, handle->collector,
+                             "hydrology.quality: quality requires all particle/visual/coarse/gameplay settings and mesh caps");
+    }
+    std::string error;
+    if (!handle->collector->river_builder->set_quality(quality, error))
+        return river_failure(context, handle->collector, error);
+    return JS_DupValue(context, this_value);
+}
+
+JSValue network_build(JSContext* context, JSValueConst this_value,
+                      int, JSValueConst*) {
+    RiverNetworkHandle* handle = static_cast<RiverNetworkHandle*>(
+        JS_GetOpaque2(context, this_value, river_network_class_id));
+    if (!handle) return JS_EXCEPTION;
+    if (!handle->collector->river_hydrology_active)
+        return river_phase_failure(context, handle->collector);
+    RiverNetworkDefinition definition;
+    std::string error;
+    if (!handle->collector->river_builder->finish(definition, error))
+        return river_failure(context, handle->collector, error);
+    handle->collector->finished_river_network = std::move(definition);
+    handle->collector->river_network_built = true;
+    return JS_UNDEFINED;
+}
+
+JSValue river_network(JSContext* context, JSValueConst,
+                      int argument_count, JSValueConst* arguments) {
+    LoadCollector* collector =
+        static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector)
+        return JS_ThrowInternalError(context, "river network collector unavailable");
+    if (!collector->river_hydrology_active)
+        return river_phase_failure(context, collector);
+    if (collector->river_network_created)
+        return river_failure(context, collector,
+                             "hydrology.riverNetwork: only one network may be created");
+    float cell_size = 0.0f;
+    JSValue seed_value = argument_count > 0 && JS_IsObject(arguments[0])
+        ? JS_GetPropertyStr(context, arguments[0], "seed") : JS_UNDEFINED;
+    double seed_number = 0.0;
+    const bool seed_ok = JS_IsNumber(seed_value) &&
+                         JS_ToFloat64(context, &seed_number, seed_value) == 0 &&
+                         std::isfinite(seed_number) && seed_number >= 0.0 &&
+                         std::floor(seed_number) == seed_number &&
+                         seed_number <= 9007199254740991.0;
+    JS_FreeValue(context, seed_value);
+    if (argument_count < 1 || !JS_IsObject(arguments[0])) {
+        return river_failure(context, collector,
+                             "hydrology.riverNetwork: options object is required");
+    }
+    if (!required_float(context, arguments[0], "cellSize", cell_size))
+        return river_failure(context, collector,
+                             "hydrology.cellSize: cellSize must be a finite number");
+    if (!seed_ok)
+        return river_failure(context, collector,
+                             "hydrology.seed: seed must be a nonnegative safe integer");
+    collector->river_network_created = true;
+    collector->river_builder = std::make_unique<hydrology::RiverNetworkBuilder>(
+        cell_size, static_cast<std::uint64_t>(seed_number));
+    JSValue object = JS_NewObjectClass(context, river_network_class_id);
+    if (JS_IsException(object)) return object;
+    JS_SetOpaque(object, new RiverNetworkHandle{collector});
+    JS_SetPropertyStr(context, object, "river",
+                      JS_NewCFunction(context, network_river, "river", 1));
+    JS_SetPropertyStr(context, object, "waterSurface",
+                      JS_NewCFunction(context, network_water_surface,
+                                      "waterSurface", 1));
+    JS_SetPropertyStr(context, object, "backend",
+                      JS_NewCFunction(context, network_backend, "backend", 1));
+    JS_SetPropertyStr(context, object, "pbd",
+                      JS_NewCFunction(context, network_pbd, "pbd", 1));
+    JS_SetPropertyStr(
+        context, object, "meshAnimation",
+        JS_NewCFunction(context, network_mesh_animation, "meshAnimation", 1));
+    JS_SetPropertyStr(context, object, "limits",
+                      JS_NewCFunction(context, network_limits, "limits", 1));
+    JS_SetPropertyStr(context, object, "escapePolicy",
+                      JS_NewCFunction(context, network_escape_policy,
+                                      "escapePolicy", 1));
+    JS_SetPropertyStr(context, object, "emitter",
+                      JS_NewCFunction(context, network_emitter, "emitter", 1));
+    JS_SetPropertyStr(context, object, "virtualDam",
+                      JS_NewCFunction(context, network_virtual_dam, "virtualDam", 1));
+    JS_SetPropertyStr(context, object, "fillSensor",
+                      JS_NewCFunction(context, network_fill_sensor, "fillSensor", 1));
+    JS_SetPropertyStr(context, object, "quality",
+                      JS_NewCFunction(context, network_quality, "quality", 1));
+    JS_SetPropertyStr(context, object, "bakeSequential",
+                      JS_NewCFunction(context, network_bake_sequential,
+                                      "bakeSequential", 0));
+    JS_SetPropertyStr(context, object, "build",
+                      JS_NewCFunction(context, network_build, "build", 0));
+    return object;
+}
 
 std::uint32_t fnv1a32(const std::string& text) {
     std::uint32_t hash = 2166136261u;
@@ -362,6 +1639,7 @@ const char* const kMaterialSpecKeys[] = {
     "clearcoat", "clearcoatRoughness", "specularStrength", "specularTint",
     "alphaCutoff", "shadowOpacity",
     "thinWalled", "doubleSided", "alphaTested", "volumeBoundary",
+    "waterSurface",
     "detail", "detailDensity",
 };
 
@@ -440,10 +1718,17 @@ JSValue define_material(JSContext* context,
 
     MaterialDef def{};
     MaterialRegistryDefaultDynamicDef(&def);
-    // Distinct dynamic materials must not share a merge group with each other
-    // or with a builtin (0..25), or the SDF mesher would blend them. Derived
-    // from the name so the group is stable across loads and independent of
-    // declaration order.
+    // Distinct dynamic materials must not share a MERGE GROUP with each other
+    // or with a builtin, or the SDF mesher would blend them into one surface.
+    // Builtin merge groups are the GROUP_* enum in
+    // libs/MatterSurfaceLib/src/material_registry.c, currently GROUP_RED = 0
+    // through GROUP_FOLIAGE_THIN = 25 — note these are group ids, NOT the
+    // builtin MATERIAL ids (0 .. MaterialRegistryStaticCount()-1, see the
+    // reset comment in load_world_definition). The 1000 floor below clears
+    // both ranges by a wide margin; it is the one number to raise if the
+    // GROUP_* enum ever grows past it.
+    // Derived from the name so the group is stable across loads and
+    // independent of declaration order.
     def.mergeGroup = 1000 + static_cast<int>(fnv1a32(name) % 1000000u);
 
     bool present = false;
@@ -486,6 +1771,7 @@ JSValue define_material(JSContext* context,
     spec_flag(context, spec, "doubleSided", MATERIAL_DOUBLE_SIDED, flags);
     spec_flag(context, spec, "alphaTested", MATERIAL_ALPHA_TESTED, flags);
     spec_flag(context, spec, "volumeBoundary", MATERIAL_VOLUME_BOUNDARY, flags);
+    spec_flag(context, spec, "waterSurface", MATERIAL_WATER_SURFACE, flags);
     def.surfaceFlags = flags;
 
     WorldMaterial record;
@@ -579,6 +1865,47 @@ bool extract_settings_object(JSContext* context,
            optional_number(context, object, "yMax", settings.y_max);
 }
 
+bool valid_fluid_collider_transform(const Mat4f& transform) {
+    for (const float value : transform.m)
+        if (!std::isfinite(value)) return false;
+    if (transform.m[12] != 0.0f || transform.m[13] != 0.0f ||
+        transform.m[14] != 0.0f || transform.m[15] != 1.0f)
+        return false;
+    const Float3 columns[] = {
+        {transform.m[0], transform.m[4], transform.m[8]},
+        {transform.m[1], transform.m[5], transform.m[9]},
+        {transform.m[2], transform.m[6], transform.m[10]},
+    };
+    const auto dot = [](Float3 a, Float3 b) {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    };
+    float lengths[3]{};
+    for (std::size_t index = 0; index < 3u; ++index) {
+        lengths[index] = std::sqrt(dot(columns[index], columns[index]));
+        if (!(lengths[index] > 1.0e-6f)) return false;
+    }
+    for (std::size_t a = 0; a < 3u; ++a) {
+        for (std::size_t b = a + 1u; b < 3u; ++b) {
+            const float tolerance = 1.0e-4f * lengths[a] * lengths[b];
+            if (std::fabs(dot(columns[a], columns[b])) > tolerance)
+                return false;
+        }
+    }
+    return true;
+}
+
+// World.roots -> definition.roots. Optional; absent means a world with no
+// roots, not an error. Each entry needs a string `module`; `params` (any
+// JSON-serializable value, canonicalized because it is hashed into the root's
+// content address), a 16-number row of `transform`, and the `expand` / `tileset`
+// booleans are optional and keep the WorldRoot default when absent — which for
+// `transform` is IDENTITY (see matter/world_definition.h), so a root that omits
+// it is placed at the origin unrotated rather than through a zero matrix.
+//
+// Runs FIRST among the extractors, which is what defines "too late" for
+// defineMaterial: a root's params may name a material handle, so materials must
+// already exist by the time this runs, and the binding is swapped for a
+// throwing stub once it has.
 bool extract_roots(JSContext* context,
                    JSValueConst world_class,
                    JSValueConst canonicalizer,
@@ -595,6 +1922,7 @@ bool extract_roots(JSContext* context,
         JS_FreeValue(context, roots);
         return fail(desc, error, "roots", "World.roots must be an array");
     }
+    std::set<std::string> fluid_collider_ids;
     for (std::uint32_t index = 0; index < count; ++index) {
         const std::string path = "roots[" + std::to_string(index) + "]";
         JSValue entry = JS_GetPropertyUint32(context, roots, index);
@@ -604,6 +1932,15 @@ bool extract_roots(JSContext* context,
             return fail(desc, error, path, "world root must be an object");
         }
         WorldRoot root;
+        JSValue id = JS_GetPropertyStr(context, entry, "id");
+        if (!JS_IsUndefined(id) && !string_value(context, id, root.id)) {
+            JS_FreeValue(context, id);
+            JS_FreeValue(context, entry);
+            JS_FreeValue(context, roots);
+            return fail(desc, error, path + ".id",
+                        "world root id must be a string");
+        }
+        JS_FreeValue(context, id);
         JSValue module = JS_GetPropertyStr(context, entry, "module");
         if (!string_value(context, module, root.module)) {
             JS_FreeValue(context, module);
@@ -653,6 +1990,114 @@ bool extract_roots(JSContext* context,
         }
         JS_FreeValue(context, transform);
 
+        JSValue fluid_collider =
+            JS_GetPropertyStr(context, entry, "fluidCollider");
+        if (!JS_IsUndefined(fluid_collider)) {
+            if (root.id.empty()) {
+                JS_FreeValue(context, fluid_collider);
+                JS_FreeValue(context, entry);
+                JS_FreeValue(context, roots);
+                return fail(desc, error, path + ".id",
+                            "fluid collider roots require a non-empty stable id");
+            }
+            if (!JS_IsObject(fluid_collider)) {
+                JS_FreeValue(context, fluid_collider);
+                JS_FreeValue(context, entry);
+                JS_FreeValue(context, roots);
+                return fail(desc, error, path + ".fluidCollider",
+                            "fluidCollider must be an object");
+            }
+            JSValue shape =
+                JS_GetPropertyStr(context, fluid_collider, "shape");
+            std::string shape_name;
+            if (!string_value(context, shape, shape_name)) {
+                JS_FreeValue(context, shape);
+                JS_FreeValue(context, fluid_collider);
+                JS_FreeValue(context, entry);
+                JS_FreeValue(context, roots);
+                return fail(desc, error, path + ".fluidCollider.shape",
+                            "fluid collider shape must be a string");
+            }
+            JS_FreeValue(context, shape);
+            if (shape_name == "sphere") {
+                JSValue radius =
+                    JS_GetPropertyStr(context, fluid_collider, "radius");
+                const bool valid = number_value(
+                    context, radius, root.fluid_collider.radius_m);
+                JS_FreeValue(context, radius);
+                if (!valid || !std::isfinite(root.fluid_collider.radius_m) ||
+                    root.fluid_collider.radius_m <= 0.0f) {
+                    JS_FreeValue(context, fluid_collider);
+                    JS_FreeValue(context, entry);
+                    JS_FreeValue(context, roots);
+                    return fail(desc, error,
+                                path + ".fluidCollider.radius",
+                                "sphere radius must be finite and positive");
+                }
+                root.fluid_collider.shape =
+                    WorldFluidColliderShape::Sphere;
+            } else if (shape_name == "box") {
+                JSValue extents = JS_GetPropertyStr(
+                    context, fluid_collider, "halfExtents");
+                const bool valid = float3_value(
+                    context, extents,
+                    root.fluid_collider.half_extents_m);
+                JS_FreeValue(context, extents);
+                const auto half = root.fluid_collider.half_extents_m;
+                if (!valid || !std::isfinite(half.x) ||
+                    !std::isfinite(half.y) || !std::isfinite(half.z) ||
+                    half.x <= 0.0f || half.y <= 0.0f || half.z <= 0.0f) {
+                    JS_FreeValue(context, fluid_collider);
+                    JS_FreeValue(context, entry);
+                    JS_FreeValue(context, roots);
+                    return fail(desc, error,
+                                path + ".fluidCollider.halfExtents",
+                                "box halfExtents must be three finite positive numbers");
+                }
+                root.fluid_collider.shape = WorldFluidColliderShape::Box;
+            } else {
+                JS_FreeValue(context, fluid_collider);
+                JS_FreeValue(context, entry);
+                JS_FreeValue(context, roots);
+                return fail(desc, error, path + ".fluidCollider.shape",
+                            "fluid collider shape must be sphere or box");
+            }
+            JSValue center =
+                JS_GetPropertyStr(context, fluid_collider, "center");
+            if (!JS_IsUndefined(center)) {
+                const bool valid = float3_value(
+                    context, center, root.fluid_collider.center_m);
+                const auto local_center = root.fluid_collider.center_m;
+                if (!valid || !std::isfinite(local_center.x) ||
+                    !std::isfinite(local_center.y) ||
+                    !std::isfinite(local_center.z)) {
+                    JS_FreeValue(context, center);
+                    JS_FreeValue(context, fluid_collider);
+                    JS_FreeValue(context, entry);
+                    JS_FreeValue(context, roots);
+                    return fail(desc, error,
+                                path + ".fluidCollider.center",
+                                "fluid collider center must be three finite numbers");
+                }
+            }
+            JS_FreeValue(context, center);
+            if (!valid_fluid_collider_transform(root.transform)) {
+                JS_FreeValue(context, fluid_collider);
+                JS_FreeValue(context, entry);
+                JS_FreeValue(context, roots);
+                return fail(desc, error, path + ".transform",
+                            "fluid collider transform must be finite, affine, nonsingular, and shear-free");
+            }
+            if (!fluid_collider_ids.insert(root.id).second) {
+                JS_FreeValue(context, fluid_collider);
+                JS_FreeValue(context, entry);
+                JS_FreeValue(context, roots);
+                return fail(desc, error, path + ".id",
+                            "fluid collider root ids must be unique");
+            }
+        }
+        JS_FreeValue(context, fluid_collider);
+
         JSValue expand = JS_GetPropertyStr(context, entry, "expand");
         if (!JS_IsUndefined(expand)) root.expand = JS_ToBool(context, expand) != 0;
         JS_FreeValue(context, expand);
@@ -667,6 +2112,13 @@ bool extract_roots(JSContext* context,
     return true;
 }
 
+// World.lights, which accepts TWO shapes:
+//   * an array of point lights, appended to definition.lights; or
+//   * an object with optional `sun` / `sky` / `spots` members, where sun and sky
+//     write renderer SETTINGS (definition.settings.sun_* / sky_color) rather
+//     than list entries, and only `spots` appends lights.
+// The array form returns early, so a world using it gets no sun/sky authoring
+// at all. Absent means "keep the compiled defaults".
 bool extract_lights(JSContext* context,
                     JSValueConst world_class,
                     const WorldLoadDesc& desc,
@@ -1051,6 +2503,11 @@ bool extract_fog(JSContext* context,
     return true;
 }
 
+// World.camera -> definition.settings.camera, and sets its `authored` flag so
+// the viewer knows to use it instead of its own default framing. Both position
+// and target are REQUIRED (unlike most optional statics here) and must be
+// finite and distinct — a degenerate view vector produces a broken view matrix
+// with no later opportunity to diagnose it.
 bool extract_camera(JSContext* context,
                     JSValueConst world_class,
                     const WorldLoadDesc& desc,
@@ -1100,6 +2557,19 @@ bool extract_camera(JSContext* context,
     return true;
 }
 
+// World.streaming -> the streaming half of WorldSettings: the `nestedSectors`
+// and `volumetricSectors` flags, the `rings` ladder ({radius, rung}) and the
+// heightfield `terrainBands` ladder ({radius, lod}).
+//
+// Both ladders share one ordering contract, enforced here rather than by the
+// streamer: strictly increasing positive radii, integral non-negative
+// levels, and each entry's level exactly one BELOW its predecessor's — i.e.
+// innermost first and finest first. Bands additionally cap lod at 5.
+//
+// Everything is optional and each part is independent; note in particular that
+// the flags and the bands are parsed OUTSIDE the rings block, for the reasons
+// spelled out at each site (a nested-LOD world can legitimately author bands
+// with no rings).
 bool extract_streaming(JSContext* context,
                        JSValueConst world_class,
                        const WorldLoadDesc& desc,
@@ -1425,6 +2895,15 @@ bool extract_atmosphere(JSContext* context,
     return true;
 }
 
+// World.cloudShadows -> definition.settings.cloud_shadows. Numeric fields are
+// validated for finiteness and range (coverages and filter scale positive,
+// updateFraction in [0,1]).
+//
+// GOTCHA on the four resolution/slice fields: the script authors the VALUE
+// (e.g. nearResolution: 256) but what is stored is that value's INDEX into the
+// small allow-list beside it (256 -> 1). The settings fields are enum-style
+// selectors, not pixel counts. Anything not in the list is rejected rather than
+// rounded, so a typo cannot silently pick a neighbouring quality level.
 bool extract_cloud_shadows(JSContext* context,
                            JSValueConst world_class,
                            const WorldLoadDesc& desc,
@@ -1664,6 +3143,15 @@ bool prop_spec_finite(JSContext* context, JSValueConst spec, const char* key,
     return ok;
 }
 
+// Parses one `static props` entry. `default` is mandatory and its literal TYPE
+// selects WorldPropSpec::Kind — boolean -> Bool, string -> String, number ->
+// Float, or number alongside `enum` labels -> Enum (the default is then the
+// label INDEX, and must be an in-range integer). Unknown keys are rejected.
+//
+// min/max must be authored together and only survive for the Float kind (a
+// range on a Bool or a String would clamp nothing and mislead the panel, so it
+// is dropped along with `step`). When a range is present the default must lie
+// inside it.
 bool extract_prop_spec(JSContext* context,
                        JSValueConst spec,
                        const std::string& path,
@@ -1907,6 +3395,11 @@ JSValue get_prop_too_early(JSContext* context, JSValueConst, int, JSValueConst*)
         "buildEntities()");
 }
 
+// The world's sector geometry: sectorSize / yMin / yMax. Two spellings are
+// accepted, `World.world` and `World.settings`, and both write into the same
+// WorldSettings — read in that order and each key only assigned when present,
+// so a world declaring both ends up with `settings` winning per key. A
+// non-object under either name is an error, not an ignored value.
 bool extract_settings(JSContext* context,
                       JSValueConst world_class,
                       const WorldLoadDesc& desc,
@@ -1927,6 +3420,252 @@ bool extract_settings(JSContext* context,
     return true;
 }
 
+// Hydrology is deliberately a narrow, plain-data static. It is not a general
+// configuration object: later bake stages key the exact values below, so a
+// getter, function, inherited value, or unknown key would make definition-time
+// evaluation non-hermetic or silently change the frozen contract.
+bool hydrology_plain_data(JSContext* context, JSValueConst value,
+                          unsigned depth = 0) {
+    if (depth > 8 || JS_IsFunction(context, value) || JS_IsProxy(value))
+        return false;
+    if (!JS_IsObject(value)) return true;
+    JSPropertyEnum* names = nullptr;
+    std::uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(context, &names, &count, value,
+                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) != 0)
+        return false;
+    bool ok = true;
+    for (std::uint32_t index = 0; index < count && ok; ++index) {
+        JSPropertyDescriptor property{};
+        if (JS_GetOwnProperty(context, &property, value, names[index].atom) != 1 ||
+            (property.flags & JS_PROP_GETSET)) {
+            ok = false;
+        } else {
+            ok = hydrology_plain_data(context, property.value, depth + 1);
+        }
+        JS_FreeValue(context, property.value);
+        JS_FreeValue(context, property.getter);
+        JS_FreeValue(context, property.setter);
+    }
+    JS_FreePropertyEnum(context, names, count);
+    return ok;
+}
+
+bool hydrology_own_data_value(JSContext* context, JSValueConst object,
+                              const char* key, JSValue& value, bool& present) {
+    JSAtom atom = JS_NewAtom(context, key);
+    JSPropertyDescriptor property{};
+    const int found = JS_GetOwnProperty(context, &property, object, atom);
+    JS_FreeAtom(context, atom);
+    if (found != 1) {
+        present = false;
+        value = JS_UNDEFINED;
+        return found == 0;
+    }
+    present = true;
+    if (property.flags & JS_PROP_GETSET) {
+        JS_FreeValue(context, property.value);
+        JS_FreeValue(context, property.getter);
+        JS_FreeValue(context, property.setter);
+        value = JS_UNDEFINED;
+        return false;
+    }
+    value = property.value;
+    JS_FreeValue(context, property.getter);
+    JS_FreeValue(context, property.setter);
+    return true;
+}
+
+bool hydrology_number(JSContext* context, JSValueConst value, float& output) {
+    if (!JS_IsNumber(value)) return false;
+    double number = 0.0;
+    if (JS_ToFloat64(context, &number, value) != 0 || !std::isfinite(number) ||
+        number < -std::numeric_limits<float>::max() ||
+        number > std::numeric_limits<float>::max())
+        return false;
+    output = static_cast<float>(number);
+    return true;
+}
+
+bool hydrology_uint32(JSContext* context, JSValueConst value, std::uint32_t& output) {
+    if (!JS_IsNumber(value)) return false;
+    double number = 0.0;
+    if (JS_ToFloat64(context, &number, value) != 0 || !std::isfinite(number) ||
+        number < 0.0 || std::floor(number) != number ||
+        number > static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
+        return false;
+    output = static_cast<std::uint32_t>(number);
+    return true;
+}
+
+bool hydrology_float_array(JSContext* context, JSValueConst value,
+                           std::uint32_t expected, float* output) {
+    std::uint32_t length = 0;
+    if (!array_length(context, value, length) || length != expected) return false;
+    for (std::uint32_t index = 0; index < expected; ++index) {
+        JSValue item = JS_GetPropertyUint32(context, value, index);
+        const bool ok = hydrology_number(context, item, output[index]);
+        JS_FreeValue(context, item);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+bool hydrology_dimensions(JSContext* context, JSValueConst value,
+                          matter::HydrologyDomainSettings& domain) {
+    std::uint32_t* out[] = {&domain.nx, &domain.ny, &domain.nz};
+    std::uint32_t length = 0;
+    if (!array_length(context, value, length) || length != 3) return false;
+    for (unsigned index = 0; index < 3; ++index) {
+        JSValue item = JS_GetPropertyUint32(context, value, index);
+        const bool ok = hydrology_uint32(context, item, *out[index]);
+        JS_FreeValue(context, item);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+bool reject_unknown_hydrology_keys(JSContext* context, JSValueConst value,
+                                   const char* const* keys, std::size_t key_count,
+                                   std::string& unknown) {
+    JSPropertyEnum* properties = nullptr;
+    std::uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(context, &properties, &count, value,
+                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) != 0)
+        return false;
+    bool ok = true;
+    for (std::uint32_t index = 0; index < count && ok; ++index) {
+        JSValue atom_value = JS_AtomToValue(context, properties[index].atom);
+        const bool is_symbol = JS_IsSymbol(atom_value);
+        JS_FreeValue(context, atom_value);
+        if (is_symbol) {
+            unknown = "<symbol>";
+            ok = false;
+            break;
+        }
+        const char* text = JS_AtomToCString(context, properties[index].atom);
+        if (!text) {
+            ok = false;
+            break;
+        }
+        bool known = false;
+        for (std::size_t key = 0; key < key_count; ++key)
+            if (std::strcmp(keys[key], text) == 0) { known = true; break; }
+        if (!known) {
+            unknown = text;
+            ok = false;
+        }
+        JS_FreeCString(context, text);
+    }
+    JS_FreePropertyEnum(context, properties, count);
+    return ok;
+}
+
+bool extract_hydrology(JSContext* context,
+                       JSValueConst world_class,
+                       const WorldLoadDesc& desc,
+                       WorldDefinition& definition,
+                       WorldLoadError& error) {
+    JSValue value = JS_UNDEFINED;
+    bool present = false;
+    if (!hydrology_own_data_value(context, world_class, "hydrology", value, present))
+        return fail(desc, error, "hydrology", "World.hydrology must be a plain data value");
+    if (!present) return true;
+    if (!JS_IsObject(value) || JS_IsArray(value) || !hydrology_plain_data(context, value)) {
+        JS_FreeValue(context, value);
+        return fail(desc, error, "hydrology",
+                    "World.hydrology must be a plain data object without accessors or functions");
+    }
+
+    static constexpr const char* kHydrologyKeys[] = {
+        "enabled", "origin", "dimensions", "cellSize", "dt", "gravity",
+        "downstream", "residualGrade", "inletFlow", "inletHead", "outletHead",
+        "batchSteps", "maxSteps",
+    };
+    std::string unknown;
+    if (!reject_unknown_hydrology_keys(context, value, kHydrologyKeys,
+                                       sizeof(kHydrologyKeys) / sizeof(kHydrologyKeys[0]),
+                                       unknown)) {
+        JS_FreeValue(context, value);
+        return fail(desc, error, "hydrology" + (unknown.empty() ? std::string{} : "." + unknown),
+                    unknown.empty() ? "World.hydrology keys could not be read"
+                                    : "World.hydrology contains an unknown key");
+    }
+
+    matter::HydrologyWorldSettings settings{};
+    bool ok = true;
+    const auto required = [&](const char* key, JSValue& output) {
+        bool key_present = false;
+        const bool found = hydrology_own_data_value(context, value, key, output, key_present);
+        return found && key_present;
+    };
+    JSValue field = JS_UNDEFINED;
+    if (!required("enabled", field) || !JS_IsBool(field)) ok = false;
+    if (ok) settings.enabled = JS_ToBool(context, field) != 0;
+    JS_FreeValue(context, field);
+
+    float origin[3]{};
+    field = JS_UNDEFINED;
+    if (ok && (!required("origin", field) || !hydrology_float_array(context, field, 3, origin))) ok = false;
+    JS_FreeValue(context, field);
+    settings.domain.origin_m = {origin[0], origin[1], origin[2]};
+
+    field = JS_UNDEFINED;
+    if (ok && (!required("dimensions", field) || !hydrology_dimensions(context, field, settings.domain))) ok = false;
+    JS_FreeValue(context, field);
+
+    const struct { const char* key; float* target; } numbers[] = {
+        {"cellSize", &settings.domain.cell_size_m}, {"dt", &settings.dt_s},
+        {"gravity", &settings.gravity_mps2}, {"inletFlow", &settings.inlet_flow_m3s},
+        {"inletHead", &settings.inlet_head_m}, {"outletHead", &settings.outlet_head_m},
+    };
+    for (const auto& item : numbers) {
+        field = JS_UNDEFINED;
+        if (ok && (!required(item.key, field) || !hydrology_number(context, field, *item.target))) ok = false;
+        JS_FreeValue(context, field);
+    }
+
+    float downstream[2]{};
+    field = JS_UNDEFINED;
+    if (ok && (!required("downstream", field) || !hydrology_float_array(context, field, 2, downstream))) ok = false;
+    JS_FreeValue(context, field);
+    settings.downstream_xz = {downstream[0], downstream[1]};
+
+    float residual_grade[2]{};
+    field = JS_UNDEFINED;
+    if (ok && (!required("residualGrade", field) || !hydrology_float_array(context, field, 2, residual_grade))) ok = false;
+    JS_FreeValue(context, field);
+    settings.residual_head_gradient_xz = {residual_grade[0], residual_grade[1]};
+
+    const struct { const char* key; std::uint32_t* target; } steps[] = {
+        {"batchSteps", &settings.batch_steps}, {"maxSteps", &settings.max_steps},
+    };
+    for (const auto& item : steps) {
+        field = JS_UNDEFINED;
+        if (ok && (!required(item.key, field) ||
+                   !hydrology_uint32(context, field, *item.target))) {
+            ok = false;
+        }
+        JS_FreeValue(context, field);
+    }
+    JS_FreeValue(context, value);
+    if (!ok)
+        return fail(desc, error, "hydrology",
+                    "World.hydrology must contain complete finite typed values");
+
+    hydrology::HydrologyBakeDescription canonical{};
+    std::string validation_error;
+    if (!hydrology::validate_and_key(settings, 0, canonical, validation_error))
+        return fail(desc, error, "hydrology", validation_error);
+    definition.hydrology = settings;
+    return true;
+}
+
+// Copies the declarative `World.entities` static into the __matter_entities
+// global array at indices 0..n-1. Runs BEFORE buildEntities(), whose entity()
+// calls then append after them, so the static entries always come first in the
+// final recipe order. Records are not validated here — extract_entities does
+// that for both sources at once.
 bool append_static_entities(JSContext* context,
                             JSValueConst world_class,
                             const WorldLoadDesc& desc,
@@ -1953,6 +3692,13 @@ bool append_static_entities(JSContext* context,
     return true;
 }
 
+// Drains the __matter_entities global — the static `World.entities` block plus
+// everything buildEntities() emitted through entity() — into
+// definition.entities as RawEntityRecipes. `id` is required and must be a
+// string; `name` defaults to the id; `parent` is an optional authored id
+// resolved later, not here; `components` defaults to an empty object and is
+// stored as CANONICAL JSON because it feeds a content address. Called last, so
+// it sees both sources in authoring order.
 bool extract_entities(JSContext* context,
                       JSValueConst canonicalizer,
                       const WorldLoadDesc& desc,
@@ -2022,6 +3768,34 @@ bool extract_entities(JSContext* context,
 
 } // namespace
 
+// Loads one world. See the file header for the script surface and the phased
+// globals; the sequence, which is order-dependent throughout, is:
+//
+//   1. Reset `definition`/`error` and the material registry's dynamic tail.
+//   2. Read the world source; find its `class X extends World` name lexically
+//      (world_script_detail::find_world_class_name, shared with ScriptHost so
+//      both pick the same class).
+//   3. gather_modules(): read every transitively imported shared-lib module.
+//      Whether any exist decides module vs. global evaluation for the rest.
+//   4. Create the runtime + minimal context, install the prelude, bind
+//      __matter_params / __matter_world_seed, defineMaterial (live) and getProp
+//      (throwing stub).
+//   5. Evaluate the world source with a trailing assignment that publishes the
+//      class; on the module path also drain pending jobs and check the module
+//      promise for rejection, since a module's failure surfaces there rather
+//      than as a thrown exception.
+//   6. Run the extractor chain over the class statics, then sanitize the
+//      atmosphere and fold the legacy fog height layer into clouds[0].
+//   7. Swap the two globals: defineMaterial becomes the "too late" stub,
+//      getProp becomes readable now that `static props` is parsed.
+//   8. Build a bare instance from the class prototype (an authored constructor
+//      is intentionally NOT run), bind params/worldSeed/entity() on it, and
+//      call buildEntities() if the class declares one.
+//   9. extract_entities(), then free everything.
+//
+// Returns false with `error` filled on any failure, and `definition` is reset
+// to empty on every failure path so a partially built world is never returned.
+// The runtime, context and every JS value created here die before this returns.
 bool load_world_definition(const WorldLoadDesc& desc,
                            WorldDefinition& definition,
                            WorldLoadError& error) {
@@ -2031,7 +3805,9 @@ bool load_world_definition(const WorldLoadDesc& desc,
     // Contract C3: the dynamic registry tail is per-world. Clearing it here (not
     // only at provider connect) is what makes handles deterministic — loading
     // the same world twice yields the same indices, and a second world never
-    // inherits the first world's materials. Builtin ids 0..29 are untouched.
+    // inherits the first world's materials. The frozen builtin MATERIAL ids
+    // [0, MaterialRegistryStaticCount()) are untouched — that count is the
+    // authority, not any literal written here.
     MaterialRegistryResetDynamic();
 
     std::string source;
@@ -2059,6 +3835,11 @@ bool load_world_definition(const WorldLoadDesc& desc,
     if (!context) {
         JS_FreeRuntime(runtime);
         return fail(desc, error, "runtime", "unable to create JavaScript context");
+    }
+    if (!install_river_classes(runtime)) {
+        JS_FreeContext(context);
+        JS_FreeRuntime(runtime);
+        return fail(desc, error, "runtime", "unable to install river builder classes");
     }
     auto cleanup = [&]() {
         JS_FreeContext(context);
@@ -2120,6 +3901,10 @@ class World {}
     // readable once `static props` has been extracted, below.
     JS_SetPropertyStr(context, global, "getProp",
                       JS_NewCFunction(context, get_prop_too_early, "getProp", 1));
+    JS_SetPropertyStr(context, global, "riverNetwork",
+                      JS_NewCFunction(context, river_network, "riverNetwork", 1));
+    JS_SetPropertyStr(context, global, "terrainCollision",
+                      JS_NewCFunction(context, terrain_collision_builder, "terrainCollision", 1));
     JS_FreeValue(context, global);
 
     const std::string wrapped = source +
@@ -2139,7 +3924,9 @@ class World {}
         const std::string message = exception_message(context);
         JS_FreeValue(context, evaluated);
         cleanup();
-        return fail(desc, error, "source", message);
+        const std::string path = load_collector.terrain_collision_error_path.empty()
+            ? "source" : load_collector.terrain_collision_error_path;
+        return fail(desc, error, path, message);
     }
     JS_FreeValue(context, evaluated);
 
@@ -2181,6 +3968,7 @@ class World {}
     bool ok = extract_roots(context, world_class, canonicalizer, desc,
                             definition, error) &&
               extract_settings(context, world_class, desc, definition, error) &&
+              extract_hydrology(context, world_class, desc, definition, error) &&
               extract_lights(context, world_class, desc, definition, error) &&
               extract_atmosphere(context, world_class, desc, definition, error) &&
               extract_fog(context, world_class, desc, definition, error) &&
@@ -2243,6 +4031,140 @@ class World {}
         context, instance, "entity",
         JS_NewCFunction(context, append_entity, "entity", 1), 0);
 
+    JSValue hydrology_method = JS_GetPropertyStr(context, instance, "hydrology");
+    if (JS_IsException(hydrology_method)) {
+        const std::string message = exception_message(context);
+        definition = WorldDefinition{};
+        JS_FreeValue(context, hydrology_method);
+        JS_FreeValue(context, instance);
+        JS_FreeValue(context, canonicalizer);
+        JS_FreeValue(context, world_class);
+        cleanup();
+        return fail(desc, error, "hydrology", message);
+    }
+    if (!JS_IsUndefined(hydrology_method)) {
+        if (!JS_IsFunction(context, hydrology_method)) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, hydrology_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "hydrology",
+                        "World.hydrology must be a function when declared on an instance");
+        }
+        if (definition.hydrology.has_value()) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, hydrology_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "hydrology",
+                        "static World.hydrology and instance hydrology() are mutually exclusive");
+        }
+        load_collector.river_error_path.clear();
+        load_collector.terrain_collision_phase = "hydrology()";
+        load_collector.river_hydrology_active = true;
+        JSValue result = JS_Call(context, hydrology_method, instance, 0, nullptr);
+        load_collector.river_hydrology_active = false;
+        if (JS_IsException(result)) {
+            const std::string message = exception_message(context);
+            const std::string path = load_collector.river_error_path.empty()
+                ? "hydrology" : load_collector.river_error_path;
+            definition = WorldDefinition{};
+            JS_FreeValue(context, result);
+            JS_FreeValue(context, hydrology_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, path, message);
+        }
+        JS_FreeValue(context, result);
+        if (!load_collector.river_network_created ||
+            !load_collector.river_network_built ||
+            !load_collector.finished_river_network.has_value()) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, hydrology_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "hydrology.build",
+                        "hydrology() must call exactly one network.build()");
+        }
+        definition.river_network =
+            std::move(load_collector.finished_river_network);
+    } else if (load_collector.river_network_created) {
+        definition = WorldDefinition{};
+        JS_FreeValue(context, hydrology_method);
+        JS_FreeValue(context, instance);
+        JS_FreeValue(context, canonicalizer);
+        JS_FreeValue(context, world_class);
+        cleanup();
+        return fail(desc, error, "hydrology",
+                    "riverNetwork() may only be used from hydrology()");
+    }
+    JS_FreeValue(context, hydrology_method);
+
+    JSValue collision_method = JS_GetPropertyStr(context, instance, "collision");
+    if (JS_IsException(collision_method)) {
+        const std::string message = exception_message(context);
+        definition = WorldDefinition{};
+        JS_FreeValue(context, collision_method);
+        JS_FreeValue(context, instance);
+        JS_FreeValue(context, canonicalizer);
+        JS_FreeValue(context, world_class);
+        cleanup();
+        return fail(desc, error, "collision", message);
+    }
+    if (!JS_IsUndefined(collision_method)) {
+        if (!JS_IsFunction(context, collision_method)) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, collision_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "collision",
+                        "World.collision must be a function when declared on an instance");
+        }
+        load_collector.terrain_collision_error_path.clear();
+        load_collector.terrain_collision_phase = "collision()";
+        load_collector.terrain_collision_sector_size_m = definition.settings.sector_size;
+        load_collector.terrain_collision_active = true;
+        JSValue result = JS_Call(context, collision_method, instance, 0, nullptr);
+        load_collector.terrain_collision_active = false;
+        if (JS_IsException(result)) {
+            const std::string message = exception_message(context);
+            const std::string path = load_collector.terrain_collision_error_path.empty()
+                ? "collision" : load_collector.terrain_collision_error_path;
+            definition = WorldDefinition{};
+            JS_FreeValue(context, result);
+            JS_FreeValue(context, collision_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, path, message);
+        }
+        JS_FreeValue(context, result);  // collision() return values are intentionally ignored.
+        if (!load_collector.terrain_collision_created ||
+            !load_collector.terrain_collision_built) {
+            definition = WorldDefinition{};
+            JS_FreeValue(context, collision_method);
+            JS_FreeValue(context, instance);
+            JS_FreeValue(context, canonicalizer);
+            JS_FreeValue(context, world_class);
+            cleanup();
+            return fail(desc, error, "collision.build",
+                        "collision() must call exactly one terrainCollision(...).build()");
+        }
+        definition.terrain_collision = load_collector.terrain_collision_settings;
+    }
+    JS_FreeValue(context, collision_method);
+
     JSValue build = JS_GetPropertyStr(context, instance, "buildEntities");
     if (JS_IsException(build)) {
         const std::string message = exception_message(context);
@@ -2265,6 +4187,7 @@ class World {}
             return fail(desc, error, "buildEntities",
                         "World.buildEntities must be a function");
         }
+        load_collector.terrain_collision_phase = "buildEntities()";
         JSValue result = JS_Call(context, build, instance, 0, nullptr);
         if (JS_IsException(result)) {
             const std::string message = exception_message(context);

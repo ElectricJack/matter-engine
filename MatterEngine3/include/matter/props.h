@@ -1,5 +1,7 @@
 #pragma once
 
+// MatterEngine3/include/matter/props.h
+//
 // matter::props — schema-over-existing-structs property system core.
 // ImGui-free and engine-side; the editor builds its generic panel on top.
 // See docs/superpowers/specs/2026-07-31-property-system-design.md.
@@ -7,6 +9,33 @@
 // The registry is NOT on any read path: engine code keeps reading its plain
 // struct members. A Group describes byte offsets into a struct; a Binding
 // pairs a Group with one live instance.
+//
+// TYPICAL LIFECYCLE (what a subsystem that wants tunables does):
+//
+//   1. Declare a schema once, at namespace or function-static scope:
+//        static const auto s_def = props::group<MySettings>(
+//            "render.mything", "My Thing", prop(&MySettings::gain, "gain")...);
+//   2. Seed the env layer:            props::apply_env(&instance, s_def);
+//        (or bind first and use the Binding/Registry overload)
+//   3. Bind the live instance:        id = registry.bind(s_def, &inst, Scope::World);
+//   4. After the world/JS layer has written its authored values,
+//      registry.capture_baseline(id) — that snapshot is what "modified",
+//      sparse save and "reset to default" are all measured against.
+//   5. Load then save the scope file: load_scope_file / save_scope_file.
+//
+// Skipping step 4, or doing it before the authored values land, is the classic
+// failure mode: every field then looks modified and the sparse save writes the
+// whole struct.
+//
+// LIFETIME. A Binding holds bare pointers to the caller's instance AND to the
+// schema's Desc array. Both must outlive it — hence `GroupDef` being
+// non-copyable and normally a static, and hence `DynamicGroup`'s bind_into /
+// unbind_from discipline. Unbind before destroying the instance.
+//
+// THREADING. Nothing in this file locks. The registry, its bindings, the env
+// pass and the persistence helpers are all expected to run on one thread (the
+// app/editor thread); the engine's own reads of the described structs are the
+// ordinary plain-member reads they always were, and are unaffected.
 
 #include "matter/json_doc.h"
 #include "matter/math_types.h"
@@ -41,6 +70,11 @@ enum Flags : uint32_t {
     NoSerialize    = 1u << 3,  // editable live, never written to disk
 };
 
+// One described field: where it lives in the struct (`offset`), how to read it
+// (`type`), and everything the UI, the text parser, the env layer and the
+// serializer need to know about it. A Desc is pure data with no ownership — the
+// `const char*`s point at string literals (static groups) or at storage the
+// owning DynamicGroup keeps alive.
 struct Desc {
     const char* name = nullptr;   // "phase_g" — JSON key and UI id
     const char* label = nullptr;  // "Phase g" — UI text (nullptr → name)
@@ -66,6 +100,12 @@ struct Desc {
     uint32_t    flags = 0;
 };
 
+// A schema for one struct type: the field table plus enough type information to
+// construct, destroy and copy a default instance of it. A Group is a
+// description, never an instance — pairing it with live memory is `Binding`'s
+// job. It does not own `fields`; `GroupDef` (static schemas) or `DynamicGroup`
+// (script-defined ones) owns that array and must outlive every Group copy that
+// points into it.
 struct Group {
     const char* path = nullptr;   // "render.volumetrics" — registry + JSON key
     const char* label = nullptr;  // "Volumetrics" — panel header
@@ -159,6 +199,11 @@ void copy_assign_impl(void* dst, const void* src) {
 
 }  // namespace detail
 
+// Fluent builder for one `Desc`. Construct it through the `prop(&S::member,
+// "name")` helper below rather than directly — that deduces the type and offset
+// from the pointer-to-member so they cannot disagree with the struct. Chain the
+// modifiers and hand the result to `props::group(...)`, which copies the Desc
+// out; the builder itself is a temporary and owns nothing.
 class PropBuilder {
 public:
     PropBuilder(const char* name, Type type, uint32_t offset) {
@@ -312,6 +357,12 @@ private:
     void free_instance(void* p) const;
 };
 
+// Owns the set of live bindings. Ids are handed out monotonically and never
+// reused, so a stale BindingId resolves to null rather than to somebody else's
+// binding. `at(index)` enumerates in BIND ORDER, which is the order panels and
+// the persistence writers use; `find(path)` looks a group up by its schema path.
+// Not thread-safe and not intended to be — see the threading note in the file
+// header.
 class Registry {
 public:
     Registry() = default;
@@ -642,6 +693,11 @@ private:
     BindingId binding_ = kInvalidBinding;
 };
 
+// Accumulates `DynamicField` declarations (from a world script's `static props`
+// block) and produces a `DynamicGroup`. One-shot and fail-slow: a rejected field
+// poisons the builder so `ok()` stays false and `build()` returns null, which
+// means a caller can add every declared field and check once at the end rather
+// than after each `add`.
 class DynamicGroupBuilder {
 public:
     DynamicGroupBuilder(std::string path, std::string label);

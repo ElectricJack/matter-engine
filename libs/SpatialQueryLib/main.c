@@ -1,3 +1,29 @@
+// libs/SpatialQueryLib/main.c
+//
+// Smoke-test driver for SpatialQueryLib. This file IS the project's
+// executable: `make -C libs/SpatialQueryLib` links it with `src/spatial_hash.c`
+// and MemoryLib's `src/mem_pool.c` into `build/spatialquerylib`, which
+// `build-all.sh` builds as part of the repo-wide sweep. There is no library
+// archive target — the consumers of this project (`libs/MatterSurfaceLib`,
+// `MatterEngine3`) compile `src/spatial_hash.c` directly from here, per the
+// "Code Sharing Between Projects" rule in the root CLAUDE.md.
+//
+// Scope: coarse coverage that the pieces fit together — the MemoryLib
+// integration plus create/insert/query/remove/box/stats/clear on the spatial
+// hash. It deliberately does not cover the sharp edges (hash collisions
+// between distinct grid cells, signed-overflow-free hashing at extreme
+// coordinates, `initialCapacity` actually sizing the bucket table, or
+// `sh_query_first`). Those live in `tests/spatial_hash_tests.c`, and the
+// BVH/TLAS/analyzer regressions live in `tests/bvh_tests.cpp`; `make -C
+// libs/SpatialQueryLib test` builds and runs both (with AddressSanitizer +
+// UBSan where the toolchain has them — mingw-w64 does not). Add new regression
+// coverage there, not here.
+//
+// Convention: each test returns bool and prints via the TEST_PASSED /
+// TEST_FAILED macros below; every failure path must destroy the hash it
+// created before returning, since the suite is also run under sanitizers.
+// Exit status is 0 only when every test passes.
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -242,6 +268,8 @@ bool test_spatial_hash_clear() {
 }
 
 // Run all tests
+// `total` below is a hand-maintained count, not derived from the call list —
+// bump it whenever you add or remove a test or the pass/fail line lies.
 int main() {
     printf("=== SpatialQueryLib Tests ===\n");
     

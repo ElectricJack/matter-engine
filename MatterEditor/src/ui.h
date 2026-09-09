@@ -1,6 +1,48 @@
 #ifndef VIEWER_UI_H
 #define VIEWER_UI_H
 
+// MatterEditor/src/ui.h
+//
+// The editor's ImGui shell and the state every panel reads. Three things live
+// here:
+//
+//   1. `Ui` — owns the ImGui context, the GLFW and Vulkan ImGui backends, the
+//      dockspace layout, the offscreen viewport render target, and one
+//      draw_*_panel entry point per window. It is a shell: almost every panel
+//      body lives in a sibling file (toolbar_panel, scene_tree_panel,
+//      properties_panel, property_editor, console_panel, asset_browser,
+//      bake_lab) and Ui only supplies the Begin/End and the panel state.
+//   2. `ViewerStats` — the one struct main.cpp fills each frame and hands to
+//      the panels, carrying both engine telemetry and the debug toggles the
+//      panels write back.
+//   3. The status/telemetry property groups and the world-scope reset seams.
+//
+// Everything here is MAIN-THREAD ONLY, and every draw_* method must be called
+// between Ui::begin_frame and Ui::end_frame — they are immediate-mode ImGui
+// calls, not deferred work.
+//
+// Frame order main.cpp relies on (documented here because it is not local to
+// any one function): begin_frame -> prepare_viewport_rect -> the panel draws
+// -> draw_gizmo -> viewport_render_frame (which redirects the 3D pass into the
+// offscreen target) -> transition_viewport_for_sampling -> draw_viewport_window
+// -> end_frame. The viewport RECT has to be known before the 3D pass renders,
+// which is why measuring it and drawing the image into it are two separate
+// calls on the same ImGui window.
+//
+// VIEWER_UI_STATUS_ONLY: defining it before including this header keeps only
+// the status structs and their property groups, dropping Vulkan, ImGui, flecs
+// and world_session.h from the include chain. That is how
+// MatterEngine3/tests/property_editor_tests.cpp tests those groups headlessly;
+// keep any new declaration outside the guarded regions only if it is that
+// dependency-free.
+//
+// Control surface: the property groups reachable from here (viewer.session,
+// viewer.atmosphere_status, plus the ViewerStats sub-structs EditorProps binds)
+// are what QA drives headlessly over the FIFO — `set viewer.budget.pixel_budget
+// 0.8` and friends. See docs/agent/control-surface.md. Fields edited as RAW
+// WIDGETS in the panels (see the note on ViewerStats) are NOT on that path
+// unless a group also describes them.
+
 #include <cstdint>
 #include "matter/props.h"
 
@@ -38,6 +80,9 @@ namespace matter { class VulkanDevice; struct VulkanFrame; namespace evt { class
 namespace viewer {
 
 #ifndef VIEWER_UI_STATUS_ONLY
+// The 3D viewport's rectangle in ImGui screen coordinates (pixels, origin
+// top-left), floored to whole pixels so the render target size and the blit
+// position agree exactly. When the UI is hidden this is the whole display.
 struct ViewportRect { float x = 0, y = 0, w = 0, h = 0; };
 
 // One available world for the runtime picker. Populated by scan_worlds at
@@ -74,9 +119,33 @@ struct ViewerCommands {
 };
 #endif
 
+// ---------------------------------------------------------------------------
+// Status groups — read-only telemetry, published as property groups
+// ---------------------------------------------------------------------------
+//
+// These two structs and their groups are the part of this header that survives
+// VIEWER_UI_STATUS_ONLY: no Vulkan, no ImGui, no session types. Every field is
+// declared .read_only().no_serialize(), so they are observable (Tunables, the
+// FIFO `get` path, tests) and never written back or persisted.
+//
+// Which path the frame actually took. NativeRtUnavailable is distinct from
+// Raster on purpose: it means ray tracing was ASKED for and the device could
+// not provide it, which a bare "raster" would hide.
 enum class ViewerRenderPathStatus : int32_t {
     Raster = 0, NativeRt = 1, NativeRtUnavailable = 2
 };
+inline const char* viewer_render_path_status_label(
+        ViewerRenderPathStatus status) {
+    switch (status) {
+        case ViewerRenderPathStatus::NativeRt:
+            return "native RT";
+        case ViewerRenderPathStatus::NativeRtUnavailable:
+            return "native RT unavailable";
+        case ViewerRenderPathStatus::Raster:
+        default:
+            return "Vulkan raster";
+    }
+}
 struct ViewerSessionStatus {
     ViewerRenderPathStatus render_path = ViewerRenderPathStatus::Raster;
     uint64_t presented_frame_serial = 0;
@@ -95,6 +164,9 @@ struct ViewerAtmosphereStatus {
     matter::Float3 sky_irradiance_modifier_rgb{};
 };
 
+// Group definitions are function-local statics: built once, on first call, and
+// returned by reference forever after. Safe to call from anywhere; the address
+// is stable, which is what lets a Binding hold onto the schema.
 inline const matter::props::Group& viewer_session_status_group() {
     static const char* const render_path_labels[] = {
         "raster", "native_rt", "native_rt_unavailable"};
@@ -145,8 +217,34 @@ inline const matter::props::Group& viewer_atmosphere_status_group() {
 }
 
 #ifndef VIEWER_UI_STATUS_ONLY
-// Read-only stats the HUD displays each frame; the resolver selector is the one
-// field the panel writes back. Everything else is filled by main/composer/provider.
+// The editor's per-frame blackboard: one instance, owned by main.cpp for the
+// process lifetime, passed by reference to every panel that needs it.
+//
+// It carries two different kinds of field and the distinction matters:
+//   - TELEMETRY, written by main.cpp / the renderer / the provider each frame
+//     and only displayed here (fps, the gpu_*_ms and loop_*_ms breakdowns, the
+//     instance and VT censuses, the byte counters).
+//   - CONTROLS, written by the panels and copied back OUT by main.cpp each
+//     frame into RenderOptions and the render settings structs
+//     (pixel_budget, debug_view_mode, vol_debug_view, wireframe,
+//     impostor_parallax, freeze_stream_anchor, freeze_cull_camera,
+//     occlusion_draw_cull, min_projected_size). These are edited as RAW
+//     ImGui widgets rather than through draw_group, so the struct member IS
+//     the widget's backing value — there is no separate draft or apply step,
+//     and equally no persistence unless a property group also describes it.
+// Several of the sub-structs (lighting, atmosphere, volumetrics,
+// cloud_shadows, fog, tileset_pom, vt_near_band, animation_overlay) ARE bound
+// as property groups by editor_props.cpp; those go through the normal
+// draft/apply/persist path instead.
+//
+// Units, throughout: `*_ms` are milliseconds, `*_bytes` are bytes, positions
+// are world-space metres, `pixel_budget`/`min_projected_size` are normalized
+// screen-size dials.
+//
+// Everything not in the CONTROLS list above is read-only telemetry the HUD
+// displays each frame, filled by main.cpp / the renderer / the provider. (There
+// is no resolver selector: the engine has one resolver — see the comment at
+// min_projected_size.)
 struct ViewerStats {
     ViewerSessionStatus session_status{};
     ViewerAtmosphereStatus atmosphere_status{};
@@ -366,6 +464,9 @@ struct ViewerStats {
 matter::WorldSession::StreamingLodConfig streaming_config_from(
     const StreamingLodPrefs& prefs);
 
+// The world-scope reset seams. Defined in ui_lighting_controls.cpp — a
+// separate translation unit precisely so tests that cannot link the ImGui
+// panels can still link these. See that file's header.
 void reset_lighting_controls(ViewerStats& stats);
 // Every Scope::World property group's backing struct dropped to its compiled
 // default (layer 1), so the incoming world's authored values are the only
@@ -374,11 +475,48 @@ void reset_world_scope_controls(ViewerStats& stats);
 void prepare_world_reload(ViewerStats& stats);
 void complete_world_switch(ViewerStats& stats, bool succeeded);
 
+// The editor's ImGui shell. One instance, owned by main.cpp, alive from just
+// after device creation until just before device teardown.
+//
+// OWNS OS/GPU RESOURCES: the ImGui context (process-global state — there can
+// only be one), the GLFW and Vulkan ImGui backends, a descriptor pool, and the
+// offscreen viewport render target (image + memory + view + sampler + an ImGui
+// texture descriptor). Not copyable or movable in any meaningful sense; call
+// shutdown() before destroying it, and never construct a second one.
+//
+// THREADING: main thread only, and every draw_* method must run inside an
+// ImGui frame (between begin_frame and end_frame). Nothing here takes a lock,
+// because nothing else may touch it.
+//
+// CALL ORDER matters — see the frame-order note in this file's header. Two
+// pairs in particular: prepare_viewport_rect must run before
+// viewport_render_frame (the rect sizes the target), and draw_gizmo must run
+// after the panels and before main.cpp latches camera input, because it sets
+// the flag camera_input_allowed() reads.
+//
+// PANEL OWNERSHIP PROTOCOL: several draw_*_panel methods call
+// props.note_panel_home(<group path>, "<window>") to claim a property group so
+// Tunables can hide the duplicate. A claim must be made UNCONDITIONALLY, not
+// behind the panel's own `if (ImGui::Begin(...))` — a docked window that is not
+// the selected tab returns false from Begin and would silently stop claiming.
+// draw_performance_panel carries the full account of that bug.
 class Ui {
 public:
     bool setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
                std::string& error);
     void shutdown();
+    // setup() creates the ImGui context and both backends; on any failure it
+    // calls shutdown() itself and returns false with `error` set, so the
+    // caller must not also call shutdown. shutdown() waits for the device to
+    // go idle and is safe to call twice (it early-outs once vulkan_ is null).
+    //
+    // begin_frame reacts to a swapchain format/count change by rebuilding the
+    // Vulkan backend, resets the per-frame flags, opens the ImGui and ImGuizmo
+    // frames, and builds the dockspace (or, with the UI hidden, sets the
+    // viewport rect to the whole display). end_frame records ImGui's draw data
+    // into `frame.command_buffer` inside its own dynamic-rendering pass; its
+    // load-op depends on whether the 3D actually went offscreen this frame —
+    // see the comment on the implementation. Both must be called, in pairs.
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
     // `props` supplies the registered lighting / volumetrics / POM /
@@ -473,10 +611,28 @@ public:
     // (for the console) User-scope persistence on top of them.
     ToolbarState& toolbar_state() { return toolbar_state_; }
     ConsolePanelState& console_state() { return console_state_; }
+    // Two halves of the same ImGui window, deliberately split across the
+    // frame. prepare_viewport_rect opens "Viewport" early only to MEASURE it
+    // (and to record whether it is hovered, which camera_input_allowed needs);
+    // draw_viewport_window reopens it later and blits the finished offscreen
+    // image into that exact rect. Nothing renders in between if the 3D pass
+    // has not run.
     void prepare_viewport_rect();
     void draw_viewport_window();
     const ViewportRect& viewport_rect() const { return viewport_rect_; }
     void set_hide_ui(bool hide) { hide_ui_ = hide; }
+    // Returns a COPY of `frame` with the swapchain image/view/extent swapped
+    // for the offscreen viewport target, so the 3D pass renders into the
+    // viewport instead of the window. Returns `frame` UNCHANGED — meaning "the
+    // 3D goes straight to the swapchain" — when the UI is hidden, when the
+    // viewport has zero area, or when the target could not be allocated (in
+    // which case `error` is set but the frame is still usable). Also records
+    // the barrier into COLOR_ATTACHMENT_OPTIMAL, discarding the target's
+    // previous contents.
+    //
+    // transition_viewport_for_sampling puts it back into
+    // SHADER_READ_ONLY_OPTIMAL for the ImGui blit. main.cpp calls it every
+    // frame unconditionally; it self-guards when the 3D did not go offscreen.
     matter::VulkanFrame viewport_render_frame(const matter::VulkanFrame& frame,
                                                std::string& error);
     void transition_viewport_for_sampling(VkCommandBuffer cmd);
@@ -540,6 +696,12 @@ public:
     // editing now lives in the Properties panel via SpecializedEditors
     // (see MatterEditor/src/specialized_editors.h). update_sector_streaming above
     // (the per-frame anchor/follow logic) is unaffected and stays here.
+    // May the free-fly camera consume this frame's input? Folds ImGui's
+    // WantCaptureMouse/Keyboard together with the gizmo hover/drag state — but
+    // ignores the capture flags while the VIEWPORT itself is hovered, since
+    // the viewport is an ImGui window and would otherwise "capture" every
+    // click meant for the scene. Returns true when there is no ImGui context
+    // at all.
     bool camera_input_allowed() const;
     void reset_scene_tree_cache();
     // viewer.reveal_part: record the hash a Scene-tree baked-root click would
@@ -596,6 +758,16 @@ private:
     // is the flag end_frame's load-op must key on -- see the note there.
     bool rendered_to_viewport_target_ = false;
     ViewportRect viewport_rect_{};
+    // Offscreen viewport render target. Owned by this object and destroyed in
+    // destroy_viewport_target(); the sampler outlives individual targets and
+    // is only destroyed in shutdown(). rt_descriptor_ is the ImGui texture
+    // handle for the blit, and must be removed via
+    // ImGui_ImplVulkan_RemoveTexture before the view dies.
+    //
+    // pending_rt_*: a resize DEBOUNCE. A drag resizes the window every frame,
+    // and each reallocation costs a device wait_idle, so a new size is only
+    // honoured after it has been stable for a few consecutive frames. Until
+    // then the old, wrongly-sized target keeps being used.
     VkImage rt_image_ = VK_NULL_HANDLE;
     VkImageView rt_view_ = VK_NULL_HANDLE;
     VkDeviceMemory rt_memory_ = VK_NULL_HANDLE;

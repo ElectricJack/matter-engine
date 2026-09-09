@@ -1,6 +1,16 @@
 #ifndef FAT_PRIMITIVE_H
 #define FAT_PRIMITIVE_H
 
+// libs/MatterSurfaceLib/include/fat_primitive.h
+//
+// primitive_sdf() is implemented in libs/MatterSurfaceLib/src/fat_primitive.c.
+// FatPrims travel as a borrowed (pointer, count) pair: Cell::build_cell_meshes()
+// (cell.h) takes `fat`/`fatCount`, MeshContext (meshing_algorithm.h) carries
+// them, and the field evaluator linear-scans them per sample -- so the array
+// must stay alive for the whole mesh build, and the scan cost is O(fatCount)
+// per sample with no acceleration structure behind it. `stage` ties each
+// primitive into the ordered-CSG list described in csg_stages.h.
+//
 // Typed "fat" iso-primitive for the voxel/SDF mesher (Phase 1: typed iso-primitives).
 //
 // Spheres remain the implicit hot path (StaticParticle/Particle + spatial hash +

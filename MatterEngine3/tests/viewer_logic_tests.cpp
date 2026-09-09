@@ -31,11 +31,31 @@
 #include <string>
 #include <sys/stat.h>
 #include <vector>
+#ifdef _WIN32
+#include <direct.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "check.h"
 
 #include <array>
+
+static char* test_getcwd(char* buffer, size_t size) {
+#ifdef _WIN32
+    return _getcwd(buffer, static_cast<int>(size));
+#else
+    return getcwd(buffer, size);
+#endif
+}
+
+static int test_chdir(const char* path) {
+#ifdef _WIN32
+    return _chdir(path);
+#else
+    return chdir(path);
+#endif
+}
 
 // Shared PartStore and WorldManifest populated once by test_local_provider_cache's cold run
 // and reused by subsequent tests that need loaded parts. This avoids re-running the
@@ -687,8 +707,8 @@ static void test_partstore_keeps_children() {
     const std::string root = test_tmp("me3_viewer_cache_test");
     ensure_parts_dir(root);   // ensure exists (may already)
 
-    char prevcwd[4096]; if (!getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
-    CHECK(chdir(root.c_str()) == 0, "chdir into keep-children sandbox");
+    char prevcwd[4096]; if (!test_getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
+    CHECK(test_chdir(root.c_str()) == 0, "chdir into keep-children sandbox");
 
     script_host::ScriptHost host;
     host.set_shared_lib_root(sharedlib);
@@ -713,7 +733,7 @@ static void test_partstore_keeps_children() {
 
     // Reuse the shared PartStore (already has the manifest root loaded) to avoid a
     // second lod_bake pass. The shared store points at the same cache root.
-    if (!g_shared_store) { CHECK(false, "keep-children: shared store not set"); if (prevcwd[0]) chdir(prevcwd); return; }
+    if (!g_shared_store) { CHECK(false, "keep-children: shared store not set"); if (prevcwd[0]) test_chdir(prevcwd); return; }
 
     // Placed root (from the manifest; LocalProvider::connect wrote its flat
     // artifact) -> flat-preferred: merged mesh, stored ladder, EMPTY child table.
@@ -746,7 +766,7 @@ static void test_partstore_keeps_children() {
     const viewer::LoadedPart* branch = g_shared_store->get_or_load(branch_hash);
     CHECK(branch != nullptr, "branch part loads from PartStore");
 
-    if (prevcwd[0]) (void)chdir(prevcwd);
+    if (prevcwd[0]) (void)test_chdir(prevcwd);
     // Do not remove root — it is the shared warm cache reused by other tests.
 }
 
@@ -930,6 +950,28 @@ static void test_indexed_weld() {
     // First corner of tri 1 is 'b' = (1,0,0).
     CHECK(soup.vertices[9] == 1.0f && soup.vertices[10] == 0.0f,
           "expand_indexed: triangle order preserved");
+
+    // Warp channels survive the unweld. They are filled by a later pass than
+    // build_raster_mesh_data, so they are attached by hand here — exactly the
+    // shape a terrain-sector rung carries. Dropping them used to make a
+    // round-tripped sector silently fall back to world-XZ ground addressing.
+    auto warped = m;
+    warped.warp_uvs.assign(static_cast<size_t>(warped.vertex_count) * 2, 0.0f);
+    warped.warp_frames.assign(static_cast<size_t>(warped.vertex_count) * 2, 0u);
+    for (int v = 0; v < warped.vertex_count; ++v) {
+        warped.warp_uvs[static_cast<size_t>(v) * 2] = static_cast<float>(v);
+        warped.warp_frames[static_cast<size_t>(v) * 2 + 1] =
+            static_cast<uint32_t>(100 + v);
+    }
+    auto warped_soup = viewer::expand_indexed(warped);
+    CHECK(warped_soup.warp_uvs.size() == 12 &&
+              warped_soup.warp_frames.size() == 12,
+          "expand_indexed: warp channels are 2 per soup vertex");
+    // Soup vertex 3 is the first corner of tri 1, i.e. input vertex m.indices[3].
+    const uint32_t src = m.indices[3];
+    CHECK(warped_soup.warp_uvs[6] == static_cast<float>(src) &&
+              warped_soup.warp_frames[7] == 100u + src,
+          "expand_indexed: warp values follow their source vertex");
 }
 
 static void test_sector_lod_floor_cull() {
@@ -1044,8 +1086,12 @@ static void test_provider_regen_stale_v2_flat() {
 //  (b) the legacy lp.lod_blas / lp.thresholds are still populated (whole-part RT view),
 //  (c) legacy lod0 tri total == sum of cluster lod0 tri counts,
 //  (d) bound_radius > 0,
-//  (e) loading a v2 flat still works (produces 1 synthetic cluster + non-empty legacy view),
+//  (e) a bundled v2 canonical part is not misidentified as a legacy flat and
+//      still produces one exact-bounds synthetic cluster,
 //  (f) the compositional path publishes one exact-bounds synthetic cluster.
+//
+// The fixture writes the canonical `.part` beside every flat it saves, because
+// a flat is only admitted as an acceleration of one (8d4291df).
 static void test_partstore_cluster_loading() {
     printf("=== test_partstore_cluster_loading ===\n");
 
@@ -1096,6 +1142,20 @@ static void test_partstore_cluster_loading() {
             part_asset::LodLevel L; L.screen_size_threshold = 0.5f; L.blas_indices.push_back(bi1);
             clusters[1].lods.push_back(L);
         }
+
+        // A flat section is admitted only beside an exact static canonical
+        // PART snapshot. Seed that coherent sibling before adding FLAT to the
+        // same bundle; a flat-only bundle is intentionally rejected.
+        part_asset::LodLevels canonical_lods;
+        part_asset::LodLevel canonical_lod;
+        canonical_lod.screen_size_threshold = 0.0f;
+        canonical_lod.blas_indices = {bi0, bi1};
+        canonical_lods.push_back(canonical_lod);
+        const std::string part_path = root + "/" + part_asset::cache_path_resolved(kV3Hash);
+        bool canonical_ok = part_asset::save_v2(
+            part_path, scratch, scratch_tlas, nullptr, 0, canonical_lods, kV3Hash);
+        CHECK(canonical_ok, "cluster test: canonical static part saved");
+        if (!canonical_ok) return;
 
         const std::string flat_path = root + "/" + part_asset::cache_path_flat(kV3Hash);
         bool ok = part_asset::save_flat_v3(flat_path, scratch, scratch_tlas, clusters, kV3Hash);
@@ -1154,7 +1214,9 @@ static void test_partstore_cluster_loading() {
         CHECK(lp->bound_radius > 0.0f, "v3 load: bound_radius > 0");
     }
 
-    // (e): v2 flat still works (1 synthetic cluster + non-empty legacy view).
+    // (e): a v2 canonical PART has no FLAT section in the bundle. It must not
+    // take the obsolete legacy-flat path, but its compositional load still
+    // publishes one synthetic cluster and the non-empty legacy view.
     const uint64_t kV2Hash = 0xA1A2A3A4B1B2B3B4ull;
     {
         BLASManager scratch2; TLASManager scratch_tlas2(64);
@@ -1165,21 +1227,23 @@ static void test_partstore_cluster_loading() {
         lods.push_back(Lv2);
         const std::string flat_path2 = root + "/" + part_asset::cache_path_flat(kV2Hash);
         bool ok2 = part_asset::save_v2(flat_path2, scratch2, scratch_tlas2, nullptr, 0, lods, kV2Hash);
-        CHECK(ok2, "cluster test: v2 flat saved");
-        CHECK(part_asset::peek_format_version(flat_path2) == 2, "cluster test: v2 flat is v2");
+        CHECK(ok2, "cluster test: v2 canonical part saved");
+        CHECK(part_asset::peek_format_version(flat_path2) == 0,
+              "cluster test: v2 canonical part is not reported as FLAT");
     }
     {
         viewer::PartStore store2(root);
         const viewer::LoadedPart* lp2 = store2.get_or_load(kV2Hash);
-        CHECK(lp2 != nullptr, "v2 flat: loads successfully");
+        CHECK(lp2 != nullptr, "v2 canonical part: loads compositionally");
         if (lp2) {
-            CHECK(!lp2->lod_blas.empty(), "v2 flat: legacy lod_blas non-empty");
-            CHECK(lp2->clusters.size() == 1, "v2 flat: produces exactly 1 synthetic cluster");
+            CHECK(!lp2->lod_blas.empty(), "v2 canonical part: legacy lod_blas non-empty");
+            CHECK(lp2->clusters.size() == 1,
+                  "v2 canonical part: produces exactly 1 synthetic cluster");
             // Task 7 guards: unsegmented flat has fine_cluster_count == clusters.size()
             // and no flat_refs (v2 format has no instance-refs trailer).
             CHECK(lp2->fine_cluster_count == lp2->clusters.size(),
-                  "v2 flat: fine_cluster_count == clusters.size() (unsegmented)");
-            CHECK(lp2->flat_refs.empty(), "v2 flat: flat_refs empty (unsegmented)");
+                   "v2 canonical part: fine_cluster_count == clusters.size()");
+            CHECK(lp2->flat_refs.empty(), "v2 canonical part: flat_refs empty");
         }
     }
 
