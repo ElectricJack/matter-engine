@@ -12,10 +12,10 @@ set(matter_editor_sources_unique ${matter_editor_sources})
 list(REMOVE_DUPLICATES matter_editor_sources_unique)
 list(LENGTH matter_editor_sources matter_editor_source_count)
 list(LENGTH matter_editor_sources_unique matter_editor_unique_source_count)
-if(NOT matter_editor_source_count EQUAL 41 OR
-        NOT matter_editor_unique_source_count EQUAL 41)
+if(NOT matter_editor_source_count EQUAL 42 OR
+        NOT matter_editor_unique_source_count EQUAL 42)
     message(FATAL_ERROR
-        "editor.sources must provide exactly 41 unique editor C++ sources; "
+        "editor.sources must provide exactly 42 unique editor C++ sources; "
         "count=${matter_editor_source_count}, unique=${matter_editor_unique_source_count}")
 endif()
 
@@ -30,7 +30,7 @@ target_include_directories(matter_editor PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
 )
 # Headers owned by source-built dependencies retain their own warning policy.
-# /WX below applies to Matter's 41 editor translation units, while MSVC treats
+# /WX below applies to Matter's 42 editor translation units, while MSVC treats
 # these include roots as external at a narrowly suppressed warning level.
 target_include_directories(matter_editor SYSTEM PRIVATE
     "${matter_vulkan_include}"
@@ -102,6 +102,27 @@ target_link_options(matter_editor PRIVATE /ENTRY:mainCRTStartup)
 add_custom_target(editor DEPENDS matter_editor)
 
 if(BUILD_TESTING)
+    add_executable(agent_protocol_tests
+        MatterEditor/tests/test_agent_protocol.cpp
+        MatterEditor/src/agent_protocol.cpp
+        MatterEngine3/src/util/json_doc.cpp
+    )
+    target_include_directories(agent_protocol_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+    )
+    matter_apply_project_defaults(agent_protocol_tests)
+    matter_apply_test_assertion_policy(agent_protocol_tests)
+    add_test(NAME agent_protocol_tests COMMAND agent_protocol_tests)
+    set_tests_properties(agent_protocol_tests PROPERTIES LABELS "editor;cpu")
+
+    add_test(NAME matter_agent_client_tests
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/tools/tests/test_matter_agent.py"
+    )
+    set_tests_properties(matter_agent_client_tests PROPERTIES
+        LABELS "editor;python")
+
     add_test(NAME windows_build_wrapper_contract
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/cmake/tests/build_wrapper_contract_tests.ps1"

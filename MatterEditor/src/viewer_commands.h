@@ -72,6 +72,7 @@
 
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/event/command.h"
+#include "agent_protocol.h"
 #endif
 #include "matter/props.h"
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
@@ -94,6 +95,27 @@ inline bool write_screenshot_completion_marker(const std::string& path) {
 }
 
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
+// --- versioned agent-protocol metadata commands -----------------------------
+// These are ordinary ticketed CommandRegistry commands.  agent_protocol owns
+// request validation/correlation and main.cpp attaches each returned registry
+// ticket to the external request id; there is no second command dispatcher.
+struct AgentCommands {
+    MT_COMMAND_NAME("agent.commands");
+    using Result = matter::evt::CommandResult<matter::jsondoc::Value>;
+};
+
+struct AgentHelp {
+    MT_COMMAND_NAME("agent.help");
+    using Result = matter::evt::CommandResult<matter::jsondoc::Value>;
+    std::string command;
+};
+
+struct AgentSchema {
+    MT_COMMAND_NAME("agent.schema");
+    using Result = matter::evt::CommandResult<matter::jsondoc::Value>;
+    std::string command;
+};
+
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------
 // The FIRST ActiveSession-scoped commands: each mutates world entity state, so
 // each is stamped with the SessionBinding's ActiveSession epoch token and

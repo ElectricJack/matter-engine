@@ -158,6 +158,9 @@
     "vt.residency"
   ],
   "editor": [
+    "agent.commands",
+    "agent.help",
+    "agent.schema",
     "fifo.budget",
     "fifo.character",
     "fifo.dlss",

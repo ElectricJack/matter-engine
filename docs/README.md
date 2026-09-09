@@ -32,6 +32,8 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Agent and QA references
 
+- **[Agent protocol v1](agent/agent-protocol.md)** — structured discovery,
+  request/result envelopes, identities, revisions, limits, and script client.
 - **[Control surface](agent/control-surface.md)** — environment variables,
   command FIFO grammar, and events.
 - **[QA cookbook](agent/qa-cookbook.md)** — builds, screenshots, replay/diff,

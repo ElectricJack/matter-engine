@@ -90,6 +90,11 @@ public:
     size_t size() const { return items_.size(); }
     bool empty() const { return items_.empty(); }
 
+    // Monotonic app-session revision. It advances only when the ordered set or
+    // primary actually changes; idempotent clears/replacements do not make an
+    // optimistic-concurrency token stale.
+    uint64_t revision() const { return revision_; }
+
     // Remove objects that no longer exist. Call once per frame.
     // `alive` returns true if the object still exists in the scene.
     // Called once per selected object, so keep that lookup cheap. A surviving
@@ -100,6 +105,7 @@ public:
 private:
     std::vector<SelectedObject> items_;
     int primary_index_ = -1;  // index into items_ of the primary selection
+    uint64_t revision_ = 0;
 };
 
 } // namespace viewer

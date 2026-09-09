@@ -1125,6 +1125,21 @@ build/test_selection_set.exe: tests/test_selection_set.cpp src/selection_set.cpp
 run-test-selection-set: build/test_selection_set.exe
 	./build/test_selection_set.exe
 
+# Versioned agent request/result contract. Pure CPU and filesystem only; the
+# production adapter attaches these envelopes to CommandRegistry tickets in
+# main.cpp, while this target tests hostile input and lifecycle semantics.
+build/test_agent_protocol.exe: tests/test_agent_protocol.cpp \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_agent_protocol.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-agent-protocol
+run-test-agent-protocol: build/test_agent_protocol.exe
+	./build/test_agent_protocol.exe
+
 # Camera orbit / move / turn math (issue a4203d22 parts 1-2). Pure CPU: no
 # ImGui context, no window, no session -- camera_orbit.cpp exists precisely
 # so this math is reachable without any of them. camera_controller.cpp comes

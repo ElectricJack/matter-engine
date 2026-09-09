@@ -149,6 +149,9 @@ public:
     // it across a frame.
     const std::vector<HierarchyRow>& rows() const { return filtered_rows_; }
     uint32_t row_count() const { return static_cast<uint32_t>(filtered_rows_.size()); }
+    // Monotonic authoritative scene-row revision, exposed to the agent
+    // protocol as a decimal string. Filters do not change it.
+    uint64_t revision() const { return rev_counter_; }
 
     // Commands (return error on failure, None on success).
     //

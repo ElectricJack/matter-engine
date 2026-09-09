@@ -95,6 +95,22 @@ polled plain file, not a real FIFO — `mkfifo`/blocking-open semantics only
 apply on Linux; `drive.py` and `viewer_shots.sh` both handle the platform
 difference for you.
 
+## 4a. Structured agent request
+
+Launch the editor with both `MATTER_CMD_FIFO=<commands.txt>` and
+`MATTER_AGENT_RESULT_FILE=<results.jsonl>`, then issue a discoverable request:
+
+```bash
+python tools/matter_agent.py agent.commands \
+  --cmd-file C:/tmp/matter-commands.txt \
+  --result-file C:/tmp/matter-results.jsonl
+```
+
+Expect exactly one terminal JSON object on stdout. Client diagnostics go to
+stderr, editor logs stay on its stdout/stderr, and the shared result file is
+JSONL only. See `docs/agent/agent-protocol.md` for help/schema calls, expected
+revision guards, status codes and bounds.
+
 ## 5. Replay an issue shot and diff
 
 ```bash

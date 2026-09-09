@@ -2443,7 +2443,7 @@ int main() {
     // file that the loop polls by size, remembering its own read offset
     // (`cmd_offset`) and rewinding to 0 if the file shrinks — i.e. if a driver
     // truncated or replaced it.
-    // Either way the bytes land in `cmd_buffer`, are split on newlines into
+    // Either way the bytes land in the bounded `cmd_lines` framer, then into
     // `fifo_pending_lines`, and are dispatched under the `fifo_block` gate.
     // -----------------------------------------------------------------------
 #ifndef _WIN32
@@ -2452,8 +2452,9 @@ int main() {
     HANDLE cmd_handle = INVALID_HANDLE_VALUE;
     LARGE_INTEGER cmd_offset{};
 #endif
-    std::string cmd_buffer;
+    viewer::agent::LineBuffer cmd_lines;
     const char* fifo_path = std::getenv("MATTER_CMD_FIFO");
+    const char* agent_result_path = std::getenv("MATTER_AGENT_RESULT_FILE");
 #ifndef _WIN32
     if (fifo_path) {
         mkfifo(fifo_path, 0600);
@@ -2480,6 +2481,11 @@ int main() {
     }
 #endif
     if (fifo_path) std::fflush(stdout);
+    if (agent_result_path) {
+        std::printf("MATTER_AGENT_RESULT_FILE: writing JSONL to %s\n",
+                    agent_result_path);
+        std::fflush(stdout);
+    }
     std::string shot_path;
     std::string stats_label;
     int shot_settle = 0;
@@ -2518,7 +2524,7 @@ int main() {
     bool fifo_issue_file_pending = false;
 
     // ---- QA timeline state (event-system.md-style FIFO blocking waits) ------
-    // Lines already split out of cmd_buffer but not yet dispatched. Blocking
+    // Lines already split out by cmd_lines but not yet dispatched. Blocking
     // waits (wait_frames / wait_idle / wait_event / shot / shot_now) pause
     // POPPING this queue -- reading more bytes/lines off the file above is
     // always fine -- which is what turns a pre-written command file into a
@@ -2664,6 +2670,68 @@ int main() {
                          std::vector<matter::evt::Subscription>& out) {
             scene_adapter.build(session_hub, out);
         });
+
+    // Versioned agent JSONL rides the existing FIFO and dispatches these
+    // metadata operations through this same registry. Results go to a separate
+    // append-only file so human logs on stdout/stderr can never corrupt JSON.
+    viewer::agent::OutputSink agent_output;
+    if (agent_result_path)
+        agent_output = viewer::agent::jsonl_file_sink(agent_result_path);
+    viewer::agent::Protocol agent_protocol(
+        agent_result_path != nullptr, std::move(agent_output), [&]() {
+            viewer::agent::Context context;
+            context.scene_ready = bake_ready;
+            context.session_id = binding.current_session_id();
+            context.session_generation = binding.current_generation();
+            context.scene_generation = session ? session->graph_generation() : 0;
+            context.scene_revision = editor_model.revision();
+            context.selection_revision = selection_set.revision();
+            // The presented-frame serial is both the exact framebuffer identity
+            // and this first protocol version's conservative view identity. A
+            // later frame is stale even when its camera happens to compare equal.
+            context.frame_id = fifo_present.presented_frame_serial();
+            context.view_id = fifo_present.presented_frame_serial();
+            return context;
+        });
+    agent_protocol.add_command({
+        "agent.commands", "List commands and current availability", {}, "object",
+        false, {}});
+    agent_protocol.add_command({
+        "agent.help", "Describe one command and its arguments",
+        {{"command", "string", true, "Command name returned by agent.commands"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "agent.schema", "Return the v1 envelopes, limits and one command schema",
+        {{"command", "string", true, "Command name returned by agent.commands"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "agent.subscribe", "Reserved event streaming operation", {}, "object", false,
+        [](const viewer::agent::Context&) {
+            return viewer::agent::Availability{
+                false, viewer::agent::Status::UnsupportedCommand,
+                "protocol v1 is request/result only; event subscription is unsupported"};
+        }});
+
+    auto reg_agent_commands =
+        registry.must_register_handler<viewer::AgentCommands>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::AgentCommands&) {
+                return viewer::AgentCommands::Result::succeeded(
+                    agent_protocol.discovery());
+            });
+    auto reg_agent_help = registry.must_register_handler<viewer::AgentHelp>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::AgentHelp& command) {
+            return viewer::AgentHelp::Result::succeeded(
+                agent_protocol.help(command.command));
+        });
+    auto reg_agent_schema = registry.must_register_handler<viewer::AgentSchema>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::AgentSchema& command) {
+            return viewer::AgentSchema::Result::succeeded(
+                agent_protocol.schema(command.command));
+        });
+
     // ---- Registered viewer commands (S I.11 migration map) ------------------
     // Handlers live where the poll-site code lived (this main loop / the lab
     // shell). All App-scoped and non-undoable. Same-thread UI triggers reach
@@ -3322,21 +3390,25 @@ int main() {
             char bytes[512];
             ssize_t count = 0;
             while ((count = read(cmd_fd, bytes, sizeof(bytes))) > 0)
-                cmd_buffer.append(bytes, static_cast<size_t>(count));
+                cmd_lines.append(bytes, static_cast<size_t>(count));
         }
 #else
         if (cmd_handle != INVALID_HANDLE_VALUE) {
             LARGE_INTEGER size{};
             if (GetFileSizeEx(cmd_handle, &size) &&
-                size.QuadPart < cmd_offset.QuadPart)
+                size.QuadPart < cmd_offset.QuadPart) {
                 cmd_offset.QuadPart = 0;
+                // A replacement/truncation is a transport reconnect. Drop an
+                // incomplete old line so it cannot join a new JSON request.
+                cmd_lines.reset();
+            }
             if (size.QuadPart > cmd_offset.QuadPart) {
                 SetFilePointerEx(cmd_handle, cmd_offset, nullptr, FILE_BEGIN);
                 char bytes[512];
                 DWORD count = 0;
                 while (ReadFile(cmd_handle, bytes, sizeof(bytes), &count,
                                 nullptr) && count > 0) {
-                    cmd_buffer.append(bytes, static_cast<size_t>(count));
+                    cmd_lines.append(bytes, static_cast<size_t>(count));
                     cmd_offset.QuadPart += count;
                     if (count < sizeof(bytes)) break;
                 }
@@ -3344,19 +3416,27 @@ int main() {
         }
 #endif
         {
-            size_t newline = 0;
-            while ((newline = cmd_buffer.find('\n')) != std::string::npos) {
-                std::string line = cmd_buffer.substr(0, newline);
-                cmd_buffer.erase(0, newline + 1);
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                fifo_pending_lines.push_back(std::move(line));
+            viewer::agent::LineBuffer::Line framed;
+            while (cmd_lines.pop(framed)) {
+                if (framed.oversized) {
+                    // No bounded parser can reliably recover an id from a line
+                    // it intentionally discarded. Emit a request-less terminal
+                    // error when the JSON result channel exists, plus a log.
+                    agent_protocol.begin(std::string(
+                        viewer::agent::kMaxRequestBytes + 1, 'x'));
+                    std::fprintf(stderr,
+                                 "MATTER_CMD_FIFO: dropped line over %zu bytes\n",
+                                 viewer::agent::kMaxRequestBytes);
+                    continue;
+                }
+                fifo_pending_lines.push_back(std::move(framed.text));
             }
         }
         // Timeline semantics (QA timeline feature): a blocking wait
         // (wait_frames / wait_idle / wait_event) pauses POPPING fifo_pending_lines
         // until it releases, so a `set`/`shot`/etc. line written after a
         // `wait_frames` in the file cannot dispatch before the wait completes.
-        // Reading more bytes into cmd_buffer above still happens every frame
+        // Reading more bytes into cmd_lines above still happens every frame
         // regardless -- only dispatch is gated. This loop can still drain
         // several non-blocking lines in one frame (unchanged from before) --
         // it only stops early when a blocking wait is (re)armed.
@@ -3370,6 +3450,80 @@ int main() {
                 // an explicit ticket completion. The queued jobs run at the
                 // registry pump right below (still this frame, before render).
                 float c[6]; char word[256];
+                const size_t fifo_token_end = line.find_first_of(" \t");
+                if (line.substr(0, fifo_token_end) == "agent") {
+                    size_t json_start = fifo_token_end;
+                    while (json_start != std::string::npos &&
+                           json_start < line.size() &&
+                           (line[json_start] == ' ' || line[json_start] == '\t'))
+                        ++json_start;
+                    const std::string json =
+                        json_start == std::string::npos ? std::string()
+                                                        : line.substr(json_start);
+                    viewer::agent::BeginResult begun = agent_protocol.begin(json);
+                    if (!begun.accepted) continue;
+
+                    const std::string request_id = begun.request.request_id;
+                    auto attach_agent_ticket =
+                        [&](auto ticket) {
+                            const uint64_t ticket_id = ticket.id();
+                            if (!agent_protocol.attach_ticket(request_id, ticket_id)) {
+                                agent_protocol.reject_accepted(
+                                    request_id,
+                                    viewer::agent::Status::ExecutionFailure,
+                                    "could not attach CommandRegistry ticket");
+                                return;
+                            }
+                            ticket.then(
+                                app_lane,
+                                [&, request_id, ticket_id](const auto& result) {
+                                    viewer::agent::Status status =
+                                        viewer::agent::Status::ExecutionFailure;
+                                    if (result.status ==
+                                        matter::evt::CommandStatus::Success)
+                                        status = viewer::agent::Status::Ok;
+                                    else if (result.status ==
+                                             matter::evt::CommandStatus::StaleScope)
+                                        status = viewer::agent::Status::StaleRevision;
+                                    matter::jsondoc::Value payload;
+                                    if (result.value) payload = *result.value;
+                                    agent_protocol.complete(
+                                        request_id, ticket_id, status,
+                                        std::move(payload), result.error);
+                                });
+                        };
+
+                    if (begun.request.command == "agent.commands") {
+                        attach_agent_ticket(registry.dispatch(viewer::AgentCommands{}));
+                    } else {
+                        const matter::jsondoc::Value* requested =
+                            begun.request.arguments.find("command");
+                        const std::string target = requested ? requested->str
+                                                             : std::string();
+                        if (!agent_protocol.find_command(target)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::NotFound,
+                                "requested command is not registered");
+                        } else if (begun.request.command == "agent.help") {
+                            viewer::AgentHelp command;
+                            command.command = target;
+                            attach_agent_ticket(registry.dispatch(std::move(command)));
+                        } else if (begun.request.command == "agent.schema") {
+                            viewer::AgentSchema command;
+                            command.command = target;
+                            attach_agent_ticket(registry.dispatch(std::move(command)));
+                        } else {
+                            // Available descriptors must have a typed registry
+                            // route. Treat a missing route as an implementation
+                            // failure rather than silently accepting it.
+                            agent_protocol.reject_accepted(
+                                request_id,
+                                viewer::agent::Status::ExecutionFailure,
+                                "available command has no CommandRegistry route");
+                        }
+                    }
+                    continue;
+                }
                 const viewer::FifoParseResult presentation_command =
                     viewer::parse_fifo_line(line);
                 if (presentation_command.recognized) {
@@ -3716,6 +3870,10 @@ int main() {
         // and the camera snapshot — so a FIFO `cam`/`budget` applies to THIS
         // frame's render exactly as the old inline handling did.
         registry.pump(app_lane, 5.0);
+        agent_protocol.expire();
+        if (const std::string agent_error = agent_protocol.take_io_error();
+            !agent_error.empty())
+            std::fprintf(stderr, "agent protocol: %s\n", agent_error.c_str());
 
         // D-03: shot deadman. Checked every iteration (not gated on
         // begin_frame succeeding) so a world where presents never succeed

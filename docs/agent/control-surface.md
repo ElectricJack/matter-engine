@@ -23,6 +23,13 @@ successful capture.
 (`MATTER_SCREENSHOT`/`MATTER_REPLAY_OUT` captures do NOT write a sidecar —
 those runs quit after writing, so poll for process exit instead.)
 
+For structured automation, set `MATTER_AGENT_RESULT_FILE` alongside
+`MATTER_CMD_FIFO` and send `agent <JSON>` lines. Terminal JSONL results are
+written only to that file (logs remain on stdout/stderr) and correlate the
+request ID with the existing `CommandRegistry` ticket. The complete versioned
+contract and `tools/matter_agent.py` client are in
+[`agent-protocol.md`](agent-protocol.md).
+
 Two readiness lines matter for scripting:
 
 - `MATTER_CMD_FIFO: polling command file <path>` (Windows) or
@@ -63,6 +70,7 @@ ends onto one command registry.
 
 | Verb | Grammar | Effect |
 |---|---|---|
+| `agent` | `agent <v1 request JSON>` | Versioned, bounded request/result envelope. Dispatches typed agent operations through the existing ticketed `CommandRegistry`; writes one terminal JSON record to `MATTER_AGENT_RESULT_FILE`. See `agent-protocol.md`. |
 | `cam` | `cam ex ey ez tx ty tz` (6 floats) | Sets camera eye/target immediately. |
 | `shot` | `shot <path>` | **Blocking.** Settles 3 frames (`instances_drawn > 0` gated), writes the PNG, then writes `<path>.done`. No later FIFO line dispatches until the write completes (§ Timeline semantics below) — a bounded 30s deadman (§ shot deadman) prevents a world that never settles from hanging the timeline forever. |
 | `shot_now` | `shot_now <abs .png>` | **Blocking**, same as `shot` (landed alongside it for consistency — neither spelling needs a trailing `wait_frames` to be safe to follow with another timeline line). Queued via `FifoPresentSequencer`; captured on the next **presented** frame with no settle wait. Path must be an absolute, filesystem-safe `.png` path (`fifo_safe_absolute_png_path` rejects reserved Windows names, `..`, control chars, etc). Also writes `<path>.done`. Covered by the same shot deadman as `shot`. |
@@ -191,6 +199,8 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
 ### Editor/QA (startup + capture control)
 
 - `MATTER_CMD_FIFO` — command file path (§b).
+- `MATTER_AGENT_RESULT_FILE` — append-only JSONL terminal results for `agent`
+  requests. Kept separate from stdout/stderr logs. See `agent-protocol.md`.
 - `MATTER_WORLD` — world/scene name to open at startup.
 - `MATTER_CAM` — `"ex,ey,ez,tx,ty,tz"`, one-shot initial camera pose.
 - `MATTER_CAM_PATH` — path to a scripted fly-through file, one pose per line
