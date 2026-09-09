@@ -1,7 +1,9 @@
 include_guard(GLOBAL)
 
 function(matter_engine_include_directories target visibility)
-    add_dependencies("${target}" matter_embedded_shader_text)
+    add_dependencies("${target}"
+        matter_embedded_shader_text
+        matter_embedded_spirv)
     target_include_directories("${target}" BEFORE ${visibility}
         "${CMAKE_BINARY_DIR}/MatterEngine3")
     target_include_directories("${target}" ${visibility}

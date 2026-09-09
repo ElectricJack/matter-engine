@@ -19,9 +19,9 @@ and package validation. It writes a transcript, resolved toolchain, and JUnit
 results under `artifacts/ci/`, uploaded even when the job fails. Run it from
 native PowerShell to reproduce CI locally.
 
-Bootstrap status: workflow prepared, runner installation and remote CI
-verification pending. The baseline is f912eaf75a805dc898af0a17051baf0378105123,
-which includes 228 commits beyond the previously published main. Preserve
-that ancestry when publishing the baseline for review. Feature task origins
-must use the accepted current baseline. Keep AQ feature execution paused
-until real check evidence and the integration policy are configured.
+Bootstrap evidence: published prerequisite
+`72867a102a263d07d0a3de2b9c0ec52fe6841040` preserves the 228-commit engine
+baseline and its native-CI fixes. GitHub Actions run `34326903928` passed the
+required job at that exact SHA on the dedicated runner. AQ task and candidate
+heads must still pass the same required check before promotion; evidence for
+the prerequisite SHA is not evidence for a different candidate SHA.
