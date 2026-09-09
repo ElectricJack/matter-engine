@@ -77,7 +77,7 @@ public:
 
 private:
     // Mints a fresh SceneEntityId::value in the runtime half of the id space
-    // (scene_registry.h kRuntimeIdBit set). See scene_service.cpp.
+    // (matter/scene.h kRuntimeIdBit set). See scene_service.cpp.
     uint64_t allocate_id();
 
     flecs::world& world_;

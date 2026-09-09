@@ -1,5 +1,7 @@
 #include "scene_inventory.h"
 
+#include "matter/scene.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -99,34 +101,35 @@ bool same_object(const agent::ObjectIdentity& a, const agent::ObjectIdentity& b)
 // a Flecs handle: those are live-world handles with recycled generations and
 // are not serialized anywhere in this protocol.
 //
-// SceneEntityId splits its own space by a RESERVED HIGH BIT
-// (MatterEngine3/src/ecs/scene_registry.cpp "IDENTITY"): an id whose high bit
-// is clear is FNV-1a over the authored id STRING from the world definition and
-// is stable across reloads of that definition; the high bit is reserved for
-// ids allocated at runtime, which are not.
+// SceneEntityId splits its own space by its TOP BIT, `matter::scene`'s
+// kRuntimeIdBit (MatterEngine3/include/matter/scene.h): an id with the bit
+// clear is FNV-1a over the authored id STRING from the world definition
+// (hash_authored_id) and is stable across reloads of that definition; an id
+// with the bit set was minted at runtime by SceneService::allocate_id and is
+// not. Both allocators are held to that split, so the classification is exact
+// for either population rather than a convention one side ignores.
 //
-// Caveat, reported as `classified_by` rather than hidden: SceneService's
-// allocate_id() counts up from 1 without setting that bit
-// (MatterEngine3/src/scene/scene_service.h next_id_), so an editor-CREATED
-// entity presently classifies as world-authored. Saying which rule produced
-// the answer is the honest way to expose a convention its own allocator does
-// not yet follow.
-constexpr std::uint64_t kSessionIdBit = 1ull << 63;
+// The classification is still reported as `classified_by`, because it is a
+// rule APPLIED to the id here and not a provenance field recorded alongside
+// it: a caller that wants to know how the answer was reached can see it, and
+// a future third namespace cannot silently masquerade as one of these two.
+// `is_runtime_id` is called rather than re-deriving the bit test, so this
+// file cannot drift from the allocator that upholds it.
 
 Value identity_contract_json(const agent::ObjectIdentity& object) {
     Value out = object_value();
     if (object.kind == agent::ObjectIdentity::Kind::Entity) {
-        const bool session_allocated = (object.id & kSessionIdBit) != 0;
+        const bool runtime_minted = matter::scene::is_runtime_id(object.id);
         out.set("namespace", string_value("scene_entity"));
-        out.set("source", string_value(session_allocated
+        out.set("source", string_value(runtime_minted
                                            ? "session_allocated_id"
                                            : "world_authored_id_hash"));
         out.set("stability",
-                string_value(session_allocated ? "session" : "world_definition"));
-        out.set("classified_by", string_value("reserved_high_bit"));
+                string_value(runtime_minted ? "session" : "world_definition"));
+        out.set("classified_by", string_value("runtime_id_bit"));
         out.set("notes",
                 string_value(
-                    session_allocated
+                    runtime_minted
                         ? "runtime-allocated scene entity id, not a Flecs "
                           "handle; it does not survive the session, so pair it "
                           "with expect.session_generation"

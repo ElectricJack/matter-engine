@@ -29,7 +29,7 @@
 // Do not reuse the legacy helpers on untrusted or unvalidated JSON.
 //
 // IDENTITY. `hash_authored_id` is FNV-1a over the authored id string with
-// `kRuntimeIdBit` (scene_registry.h) cleared; that bit is reserved for
+// `kRuntimeIdBit` (matter/scene.h) cleared; that bit is reserved for
 // session-created ids, which SceneService::allocate_id sets. The resulting
 // `SceneEntityId::value` is stable across reloads while
 // `SceneEntityId::generation` identifies one incarnation, so a recycled id

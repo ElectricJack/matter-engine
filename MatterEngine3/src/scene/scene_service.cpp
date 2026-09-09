@@ -93,7 +93,8 @@ uint64_t SceneService::allocate_id() {
     // Runtime ids live in the HIGH half of the SceneEntityId::value space:
     // kRuntimeIdBit set, the monotonic counter in the low 63 bits. Authored
     // ids are hash_authored_id() FNV-1a hashes with that bit cleared
-    // (scene_registry.h), so the two allocators are disjoint by construction.
+    // (matter/scene.h defines the split), so the two allocators are disjoint
+    // by construction.
     // That is what actually upholds the no-collision claim — the liveness scan
     // below only sees CURRENTLY loaded entities, so on its own it could not
     // stop a later world reload from bringing in an authored id this service

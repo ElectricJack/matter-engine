@@ -13,6 +13,8 @@
 
 #include "../src/scene_inventory.h"
 
+#include "matter/scene.h"
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -179,15 +181,18 @@ void test_overlapping_numeric_ids_across_kinds() {
 }
 
 // No id here is ever a Flecs handle, and SceneEntityId splits its own space by
-// a reserved high bit (scene_registry.cpp "IDENTITY"): high bit clear is the
-// FNV-1a hash of the world definition's authored id string, stable across
-// reloads; the high bit is reserved for runtime-allocated ids, which are not.
-// The contract states which rule classified the id rather than assuming one.
+// its top bit -- matter::scene::kRuntimeIdBit (matter/scene.h), the ONE
+// definition of the split: bit clear is the FNV-1a hash of the world
+// definition's authored id string, stable across reloads; bit set is an id
+// SceneService::allocate_id minted at runtime, which is not. Both allocators
+// are held to it, so the classification is exact for either population. The
+// contract still names the rule that produced the answer rather than letting a
+// caller assume one.
 void test_identity_contract_is_explicit() {
-    const std::uint64_t kSessionBit = 1ull << 63;
+    const std::uint64_t kRuntimeBit = matter::scene::kRuntimeIdBit;
     const inv::Snapshot snapshot = inv::build_snapshot(
         {entity_row(637276243303307148ull, 0, "Authored"),
-         entity_row(kSessionBit | 1ull, 0, "Runtime")},
+         entity_row(kRuntimeBit | 1ull, 0, "Runtime")},
         {root_row(2, "b")}, {}, 1);
     const Value listing = list_json(snapshot, inv::ListQuery{});
 
@@ -196,13 +201,32 @@ void test_identity_contract_is_explicit() {
               text(authored, "source") == "world_authored_id_hash" &&
               text(authored, "stability") == "world_definition",
           "an authored entity id is declared as the world definition's hash");
-    CHECK(text(authored, "classified_by") == "reserved_high_bit",
+    CHECK(text(authored, "classified_by") == "runtime_id_bit",
           "the contract names the rule that classified the id");
 
     const Value& runtime = field(row_at(listing, 1), "identity");
     CHECK(text(runtime, "source") == "session_allocated_id" &&
               text(runtime, "stability") == "session",
-          "a high-bit id is declared runtime-allocated and session-scoped");
+          "a runtime-bit id is declared runtime-allocated and session-scoped");
+    CHECK(text(runtime, "classified_by") == "runtime_id_bit",
+          "both entity classifications name the same rule");
+
+    // Read every emitted entity id back and re-run the ENGINE predicate on it:
+    // the reported source must be whatever matter::scene::is_runtime_id says,
+    // not whatever a bit test copied into this file would say. That is the
+    // coupling that keeps the protocol from drifting from the allocator.
+    for (const Value& row : field(listing, "objects").arr) {
+        if (text(row, "kind") != "entity") continue;
+        const std::uint64_t id =
+            std::strtoull(text(field(row, "object"), "id").c_str(), nullptr, 10);
+        const bool runtime = matter::scene::is_runtime_id(id);
+        CHECK(text(field(row, "identity"), "source") ==
+                  (runtime ? "session_allocated_id" : "world_authored_id_hash"),
+              "source follows matter::scene::is_runtime_id, not a local copy");
+        CHECK(text(field(row, "identity"), "stability") ==
+                  (runtime ? "session" : "world_definition"),
+              "stability follows the same split as source");
+    }
 
     for (const Value& row : field(listing, "objects").arr)
         CHECK(text(field(row, "identity"), "notes").find("not a Flecs handle") !=

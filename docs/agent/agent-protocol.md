@@ -259,26 +259,29 @@ because the gizmo edits scene entities only.
 
 | kind | `namespace` | `source` | `stability` | `classified_by` |
 | --- | --- | --- | --- | --- |
-| `entity`, high bit clear | `scene_entity` | `world_authored_id_hash` | `world_definition` | `reserved_high_bit` |
-| `entity`, high bit set | `scene_entity` | `session_allocated_id` | `session` | `reserved_high_bit` |
+| `entity`, runtime bit clear | `scene_entity` | `world_authored_id_hash` | `world_definition` | `runtime_id_bit` |
+| `entity`, runtime bit set | `scene_entity` | `session_allocated_id` | `session` | `runtime_id_bit` |
 | `baked_root` | `baked_part_hash` | `resolved_part_content_hash` | `content` | `part_graph_root` |
 
 No id in this protocol is a Flecs handle; Flecs handles are live-world values
 with recycled generations and are never serialized.
 
-`SceneEntityId` splits its own space by a reserved high bit
-(`MatterEngine3/src/ecs/scene_registry.cpp`, "IDENTITY"): an id whose high bit
-is clear is FNV-1a over the world definition's authored id STRING and is stable
-across reloads of that definition, while the high bit is reserved for ids
-allocated at runtime, which are not. Either way a DIFFERENT world can hand out
+`SceneEntityId` splits its own space by its top bit: `matter::scene::kRuntimeIdBit`
+in `MatterEngine3/include/matter/scene.h` is the one definition of that
+split. An id with the bit CLEAR is FNV-1a over the world definition's
+authored id STRING (`hash_authored_id`) and is stable across reloads of that
+definition; an id with the bit SET was minted at runtime by
+`SceneService::allocate_id`, and is not. Both allocators are held to the split,
+so an entity the editor creates reports `session_allocated_id` rather than
+being mistaken for an authored one. Either way a DIFFERENT world can hand out
 the same number for a different object, so pair an entity id with
 `expect.session_generation` across a world switch.
 
-`classified_by` is reported because the classification is a rule applied to the
-id, not a recorded fact: `SceneService::allocate_id` currently counts up from 1
-without setting the reserved bit, so an entity created by the editor at runtime
-classifies as `world_authored_id_hash` today. Naming the rule is what lets a
-caller tell a derived answer from a recorded one.
+`classified_by` is reported because the classification is a rule APPLIED to the
+id at read time, not a provenance field recorded next to it: `runtime_id_bit`
+says the answer came from `matter::scene::is_runtime_id`, so a caller can tell a
+derived answer from a recorded one and a namespace added later cannot silently
+pass itself off as one of these two.
 
 A baked-root id is the resolved content hash, so a rebake that changes the part
 changes the id and the old one stops resolving.
