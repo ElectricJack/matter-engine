@@ -28,7 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "../shaders_gen/embedded_shaders.h"
+#include "shaders_gen/embedded_shaders.h"
 
 namespace matter {
 

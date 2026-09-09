@@ -108,6 +108,32 @@ matter_add_vulkan_shader_pipeline(
         "raster_water.vert|raster.vert|MATTER_WATER_ANIMATION_VERTEX_INPUT"
 )
 
+# The text lookup API is compiled into both core and viewer builds. Keep its
+# generated table in this build tree, just like the embedded SPIR-V header.
+set(matter_text_shader_keys
+    shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl
+    shaders/raytrace_tlas_blas_processed.fs shaders/materials.glsl
+    shaders/bvh_tlas_common.glsl shaders/lighting.glsl)
+set(matter_text_shader_inputs)
+foreach(shader IN LISTS matter_text_shader_keys)
+    list(APPEND matter_text_shader_inputs
+        "${CMAKE_SOURCE_DIR}/libs/MatterSurfaceLib/${shader}")
+endforeach()
+set(matter_text_shader_header
+    "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen/embedded_shaders.h")
+add_custom_command(
+    OUTPUT "${matter_text_shader_header}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_BINARY_DIR}/MatterEngine3/shaders_gen"
+    COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_shaders.py"
+        "${matter_text_shader_header}"
+        "${CMAKE_SOURCE_DIR}/libs/MatterSurfaceLib" ${matter_text_shader_keys}
+    DEPENDS "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_shaders.py"
+        ${matter_text_shader_inputs}
+    VERBATIM)
+add_custom_target(matter_embedded_shader_text DEPENDS "${matter_text_shader_header}")
+
 include(cmake/MatterPhysx.cmake)
 include(cmake/MatterEngine.cmake)
 include(cmake/MatterViewer.cmake)
