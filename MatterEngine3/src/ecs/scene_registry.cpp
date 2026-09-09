@@ -28,9 +28,10 @@
 // RiverFloatBody instead enforce their strict field and ownership contracts.
 // Do not reuse the legacy helpers on untrusted or unvalidated JSON.
 //
-// IDENTITY. `hash_authored_id` is FNV-1a over the authored id string with the
-// high bit cleared; the high bit is reserved for session-created ids. The
-// resulting `SceneEntityId::value` is stable across reloads while
+// IDENTITY. `hash_authored_id` is FNV-1a over the authored id string with
+// `kRuntimeIdBit` (scene_registry.h) cleared; that bit is reserved for
+// session-created ids, which SceneService::allocate_id sets. The resulting
+// `SceneEntityId::value` is stable across reloads while
 // `SceneEntityId::generation` identifies one incarnation, so a recycled id
 // cannot be mistaken for a GPU slot still retiring.
 //
@@ -756,8 +757,9 @@ static std::vector<std::string> extract_top_keys(const std::string& json) {
 }
 
 // ---------------------------------------------------------------------------
-// Identity hashing. Authored IDs use FNV-1a over the string bytes.
-// Session-created IDs use the high bit set with a monotonic counter.
+// Identity hashing. Authored IDs use FNV-1a over the string bytes with
+// kRuntimeIdBit cleared. Session-created IDs set that bit over a monotonic
+// counter (SceneService::allocate_id), so the two halves cannot collide.
 // ---------------------------------------------------------------------------
 
 uint64_t hash_authored_id(const std::string& id) {
@@ -766,7 +768,7 @@ uint64_t hash_authored_id(const std::string& id) {
         h ^= static_cast<uint64_t>(static_cast<uint8_t>(c));
         h *= 1099511628211ULL;
     }
-    return h & 0x7FFFFFFFFFFFFFFFULL; // clear high bit for authored IDs
+    return h & ~kRuntimeIdBit; // authored IDs live in the low half
 }
 
 // ---------------------------------------------------------------------------

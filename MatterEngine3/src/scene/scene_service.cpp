@@ -90,11 +90,23 @@ flecs::entity SceneService::find_entity(SceneEntityId id) const {
 }
 
 uint64_t SceneService::allocate_id() {
-    // Monotonic candidate, verified unique against live scene ids so a
-    // service-created id can never collide with a hash-authored id.
+    // Runtime ids live in the HIGH half of the SceneEntityId::value space:
+    // kRuntimeIdBit set, the monotonic counter in the low 63 bits. Authored
+    // ids are hash_authored_id() FNV-1a hashes with that bit cleared
+    // (scene_registry.h), so the two allocators are disjoint by construction.
+    // That is what actually upholds the no-collision claim — the liveness scan
+    // below only sees CURRENTLY loaded entities, so on its own it could not
+    // stop a later world reload from bringing in an authored id this service
+    // had already handed out. The scan remains as a guard against a collision
+    // inside the runtime half itself (a duplicated id, or a counter that wraps
+    // in a session that outlives 2^63 allocations).
+    //
+    // Masking the counter rather than trusting it to stay in range also keeps
+    // the invariant true at wraparound: the candidate always has the bit set
+    // and is therefore never the 0 "no id" sentinel.
     while (true) {
-        uint64_t candidate = next_id_++;
-        if (candidate != 0 && !find_entity(SceneEntityId{candidate}).is_valid())
+        const uint64_t candidate = kRuntimeIdBit | (next_id_++ & ~kRuntimeIdBit);
+        if (!find_entity(SceneEntityId{candidate}).is_valid())
             return candidate;
     }
 }

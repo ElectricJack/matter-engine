@@ -208,7 +208,23 @@ bool to_props_desc(const FieldDescriptor& field, matter::props::Desc& out);
 bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
              const PartResolver& resolve_part = nullptr);
 
-// Stable authored identity: FNV-1a bytes with the high bit cleared.
+// SceneEntityId::value is split into two namespaces by its top bit, and this
+// constant is the ONE definition of that split. World-authored ids are
+// `hash_authored_id` FNV-1a hashes with the bit CLEARED; ids minted at runtime
+// by SceneService (scene/scene_service.cpp allocate_id) carry it SET. Keeping
+// the allocators in disjoint halves is what makes them collision-free across a
+// reload, which a liveness scan over currently-loaded entities cannot achieve,
+// and it lets a reader classify an id's provenance without the world
+// definition in hand.
+inline constexpr uint64_t kRuntimeIdBit = 1ULL << 63;
+
+// True when `value` was minted at runtime rather than hashed from an authored
+// id. The zero sentinel ("no id") reports false, like any authored value.
+inline constexpr bool is_runtime_id(uint64_t value) {
+    return (value & kRuntimeIdBit) != 0;
+}
+
+// Stable authored identity: FNV-1a bytes with kRuntimeIdBit cleared.
 uint64_t hash_authored_id(const std::string& id);
 
 // Validate an edited copy against its entity before committing ECS storage.

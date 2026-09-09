@@ -76,10 +76,16 @@ public:
     flecs::entity find_entity(SceneEntityId id) const;
 
 private:
+    // Mints a fresh SceneEntityId::value in the runtime half of the id space
+    // (scene_registry.h kRuntimeIdBit set). See scene_service.cpp.
     uint64_t allocate_id();
 
     flecs::world& world_;
-    uint64_t next_id_ = 1;  // monotonic; allocate_id() verifies uniqueness
+    // Monotonic counter over the LOW 63 bits only; allocate_id() sets
+    // kRuntimeIdBit on the way out and additionally verifies uniqueness
+    // against live ids. Never use next_id_ as an id directly — a value with
+    // the bit clear lands in the world-authored namespace.
+    uint64_t next_id_ = 1;
 };
 
 } // namespace matter::scene

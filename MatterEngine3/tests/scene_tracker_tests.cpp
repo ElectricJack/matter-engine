@@ -506,6 +506,59 @@ void test_character_edits_rejected_before_mutation() {
     CHECK(fx.service.add_component(id, ComponentKind::CharacterController).error == SceneEditError::InvalidTarget, "service rejects parented player");
 }
 
+// -------------------------------------------------------------------------
+// 11. Runtime ids land in the reserved half of the SceneEntityId value space.
+//
+// scene_registry.h splits SceneEntityId::value by kRuntimeIdBit: authored ids
+// are hash_authored_id() FNV-1a hashes with the bit CLEARED, ids minted by
+// SceneService carry it SET. allocate_id() used to hand out a bare counter, so
+// runtime ids sat inside the authored namespace and the "no collision" claim
+// rested entirely on a scan of currently-live entities -- which says nothing
+// about an authored id a later world reload will introduce. This asserts the
+// namespaces are disjoint by construction, not by liveness.
+// -------------------------------------------------------------------------
+void test_runtime_id_namespace() {
+    printf("[test_runtime_id_namespace]\n");
+    Fx fx;
+
+    // Seed an authored entity whose id is what the loader would hash, to prove
+    // the two allocators cannot meet even with both populations in one world.
+    const uint64_t authored = matter::scene::hash_authored_id("river-player");
+    CHECK(!matter::scene::is_runtime_id(authored),
+          "hash_authored_id leaves kRuntimeIdBit clear");
+    fx.world.entity().set<SceneEntityId>({authored, 1});
+
+    std::vector<uint64_t> minted;
+    for (int i = 0; i < 8; ++i) {
+        SceneEditResult r = fx.service.create_empty("Runtime" + std::to_string(i));
+        CHECK(r.error == SceneEditError::None, "create_empty succeeds");
+        CHECK(r.created_id.value != 0, "created id is never the 0 sentinel");
+        CHECK(matter::scene::is_runtime_id(r.created_id.value),
+              "service-created id sets kRuntimeIdBit");
+        CHECK(r.created_id.value != authored,
+              "service-created id never equals an authored hash");
+        minted.push_back(r.created_id.value);
+    }
+
+    // duplicate() shares allocate_id(), so it must obey the same split.
+    SceneEditResult dup = fx.service.duplicate(SceneEntityId{minted.front()});
+    CHECK(dup.error == SceneEditError::None, "duplicate succeeds");
+    CHECK(matter::scene::is_runtime_id(dup.created_id.value),
+          "duplicated id sets kRuntimeIdBit");
+    minted.push_back(dup.created_id.value);
+
+    std::sort(minted.begin(), minted.end());
+    CHECK(std::adjacent_find(minted.begin(), minted.end()) == minted.end(),
+          "every minted id is distinct");
+
+    // The authored population is untouched: hashing stays in the low half for
+    // a spread of strings, so no authored id can ever land in the reserved one.
+    for (const char* id : {"", "a", "river-player", "PhysicsPlayground/box-17"}) {
+        CHECK(!matter::scene::is_runtime_id(matter::scene::hash_authored_id(id)),
+              "authored hashes stay in the low half");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -519,6 +572,7 @@ int main() {
     test_sequence_discipline();
     test_snapshot_recovery_invariant();
     test_direct_edit_caught();
+    test_runtime_id_namespace();
 
     if (g_failures == 0) {
         printf("scene_tracker_tests: ALL PASS\n");
