@@ -43,6 +43,25 @@ The client records the current result-file offset before appending its request,
 polls incrementally, tolerates partial writes and transient Windows open races,
 and resets its partial buffer if the result file is truncated or replaced.
 
+**Driving the native editor from WSL.** A Win32 process launched from WSL does
+NOT inherit arbitrary WSL environment variables — only the ones named in
+`WSLENV`. An `env`-prefixed launch therefore starts an editor that silently
+never opens the command file (no `MATTER_CMD_FIFO: polling command file …` line
+on stdout) and answers nothing. Name the variables explicitly, and keep passing
+Windows-style paths, since these entries take no `/p` translation flag:
+
+```bash
+WSLENV=MATTER_WORLD:MATTER_CMD_FIFO:MATTER_AGENT_RESULT_FILE:TMP:TEMP \
+MATTER_WORLD=FloorDemo \
+MATTER_CMD_FIFO='C:/tmp/matter-commands.txt' \
+MATTER_AGENT_RESULT_FILE='C:/tmp/matter-results.jsonl' \
+TMP='C:/Users/<you>/AppData/Local/Temp' TEMP='C:/Users/<you>/AppData/Local/Temp' \
+./build/windows-msvc/editor.exe
+```
+
+`tools/matter_agent.py` itself runs fine under WSL's own `python3` as long as
+its `--cmd-file` / `--result-file` name the same files through `/mnt/c/...`.
+
 ## Request envelope
 
 One FIFO line is `agent ` followed by this JSON object:
@@ -141,6 +160,129 @@ The reserved `agent.subscribe` descriptor is intentionally reported as
 `unsupported_command`: v1 is request/result only. This makes known-but-not-
 implemented distinct from a typo.
 
+## Scene reads
+
+Two commands answer "what is in this world" and "what exactly is this object".
+Both stay available before the first bake finishes — `context.scene.ready` tells
+you the world is still filling in, which is more useful than a refusal. Their
+join, ordering, paging and JSON live in `MatterEditor/src/scene_inventory.h`
+(unit-tested by `MatterEditor/tests/test_scene_inventory.cpp`).
+
+### `scene.list_objects`
+
+All arguments are optional:
+
+| Argument | Type | Meaning |
+| --- | --- | --- |
+| `kinds` | array of `"entity"` / `"baked_root"` | Restrict to one population. Omitted means both; an unknown spelling is `invalid_input`, never silently ignored. |
+| `name_contains` | string (max 256 bytes) | Case-insensitive substring of the object NAME (module name for a baked root). IDs are never searched. |
+| `offset` | integer >= 0 | Rows to skip within the matched set. |
+| `limit` | integer 1..200 | Rows to return; default 100. The cap leaves headroom under the 1 MiB result bound; a page that still overflows comes back as `output_too_large`, and the fix is a smaller `limit`, not a retry. |
+
+```powershell
+py -3 tools/matter_agent.py scene.list_objects `
+  --cmd-file C:\tmp\matter-commands.txt `
+  --result-file C:\tmp\matter-results.jsonl `
+  --args '{"kinds":["baked_root"],"limit":50}'
+```
+
+`result` carries:
+
+- `scene_revision` — decimal string, the same value as `context.scene.revision`;
+- `ordering` — `"kind_then_id"`. The order is a TOTAL order over (kind, id), so
+  two listings at the same `scene_revision` return the same objects in the same
+  order and `offset` paging is safe to resume. Sorting on the id alone would
+  interleave the two namespaces;
+- `filter` — the applied kinds and `name_contains`, echoed back;
+- `scene_counts` — whole-scene per-kind counts, unaffected by the filter;
+- `page` — `offset`, `limit`, `returned`, `total_matched`, `has_more` and
+  `next_offset` (`null` on the last page). These are plain numbers: they are
+  bounded by the object count and a caller has to add to them. IDs and revisions
+  stay decimal strings;
+- `objects` — one row each (see below).
+
+### `scene.get_object`
+
+Requires `args.object`, the `{kind,id}` pair a listing returned:
+
+```powershell
+py -3 tools/matter_agent.py scene.get_object `
+  --cmd-file C:\tmp\matter-commands.txt `
+  --result-file C:\tmp\matter-results.jsonl `
+  --args '{"object":{"kind":"entity","id":"42"}}'
+```
+
+An object that is not in the current scene answers `not_found` with a `result`
+of `{"found":false,"object":…,"identity":…,"scene_revision":…,"reason":…}`. A
+deleted entity, a baked root a rebake re-addressed, and an id that is only valid
+in the other kind's namespace all take that path.
+
+### Object rows
+
+Every row (in a listing and in an inspection) carries:
+
+| Field | Meaning |
+| --- | --- |
+| `object` | `{kind,id}` — the identity, ids always decimal strings |
+| `kind` | `entity` or `baked_root` |
+| `identity` | `namespace` / `source` / `stability` / `notes` — see below |
+| `name`, `path` | `{"available":…}` with `value` or `reason`; a path needs a name on the object AND every ancestor |
+| `parent`, `depth`, `child_count`, `components` | authored hierarchy (baked roots are flat: `parent` is `null`) |
+| `provenance` | `available` plus `module`, `source_path`, `params_json` — each with its own availability |
+| `selected`, `primary` | shared `SelectionSet` state |
+
+An inspection adds:
+
+| Field | Meaning |
+| --- | --- |
+| `found` | `true` |
+| `visibility` | `{"available":…}` with the authored `PartInstance.visible` flag, or a reason |
+| `placement` | `world_matrix` (row-major local→world), `local_bounds`, derived `world_bounds`, or a reason |
+| `operations` | `name` / `available` / `reason` / `command` per capability |
+
+Availability is never faked. A baked root with no recorded source path reports
+`{"available":false,"reason":…}` rather than an empty string; a root that is in
+the part graph but placed nowhere in this world reports `placement.available`
+false rather than an identity matrix; an authored entity says outright that it
+carries no part-graph provenance rather than borrowing the module of some part
+it happens to place.
+
+`operations` is the editor's real capability surface for that object, not a
+wish list: `duplicate` / `delete` / `reparent` name the registered command that
+performs them and are unavailable on a baked root (a bake output — edit the
+authoring source and rebake), and `transform_gizmo` is unavailable there too
+because the gizmo edits scene entities only.
+
+### Which IDs are stable
+
+`identity` states this per object rather than leaving it to be assumed:
+
+| kind | `namespace` | `source` | `stability` | `classified_by` |
+| --- | --- | --- | --- | --- |
+| `entity`, high bit clear | `scene_entity` | `world_authored_id_hash` | `world_definition` | `reserved_high_bit` |
+| `entity`, high bit set | `scene_entity` | `session_allocated_id` | `session` | `reserved_high_bit` |
+| `baked_root` | `baked_part_hash` | `resolved_part_content_hash` | `content` | `part_graph_root` |
+
+No id in this protocol is a Flecs handle; Flecs handles are live-world values
+with recycled generations and are never serialized.
+
+`SceneEntityId` splits its own space by a reserved high bit
+(`MatterEngine3/src/ecs/scene_registry.cpp`, "IDENTITY"): an id whose high bit
+is clear is FNV-1a over the world definition's authored id STRING and is stable
+across reloads of that definition, while the high bit is reserved for ids
+allocated at runtime, which are not. Either way a DIFFERENT world can hand out
+the same number for a different object, so pair an entity id with
+`expect.session_generation` across a world switch.
+
+`classified_by` is reported because the classification is a rule applied to the
+id, not a recorded fact: `SceneService::allocate_id` currently counts up from 1
+without setting the reserved bit, so an entity created by the editor at runtime
+classifies as `world_authored_id_hash` today. Naming the rule is what lets a
+caller tell a derived answer from a recorded one.
+
+A baked-root id is the resolved content hash, so a rebake that changes the part
+changes the id and the old one stops resolving.
+
 ## Identity and revision contract
 
 Object references always have this shape:
@@ -151,8 +293,10 @@ Object references always have this shape:
 
 `kind` is `entity` or `baked_root`; the namespaces may contain the same numeric
 ID without collision. `id` must be a non-zero unsigned 64-bit decimal string.
-Flecs runtime handles are not part of this contract. Later scene commands add
-provenance and authored IDs without changing this base identity.
+Flecs runtime handles are not part of this contract. `scene.list_objects` /
+`scene.get_object` add provenance and authored names/paths on top of this base
+identity without changing it, and state per object which namespace an ID belongs
+to and how long it is good for (see "Which IDs are stable" above).
 
 `session.id` never aliases a replacement session. `session.generation` marks
 the command-scope epoch. `scene.generation` is the baked part-graph generation;

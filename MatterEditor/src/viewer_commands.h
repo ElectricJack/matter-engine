@@ -116,6 +116,38 @@ struct AgentSchema {
     std::string command;
 };
 
+// --- versioned agent-protocol scene reads ----------------------------------
+// The three metadata commands above answer with a payload and nothing else, so
+// their handler's success/failure is the whole protocol status. A scene READ
+// has outcomes the CommandRegistry has no vocabulary for — "that object does
+// not exist at this revision" is a successful query with a not_found answer,
+// not a handler failure — so these two carry the protocol status back with the
+// payload instead of collapsing every non-success into execution_failure.
+struct AgentPayload {
+    agent::Status status = agent::Status::Ok;
+    matter::jsondoc::Value value;
+    std::string message;
+};
+
+// scene.list_objects{kinds?,name_contains?,offset?,limit?} — one bounded,
+// deterministically ordered page of the authored entities and baked roots in
+// the current world. Ordering and paging live in scene_inventory.h; the
+// handler only snapshots the live sources.
+struct SceneListObjects {
+    MT_COMMAND_NAME("scene.list_objects");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+// scene.get_object{object} — exact inspection of ONE typed object. `object` is
+// the {kind,id} pair scene.list_objects returned; the two id namespaces never
+// merge, so entity 42 and baked_root 42 resolve to different objects.
+struct SceneGetObject {
+    MT_COMMAND_NAME("scene.get_object");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    agent::ObjectIdentity object;
+};
+
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------
 // The FIRST ActiveSession-scoped commands: each mutates world entity state, so
 // each is stamped with the SessionBinding's ActiveSession epoch token and
