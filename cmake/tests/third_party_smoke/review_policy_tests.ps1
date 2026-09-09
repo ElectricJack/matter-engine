@@ -70,7 +70,8 @@ $renamePolicies = [ordered]@{
     )
 }
 foreach ($entry in $renamePolicies.GetEnumerator()) {
-    $sourceCommand = @($compileCommands | Where-Object { $_ -match "[\\/]$([regex]::Escape($entry.Key))(?:\s|$)" })
+    $sourcePattern = '[\\/]{0}(?:"|\s|$)' -f ([regex]::Escape($entry.Key))
+    $sourceCommand = @($compileCommands | Where-Object { $_ -match $sourcePattern })
     if ($sourceCommand.Count -ne 1) {
         throw "Expected one compile command for $($entry.Key), got $($sourceCommand.Count)"
     }

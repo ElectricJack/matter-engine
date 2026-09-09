@@ -92,20 +92,30 @@ function(matter_add_vulkan_shader_pipeline)
             message(FATAL_ERROR "Shader source was not found: ${shader_source}")
         endif()
         get_filename_component(shader_output_directory "${shader_output}" DIRECTORY)
+        file(RELATIVE_PATH shader_source_argument
+            "${CMAKE_CURRENT_BINARY_DIR}" "${shader_source}")
+        file(RELATIVE_PATH shader_include_argument
+            "${CMAKE_CURRENT_BINARY_DIR}" "${MATTER_SHADER_SOURCE_DIR}")
+        file(RELATIVE_PATH shader_output_argument
+            "${CMAKE_CURRENT_BINARY_DIR}" "${shader_output}")
+        file(RELATIVE_PATH shader_depfile_argument
+            "${CMAKE_CURRENT_BINARY_DIR}" "${shader_depfile}")
+        file(MAKE_DIRECTORY "${shader_output_directory}")
         add_custom_command(
             OUTPUT "${shader_output}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${shader_output_directory}"
             COMMAND "${MATTER_SHADER_GLSLC}"
                 --target-env=vulkan1.3
                 -O
-                -I "${MATTER_SHADER_SOURCE_DIR}"
+                -I "${shader_include_argument}"
                 -MD
-                -MF "${shader_depfile}"
-                "${shader_source}"
-                -o "${shader_output}"
+                -MF "${shader_depfile_argument}"
+                "${shader_source_argument}"
+                -o "${shader_output_argument}"
             DEPENDS "${shader_source}"
             DEPFILE "${shader_depfile}"
             BYPRODUCTS "${shader_depfile}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
             COMMENT "Compiling Vulkan shader ${shader}"
             VERBATIM
         )
@@ -131,21 +141,31 @@ function(matter_add_vulkan_shader_pipeline)
             message(FATAL_ERROR "Specialized shader source was not found: ${shader_source}")
         endif()
         get_filename_component(shader_output_directory "${shader_output}" DIRECTORY)
+        file(RELATIVE_PATH shader_source_argument
+            "${CMAKE_CURRENT_BINARY_DIR}" "${shader_source}")
+        file(RELATIVE_PATH shader_include_argument
+            "${CMAKE_CURRENT_BINARY_DIR}" "${MATTER_SHADER_SOURCE_DIR}")
+        file(RELATIVE_PATH shader_output_argument
+            "${CMAKE_CURRENT_BINARY_DIR}" "${shader_output}")
+        file(RELATIVE_PATH shader_depfile_argument
+            "${CMAKE_CURRENT_BINARY_DIR}" "${shader_depfile}")
+        file(MAKE_DIRECTORY "${shader_output_directory}")
         add_custom_command(
             OUTPUT "${shader_output}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${shader_output_directory}"
             COMMAND "${MATTER_SHADER_GLSLC}"
                 --target-env=vulkan1.3
                 -O
-                -I "${MATTER_SHADER_SOURCE_DIR}"
+                -I "${shader_include_argument}"
                 "-D${compile_define}"
                 -MD
-                -MF "${shader_depfile}"
-                "${shader_source}"
-                -o "${shader_output}"
+                -MF "${shader_depfile_argument}"
+                "${shader_source_argument}"
+                -o "${shader_output_argument}"
             DEPENDS "${shader_source}"
             DEPFILE "${shader_depfile}"
             BYPRODUCTS "${shader_depfile}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
             COMMENT "Compiling Vulkan shader specialization ${output_name}"
             VERBATIM
         )
