@@ -757,8 +757,17 @@ ENTITY_RECIPE_TARGET = build/entity_recipe_tests
 # physics/streaming closure main used to list explicitly here, so reuse it
 # rather than re-listing: obj_list does not dedupe, and naming the same source
 # twice makes ld see the object twice ("multiple definition").
+# The reload regression cases (smart-dune.8) drive bootstrap_transactional and
+# scene::SceneChangeTracker together, which is the only pairing that reproduces
+# a reload as the editor observes it, so the tracker + event-hub sources join
+# this target. None of them appears in ANIMATION_STORE_CPP, so this stays
+# duplicate-free (obj_list does not dedupe).
 ENTITY_RECIPE_CPP    = entity_recipe_tests.cpp \
-                       $(filter-out animation_store_tests.cpp,$(ANIMATION_STORE_CPP))
+                       $(filter-out animation_store_tests.cpp,$(ANIMATION_STORE_CPP)) \
+                       ../src/scene/scene_change_tracker.cpp \
+                       ../src/event/event_hub.cpp \
+                       ../src/event/subscription.cpp \
+                       ../src/event/dispatch_context.cpp
 ENTITY_RECIPE_C      = $(FLECS_C)
 
 # Phase 4 Task 8 — ECS dynamic scene bridge (headless, Flecs, no GL/Vulkan).

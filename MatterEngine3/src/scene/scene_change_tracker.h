@@ -15,6 +15,13 @@
 //     ChildOf add/remove, display-name identifier changes, and add/set/remove
 //     of the components in SceneRecord::component_names. Observers only touch
 //     the dirty/removed sets; they never emit (cheap, S I.14).
+//   * Within one tick the LAST thing that happened to an id wins: a destruct
+//     clears any pending upsert, and a subsequent re-create clears the pending
+//     removal. That second half is what a world reload needs — bootstrap_
+//     transactional destructs and re-instantiates the whole authored scene in
+//     one tick under the SAME (stable) SceneEntityId values, so treating the
+//     removal as final would publish removals with no matching upserts and
+//     empty the editor's scene on every reload.
 //   * flush(), called at END of the app-thread ECS tick (WorldSession::tick),
 //     snapshots each dirty live entity ONCE and publishes one of the two
 //     canonical events (scene_events.h) with the sequence/ordering rules:

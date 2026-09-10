@@ -77,14 +77,29 @@ SceneChangeTracker::SceneChangeTracker(flecs::world& world, evt::Hub& hub)
     //    assigns the real value, so an OnAdd handler would capture 0. OnSet
     //    fires after assignment with the real id; the value==0 guard also
     //    drops the pre-assignment default should OnAdd ever be observed.
+    //
+    //    This is the ONE observer that un-removes an id, and it has to be:
+    //    a world reload runs scene::bootstrap_transactional, which destructs
+    //    every prior scene entity and re-instantiates the batch inside a
+    //    SINGLE app tick, and a SceneEntityId VALUE is stable across reloads
+    //    (scene_registry.cpp hashes the authored id; only the generation
+    //    moves). With the plain `removal wins` rule the re-created rows were
+    //    suppressed and flush() published removals with no matching upserts,
+    //    so a reload emptied the editor's authored population while the bake
+    //    reported success. An OnSet is proof that a LIVE entity carries this
+    //    id right now, so the later create supersedes the earlier destruct.
+    //    mark_dirty (above) deliberately keeps the `removal wins` guard: it
+    //    is reached from component/ChildOf OnRemove observers that fire while
+    //    an entity is being destructed, where resurrecting the id would drop
+    //    a real removal instead.
     observers_.push_back(
         world_.observer<SceneEntityId>("SceneTracker_EntityUpsert")
             .event(flecs::OnSet)
             .each([state](flecs::entity e, SceneEntityId& id) {
                 if (id.value == 0) return;
                 std::lock_guard<std::mutex> lk(state->mu);
-                if (state->removed.find(id.value) == state->removed.end())
-                    state->dirty[id.value] = e.raw_id();
+                state->removed.erase(id.value);
+                state->dirty[id.value] = e.raw_id();
             }));
 
     // 2. Entity remove — SceneEntityId removed / entity destroyed. Cascade
@@ -97,7 +112,9 @@ SceneChangeTracker::SceneChangeTracker(flecs::world& world, evt::Hub& hub)
                 if (id.value == 0) return;
                 std::lock_guard<std::mutex> lk(state->mu);
                 state->removed.insert(id.value);
-                state->dirty.erase(id.value);  // removal wins over any upsert
+                // Removal wins over any upsert marked EARLIER in this
+                // tick; a re-create after it un-removes the id (observer 1).
+                state->dirty.erase(id.value);
             }));
 
     // 3/4. ChildOf add/remove — reparent changes parent_id; detach clears it.
