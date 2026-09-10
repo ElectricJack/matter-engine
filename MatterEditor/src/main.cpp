@@ -1764,11 +1764,35 @@ int main() {
     console_log.push(viewer::LogSeverity::Info,
                       "Connected to " + worlds[initial_world].world_name);
 
-    // Task 9: cached part graph snapshot for the Properties panel's baked-root
-    // info card. Refreshed only when graph_generation() changes so the panel
-    // doesn't re-copy the whole snapshot every frame.
+    // Task 9: cached part graph snapshot, shared by the Properties panel's
+    // baked-root info card, `viewer.reveal_part`, and the per-frame selection
+    // prune. Refreshed only when graph_generation() changes so none of them
+    // re-copies the whole snapshot every frame.
     part_graph_snapshot::Snapshot cached_snapshot;
     uint64_t cached_graph_gen = 0;
+    // The one refresh rule, so the three consumers cannot observe different
+    // graphs. The empty-cache retest is not redundant with the generation
+    // compare: graph_generation() can sit at 0 for a whole session
+    // (resolve-cache-hit worlds), and the 0-initialized sentinel would then
+    // never trigger a first fetch.
+    auto refresh_graph_cache = [&]() -> const part_graph_snapshot::Snapshot& {
+        if (session) {
+            const uint64_t gen = session->graph_generation();
+            if ((gen != cached_graph_gen || cached_snapshot.nodes.empty()) &&
+                session->graph_snapshot(cached_snapshot))
+                cached_graph_gen = gen;
+        }
+        return cached_snapshot;
+    };
+    // Liveness of one BakedRoot selection entry (reveal_part.h). Refreshes the
+    // cache itself rather than leaning on the draw site, which only runs under
+    // `!hide_ui` — the prune below runs headlessly too (drive.py /
+    // MATTER_SCREENSHOT), and pruning against a never-fetched snapshot would
+    // drop live selections in exactly the runs QA scripts.
+    auto baked_root_alive = [&](uint64_t resolved_hash) {
+        if (!session) return false;
+        return viewer::baked_root_selectable(refresh_graph_cache(), resolved_hash);
+    };
     viewer::SceneCommands scene_commands;
     // E5c (event-system.md S I.14): the mutation closures are assigned
     // LATER (after the command registry + scene-edit handlers exist) so each
@@ -4273,14 +4297,8 @@ int main() {
         matter::evt::CommandScope::App, app_lane, [&](const viewer::ViewerRevealPart& cmd) {
             // Reveal = the Scene tree's baked-root click + Focus, addressed by
             // module name (Asset Browser "Reveal"). Reuses the loop's cached
-            // snapshot, refreshed by generation like the draw site below —
-            // plus an empty-cache fetch, because graph_generation() can sit
-            // at 0 for a whole session (resolve-cache-hit worlds) and the
-            // loop's 0-initialized sentinel then never fetches at all.
-            const uint64_t gen = session->graph_generation();
-            if ((gen != cached_graph_gen || cached_snapshot.nodes.empty()) &&
-                session->graph_snapshot(cached_snapshot))
-                cached_graph_gen = gen;
+            // snapshot through the shared refresh rule.
+            refresh_graph_cache();
             const uint64_t hash =
                 viewer::reveal_part_in_world(cached_snapshot, cmd.module, selection_set);
             if (hash == 0) {
@@ -6499,8 +6517,13 @@ int main() {
 
         selection_set.validate([&](const viewer::SelectedObject& obj) {
             if (obj.kind == viewer::SelectedObject::BakedRoot) {
-                matter::InstanceInfo info;
-                return session->instance_info_by_hash(obj.id, info);
+                // Alive == "still a root in the part graph", NOT "placed in
+                // this world". The agent protocol's selection commands admit
+                // a root on exactly that rule (inventory::find_object), the
+                // Scene tree's [Baked] rows and Reveal select on it too, and a
+                // stricter rule here silently undid all three one frame later
+                // while the command had already answered changed:true.
+                return baked_root_alive(obj.id);
             }
             // Entity selections are keyed by SceneEntityId (the stable
             // authored-id hash), not by flecs entity id — resolve through the

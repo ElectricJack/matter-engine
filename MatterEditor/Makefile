@@ -1216,12 +1216,14 @@ run-test-procedural-parameters: build/test_procedural_parameters.exe
 build/test_selection_commands.exe: tests/test_selection_commands.cpp \
         src/selection_commands.h src/selection_set.cpp src/selection_set.h \
         src/scene_inventory.cpp src/scene_inventory.h \
+        src/reveal_part.cpp src/reveal_part.h \
         src/agent_protocol.cpp src/agent_protocol.h \
         $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) tests/test_selection_commands.cpp src/selection_set.cpp \
-	    src/scene_inventory.cpp src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
-	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+	    src/scene_inventory.cpp src/reveal_part.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include -I$(ME3_DIR)/src
 
 .PHONY: run-test-selection-commands
 run-test-selection-commands: build/test_selection_commands.exe
