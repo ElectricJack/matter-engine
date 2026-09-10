@@ -4408,6 +4408,11 @@ void WorldSession::Impl::publish_pipeline(
 
         state.reset(viewer::WorldManifest{});
         reset_runtime_animation();
+#ifdef MATTER_VULKAN_VIEWER
+        // vk_scene->reset() discarded its dynamic slots. The bridge otherwise
+        // sees unchanged ECS entities and emits no Bind changes after reload.
+        dynamic_bridge.reset();
+#endif
         store.swap(reset_out->new_store);
 
         // Pre-warm the child-variant catalog into the freshly-swapped store, on

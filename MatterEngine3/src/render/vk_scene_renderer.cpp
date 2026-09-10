@@ -17270,6 +17270,18 @@ void VkSceneRenderer::reset() {
     dirty_index_ranges_.clear();
     instance_staging_.clear();
     instance_part_slots_.clear();
+    // The part table below is being discarded, so dynamic slots holding part
+    // indices into it cannot survive the reset. The ECS bridge will rebind
+    // live entities once the next world is ready.
+    dynamic_instance_staging_.clear();
+    dynamic_instance_part_slots_.clear();
+    dynamic_instance_ray_traced_.clear();
+    dynamic_instance_count_ = 0;
+    dynamic_submit_serial_ = 0;
+    dynamic_completed_serial_ = 0;
+    dynamic_dirty_ = false;
+    dynamic_command_layout_applied_ = false;
+    skin_transform_staging_.clear();
     // Retire update_instances()' unchanged-input snapshot with the state it
     // describes, and force the next set_temporal_frame() to report a change.
     instance_snapshot_valid_ = false;
