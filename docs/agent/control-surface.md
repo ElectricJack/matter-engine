@@ -473,7 +473,8 @@ than silently losing to the env value on the next frame.
 in-process pub-sub core; `matter::evt::CommandRegistry`
 (`MatterEngine3/include/matter/event/command.h`) is the deliver-once command
 layer the FIFO and UI both dispatch/execute through (§b). Declared event types
-today: `bake.started`, `bake.part_done`, `bake.finished`, `bake.error`
+today: `bake.started`, `bake.part_done`, `bake.finished`, `bake.error`,
+`bake.aborted`
 (`MatterEngine3/include/matter/events/bake_events.h`), `stream.refine_tile`
 (`.../events/stream_events.h`), `cmd.completed`/`cmd.failed`
 (`.../event/command.h`), `scene.rows_upserted`/`scene.rows_removed`
@@ -539,9 +540,22 @@ behavior). At most one blocking wait is ever in flight at a time. Concretely:
   | `bake.finished` | session | yes |
   | `bake.part_done` | session | yes |
   | `bake.error` | session | yes |
+  | `bake.aborted` | session | yes |
   | `stream.refine_tile` | session | yes |
   | `cmd.completed` | `app_hub` | no |
   | `cmd.failed` | `app_hub` | no |
+
+  `bake.finished` and `bake.aborted` are the two TERMINAL events of a bake run
+  (landed smart-dune.7): exactly one of them follows every `bake.started`, so
+  "did this bake end, and how?" is answerable from the stream instead of from a
+  timeout. A `wait_event bake.finished` still has to time out on a world that
+  cannot bake (one `wait_event` carries one name) — what is new is that the
+  abort is *visible*: the editor prints `bake aborted [<phase>]: <message>` on
+  stdout when it lands, so a harness reading the log can say why a world never
+  came up rather than only that it didn't. Every bake/stream event also carries
+  a `bake_generation` (`matter::Event::bake_generation`), the identity of the
+  bake run that emitted it; it is stamped at emit time, so an event queued just
+  before a consumer's drain still names the run that produced it.
 
   `cmd.*` lives on `app_hub`, which outlives world switches, so it is never
   session-scoped. `bake.*`/`stream.*` subscribe on the session's own hub,

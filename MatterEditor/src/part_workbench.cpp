@@ -629,6 +629,11 @@ void PartWorkbench::tick(float dt) {
             }
         } else if (event.type == matter::EventType::BakeError) {
             status_line_ = "bake error [" + event.module + "]: " + event.message;
+        } else if (event.type == matter::EventType::BakeAborted) {
+            // smart-dune.7: a fatal isolation bake used to leave the last
+            // "bake error [...]" line standing with no sign the run had ended,
+            // so the panel read as still working.
+            status_line_ = "bake aborted in " + event.phase + ": " + event.message;
         }
     }
 }

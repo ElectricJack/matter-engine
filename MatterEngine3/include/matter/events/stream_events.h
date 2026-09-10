@@ -37,6 +37,7 @@
 // the hand-written to_legacy_event(const events::RefineTileDone&) overload in
 // src/matter_engine.cpp copies it across.
 #pragma once
+#include <cstdint>
 #include <string>
 
 #include "matter/event/event_name.h"
@@ -55,6 +56,11 @@ struct RefineTileDone {
     // Integer tile coordinates in the RefineController's tile grid, not world
     // metres; -1/-1 is the struct default for "no tile identified".
     int tile_tx = -1, tile_tz = -1;      // the (tx,tz) tile that changed
+    // smart-dune.7: the bake run whose world this tile belongs to (see
+    // matter/events.h). Refine runs between bakes, so this is the generation of
+    // the LAST bake command, not of a run that is still in flight. Stamped by
+    // WorldSession::Impl::emit_bake(), never by the emit site.
+    uint64_t bake_generation = 0;
 };
 
 }  // namespace matter::events

@@ -4408,6 +4408,13 @@ int main() {
                     if (live_gen->load(std::memory_order_acquire) == my_gen)
                         fired->store(true, std::memory_order_release);
                 });
+        } else if (name == "bake.aborted") {
+            fifo_wait_event_sub = session->events().must_subscribe<matter::events::BakeAborted>(
+                sub_name.c_str(), matter::evt::immediate,
+                [fired, live_gen, my_gen](const matter::events::BakeAborted&) {
+                    if (live_gen->load(std::memory_order_acquire) == my_gen)
+                        fired->store(true, std::memory_order_release);
+                });
         } else if (name == "stream.refine_tile") {
             fifo_wait_event_sub =
                 session->events().must_subscribe<matter::events::RefineTileDone>(
@@ -6337,6 +6344,20 @@ int main() {
                             event.message.c_str());
                 console_log.push(viewer::LogSeverity::Error,
                                   "[" + event.module + "] " + event.message);
+            } else if (event.type == matter::EventType::BakeAborted) {
+                // smart-dune.7: the terminal event for a bake that gave up.
+                // Without it the log just stopped after the last bake error
+                // while `bake_ready` stayed false, which reads identically to a
+                // bake that is merely slow. `bake_ready` is deliberately left
+                // alone here — the world on screen is still the last good one.
+                std::printf("bake aborted [%s]: %s (%d error%s, gen %llu)\n",
+                            event.phase.c_str(), event.message.c_str(),
+                            event.errors, event.errors == 1 ? "" : "s",
+                            (unsigned long long)event.bake_generation);
+                std::fflush(stdout);
+                console_log.push(viewer::LogSeverity::Error,
+                                  "bake aborted in " + event.phase + ": " +
+                                      event.message);
             }
         }
         // ---- RenderOptions assembly -----------------------------------------
