@@ -97,6 +97,84 @@ class MatterAgentClientTests(unittest.TestCase):
                 )
             self.assertLess(time.monotonic() - start, 0.5)
 
+    def test_named_session_round_trips_without_cwd_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sessions = Path(directory) / "sessions"
+            command_file = Path("C:/tmp/matter/commands.txt")
+            result_file = Path("C:/tmp/matter/results.jsonl")
+            written = matter_agent.save_session(
+                sessions, "physics-playground", command_file, result_file
+            )
+            self.assertEqual(written, sessions / "physics-playground.json")
+            self.assertEqual(
+                matter_agent.load_session(sessions, "physics-playground"),
+                (command_file, result_file),
+            )
+
+    def test_batch_stops_in_order_and_reports_partial_completion(self) -> None:
+        envelopes = [
+            matter_agent.make_envelope("scene.list_objects", {}, {}, "batch:1", 5000),
+            matter_agent.make_envelope("procedural.update", {}, {}, "batch:2", 5000),
+            matter_agent.make_envelope("viewport.capture", {}, {}, "batch:3", 5000),
+        ]
+        sent: list[str] = []
+
+        def send(_cmd: Path, _result: Path, envelope: dict[str, object], _timeout: float) -> dict[str, object]:
+            sent.append(str(envelope["request_id"]))
+            return {"ok": envelope["request_id"] != "batch:2", "code": "ok"}
+
+        output, exit_code = matter_agent.execute_batch(
+            "batch", True, envelopes, Path("commands.txt"), Path("results.jsonl"), send
+        )
+        self.assertEqual(sent, ["batch:1", "batch:2"])
+        self.assertEqual(exit_code, matter_agent.EXIT_BATCH_PARTIAL)
+        self.assertEqual(output["status"], "partial")
+        self.assertEqual(output["completed_steps"], 2)
+        self.assertEqual(output["remaining_steps"], 1)
+        self.assertFalse(output["transactional"])
+
+    def test_batch_continue_on_error_keeps_each_terminal_result(self) -> None:
+        envelopes = [
+            matter_agent.make_envelope("scene.list_objects", {}, {}, "batch:1", 5000),
+            matter_agent.make_envelope("viewport.capture", {}, {}, "batch:2", 5000),
+        ]
+
+        def send(_cmd: Path, _result: Path, envelope: dict[str, object], _timeout: float) -> dict[str, object]:
+            return {"ok": envelope["request_id"] == "batch:2", "code": "ok"}
+
+        output, exit_code = matter_agent.execute_batch(
+            "batch", False, envelopes, Path("commands.txt"), Path("results.jsonl"), send
+        )
+        self.assertEqual(exit_code, matter_agent.EXIT_COMMAND_FAILED)
+        self.assertEqual(output["status"], "completed")
+        self.assertEqual(output["completed_steps"], 2)
+        self.assertEqual(len(output["steps"]), 2)
+
+    def test_batch_ids_are_stable_and_duplicates_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            batch = Path(directory) / "batch.json"
+            batch.write_text(json.dumps({
+                "version": 1,
+                "batch_id": "daily-inspect",
+                "steps": [{"command": "scene.list_objects"}, {"command": "job.list"}],
+            }), encoding="utf-8")
+            batch_id, stop_on_error, envelopes = matter_agent.load_batch(batch, 5.0)
+            self.assertEqual(batch_id, "daily-inspect")
+            self.assertTrue(stop_on_error)
+            self.assertEqual([item["request_id"] for item in envelopes],
+                             ["daily-inspect:1", "daily-inspect:2"])
+
+            batch.write_text(json.dumps({
+                "version": 1,
+                "batch_id": "duplicate",
+                "steps": [
+                    {"command": "scene.list_objects", "request_id": "same"},
+                    {"command": "job.list", "request_id": "same"},
+                ],
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "repeats request_id"):
+                matter_agent.load_batch(batch, 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()

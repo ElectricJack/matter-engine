@@ -155,6 +155,30 @@ when the world replacement supersedes the old session; this is the expected
 asynchronous outcome, and the following idle wait still settles.  Do not
 interpret an event timeout/abort as a client-command exit failure.
 
+For an agent that needs the usual inspect → select → edit/regenerate → wait →
+capture loop, save the target once and use a bounded batch.  This is inspired
+by scene/object inspection plus viewport capture workflows, but keeps Matter
+Engine's procedural changes explicit and non-transactional:
+
+```bash
+python3 tools/matter_agent.py session set physics \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl
+
+python3 tools/matter_agent.py --session physics --batch /tmp/physics-plan.json \
+  | jq .
+```
+
+`/tmp/physics-plan.json` is a version-1 `steps` document as shown in
+[`agent-protocol.md`](agent-protocol.md#persistent-targets-and-bounded-batches).
+Start with `scene.list_objects`, `scene.get_object`, or `selection.list` rather
+than parsing editor text; then use `procedural.update` only for its documented
+session override, wait for its returned `job_id` with `job.wait`, and capture
+through `viewport.capture`.  The client sends each step only after the prior
+terminal result.  Default `stop_on_error:true` preserves the completed prefix
+in one JSON result and exits 3; no rollback is attempted.  Do source edits to
+the procedural model through the ordinary repository/source-control workflow.
+
 **Current limitation.** On the acceptance revision, appending `reload` while
 the native `PhysicsPlayground` session is live reaches a renderer fatal error,
 `dynamic instance part bucket is outside the active part table`, before a

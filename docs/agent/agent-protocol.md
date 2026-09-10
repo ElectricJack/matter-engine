@@ -43,6 +43,81 @@ The client records the current result-file offset before appending its request,
 polls incrementally, tolerates partial writes and transient Windows open races,
 and resets its partial buffer if the result file is truncated or replaced.
 
+### Persistent targets and bounded batches
+
+`tools/matter_agent.py` is safe to use as the small reusable CLI layer in an
+agent workflow.  Its normal one-command form remains the one above; stdout is
+exactly one JSON terminal result and stderr is diagnostics.  Its exit codes
+are stable:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Every requested command returned `ok:true`. |
+| 1 | A terminal protocol result returned `ok:false`. Inspect its JSON `code`. |
+| 2 | Local input, file I/O, or client wait failure. A request may already have been appended, so do not blindly resend an edit/regeneration. |
+| 3 | A batch stopped at a failed step; its stdout JSON records the completed prefix. |
+
+Create a named target once, then target the same editor session from later
+shells without repeatedly carrying both paths.  Targets are versioned JSON
+files in `.matter-agent/sessions/` by default (override with
+`MATTER_AGENT_SESSIONS_DIR` or `--sessions-dir`); they contain paths only, not
+credentials or editor state.
+
+```bash
+python3 tools/matter_agent.py session set physics \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl
+
+python3 tools/matter_agent.py scene.list_objects --session physics \
+  --args '{"limit":200}'
+```
+
+The client appends a request once and never automatically retries it.  If the
+editor rotates/truncates the JSONL result file, polling reconnects to the new
+file and continues looking for the original `request_id`; that reconnect does
+not append a second command.  Give a destructive operation an explicit,
+recorded `--request-id` if a caller needs to reconcile an interrupted run with
+the editor's bounded request-id replay window.  A local exit 2 is intentionally
+an *unknown completion state*, not evidence that the operation did not run.
+
+`--batch FILE` sends a small ordered list of ordinary protocol requests.  It
+does not add a new editor command or transaction: each step reaches the normal
+`CommandRegistry` separately, and already-completed edits/regenerations remain
+completed if a later step fails.  At most 64 steps are accepted.  The batch
+prints one JSON `batch_result` with the terminal result (or local error) for
+each dispatched step, `completed_steps`, `remaining_steps`, and
+`transactional:false`.
+
+```json
+{
+  "version": 1,
+  "batch_id": "physics-inspect-reroll-capture-01",
+  "stop_on_error": true,
+  "steps": [
+    {"command": "scene.list_objects", "args": {"limit": 200}},
+    {"command": "selection.replace", "args": {"objects": [{"kind": "entity", "id": "637278442326563570"}]}},
+    {"command": "procedural.update", "args": {"object": {"kind": "baked_root", "id": "123"}, "changes": {"worldSeed": "424242"}, "dry_run": true}},
+    {"command": "job.start", "args": {"operation": "regenerate", "seed": "424242"}},
+    {"command": "job.wait", "args": {"job_id": "1"}, "timeout_ms": 30000},
+    {"command": "viewport.capture", "args": {"path": "C:/tmp/matter-agent-physics/after.png", "annotate_selection": true}}
+  ]
+}
+```
+
+Run it with `python3 tools/matter_agent.py --session physics --batch plan.json`.
+`stop_on_error` defaults to `true`; with it, the first non-OK terminal result
+stops dispatch and exits 3 with `status:"partial"`.  Set it to `false` only
+when later operations are independently safe; every step is still sequential
+and a fully dispatched batch with any non-OK terminal result exits 1.  Step
+`timeout_ms` is 1 through 30000 and otherwise inherits `--timeout`.  A supplied
+`batch_id` makes omitted per-step request IDs deterministic (`<batch_id>:1`,
+`<batch_id>:2`, ...), so retain it in logs when reconciling a failed run.
+
+Use the direct structured reads (`scene.*`, `selection.list`, `job.*`) for
+routine inspection.  `procedural.update` is a bounded session override, not a
+source editor: authoring JavaScript and broader procedural-code changes stay in
+the normal source-control workflow.
+
 **Driving the native editor from WSL.** A Win32 process launched from WSL does
 NOT inherit arbitrary WSL environment variables — only the ones named in
 `WSLENV`. An `env`-prefixed launch therefore starts an editor that silently
