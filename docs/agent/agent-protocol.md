@@ -113,6 +113,12 @@ and a fully dispatched batch with any non-OK terminal result exits 1.  Step
 `batch_id` makes omitted per-step request IDs deterministic (`<batch_id>:1`,
 `<batch_id>:2`, ...), so retain it in logs when reconciling a failed run.
 
+The 2026-09-10 native MSVC acceptance run
+([`acceptance-2026-09-10.md`](acceptance-2026-09-10.md)) exercised all 28
+descriptors and records which of them are working, broken or untested on that
+revision. Read its capability matrix before relying on `procedural.update`,
+`job.start{reload}` or selection of an unplaced `baked_root`.
+
 Use the direct structured reads (`scene.*`, `selection.list`, `job.*`) for
 routine inspection.  `procedural.update` is a bounded session override, not a
 source editor: authoring JavaScript and broader procedural-code changes stay in

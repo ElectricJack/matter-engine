@@ -1,0 +1,241 @@
+{
+ "protocol": "matter-agent",
+ "command": "scene.diff",
+ "ok": true,
+ "code": "ok",
+ "context": {
+  "session": {
+   "id": "1",
+   "generation": "1"
+  },
+  "scene": {
+   "generation": "2",
+   "revision": "3",
+   "ready": true
+  },
+  "selection": {
+   "revision": "17"
+  },
+  "frame": {
+   "id": "64662"
+  },
+  "view": {
+   "id": "64662"
+  }
+ },
+ "result": {
+  "identity_model": {
+   "entity": "paired on the authored SceneEntityId, which is stable across reloads of one world definition; a session-allocated id is paired only within one session generation",
+   "baked_root": "paired on the part-graph MODULE name; the {kind,id} content hash is the incarnation and changes with every rebake that changes the part",
+   "incarnation_field": "incarnation"
+  },
+  "compatibility": {
+   "level": "full",
+   "comparable": true,
+   "session_scoped_ids_comparable": true,
+   "incomparable_classes": []
+  },
+  "summary": {
+   "added": 0,
+   "removed": 10,
+   "changed": 0,
+   "unchanged": 4,
+   "regenerated": 0,
+   "incomparable": 0,
+   "content_identical": {
+    "available": true,
+    "value": true
+   }
+  },
+  "ordering": "kind_then_logical_key",
+  "filter": {
+   "kinds": [
+    "entity",
+    "baked_root"
+   ],
+   "changes": [
+    "added",
+    "removed",
+    "changed"
+   ]
+  },
+  "page": {
+   "offset": 0,
+   "limit": 100,
+   "returned": 10,
+   "total_matched": 10,
+   "has_more": false,
+   "next_offset": null
+  },
+  "from": {
+   "snapshot_id": "1",
+   "label": "before",
+   "generation_inputs": {
+    "world": {
+     "available": true,
+     "value": "PhysicsPlayground"
+    },
+    "project": {
+     "available": true,
+     "value": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo"
+    },
+    "world_seed": {
+     "available": false,
+     "reason": "no completed seeded regeneration in this editor session produced the scene generation being captured"
+    },
+    "content_digest": {
+     "available": true,
+     "value": "b108073d1eeaafba",
+     "algorithm": "fnv1a64_sorted_part_graph_roots"
+    }
+   },
+   "counts": {
+    "entities": "10",
+    "baked_roots": "4",
+    "named_total": "14",
+    "captured": "14"
+   }
+  },
+  "to": {
+   "snapshot_id": null,
+   "label": "current",
+   "generation_inputs": {
+    "world": {
+     "available": true,
+     "value": "PhysicsPlayground"
+    },
+    "project": {
+     "available": true,
+     "value": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo"
+    },
+    "world_seed": {
+     "available": false,
+     "reason": "no completed seeded regeneration in this editor session produced the scene generation being captured"
+    },
+    "content_digest": {
+     "available": true,
+     "value": "b108073d1eeaafba",
+     "algorithm": "fnv1a64_sorted_part_graph_roots"
+    }
+   },
+   "counts": {
+    "entities": "0",
+    "baked_roots": "4",
+    "named_total": "4",
+    "captured": "4"
+   }
+  },
+  "rows_summary": [
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "637276243303307148",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "637277342814935359",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "637278442326563570",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "637279541838191781",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "2685503849002682652",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "4225393383860315065",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "4225394483371943276",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "4225395582883571487",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "4225396682395199698",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   },
+   {
+    "change": "removed",
+    "logical_key": {
+     "kind": "entity",
+     "key": "4225397781906827909",
+     "stability": "world_definition",
+     "classified_by": "runtime_id_bit"
+    },
+    "regenerated": false,
+    "changed_fields": []
+   }
+  ]
+ }
+}

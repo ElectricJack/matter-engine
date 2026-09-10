@@ -1,0 +1,130 @@
+{
+ "protocol": "matter-agent",
+ "version": 1,
+ "type": "result",
+ "request_id": "acc-cap-0003",
+ "command": "viewport.capture",
+ "ticket_id": "432",
+ "ok": true,
+ "code": "ok",
+ "message": "",
+ "context": {
+  "session": {
+   "id": "5",
+   "generation": "5"
+  },
+  "scene": {
+   "generation": "1",
+   "revision": "12",
+   "ready": true
+  },
+  "selection": {
+   "revision": "21"
+  },
+  "frame": {
+   "id": "172503"
+  },
+  "view": {
+   "id": "172503"
+  }
+ },
+ "result": {
+  "path": "C:/tmp/aq-smart-dune6/meadow_0.png",
+  "completion_marker": "C:/tmp/aq-smart-dune6/meadow_0.png.done",
+  "image": {
+   "format": "png",
+   "width": 1280,
+   "height": 720,
+   "framebuffer_origin": {
+    "x": 0,
+    "y": 0
+   }
+  },
+  "viewport": {
+   "logical": {
+    "x": 283,
+    "y": 59,
+    "width": 663,
+    "height": 523
+   },
+   "framebuffer": {
+    "x": 283,
+    "y": 59,
+    "width": 663,
+    "height": 523
+   },
+   "image": {
+    "x": 283,
+    "y": 59,
+    "width": 663,
+    "height": 523
+   },
+   "framebuffer_scale": {
+    "x": 1,
+    "y": 1
+   },
+   "production_view": true
+  },
+  "pick_mapping": {
+   "target_space": "viewport_local_logical_pixels",
+   "image_offset": {
+    "x": 283,
+    "y": 59
+   },
+   "divide_by": {
+    "x": 1,
+    "y": 1
+   },
+   "formula": "viewport_x = (image_x - image_offset.x) / divide_by.x; same for y"
+  },
+  "camera": {
+   "position": [
+    0,
+    60,
+    600
+   ],
+   "target": [
+    0,
+    90,
+    0
+   ],
+   "up": [
+    0,
+    1,
+    0
+   ],
+   "vertical_fov_radians": 0.7853981852531433,
+   "near_plane": 0.10000000149011612,
+   "far_plane": 10241
+  },
+  "captured": {
+   "session": {
+    "id": "5",
+    "generation": "5"
+   },
+   "scene": {
+    "generation": "1",
+    "revision": "12",
+    "ready": true
+   },
+   "selection": {
+    "revision": "21"
+   },
+   "frame": {
+    "id": "172503"
+   },
+   "view": {
+    "id": "172503"
+   }
+  },
+  "presented": {
+   "id": "172503",
+   "view_id": "172503"
+  },
+  "annotations": {
+   "available": true,
+   "space": "image_pixels",
+   "objects": []
+  }
+ }
+}

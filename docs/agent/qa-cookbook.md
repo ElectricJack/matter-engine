@@ -179,14 +179,25 @@ terminal result.  Default `stop_on_error:true` preserves the completed prefix
 in one JSON result and exits 3; no rollback is attempted.  Do source edits to
 the procedural model through the ordinary repository/source-control workflow.
 
-**Current limitation.** On the acceptance revision, appending `reload` while
-the native `PhysicsPlayground` session is live reaches a renderer fatal error,
-`dynamic instance part bucket is outside the active part table`, before a
-positive rebake-invalidates-selection result can be observed.  The editor
-auto-filed issue `53c8d7e8-2ba5-502d-d94f-3789f3db174a`; the implementation
-follow-up is AQ task `nimble-dune.8`.  Keep the focused parser/selection/capture
-tests below as the regression guard, but treat a live reload result as blocked
-until that renderer defect is fixed.
+**Current limitation (revised 2026-09-10).** The renderer fatal this note used
+to describe -- `dynamic instance part bucket is outside the active part table`,
+auto-filed as issue `53c8d7e8-2ba5-502d-d94f-3789f3db174a` and fixed under AQ
+task `nimble-dune.8` -- no longer reproduces.  A `reload` against a live native
+`PhysicsPlayground` session now completes cleanly (`state:"completed"`,
+`total_ms` ~220, no diagnostics).
+
+It also EMPTIES the scene: `scene.list_objects` reports `{entity:10,
+baked_root:4}` before the reload and `{entity:0, baked_root:4}` after it, and
+`scene.diff` against a pre-reload snapshot returns ten `removed` rows with
+`content_identical:true`.  Re-issuing `world PhysicsPlayground` restores the
+entities; one reload empties them again.  AQ task `smart-dune.8` tracks the
+fix; the full evidence is in
+[`acceptance-2026-09-10.md`](acceptance-2026-09-10.md#finding-1).
+
+So a live reload result is still blocked as a positive
+rebake-invalidates-selection check, for a different reason than before: the
+selection is invalidated because the objects are gone.  Keep the focused
+parser/selection/capture tests below as the regression guard.
 
 ## 4c. Bounded regeneration jobs
 

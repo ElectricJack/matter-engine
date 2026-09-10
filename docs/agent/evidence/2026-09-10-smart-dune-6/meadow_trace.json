@@ -1,0 +1,234 @@
+{
+ "protocol": "matter-agent",
+ "version": 1,
+ "type": "result",
+ "request_id": "acc-md1-0006",
+ "command": "scene.trace_provenance",
+ "ticket_id": "288",
+ "ok": true,
+ "code": "ok",
+ "message": "",
+ "context": {
+  "session": {
+   "id": "5",
+   "generation": "5"
+  },
+  "scene": {
+   "generation": "1",
+   "revision": "12",
+   "ready": true
+  },
+  "selection": {
+   "revision": "19"
+  },
+  "frame": {
+   "id": "157622"
+  },
+  "view": {
+   "id": "157622"
+  }
+ },
+ "result": {
+  "scene_revision": "12",
+  "object": {
+   "kind": "baked_root",
+   "id": "3743653689683782954"
+  },
+  "found": true,
+  "classification": {
+   "kind": "baked_root",
+   "reason": "a content-addressed bake output; its graph node records generation inputs"
+  },
+  "generated_instance": {
+   "available": true,
+   "part_hash": "3743653689683782954",
+   "kind": "generated_instance"
+  },
+  "traversal": {
+   "max_depth": 8,
+   "max_nodes": 100,
+   "available": true,
+   "graph_contract": "module DAG; each node records the first representative parameter set seen for that module, not every generated instance",
+   "returned": 5,
+   "truncated": false,
+   "nodes": [
+    {
+     "module": "Meadow",
+     "resolved_hash": "3743653689683782954",
+     "is_baked_root": true,
+     "depth": 0,
+     "source_location": {
+      "available": true,
+      "value": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo\\scenes\\Meadow\\objects\\Meadow.js"
+     },
+     "generation_inputs": {
+      "params_json": {
+       "available": true,
+       "value": "{}"
+      },
+      "params_hash": "08f44b07b5901a25",
+      "params_hash_algorithm": "fnv1a64_canonical_params",
+      "world_seed": {
+       "available": false,
+       "reason": "the recorded parameters contain no worldSeed"
+      }
+     },
+     "dependencies": {
+      "parents": [],
+      "children": [
+       "MeadowGround",
+       "Rock",
+       "Pebble",
+       "Grass"
+      ],
+      "shared_imports": [
+       "rng"
+      ],
+      "shared_source_paths": [
+       "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\MatterEngine3\\shared-lib/rng.js"
+      ],
+      "truncated": false
+     }
+    },
+    {
+     "module": "Grass",
+     "resolved_hash": "11127166457399360382",
+     "is_baked_root": false,
+     "depth": 1,
+     "source_location": {
+      "available": true,
+      "value": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo\\objects\\Grass.js"
+     },
+     "generation_inputs": {
+      "params_json": {
+       "available": true,
+       "value": "{\"seed\":4}"
+      },
+      "params_hash": "0125f17ff619434a",
+      "params_hash_algorithm": "fnv1a64_canonical_params",
+      "world_seed": {
+       "available": false,
+       "reason": "the recorded parameters contain no worldSeed"
+      }
+     },
+     "dependencies": {
+      "parents": [
+       "Meadow"
+      ],
+      "children": [],
+      "shared_imports": [
+       "rng"
+      ],
+      "shared_source_paths": [
+       "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\MatterEngine3\\shared-lib/rng.js"
+      ],
+      "truncated": false
+     }
+    },
+    {
+     "module": "MeadowGround",
+     "resolved_hash": "5642309324679218368",
+     "is_baked_root": false,
+     "depth": 1,
+     "source_location": {
+      "available": true,
+      "value": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo\\scenes\\Meadow\\objects\\MeadowGround.js"
+     },
+     "generation_inputs": {
+      "params_json": {
+       "available": true,
+       "value": "{}"
+      },
+      "params_hash": "08f44b07b5901a25",
+      "params_hash_algorithm": "fnv1a64_canonical_params",
+      "world_seed": {
+       "available": false,
+       "reason": "the recorded parameters contain no worldSeed"
+      }
+     },
+     "dependencies": {
+      "parents": [
+       "Meadow"
+      ],
+      "children": [],
+      "shared_imports": [],
+      "shared_source_paths": [],
+      "truncated": false
+     }
+    },
+    {
+     "module": "Pebble",
+     "resolved_hash": "1534447161363974978",
+     "is_baked_root": false,
+     "depth": 1,
+     "source_location": {
+      "available": true,
+      "value": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo\\objects\\Pebble.js"
+     },
+     "generation_inputs": {
+      "params_json": {
+       "available": true,
+       "value": "{\"seed\":0}"
+      },
+      "params_hash": "0133f17ff62580a6",
+      "params_hash_algorithm": "fnv1a64_canonical_params",
+      "world_seed": {
+       "available": false,
+       "reason": "the recorded parameters contain no worldSeed"
+      }
+     },
+     "dependencies": {
+      "parents": [
+       "Meadow"
+      ],
+      "children": [],
+      "shared_imports": [
+       "rng"
+      ],
+      "shared_source_paths": [
+       "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\MatterEngine3\\shared-lib/rng.js"
+      ],
+      "truncated": false
+     }
+    },
+    {
+     "module": "Rock",
+     "resolved_hash": "12848341287207761104",
+     "is_baked_root": false,
+     "depth": 1,
+     "source_location": {
+      "available": true,
+      "value": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo\\objects\\Rock.js"
+     },
+     "generation_inputs": {
+      "params_json": {
+       "available": true,
+       "value": "{\"seed\":0,\"size\":4}"
+      },
+      "params_hash": "e8cab71a5677ddc7",
+      "params_hash_algorithm": "fnv1a64_canonical_params",
+      "world_seed": {
+       "available": false,
+       "reason": "the recorded parameters contain no worldSeed"
+      }
+     },
+     "dependencies": {
+      "parents": [
+       "Meadow"
+      ],
+      "children": [],
+      "shared_imports": [
+       "rng",
+       "vecmath"
+      ],
+      "shared_source_paths": [
+       "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\MatterEngine3\\shared-lib/rng.js",
+       "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\MatterEngine3\\shared-lib/vecmath.js"
+      ],
+      "truncated": false
+     }
+    }
+   ]
+  }
+ }
+}

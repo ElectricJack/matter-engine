@@ -1,0 +1,94 @@
+{
+ "protocol": "matter-agent",
+ "version": 1,
+ "type": "result",
+ "request_id": "acc-p4-0003",
+ "command": "job.wait",
+ "ticket_id": "70",
+ "ok": true,
+ "code": "ok",
+ "message": "",
+ "context": {
+  "session": {
+   "id": "1",
+   "generation": "1"
+  },
+  "scene": {
+   "generation": "3",
+   "revision": "3",
+   "ready": true
+  },
+  "selection": {
+   "revision": "17"
+  },
+  "frame": {
+   "id": "64943"
+  },
+  "view": {
+   "id": "64943"
+  }
+ },
+ "result": {
+  "timed_out": false,
+  "completed": true,
+  "job": {
+   "job_id": "2",
+   "state": "completed",
+   "terminal": true,
+   "inputs": {
+    "operation": "regenerate",
+    "world": "PhysicsPlayground",
+    "project": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo",
+    "world_seed": "424242",
+    "parameter_module": {
+     "available": false,
+     "reason": "this operation carries no parameter override"
+    },
+    "parameters_json": {
+     "available": false,
+     "reason": "this operation carries no parameter override"
+    },
+    "digest": "460b4ef9b4e1e5c8",
+    "digest_algorithm": "fnv1a64_operation_project_world_seed_parameters"
+   },
+   "accepted_context": {
+    "scene_revision": "3",
+    "scene_generation": "2"
+   },
+   "progress": {
+    "engine_confirmed": true,
+    "parts_done": 4,
+    "parts_total": 4,
+    "indeterminate": false,
+    "advisory": true,
+    "phase": "parts",
+    "module": {
+     "available": false,
+     "reason": "no part module has been reported yet"
+    },
+    "failed_parts": 0
+   },
+   "result": {
+    "scene_revision": "3",
+    "scene_generation": "3",
+    "content_digest": "ecea5dab3fedba3d",
+    "content_digest_algorithm": "fnv1a64_sorted_root_module_hash"
+   },
+   "diagnostics": [],
+   "diagnostics_truncated": false,
+   "superseded_by": {
+    "available": false,
+    "reason": "no later job superseded this one"
+   },
+   "terminal_reason": {
+    "available": false,
+    "reason": "the job completed with nothing to report"
+   },
+   "timing": {
+    "queued_ms": 6,
+    "running_ms": 1068,
+    "total_ms": 1075
+   }
+  }
+ }
+}

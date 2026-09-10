@@ -1,0 +1,131 @@
+{
+ "world": "Meadow",
+ "requests": 140,
+ "wall_s": 3.945,
+ "throughput_req_per_s": 35.48,
+ "scene_counts": {
+  "entity": 0,
+  "baked_root": 1
+ },
+ "named_total": 1,
+ "overall": {
+  "n": 140,
+  "latency_ms": {
+   "min": 14.087,
+   "p50": 31.1465,
+   "p90": 34.65,
+   "p99": 61.439,
+   "max": 90.044
+  },
+  "result_bytes": {
+   "min": 470,
+   "p50": 1564.0,
+   "p90": 4631,
+   "max": 4631
+  }
+ },
+ "per_command": {
+  "scene.get_object": {
+   "n": 20,
+   "latency_ms": {
+    "min": 15.182,
+    "p50": 31.5175,
+    "p90": 34.902,
+    "p99": 43.195,
+    "max": 43.195
+   },
+   "result_bytes": {
+    "min": 2433,
+    "p50": 2433.0,
+    "p90": 2433,
+    "max": 2433
+   },
+   "ok_rate": 1.0
+  },
+  "scene.list_objects": {
+   "n": 40,
+   "latency_ms": {
+    "min": 14.929,
+    "p50": 21.415999999999997,
+    "p90": 33.129,
+    "p99": 46.06,
+    "max": 46.06
+   },
+   "result_bytes": {
+    "min": 1563,
+    "p50": 1563.5,
+    "p90": 1564,
+    "max": 1564
+   },
+   "ok_rate": 1.0
+  },
+  "scene.query": {
+   "n": 20,
+   "latency_ms": {
+    "min": 14.087,
+    "p50": 31.049,
+    "p90": 32.819,
+    "p99": 61.439,
+    "max": 61.439
+   },
+   "result_bytes": {
+    "min": 1936,
+    "p50": 1936.0,
+    "p90": 1936,
+    "max": 1936
+   },
+   "ok_rate": 1.0
+  },
+  "scene.trace_provenance": {
+   "n": 20,
+   "latency_ms": {
+    "min": 15.574,
+    "p50": 32.169,
+    "p90": 37.814,
+    "p99": 90.044,
+    "max": 90.044
+   },
+   "result_bytes": {
+    "min": 4631,
+    "p50": 4631.0,
+    "p90": 4631,
+    "max": 4631
+   },
+   "ok_rate": 1.0
+  },
+  "selection.list": {
+   "n": 20,
+   "latency_ms": {
+    "min": 16.96,
+    "p50": 27.7945,
+    "p90": 32.644,
+    "p99": 45.592,
+    "max": 45.592
+   },
+   "result_bytes": {
+    "min": 470,
+    "p50": 470.0,
+    "p90": 470,
+    "max": 470
+   },
+   "ok_rate": 1.0
+  },
+  "viewport.pick": {
+   "n": 20,
+   "latency_ms": {
+    "min": 20.358,
+    "p50": 31.9365,
+    "p90": 34.65,
+    "p99": 44.05,
+    "max": 44.05
+   },
+   "result_bytes": {
+    "min": 1008,
+    "p50": 1008.0,
+    "p90": 1008,
+    "max": 1008
+   },
+   "ok_rate": 1.0
+  }
+ }
+}
