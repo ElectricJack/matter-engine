@@ -148,6 +148,45 @@ struct SceneGetObject {
     agent::ObjectIdentity object;
 };
 
+// --- typed app-selection commands ------------------------------------------
+// These mutate the one app-owned SelectionSet only.  They deliberately carry
+// typed identities rather than raw JSON; parsing and duplicate rejection stay
+// at the protocol boundary, while the handler validates the complete vector
+// against one current scene-inventory snapshot before changing selection.
+struct SelectionReplace {
+    MT_COMMAND_NAME("selection.replace");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::vector<agent::ObjectIdentity> objects;
+};
+
+struct SelectionAdd {
+    MT_COMMAND_NAME("selection.add");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::vector<agent::ObjectIdentity> objects;
+};
+
+struct SelectionRemove {
+    MT_COMMAND_NAME("selection.remove");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::vector<agent::ObjectIdentity> objects;
+};
+
+struct SelectionToggle {
+    MT_COMMAND_NAME("selection.toggle");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::vector<agent::ObjectIdentity> objects;
+};
+
+struct SelectionClear {
+    MT_COMMAND_NAME("selection.clear");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
+struct SelectionList {
+    MT_COMMAND_NAME("selection.list");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------
 // The FIRST ActiveSession-scoped commands: each mutates world entity state, so
 // each is stamped with the SessionBinding's ActiveSession epoch token and

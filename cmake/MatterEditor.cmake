@@ -131,6 +131,22 @@ if(BUILD_TESTING)
     add_test(NAME scene_inventory_tests COMMAND scene_inventory_tests)
     set_tests_properties(scene_inventory_tests PROPERTIES LABELS "editor;cpu")
 
+    add_executable(selection_command_tests
+        MatterEditor/tests/test_selection_commands.cpp
+        MatterEditor/src/selection_set.cpp
+        MatterEditor/src/scene_inventory.cpp
+        MatterEditor/src/agent_protocol.cpp
+        MatterEngine3/src/util/json_doc.cpp
+    )
+    target_include_directories(selection_command_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+    )
+    matter_apply_project_defaults(selection_command_tests)
+    matter_apply_test_assertion_policy(selection_command_tests)
+    add_test(NAME selection_command_tests COMMAND selection_command_tests)
+    set_tests_properties(selection_command_tests PROPERTIES LABELS "editor;cpu")
+
     add_test(NAME matter_agent_client_tests
         COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
             "${CMAKE_SOURCE_DIR}/tools/tests/test_matter_agent.py"

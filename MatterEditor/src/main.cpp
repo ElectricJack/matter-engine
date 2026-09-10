@@ -191,6 +191,7 @@
 #include "properties_registry.h"
 #include "reveal_part.h"
 #include "selection_bounds.h"
+#include "selection_commands.h"
 #include "selection_outline.h"
 #include "selection_set.h"
 #include "toolbar_panel.h"
@@ -2735,6 +2736,32 @@ int main() {
           "{kind,id} pair from scene.list_objects; entity and baked_root ids "
           "are separate namespaces"}},
         "object", false, {}});
+    agent_protocol.add_command({
+        "selection.replace", "Replace selection with typed scene objects",
+        {{"objects", "array", true,
+          "Non-empty unique {kind,id} array; last object becomes primary"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "selection.add", "Add typed scene objects to selection",
+        {{"objects", "array", true,
+          "Non-empty unique {kind,id} array; last newly added object becomes primary"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "selection.remove", "Remove typed scene objects from selection",
+        {{"objects", "array", true,
+          "Non-empty unique {kind,id} array; removed primary promotes last survivor"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "selection.toggle", "Toggle typed scene objects in selection",
+        {{"objects", "array", true,
+          "Non-empty unique {kind,id} array; last newly added object becomes primary"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "selection.clear", "Clear the shared editor selection", {}, "object", false,
+        {}});
+    agent_protocol.add_command({
+        "selection.list", "List selected typed objects and the primary", {}, "object",
+        false, {}});
 
     auto reg_agent_commands =
         registry.must_register_handler<viewer::AgentCommands>(
@@ -2931,6 +2958,105 @@ int main() {
                     viewer::inventory::detail_result_json(snapshot, detail);
                 return viewer::SceneGetObject::Result::succeeded(std::move(payload));
             });
+
+    // Selection commands share exactly the SelectionSet read by picking,
+    // outlines and the gizmo.  The auxiliary Scene-tree highlight is only a
+    // projection of its primary item, never a second selection authority.
+    auto prune_selection_to_inventory = [&]() {
+        viewer::inventory::Snapshot snapshot = build_scene_inventory();
+        selection_set.validate([&](const viewer::SelectedObject& item) {
+            const viewer::agent::ObjectIdentity object{
+                item.kind == viewer::SelectedObject::BakedRoot
+                    ? viewer::agent::ObjectIdentity::Kind::BakedRoot
+                    : viewer::agent::ObjectIdentity::Kind::Entity,
+                item.id};
+            return viewer::inventory::find_object(snapshot, object) != nullptr;
+        });
+        // build_scene_inventory embeds SelectionSet state, so refresh it after
+        // pruning before returning it to a command or a response serializer.
+        return build_scene_inventory();
+    };
+    auto mirror_selection_primary = [&]() {
+        const viewer::SelectedObject* primary = selection_set.primary();
+        if (primary && primary->kind == viewer::SelectedObject::Entity) {
+            editor_model.select(matter::scene::SceneEntityId{primary->id});
+            ui.select_baked_root(0);
+        } else if (primary) {
+            editor_model.clear_selection();
+            ui.select_baked_root(primary->id);
+        } else {
+            editor_model.clear_selection();
+            ui.select_baked_root(0);
+        }
+    };
+    auto selection_change = [&](viewer::selection_command::Operation operation,
+                                const std::vector<viewer::agent::ObjectIdentity>& objects) {
+        viewer::AgentPayload payload;
+        const uint64_t selection_revision_before = selection_set.revision();
+        viewer::inventory::Snapshot snapshot = prune_selection_to_inventory();
+        const viewer::selection_command::ApplyResult applied =
+            viewer::selection_command::apply(selection_set, snapshot, operation, objects);
+        payload.status = applied.status;
+        payload.message = applied.message;
+        const bool pruned = selection_set.revision() != selection_revision_before &&
+                            !applied.changed;
+        if (pruned || applied.changed) mirror_selection_primary();
+        if (applied.status != viewer::agent::Status::Ok) return payload;
+        snapshot = build_scene_inventory();
+        payload.value = viewer::selection_command::selection_json(
+            snapshot, selection_set, operation, applied.changed);
+        return payload;
+    };
+    auto reg_selection_replace =
+        registry.must_register_handler<viewer::SelectionReplace>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SelectionReplace& command) {
+                return viewer::SelectionReplace::Result::succeeded(
+                    selection_change(viewer::selection_command::Operation::Replace,
+                                     command.objects));
+            });
+    auto reg_selection_add = registry.must_register_handler<viewer::SelectionAdd>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::SelectionAdd& command) {
+            return viewer::SelectionAdd::Result::succeeded(
+                selection_change(viewer::selection_command::Operation::Add,
+                                 command.objects));
+        });
+    auto reg_selection_remove =
+        registry.must_register_handler<viewer::SelectionRemove>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SelectionRemove& command) {
+                return viewer::SelectionRemove::Result::succeeded(
+                    selection_change(viewer::selection_command::Operation::Remove,
+                                     command.objects));
+            });
+    auto reg_selection_toggle =
+        registry.must_register_handler<viewer::SelectionToggle>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SelectionToggle& command) {
+                return viewer::SelectionToggle::Result::succeeded(
+                    selection_change(viewer::selection_command::Operation::Toggle,
+                                     command.objects));
+            });
+    auto reg_selection_clear =
+        registry.must_register_handler<viewer::SelectionClear>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SelectionClear&) {
+                return viewer::SelectionClear::Result::succeeded(
+                    selection_change(viewer::selection_command::Operation::Clear, {}));
+            });
+    auto reg_selection_list = registry.must_register_handler<viewer::SelectionList>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::SelectionList&) {
+            const uint64_t selection_revision_before = selection_set.revision();
+            const viewer::inventory::Snapshot snapshot = prune_selection_to_inventory();
+            if (selection_set.revision() != selection_revision_before)
+                mirror_selection_primary();
+            viewer::AgentPayload payload;
+            payload.value = viewer::selection_command::selection_json(
+                snapshot, selection_set, viewer::selection_command::Operation::List,
+                false);
+            return viewer::SelectionList::Result::succeeded(std::move(payload));
+        });
 
     // ---- Registered viewer commands (S I.11 migration map) ------------------
     // Handlers live where the poll-site code lived (this main loop / the lab
@@ -3763,6 +3889,48 @@ int main() {
                                 registry.dispatch(std::move(command)),
                                 payload_terminal);
                         }
+                    } else if (begun.request.command == "selection.replace" ||
+                               begun.request.command == "selection.add" ||
+                               begun.request.command == "selection.remove" ||
+                               begun.request.command == "selection.toggle") {
+                        const matter::jsondoc::Value* requested =
+                            begun.request.arguments.find("objects");
+                        std::vector<viewer::agent::ObjectIdentity> objects;
+                        std::string objects_error;
+                        if (!requested || !viewer::selection_command::parse_objects(
+                                              *requested, objects, objects_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                objects_error.empty()
+                                    ? "objects must be a non-empty array of object identities"
+                                    : objects_error);
+                        } else if (begun.request.command == "selection.replace") {
+                            viewer::SelectionReplace command;
+                            command.objects = std::move(objects);
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else if (begun.request.command == "selection.add") {
+                            viewer::SelectionAdd command;
+                            command.objects = std::move(objects);
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else if (begun.request.command == "selection.remove") {
+                            viewer::SelectionRemove command;
+                            command.objects = std::move(objects);
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else {
+                            viewer::SelectionToggle command;
+                            command.objects = std::move(objects);
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        }
+                    } else if (begun.request.command == "selection.clear") {
+                        attach_agent_ticket(registry.dispatch(viewer::SelectionClear{}),
+                                            payload_terminal);
+                    } else if (begun.request.command == "selection.list") {
+                        attach_agent_ticket(registry.dispatch(viewer::SelectionList{}),
+                                            payload_terminal);
                     } else {
                         const matter::jsondoc::Value* requested =
                             begun.request.arguments.find("command");

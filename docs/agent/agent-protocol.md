@@ -217,6 +217,34 @@ of `{"found":false,"object":…,"identity":…,"scene_revision":…,"reason":…
 deleted entity, a baked root a rebake re-addressed, and an id that is only valid
 in the other kind's namespace all take that path.
 
+## Shared selection
+
+`selection.replace`, `selection.add`, `selection.remove`, `selection.toggle`,
+`selection.clear`, and `selection.list` operate on the one editor
+`SelectionSet`: the same state consumed by the picker, Scene tree, outlines,
+and gizmo. They never edit authored source or geometry.
+
+The four object-taking commands require `args.objects`, a non-empty array of
+unique typed `{kind,id}` identities from `scene.list_objects`. The complete
+array is checked against one current inventory snapshot before any selection
+mutation. A missing/rebaked/wrong-kind ID returns `not_found` and leaves the
+selection unchanged; duplicate identities return `invalid_input`. Use
+`expect.session_generation` and `expect.scene_generation` from the listing
+context when acting on a prior observation, so a world switch or rebake returns
+`stale_revision` rather than allowing a reused numeric ID to be retargeted.
+
+Primary policy is deterministic: `replace` makes the last request item primary;
+`add` and `toggle` make the last newly added item primary; and removing the
+primary promotes the last surviving item. `add`, `remove`, and `clear` report
+`changed:false` when repeated with no state change and retain the same
+`selection_revision`.
+
+Every selection result (including `selection.list`) returns `operation`,
+`changed`, `scene_revision`, `selection_revision`, ordered `objects` (typed
+identities), and typed `primary` or `null`. Stale entries are pruned before a
+selection command/list response, so a rebake or world switch cannot leave an
+old root/entity selected.
+
 ### Object rows
 
 Every row (in a listing and in an inspection) carries:

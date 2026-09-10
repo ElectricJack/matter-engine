@@ -1157,6 +1157,22 @@ build/test_scene_inventory.exe: tests/test_scene_inventory.cpp \
 run-test-scene-inventory: build/test_scene_inventory.exe
 	./build/test_scene_inventory.exe
 
+# Typed selection operations over the shared SelectionSet.  The test keeps the
+# protocol parser, inventory and state mutation together without a renderer.
+build/test_selection_commands.exe: tests/test_selection_commands.cpp \
+        src/selection_commands.h src/selection_set.cpp src/selection_set.h \
+        src/scene_inventory.cpp src/scene_inventory.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_selection_commands.cpp src/selection_set.cpp \
+	    src/scene_inventory.cpp src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-selection-commands
+run-test-selection-commands: build/test_selection_commands.exe
+	./build/test_selection_commands.exe
+
 # Camera orbit / move / turn math (issue a4203d22 parts 1-2). Pure CPU: no
 # ImGui context, no window, no session -- camera_orbit.cpp exists precisely
 # so this math is reachable without any of them. camera_controller.cpp comes

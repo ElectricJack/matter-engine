@@ -103,6 +103,29 @@ void SelectionSet::clear() {
     ++revision_;
 }
 
+bool SelectionSet::assign(std::vector<SelectedObject> items, int primary) {
+    if (items.empty()) {
+        if (primary != -1) return false;
+    } else if (primary < 0 || primary >= static_cast<int>(items.size())) {
+        return false;
+    }
+
+    // SelectionSet is the uniqueness authority.  A malformed caller must not
+    // be able to create a state that click gestures can never create.
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].id == 0) return false;
+        for (size_t j = 0; j < i; ++j) {
+            if (items[i] == items[j]) return false;
+        }
+    }
+
+    if (items_ == items && primary_index_ == primary) return false;
+    items_ = std::move(items);
+    primary_index_ = primary;
+    ++revision_;
+    return true;
+}
+
 const SelectedObject* SelectionSet::primary() const {
     if (primary_index_ < 0 || primary_index_ >= static_cast<int>(items_.size())) {
         return nullptr;
