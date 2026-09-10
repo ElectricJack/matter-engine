@@ -145,6 +145,57 @@ class ProjectNameTests(unittest.TestCase):
                 stager.validate_project_name(name)
 
 
+class GitWorktreeTests(unittest.TestCase):
+    def test_translates_wsl_worktree_gitdir_for_native_git(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matter-stage-wsl-git-") as temporary:
+            root = Path(temporary)
+            (root / ".git").write_text(
+                "gitdir: /mnt/d/Shared With Desktop/AI/matter-engine-cpp/.git/worktrees/slot-1\n",
+                encoding="utf-8",
+            )
+            completed = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="a" * 40 + "\n", stderr=""
+            )
+            with mock.patch.object(stager.os, "name", "nt"), mock.patch.object(
+                stager.subprocess, "run", return_value=completed
+            ) as run:
+                self.assertEqual(
+                    stager.run_git(root, "rev-parse", "HEAD").strip(), "a" * 40
+                )
+
+            run.assert_called_once_with(
+                [
+                    "git",
+                    "--git-dir",
+                    r"D:\Shared With Desktop\AI\matter-engine-cpp\.git\worktrees\slot-1",
+                    "--work-tree",
+                    str(root),
+                    "rev-parse",
+                    "HEAD",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_preserves_default_git_lookup_for_non_wsl_worktrees(self) -> None:
+        root = Path("repository")
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="clean\n", stderr=""
+        )
+        with mock.patch.object(
+            stager.subprocess, "run", return_value=completed
+        ) as run:
+            self.assertEqual(stager.run_git(root, "status"), "clean\n")
+
+        run.assert_called_once_with(
+            ["git", "-C", "repository", "status"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+
 class DirectChildSafetyTests(unittest.TestCase):
     def test_creates_missing_physical_dist_root_for_first_stage(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matter-stage-first-dist-") as temporary:
