@@ -28,12 +28,16 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(REMOVE_DUPLICATES editor_sources_unique)
         list(LENGTH editor_sources editor_count)
         list(LENGTH editor_sources_unique editor_unique_count)
-        if(NOT editor_count EQUAL 42 OR NOT editor_unique_count EQUAL 42)
+        if(NOT editor_count EQUAL 44 OR NOT editor_unique_count EQUAL 44)
             message(FATAL_ERROR
-                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=42")
+                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=44")
         endif()
         assert_list_contains("${editor_sources}" MatterEditor/src/agent_protocol.cpp
             "editor agent protocol source is missing")
+        assert_list_contains("${editor_sources}" MatterEditor/src/scene_inventory.cpp
+            "editor scene inventory source is missing")
+        assert_list_contains("${editor_sources}" MatterEditor/src/viewport_capture.cpp
+            "editor viewport capture source is missing")
         assert_list_contains("${editor_sources}" MatterEditor/src/character_walk_controller.cpp
             "editor character policy source is missing")
         get_target_property(headless_core_sources matter_engine_core SOURCES)
@@ -154,4 +158,4 @@ foreach(retopo IN ITEMS ON OFF)
     endif()
 endforeach()
 
-message(STATUS "viewer graph preserves 42-source editor, isolated 138+21 headless, and coherent 179/180-source viewer boundaries")
+message(STATUS "viewer graph preserves 44-source editor, isolated 138+21 headless, and coherent 179/180-source viewer boundaries")

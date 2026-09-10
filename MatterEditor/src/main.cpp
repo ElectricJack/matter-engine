@@ -212,6 +212,7 @@
 // must be visible here (world_session.h only pulls in the legacy events.h).
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
+#include "viewport_capture.h"
 #include "viewport_pick.h"
 #include "viewport_pick_command.h"
 #include "dsl_bindings.h"
@@ -2501,6 +2502,12 @@ int main() {
     bool presented_camera_available = false;
     bool presented_production_view = false;
     uint64_t presented_session_generation = 0;
+    // viewport.capture's one in-flight request. A screenshot is the only agent
+    // command whose answer needs a PRESENTED frame, so its terminal result is
+    // emitted from the frame loop's capture seam (or from one of the three
+    // failure seams beside it), not from the app-lane handler. At most one is
+    // armed at a time -- see viewport_capture.h.
+    viewer::capture::Tracker agent_capture;
     // D-03: wall-clock deadman for a `shot`/`shot_now` that can never
     // complete (a world where presents never succeed, or where
     // instances_drawn never goes positive so shot_settle can never reach
@@ -2688,22 +2695,29 @@ int main() {
     viewer::agent::OutputSink agent_output;
     if (agent_result_path)
         agent_output = viewer::agent::jsonl_file_sink(agent_result_path);
+    // ONE identity snapshot, read at two different moments: the protocol takes
+    // it when a terminal record is written, and the viewport.capture resolver
+    // takes it on the frame the PNG was read back from. Those differ whenever a
+    // later frame presented in between, which is exactly when a caller must not
+    // use the newer numbers -- so the two must not be two hand-copied bodies.
+    auto agent_context_snapshot = [&]() {
+        viewer::agent::Context context;
+        context.scene_ready = bake_ready;
+        context.session_id = binding.current_session_id();
+        context.session_generation = binding.current_generation();
+        context.scene_generation = session ? session->graph_generation() : 0;
+        context.scene_revision = editor_model.revision();
+        context.selection_revision = selection_set.revision();
+        // The presented-frame serial is both the exact framebuffer identity
+        // and this first protocol version's conservative view identity. A
+        // later frame is stale even when its camera happens to compare equal.
+        context.frame_id = fifo_present.presented_frame_serial();
+        context.view_id = fifo_present.presented_frame_serial();
+        return context;
+    };
     viewer::agent::Protocol agent_protocol(
-        agent_result_path != nullptr, std::move(agent_output), [&]() {
-            viewer::agent::Context context;
-            context.scene_ready = bake_ready;
-            context.session_id = binding.current_session_id();
-            context.session_generation = binding.current_generation();
-            context.scene_generation = session ? session->graph_generation() : 0;
-            context.scene_revision = editor_model.revision();
-            context.selection_revision = selection_set.revision();
-            // The presented-frame serial is both the exact framebuffer identity
-            // and this first protocol version's conservative view identity. A
-            // later frame is stale even when its camera happens to compare equal.
-            context.frame_id = fifo_present.presented_frame_serial();
-            context.view_id = fifo_present.presented_frame_serial();
-            return context;
-        });
+        agent_result_path != nullptr, std::move(agent_output),
+        agent_context_snapshot);
     agent_protocol.add_command({
         "agent.commands", "List commands and current availability", {}, "object",
         false, {}});
@@ -2784,6 +2798,22 @@ int main() {
          {"y", "number", true, "Viewport-local logical Y pixel (top = 0)"},
          {"mode", "string", false,
           "replace (default), add, or toggle; a replace miss clears selection"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "viewport.capture",
+        "Capture the next presented frame to a PNG and return its geometry, "
+        "captured revisions and optional selection annotations",
+        {{"path", "string", true,
+          "Absolute .png path; the same safety rules the shot_now FIFO verb applies"},
+         {"annotate_selection", "boolean", false,
+          "Also return each selected object's typed id and projected image rectangle"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "view.focus",
+        "Frame the camera on the selection, or on one named object without "
+        "changing the selection",
+        {{"object", "object_id", false,
+          "{kind,id} pair to frame; omitted frames the current selection"}},
         "object", false, {}});
 
     auto reg_agent_commands =
@@ -3091,47 +3121,15 @@ int main() {
                                          const viewer::ViewportRect& vp,
                                          const matter::CameraDesc& pick_camera,
                                          float x, float y) {
+        // agent_protocol.h's shared value constructors -- one spelling of
+        // "a JSON number" for every hand-built payload in this file.
         using JsonValue = matter::jsondoc::Value;
-        const auto object = [] {
-            JsonValue value;
-            value.kind = JsonValue::Kind::Object;
-            return value;
-        };
-        const auto array3 = [](float x, float y, float z) {
-            JsonValue value;
-            value.kind = JsonValue::Kind::Array;
-            for (float component : {x, y, z}) {
-                JsonValue number;
-                number.kind = JsonValue::Kind::Number;
-                number.num = component;
-                value.arr.push_back(std::move(number));
-            }
-            return value;
-        };
-        const auto number = [](double input) {
-            JsonValue value;
-            value.kind = JsonValue::Kind::Number;
-            value.num = input;
-            return value;
-        };
-        const auto boolean = [](bool input) {
-            JsonValue value;
-            value.kind = JsonValue::Kind::Bool;
-            value.b = input;
-            return value;
-        };
-        const auto string = [](std::string input) {
-            JsonValue value;
-            value.kind = JsonValue::Kind::String;
-            value.str = std::move(input);
-            return value;
-        };
-        const auto unavailable = [&](const char* reason) {
-            JsonValue value = object();
-            value.set("available", boolean(false));
-            value.set("reason", string(reason));
-            return value;
-        };
+        using viewer::agent::json::boolean;
+        using viewer::agent::json::number;
+        using viewer::agent::json::object;
+        using viewer::agent::json::string;
+        using viewer::agent::json::unavailable;
+        using viewer::agent::json::vec3;
 
         int framebuffer_width = 0;
         int framebuffer_height = 0;
@@ -3175,11 +3173,11 @@ int main() {
         result.set("coordinate", std::move(coordinate));
 
         JsonValue camera_json = object();
-        camera_json.set("position", array3(pick_camera.position.x, pick_camera.position.y,
+        camera_json.set("position", vec3(pick_camera.position.x, pick_camera.position.y,
                                              pick_camera.position.z));
-        camera_json.set("target", array3(pick_camera.target.x, pick_camera.target.y,
+        camera_json.set("target", vec3(pick_camera.target.x, pick_camera.target.y,
                                            pick_camera.target.z));
-        camera_json.set("up", array3(pick_camera.up.x, pick_camera.up.y,
+        camera_json.set("up", vec3(pick_camera.up.x, pick_camera.up.y,
                                       pick_camera.up.z));
         camera_json.set("vertical_fov_radians",
                         number(pick_camera.vertical_fov_radians));
@@ -3214,7 +3212,7 @@ int main() {
             geometry.set("source", string("cpu_obb_fallback"));
             JsonValue world_position = object();
             world_position.set("available", boolean(true));
-            world_position.set("value", array3(pick.world_position.x,
+            world_position.set("value", vec3(pick.world_position.x,
                                                 pick.world_position.y,
                                                 pick.world_position.z));
             geometry.set("world_position", std::move(world_position));
@@ -3318,6 +3316,184 @@ int main() {
                     perform_viewport_pick(command.x, command.y, &command.mode));
             });
 
+    // The one baked-root bounds provider for camera framing. camera_focus.h is
+    // session-free by design, so every framing site has to supply this; sharing
+    // one lambda is what keeps `viewer.reveal_part`, the viewport orbit pivot
+    // and `view.focus` framing the SAME box.
+    auto baked_root_bounds = [&](uint64_t part_hash, viewer::SelectionBounds& out) {
+        viewer::SelectedObject obj{viewer::SelectedObject::BakedRoot, part_hash};
+        return viewer::bounds_for_object(obj, *session, out);
+    };
+
+    // view.focus — the F key's framing, addressable. `args.object` frames one
+    // named object WITHOUT selecting it: framing is a view operation, and an
+    // agent that wanted the selection changed has selection.replace.
+    auto reg_view_focus = registry.must_register_handler<viewer::ViewFocus>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::ViewFocus& command) {
+            using JsonValue = matter::jsondoc::Value;
+            using viewer::agent::json::number;
+            using viewer::agent::json::object;
+            using viewer::agent::json::string;
+            using viewer::agent::json::vec3;
+            const auto camera_json = [&](const matter::CameraDesc& desc) {
+                JsonValue value = object();
+                value.set("position",
+                          vec3(desc.position.x, desc.position.y, desc.position.z));
+                value.set("target",
+                          vec3(desc.target.x, desc.target.y, desc.target.z));
+                value.set("up", vec3(desc.up.x, desc.up.y, desc.up.z));
+                value.set("vertical_fov_radians", number(desc.vertical_fov_radians));
+                value.set("near_plane", number(desc.near_plane));
+                value.set("far_plane", number(desc.far_plane));
+                return value;
+            };
+
+            viewer::AgentPayload payload;
+            if (!session) {
+                payload.status = viewer::agent::Status::NotReady;
+                payload.message = "no world session is loaded";
+                return viewer::ViewFocus::Result::succeeded(std::move(payload));
+            }
+            const uint64_t selection_revision_before = selection_set.revision();
+            const viewer::inventory::Snapshot snapshot = prune_selection_to_inventory();
+            if (selection_set.revision() != selection_revision_before)
+                mirror_selection_primary();
+
+            // A scratch set for the object form. It never touches the shared
+            // SelectionSet, so `view.focus {object}` cannot move the gizmo,
+            // the outline or the Scene tree highlight.
+            viewer::SelectionSet scratch;
+            const viewer::SelectionSet* framed = &selection_set;
+            if (command.has_object) {
+                if (!viewer::inventory::find_object(snapshot, command.object)) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message =
+                        "no object with that typed id exists at this scene revision";
+                    return viewer::ViewFocus::Result::succeeded(std::move(payload));
+                }
+                scratch.replace(viewer::selection_command::selected(command.object));
+                framed = &scratch;
+            } else if (selection_set.empty()) {
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message =
+                    "the editor selection is empty; pass args.object to frame "
+                    "one object";
+                return viewer::ViewFocus::Result::succeeded(std::move(payload));
+            }
+
+            // Asked first, and separately, so "nothing here resolves to bounds
+            // yet" is an explicit not_ready rather than a silent no-op camera.
+            // focus_camera_on_selection leaves the camera alone in exactly this
+            // case, which is indistinguishable from success from outside.
+            matter::Float3 center{};
+            float radius = 0.0f;
+            if (!viewer::selection_focus_point(*framed, field_commands,
+                                               baked_root_bounds, center, radius)) {
+                payload.status = viewer::agent::Status::NotReady;
+                payload.message =
+                    "nothing in the focus target resolves to bounds in this "
+                    "world yet";
+                return viewer::ViewFocus::Result::succeeded(std::move(payload));
+            }
+            const matter::CameraDesc before = camera;
+            viewer::focus_camera_on_selection(camera, *framed, field_commands,
+                                              baked_root_bounds);
+
+            JsonValue result = object();
+            JsonValue target = object();
+            target.set("mode", string(command.has_object ? "object" : "selection"));
+            if (command.has_object)
+                target.set("object", viewer::agent::object_identity_json(command.object));
+            else
+                target.set("object", JsonValue{});
+            JsonValue framed_objects = viewer::agent::json::array();
+            for (const viewer::SelectedObject& item : framed->items()) {
+                framed_objects.arr.push_back(viewer::agent::object_identity_json(
+                    {item.kind == viewer::SelectedObject::BakedRoot
+                         ? viewer::agent::ObjectIdentity::Kind::BakedRoot
+                         : viewer::agent::ObjectIdentity::Kind::Entity,
+                     item.id}));
+            }
+            target.set("objects", std::move(framed_objects));
+            result.set("target", std::move(target));
+            JsonValue focus = object();
+            focus.set("center", vec3(center.x, center.y, center.z));
+            focus.set("radius_meters", number(radius));
+            result.set("focus", std::move(focus));
+            JsonValue camera_block = object();
+            camera_block.set("before", camera_json(before));
+            camera_block.set("after", camera_json(camera));
+            result.set("camera", std::move(camera_block));
+            // The camera moves at the NEXT presented frame, so the frame the
+            // caller can pick against is not this one. Say so rather than let
+            // an agent assume the shot it took a moment ago still matches.
+            result.set("applies_at", string("next_presented_frame"));
+            result.set("scene_revision",
+                       viewer::agent::json::decimal(snapshot.scene_revision));
+            payload.value = std::move(result);
+            return viewer::ViewFocus::Result::succeeded(std::move(payload));
+        });
+
+    // The ONE place a pending viewport.capture becomes a terminal result. Four
+    // frame-loop seams call it: the successful PNG write, the readback/write
+    // failure beside it, the `shot` deadman that abandons a capture the editor
+    // can no longer present, and the request's own deadline. Completing a
+    // request the protocol has already expired is a no-op (complete() returns
+    // false), which is what keeps "exactly one terminal record" true without
+    // this having to know which of the two deadlines fired first.
+    auto resolve_agent_capture =
+        [&](viewer::capture::Resolution resolution,
+            const viewer::capture::Geometry* geometry,
+            const matter::CameraDesc* captured_camera,
+            const std::vector<viewer::capture::AnnotationInput>* annotation_inputs) {
+            if (!agent_capture.armed()) return;
+            const viewer::capture::Request request = agent_capture.release();
+            const viewer::capture::Terminal terminal =
+                viewer::capture::terminal_for(resolution);
+            matter::jsondoc::Value payload;
+            if (resolution == viewer::capture::Resolution::Captured && geometry &&
+                captured_camera) {
+                std::vector<viewer::capture::Annotation> annotations;
+                if (request.annotate && annotation_inputs)
+                    annotations = viewer::capture::project_annotations(
+                        *annotation_inputs, *captured_camera, *geometry);
+                payload = viewer::capture::capture_result_json(
+                    request, *geometry, *captured_camera, agent_context_snapshot(),
+                    request.annotate ? &annotations : nullptr);
+            }
+            agent_protocol.complete(request.request_id, request.ticket_id,
+                                    terminal.status, std::move(payload),
+                                    terminal.message);
+        };
+
+    // viewport.capture: the handler decides only whether a capture can be
+    // ARMED right now. The arming itself, and the single terminal result, are
+    // owned by the dispatch bridge and the frame loop -- a screenshot is not
+    // true until a frame has presented and its readback has been written, and
+    // the app lane cannot wait for that.
+    auto reg_viewport_capture =
+        registry.must_register_handler<viewer::ViewportCapture>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ViewportCapture&) {
+                viewer::AgentPayload payload;
+                const viewer::ViewportRect vp = ui.viewport_rect();
+                if (vp.w <= 0.0f || vp.h <= 0.0f) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message =
+                        "the viewport has no drawable logical-pixel rectangle";
+                } else if (!presented_camera_available) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message = "no viewport frame has been presented yet";
+                } else if (agent_capture.armed()) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message =
+                        "another viewport.capture is still in flight; captures "
+                        "are not queued";
+                }
+                return viewer::ViewportCapture::Result::succeeded(std::move(payload));
+            });
+
     // ---- Registered viewer commands (S I.11 migration map) ------------------
     // Handlers live where the poll-site code lived (this main loop / the lab
     // shell). All App-scoped and non-undoable. Same-thread UI triggers reach
@@ -3384,12 +3560,8 @@ int main() {
             }
             editor_model.clear_selection();
             ui.select_baked_root(hash);
-            viewer::focus_camera_on_selection(
-                camera, selection_set, field_commands,
-                [&](uint64_t part_hash, viewer::SelectionBounds& out) {
-                    viewer::SelectedObject obj{viewer::SelectedObject::BakedRoot, part_hash};
-                    return viewer::bounds_for_object(obj, *session, out);
-                });
+            viewer::focus_camera_on_selection(camera, selection_set,
+                                              field_commands, baked_root_bounds);
             return viewer::ViewerRevealPart::Result::succeeded(true);
         });
 
@@ -4191,6 +4363,126 @@ int main() {
                                                     payload_terminal);
                             }
                         }
+                    } else if (begun.request.command == "viewport.capture") {
+                        // The path policy is the shot_now verb's, applied here
+                        // rather than in viewport_capture.h so the FIFO and the
+                        // agent protocol can never disagree about what a safe
+                        // capture path is.
+                        viewer::capture::Arguments arguments;
+                        std::string argument_error;
+                        if (!viewer::capture::parse_arguments(
+                                begun.request.arguments, arguments, argument_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                argument_error);
+                        } else if (!viewer::fifo_safe_absolute_png_path(arguments.path)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                "path must be a safe absolute .png path, the same "
+                                "rule the shot_now FIFO verb applies");
+                        } else {
+                            viewer::ViewportCapture command;
+                            command.path = arguments.path;
+                            command.annotate = arguments.annotate;
+                            // The deadline the tracker enforces is the request's
+                            // own, recomputed here because Protocol keeps its
+                            // copy private. The two can differ by the microseconds
+                            // between begin() and this line; whichever fires
+                            // first emits the ONE terminal timeout record, and
+                            // Protocol::complete's pending map is what makes that
+                            // exactly-once rather than a race.
+                            const auto deadline =
+                                viewer::capture::Clock::now() +
+                                std::chrono::milliseconds(begun.request.timeout_ms);
+                            const bool annotate = arguments.annotate;
+                            const std::string path = arguments.path;
+                            auto ticket = registry.dispatch(std::move(command));
+                            const uint64_t ticket_id = ticket.id();
+                            if (!agent_protocol.attach_ticket(request_id, ticket_id)) {
+                                agent_protocol.reject_accepted(
+                                    request_id,
+                                    viewer::agent::Status::ExecutionFailure,
+                                    "could not attach CommandRegistry ticket");
+                            } else {
+                                ticket.then(
+                                    app_lane,
+                                    [&, request_id, ticket_id, path, annotate,
+                                     deadline](const auto& result) {
+                                        // Unlike every other agent command, a
+                                        // Success here is NOT a terminal answer:
+                                        // it means "armable". Only the refusals
+                                        // complete from this continuation.
+                                        if (result.status !=
+                                            matter::evt::CommandStatus::Success) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                result.status ==
+                                                        matter::evt::CommandStatus::StaleScope
+                                                    ? viewer::agent::Status::StaleRevision
+                                                    : viewer::agent::Status::ExecutionFailure,
+                                                matter::jsondoc::Value{},
+                                                result.error);
+                                            return;
+                                        }
+                                        if (result.value &&
+                                            result.value->status !=
+                                                viewer::agent::Status::Ok) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                result.value->status,
+                                                matter::jsondoc::Value{},
+                                                result.value->message);
+                                            return;
+                                        }
+                                        viewer::capture::Request pending;
+                                        pending.request_id = request_id;
+                                        pending.ticket_id = ticket_id;
+                                        pending.path = path;
+                                        pending.annotate = annotate;
+                                        pending.deadline = deadline;
+                                        if (!agent_capture.arm(std::move(pending))) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                viewer::agent::Status::NotReady,
+                                                matter::jsondoc::Value{},
+                                                "another viewport.capture armed "
+                                                "first; captures are not queued");
+                                            return;
+                                        }
+                                        // Same queue, same presented-frame drain
+                                        // and same PNG writer as `shot_now` --
+                                        // including the D-03 deadman, whose
+                                        // in-flight condition is the queue
+                                        // itself, so arming re-arms it here the
+                                        // way the FIFO verbs do.
+                                        fifo_present.queue_screenshot(path);
+                                        fifo_shot_wait_start =
+                                            std::chrono::steady_clock::now();
+                                    });
+                            }
+                        }
+                    } else if (begun.request.command == "view.focus") {
+                        // `object` is OPTIONAL here, so unlike scene.get_object
+                        // the descriptor has not already validated its shape --
+                        // an absent key is the selection form, a malformed one
+                        // is invalid_input.
+                        viewer::ViewFocus command;
+                        std::string object_error;
+                        const matter::jsondoc::Value* requested =
+                            begun.request.arguments.find("object");
+                        if (requested &&
+                            !viewer::agent::parse_object_identity(
+                                *requested, command.object, object_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                object_error.empty()
+                                    ? "object must be {\"kind\",\"id\"}"
+                                    : object_error);
+                        } else {
+                            command.has_object = requested != nullptr;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        }
                     } else if (begun.request.command == "selection.replace" ||
                                begun.request.command == "selection.add" ||
                                begun.request.command == "selection.remove" ||
@@ -4610,6 +4902,19 @@ int main() {
         // and the camera snapshot — so a FIFO `cam`/`budget` applies to THIS
         // frame's render exactly as the old inline handling did.
         registry.pump(app_lane, 5.0);
+        // The armed capture's deadline, checked BEFORE the protocol's generic
+        // expiry so the capture-specific timeout message is the one that lands
+        // in the ordinary case. Both deadlines are the same request's, so
+        // whichever wins still emits exactly one `timeout` record.
+        if (agent_capture.expired(std::chrono::steady_clock::now())) {
+            // Drop the queued capture only when it is still the FRONT of the
+            // present queue: cancel_pending_screenshot pops the front, and a
+            // `shot_now` queued ahead of it is not ours to discard.
+            if (fifo_present.pending_screenshot_path() == agent_capture.request().path)
+                fifo_present.cancel_pending_screenshot();
+            resolve_agent_capture(viewer::capture::Resolution::TimedOut, nullptr,
+                                  nullptr, nullptr);
+        }
         agent_protocol.expire();
         if (const std::string agent_error = agent_protocol.take_io_error();
             !agent_error.empty())
@@ -4629,6 +4934,9 @@ int main() {
             const std::string abandoned_path =
                 shot_settle > 0 ? shot_path : fifo_present.pending_screenshot_path();
             std::printf("shot: timeout, abandoned %s\n", abandoned_path.c_str());
+            if (agent_capture.owns(abandoned_path))
+                resolve_agent_capture(viewer::capture::Resolution::Abandoned,
+                                      nullptr, nullptr, nullptr);
             shot_settle = 0;
             fifo_present.cancel_pending_screenshot();
             if (fifo_block == FifoBlockKind::Shot) fifo_block = FifoBlockKind::None;
@@ -4699,12 +5007,7 @@ int main() {
         if (session) {
             float pivot_radius = 0.0f;
             selection_pivot_valid = viewer::selection_focus_point(
-                selection_set, field_commands,
-                [&](uint64_t part_hash, viewer::SelectionBounds& out) {
-                    viewer::SelectedObject obj{viewer::SelectedObject::BakedRoot,
-                                               part_hash};
-                    return viewer::bounds_for_object(obj, *session, out);
-                },
+                selection_set, field_commands, baked_root_bounds,
                 selection_pivot, pivot_radius);
         }
 
@@ -6219,6 +6522,12 @@ int main() {
                 std::vector<uint8_t> out_rgba = rgba;
                 uint32_t out_w = frame.extent.width;
                 uint32_t out_h = frame.extent.height;
+                // Where the written image starts inside the framebuffer. Only a
+                // replay crop moves it; viewport.capture reports it so an agent
+                // can map an image pixel back to a viewport-local one without
+                // assuming the PNG is the whole swapchain.
+                double out_origin_x = 0.0;
+                double out_origin_y = 0.0;
                 if (replay.valid && capture_path == screenshot_path &&
                     !replay.rect.empty()) {
                     // Validate the two things that silently invalidate a diff:
@@ -6325,10 +6634,16 @@ int main() {
                                                  frame.extent.height, rect);
                     out_w = static_cast<uint32_t>(rect.w);
                     out_h = static_cast<uint32_t>(rect.h);
+                    out_origin_x = rect.x;
+                    out_origin_y = rect.y;
                 }
                 if (!write_png(capture_path, out_rgba, out_w, out_h)) {
                     MATTER_LOGE("screenshot", "screenshot FAILED %s\n",
                                  capture_path.c_str());
+                    if (agent_capture.owns(capture_path))
+                        resolve_agent_capture(
+                            viewer::capture::Resolution::WriteFailed, nullptr,
+                            nullptr, nullptr);
                     fatal_error = true;
                 } else {
                     bool completion_written = true;
@@ -6342,11 +6657,84 @@ int main() {
                             "screenshot",
                             "screenshot completion marker FAILED %s.done\n",
                             capture_path.c_str());
+                        if (agent_capture.owns(capture_path))
+                            resolve_agent_capture(
+                                viewer::capture::Resolution::WriteFailed, nullptr,
+                                nullptr, nullptr);
                         fatal_error = true;
                     } else {
                         screenshot_failures = 0;
                         std::printf("screenshot written to %s\n",
                                     capture_path.c_str());
+                        if (agent_capture.owns(capture_path)) {
+                            // Every number here is measured on THIS frame -- the
+                            // one that presented and was read back -- so a resize
+                            // between arming and capturing is reported as the
+                            // size the PNG really is, not the size it was asked
+                            // for.
+                            viewer::capture::Geometry geometry;
+                            const viewer::ViewportRect& capture_vp = ui.viewport_rect();
+                            const ImVec2 capture_display = ImGui::GetIO().DisplaySize;
+                            geometry.viewport_logical =
+                                viewer::capture::Rect{capture_vp.x, capture_vp.y,
+                                                      capture_vp.w, capture_vp.h};
+                            geometry.framebuffer_scale_x =
+                                capture_display.x > 0.0f
+                                    ? frame.extent.width / capture_display.x
+                                    : 1.0;
+                            geometry.framebuffer_scale_y =
+                                capture_display.y > 0.0f
+                                    ? frame.extent.height / capture_display.y
+                                    : 1.0;
+                            geometry.image_width = out_w;
+                            geometry.image_height = out_h;
+                            geometry.image_origin_x = out_origin_x;
+                            geometry.image_origin_y = out_origin_y;
+                            geometry.production_view = !show_isolation;
+                            // The same batched bounds the selection overlay
+                            // draws from, so an annotation rectangle and the
+                            // box on screen describe one box.
+                            std::vector<viewer::capture::AnnotationInput> annotations;
+                            const std::vector<viewer::SelectedObject>& selected =
+                                selection_set.items();
+                            if (agent_capture.request().annotate && !selected.empty()) {
+                                std::vector<viewer::SelectionBounds> bounds(selected.size());
+                                std::unique_ptr<bool[]> resolved(new bool[selected.size()]);
+                                // The selection names production-world objects,
+                                // so an isolation frame gets the rows without
+                                // the O(entities) scan; project_annotations
+                                // reports every one of them unavailable anyway.
+                                if (show_isolation)
+                                    std::fill(resolved.get(),
+                                              resolved.get() + selected.size(), false);
+                                else
+                                    viewer::bounds_for_objects(selected.data(),
+                                                               selected.size(), *session,
+                                                               bounds.data(), resolved.get());
+                                const viewer::SelectedObject* primary =
+                                    selection_set.primary();
+                                annotations.reserve(selected.size());
+                                for (size_t i = 0; i < selected.size(); ++i) {
+                                    viewer::capture::AnnotationInput input;
+                                    input.object = {
+                                        selected[i].kind == viewer::SelectedObject::BakedRoot
+                                            ? viewer::agent::ObjectIdentity::Kind::BakedRoot
+                                            : viewer::agent::ObjectIdentity::Kind::Entity,
+                                        selected[i].id};
+                                    input.primary = primary && *primary == selected[i];
+                                    input.resolved = resolved[i];
+                                    if (resolved[i]) input.bounds = bounds[i];
+                                    annotations.push_back(input);
+                                }
+                            }
+                            // render_camera, not frame_camera: an isolation
+                            // frame was drawn with the workbench's pose, and
+                            // reporting the production one would describe a
+                            // picture nobody took.
+                            resolve_agent_capture(
+                                viewer::capture::Resolution::Captured, &geometry,
+                                &render_camera, &annotations);
+                        }
                     }
                     if (capture_path == screenshot_path) quit_requested = true;
                 }

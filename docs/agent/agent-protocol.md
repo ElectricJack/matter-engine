@@ -194,6 +194,92 @@ to that same presented production view; a request made before the first frame,
 or while Part Workbench isolation owns the viewport, returns `not_ready` rather
 than mixing a visible image with a different pick world/camera.
 
+## Viewport capture and framing
+
+`viewport.capture` and `view.focus` are what close the loop: read the image,
+decide where to look, look there, read again.
+
+### `viewport.capture`
+
+| Argument | Type | Meaning |
+| --- | --- | --- |
+| `path` | string, required | Absolute `.png` path. The same rule the `shot_now` FIFO verb applies (`fifo_safe_absolute_png_path`: drive-absolute or UNC, no `..`, no reserved DOS names, no control characters). |
+| `annotate_selection` | boolean | Also project every selected object's bounding box into the captured image. Default false, because it costs a bounds scan. |
+
+It is the ONE command whose result is not produced on the app lane. The request
+is accepted, a capture is armed on the same present/readback queue `shot_now`
+uses, and the single terminal record is written only once a frame has actually
+PRESENTED and its PNG has been written to disk — with `<path>.done` beside it,
+exactly as the `shot` verbs write it. Nothing is reported "captured" from an
+intent.
+
+At most one capture is in flight; a second while one is armed is `not_ready`
+rather than queued, so a request's own `timeout_ms` keeps meaning what it says.
+The four terminal outcomes are deliberately distinct:
+
+| Outcome | Code |
+|---|---|
+| the PNG landed | `ok` |
+| `timeout_ms` passed with no presented capture | `timeout` |
+| the editor stopped presenting and the shot deadman abandoned it | `not_ready` |
+| a frame presented but its readback or PNG write failed | `execution_failure` |
+
+`result` carries the image and everything needed to act on it:
+
+- `path`, `completion_marker`;
+- `image` — `width`, `height`, `format`, and `framebuffer_origin` (non-zero
+  only for a cropped capture);
+- `viewport` — the 3D view rectangle in `logical`, `framebuffer` and `image`
+  pixels, plus `framebuffer_scale` and `production_view`. Every one of these is
+  measured on the frame that presented, so a window resize between the request
+  and the capture is reported as the size the PNG really is;
+- `pick_mapping` — `image_offset`, `divide_by` and the `formula`
+  `viewport_x = (image_x - image_offset.x) / divide_by.x`. That is the exact
+  coordinate `viewport.pick` takes; a pixel outside the viewport rectangle has
+  no pick coordinate at all, and clamping to the nearest edge would answer for
+  a pixel the caller never saw;
+- `camera` — the pose the image was rendered with;
+- `captured` — the full context block AS OF THE CAPTURED FRAME. The envelope's
+  own `context` is a completion-time snapshot; these two differ whenever a
+  later frame presented in between, which is precisely when the newer numbers
+  must not be used. Pass `captured.frame.id` as `expect.frame_id` on the
+  follow-up `viewport.pick` and a moved camera is `stale_revision`, not a
+  plausible wrong answer;
+- `presented` — `id` / `view_id` for the same frame;
+- `annotations` — always present. Without `annotate_selection` it is
+  `{"available":false,"reason":…}` so a reader never has to tell "absent" from
+  "empty selection". With it, one row per selected object carrying the typed
+  `object`, a printable `label` (`entity:42`), `primary`, and either
+  `image_rect` + `viewport_logical_rect` + `clipped`, or `available:false` with
+  a reason. A row is unavailable when the object resolved to no bounds this
+  frame, when its box crosses the camera's eye plane (the honest answer: the
+  missing corners are the ones that would have been widest), when it projects
+  entirely outside the viewport, or when the Part Workbench isolation view
+  owned the frame. Annotations are a MEASUREMENT of the image: they change no
+  authored content, no selection and no camera, and the boxes come from the
+  same `selection_bounds` the on-screen selection outline draws.
+
+The existing `shot` / `shot_now` FIFO verbs are untouched, keep their stdout
+wording, and share the queue.
+
+### `view.focus`
+
+`args.object` is optional. With it, the camera frames that one `{kind,id}`
+WITHOUT selecting it — framing is a view operation, and an agent that wanted
+the selection changed has `selection.replace`. Without it, the camera frames
+the current selection. Either way this is the F key's framing:
+`camera_focus.h`'s merged world-space AABB over the same bounds the outline and
+the pick use.
+
+An id that is not in the current scene is `not_found`. A target that resolves
+to no bounds in this world yet is `not_ready` — reported explicitly, because
+`focus_camera_on_selection` leaves the camera untouched in exactly that case
+and a silent no-op is indistinguishable from success. `result` carries the
+`target` (`mode`, `object`, the `objects` actually framed), the `focus` centre
+and bounding-sphere `radius_meters`, `camera.before` / `camera.after`, and
+`applies_at: "next_presented_frame"` — the new pose is not in any image yet, so
+a screenshot taken a moment ago still shows the old one.
+
 ## Scene reads
 
 Two commands answer "what is in this world" and "what exactly is this object".

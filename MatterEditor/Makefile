@@ -1173,6 +1173,25 @@ build/test_selection_commands.exe: tests/test_selection_commands.cpp \
 run-test-selection-commands: build/test_selection_commands.exe
 	./build/test_selection_commands.exe
 
+# viewport.capture: the pending-capture state machine, capture-time geometry,
+# the image<->viewport mapping viewport.pick consumes, and the selection
+# annotations projected into a captured PNG.  viewport_capture.cpp is
+# renderer-free by design, so timeout / abandoned presentation / resize /
+# pick coherence are all decidable with no window.
+build/test_viewport_capture.exe: tests/test_viewport_capture.cpp \
+        src/viewport_capture.cpp src/viewport_capture.h src/view_projection.h \
+        src/selection_bounds.h src/selection_set.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_viewport_capture.cpp src/viewport_capture.cpp \
+	    src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-viewport-capture
+run-test-viewport-capture: build/test_viewport_capture.exe
+	./build/test_viewport_capture.exe
+
 # Camera orbit / move / turn math (issue a4203d22 parts 1-2). Pure CPU: no
 # ImGui context, no window, no session -- camera_orbit.cpp exists precisely
 # so this math is reachable without any of them. camera_controller.cpp comes

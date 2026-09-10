@@ -27,6 +27,7 @@ MatterEditor/src/editor_model.cpp|all
 MatterEditor/src/scene_tree_panel.cpp|all
 MatterEditor/src/selection_bounds.cpp|all
 MatterEditor/src/viewport_pick.cpp|all
+MatterEditor/src/viewport_capture.cpp|all
 MatterEditor/src/selection_outline.cpp|all
 MatterEditor/src/toolbar_panel.cpp|all
 MatterEditor/src/console_panel.cpp|all

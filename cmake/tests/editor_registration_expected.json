@@ -188,9 +188,13 @@
     "selection.remove",
     "selection.replace",
     "selection.toggle",
+    "view.focus",
     "viewer.reload",
     "viewer.reveal_part",
     "viewer.switch_world",
+    "viewport.capture",
+    "viewport.pick",
+    "viewport.pick_select",
     "workbench.open_part"
   ]
 }

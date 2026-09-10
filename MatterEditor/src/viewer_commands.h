@@ -209,6 +209,32 @@ struct ViewportPickSelect {
     Mode mode = Mode::Replace;
 };
 
+// --- typed viewport capture and framing -------------------------------------
+// viewport.capture is the ONE agent command whose answer is not knowable on
+// the app lane: a screenshot is only true once a frame has PRESENTED and its
+// readback has been written. The handler therefore only decides whether a
+// capture can be armed right now; main.cpp's dispatch bridge arms it, and the
+// frame loop emits the single terminal result when the PNG lands, times out,
+// or is abandoned. See MatterEditor/src/viewport_capture.h.
+struct ViewportCapture {
+    MT_COMMAND_NAME("viewport.capture");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::string path;
+    bool annotate = false;
+};
+
+// view.focus frames the camera exactly the way the F key and the Asset
+// Browser's Reveal do -- camera_focus.h's merged selection AABB -- on either
+// the current selection or one named object. Naming an object does NOT select
+// it: framing is a view operation, and an agent that wanted the selection
+// changed has selection.replace for that.
+struct ViewFocus {
+    MT_COMMAND_NAME("view.focus");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    bool has_object = false;
+    agent::ObjectIdentity object;
+};
+
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------
 // The FIRST ActiveSession-scoped commands: each mutates world entity state, so
 // each is stamped with the SessionBinding's ActiveSession epoch token and
