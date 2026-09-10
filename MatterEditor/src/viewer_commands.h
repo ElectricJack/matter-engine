@@ -159,6 +159,48 @@ struct SceneTraceProvenance {
     matter::jsondoc::Value arguments;
 };
 
+// --- versioned agent-protocol scene comparison (scene_diff.h) --------------
+// A baked root's id IS its content hash, so "what changed" cannot be answered
+// by diffing two object lists: a rebake re-addresses every root. These four
+// carry the same AgentPayload status convention as the reads above -- an
+// unknown snapshot id or an incomparable pair of snapshots is a successful
+// query with a not_found / labelled answer, not a handler failure.
+
+// scene.capture_snapshot{label?} -- retains one bounded, ordered capture of
+// every object the editor can name, plus its measured world bounds and the
+// generation inputs the editor can attest to.
+struct SceneCaptureSnapshot {
+    MT_COMMAND_NAME("scene.capture_snapshot");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::string label;
+};
+
+// scene.list_snapshots{} -- what is still in the retained ring.
+struct SceneListSnapshots {
+    MT_COMMAND_NAME("scene.list_snapshots");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
+// scene.diff{from,to?,kinds?,changes?,offset?,limit?} -- compares two captures
+// by LOGICAL key (module name / authored entity id), so a regeneration reads
+// as one changed row carrying the new incarnation rather than as a removal
+// plus an addition. `to` defaults to "current", captured at dispatch.
+struct SceneDiff {
+    MT_COMMAND_NAME("scene.diff");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+// scene.query{snapshot?,kinds?,name_contains?,module_contains?,
+//             source_path_contains?,has_provenance?,has_part_instance?,
+//             region?,offset?,limit?}
+// -- bounded name/kind/provenance and spatial-region filtering over a capture.
+struct SceneQuery {
+    MT_COMMAND_NAME("scene.query");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
 // --- typed app-selection commands ------------------------------------------
 // These mutate the one app-owned SelectionSet only.  They deliberately carry
 // typed identities rather than raw JSON; parsing and duplicate rejection stay

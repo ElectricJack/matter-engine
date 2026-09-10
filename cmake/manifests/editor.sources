@@ -2,6 +2,7 @@
 MatterEditor/src/main.cpp|all
 MatterEditor/src/agent_protocol.cpp|all
 MatterEditor/src/scene_inventory.cpp|all
+MatterEditor/src/scene_diff.cpp|all
 MatterEditor/src/regen_jobs.cpp|all
 MatterEditor/src/procedural_parameters.cpp|all
 MatterEditor/src/ui.cpp|all

@@ -370,6 +370,176 @@ at the current scene revision. A graph that has not published yet, or a part
 hash absent from it, returns an explicit unavailable traversal rather than
 guessing from filenames.
 
+## Scene comparison and spatial queries
+
+Four commands answer "what did that change actually produce": capture the scene,
+list what is retained, compare two captures, and filter one by name, provenance
+or world-space region. The rules, ordering, paging and JSON live in
+`MatterEditor/src/scene_diff.h` (unit-tested by
+`MatterEditor/tests/test_scene_diff.cpp`).
+
+### Why a diff is not "list the objects twice"
+
+A baked root's `id` IS its resolved content hash. Rebake the part and the id
+changes, so a naive comparison of two `scene.list_objects` pages reports every
+root as one removal plus one addition and never says the useful thing. So every
+object here carries **two** identities:
+
+| | what it is | survives a rebake? |
+|---|---|---|
+| **incarnation** | the `{kind,id}` the rest of the protocol takes | no, for a baked root |
+| **logical key** | the part-graph MODULE name (baked root) or the authored `SceneEntityId` (entity) | yes |
+
+Pairing is done on the logical key. The incarnation then becomes a FIELD that
+can change, and `regenerated: true` says the same logical thing was rebaked.
+`result.identity_model` states this rule in the response rather than leaving it
+to be inferred from the rows.
+
+Two populations have no key that survives, and are reported in
+`incomparable_objects` instead of being paired:
+
+- an entity whose id was minted at runtime (`matter::scene::is_runtime_id`) is
+  session-scoped: across two sessions the same number is a different object;
+- a module published as MORE THAN ONE baked root: two roots and two roots is
+  four possible pairings and nothing in the part graph picks one.
+
+### `scene.capture_snapshot`
+
+Optional `label` (a string of at most 256 bytes) is echoed on every later
+record. The capture is one bounded, `(kind, id)`-ordered pass over everything
+`scene.list_objects` can name, plus:
+
+- each object's measured **world AABB**, derived (all eight transformed
+  corners) from the same local box and world matrix the selection outline draws
+  and the viewport pick tests — `bounds_for_object_set` in
+  `MatterEditor/src/selection_bounds.h`, one ECS scan for the whole
+  population. An object that does not resolve carries `available:false` with a
+  reason, never an origin-sized box;
+- the **generation inputs** the editor can attest to: `world`, `project`,
+  `content_digest` (FNV-1a over the SORTED published `(module, resolved hash)`
+  roots — the same number `job.status` reports), and `world_seed`. The seed is
+  claimed ONLY when a completed seeded regeneration published the very scene
+  generation being captured, and names the job it came from; a seed from some
+  earlier bake would name an input this scene was not built from.
+
+At most 20,000 objects are captured and at most 8 snapshots are retained; both
+are memory bounds, not just result bounds. A capture over the object cap is a
+deterministic ORDERED PREFIX with `capture.truncated: true`, so the missing tail
+cannot read as a deletion. Evicting the oldest snapshot is recorded in
+`retained.evicted_snapshot_id`.
+
+```powershell
+py -3 tools/matter_agent.py scene.capture_snapshot `
+  --cmd-file C:\tmp\matter-commands.txt `
+  --result-file C:\tmp\matter-results.jsonl `
+  --args '{"label":"before-reroll"}'
+```
+
+A snapshot record carries `snapshot_id` / `retained`, `label`, `context`,
+`generation_inputs`, `counts`, `capture` and `ambiguous_logical_keys`. The
+capture `scene.diff` and `scene.query` take for their default `"current"` side
+is NOT retained: its `snapshot_id` is `null` and `retained` is `false`, because
+it has no id to refer to later.
+
+### `scene.list_snapshots`
+
+No arguments. Returns `capacity`, `count`, `total_captured`,
+`oldest_retained_snapshot_id` and one record per retained snapshot, ordered
+`snapshot_id_ascending`.
+
+### `scene.diff`
+
+| Argument | Type | Meaning |
+| --- | --- | --- |
+| `from` | string, required | A retained snapshot id. Not `"current"`: a diff needs a retained baseline. |
+| `to` | string | A retained snapshot id, or `"current"` (the default) to capture the live scene at dispatch. |
+| `kinds` | array of `"entity"` / `"baked_root"` | Omitted means both. |
+| `changes` | array of `"added"` / `"removed"` / `"changed"` / `"unchanged"` | Omitted means the first three. `unchanged` is excluded by default because on a large world it is the whole scene. |
+| `offset` / `limit` | integer | Paging, `limit` 1..200 (default 100). |
+
+An id that was never captured, or that has been evicted, is `not_found` with a
+`result` carrying `oldest_retained_snapshot_id` — so "aged out of the ring"
+stays distinguishable from "never existed".
+
+`compatibility` is the first thing to read:
+
+| `level` | when | what you get |
+|---|---|---|
+| `full` | one world, one project, one session generation, no ambiguous keys | every logical key paired |
+| `partial` | a session change, or a module published as several roots | everything else paired; the named classes reported in `incomparable_objects` |
+| `incomparable` | different worlds or different projects | **no rows at all**, plus a `reason` |
+
+An incomparable pair is deliberately not rendered as "everything was removed and
+everything was added": that reads like a finding, and it is the shape of a
+question that should not have been asked.
+
+`result` then carries `from`, `to` (full snapshot records), `identity_model`,
+`generation_inputs` on each snapshot record, `summary`
+(`added`/`removed`/`changed`/`unchanged`/`regenerated`/`incomparable` plus
+`content_identical` as an availability — an absent digest never reads as
+identical content), `ordering: "kind_then_logical_key"`, `filter`, `page`,
+`rows`, and a bounded `incomparable_objects`.
+
+Each row has `change`, `logical_key`, `regenerated`, `before` / `after` object
+summaries (`null` on the side that has none), `changed_fields` and `changes`
+(the actual before/after values). The compared fields are `incarnation`, `name`,
+`path`, `parent`, `depth`, `child_count`, `components`,
+`provenance_availability`, `module`, `source_path`, `params_digest`,
+`world_seed`, `part_instance`, and either `bounds` or `bounds_availability` —
+never both. Losing a placement is an availability change, not a move; a bounds
+change is only reported past a 0.1 mm threshold, so float noise in a rebuilt
+world matrix does not read as movement.
+
+**Checking a no-op regeneration.** Capture, `job.start{"operation":"reload"}`,
+`job.wait`, then `scene.diff{"from":"<id>"}`. A cache-hit rebake reports
+`summary.added/removed/changed` all zero and
+`summary.content_identical.value: true`. A seeded reroll of the same world
+reports the same logical objects as `changed` with `regenerated: true` and an
+`incarnation` field change — not 2×N added-plus-removed rows.
+
+### `scene.query`
+
+All arguments are optional:
+
+| Argument | Type | Meaning |
+| --- | --- | --- |
+| `snapshot` | string | A retained snapshot id, or `"current"` (the default), which captures the live scene at dispatch. |
+| `kinds` | array | Subset of `"entity"` / `"baked_root"`. |
+| `name_contains` | string (max 256 bytes) | Case-insensitive substring of the object NAME. |
+| `module_contains` | string | Case-insensitive substring of the recorded provenance module. |
+| `source_path_contains` | string | Case-insensitive substring of the recorded source path. |
+| `has_provenance` | boolean | Keep only objects that do (or do not) record part-graph provenance. |
+| `has_part_instance` | boolean | Keep only objects whose live ECS row does (or does not) place a part. |
+| `region` | object | See below. |
+| `offset` / `limit` | integer | Paging, `limit` 1..200 (default 100). |
+
+A filter never matches an object whose fact is UNAVAILABLE: an authored entity
+has no module, so `module_contains` excludes it rather than treating the absent
+module as an empty string that contains every substring.
+
+`region` is either
+
+```json
+{"type":"aabb","min":[x,y,z],"max":[x,y,z],"mode":"intersects"}
+{"type":"sphere","center":[x,y,z],"radius":12.5,"mode":"contains"}
+```
+
+`mode` defaults to `intersects` (the object's world box touches the region);
+`contains` keeps only an object wholly inside it. An inverted box or a negative
+radius is `invalid_input`, not an empty answer.
+
+The test is run against the captured world AABB, so it is the same measurement
+`scene.get_object` reports as `world_bounds` and the same box the outline draws.
+There is no second acceleration structure: the capture already costs one ECS
+scan, the editor names thousands of objects rather than millions, and a BVH
+built per query would introduce a second definition of "where is this object".
+
+`result.region` reports `tested`, `matched` and `unresolved`. **Unresolved is
+not a rejection**: an object with no measured bounds in this snapshot (a root in
+the part graph placed nowhere, an entity with no transform in the live ECS) was
+neither accepted nor rejected by the region, and saying so is the difference
+between "not in the region" and "we could not tell".
+
 ## Regeneration jobs
 
 ### `procedural.parameters` and `procedural.update`

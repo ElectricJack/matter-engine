@@ -28,6 +28,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
+#include <vector>
 
 #include "matter/ecs.h"
 #include "matter/query.h"
@@ -152,6 +154,44 @@ void bounds_for_objects(const SelectedObject* objects, size_t count,
                 if (objects[i].id != sid.value) continue;
                 fill_entity_bounds(session, e, lt, out[i]);
                 resolved[i] = true;
+            }
+        });
+}
+
+
+// The whole-population form. The per-object rules are literally the same
+// functions the batched selection path uses (instance_info_by_hash +
+// local_aabb_for_part for a root, fill_entity_bounds for an entity), so a
+// snapshot cannot disagree with the outline about where an object is; only the
+// id match differs, and only in its complexity.
+void bounds_for_object_set(const SelectedObject* objects, size_t count,
+                           matter::WorldSession& session,
+                           SelectionBounds* out, bool* resolved) {
+    std::unordered_map<uint64_t, std::vector<size_t>> entity_slots;
+    for (size_t i = 0; i < count; ++i) {
+        resolved[i] = false;
+        if (objects[i].kind == SelectedObject::BakedRoot) {
+            matter::InstanceInfo info;
+            if (!session.instance_info_by_hash(objects[i].id, info)) continue;
+            std::copy(info.transform, info.transform + 16, out[i].world_matrix);
+            local_aabb_for_part(session, info.part_hash, 2.0f,
+                                out[i].local_min, out[i].local_max);
+            resolved[i] = true;
+        } else {
+            entity_slots[objects[i].id].push_back(i);
+        }
+    }
+    if (entity_slots.empty()) return;
+
+    session.ecs().each(
+        [&](flecs::entity e, const matter::scene::SceneEntityId& sid,
+            const matter::ecs::LocalTransform& lt) {
+            const auto found = entity_slots.find(sid.value);
+            if (found == entity_slots.end()) return;
+            for (size_t slot : found->second) {
+                if (resolved[slot]) continue;
+                fill_entity_bounds(session, e, lt, out[slot]);
+                resolved[slot] = true;
             }
         });
 }
