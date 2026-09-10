@@ -111,6 +111,59 @@ stderr, editor logs stay on its stdout/stderr, and the shared result file is
 JSONL only. See `docs/agent/agent-protocol.md` for help/schema calls, expected
 revision guards, status codes and bounds.
 
+## 4b. Native Windows selection, capture, and rebake probe
+
+Build the editor through the canonical MSVC graph first; do not substitute a
+MinGW build for this acceptance.
+
+```bash
+./tools/build-windows-from-wsl.sh RelWithDebInfo matter_editor
+```
+
+Then use the `PhysicsPlayground` sequence in
+[`control-surface.md`](control-surface.md#native-windows-selection-acceptance).
+It is the reproducible native fixture with both dynamic authored entities and
+baked roots.  The 2026-09-09 run produced 10 entity rows and 4 baked-root rows,
+captured `C:/tmp/matter-agent-physics/selection.png` plus its `.done` marker,
+and selected `{"kind":"entity","id":"637278442326563570"}` at the
+capture-derived viewport coordinate `(227,218)` with
+`geometry.source:"gpu_identity"`.  It also verified that `selection.remove`
+leaves `selection.list` empty and that `view.focus` changes the camera without
+changing selection.
+
+Use a bad coordinate to assert the request/result failure contract.  The
+client must exit 1, while its sole stdout record has `ok:false` and
+`code:"invalid_input"`; do not parse editor logs for this result.
+
+```bash
+python3 tools/matter_agent.py viewport.pick \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"x":-1,"y":0}'
+```
+
+Exercise timeline sequencing separately through the existing FIFO grammar:
+
+```bash
+printf 'wait_idle 1 30\n' >> /mnt/c/tmp/matter-agent-physics/commands.txt
+printf 'world PhysicsPlayground\nwait_event bake.finished 30\nwait_idle 1 30\n' \
+  >> /mnt/c/tmp/matter-agent-physics/commands.txt
+```
+
+The second sequence can print `event: bake.finished aborted (session changed)`
+when the world replacement supersedes the old session; this is the expected
+asynchronous outcome, and the following idle wait still settles.  Do not
+interpret an event timeout/abort as a client-command exit failure.
+
+**Current limitation.** On the acceptance revision, appending `reload` while
+the native `PhysicsPlayground` session is live reaches a renderer fatal error,
+`dynamic instance part bucket is outside the active part table`, before a
+positive rebake-invalidates-selection result can be observed.  The editor
+auto-filed issue `53c8d7e8-2ba5-502d-d94f-3789f3db174a`; the implementation
+follow-up is AQ task `nimble-dune.8`.  Keep the focused parser/selection/capture
+tests below as the regression guard, but treat a live reload result as blocked
+until that renderer defect is fixed.
+
 ## 5. Replay an issue shot and diff
 
 ```bash

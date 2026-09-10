@@ -30,6 +30,75 @@ request ID with the existing `CommandRegistry` ticket. The complete versioned
 contract and `tools/matter_agent.py` client are in
 [`agent-protocol.md`](agent-protocol.md).
 
+### Native Windows selection acceptance
+
+`PhysicsPlayground` is the compact native fixture for an inspect → select →
+capture → coordinate-pick loop: after its initial bake it contains authored
+physics entities as well as four baked roots.  On the 2026-09-09 MSVC
+acceptance run it listed 10 entities and 4 baked roots; the selected `Glass
+Sphere 0` entity had typed identity
+`{"kind":"entity","id":"637278442326563570"}`.  The fixture's bodies
+overlap in the production view, so this is a real identity-buffer selection
+check rather than a synthetic CPU-only unit test.
+
+From WSL, launch the native editor from `MatterEditor/` with the variables in
+`WSLENV` (a normal `env` prefix is not inherited by Win32):
+
+```bash
+mkdir -p /mnt/c/tmp/matter-agent-physics
+cd MatterEditor
+WSLENV=MATTER_WORLD:MATTER_CMD_FIFO:MATTER_AGENT_RESULT_FILE:TMP:TEMP \
+MATTER_WORLD=PhysicsPlayground \
+MATTER_CMD_FIFO='C:/tmp/matter-agent-physics/commands.txt' \
+MATTER_AGENT_RESULT_FILE='C:/tmp/matter-agent-physics/results.jsonl' \
+TMP='C:/Users/<you>/AppData/Local/Temp' \
+TEMP='C:/Users/<you>/AppData/Local/Temp' \
+./build/windows-msvc/editor.exe
+```
+
+Wait for `viewer: bake ready`, then run the client in another WSL shell (the
+client paths are WSL paths, while PNG paths inside JSON remain Windows paths):
+
+```bash
+python3 tools/matter_agent.py scene.list_objects \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"limit":200}'
+
+python3 tools/matter_agent.py selection.replace \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"objects":[{"kind":"entity","id":"637278442326563570"}]}'
+
+python3 tools/matter_agent.py viewport.capture \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"path":"C:/tmp/matter-agent-physics/selection.png","annotate_selection":true}' \
+  --timeout 30
+```
+
+The captured frame supplies the only valid image-to-pick mapping.  In the
+acceptance capture the annotation rectangle was image `(481.19,254.15)` with
+size `(57.55,45.71)`, its image offset was `(283,59)`, and therefore its centre
+was viewport-local `(227,218)`.  This exact request selected the same typed
+entity through `gpu_identity` and `selection.remove` then returned an empty
+selection:
+
+```bash
+python3 tools/matter_agent.py viewport.pick_select \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"x":227,"y":218,"mode":"replace"}'
+```
+
+Treat those numeric coordinates as this fixed fixture's evidence, not a
+general coordinate convention: callers must derive coordinates from each
+capture's `pick_mapping`.  For a screenshot-sensitive operation also send the
+capture's `captured.frame.id` or `captured.view.id` as an expectation; a newer
+presented view returns `stale_revision` instead of selecting from a different
+image.  JSON terminal records stay exclusively in `MATTER_AGENT_RESULT_FILE`;
+the legacy FIFO's human/machine-readable stdout wording remains unchanged.
+
 Two readiness lines matter for scripting:
 
 - `MATTER_CMD_FIFO: polling command file <path>` (Windows) or
