@@ -380,9 +380,44 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def windows_worktree_git_dir(root: Path) -> str | None:
+    """Return a native Git directory for a WSL-created Windows worktree.
+
+    Git worktrees created from WSL record their gitdir in ``.git`` as an
+    absolute POSIX path (for example, ``/mnt/d/repository/.git/worktrees/x``).
+    Native Windows Git cannot interpret that spelling, even when the worktree
+    itself is on the same mounted drive.  Supplying the translated gitdir
+    explicitly keeps the metadata intact for both Git implementations.
+    """
+    if os.name != "nt":
+        return None
+    git_file = root / ".git"
+    if not git_file.is_file():
+        return None
+    try:
+        contents = git_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    prefix = "gitdir: "
+    if not contents.startswith(prefix):
+        return None
+    match = re.fullmatch(r"/mnt/([A-Za-z])(?:/(.*))?", contents[len(prefix) :])
+    if not match:
+        return None
+    drive, relative = match.groups()
+    windows_relative = relative.replace("/", "\\") if relative else ""
+    return f"{drive.upper()}:\\{windows_relative}"
+
+
 def run_git(root: Path, *arguments: str, text: bool = True) -> str | bytes:
+    git_directory = windows_worktree_git_dir(root)
+    command = ["git"]
+    if git_directory is None:
+        command.extend(["-C", str(root)])
+    else:
+        command.extend(["--git-dir", git_directory, "--work-tree", str(root)])
     result = subprocess.run(
-        ["git", "-C", str(root), *arguments],
+        [*command, *arguments],
         check=False,
         capture_output=True,
         text=text,
