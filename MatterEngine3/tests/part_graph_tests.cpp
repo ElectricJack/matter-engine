@@ -43,17 +43,23 @@ struct FakeBaker : Baker {
     std::map<uint64_t,std::vector<uint64_t>> children_seen; // hash -> child_hashes at bake
     std::set<uint64_t> fail_hashes;             // hashes whose bake should fail
     std::set<uint64_t> resolve_fail_hashes;     // hashes resolve_hash should refuse (=> 0)
+    // Stands in for the host's merged params ("static params" defaults overlaid
+    // with the placement's overrides). "" reproduces every host-free caller.
+    std::string merged_params_json;
     // Deterministic stand-in for SP-2's resolve_hash: the real host merges static
     // defaults first, but a GL-free fake has no JS — fold (source, canonical override
     // params, child_hashes) the same way SP-1's compute_resolved_hash does, so test
     // expectations can mirror it. Identity/invalidation behavior is what we test here.
     uint64_t resolve_hash(const std::string& source, const Params& params,
-                          const std::vector<uint64_t>& child_hashes) override {
+                          const std::vector<uint64_t>& child_hashes,
+                          std::string* merged_params_out) override {
         std::string canon = serialize_params(params);
         uint64_t h = part_asset::compute_resolved_hash(
             source.data(), source.size(), canon.data(), canon.size(),
             child_hashes.data(), child_hashes.size());
-        return resolve_fail_hashes.count(h) ? 0 : h;
+        if (resolve_fail_hashes.count(h)) return 0;
+        if (merged_params_out) *merged_params_out = merged_params_json;
+        return h;
     }
     bool cached(uint64_t h) override { return on_disk.count(h) != 0; }
     bool bake(const std::string&, const Params&,
@@ -307,6 +313,48 @@ int main() {
         bool root_baked = false;
         for (uint64_t h : baker.bake_order) if (h == root_hash) root_baked = true;
         CHECK(!root_baked, "parent is not baked after child bake failure");
+    }
+
+    // The snapshot records the parameter object the HASH was folded from --
+    // the module's declared `static params` overlaid with the placement's
+    // overrides -- not just what the placement passed. Without this a root
+    // placed with no explicit params reports `{}`, which is what made
+    // `procedural.parameters` return an empty set for every published root.
+    {
+        FakeModuleResolver res;
+        res.modules["Seeded"] = FakeModule{ "src-Seeded", nullptr, false };
+        FakeBaker baker;
+        baker.merged_params_json = "{\"worldSeed\":20260721}";
+        PartGraph g(res, baker);
+        part_graph_snapshot::Snapshot snap;
+        InstallResult r = g.install({ ChildRequest{"Seeded", Params{}} }, &snap);
+        CHECK(r.ok, "install with a merged-params baker succeeds");
+        const part_graph_snapshot::Node& n = snap.nodes.at("Seeded");
+        CHECK(n.params_json == "{}",
+              "placement params stay exactly what the placement passed");
+        CHECK(n.effective_params_json == "{\"worldSeed\":20260721}",
+              "the merged object the hash folded is recorded alongside them");
+        CHECK(part_graph_snapshot::effective_params(n) == "{\"worldSeed\":20260721}",
+              "effective_params answers with the merged object");
+    }
+
+    // A baker that cannot report merged params (every host-free caller, and any
+    // node whose resolve failed) leaves the field empty, and effective_params
+    // falls back to the placement params rather than to nothing.
+    {
+        FakeModuleResolver res;
+        res.modules["Plain"] = FakeModule{ "src-Plain", nullptr, false };
+        FakeBaker baker;                       // merged_params_json left empty
+        PartGraph g(res, baker);
+        part_graph_snapshot::Snapshot snap;
+        Params placed; placed["size"] = ParamValue::number(2);
+        InstallResult r = g.install({ ChildRequest{"Plain", placed} }, &snap);
+        CHECK(r.ok, "install without a merged-params baker succeeds");
+        const part_graph_snapshot::Node& n = snap.nodes.at("Plain");
+        CHECK(n.effective_params_json.empty(),
+              "no merged object is invented when the baker cannot supply one");
+        CHECK(part_graph_snapshot::effective_params(n) == "{\"size\":2}",
+              "the placement params are the documented fallback");
     }
 
     if (g_failures == 0) printf("All part_graph tests passed\n");

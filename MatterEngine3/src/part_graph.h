@@ -92,8 +92,20 @@ struct Baker {
     virtual ~Baker() = default;
     // Content hash for one part: merge static+override params, fold child_hashes,
     // NO bake. Returns 0 on resolve failure (fail-closed => install hard-errors).
+    //
+    // `merged_params_out`, when non-null, receives the MERGED parameter object
+    // this hash was folded from: the class's `static params` defaults overlaid
+    // with `params`. Only the host can read those defaults (master C-2, the
+    // same reason the hash itself is asked for here) and it computes the object
+    // anyway to produce the hash, so reporting it costs nothing. An
+    // implementation that cannot supply it leaves the string EMPTY rather than
+    // writing "{}", so callers can tell "no defaults" from "not answered".
+    //
+    // It is an out-param, not a `last_merged_params()` getter, on purpose: a
+    // decorating Baker that forwards resolve_hash cannot then silently drop it.
     virtual uint64_t resolve_hash(const std::string& source, const Params& params,
-                                  const std::vector<uint64_t>& child_hashes) = 0;
+                                  const std::vector<uint64_t>& child_hashes,
+                                  std::string* merged_params_out) = 0;
     // True if parts/<resolved_hash>.part already exists (cache hit => skip bake).
     virtual bool cached(uint64_t resolved_hash) = 0;
     // Bake one part. child_hashes are this part's direct children's resolved hashes
@@ -271,7 +283,8 @@ class HostBaker : public Baker {
 public:
     HostBaker(script_host::ScriptHost& host, std::string parts_dir);
     uint64_t resolve_hash(const std::string& source, const Params& params,
-                          const std::vector<uint64_t>& child_hashes) override;
+                          const std::vector<uint64_t>& child_hashes,
+                          std::string* merged_params_out) override;
     bool cached(uint64_t resolved_hash) override;
     bool bake(const std::string& source, const Params& params,
               const std::vector<uint64_t>& child_hashes,

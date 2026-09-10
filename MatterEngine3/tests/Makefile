@@ -893,6 +893,7 @@ RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
                       ../src/part_graph.cpp \
                       ../src/part_graph_snapshot.cpp \
                       ../src/part_asset_v2.cpp \
+                      ../src/hydrology/authored_fluid_colliders.cpp \
                       $(COMMON_MSL_BLAS_SRC)
 RESOLVECACHE_C      = $(MSL)/material_registry.c
 
@@ -1130,6 +1131,7 @@ LIVEPROD_TARGET = build/live_edit_prod_tests
 LIVEPROD_CPP = live_edit_prod_tests.cpp \
                ../src/live_edit_prod.cpp \
                ../src/part_graph_snapshot.cpp \
+               ../src/terrain_collision/terrain_collision_definition.cpp \
                $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 LIVEPROD_C   = $(COMMON_MSL_C)
 

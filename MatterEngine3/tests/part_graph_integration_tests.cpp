@@ -407,7 +407,7 @@ static void test_scratch_linked_bundle_never_falls_back_to_cache() {
         "} }";
     script_host::ScriptHost host;
     pg::HostBaker baker(host, cache.string());
-    const uint64_t hash = baker.resolve_hash(source, pg::Params{}, {});
+    const uint64_t hash = baker.resolve_hash(source, pg::Params{}, {}, nullptr);
     CHECK(baker.bake(source, pg::Params{}, {}, {}, {}, hash),
           "A8 cache generation bakes before scratch corruption");
     const fs::path cache_part = cache / part_asset::cache_path_resolved(hash);
@@ -502,6 +502,63 @@ static void test_install_with_placement() {
         CHECK(children[0].child_resolved_hash == leaf_hash, "instance points at LeafX");
         // row-major translation lives in transform[3],[7],[11]; y is [7].
         CHECK(children[0].transform[7] == 1.0f, "instance placed at y=1");
+    }
+
+    if (prevcwd[0]) (void)chdir(prevcwd);
+    destroy_sandbox(root);
+}
+
+// smart-dune.10: `procedural.parameters` answered with an EMPTY parameter set
+// for every published baked root because the graph snapshot recorded only the
+// parameters the PLACEMENT passed. A root placed with no explicit params -- how
+// a world's `static roots` entry is normally placed -- therefore recorded `{}`
+// even when its module declares `static params`, and every downstream parameter
+// surface (procedural.parameters/update, scene.trace_provenance's
+// generation_inputs, the diff's params digest) reported nothing to work with.
+//
+// Only the script host can read `static params`, so this asserts the recorded
+// effective object against a REAL ScriptHost, and pins it to the hash: the
+// effective params must be exactly the object the resolved hash was folded from.
+static void test_snapshot_records_declared_defaults() {
+    namespace pg = part_graph;
+
+    const std::string root = make_sandbox("me3_graph_defaults");
+    const std::string schemas = root + "/schemas";
+
+    write_file(schemas + "/SeededX.js",
+        "class SeededX extends Part {"
+        "  static params = { worldSeed: 20260721, scale: 2 };"
+        "  build(p){ this.beginVoxels(0.1); this.fill(MAT.bark);"
+        "            this.box([0,0,0],[0.2,0.2,0.2]); this.endVoxels(); } }");
+
+    char prevcwd[4096]; if (!getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
+    CHECK(chdir(root.c_str()) == 0, "chdir into declared-defaults sandbox");
+
+    script_host::ScriptHost host;
+    pg::FileModuleResolver resolver(host, "schemas");
+    pg::HostBaker baker(host, ".");
+    pg::PartGraph graph(resolver, baker);
+
+    part_graph_snapshot::Snapshot snap;
+    // No params at all -- exactly how a world's `static roots` entry is placed.
+    pg::InstallResult ir =
+        graph.install({ pg::ChildRequest{ "SeededX", pg::Params{} } }, &snap);
+    CHECK(ir.ok, "install of a root declaring static params succeeds");
+    if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
+
+    auto it = snap.nodes.find("SeededX");
+    CHECK(it != snap.nodes.end(), "the snapshot recorded the root");
+    if (it != snap.nodes.end()) {
+        CHECK(it->second.params_json == "{}",
+              "the placement passed no params, and that stays recorded faithfully");
+        const std::string effective = part_graph_snapshot::effective_params(it->second);
+        CHECK(effective.find("\"worldSeed\":20260721") != std::string::npos,
+              "the module's declared worldSeed default is reported as effective");
+        CHECK(effective.find("\"scale\":2") != std::string::npos,
+              "every declared default is reported, not just the seed");
+        CHECK(host.resolve_hash(read_file("schemas/SeededX.js"), effective) ==
+                  it->second.resolved_hash,
+              "the effective params are the object the resolved hash was folded from");
     }
 
     if (prevcwd[0]) (void)chdir(prevcwd);
@@ -1231,6 +1288,10 @@ int main(int argc, char** argv) {
 
     // SP-3 Task 7: graph-driven placement (requires + placeChild) round-trip.
     test_install_with_placement();
+
+    // smart-dune.10: the snapshot records a root's DECLARED defaults, not just
+    // the (often empty) params its placement passed.
+    test_snapshot_records_declared_defaults();
 
     // SP-3 Tasks 8/9: the real demo Tree bakes Leaf instances through the graph.
     CHECK(!demo_schemas.empty() && !demo_sharedlib.empty(),

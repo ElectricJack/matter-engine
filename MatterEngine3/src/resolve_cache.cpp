@@ -40,6 +40,7 @@
 //       str  module
 //       str  source_path
 //       str  params_json
+//       str  effective_params_json   (v6: `static params` defaults + params_json)
 //       u32  children_count
 //       str[children_count] children
 //       u32  shared_imports_count
@@ -131,6 +132,7 @@
 #include <direct.h>
 #define fs_mkdir_rc(p) _mkdir(p)
 #else
+#include <sys/stat.h>   // ::mkdir -- absent, this TU only ever built on Windows
 #define fs_mkdir_rc(p) ::mkdir(p, 0755)
 #endif
 
@@ -145,7 +147,12 @@ namespace resolve_cache {
 // ea579ba). Version 4 adds each node's selected shared_source_paths. Older
 // versions are treated as misses because fmt_ver != kResolveCacheVersion.
 static constexpr uint32_t kResolveCacheMagic   = 0x00314352u;
-static constexpr uint32_t kResolveCacheVersion = 5u;  // M4: u32 ebv -> u64 version digest
+// Version 6 adds each node's effective_params_json. It MUST be a version bump
+// rather than a tolerated absence: a v5 file restores nodes whose effective
+// params are empty, and every parameter surface would then fall back to the
+// placement params -- i.e. a cache hit would silently reproduce the empty
+// `procedural.parameters` set this field exists to fix.
+static constexpr uint32_t kResolveCacheVersion = 6u;  // + Node::effective_params_json
 
 // ---------------------------------------------------------------------------
 // Low-level binary read/write helpers (little-endian)
@@ -482,6 +489,7 @@ bool save(const std::string& cache_root,
             if (!write_str(f, n.module))      return false;
             if (!write_str(f, n.source_path)) return false;
             if (!write_str(f, n.params_json)) return false;
+            if (!write_str(f, n.effective_params_json)) return false;
             uint32_t cc = (uint32_t)n.children.size();
             if (!write_le(f, cc)) return false;
             for (const auto& c : n.children)
@@ -690,6 +698,7 @@ bool load(const std::string& cache_root,
             if (!read_str(f, n.module))      return false;
             if (!read_str(f, n.source_path)) return false;
             if (!read_str(f, n.params_json)) return false;
+            if (!read_str(f, n.effective_params_json)) return false;
             uint32_t cc = 0;
             if (!read_le(f, cc)) return false;
             n.children.resize(cc);

@@ -169,6 +169,7 @@ struct InternalNode {
     std::vector<uint64_t> child_keys;         // direct children memo keys (topo edges)
     std::vector<std::string> child_modules;   // direct children's module names (parallel to child_hashes)
     std::vector<std::string> child_params;    // direct children's canonical params JSON (parallel to child_hashes)
+    std::string           merged_params_json;  // `static params` + overrides, as the hash folded them ("" if the baker could not say)
 };
 
 // Memo key = fnv1a64(source) combined with fnv1a64(canonical_params). Identity is the
@@ -279,7 +280,13 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             // Hash authority is SP-2 (master C-2): ask the baker, never compute here.
             // The host merges static+override params before folding, so it sees defaults
             // SP-3 cannot. 0 => resolve failure (fail-closed).
-            node.resolved_hash = baker_.resolve_hash(source, req.params, child_hashes);
+            // The merged params come back with the hash: this is the only place
+            // the module's declared `static params` defaults are observable to
+            // SP-3, and without them a root placed with no explicit params
+            // records `{}` and every parameter surface downstream reports that
+            // the module declares nothing.
+            node.resolved_hash = baker_.resolve_hash(source, req.params, child_hashes,
+                                                     &node.merged_params_json);
             if (node.resolved_hash == 0) {
                 error = "failed to resolve hash for part: " + req.module;
                 return false;
@@ -381,6 +388,7 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             part_graph_snapshot::Node snode;
             snode.module        = n.module;
             snode.params_json   = params_to_json(n.params);
+            snode.effective_params_json = n.merged_params_json;
             snode.resolved_hash = n.resolved_hash;
             snode.is_root       = root_modules.count(n.module) > 0;
 
@@ -655,9 +663,18 @@ HostBaker::HostBaker(script_host::ScriptHost& host, std::string parts_dir)
     : host_(host), parts_dir_(std::move(parts_dir)) {}
 
 uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params,
-                                 const std::vector<uint64_t>& child_hashes) {
-    return host_.resolve_hash(source, params_to_json(params),
-                              child_hashes.data(), child_hashes.size());
+                                 const std::vector<uint64_t>& child_hashes,
+                                 std::string* merged_params_out) {
+    const uint64_t hash = host_.resolve_hash(source, params_to_json(params),
+                                             child_hashes.data(), child_hashes.size());
+    // ScriptHost::merge_params_canonical (which resolve_hash just ran) left the
+    // merged object in last_merged_params_; read it now, before the next merge
+    // on this host overwrites the single slot. A failed resolve leaves "{}"
+    // there, which would be indistinguishable from a module that declares
+    // nothing -- so report nothing at all in that case.
+    if (merged_params_out) *merged_params_out = hash ? host_.last_merged_params()
+                                                     : std::string();
+    return hash;
 }
 
 // NOT an existence check — a VALIDATION, and it does real I/O. A part counts as

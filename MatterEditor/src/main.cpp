@@ -3064,7 +3064,9 @@ int main() {
                     out.resolved_hash = node.resolved_hash;
                     out.module = node.module.empty() ? module_name : node.module;
                     out.source_path = node.source_path;
-                    out.params_json = node.params_json;
+                    // The declared-defaults-inclusive object, not the bare
+                    // placement params -- see part_graph_snapshot::effective_params.
+                    out.params_json = part_graph_snapshot::effective_params(node);
                     root_rows.push_back(std::move(out));
                 }
             }
@@ -3099,7 +3101,7 @@ int main() {
             viewer::inventory::ProvenanceNode out;
             out.module = node.module.empty() ? module_name : node.module;
             out.source_path = node.source_path;
-            out.params_json = node.params_json;
+            out.params_json = part_graph_snapshot::effective_params(node);
             out.children = node.children;
             out.shared_imports = node.shared_imports;
             out.shared_source_paths = node.shared_source_paths;
@@ -3125,7 +3127,7 @@ int main() {
             out.object = object;
             out.module = node.module.empty() ? entry.first : node.module;
             out.source_path = node.source_path;
-            out.params_json = node.params_json;
+            out.params_json = part_graph_snapshot::effective_params(node);
             return true;
         }
         return false;

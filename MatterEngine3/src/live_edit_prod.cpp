@@ -217,6 +217,11 @@ ProdGraphResolver::reresolve(const live_edit::PartId& p) {
     // Update the snapshot in-place so subsequent reresolve() calls for
     // ancestors see the current child hash.
     it->second.resolved_hash = new_hash;
+    // Keep the effective (merged) params in step with the hash they were just
+    // folded into: an edit that changes a module's `static params` changes the
+    // set the parameter surfaces report, and a stale copy would describe the
+    // file as it was before the save.
+    it->second.effective_params_json = host_.last_merged_params();
 
     // Return as decimal string (Task 9 spec: std::to_string / strtoull).
     return std::to_string(new_hash);
