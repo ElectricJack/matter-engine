@@ -109,6 +109,7 @@ const char* to_string(Kind kind) {
     switch (kind) {
         case Kind::Reload: return "reload";
         case Kind::Regenerate: return "regenerate";
+        case Kind::Parameters: return "parameters";
     }
     return "reload";
 }
@@ -204,6 +205,10 @@ std::uint64_t request_digest(const StartRequest& request) {
     canonical += '\x1f';
     canonical += request.has_seed ? ("seed=" + std::to_string(request.seed))
                                   : std::string("seed=none");
+    canonical += '\x1f';
+    canonical += request.parameter_module;
+    canonical += '\x1f';
+    canonical += request.parameters_json;
     return fnv1a64(canonical);
 }
 
@@ -547,8 +552,16 @@ Value inputs_json(const Job& job) {
                    ? decimal(job.request.seed)
                    : unavailable("this operation carries no seed override; the "
                                  "world's authored seed is used"));
+    inputs.set("parameter_module",
+               job.request.kind == Kind::Parameters
+                   ? string(job.request.parameter_module)
+                   : unavailable("this operation carries no parameter override"));
+    inputs.set("parameters_json",
+               job.request.kind == Kind::Parameters
+                   ? string(job.request.parameters_json)
+                   : unavailable("this operation carries no parameter override"));
     inputs.set("digest", hex_hash(job.digest));
-    inputs.set("digest_algorithm", string("fnv1a64_operation_project_world_seed"));
+    inputs.set("digest_algorithm", string("fnv1a64_operation_project_world_seed_parameters"));
     return inputs;
 }
 

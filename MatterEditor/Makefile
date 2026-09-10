@@ -1175,6 +1175,22 @@ build/test_regen_jobs.exe: tests/test_regen_jobs.cpp \
 run-test-regen-jobs: build/test_regen_jobs.exe
 	./build/test_regen_jobs.exe
 
+# Typed procedural parameter validation is renderer-free. It covers unknown
+# fields, type/range safety, all-or-nothing multi-field planning and seed
+# handling before main.cpp hands a valid plan to the existing job ledger.
+build/test_procedural_parameters.exe: tests/test_procedural_parameters.cpp \
+        src/procedural_parameters.cpp src/procedural_parameters.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_procedural_parameters.cpp src/procedural_parameters.cpp \
+	    src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-procedural-parameters
+run-test-procedural-parameters: build/test_procedural_parameters.exe
+	./build/test_procedural_parameters.exe
+
 # Typed selection operations over the shared SelectionSet.  The test keeps the
 # protocol parser, inventory and state mutation together without a renderer.
 build/test_selection_commands.exe: tests/test_selection_commands.cpp \

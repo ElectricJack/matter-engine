@@ -12,10 +12,10 @@ set(matter_editor_sources_unique ${matter_editor_sources})
 list(REMOVE_DUPLICATES matter_editor_sources_unique)
 list(LENGTH matter_editor_sources matter_editor_source_count)
 list(LENGTH matter_editor_sources_unique matter_editor_unique_source_count)
-if(NOT matter_editor_source_count EQUAL 45 OR
-        NOT matter_editor_unique_source_count EQUAL 45)
+if(NOT matter_editor_source_count EQUAL 46 OR
+        NOT matter_editor_unique_source_count EQUAL 46)
     message(FATAL_ERROR
-        "editor.sources must provide exactly 45 unique editor C++ sources; "
+        "editor.sources must provide exactly 46 unique editor C++ sources; "
         "count=${matter_editor_source_count}, unique=${matter_editor_unique_source_count}")
 endif()
 
@@ -145,6 +145,21 @@ if(BUILD_TESTING)
     matter_apply_test_assertion_policy(regen_job_tests)
     add_test(NAME regen_job_tests COMMAND regen_job_tests)
     set_tests_properties(regen_job_tests PROPERTIES LABELS "editor;cpu")
+
+    add_executable(procedural_parameter_tests
+        MatterEditor/tests/test_procedural_parameters.cpp
+        MatterEditor/src/procedural_parameters.cpp
+        MatterEditor/src/agent_protocol.cpp
+        MatterEngine3/src/util/json_doc.cpp
+    )
+    target_include_directories(procedural_parameter_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+    )
+    matter_apply_project_defaults(procedural_parameter_tests)
+    matter_apply_test_assertion_policy(procedural_parameter_tests)
+    add_test(NAME procedural_parameter_tests COMMAND procedural_parameter_tests)
+    set_tests_properties(procedural_parameter_tests PROPERTIES LABELS "editor;cpu")
 
     add_executable(selection_command_tests
         MatterEditor/tests/test_selection_commands.cpp

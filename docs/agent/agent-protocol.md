@@ -372,6 +372,40 @@ guessing from filenames.
 
 ## Regeneration jobs
 
+### `procedural.parameters` and `procedural.update`
+
+These commands expose and change the effective `static params` of one
+published `baked_root`; they do not edit arbitrary JavaScript source. Start
+with `scene.list_objects`, choose a current baked-root identity, then ask for
+its schema:
+
+```json
+{"object":{"kind":"baked_root","id":"123"}}
+```
+
+The response names the owning module and source availability, returns every
+effective parameter with its JSON type and current default, and reports
+`persistence:"session_only_root_override"`. The procedural source model has no
+portable min/max declaration, so each field's `range` is explicitly
+unavailable rather than guessed.
+
+`procedural.update` accepts the same `object`, a non-empty `changes` object,
+and optional `dry_run` (default `false`). Keys must already be declared in the
+published object; values must have the same JSON type (numbers accept lossless
+integer representation) and be finite. All fields validate before an override
+is constructed, so an unsupported key or type error leaves every parameter
+unchanged. Supplying `expect.scene_revision` makes a stale preflight fail before
+dispatch. A `dry_run:true` response returns `before`, `after`, and
+`changed_parameters` without scheduling work.
+
+An applied update returns that same receipt plus a normal regeneration `job`
+record. Wait on its job id with `job.wait`; completion carries the resulting
+scene identity and deterministic content digest. The override is held only for
+this editor session and root module; it is intentionally not persisted and
+never rewrites JS. A module published as more than one root is explicitly
+refused for update: the engine's override seam is module-scoped, and guessing
+which duplicate root an identity should alter would be unsafe.
+
 `job.start`, `job.status`, `job.wait`, `job.cancel` and `job.list` make the
 regeneration work the engine already does OBSERVABLE. Before them, an agent
 that reloaded a world had to infer completion from a sleep or from log text.

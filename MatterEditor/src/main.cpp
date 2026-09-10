@@ -203,6 +203,7 @@
 #include "scene_model_adapter.h"
 #include "scene_inventory.h"
 #include "regen_jobs.h"
+#include "procedural_parameters.h"
 #include "viewer_commands.h"
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
@@ -2890,6 +2891,21 @@ int main() {
         "job.list", "List the most recent regeneration jobs, oldest first",
         {{"limit", "integer", false, "Rows to return, 1 through 64 (default 16)"}},
         "object", false, {}});
+    agent_protocol.add_command({
+        "procedural.parameters",
+        "Describe one baked root's typed effective procedural parameters",
+        {{"object", "object_id", true,
+          "baked_root identity returned by scene.list_objects"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "procedural.update",
+        "Validate or atomically apply typed root parameter changes without rewriting JS",
+        {{"object", "object_id", true,
+          "baked_root identity returned by scene.list_objects"},
+         {"changes", "object", true,
+          "Non-empty object of declared parameter values"},
+         {"dry_run", "boolean", false, "Validate only; default false"}},
+        "object", false, {}});
 
     auto reg_agent_commands =
         registry.must_register_handler<viewer::AgentCommands>(
@@ -3008,6 +3024,39 @@ int main() {
             nodes.push_back(std::move(out));
         }
         return nodes;
+    };
+
+    // The published root snapshot is the authoritative bridge from a typed
+    // baked-root identity to its module and effective canonical parameters.
+    auto procedural_root_for = [&](const viewer::agent::ObjectIdentity& object,
+                                   viewer::procedural::Root& out) {
+        if (!session || object.kind !=
+                             viewer::agent::ObjectIdentity::Kind::BakedRoot)
+            return false;
+        part_graph_snapshot::Snapshot graph;
+        if (!session->graph_snapshot(graph)) return false;
+        for (const auto& entry : graph.nodes) {
+            const auto& node = entry.second;
+            if (!node.is_root || node.resolved_hash != object.id) continue;
+            out.object = object;
+            out.module = node.module.empty() ? entry.first : node.module;
+            out.source_path = node.source_path;
+            out.params_json = node.params_json;
+            return true;
+        }
+        return false;
+    };
+    auto procedural_root_module_count = [&](const std::string& module) {
+        if (!session) return std::size_t{0};
+        part_graph_snapshot::Snapshot graph;
+        if (!session->graph_snapshot(graph)) return std::size_t{0};
+        std::size_t count = 0;
+        for (const auto& entry : graph.nodes) {
+            const auto& node = entry.second;
+            if (node.is_root && (node.module.empty() ? entry.first : node.module) == module)
+                ++count;
+        }
+        return count;
     };
 
     auto reg_scene_list_objects =
@@ -3606,6 +3655,69 @@ int main() {
                 *job, viewer::jobs::Clock::now());
             return viewer::JobStart::Result::succeeded(std::move(payload));
         });
+
+    auto reg_procedural_parameters =
+        registry.must_register_handler<viewer::ProceduralParameters>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ProceduralParameters& command) {
+                viewer::AgentPayload payload;
+                viewer::procedural::Root root;
+                if (!procedural_root_for(command.object, root)) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no published baked root matches this typed identity";
+                } else {
+                    payload.value = viewer::procedural::describe_json(root);
+                }
+                return viewer::ProceduralParameters::Result::succeeded(
+                    std::move(payload));
+            });
+
+    auto reg_procedural_update =
+        registry.must_register_handler<viewer::ProceduralUpdate>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ProceduralUpdate& command) {
+                viewer::AgentPayload payload;
+                viewer::procedural::Root root;
+                if (!procedural_root_for(command.object, root)) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no published baked root matches this typed identity";
+                    return viewer::ProceduralUpdate::Result::succeeded(
+                        std::move(payload));
+                }
+                if (procedural_root_module_count(root.module) != 1) {
+                    payload.status = viewer::agent::Status::UnsupportedCommand;
+                    payload.message =
+                        "this module is published as multiple roots; a module-wide "
+                        "override would not identify one owner";
+                    return viewer::ProceduralUpdate::Result::succeeded(
+                        std::move(payload));
+                }
+                viewer::procedural::Plan plan;
+                std::string error;
+                if (!viewer::procedural::make_plan(root, command.changes, plan, error)) {
+                    payload.status = viewer::agent::Status::InvalidInput;
+                    payload.message = error;
+                    return viewer::ProceduralUpdate::Result::succeeded(
+                        std::move(payload));
+                }
+                payload.value = viewer::procedural::plan_json(plan, command.dry_run);
+                if (!command.dry_run && !plan.changed.empty()) {
+                    viewer::jobs::StartRequest request;
+                    request.kind = viewer::jobs::Kind::Parameters;
+                    request.parameter_module = root.module;
+                    request.parameters_json = matter::jsondoc::write_json(plan.after);
+                    request.world = worlds[stats.world_current].world_name;
+                    request.project = worlds[stats.world_current].project_dir;
+                    const uint64_t id = regen_jobs.accept(
+                        std::move(request), editor_model.revision(),
+                        session->graph_generation(), viewer::jobs::Clock::now());
+                    const viewer::jobs::Job* job = regen_jobs.find(id);
+                    payload.value.set("job", viewer::jobs::start_result_json(
+                        *job, viewer::jobs::Clock::now()));
+                }
+                return viewer::ProceduralUpdate::Result::succeeded(
+                    std::move(payload));
+            });
 
     auto reg_job_status = registry.must_register_handler<viewer::JobStatus>(
         matter::evt::CommandScope::App, app_lane,
@@ -4651,6 +4763,48 @@ int main() {
                             attach_agent_ticket(
                                 registry.dispatch(std::move(command)),
                                 payload_terminal);
+                        }
+                    } else if (begun.request.command == "procedural.parameters" ||
+                               begun.request.command == "procedural.update") {
+                        const matter::jsondoc::Value* requested =
+                            begun.request.arguments.find("object");
+                        viewer::agent::ObjectIdentity object;
+                        std::string object_error;
+                        if (!requested || !viewer::agent::parse_object_identity(
+                                              *requested, object, object_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                object_error.empty() ? "object must be {kind,id}"
+                                                     : object_error);
+                        } else if (object.kind !=
+                                   viewer::agent::ObjectIdentity::Kind::BakedRoot) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                "procedural parameters are owned by baked_root objects");
+                        } else if (begun.request.command == "procedural.parameters") {
+                            viewer::ProceduralParameters command;
+                            command.object = object;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else {
+                            const matter::jsondoc::Value* changes =
+                                begun.request.arguments.find("changes");
+                            if (!changes || changes->kind !=
+                                                matter::jsondoc::Value::Kind::Object) {
+                                agent_protocol.reject_accepted(
+                                    request_id, viewer::agent::Status::InvalidInput,
+                                    "changes must be an object");
+                            } else {
+                                viewer::ProceduralUpdate command;
+                                command.object = object;
+                                command.changes = *changes;
+                                if (const matter::jsondoc::Value* dry =
+                                        begun.request.arguments.find("dry_run"))
+                                    command.dry_run = dry->b;
+                                attach_agent_ticket(
+                                    registry.dispatch(std::move(command)),
+                                    payload_terminal);
+                            }
                         }
                     } else if (begun.request.command == "viewport.pick" ||
                                begun.request.command == "viewport.pick_select") {
@@ -7533,6 +7687,14 @@ int main() {
                                      "Job " + std::to_string(started.id) +
                                          ": regenerating with seed " +
                                          std::to_string(started.request.seed));
+                } else if (started.request.kind == viewer::jobs::Kind::Parameters) {
+                    binding.regenerate_parameters(started.request.parameter_module,
+                                                  started.request.parameters_json);
+                    console_log.push(viewer::LogSeverity::Info,
+                                     "Job " + std::to_string(started.id) +
+                                         ": regenerating " +
+                                         started.request.parameter_module +
+                                         " with typed parameter override");
                 } else {
                     binding.reload();
                     console_log.push(viewer::LogSeverity::Info,

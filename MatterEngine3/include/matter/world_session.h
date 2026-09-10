@@ -1007,6 +1007,12 @@ public:
     // captured into cfg before the next LocalProvider is constructed.
     void regenerate(uint64_t world_seed);
 
+    // Apply one canonical JSON override object to one declared manifest-root
+    // module, then enqueue the same asynchronous Reload lifecycle as
+    // regenerate().  This is session-only: it never writes authored JS.
+    void regenerate_parameters(const std::string& module,
+                               const std::string& canonical_params_json);
+
     // Query API (backed by a lazily built CPU BVH; first call after a bake pays
     // the build cost).
     bool raycast(const float origin[3], const float dir[3], float max_t, RayHit& out);

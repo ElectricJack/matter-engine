@@ -3599,9 +3599,13 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     if (!cfg_.root_params_json.empty()) {
         Params override_params = params_from_json(cfg_.root_params_json);
         if (!override_params.empty()) {
-            for (size_t ri = 0; ri < entity_part_root_start_; ++ri)
+            for (size_t ri = 0; ri < entity_part_root_start_; ++ri) {
+                if (!cfg_.root_params_module.empty() &&
+                    roots_for_install_[ri].module != cfg_.root_params_module)
+                    continue;
                 for (const auto& kv : override_params)
                     roots_for_install_[ri].params[kv.first] = kv.second;
+            }
         }
     }
 

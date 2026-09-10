@@ -291,6 +291,22 @@ struct JobList {
     size_t limit = jobs::kDefaultListLimit;
 };
 
+// A procedural root's effective parameter object is published by the part
+// graph. Updates are typed, session-only root overrides with a job receipt.
+struct ProceduralParameters {
+    MT_COMMAND_NAME("procedural.parameters");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    agent::ObjectIdentity object;
+};
+
+struct ProceduralUpdate {
+    MT_COMMAND_NAME("procedural.update");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    agent::ObjectIdentity object;
+    matter::jsondoc::Value changes;
+    bool dry_run = false;
+};
+
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------
 // The FIRST ActiveSession-scoped commands: each mutates world entity state, so
 // each is stamped with the SessionBinding's ActiveSession epoch token and

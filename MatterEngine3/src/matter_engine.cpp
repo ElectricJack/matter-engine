@@ -1064,6 +1064,7 @@ struct WorldSession::Impl {
     // Empty string = no override (default). Set by WorldSession::regenerate().
     std::mutex  seed_mutex;
     std::string seed_root_params_json;
+    std::string seed_root_params_module;
 
     FrameStats stats{};
 
@@ -3309,6 +3310,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     {
         std::lock_guard<std::mutex> lk(seed_mutex);
         cfg.root_params_json = seed_root_params_json;
+        cfg.root_params_module = seed_root_params_module;
     }
 
     provider = std::make_shared<viewer::LocalProvider>(cfg);
@@ -10836,6 +10838,18 @@ void WorldSession::regenerate(uint64_t world_seed) {
         std::snprintf(buf, sizeof(buf), "{\"worldSeed\":%llu}",
                       (unsigned long long)world_seed);
         impl_->seed_root_params_json = buf;
+        impl_->seed_root_params_module.clear();
+    }
+    impl_->ensure_worker_started();
+    impl_->enqueue_full_bake(matter_async::CommandKind::Reload);
+}
+
+void WorldSession::regenerate_parameters(const std::string& module,
+                                         const std::string& canonical_params_json) {
+    {
+        std::lock_guard<std::mutex> lk(impl_->seed_mutex);
+        impl_->seed_root_params_module = module;
+        impl_->seed_root_params_json = canonical_params_json;
     }
     impl_->ensure_worker_started();
     impl_->enqueue_full_bake(matter_async::CommandKind::Reload);

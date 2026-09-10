@@ -87,7 +87,7 @@ constexpr std::size_t kMaxWaiters = 64;
 constexpr std::size_t kMaxListLimit = 64;
 constexpr std::size_t kDefaultListLimit = 16;
 
-enum class Kind { Reload, Regenerate };
+enum class Kind { Reload, Regenerate, Parameters };
 
 enum class State { Accepted, Running, Completed, Failed, Cancelled, Superseded };
 
@@ -137,6 +137,10 @@ struct StartRequest {
     Kind kind = Kind::Reload;
     bool has_seed = false;
     std::uint64_t seed = 0;
+    // Canonical object applied only to parameter_module for Parameters jobs.
+    // Never user JavaScript and never a persistence request.
+    std::string parameter_module;
+    std::string parameters_json;
     std::string world;
     std::string project;
 };

@@ -283,6 +283,10 @@ struct LocalProviderConfig {
     // Populated by WorldSession::regenerate(); not used by execute_rebake_cone (cone
     // rebuilds operate on a diff of changed files, not a full root-params change).
     std::string root_params_json;
+    // Empty means every manifest root (the legacy regenerate(seed) behavior).
+    // A non-empty module restricts an editor procedural-parameter override to
+    // that declared root, avoiding a same-named key rewriting other roots.
+    std::string root_params_module;
 };
 
 // Builds the shipped engine-to-provider configuration, including the request

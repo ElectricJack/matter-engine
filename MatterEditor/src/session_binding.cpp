@@ -131,4 +131,10 @@ void SessionBinding::regenerate(uint64_t world_seed) {
     if (session_) session_->regenerate(world_seed);
 }
 
+void SessionBinding::regenerate_parameters(const std::string& module,
+                                           const std::string& canonical_params_json) {
+    if (clear_models_) clear_models_();
+    if (session_) session_->regenerate_parameters(module, canonical_params_json);
+}
+
 }  // namespace viewer

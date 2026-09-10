@@ -144,6 +144,8 @@ public:
     // model reference content the reroll is about to replace, and the clear
     // must happen at the same post-frame seam a reload's does.
     void regenerate(uint64_t world_seed);
+    void regenerate_parameters(const std::string& module,
+                               const std::string& canonical_params_json);
 
     // The active ActiveSession epoch token (session id + generation), for
     // diagnostics / tests.
