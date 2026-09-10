@@ -1026,6 +1026,130 @@ struct WorldSession::Impl {
     std::deque<Event>      legacy_pending_;
     bool                   legacy_lane_claimed_ = false;
 
+    // ---------------------------------------------------------------------
+    // Bake run identity + terminal-event contract (smart-dune.7)
+    //
+    // A "bake run" is one bake command the worker executes: BakeAll, Reload or
+    // RebakeCone. `bake_generation_` names it, and every bake/stream event is
+    // stamped with it by emit_bake() below — at EMIT time, so an event the
+    // worker queued just before a consumer's drain is still attributable to
+    // the run that produced it rather than to whatever is running when the
+    // consumer finally looks.
+    //
+    // The contract the rest of this bookkeeping enforces: every bake.started
+    // is followed by exactly one terminal event — bake.finished if the run
+    // published, bake.aborted if it did not. It is enforced from a scope guard
+    // (BakeRunScope, around the worker's command switch) rather than from the
+    // exit paths themselves, because execute_bake + publish_pipeline +
+    // execute_rebake_cone have ~20 `return`s between them and two catch blocks
+    // in the worker loop; annotating each one is exactly the kind of thing that
+    // held until the next `return` was added. Before this existed, a fatal bake
+    // emitted a bake.error and then went silent, which no observer could tell
+    // from the per-part skip-and-continue bake.errors that DO go on to finish.
+    //
+    // Threading: emit_bake() is called from the worker thread, the app/GL
+    // thread (publish jobs, pump_gpu_jobs) and the sector bake pool, so the
+    // mutable bookkeeping below lives under `bake_run_mutex_`. The generation
+    // itself is atomic so a reader never has to take the mutex. begin/end are
+    // worker-thread only.
+    std::atomic<uint64_t> bake_generation_{0};
+    std::mutex            bake_run_mutex_;
+    bool                  bake_run_active_ = false;   // inside BakeRunScope
+    bool                  bake_run_started_ = false;  // emitted bake.started
+    bool                  bake_run_finished_ = false; // emitted bake.finished
+    int                   bake_run_errors_ = 0;       // bake.errors this run
+    BakeErrorCode         bake_run_last_code_ = BakeErrorCode::None;
+    std::string           bake_run_last_phase_;
+    std::string           bake_run_last_module_;
+    std::string           bake_run_last_message_;
+
+    // Stamp `ev` with the current bake generation, record what it means for the
+    // terminal-event contract, and emit it. EVERY bake/stream event emit site
+    // goes through this instead of hub_.emit() — see matter/events/bake_events.h.
+    template <class E>
+    void emit_bake(E ev) {
+        ev.bake_generation = bake_generation_.load(std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lk(bake_run_mutex_);
+            if (bake_run_active_) {
+                if constexpr (std::is_same_v<E, events::BakeStarted>) {
+                    bake_run_started_ = true;
+                } else if constexpr (std::is_same_v<E, events::BakeFinished>) {
+                    bake_run_finished_ = true;
+                } else if constexpr (std::is_same_v<E, events::BakeError>) {
+                    ++bake_run_errors_;
+                    bake_run_last_code_    = ev.code;
+                    bake_run_last_phase_   = ev.phase;
+                    bake_run_last_module_  = ev.module;
+                    bake_run_last_message_ = ev.message;
+                }
+            }
+        }
+        hub_.emit(std::move(ev));
+    }
+
+    // Open a bake run: bump the generation, clear the per-run bookkeeping.
+    void begin_bake_run() {
+        std::lock_guard<std::mutex> lk(bake_run_mutex_);
+        bake_generation_.fetch_add(1, std::memory_order_relaxed);
+        bake_run_active_   = true;
+        bake_run_started_  = false;
+        bake_run_finished_ = false;
+        bake_run_errors_   = 0;
+        bake_run_last_code_ = BakeErrorCode::None;
+        bake_run_last_phase_.clear();
+        bake_run_last_module_.clear();
+        bake_run_last_message_.clear();
+    }
+
+    // Close a bake run, emitting bake.aborted if the run announced a start and
+    // never reached a bake.finished. Runs on every exit path of the worker's
+    // command switch, including an unwinding one — so it must not throw past
+    // the guard's destructor.
+    void end_bake_run() noexcept {
+        events::BakeAborted ev;
+        bool emit = false;
+        {
+            std::lock_guard<std::mutex> lk(bake_run_mutex_);
+            bake_run_active_ = false;
+            // No start announced (e.g. RebakeCone with no changed paths, or a
+            // cancel before the announce): nothing to terminate.
+            emit = bake_run_started_ && !bake_run_finished_;
+            if (emit) {
+                ev.errors  = bake_run_errors_;
+                ev.code    = bake_run_last_code_;
+                ev.phase   = bake_run_last_phase_;
+                ev.module  = bake_run_last_module_;
+                ev.message = bake_run_last_message_;
+            }
+        }
+        if (!emit) return;
+        if (ev.code == BakeErrorCode::None) {
+            // A run that ended with neither a finish nor an error at all. Not
+            // reachable through any path today, and that is the point of saying
+            // so in the event rather than shipping an empty abort.
+            ev.code    = BakeErrorCode::Internal;
+            ev.message = "bake ended with no terminal event and no error";
+        }
+        try {
+            emit_bake(std::move(ev));
+        } catch (...) {
+            // An abort notification is the last thing that should be able to
+            // take the worker down.
+        }
+    }
+
+    // RAII bake run. Wraps the worker loop's command switch (including its
+    // catch blocks, so a fatal exception's bake.error is recorded BEFORE the
+    // bake.aborted that reports it).
+    struct BakeRunScope {
+        Impl* owner;
+        explicit BakeRunScope(Impl* o) : owner(o) { owner->begin_bake_run(); }
+        ~BakeRunScope() { owner->end_bake_run(); }
+        BakeRunScope(const BakeRunScope&) = delete;
+        BakeRunScope& operator=(const BakeRunScope&) = delete;
+    };
+
     // E5b (event-system.md S I.14): the session-owned scene-graph model layer.
     // SceneService centralizes validated create/duplicate/delete/reparent/
     // rename/component edits; SceneChangeTracker installs lightweight Flecs
@@ -2574,11 +2698,20 @@ struct WorldSession::Impl {
 // sequence poll_event() returns is identical to the pre-E3 queue (gate 2:
 // run-asyncbake's event stream is unchanged). These run only on the app
 // thread, inside poll_event()'s pump_one dispatch (event-system.md S I.11).
+//
+// smart-dune.7 adds two things on top of that baseline, both append-only:
+// `bake_generation` is copied across on every overload (the typed event
+// carries the value emit_bake() stamped, so the legacy Event gets the
+// EMITTING run's identity, not whatever is current at poll time), and
+// bake.aborted gets an overload of its own for the new EventType. The
+// happy-path sequence BakeStarted -> BakePartDone... -> BakeFinished is
+// otherwise unchanged: bake.aborted only exists on runs that failed.
 // ---------------------------------------------------------------------------
 namespace {
-Event to_legacy_event(const events::BakeStarted&) {
+Event to_legacy_event(const events::BakeStarted& s) {
     Event e;
     e.type = EventType::BakeStarted;
+    e.bake_generation = s.bake_generation;
     return e;
 }
 Event to_legacy_event(const events::BakePartDone& s) {
@@ -2588,12 +2721,14 @@ Event to_legacy_event(const events::BakePartDone& s) {
     e.done   = s.done;
     e.total  = s.total;
     e.phase  = s.phase;
+    e.bake_generation = s.bake_generation;
     return e;
 }
 Event to_legacy_event(const events::BakeFinished& s) {
     Event e;
     e.type   = EventType::BakeFinished;
     e.errors = s.errors;
+    e.bake_generation = s.bake_generation;
     return e;
 }
 Event to_legacy_event(const events::BakeError& s) {
@@ -2603,6 +2738,22 @@ Event to_legacy_event(const events::BakeError& s) {
     e.message = s.message;
     e.phase   = s.phase;
     e.code    = s.code;
+    e.bake_generation = s.bake_generation;
+    return e;
+}
+// smart-dune.7: bake.aborted has no pre-E3 ancestor — it is a NEW legacy
+// EventType, appended to the enum. An older consumer that only switches on the
+// four original types ignores it and keeps working; one that wants to know a
+// bake ended badly looks for it.
+Event to_legacy_event(const events::BakeAborted& s) {
+    Event e;
+    e.type    = EventType::BakeAborted;
+    e.module  = s.module;
+    e.message = s.message;
+    e.phase   = s.phase;
+    e.code    = s.code;
+    e.errors  = s.errors;
+    e.bake_generation = s.bake_generation;
     return e;
 }
 Event to_legacy_event(const events::RefineTileDone& s) {
@@ -2614,6 +2765,7 @@ Event to_legacy_event(const events::RefineTileDone& s) {
     e.phase   = "refine";   // the legacy Event always tagged phase="refine"
     e.tile_tx = s.tile_tx;
     e.tile_tz = s.tile_tz;
+    e.bake_generation = s.bake_generation;
     return e;
 }
 }  // namespace
@@ -2638,6 +2790,9 @@ void WorldSession::Impl::wire_legacy_poll_subs() {
     legacy_subs_ += hub_.must_subscribe<events::BakeError>(
         "legacy_poll.bake_error", evt::lane::legacy_poll,
         [this](const events::BakeError& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::BakeAborted>(
+        "legacy_poll.bake_aborted", evt::lane::legacy_poll,
+        [this](const events::BakeAborted& e) { legacy_pending_.push_back(to_legacy_event(e)); });
     legacy_subs_ += hub_.must_subscribe<events::RefineTileDone>(
         "legacy_poll.refine_tile", evt::lane::legacy_poll,
         [this](const events::RefineTileDone& e) { legacy_pending_.push_back(to_legacy_event(e)); });
@@ -2915,19 +3070,19 @@ void WorldSession::Impl::bake_pool_loop() {
             event.code = BakeErrorCode::OutOfMemory;
             event.phase = "stream";
             event.message = "sector bake worker: std::bad_alloc";
-            hub_.emit(std::move(event));
+            emit_bake(std::move(event));
         } catch (const std::exception& exception) {
             events::BakeError event;
             event.code = BakeErrorCode::Internal;
             event.phase = "stream";
             event.message = exception.what();
-            hub_.emit(std::move(event));
+            emit_bake(std::move(event));
         } catch (...) {
             events::BakeError event;
             event.code = BakeErrorCode::Internal;
             event.phase = "stream";
             event.message = "unknown sector bake worker failure";
-            hub_.emit(std::move(event));
+            emit_bake(std::move(event));
         }
         stream_task_total_us.fetch_add(
             (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
@@ -3016,7 +3171,7 @@ void WorldSession::Impl::worker_loop() {
         event.message = clear_error.empty()
             ? "streaming eviction barrier failed"
             : clear_error;
-        hub_.emit(std::move(event));
+        emit_bake(std::move(event));
         return false;
     };
     // Phase C Task 6: refine loop.
@@ -3081,6 +3236,15 @@ void WorldSession::Impl::worker_loop() {
                     world_initial_load_done = false;
                 }
                 bake_active.store(true, std::memory_order_release);
+                // One bake run: bump the generation every emit below is stamped
+                // with, and guarantee a terminal event (bake.finished or
+                // bake.aborted) on every way out of the switch — `return`s deep
+                // inside execute_bake / publish_pipeline / execute_rebake_cone
+                // included, and the catch blocks below too, which is why the
+                // guard is declared OUTSIDE the try: their bake.error must be
+                // recorded before the bake.aborted that carries it. See
+                // Impl::end_bake_run and matter/events/bake_events.h.
+                BakeRunScope bake_run(this);
                 try {
                     switch (cmd.kind) {
                         case matter_async::CommandKind::BakeAll:
@@ -3108,7 +3272,7 @@ void WorldSession::Impl::worker_loop() {
                     events::BakeError ev;
                     ev.code    = BakeErrorCode::OutOfMemory;
                     ev.message = "std::bad_alloc";
-                    hub_.emit(std::move(ev));
+                    emit_bake(std::move(ev));
                 } catch (std::exception& e) {
                     if (!cmd.token || !cmd.token->is_cancelled()) {
                         ecs_runtime.enqueue_world_state(
@@ -3117,7 +3281,7 @@ void WorldSession::Impl::worker_loop() {
                     events::BakeError ev;
                     ev.code    = BakeErrorCode::Internal;
                     ev.message = e.what();
-                    hub_.emit(std::move(ev));
+                    emit_bake(std::move(ev));
                 }
                 bake_active.store(false, std::memory_order_release);
                 continue;
@@ -3142,7 +3306,7 @@ void WorldSession::Impl::worker_loop() {
                         : BakeErrorCode::Internal;
                     event.phase = "stream";
                     event.message = message;
-                    self.hub_.emit(std::move(event));
+                    self.emit_bake(std::move(event));
                 });
             if (refine_ctrl) execute_refine_step();
             continue;
@@ -3185,7 +3349,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     ecs_runtime.enqueue_world_state(
         {ecs_runtime::WorldStateCommandKind::Loading});
     {
-        hub_.emit(events::BakeStarted{});
+        emit_bake(events::BakeStarted{});
     }
 
     // Emit-a-BakeError helper (worker-side, so all call sites just tag phase).
@@ -3198,7 +3362,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        hub_.emit(std::move(ev));
+        emit_bake(std::move(ev));
     };
     TerrainCollisionPublication terrain_publication{};
 
@@ -3221,7 +3385,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // total==0 => install phase; total>0 => fetch/parts phase.
         // Distinguish by total: install fires with 0, per-part with want.size().
         ev.phase  = (total == 0) ? "install" : "parts";
-        hub_.emit(std::move(ev));
+        emit_bake(std::move(ev));
     };
     // Bind gpu_run to marshal tileset GL work to the app thread via gpu_jobs.
     cfg.gpu_run = [this, token](const char* name,
@@ -3441,7 +3605,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             ev.phase   = "install";
             ev.module  = fp.module;
             ev.message = fp.error;
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
             ++count_errors;
         }
     }
@@ -3668,7 +3832,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
             progress.total_steps,
             static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
         event.phase = "hydrology";
-        hub_.emit(std::move(event));
+        emit_bake(std::move(event));
     };
     if (world_field) {
         context.terrain = [this](float x, float z, float& height) {
@@ -3874,7 +4038,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
                 event.done = static_cast<int>(result.completed_sections);
                 event.total = static_cast<int>(result.total_sections);
                 event.phase = "hydrology";
-                hub_.emit(std::move(event));
+                emit_bake(std::move(event));
             } else if (!error.message.empty()) {
                 events::BakeError event;
                 event.code =
@@ -3884,7 +4048,7 @@ void WorldSession::Impl::run_authored_fluid_bake_after_world_load(
                     : BakeErrorCode::Internal;
                 event.phase = "hydrology";
                 event.message = error.message;
-                hub_.emit(std::move(event));
+                emit_bake(std::move(event));
                 MATTER_LOGE("hydrology", "fluid bake rejected: %s\n",
                             error.message.c_str());
             }
@@ -3996,7 +4160,7 @@ void WorldSession::Impl::publish_pipeline(
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        hub_.emit(std::move(ev));
+        emit_bake(std::move(ev));
     };
 
     const std::string& pfx = p.job_prefix;
@@ -4632,7 +4796,7 @@ void WorldSession::Impl::publish_pipeline(
                     bev.phase   = "parts";
                     bev.module  = part_module_b;
                     bev.message = berr;
-                    hub_.emit(std::move(bev));
+                    emit_bake(std::move(bev));
                     ++bake_fail_count;
                 }
                 // Skip GPU job for this part (artifact missing)
@@ -4733,7 +4897,7 @@ void WorldSession::Impl::publish_pipeline(
             ev.done   = (int)(i + 1);
             ev.total  = (int)publish_order.size();
             ev.phase  = "parts";
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
         }
 
         if (part_bake_failed) continue;  // skip GPU job for this part
@@ -4795,7 +4959,7 @@ void WorldSession::Impl::publish_pipeline(
                 bev.phase   = "parts";
                 bev.module  = part_module;
                 bev.message = fail_msg;
-                hub_.emit(std::move(bev));
+                emit_bake(std::move(bev));
                 ++cap_state->load_fail_count;
                 return true;   // skip-and-continue: pipeline keeps running
             }
@@ -4884,7 +5048,7 @@ void WorldSession::Impl::publish_pipeline(
     {
         events::BakeFinished ev;
         ev.errors = count_errors;
-        hub_.emit(std::move(ev));
+        emit_bake(std::move(ev));
     }
 
     // 9) Deferred tileset phase (Task 15): runs after BakeFinished so silhouette
@@ -4901,7 +5065,7 @@ void WorldSession::Impl::publish_pipeline(
             ev.module = module ? module : "";
             ev.done   = done;
             ev.total  = total;
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
         };
         std::string terr;
         if (!p.provider_ref->run_tileset_deferred(tileset_on_part, is_cancelled, terr)) {
@@ -4911,7 +5075,7 @@ void WorldSession::Impl::publish_pipeline(
                 ev.code    = classify_error(terr);
                 ev.phase   = "tileset";
                 ev.message = terr;
-                hub_.emit(std::move(ev));
+                emit_bake(std::move(ev));
             }
         }
     }
@@ -5057,7 +5221,7 @@ void WorldSession::Impl::execute_refine_step() {
                 ev.total   = (int)tile_count;
                 ev.tile_tx = ev_tx;
                 ev.tile_tz = ev_tz;
-                hub_.emit(std::move(ev));
+                emit_bake(std::move(ev));
             } else {
                 // Swap failed (get_or_load returned null) — leave Coarse for retry.
                 MATTER_LOGW("refine", "upgrade GL job failed for tile (%d,%d) — "
@@ -5137,7 +5301,7 @@ void WorldSession::Impl::execute_refine_step() {
             ev.total   = (int)tile_count;
             ev.tile_tx = ev_tx_e;
             ev.tile_tz = ev_tz_e;
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
         }
     }
 
@@ -5717,7 +5881,7 @@ bool WorldSession::Impl::install_world(
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
                 ev.message = where;
-                hub_.emit(std::move(ev));
+                emit_bake(std::move(ev));
                 return false;
             }
             std::ostringstream ss; ss << in.rdbuf();
@@ -5759,7 +5923,7 @@ bool WorldSession::Impl::install_world(
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
                 ev.message = "bake failed for " + module + " params=" + params_json;
-                hub_.emit(std::move(ev));
+                emit_bake(std::move(ev));
                 return false;
             }
             // W5 (Part Workbench, static lods): must run BEFORE bake_lod_variants
@@ -8749,7 +8913,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             ev.code = BakeErrorCode::ScriptError;
             ev.phase = "stream";
             ev.message = exception.what();
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
             continue;
         } catch (...) {
             mark_publication_for_retry(
@@ -8760,7 +8924,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             ev.code = BakeErrorCode::ScriptError;
             ev.phase = "stream";
             ev.message = "unknown sector bake failure";
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
             continue;
         }
 
@@ -8777,7 +8941,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             ev.code    = BakeErrorCode::ScriptError;
             ev.phase   = "stream";
             ev.message = br.error.message;
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
             continue;
         }
 
@@ -8791,7 +8955,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             ev.code = BakeErrorCode::GpuError;
             ev.phase = "stream";
             ev.message = "sector publication artifact retention failed";
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
             continue;
         }
         tracked_guard.disarm();
@@ -9095,7 +9259,7 @@ void WorldSession::Impl::bake_and_stage_sector(
                             event.message += ": cleanup pending: ";
                             event.message += detail;
                         }
-                        hub_.emit(std::move(event));
+                        emit_bake(std::move(event));
                     } catch (...) {
                     }
                 };
@@ -9549,7 +9713,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = exception.what();
-            hub_.emit(std::move(event));
+            emit_bake(std::move(event));
         } catch (...) {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/false,
@@ -9558,7 +9722,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = "unknown sector publication post failure";
-            hub_.emit(std::move(event));
+            emit_bake(std::move(event));
         }
     } while (false);
 }
@@ -9580,7 +9744,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
         event.message = eviction_error.empty()
             ? "sector eviction failed"
             : eviction_error;
-        hub_.emit(std::move(event));
+        emit_bake(std::move(event));
         return;
     }
     if (!provider || !world_field) return;
@@ -9832,7 +9996,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
         event.message = eviction_error.empty()
             ? "sector replacement eviction failed"
             : eviction_error;
-        hub_.emit(std::move(event));
+        emit_bake(std::move(event));
         return;
     }
 
@@ -9895,7 +10059,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
         }
         events::BakeFinished ev;
         ev.errors = 0;
-        hub_.emit(std::move(ev));
+        emit_bake(std::move(ev));
     }
 }
 
@@ -9930,12 +10094,12 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        hub_.emit(std::move(ev));
+        emit_bake(std::move(ev));
     };
 
     // 0) Announce start.
     {
-        hub_.emit(events::BakeStarted{});
+        emit_bake(events::BakeStarted{});
     }
 
     if (is_cancelled()) {
@@ -9990,7 +10154,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
             ev.phase   = "cone";
             ev.module  = e.part;
             ev.message = e.message;
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
         }
         return;  // old world keeps rendering
     }
@@ -10010,7 +10174,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         ev.done   = done;
         ev.total  = total;
         ev.phase  = (total == 0) ? "install" : "parts";
-        hub_.emit(std::move(ev));
+        emit_bake(std::move(ev));
     };
     cfg.gpu_run = [this, token](const char* name,
                                 std::function<bool(std::string&)> fn,
@@ -10094,7 +10258,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
             ev.phase   = "cone";
             ev.module  = fp.module;
             ev.message = fp.error;
-            hub_.emit(std::move(ev));
+            emit_bake(std::move(ev));
         }
     }
 
@@ -13673,7 +13837,7 @@ void WorldSession::pump_gpu_jobs(float ms_budget) {
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = completion_error;
-            impl_->hub_.emit(std::move(event));
+            impl_->emit_bake(std::move(event));
         } catch (...) {
         }
     }

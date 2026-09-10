@@ -375,6 +375,8 @@ static std::string ev_type_name(matter::EventType t) {
         case matter::EventType::BakeError:      return "BakeError";
         // Phase C Task 6: camera-driven refine loop event (append-only).
         case matter::EventType::RefineTileDone: return "RefineTileDone";
+        // smart-dune.7: terminal event for a bake that gave up (append-only).
+        case matter::EventType::BakeAborted:    return "BakeAborted";
     }
     return "?";
 }
@@ -867,12 +869,14 @@ static bool test_supersede_cancels_inflight(const std::string& sandbox) {
         s->pump_gpu_jobs(4.0f);
         matter::Event ev;
         while (s->poll_event(ev)) {
-            printf("  ev: %s code=%d phase=%s module=%s\n",
-                   ev.type == matter::EventType::BakeStarted  ? "BakeStarted"  :
-                   ev.type == matter::EventType::BakePartDone ? "BakePartDone" :
-                   ev.type == matter::EventType::BakeFinished ? "BakeFinished" :
-                   "BakeError",
-                   (int)ev.code, ev.phase.c_str(), ev.module.c_str());
+            // ev_type_name, not a hand-rolled ternary chain that labelled
+            // everything it did not recognize "BakeError" — a superseded bake
+            // now also emits BakeAborted, and reading that as a BakeError in
+            // this log would be actively misleading.
+            printf("  ev: %s code=%d phase=%s module=%s gen=%llu\n",
+                   ev_type_name(ev.type).c_str(),
+                   (int)ev.code, ev.phase.c_str(), ev.module.c_str(),
+                   (unsigned long long)ev.bake_generation);
 
             if (ev.type == matter::EventType::BakePartDone && !second_bake_issued) {
                 ++part_done_count;
@@ -2097,6 +2101,204 @@ static bool test_e3_poll_event_typed_parity(const std::string& sandbox) {
     return finished;
 }
 
+// --- (n) bake_aborted_terminal_event (smart-dune.7) -------------------------
+// The terminal-event contract: every BakeStarted is followed by exactly one of
+// BakeFinished or BakeAborted, and every event carries the bake_generation of
+// the run that emitted it.
+//
+// Before this landed, a FATAL bake (one that gives up rather than skipping a
+// part) emitted a BakeError and then went silent: the stream was
+// indistinguishable from a bake still in progress, and an aborting BakeError
+// was indistinguishable from the per-part skip-and-continue BakeErrors that DO
+// go on to a BakeFinished (see (g)/(h)/(i) above, which assert exactly that
+// skip-and-continue shape). So a consumer could only report an aborted bake by
+// timing out.
+//
+// Abort trigger: a world source with a JS syntax error. open_world only checks
+// that worlds/<Name>.js EXISTS, so the session opens; install_graph's
+// load_authored_world then fails, which is a fatal (not per-part) failure and
+// the shortest real path to the `emit_error(...); return;` branch this test is
+// about.
+static bool test_bake_aborted_terminal_event(const std::string& sandbox) {
+    printf("-- (n) bake_aborted_terminal_event\n");
+
+    // Drain until a TERMINAL event (BakeFinished or BakeAborted), keeping the
+    // whole sequence. Unlike drive_bake/drive_bake_tolerant this does not treat
+    // a BakeError as the end of the story — the point is what comes after it.
+    auto drive_to_terminal = [](matter::WorldSession& s,
+                                std::vector<matter::Event>& out,
+                                int timeout_sec = 60) -> bool {
+        auto deadline = clk::now() + std::chrono::seconds(timeout_sec);
+        while (clk::now() < deadline) {
+            s.pump_gpu_jobs(4.0f);
+            matter::Event ev;
+            bool any = false;
+            while (s.poll_event(ev)) {
+                any = true;
+                out.push_back(ev);
+                if (ev.type == matter::EventType::BakeFinished ||
+                    ev.type == matter::EventType::BakeAborted)
+                    return true;
+            }
+            if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        printf("  drive_to_terminal TIMEOUT after %ds\n", timeout_sec);
+        return false;
+    };
+
+    bool all_ok = true;
+
+    // --- part 1: the happy path still finishes, and carries a generation -----
+    {
+        reset_cache(sandbox, "Box");
+        std::string err;
+        std::unique_ptr<matter::EngineContext> engine;
+        auto s = open_session(sandbox, err, engine, "Box");
+        CHECK(s != nullptr, "aborted: happy-path session opened");
+        if (!s) return false;
+
+        s->request_bake();
+        std::vector<matter::Event> evs;
+        const bool terminal = drive_to_terminal(*s, evs);
+        CHECK(terminal, "aborted: happy path reached a terminal event");
+
+        const matter::Event* started = nullptr;
+        const matter::Event* finished = nullptr;
+        bool saw_aborted = false;
+        bool all_stamped = !evs.empty();
+        for (const auto& ev : evs) {
+            if (ev.type == matter::EventType::BakeStarted && !started) started = &ev;
+            if (ev.type == matter::EventType::BakeFinished) finished = &ev;
+            if (ev.type == matter::EventType::BakeAborted) saw_aborted = true;
+            if (ev.bake_generation == 0) all_stamped = false;
+        }
+        CHECK(finished != nullptr, "aborted: happy path ends in BakeFinished");
+        CHECK(!saw_aborted, "aborted: happy path emits NO BakeAborted");
+        CHECK(all_stamped, "aborted: every event carries a non-zero bake_generation");
+        if (started && finished) {
+            printf("  happy path: started gen=%llu finished gen=%llu\n",
+                   (unsigned long long)started->bake_generation,
+                   (unsigned long long)finished->bake_generation);
+            CHECK(started->bake_generation == 1,
+                  "aborted: first bake of a session is generation 1");
+            CHECK(started->bake_generation == finished->bake_generation,
+                  "aborted: BakeStarted and BakeFinished share one generation");
+            all_ok = all_ok && started->bake_generation == 1 &&
+                     started->bake_generation == finished->bake_generation;
+        }
+        all_ok = all_ok && terminal && finished != nullptr && !saw_aborted &&
+                 all_stamped;
+    }
+
+    // --- part 2: a fatal bake terminates with BakeAborted -------------------
+    const std::string aroot = sandbox + "_abort";
+    if (!reset_project(aroot, "AbortWorld")) {
+        printf("  FAIL: reset_project\n");
+        ++g_failures;
+        return false;
+    }
+    // A valid part, so the only thing wrong with this project is the world.
+    if (!write_file(fs::path(aroot) / "objects" / "Box.js",
+        "class Box extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-0.5, 0, -0.5); this.vertex(-0.5, 0, 0.5);\n"
+        "    this.vertex(0.5, 0, -0.5);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) { remove_tree(aroot); return false; }
+    // Unterminated array literal: the world source cannot be evaluated at all,
+    // so there is no per-part failure to skip — the whole run has to give up.
+    if (!write_file(fs::path(aroot) / "worlds" / "AbortWorld.js",
+        "class AbortWorld extends World {\n"
+        "  static roots = [ { module: 'Box',\n")) {
+        remove_tree(aroot);
+        return false;
+    }
+
+    std::string err;
+    std::unique_ptr<matter::EngineContext> engine;
+    auto s = open_session(aroot, err, engine, "AbortWorld");
+    CHECK(s != nullptr, "aborted: broken-world session opened");
+    if (!s) { remove_tree(aroot); return false; }
+
+    s->request_bake();
+    std::vector<matter::Event> evs;
+    const bool terminal = drive_to_terminal(*s, evs);
+    CHECK(terminal,
+          "aborted: fatal bake reaches a terminal event (no timeout)");
+
+    int errors = 0;
+    bool saw_started = false, saw_finished = false;
+    const matter::Event* aborted = nullptr;
+    for (const auto& ev : evs) {
+        if (ev.type == matter::EventType::BakeStarted)  saw_started = true;
+        if (ev.type == matter::EventType::BakeFinished) saw_finished = true;
+        if (ev.type == matter::EventType::BakeError)    ++errors;
+        if (ev.type == matter::EventType::BakeAborted)  aborted = &ev;
+    }
+    printf("  fatal run: %zu events, %d BakeError(s), aborted=%d finished=%d\n",
+           evs.size(), errors, aborted != nullptr ? 1 : 0, (int)saw_finished);
+    CHECK(saw_started, "aborted: fatal run announced BakeStarted");
+    CHECK(!saw_finished, "aborted: fatal run emits NO BakeFinished");
+    CHECK(errors >= 1, "aborted: fatal run emitted at least one BakeError");
+    CHECK(aborted != nullptr, "aborted: fatal run emits BakeAborted");
+    bool shape_ok = saw_started && !saw_finished && errors >= 1 && aborted;
+    if (aborted) {
+        printf("  BakeAborted: gen=%llu phase=%s code=%d errors=%d msg=%s\n",
+               (unsigned long long)aborted->bake_generation,
+               aborted->phase.c_str(), (int)aborted->code, aborted->errors,
+               aborted->message.c_str());
+        CHECK(&evs.back() == aborted,
+              "aborted: BakeAborted is the LAST event of the run");
+        CHECK(aborted->bake_generation == 1,
+              "aborted: BakeAborted carries the run's generation (1)");
+        CHECK(aborted->phase == "install",
+              "aborted: BakeAborted names the phase that died (install)");
+        CHECK(aborted->code != matter::BakeErrorCode::None,
+              "aborted: BakeAborted carries a classified error code");
+        CHECK(!aborted->message.empty(),
+              "aborted: BakeAborted carries the failure detail");
+        CHECK(aborted->errors == errors,
+              "aborted: BakeAborted.errors counts the run's BakeErrors");
+        shape_ok = shape_ok && &evs.back() == aborted &&
+                   aborted->bake_generation == 1 &&
+                   aborted->phase == "install" &&
+                   aborted->code != matter::BakeErrorCode::None &&
+                   !aborted->message.empty() && aborted->errors == errors;
+    }
+
+    // --- part 3: the generation advances with the next bake command ---------
+    // This is what makes an event attributable: a second run on the SAME
+    // session stamps 2, so a consumer holding a stale event can tell it belongs
+    // to the previous run rather than to the one it is watching.
+    // Drain anything the first run left queued behind its terminal event, so
+    // the generation check below can be exact rather than "mostly 2".
+    {
+        matter::Event drained;
+        while (s->poll_event(drained)) {}
+    }
+    std::vector<matter::Event> evs2;
+    s->request_bake();
+    const bool terminal2 = drive_to_terminal(*s, evs2);
+    CHECK(terminal2, "aborted: second fatal bake also terminates");
+    bool gen2_ok = terminal2;
+    for (const auto& ev : evs2) {
+        if (ev.bake_generation != 2) {
+            printf("  second run event type=%s carried gen=%llu (expected 2)\n",
+                   ev_type_name(ev.type).c_str(),
+                   (unsigned long long)ev.bake_generation);
+            gen2_ok = false;
+        }
+    }
+    CHECK(gen2_ok, "aborted: every event of the second run carries generation 2");
+
+    all_ok = all_ok && terminal && shape_ok && gen2_ok;
+    remove_tree(aroot);
+    return all_ok;
+}
+
 // Task 7 fluid lifecycle proof in the general async suite. The focused PhysX
 // contract suite exercises cache, failure, LUID mismatch, and supersession;
 // this case keeps the core worker/event promise visible beside the editor's
@@ -2516,6 +2718,9 @@ int main() {
     // Task 7 PhysX fluid bake integration on the same worker/GPU-job lifecycle.
     test_authored_fluid_uses_worker_and_gpu_job_seam(sandbox);
     test_cancelled_fluid_generation_publishes_neither_half(sandbox);
+
+    // smart-dune.7: terminal-event contract + bake_generation attribution.
+    test_bake_aborted_terminal_event(sandbox);
 
     // E3 milestone (event-system.md): typed bake events + legacy poll_event
     // shim over lane::legacy_poll. Runs LAST so it cannot perturb any prior
