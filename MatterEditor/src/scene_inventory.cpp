@@ -6,6 +6,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -183,6 +185,9 @@ Value entry_json(const Entry& entry) {
     }
     out.set("provenance", std::move(provenance));
 
+    out.set("part_instance",
+            optional_json(entry.part_instance, counter_value(entry.part_hash)));
+
     out.set("selected", bool_value(entry.selected));
     out.set("primary", bool_value(entry.primary));
     return out;
@@ -258,6 +263,12 @@ Snapshot build_snapshot(const std::vector<EntityRow>& entities,
         entry.depth = row.depth;
         entry.child_count = row.child_count;
         entry.component_names = row.component_names;
+        entry.part_instance = row.part_instance;
+        entry.part_hash = row.part_hash;
+        if (!entry.part_instance.available && entry.part_instance.reason.empty()) {
+            entry.part_instance.reason =
+                "this entity has no recorded PartInstance content hash";
+        }
         entry.has_parent = row.parent_id != 0;
         entry.parent.kind = agent::ObjectIdentity::Kind::Entity;
         entry.parent.id = row.parent_id;
@@ -354,6 +365,9 @@ Snapshot build_snapshot(const std::vector<EntityRow>& entities,
             entry.source_path.available = true;
             entry.source_path_value = row.source_path;
         }
+
+        entry.part_instance.available = true;
+        entry.part_hash = row.resolved_hash;
         if (row.params_json.empty()) {
             entry.params.available = false;
             entry.params.reason =
@@ -496,6 +510,301 @@ const Entry* find_object(const Snapshot& snapshot,
     for (const Entry& entry : snapshot.entries)
         if (same_object(entry.object, object)) return &entry;
     return nullptr;
+}
+
+bool parse_trace_query(const Value& arguments, TraceQuery& out,
+                       std::string& error) {
+    out = TraceQuery{};
+    bool duplicated = false;
+    auto argument = [&](const char* key) -> const Value* {
+        const Value* value = unique_argument(arguments, key, duplicated);
+        if (duplicated)
+            error = std::string("argument '") + key + "' was given more than once";
+        return value;
+    };
+
+    const Value* object = argument("object");
+    if (duplicated) return false;
+    if (!object || !agent::parse_object_identity(*object, out.object, error)) {
+        if (error.empty()) error = "object must be {\"kind\",\"id\"}";
+        return false;
+    }
+
+    const Value* depth = argument("max_depth");
+    if (duplicated) return false;
+    if (depth) {
+        std::uint64_t parsed = 0;
+        if (!decimal_u64_in_range(*depth, kMaxTraceDepth, parsed)) {
+            error = "max_depth must be an integer from 0 through " +
+                    std::to_string(kMaxTraceDepth);
+            return false;
+        }
+        out.max_depth = static_cast<std::uint32_t>(parsed);
+    }
+
+    const Value* nodes = argument("max_nodes");
+    if (duplicated) return false;
+    if (nodes) {
+        std::uint64_t parsed = 0;
+        if (!decimal_u64_in_range(*nodes, kMaxTraceNodes, parsed) || parsed == 0) {
+            error = "max_nodes must be an integer from 1 through " +
+                    std::to_string(kMaxTraceNodes);
+            return false;
+        }
+        out.max_nodes = static_cast<std::uint32_t>(parsed);
+    }
+    return true;
+}
+
+namespace {
+
+constexpr std::size_t kMaxTraceEdges = 32;
+
+std::uint64_t fnv1a64(const std::string& text) {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (unsigned char byte : text) {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+Value hash_value(std::uint64_t hash) {
+    char text[17] = {};
+    std::snprintf(text, sizeof(text), "%016llx",
+                  static_cast<unsigned long long>(hash));
+    return string_value(text);
+}
+
+Availability seed_from_params(const std::string& params, std::uint64_t& seed) {
+    Availability result;
+    Value parsed;
+    if (!matter::jsondoc::parse_json(params, parsed) ||
+        parsed.kind != Value::Kind::Object) {
+        result.reason = "recorded parameters are not a readable JSON object";
+        return result;
+    }
+    const Value* value = parsed.find("worldSeed");
+    if (!value) {
+        result.reason = "the recorded parameters contain no worldSeed";
+        return result;
+    }
+    if (value->kind == Value::Kind::UInt64) {
+        seed = value->uint64_value;
+        result.available = true;
+        return result;
+    }
+    if (value->kind == Value::Kind::Number && std::isfinite(value->num) &&
+        value->num >= 0.0 && std::floor(value->num) == value->num &&
+        value->num <= static_cast<double>(UINT64_MAX)) {
+        seed = static_cast<std::uint64_t>(value->num);
+        result.available = true;
+        return result;
+    }
+    result.reason = "worldSeed is not a non-negative integer";
+    return result;
+}
+
+Value bounded_strings(const std::vector<std::string>& names, bool& truncated) {
+    Value result = array_value();
+    const std::size_t count = std::min(names.size(), kMaxTraceEdges);
+    result.arr.reserve(count);
+    for (std::size_t index = 0; index < count; ++index)
+        result.arr.push_back(string_value(names[index]));
+    truncated = names.size() > count;
+    return result;
+}
+
+Value trace_node_json(const ProvenanceNode& node,
+                      const std::vector<std::string>& parents,
+                      std::uint32_t depth) {
+    Value out = object_value();
+    out.set("module", string_value(node.module));
+    out.set("resolved_hash", counter_value(node.resolved_hash));
+    out.set("is_baked_root", bool_value(node.is_root));
+    out.set("depth", number_value(depth));
+
+    Availability source;
+    source.available = !node.source_path.empty();
+    if (!source.available)
+        source.reason = "the part graph recorded no source path for this module";
+    out.set("source_location", optional_json(source, string_value(node.source_path)));
+
+    Availability params;
+    params.available = !node.params_json.empty();
+    if (!params.available)
+        params.reason = "the part graph recorded no canonical parameters for this module";
+    Value inputs = object_value();
+    inputs.set("params_json", optional_json(params, string_value(node.params_json)));
+    if (params.available) {
+        inputs.set("params_hash", hash_value(fnv1a64(node.params_json)));
+        inputs.set("params_hash_algorithm", string_value("fnv1a64_canonical_params"));
+        std::uint64_t seed = 0;
+        const Availability seed_availability = seed_from_params(node.params_json, seed);
+        inputs.set("world_seed", optional_json(seed_availability, counter_value(seed)));
+    } else {
+        Availability seed;
+        seed.reason = "no canonical parameters were recorded for this module";
+        inputs.set("world_seed", optional_json(seed, counter_value(0)));
+    }
+    out.set("generation_inputs", std::move(inputs));
+
+    bool parents_truncated = false;
+    bool children_truncated = false;
+    bool imports_truncated = false;
+    bool sources_truncated = false;
+    Value edges = object_value();
+    edges.set("parents", bounded_strings(parents, parents_truncated));
+    edges.set("children", bounded_strings(node.children, children_truncated));
+    edges.set("shared_imports", bounded_strings(node.shared_imports, imports_truncated));
+    edges.set("shared_source_paths",
+              bounded_strings(node.shared_source_paths, sources_truncated));
+    edges.set("truncated", bool_value(parents_truncated || children_truncated ||
+                                       imports_truncated || sources_truncated));
+    out.set("dependencies", std::move(edges));
+    return out;
+}
+
+}  // namespace
+
+Value trace_result_json(const Snapshot& snapshot,
+                        const std::vector<ProvenanceNode>& graph,
+                        const TraceQuery& query) {
+    Value out = object_value();
+    out.set("scene_revision", counter_value(snapshot.scene_revision));
+    out.set("object", agent::object_identity_json(query.object));
+    out.set("found", bool_value(false));
+    const Entry* entry = find_object(snapshot, query.object);
+    if (!entry) {
+        out.set("reason", string_value("no such object at this scene revision"));
+        return out;
+    }
+    out.set("found", bool_value(true));
+
+    Value classification = object_value();
+    std::string target_module;
+    if (query.object.kind == agent::ObjectIdentity::Kind::BakedRoot) {
+        classification.set("kind", string_value("baked_root"));
+        classification.set("reason", string_value(
+            "a content-addressed bake output; its graph node records generation inputs"));
+        target_module = entry->module;
+    } else if (matter::scene::is_runtime_id(query.object.id)) {
+        classification.set("kind", string_value("runtime_only"));
+        classification.set("reason", string_value(
+            "the runtime-id bit marks this entity as session allocated; no authored "
+            "source location is recorded for the entity itself"));
+    } else {
+        classification.set("kind", string_value("authored_entity"));
+        classification.set("reason", string_value(
+            "the id is a hash of an authored world-definition id; this inventory does "
+            "not retain its declaration location"));
+    }
+    out.set("classification", std::move(classification));
+
+    Value generated = object_value();
+    generated.set("available", bool_value(entry->part_instance.available));
+    if (entry->part_instance.available) {
+        generated.set("part_hash", counter_value(entry->part_hash));
+        generated.set("kind", string_value("generated_instance"));
+    } else {
+        generated.set("reason", string_value(entry->part_instance.reason));
+    }
+    out.set("generated_instance", std::move(generated));
+
+    std::unordered_map<std::string, const ProvenanceNode*> by_module;
+    std::unordered_map<std::string, std::vector<std::string>> parents;
+    for (const ProvenanceNode& node : graph) {
+        if (node.module.empty()) continue;
+        by_module.emplace(node.module, &node);
+    }
+    for (const ProvenanceNode& node : graph) {
+        if (node.module.empty()) continue;
+        for (const std::string& child : node.children)
+            parents[child].push_back(node.module);
+    }
+    for (auto& item : parents)
+        std::sort(item.second.begin(), item.second.end());
+
+    if (target_module.empty() && entry->part_instance.available) {
+        for (const ProvenanceNode& node : graph) {
+            if (node.resolved_hash != entry->part_hash || node.module.empty()) continue;
+            if (target_module.empty() || node.module < target_module)
+                target_module = node.module;
+        }
+    }
+
+    Value traversal = object_value();
+    traversal.set("max_depth", number_value(query.max_depth));
+    traversal.set("max_nodes", number_value(query.max_nodes));
+    const auto start = by_module.find(target_module);
+    if (target_module.empty() || start == by_module.end()) {
+        traversal.set("available", bool_value(false));
+        traversal.set("reason", string_value(
+            graph.empty()
+                ? "the current session has no published part-graph snapshot"
+                : "the object's recorded part hash/module is absent from the current "
+                  "part-graph snapshot"));
+        out.set("traversal", std::move(traversal));
+        return out;
+    }
+
+    traversal.set("available", bool_value(true));
+    traversal.set("graph_contract", string_value(
+        "module DAG; each node records the first representative parameter set "
+        "seen for that module, not every generated instance"));
+    Value nodes = array_value();
+    std::deque<std::pair<std::string, std::uint32_t>> pending;
+    std::unordered_set<std::string> queued;
+    pending.emplace_back(target_module, 0);
+    queued.insert(target_module);
+    bool truncated = false;
+    while (!pending.empty()) {
+        if (nodes.arr.size() >= query.max_nodes) {
+            truncated = true;
+            break;
+        }
+        const std::pair<std::string, std::uint32_t> current = pending.front();
+        pending.pop_front();
+        const auto found = by_module.find(current.first);
+        if (found == by_module.end()) continue;
+        const std::vector<std::string>& parent_names = parents[current.first];
+        nodes.arr.push_back(trace_node_json(*found->second, parent_names, current.second));
+        if (current.second >= query.max_depth) {
+            for (const std::string& parent : parent_names) {
+                if (by_module.find(parent) != by_module.end() &&
+                    queued.find(parent) == queued.end()) {
+                    truncated = true;
+                    break;
+                }
+            }
+            if (!truncated) {
+                for (const std::string& child : found->second->children) {
+                    if (by_module.find(child) != by_module.end() &&
+                        queued.find(child) == queued.end()) {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        std::vector<std::string> neighbors = parent_names;
+        neighbors.insert(neighbors.end(), found->second->children.begin(),
+                         found->second->children.end());
+        std::sort(neighbors.begin(), neighbors.end());
+        neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+        for (const std::string& neighbor : neighbors) {
+            if (by_module.find(neighbor) == by_module.end()) continue;
+            if (queued.insert(neighbor).second)
+                pending.emplace_back(neighbor, current.second + 1);
+        }
+    }
+    if (!pending.empty()) truncated = true;
+    traversal.set("returned", number_value(static_cast<double>(nodes.arr.size())));
+    traversal.set("truncated", bool_value(truncated));
+    traversal.set("nodes", std::move(nodes));
+    out.set("traversal", std::move(traversal));
+    return out;
 }
 
 std::vector<Operation> default_operations(agent::ObjectIdentity::Kind kind,

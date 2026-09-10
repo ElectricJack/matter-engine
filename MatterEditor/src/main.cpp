@@ -2760,6 +2760,16 @@ int main() {
           "are separate namespaces"}},
         "object", false, {}});
     agent_protocol.add_command({
+        "scene.trace_provenance",
+        "Trace an inspected object to recorded procedural modules and inputs",
+        {{"object", "object_id", true,
+          "{kind,id} pair from scene.list_objects; entity and baked_root ids "
+          "are separate namespaces"},
+         {"max_depth", "integer", false, "Graph hops, 0 through 8 (default 3)"},
+         {"max_nodes", "integer", false,
+          "Returned graph nodes, 1 through 100 (default 64)"}},
+        "object", false, {}});
+    agent_protocol.add_command({
         "selection.replace", "Replace selection with typed scene objects",
         {{"objects", "array", true,
           "Non-empty unique {kind,id} array; last object becomes primary"}},
@@ -2856,6 +2866,21 @@ int main() {
             out.depth = row.depth;
             out.child_count = row.child_count;
             out.component_names = row.component_names;
+            if (!session) {
+                out.part_instance.reason = "no world session is open";
+            } else {
+                const flecs::entity entity = find_scene_entity(
+                    session->ecs(), matter::scene::SceneEntityId{row.id.value});
+                if (!entity.is_valid() ||
+                    !entity.has<matter::scene::PartInstance>()) {
+                    out.part_instance.reason =
+                        "this entity has no PartInstance component in the live ECS";
+                } else {
+                    out.part_instance.available = true;
+                    out.part_hash =
+                        entity.get<matter::scene::PartInstance>().part_hash;
+                }
+            }
             entity_rows.push_back(std::move(out));
         }
 
@@ -2895,6 +2920,29 @@ int main() {
 
         return viewer::inventory::build_snapshot(entity_rows, root_rows, selection,
                                                  editor_model.revision());
+    };
+
+    // Convert the session's locked deep copy into editor-owned plain data
+    // before serializing a trace.  No response retains worker-owned pointers.
+    auto build_provenance_graph = [&]() {
+        std::vector<viewer::inventory::ProvenanceNode> nodes;
+        if (!session) return nodes;
+        part_graph_snapshot::Snapshot graph;
+        if (!session->graph_snapshot(graph)) return nodes;
+        nodes.reserve(graph.nodes.size());
+        for (const auto& [module_name, node] : graph.nodes) {
+            viewer::inventory::ProvenanceNode out;
+            out.module = node.module.empty() ? module_name : node.module;
+            out.source_path = node.source_path;
+            out.params_json = node.params_json;
+            out.children = node.children;
+            out.shared_imports = node.shared_imports;
+            out.shared_source_paths = node.shared_source_paths;
+            out.resolved_hash = node.resolved_hash;
+            out.is_root = node.is_root;
+            nodes.push_back(std::move(out));
+        }
+        return nodes;
     };
 
     auto reg_scene_list_objects =
@@ -3010,6 +3058,37 @@ int main() {
                 payload.value =
                     viewer::inventory::detail_result_json(snapshot, detail);
                 return viewer::SceneGetObject::Result::succeeded(std::move(payload));
+            });
+
+    auto reg_scene_trace_provenance =
+        registry.must_register_handler<viewer::SceneTraceProvenance>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SceneTraceProvenance& command) {
+                viewer::AgentPayload payload;
+                viewer::inventory::TraceQuery query;
+                std::string error;
+                if (!viewer::inventory::parse_trace_query(command.arguments, query,
+                                                          error)) {
+                    payload.status = viewer::agent::Status::InvalidInput;
+                    payload.message = error;
+                    return viewer::SceneTraceProvenance::Result::succeeded(
+                        std::move(payload));
+                }
+                const viewer::inventory::Snapshot snapshot = build_scene_inventory();
+                if (!viewer::inventory::find_object(snapshot, query.object)) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no such object at this scene revision";
+                    payload.value = viewer::inventory::missing_result_json(
+                        snapshot, query.object,
+                        "this typed object was deleted or replaced before its "
+                        "provenance could be traced");
+                    return viewer::SceneTraceProvenance::Result::succeeded(
+                        std::move(payload));
+                }
+                payload.value = viewer::inventory::trace_result_json(
+                    snapshot, build_provenance_graph(), query);
+                return viewer::SceneTraceProvenance::Result::succeeded(
+                    std::move(payload));
             });
 
     // Selection commands share exactly the SelectionSet read by picking,
@@ -4317,6 +4396,24 @@ int main() {
                         } else {
                             viewer::SceneGetObject command;
                             command.object = object;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        }
+                    } else if (begun.request.command == "scene.trace_provenance") {
+                        // Keep the boundary validation identical to the handler:
+                        // malformed typed ids and traversal bounds are protocol
+                        // input errors, not a failed app-lane command.
+                        viewer::inventory::TraceQuery query;
+                        std::string query_error;
+                        if (!viewer::inventory::parse_trace_query(
+                                begun.request.arguments, query, query_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                query_error);
+                        } else {
+                            viewer::SceneTraceProvenance command;
+                            command.arguments = begun.request.arguments;
                             attach_agent_ticket(
                                 registry.dispatch(std::move(command)),
                                 payload_terminal);

@@ -69,6 +69,12 @@ struct EntityRow {
     std::uint32_t depth = 0;
     std::uint32_t child_count = 0;
     std::vector<std::string> component_names;
+    // A PartInstance can point at a generated part.  It is deliberately an
+    // availability rather than a zero/non-zero convention: zero is not a
+    // usable content address, but the caller still needs to know whether the
+    // live ECS row was inspected at all.
+    Availability part_instance;
+    std::uint64_t part_hash = 0;
 };
 
 // One baked root, as part_graph_snapshot::Node knows it. `source_path` and
@@ -79,6 +85,20 @@ struct RootRow {
     std::string module;
     std::string source_path;
     std::string params_json;
+};
+
+// A copied, app-thread-safe view of one part-graph node.  The production
+// adapter fills this from WorldSession::graph_snapshot(); keeping it as plain
+// data makes the traversal below testable without a session or script host.
+struct ProvenanceNode {
+    std::string module;
+    std::string source_path;
+    std::string params_json;
+    std::vector<std::string> children;
+    std::vector<std::string> shared_imports;
+    std::vector<std::string> shared_source_paths;
+    std::uint64_t resolved_hash = 0;
+    bool is_root = false;
 };
 
 // The app-wide selection, flattened. `primary_index` is -1 when nothing is
@@ -119,6 +139,12 @@ struct Entry {
     std::string source_path_value;
     Availability params;  // guards `params_json`
     std::string params_json;
+
+    // Present only for an entity whose live ECS row has a PartInstance.  This
+    // is the honest bridge from an authored/runtime entity to a generated
+    // part; it does not claim that the entity itself came from that module.
+    Availability part_instance;
+    std::uint64_t part_hash = 0;
 
     bool selected = false;
     bool primary = false;
@@ -175,6 +201,35 @@ ListPage list_objects(const Snapshot& snapshot, const ListQuery& query);
 // numerically valid id that only exists in the OTHER kind's namespace.
 const Entry* find_object(const Snapshot& snapshot,
                          const agent::ObjectIdentity& object);
+
+// --- provenance tracing ----------------------------------------------------
+
+// scene.trace_provenance takes the same typed identity as scene.get_object,
+// then walks only the recorded part-graph edges.  The graph is a module DAG,
+// not an instance graph: a node records the first representative parameter
+// set seen for a module, which is stated in the response rather than hidden.
+constexpr std::uint32_t kDefaultTraceDepth = 3;
+constexpr std::uint32_t kMaxTraceDepth = 8;
+constexpr std::uint32_t kDefaultTraceNodes = 64;
+constexpr std::uint32_t kMaxTraceNodes = 100;
+
+struct TraceQuery {
+    agent::ObjectIdentity object;
+    std::uint32_t max_depth = kDefaultTraceDepth;
+    std::uint32_t max_nodes = kDefaultTraceNodes;
+};
+
+// Validates object plus the bounded traversal arguments.  `object` is parsed
+// here as well as at the command boundary so a direct caller cannot bypass the
+// typed-id contract.
+bool parse_trace_query(const matter::jsondoc::Value& arguments, TraceQuery& out,
+                       std::string& error);
+
+// Serializes a source/procedural trace.  Missing graph, source, params and
+// seed data remain explicit availability records; no file or seed is guessed.
+matter::jsondoc::Value trace_result_json(const Snapshot& snapshot,
+                                         const std::vector<ProvenanceNode>& graph,
+                                         const TraceQuery& query);
 
 // --- inspection -------------------------------------------------------------
 

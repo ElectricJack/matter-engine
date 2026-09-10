@@ -282,7 +282,8 @@ a screenshot taken a moment ago still shows the old one.
 
 ## Scene reads
 
-Two commands answer "what is in this world" and "what exactly is this object".
+Three commands answer "what is in this world", "what exactly is this object",
+and "which recorded procedural source produced it".
 Both stay available before the first bake finishes — `context.scene.ready` tells
 you the world is still filling in, which is more useful than a refusal. Their
 join, ordering, paging and JSON live in `MatterEditor/src/scene_inventory.h`
@@ -336,6 +337,38 @@ An object that is not in the current scene answers `not_found` with a `result`
 of `{"found":false,"object":…,"identity":…,"scene_revision":…,"reason":…}`. A
 deleted entity, a baked root a rebake re-addressed, and an id that is only valid
 in the other kind's namespace all take that path.
+
+### `scene.trace_provenance`
+
+Requires `args.object`, the same typed `{kind,id}` pair `scene.get_object`
+takes. Optional `max_depth` is 0 through 8 (default 3), and optional
+`max_nodes` is 1 through 100 (default 64). Both bounds apply to the returned
+module traversal, so it is safe to use while locating code in a large world.
+
+The response preserves the inspected object identity and scene revision, then
+classifies it as `authored_entity`, `baked_root`, or `runtime_only`. A live
+entity with a recorded `PartInstance` additionally carries a separate
+`generated_instance` record; this prevents a generated part from being
+misrepresented as the entity's authored source. Runtime-only means the
+session-allocated runtime-id bit is set, so no authored mapping is invented.
+
+For a recorded part, `traversal.nodes` contains module identity, content hash,
+source location, canonical parameters, a deterministic FNV-1a hash of those
+canonical parameter bytes, and `world_seed` only when the parameters actually
+record an integral `worldSeed`. Source paths, parameters, and seeds are
+availability records with reasons when absent. Each node reports direct
+parents, child modules, shared imports, and selected shared-source paths; the
+walk follows parent and child module edges only. `truncated:true` means a
+requested bound or per-node edge cap omitted graph data, never that an edge was
+silently ignored.
+
+The graph is a module DAG rather than an instance graph. Its node record is the
+first representative parameter set seen for a module, so a trace never claims
+to enumerate every parametric instance. A deleted entity, a rebake-replaced
+root hash, or a typed id from the other namespace returns normal `not_found`
+at the current scene revision. A graph that has not published yet, or a part
+hash absent from it, returns an explicit unavailable traversal rather than
+guessing from filenames.
 
 ## Shared selection
 

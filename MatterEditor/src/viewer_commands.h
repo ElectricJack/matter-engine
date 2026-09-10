@@ -148,6 +148,16 @@ struct SceneGetObject {
     agent::ObjectIdentity object;
 };
 
+// scene.trace_provenance{object,max_depth?,max_nodes?} — follows the published
+// procedural module DAG for one inspected object.  Like scene.get_object, a
+// missing/replaced typed identity is a normal not_found payload rather than a
+// registry failure.
+struct SceneTraceProvenance {
+    MT_COMMAND_NAME("scene.trace_provenance");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
 // --- typed app-selection commands ------------------------------------------
 // These mutate the one app-owned SelectionSet only.  They deliberately carry
 // typed identities rather than raw JSON; parsing and duplicate rejection stay
