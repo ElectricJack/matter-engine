@@ -34,4 +34,18 @@ uint64_t reveal_part_in_world(const part_graph_snapshot::Snapshot& snapshot,
     return node.resolved_hash;
 }
 
+// Linear scan of the snapshot's nodes: the graph is a MODULE map, so there is
+// no hash-keyed index to consult, and a selection carries a handful of entries
+// at most. The `resolved_hash == 0` guard mirrors reveal_part_in_world's --
+// zero is not an addressable content hash, so it can never be alive.
+bool baked_root_selectable(const part_graph_snapshot::Snapshot& snapshot,
+                           uint64_t resolved_hash) {
+    if (resolved_hash == 0) return false;
+    for (const auto& entry : snapshot.nodes) {
+        const part_graph_snapshot::Node& node = entry.second;
+        if (node.is_root && node.resolved_hash == resolved_hash) return true;
+    }
+    return false;
+}
+
 }  // namespace viewer

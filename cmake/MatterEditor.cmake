@@ -177,16 +177,22 @@ if(BUILD_TESTING)
     add_test(NAME procedural_parameter_tests COMMAND procedural_parameter_tests)
     set_tests_properties(procedural_parameter_tests PROPERTIES LABELS "editor;cpu")
 
+    # reveal_part.cpp comes along for baked_root_selectable -- the one
+    # liveness rule the once-a-frame selection prune shares with the Scene
+    # tree's [Baked] rows and Reveal.  It only needs part_graph_snapshot.h
+    # (plain std containers), hence the extra MatterEngine3/src include.
     add_executable(selection_command_tests
         MatterEditor/tests/test_selection_commands.cpp
         MatterEditor/src/selection_set.cpp
         MatterEditor/src/scene_inventory.cpp
+        MatterEditor/src/reveal_part.cpp
         MatterEditor/src/agent_protocol.cpp
         MatterEngine3/src/util/json_doc.cpp
     )
     target_include_directories(selection_command_tests PRIVATE
         "${CMAKE_SOURCE_DIR}/MatterEditor/src"
         "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/src"
     )
     matter_apply_project_defaults(selection_command_tests)
     matter_apply_test_assertion_policy(selection_command_tests)

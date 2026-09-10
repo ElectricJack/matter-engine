@@ -812,6 +812,17 @@ identities), and typed `primary` or `null`. Stale entries are pruned before a
 selection command/list response, so a rebake or world switch cannot leave an
 old root/entity selected.
 
+"Stale" means gone from the current population, never "not placed". A baked
+root that is in the part graph but has no instance in this world — the one
+`scene.get_object` answers `found:true` with `placement.available:false` for —
+is a selectable object: it can be selected, stays selected, and reports
+`changed:false` on a repeated `add`. It simply has no bounds, so the outline
+and camera focus have nothing to draw or frame for it. The editor's
+once-a-frame prune uses the same part-graph population the selection commands
+validate against (`viewer::baked_root_selectable`, MatterEditor/src/reveal_part.h),
+so `changed:true` is never reported for a selection that does not survive to
+the next read.
+
 ### Object rows
 
 Every row (in a listing and in an inspection) carries:
