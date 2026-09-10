@@ -282,6 +282,13 @@ A survey of `projects/world_demo` found `Meadow` is the **only** world whose
 `static roots` names a module declaring `static params` at all, so no other
 fixture could cover this either.
 
+**Resolved** by AQ `smart-dune.10`: the part-graph snapshot now records each
+node's *effective* parameters — the merged object the resolved hash was already
+folded from — alongside the placement params, and every parameter surface reads
+that. The two rows above were true of `a0ab93e0` and are left as the record of
+that run; re-running them against the fix is the follow-up acceptance pass's
+job.
+
 ### Frame guards are unusable on an animated world
 
 `agent-protocol.md` recommends passing a capture's `captured.frame.id` as

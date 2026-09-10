@@ -636,9 +636,21 @@ its schema:
 
 The response names the owning module and source availability, returns every
 effective parameter with its JSON type and current default, and reports
-`persistence:"session_only_root_override"`. The procedural source model has no
-portable min/max declaration, so each field's `range` is explicitly
-unavailable rather than guessed.
+`persistence:"session_only_root_override"`. *Effective* means the module's
+declared `static params` merged with whatever the placement (or an override
+already applied this session) passed, so a root placed with no explicit params
+still reports everything its module declares — it is the same parameter object
+the root's resolved hash was folded from, which is what
+`scene.trace_provenance` publishes as `params_json`/`params_hash`. The
+procedural source model has no portable min/max declaration, so each field's
+`range` is explicitly unavailable rather than guessed.
+
+Each field also carries `overridable`. The session override the applied path
+uses carries numbers, booleans and strings only, so a parameter whose declared
+value is a nested object or array is *reported* (it is genuinely part of the
+effective set) but reports `overridable {available:false}` with the reason, and
+`procedural.update` refuses it with `invalid_input` rather than returning a
+receipt for a change that would be dropped on the way in.
 
 `procedural.update` accepts the same `object`, a non-empty `changes` object,
 and optional `dry_run` (default `false`). Keys must already be declared in the

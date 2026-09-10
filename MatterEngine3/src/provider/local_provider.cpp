@@ -3535,8 +3535,9 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
                        LocalProviderConfig* c, int* ibc)
             : inner(b), cfg(c), install_bake_count(ibc) {}
         uint64_t resolve_hash(const std::string& source, const Params& params,
-                              const std::vector<uint64_t>& child_hashes) override {
-            return inner.resolve_hash(source, params, child_hashes);
+                              const std::vector<uint64_t>& child_hashes,
+                              std::string* merged_params_out) override {
+            return inner.resolve_hash(source, params, child_hashes, merged_params_out);
         }
         bool cached(uint64_t resolved_hash) override { return inner.cached(resolved_hash); }
         bool bake(const std::string& source, const Params& params,

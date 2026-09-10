@@ -292,6 +292,12 @@ if(BUILD_TESTING)
         MatterEngine3/tests/field_probe.cpp)
     matter_add_engine_cpu_test(script_host_tests
         MatterEngine3/tests/script_host_tests.cpp)
+    # The part-graph logic suite is host-free (its Baker/ModuleResolver are
+    # fakes), so unlike part_graph_integration_tests.cpp -- which needs POSIX
+    # unistd.h and stays a Make/MinGW target -- it builds under MSVC and can
+    # gate the snapshot contract on the canonical build.
+    matter_add_engine_cpu_test(part_graph_tests
+        MatterEngine3/tests/part_graph_tests.cpp)
     matter_add_engine_cpu_test(partstore_tests
         MatterEngine3/tests/partstore_tests.cpp)
     matter_add_engine_cpu_test(eval_world_tests

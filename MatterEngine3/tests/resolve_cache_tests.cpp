@@ -148,6 +148,10 @@ static resolve_cache::ResolveCachePayload make_payload() {
         n.module      = "Box";
         n.source_path = "/abs/schemas/Box.js";
         n.params_json = "{}";
+        // A root placed with no explicit params still carries the module's
+        // declared defaults; the cache must round-trip them, or a cache hit
+        // would restore the empty parameter set they exist to replace.
+        n.effective_params_json = "{\"worldSeed\":20260721}";
         n.children    = {"Leg"};
         n.shared_imports = {"base"};
         n.shared_source_paths = {"/project/shared-lib/base.js",
@@ -269,6 +273,7 @@ static void test_round_trip_basic() {
         CHECK(it->second.module      == kv.second.module);
         CHECK(it->second.source_path == kv.second.source_path);
         CHECK(it->second.params_json == kv.second.params_json);
+        CHECK(it->second.effective_params_json == kv.second.effective_params_json);
         CHECK(it->second.children    == kv.second.children);
         CHECK(it->second.shared_imports == kv.second.shared_imports);
         CHECK(it->second.shared_source_paths == kv.second.shared_source_paths);
