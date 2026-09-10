@@ -72,4 +72,19 @@ void bounds_for_objects(const SelectedObject* objects, size_t count,
                         matter::WorldSession& session,
                         SelectionBounds* out, bool* resolved);
 
+// Whole-population form, for a scene SNAPSHOT rather than a selection. Same
+// per-object rules and the same one ECS scan as bounds_for_objects, but the
+// id match is a hash lookup instead of a linear walk of the batch, so
+// resolving every object the editor can name costs O(scene + count) rather
+// than O(scene x count). That difference is the whole reason it exists:
+// scene_diff.h captures every named object at once, and the quadratic form
+// turns a large procedural world into a stalled frame.
+//
+// Duplicate ids in `objects` all resolve, exactly as they do above. `out` and
+// `resolved` are caller-owned arrays of `count` entries with identical
+// contracts: `resolved` is fully written, `out[i]` only where `resolved[i]`.
+void bounds_for_object_set(const SelectedObject* objects, size_t count,
+                           matter::WorldSession& session,
+                           SelectionBounds* out, bool* resolved);
+
 } // namespace viewer

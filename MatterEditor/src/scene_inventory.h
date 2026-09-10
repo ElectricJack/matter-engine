@@ -108,6 +108,44 @@ struct SelectionInput {
     int primary_index = -1;
 };
 
+// --- primitives shared with scene_diff.h ------------------------------------
+// Exported rather than kept file-private because MatterEditor/src/scene_diff.h
+// answers about the SAME objects. A diff that classified an id's namespace,
+// digested a parameter object, or read a worldSeed differently from the
+// listing that produced the id would be worse than no diff at all, so there is
+// one spelling of each rule and both files call it.
+
+// FNV-1a over the exact bytes. Used for the canonical-parameter digest that
+// `scene.trace_provenance` reports as `params_hash`, so the same parameters
+// digest equal in a trace and in a diff.
+std::uint64_t fnv1a64(const std::string& text);
+
+// A digest as 16 lowercase hex digits: a JSON string, never a number, for the
+// same reason ids are.
+matter::jsondoc::Value hash_json(std::uint64_t hash);
+
+// `namespace` / `source` / `stability` / `classified_by` / `notes` for one
+// typed id -- the identity contract emitted beside every object row.
+matter::jsondoc::Value identity_contract_json(const agent::ObjectIdentity& object);
+
+// The integral `worldSeed` recorded in a canonical parameter object, or an
+// unavailability that says which of "not JSON", "no worldSeed" and "not a
+// non-negative integer" was true. Never guesses a seed.
+Availability seed_from_params(const std::string& params_json, std::uint64_t& seed);
+
+// Duplicate-key aware argument lookup. A request off the wire cannot carry a
+// duplicate key -- the strict parser rejects one -- but a jsondoc Value is a
+// VECTOR of pairs, so anything that builds arguments programmatically can, and
+// Value::find would return the copy the protocol's type check SKIPPED.
+// `duplicated` separates "absent" from "ambiguous".
+const matter::jsondoc::Value* unique_argument(const matter::jsondoc::Value& object,
+                                              const char* key, bool& duplicated);
+
+// A non-negative integral JSON number (or lossless UInt64) no greater than
+// `max`. False leaves `out` alone.
+bool decimal_u64_in_range(const matter::jsondoc::Value& value, std::uint64_t max,
+                          std::uint64_t& out);
+
 // --- listed facts -----------------------------------------------------------
 
 // Everything `scene.list_objects` reports for one object. Cheap by

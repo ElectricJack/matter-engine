@@ -12,10 +12,10 @@ set(matter_editor_sources_unique ${matter_editor_sources})
 list(REMOVE_DUPLICATES matter_editor_sources_unique)
 list(LENGTH matter_editor_sources matter_editor_source_count)
 list(LENGTH matter_editor_sources_unique matter_editor_unique_source_count)
-if(NOT matter_editor_source_count EQUAL 46 OR
-        NOT matter_editor_unique_source_count EQUAL 46)
+if(NOT matter_editor_source_count EQUAL 47 OR
+        NOT matter_editor_unique_source_count EQUAL 47)
     message(FATAL_ERROR
-        "editor.sources must provide exactly 46 unique editor C++ sources; "
+        "editor.sources must provide exactly 47 unique editor C++ sources; "
         "count=${matter_editor_source_count}, unique=${matter_editor_unique_source_count}")
 endif()
 
@@ -130,6 +130,22 @@ if(BUILD_TESTING)
     matter_apply_test_assertion_policy(scene_inventory_tests)
     add_test(NAME scene_inventory_tests COMMAND scene_inventory_tests)
     set_tests_properties(scene_inventory_tests PROPERTIES LABELS "editor;cpu")
+
+    add_executable(scene_diff_tests
+        MatterEditor/tests/test_scene_diff.cpp
+        MatterEditor/src/scene_diff.cpp
+        MatterEditor/src/scene_inventory.cpp
+        MatterEditor/src/agent_protocol.cpp
+        MatterEngine3/src/util/json_doc.cpp
+    )
+    target_include_directories(scene_diff_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+    )
+    matter_apply_project_defaults(scene_diff_tests)
+    matter_apply_test_assertion_policy(scene_diff_tests)
+    add_test(NAME scene_diff_tests COMMAND scene_diff_tests)
+    set_tests_properties(scene_diff_tests PROPERTIES LABELS "editor;cpu")
 
     add_executable(regen_job_tests
         MatterEditor/tests/test_regen_jobs.cpp

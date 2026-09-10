@@ -1157,6 +1157,26 @@ build/test_scene_inventory.exe: tests/test_scene_inventory.cpp \
 run-test-scene-inventory: build/test_scene_inventory.exe
 	./build/test_scene_inventory.exe
 
+# Scene comparison and spatial queries (scene.capture_snapshot /
+# scene.list_snapshots / scene.diff / scene.query). scene_diff.cpp is
+# engine-free like scene_inventory.cpp, so logical-vs-incarnation pairing,
+# no-op and seeded regeneration, deletions, unloaded bounds, incomparable
+# snapshots, region tests and paging are all decidable here with no session.
+build/test_scene_diff.exe: tests/test_scene_diff.cpp \
+        src/scene_diff.cpp src/scene_diff.h \
+        src/scene_inventory.cpp src/scene_inventory.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_scene_diff.cpp src/scene_diff.cpp \
+	    src/scene_inventory.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-scene-diff
+run-test-scene-diff: build/test_scene_diff.exe
+	./build/test_scene_diff.exe
+
 # Regeneration job ledger (job.start / job.status / job.wait / job.cancel /
 # job.list).  regen_jobs.cpp holds no session, bake or renderer, so overlapping
 # reloads, a superseded result, a script failure with its file:line, editor

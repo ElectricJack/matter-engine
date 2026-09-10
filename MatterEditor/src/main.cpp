@@ -202,6 +202,7 @@
 #include "session_binding.h"
 #include "scene_model_adapter.h"
 #include "scene_inventory.h"
+#include "scene_diff.h"
 #include "regen_jobs.h"
 #include "procedural_parameters.h"
 #include "viewer_commands.h"
@@ -2539,6 +2540,11 @@ int main() {
     // guess, and guessing is what the ledger exists to replace.
     viewer::jobs::Registry regen_jobs;
     viewer::jobs::WaitList regen_waits;
+    // The retained scene-snapshot ring behind scene.capture_snapshot /
+    // scene.diff (scene_diff.h). App-scoped like the job ledger, and bounded
+    // for the same reason: a snapshot holds one row per named object, so an
+    // unbounded ring is an unbounded editor.
+    viewer::scenediff::SnapshotStore scene_snapshots;
     // D-03: wall-clock deadman for a `shot`/`shot_now` that can never
     // complete (a world where presents never succeed, or where
     // instances_drawn never goes positive so shot_settle can never reach
@@ -2800,6 +2806,60 @@ int main() {
          {"max_nodes", "integer", false,
           "Returned graph nodes, 1 through 100 (default 64)"}},
         "object", false, {}});
+    // Scene comparison and spatial queries (scene_diff.h). Available before
+    // the first bake for the same reason the reads are: a capture of a world
+    // that is still filling in is a fact, and `context.scene.ready` says so.
+    agent_protocol.add_command({
+        "scene.capture_snapshot",
+        "Retain a bounded, ordered capture of the scene plus its measured "
+        "world bounds and generation inputs",
+        {{"label", "string", false,
+          "Caller-chosen label echoed back on the snapshot record"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "scene.list_snapshots",
+        "List the retained scene snapshots, oldest first", {}, "object", false, {}});
+    agent_protocol.add_command({
+        "scene.diff",
+        "Compare two scene captures by logical identity: added, removed and "
+        "changed objects, bounds and generation inputs",
+        {{"from", "string", true,
+          "Retained snapshot id from scene.capture_snapshot"},
+         {"to", "string", false,
+          "Retained snapshot id, or \"current\" (the default) to capture the "
+          "live scene at dispatch"},
+         {"kinds", "array", false,
+          "Subset of [\"entity\",\"baked_root\"]; omitted means both"},
+         {"changes", "array", false,
+          "Subset of [\"added\",\"removed\",\"changed\",\"unchanged\"]; "
+          "omitted means the first three"},
+         {"offset", "integer", false, "Rows to skip within the matched set"},
+         {"limit", "integer", false, "Rows to return, 1 through 200 (default 100)"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "scene.query",
+        "Filter a scene capture by kind, name, provenance and world-space region",
+        {{"snapshot", "string", false,
+          "Retained snapshot id, or \"current\" (the default)"},
+         {"kinds", "array", false,
+          "Subset of [\"entity\",\"baked_root\"]; omitted means both"},
+         {"name_contains", "string", false,
+          "Case-insensitive substring of the object name"},
+         {"module_contains", "string", false,
+          "Case-insensitive substring of the recorded provenance module"},
+         {"source_path_contains", "string", false,
+          "Case-insensitive substring of the recorded source path"},
+         {"has_provenance", "boolean", false,
+          "Keep only objects that do (or do not) carry part-graph provenance"},
+         {"has_part_instance", "boolean", false,
+          "Keep only objects whose live ECS row does (or does not) place a part"},
+         {"region", "object", false,
+          "{\"type\":\"aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} or "
+          "{\"type\":\"sphere\",\"center\":[x,y,z],\"radius\":r}, with "
+          "optional \"mode\":\"intersects\"|\"contains\""},
+         {"offset", "integer", false, "Rows to skip within the matched set"},
+         {"limit", "integer", false, "Rows to return, 1 through 200 (default 100)"}},
+        "object", false, {}});
     agent_protocol.add_command({
         "selection.replace", "Replace selection with typed scene objects",
         {{"objects", "array", true,
@@ -3059,6 +3119,147 @@ int main() {
         return count;
     };
 
+    // --- scene.capture_snapshot / scene.diff / scene.query (scene_diff.h) ---
+    // One capture routine behind all three: a diff of "this snapshot against
+    // the live scene" and a query of the live scene must observe the world the
+    // same way, and two capture paths would eventually not.
+    //
+    // Bounds are measured with bounds_for_object_set -- the whole-population
+    // form of the SAME resolver the selection outline and the viewport pick
+    // use -- so an agent's spatial answer and the box on screen are one
+    // measurement. It costs ONE ECS scan for the entire population.
+    auto capture_scene_snapshot = [&](std::string label) {
+        const viewer::inventory::Snapshot inventory_snapshot = build_scene_inventory();
+
+        std::vector<viewer::scenediff::MeasuredBounds> measured(
+            inventory_snapshot.entries.size());
+        if (!session) {
+            for (viewer::scenediff::MeasuredBounds& bounds : measured)
+                bounds.reason = "no world session is open, so nothing has a "
+                                "world placement to measure";
+        } else if (!inventory_snapshot.entries.empty()) {
+            std::vector<viewer::SelectedObject> targets;
+            targets.reserve(inventory_snapshot.entries.size());
+            for (const viewer::inventory::Entry& entry : inventory_snapshot.entries) {
+                targets.push_back(viewer::SelectedObject{
+                    entry.object.kind ==
+                            viewer::agent::ObjectIdentity::Kind::BakedRoot
+                        ? viewer::SelectedObject::BakedRoot
+                        : viewer::SelectedObject::Entity,
+                    entry.object.id});
+            }
+            std::vector<viewer::SelectionBounds> boxes(targets.size());
+            // A plain bool array, not std::vector<bool>: the resolver writes
+            // through a bool*, and the vector specialisation has no such
+            // storage to hand out.
+            std::unique_ptr<bool[]> resolved(new bool[targets.size()]);
+            viewer::bounds_for_object_set(targets.data(), targets.size(),
+                                          *session, boxes.data(), resolved.get());
+            for (std::size_t index = 0; index < targets.size(); ++index) {
+                viewer::scenediff::MeasuredBounds& out = measured[index];
+                const bool is_entity =
+                    targets[index].kind == viewer::SelectedObject::Entity;
+                if (!resolved[index]) {
+                    out.reason =
+                        is_entity
+                            ? "this entity is in the scene rows but has no "
+                              "resolvable transform in the live ECS"
+                            : "this baked root is in the part graph but has no "
+                              "placed instance in the current world";
+                    continue;
+                }
+                // All eight transformed corners: the transformed min/max would
+                // be wrong under rotation, and this is the one derivation
+                // scene.get_object's `world_bounds` already uses.
+                if (!viewer::inventory::world_aabb_from_local(
+                        boxes[index].local_min, boxes[index].local_max,
+                        boxes[index].world_matrix, out.world_min, out.world_max)) {
+                    out.reason =
+                        "this object's local-to-world matrix is not finite, so "
+                        "it has no world box";
+                    continue;
+                }
+                out.resolved = true;
+            }
+        }
+
+        viewer::scenediff::CaptureContext context;
+        context.session_open = session != nullptr;
+        context.scene_ready = bake_ready;
+        context.session_id = binding.current_session_id();
+        context.session_generation = binding.current_generation();
+        context.scene_generation = session ? session->graph_generation() : 0;
+        context.scene_revision = editor_model.revision();
+
+        viewer::scenediff::GenerationInputs inputs;
+        const std::string world_name = worlds.empty()
+                                           ? std::string()
+                                           : worlds[stats.world_current].world_name;
+        const std::string project_dir = worlds.empty()
+                                            ? std::string()
+                                            : worlds[stats.world_current].project_dir;
+        inputs.world.available = !world_name.empty();
+        inputs.world_value = world_name;
+        if (!inputs.world.available)
+            inputs.world.reason = "the editor has no current world entry";
+        inputs.project.available = !project_dir.empty();
+        inputs.project_value = project_dir;
+        if (!inputs.project.available)
+            inputs.project.reason = "the editor recorded no project directory";
+
+        // The same digest job.status reports: FNV-1a over the SORTED published
+        // (module, resolved hash) roots. A world that publishes no roots (a
+        // streamed world installs sector assets instead) has nothing for the
+        // digest to distinguish, and says so rather than returning the
+        // empty-set constant as if it were content.
+        std::vector<viewer::jobs::RootDigest> roots;
+        if (session) {
+            part_graph_snapshot::Snapshot graph;
+            if (session->graph_snapshot(graph)) {
+                for (const auto& [module_name, node] : graph.nodes) {
+                    if (!node.is_root) continue;
+                    roots.push_back(viewer::jobs::RootDigest{
+                        node.module.empty() ? module_name : node.module,
+                        node.resolved_hash});
+                }
+            }
+        }
+        if (roots.empty()) {
+            inputs.content_digest.reason =
+                session ? "this world published no part-graph roots, so there is "
+                          "no content digest to compare"
+                        : "no world session is open";
+        } else {
+            inputs.content_digest.available = true;
+            inputs.content_digest_value = viewer::jobs::content_digest(roots);
+        }
+
+        // A world seed is claimed only when a COMPLETED seeded regeneration
+        // published the very scene generation being captured. A seed from some
+        // earlier bake would name an input this scene was not built from.
+        inputs.world_seed.reason =
+            "no completed seeded regeneration in this editor session produced "
+            "the scene generation being captured";
+        const std::vector<const viewer::jobs::Job*> recent =
+            regen_jobs.recent(viewer::jobs::kDefaultHistoryLimit);
+        for (auto it = recent.rbegin(); it != recent.rend(); ++it) {
+            const viewer::jobs::Job& job = **it;
+            if (!job.request.has_seed) continue;
+            if (job.state != viewer::jobs::State::Completed) continue;
+            if (!job.has_result_scene) continue;
+            if (job.result_scene_generation != context.scene_generation) continue;
+            inputs.world_seed.available = true;
+            inputs.world_seed.reason.clear();
+            inputs.world_seed_value = job.request.seed;
+            inputs.world_seed_source =
+                "regeneration job " + std::to_string(job.id);
+            break;
+        }
+
+        return viewer::scenediff::capture(inventory_snapshot, measured, context,
+                                          inputs, std::move(label));
+    };
+
     auto reg_scene_list_objects =
         registry.must_register_handler<viewer::SceneListObjects>(
             matter::evt::CommandScope::App, app_lane,
@@ -3204,6 +3405,118 @@ int main() {
                 return viewer::SceneTraceProvenance::Result::succeeded(
                     std::move(payload));
             });
+
+    auto reg_scene_capture_snapshot =
+        registry.must_register_handler<viewer::SceneCaptureSnapshot>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SceneCaptureSnapshot& command) {
+                viewer::AgentPayload payload;
+                const std::uint64_t id =
+                    scene_snapshots.retain(capture_scene_snapshot(command.label));
+                payload.value = viewer::scenediff::capture_result_json(
+                    *scene_snapshots.find(id), scene_snapshots);
+                return viewer::SceneCaptureSnapshot::Result::succeeded(
+                    std::move(payload));
+            });
+
+    auto reg_scene_list_snapshots =
+        registry.must_register_handler<viewer::SceneListSnapshots>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SceneListSnapshots&) {
+                viewer::AgentPayload payload;
+                payload.value =
+                    viewer::scenediff::snapshot_list_json(scene_snapshots);
+                return viewer::SceneListSnapshots::Result::succeeded(
+                    std::move(payload));
+            });
+
+    auto reg_scene_diff = registry.must_register_handler<viewer::SceneDiff>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::SceneDiff& command) {
+            viewer::AgentPayload payload;
+            viewer::scenediff::DiffQuery query;
+            std::string error;
+            // Re-parsed rather than trusted, exactly as scene.list_objects
+            // re-parses: a handler that assumes its input was checked elsewhere
+            // is one refactor from not being.
+            if (!viewer::scenediff::parse_diff_query(command.arguments, query,
+                                                     error)) {
+                payload.status = viewer::agent::Status::InvalidInput;
+                payload.message = error;
+                return viewer::SceneDiff::Result::succeeded(std::move(payload));
+            }
+            const viewer::scenediff::Snapshot* from =
+                scene_snapshots.find(query.from_id);
+            if (!from) {
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message = "no such retained snapshot";
+                payload.value = viewer::scenediff::missing_snapshot_json(
+                    query.from_id, scene_snapshots,
+                    "this snapshot id was never captured, or has been evicted "
+                    "from the retained ring");
+                return viewer::SceneDiff::Result::succeeded(std::move(payload));
+            }
+            // The live capture is held here for the lifetime of the response:
+            // `to` may point at it, and the diff borrows both snapshots' rows.
+            viewer::scenediff::Snapshot live;
+            const viewer::scenediff::Snapshot* to = nullptr;
+            if (query.to_is_current) {
+                live = capture_scene_snapshot("current");
+                to = &live;
+            } else {
+                to = scene_snapshots.find(query.to_id);
+                if (!to) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no such retained snapshot";
+                    payload.value = viewer::scenediff::missing_snapshot_json(
+                        query.to_id, scene_snapshots,
+                        "this snapshot id was never captured, or has been "
+                        "evicted from the retained ring");
+                    return viewer::SceneDiff::Result::succeeded(std::move(payload));
+                }
+            }
+            const viewer::scenediff::Diff diff =
+                viewer::scenediff::compare(*from, *to);
+            payload.value = viewer::scenediff::diff_result_json(
+                *from, *to, diff, query,
+                viewer::scenediff::page_diff(diff, query));
+            return viewer::SceneDiff::Result::succeeded(std::move(payload));
+        });
+
+    auto reg_scene_query = registry.must_register_handler<viewer::SceneQuery>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::SceneQuery& command) {
+            viewer::AgentPayload payload;
+            viewer::scenediff::ObjectQuery query;
+            std::string error;
+            if (!viewer::scenediff::parse_object_query(command.arguments, query,
+                                                       error)) {
+                payload.status = viewer::agent::Status::InvalidInput;
+                payload.message = error;
+                return viewer::SceneQuery::Result::succeeded(std::move(payload));
+            }
+            viewer::scenediff::Snapshot live;
+            const viewer::scenediff::Snapshot* snapshot = nullptr;
+            if (query.snapshot_is_current) {
+                live = capture_scene_snapshot("current");
+                snapshot = &live;
+            } else {
+                snapshot = scene_snapshots.find(query.snapshot_id);
+                if (!snapshot) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no such retained snapshot";
+                    payload.value = viewer::scenediff::missing_snapshot_json(
+                        query.snapshot_id, scene_snapshots,
+                        "this snapshot id was never captured, or has been "
+                        "evicted from the retained ring");
+                    return viewer::SceneQuery::Result::succeeded(std::move(payload));
+                }
+            }
+            payload.value = viewer::scenediff::query_result_json(
+                *snapshot, query,
+                viewer::scenediff::query_objects(*snapshot, query));
+            return viewer::SceneQuery::Result::succeeded(std::move(payload));
+        });
 
     // Selection commands share exactly the SelectionSet read by picking,
     // outlines and the gizmo.  The auxiliary Scene-tree highlight is only a
@@ -4749,6 +5062,72 @@ int main() {
                         } else {
                             viewer::SceneGetObject command;
                             command.object = object;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        }
+                    } else if (begun.request.command == "scene.capture_snapshot") {
+                        // `label` is optional and free-form, but it is echoed
+                        // in every later record, so it is bounded here rather
+                        // than at the point it is printed.
+                        bool duplicated = false;
+                        const matter::jsondoc::Value* label =
+                            viewer::inventory::unique_argument(
+                                begun.request.arguments, "label", duplicated);
+                        if (duplicated) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                "label was supplied more than once");
+                        } else if (label &&
+                                   (label->kind !=
+                                        matter::jsondoc::Value::Kind::String ||
+                                    label->str.size() >
+                                        viewer::scenediff::kMaxCapturedTextBytes)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                "label must be a string of at most 256 bytes");
+                        } else {
+                            viewer::SceneCaptureSnapshot command;
+                            if (label) command.label = label->str;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        }
+                    } else if (begun.request.command == "scene.list_snapshots") {
+                        attach_agent_ticket(
+                            registry.dispatch(viewer::SceneListSnapshots{}),
+                            payload_terminal);
+                    } else if (begun.request.command == "scene.diff" ||
+                               begun.request.command == "scene.query") {
+                        // Same rule as the other scene reads: range, enum and
+                        // region validation happen HERE so a bad limit, an
+                        // unknown change class or an inverted box is
+                        // invalid_input rather than a handler failure. The
+                        // descriptor only checked JSON types.
+                        std::string query_error;
+                        bool valid = false;
+                        if (begun.request.command == "scene.diff") {
+                            viewer::scenediff::DiffQuery query;
+                            valid = viewer::scenediff::parse_diff_query(
+                                begun.request.arguments, query, query_error);
+                        } else {
+                            viewer::scenediff::ObjectQuery query;
+                            valid = viewer::scenediff::parse_object_query(
+                                begun.request.arguments, query, query_error);
+                        }
+                        if (!valid) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                query_error);
+                        } else if (begun.request.command == "scene.diff") {
+                            viewer::SceneDiff command;
+                            command.arguments = begun.request.arguments;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        } else {
+                            viewer::SceneQuery command;
+                            command.arguments = begun.request.arguments;
                             attach_agent_ticket(
                                 registry.dispatch(std::move(command)),
                                 payload_terminal);

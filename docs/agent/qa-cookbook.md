@@ -233,6 +233,118 @@ seed `424242` completed in 2.29 s with `content_digest 0e76c92dc6e0b23e`; and
 `execution_failure` / `state:"failed"` / `completed:false` with
 `"the editor shut down before this job finished"`.
 
+## 4d. Verify what a change actually produced
+
+`job.wait` tells you a bake finished. It does not tell you whether the world it
+produced differs from the one before it, and on a procedural world you cannot
+read that off two `scene.list_objects` pages: a baked root's id IS its content
+hash, so any rebake re-addresses every root and a naive comparison reports
+2xN removals-plus-additions. `scene.capture_snapshot` + `scene.diff` pair on
+the LOGICAL key (module name / authored entity id) instead, so a rebake reads
+as one `changed` row per object carrying `regenerated: true`.
+
+```bash
+CMD=/mnt/c/tmp/matter-agent/commands.txt
+RES=/mnt/c/tmp/matter-agent/results.jsonl
+A () { python3 tools/matter_agent.py "$1" --cmd-file "$CMD" --result-file "$RES" \
+         ${2:+--args "$2"} ${3:+--timeout "$3"}; }
+
+# 1. baseline
+A scene.capture_snapshot '{"label":"before"}'      # -> result.snapshot.snapshot_id
+
+# 2. the change under test
+A job.start '{"operation":"regenerate","seed":"12345"}'
+A job.wait  '{"job_id":"1"}' 30
+
+# 3. what it produced, against the live scene
+A scene.diff '{"from":"1"}'
+```
+
+Read `result.compatibility.level` first:
+
+- `full` — every logical key paired;
+- `partial` — the comparison still holds, but a named class could not be
+  paired: `entity/session_allocated_id` (the two captures come from different
+  session generations, so a runtime-minted id means different objects) or
+  `baked_root/ambiguous_module_key` (a module published as several roots).
+  Those objects are in `incomparable_objects`, never guessed at;
+- `incomparable` — different worlds or projects. There are **no rows**, and
+  `reason` says why. That is deliberate: "everything was removed and everything
+  was added" reads like a finding.
+
+Then `result.summary`:
+
+- **a no-op reload** (a cache-hit rebake) is `added/removed/changed` all zero
+  with `content_identical.value: true`;
+- **a seeded reroll** is `changed == regenerated == <root count>`, each row
+  carrying `incarnation`, `params_digest` and `world_seed` in `changed_fields`,
+  plus `bounds` for the parts that actually moved;
+- `content_identical` is an AVAILABILITY. A world-kind (streamed) world such as
+  `StreamMountain` publishes no part-graph roots, so it has no digest and the
+  field reports `available:false` with that reason — an absent digest never
+  reads as identical content. Check those worlds with `viewport.capture` +
+  `MatterEngine3/tools/img_diff.py`.
+
+`scene.query` is the same capture with filters, including a world-space region:
+
+```bash
+# every baked root whose module mentions "rock", within 40 m of the origin
+A scene.query '{"kinds":["baked_root"],"module_contains":"rock",
+                "region":{"type":"sphere","center":[0,0,0],"radius":40},
+                "limit":50}'
+
+# everything wholly inside one box, in a snapshot captured earlier
+A scene.query '{"snapshot":"1","region":{"type":"aabb","min":[-10,-5,-10],
+                "max":[10,5,10],"mode":"contains"}}'
+```
+
+The region test runs against each object's captured world AABB — the same box
+`scene.get_object` reports as `world_bounds` and the same one the selection
+outline draws. `result.region.unresolved` is **not** a rejection count: an
+object with no measured bounds (a root in the part graph placed nowhere, an
+entity with no transform in the live ECS) was neither accepted nor rejected,
+and that is a different answer from "outside the region". Page with
+`offset`/`limit` exactly as `scene.list_objects` does; ordering is
+`kind_then_logical_key` for a diff and `kind_then_id` for a query, both total,
+so paging a fixed pair of snapshots is resumable.
+
+Snapshots are retained 8 deep and cap at 20,000 objects. An id that aged out of
+the ring answers `not_found` with `oldest_retained_snapshot_id`, so "evicted"
+stays distinguishable from "never existed"; a capture over the object cap is an
+ordered PREFIX with `capture.truncated: true`, so the missing tail cannot read
+as a deletion.
+
+**2026-09-09 native MSVC acceptance.** On `RockGallery` (1 baked root, 0
+entities): the baseline capture reported `content_digest 99d4be1f1b73784b` and
+`world_seed available:false`; a `reload` job completed and `scene.diff` returned
+`compatibility.level:"full"`, `changed:0`, `unchanged:1`,
+`content_identical.value:true`, zero rows. A `regenerate` with seed `424242`
+completed with `content_digest 0e76c92dc6e0b23e`, the next capture attributed
+`world_seed 424242` to `"source":"regeneration job 2"`, and `scene.diff` between
+the two returned ONE row: `changed` / `regenerated:true` on logical key
+`RockGallery`, `changed_fields
+["incarnation","params_digest","world_seed","part_instance"]`, with
+`incarnation` naming `5261899218771808037` -> `184616422800810673`.
+
+On `PhysicsPlayground` (10 entities, 4 baked roots): the capture measured 11 of
+14 objects (`bounds_unresolved:3` — three roots are in the part graph but placed
+nowhere) and reported no ambiguous logical keys. `scene.query` with
+`{"type":"sphere","center":[0,0,0],"radius":5}` matched `Floor Body`, `Crate 0`
+and `PlaygroundFloor` with `region.tested:11, unresolved.count:3`; the same box
+under `mode:"contains"` matched only `Floor Body`; `limit:5` paged
+`has_more:true, next_offset:5` and `offset:10` closed the set at 14.
+
+Both labelling paths were exercised live. Switching
+`PhysicsPlayground -> RockGallery` and diffing across it returned
+`level:"incomparable"` with zero rows and the reason naming both worlds.
+Switching back and diffing against the ORIGINAL `PhysicsPlayground` snapshot
+returned `level:"partial"` with `session_scoped_ids_comparable:false` and the
+`entity/session_allocated_id` class named — while all 14 authored objects still
+paired as `unchanged` across session `1` -> session `3`. Error paths answered
+`not_found` (an unretained snapshot id, carrying
+`oldest_retained_snapshot_id`) and `invalid_input` (`region.min` past
+`region.max`, `from:"current"`, `limit:500`).
+
 ## 5. Replay an issue shot and diff
 
 ```bash

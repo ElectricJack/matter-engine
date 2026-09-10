@@ -118,6 +118,8 @@ bool same_object(const agent::ObjectIdentity& a, const agent::ObjectIdentity& b)
 // `is_runtime_id` is called rather than re-deriving the bit test, so this
 // file cannot drift from the allocator that upholds it.
 
+}  // namespace
+
 Value identity_contract_json(const agent::ObjectIdentity& object) {
     Value out = object_value();
     if (object.kind == agent::ObjectIdentity::Kind::Entity) {
@@ -152,6 +154,8 @@ Value identity_contract_json(const agent::ObjectIdentity& object) {
     }
     return out;
 }
+
+namespace {
 
 Value entry_json(const Entry& entry) {
     Value out = object_value();
@@ -200,6 +204,8 @@ Value entry_json(const Entry& entry) {
 // copy, which is also the one the protocol's type check SKIPPED (its
 // unique_field returns null for an ambiguous key), so the value would be acted
 // on unvalidated. `duplicated` separates "absent" from "ambiguous".
+}  // namespace
+
 const Value* unique_argument(const Value& object, const char* key,
                              bool& duplicated) {
     const Value* result = nullptr;
@@ -229,8 +235,6 @@ bool decimal_u64_in_range(const Value& value, std::uint64_t max,
     out = static_cast<std::uint64_t>(value.num);
     return true;
 }
-
-}  // namespace
 
 Snapshot build_snapshot(const std::vector<EntityRow>& entities,
                         const std::vector<RootRow>& roots,
@@ -556,10 +560,6 @@ bool parse_trace_query(const Value& arguments, TraceQuery& out,
     return true;
 }
 
-namespace {
-
-constexpr std::size_t kMaxTraceEdges = 32;
-
 std::uint64_t fnv1a64(const std::string& text) {
     std::uint64_t hash = 14695981039346656037ull;
     for (unsigned char byte : text) {
@@ -569,7 +569,7 @@ std::uint64_t fnv1a64(const std::string& text) {
     return hash;
 }
 
-Value hash_value(std::uint64_t hash) {
+Value hash_json(std::uint64_t hash) {
     char text[17] = {};
     std::snprintf(text, sizeof(text), "%016llx",
                   static_cast<unsigned long long>(hash));
@@ -605,6 +605,10 @@ Availability seed_from_params(const std::string& params, std::uint64_t& seed) {
     return result;
 }
 
+namespace {
+
+constexpr std::size_t kMaxTraceEdges = 32;
+
 Value bounded_strings(const std::vector<std::string>& names, bool& truncated) {
     Value result = array_value();
     const std::size_t count = std::min(names.size(), kMaxTraceEdges);
@@ -637,7 +641,7 @@ Value trace_node_json(const ProvenanceNode& node,
     Value inputs = object_value();
     inputs.set("params_json", optional_json(params, string_value(node.params_json)));
     if (params.available) {
-        inputs.set("params_hash", hash_value(fnv1a64(node.params_json)));
+        inputs.set("params_hash", hash_json(fnv1a64(node.params_json)));
         inputs.set("params_hash_algorithm", string_value("fnv1a64_canonical_params"));
         std::uint64_t seed = 0;
         const Availability seed_availability = seed_from_params(node.params_json, seed);
