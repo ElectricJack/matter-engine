@@ -202,6 +202,7 @@
 #include "session_binding.h"
 #include "scene_model_adapter.h"
 #include "scene_inventory.h"
+#include "regen_jobs.h"
 #include "viewer_commands.h"
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
@@ -252,6 +253,27 @@
 #endif
 
 namespace {
+
+// regen_jobs.h mirrors matter::BakeErrorCode by VALUE so the job ledger can
+// stay engine-free and still report the engine's own classification. This is
+// the one place the two are held together: adding a code to matter/events.h
+// without adding it there is a compile error here, not a silently mislabelled
+// diagnostic in an agent's result.
+static_assert(static_cast<int>(matter::BakeErrorCode::None) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::None) &&
+              static_cast<int>(matter::BakeErrorCode::Cancelled) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::Cancelled) &&
+              static_cast<int>(matter::BakeErrorCode::OutOfMemory) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::OutOfMemory) &&
+              static_cast<int>(matter::BakeErrorCode::ScriptError) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::ScriptError) &&
+              static_cast<int>(matter::BakeErrorCode::GpuError) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::GpuError) &&
+              static_cast<int>(matter::BakeErrorCode::IoError) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::IoError) &&
+              static_cast<int>(matter::BakeErrorCode::Internal) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::Internal),
+              "viewer::jobs::ErrorCode must mirror matter::BakeErrorCode");
 
 // ---------------------------------------------------------------------------
 // Console log sink. Bridges the engine-wide matter::log facility into the
@@ -2508,6 +2530,14 @@ int main() {
     // failure seams beside it), not from the app-lane handler. At most one is
     // armed at a time -- see viewport_capture.h.
     viewer::capture::Tracker agent_capture;
+    // The regeneration job ledger (regen_jobs.h) and its bounded waits. The
+    // ledger is written at exactly two places: the post-frame seam, which is
+    // the only point a reload/regenerate may actually run, and the poll_event
+    // drain below, which is where the engine's own bake events arrive. Nothing
+    // else may transition a job -- a state derived anywhere else would be a
+    // guess, and guessing is what the ledger exists to replace.
+    viewer::jobs::Registry regen_jobs;
+    viewer::jobs::WaitList regen_waits;
     // D-03: wall-clock deadman for a `shot`/`shot_now` that can never
     // complete (a world where presents never succeed, or where
     // instances_drawn never goes positive so shot_settle can never reach
@@ -2824,6 +2854,41 @@ int main() {
         "changing the selection",
         {{"object", "object_id", false,
           "{kind,id} pair to frame; omitted frames the current selection"}},
+        "object", false, {}});
+    // Regeneration job control (regen_jobs.h). `seed` and `job_id` are decimal
+    // STRINGS for the same reason every other id here is: a 64-bit seed does
+    // not survive an IEEE-754 double. Ranges and the per-operation seed rules
+    // are checked at dispatch so they report invalid_input.
+    agent_protocol.add_command({
+        "job.start",
+        "Queue a world reload or seeded regeneration and return its job id",
+        {{"operation", "string", true,
+          "\"reload\" (rebake the world as authored) or \"regenerate\" "
+          "(rebake with a worldSeed override)"},
+         {"seed", "string", false,
+          "Unsigned 64-bit decimal string; required for \"regenerate\" and "
+          "refused for \"reload\""}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "job.status",
+        "Read one regeneration job: state, progress, diagnostics and result",
+        {{"job_id", "string", true, "Decimal job id returned by job.start"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "job.wait",
+        "Wait, bounded by this request's timeout_ms, for one job to reach a "
+        "terminal state",
+        {{"job_id", "string", true, "Decimal job id returned by job.start"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "job.cancel",
+        "Cancel a job that is still queued; report unsupported for one the "
+        "engine is already running",
+        {{"job_id", "string", true, "Decimal job id returned by job.start"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "job.list", "List the most recent regeneration jobs, oldest first",
+        {{"limit", "integer", false, "Rows to return, 1 through 64 (default 16)"}},
         "object", false, {}});
 
     auto reg_agent_commands =
@@ -3513,6 +3578,175 @@ int main() {
             payload.value = std::move(result);
             return viewer::ViewFocus::Result::succeeded(std::move(payload));
         });
+
+    // --- regeneration job control (regen_jobs.h) ---------------------------
+    // job.start ACCEPTS: it records a ledger entry and returns. The heavy
+    // session operation runs at the post-frame seam below, because destroying
+    // and rebuilding world content mid-draw is exactly what SessionBinding
+    // exists to prevent. Everything else here is a read of that ledger.
+    auto reg_job_start = registry.must_register_handler<viewer::JobStart>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobStart& command) {
+            viewer::AgentPayload payload;
+            if (!session) {
+                payload.status = viewer::agent::Status::NotReady;
+                payload.message = "no world session is open to regenerate";
+                return viewer::JobStart::Result::succeeded(std::move(payload));
+            }
+            viewer::jobs::StartRequest request = command.request;
+            // The world is the editor's, not the caller's: naming it in the
+            // record is what makes a job id readable after a world switch.
+            request.world = worlds[stats.world_current].world_name;
+            request.project = worlds[stats.world_current].project_dir;
+            const uint64_t id = regen_jobs.accept(
+                std::move(request), editor_model.revision(),
+                session->graph_generation(), viewer::jobs::Clock::now());
+            const viewer::jobs::Job* job = regen_jobs.find(id);
+            payload.value = viewer::jobs::start_result_json(
+                *job, viewer::jobs::Clock::now());
+            return viewer::JobStart::Result::succeeded(std::move(payload));
+        });
+
+    auto reg_job_status = registry.must_register_handler<viewer::JobStatus>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobStatus& command) {
+            viewer::AgentPayload payload;
+            const viewer::jobs::Job* job = regen_jobs.find(command.job_id);
+            if (!job) {
+                // A read of a job that is gone is not_found with the window
+                // that IS answerable, so "aged out" and "never existed" stay
+                // distinguishable.
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message = "no such regeneration job at this id";
+                payload.value =
+                    viewer::jobs::missing_result_json(regen_jobs, command.job_id);
+                return viewer::JobStatus::Result::succeeded(std::move(payload));
+            }
+            // A status READ succeeds even when the job it describes failed:
+            // the failure is in `job.state`, not in the query.
+            payload.value =
+                viewer::jobs::status_result_json(*job, viewer::jobs::Clock::now());
+            return viewer::JobStatus::Result::succeeded(std::move(payload));
+        });
+
+    auto reg_job_list = registry.must_register_handler<viewer::JobList>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobList& command) {
+            viewer::AgentPayload payload;
+            payload.value = viewer::jobs::list_result_json(
+                regen_jobs, command.limit, viewer::jobs::Clock::now());
+            return viewer::JobList::Result::succeeded(std::move(payload));
+        });
+
+    auto reg_job_cancel = registry.must_register_handler<viewer::JobCancel>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobCancel& command) {
+            viewer::AgentPayload payload;
+            const viewer::jobs::CancelOutcome outcome =
+                regen_jobs.cancel(command.job_id, viewer::jobs::Clock::now());
+            if (outcome == viewer::jobs::CancelOutcome::NotFound) {
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message = "no such regeneration job at this id";
+                payload.value =
+                    viewer::jobs::missing_result_json(regen_jobs, command.job_id);
+                return viewer::JobCancel::Result::succeeded(std::move(payload));
+            }
+            const viewer::jobs::Job* job = regen_jobs.find(command.job_id);
+            if (outcome == viewer::jobs::CancelOutcome::UnsupportedRunning) {
+                // WorldSession has no cancel entry point -- supersession is
+                // the only mechanism the backend has. Saying so with the
+                // protocol's own "known but unavailable" code is the honest
+                // answer; reporting ok would claim a stop that never happened.
+                payload.status = viewer::agent::Status::UnsupportedCommand;
+                payload.message =
+                    "this job is already running and the engine exposes no "
+                    "cancel; start a newer job to supersede it";
+            }
+            payload.value = viewer::jobs::cancel_result_json(
+                *job, outcome, viewer::jobs::Clock::now());
+            return viewer::JobCancel::Result::succeeded(std::move(payload));
+        });
+
+    // job.wait is the second command (after viewport.capture) whose answer is
+    // not knowable on the app lane. The handler decides only whether a wait can
+    // be ARMED -- an already-terminal job answers here and now, a missing one
+    // is not_found -- and the frame loop below emits the one terminal record
+    // when the job ends or the deadline passes.
+    auto reg_job_wait = registry.must_register_handler<viewer::JobWait>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobWait& command) {
+            viewer::AgentPayload payload;
+            const viewer::jobs::Job* job = regen_jobs.find(command.job_id);
+            if (!job) {
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message = "no such regeneration job at this id";
+                payload.value =
+                    viewer::jobs::missing_result_json(regen_jobs, command.job_id);
+            } else if (regen_waits.size() >= viewer::jobs::kMaxWaiters) {
+                payload.status = viewer::agent::Status::NotReady;
+                payload.message = "too many bounded waits are already pending";
+            }
+            return viewer::JobWait::Result::succeeded(std::move(payload));
+        });
+
+    // The ONE place a released bounded wait becomes a terminal result. Three
+    // callers: the frame-loop sweep, the shutdown drain after the loop, and the
+    // dispatch bridge's immediate answer for a job that was already terminal.
+    // Completing a request the protocol has already expired is a no-op, which
+    // is what keeps "exactly one terminal record" true here too.
+    auto resolve_regen_wait = [&](const viewer::jobs::Waiter& waiter,
+                                  bool timed_out) {
+        const viewer::jobs::Job* job = regen_jobs.find(waiter.job_id);
+        const viewer::jobs::Clock::time_point now = viewer::jobs::Clock::now();
+        if (!job) {
+            // The job aged out of the retained window while the wait was open.
+            // There is no outcome to report, so this is a timeout rather than
+            // an invented completion.
+            agent_protocol.complete(
+                waiter.request_id, waiter.ticket_id, viewer::agent::Status::Timeout,
+                viewer::jobs::missing_result_json(regen_jobs, waiter.job_id),
+                "the job aged out of the retained history before this wait ended");
+            return;
+        }
+        const viewer::agent::Status status =
+            timed_out ? viewer::agent::Status::Timeout
+                      : viewer::jobs::wait_status(job->state);
+        const std::string message =
+            timed_out ? "the bounded wait expired with the job in state '" +
+                            std::string(viewer::jobs::to_string(job->state)) + "'"
+                      : viewer::jobs::wait_message(*job);
+        agent_protocol.complete(
+            waiter.request_id, waiter.ticket_id, status,
+            viewer::jobs::wait_result_json(*job, timed_out, now), message);
+    };
+
+    // FNV-1a over the published part-graph ROOTS, sorted, so "the same seed
+    // produced the same world" is answerable. It is the roots and their
+    // resolved content hashes -- the same identities scene.list_objects hands
+    // out as baked_root ids -- and not a render or a screenshot, so it is
+    // decided by what was baked rather than by what a frame happened to draw.
+    //
+    // An EMPTY root set is reported as unavailable rather than digested. A
+    // world-kind (streamed) session installs sector assets and publishes no
+    // graph roots at all, so a digest over zero roots is the same constant for
+    // every such world and for every seed -- offering it as a content identity
+    // would be a signal that cannot distinguish anything.
+    auto regen_content_digest = [&](bool& available) -> uint64_t {
+        available = false;
+        if (!session) return 0;
+        part_graph_snapshot::Snapshot graph;
+        if (!session->graph_snapshot(graph)) return 0;
+        std::vector<viewer::jobs::RootDigest> roots;
+        for (const auto& [module_name, node] : graph.nodes) {
+            if (!node.is_root) continue;
+            roots.push_back(viewer::jobs::RootDigest{
+                node.module.empty() ? module_name : node.module,
+                node.resolved_hash});
+        }
+        if (roots.empty()) return 0;
+        available = true;
+        return viewer::jobs::content_digest(std::move(roots));
+    };
 
     // The ONE place a pending viewport.capture becomes a terminal result. Four
     // frame-loop seams call it: the successful PNG write, the readback/write
@@ -4622,6 +4856,130 @@ int main() {
                     } else if (begun.request.command == "selection.list") {
                         attach_agent_ticket(registry.dispatch(viewer::SelectionList{}),
                                             payload_terminal);
+                    } else if (begun.request.command == "job.start") {
+                        // The operation enum and the per-operation seed rules
+                        // are checked HERE so a seed on a reload is
+                        // invalid_input rather than a handler failure; the
+                        // descriptor only checked JSON types.
+                        viewer::jobs::StartRequest request;
+                        std::string request_error;
+                        if (!viewer::jobs::parse_start_arguments(
+                                begun.request.arguments, request, request_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                request_error);
+                        } else {
+                            viewer::JobStart command;
+                            command.request = std::move(request);
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        }
+                    } else if (begun.request.command == "job.status" ||
+                               begun.request.command == "job.cancel" ||
+                               begun.request.command == "job.wait") {
+                        uint64_t job_id = 0;
+                        std::string job_error;
+                        if (!viewer::jobs::parse_job_id(begun.request.arguments,
+                                                        job_id, job_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                job_error);
+                        } else if (begun.request.command == "job.status") {
+                            viewer::JobStatus command;
+                            command.job_id = job_id;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else if (begun.request.command == "job.cancel") {
+                            viewer::JobCancel command;
+                            command.job_id = job_id;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else {
+                            // job.wait: like viewport.capture, a Success from
+                            // the handler means "waitable", not "finished".
+                            // The deadline is the request's own, recomputed
+                            // here because Protocol keeps its copy private;
+                            // whichever of the two fires first emits the ONE
+                            // terminal record.
+                            const auto deadline =
+                                viewer::jobs::Clock::now() +
+                                std::chrono::milliseconds(begun.request.timeout_ms);
+                            viewer::JobWait command;
+                            command.job_id = job_id;
+                            auto ticket = registry.dispatch(std::move(command));
+                            const uint64_t ticket_id = ticket.id();
+                            if (!agent_protocol.attach_ticket(request_id, ticket_id)) {
+                                agent_protocol.reject_accepted(
+                                    request_id,
+                                    viewer::agent::Status::ExecutionFailure,
+                                    "could not attach CommandRegistry ticket");
+                            } else {
+                                ticket.then(
+                                    app_lane,
+                                    [&, request_id, ticket_id, job_id, deadline](
+                                        const auto& result) {
+                                        if (result.status !=
+                                            matter::evt::CommandStatus::Success) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                result.status ==
+                                                        matter::evt::CommandStatus::StaleScope
+                                                    ? viewer::agent::Status::StaleRevision
+                                                    : viewer::agent::Status::ExecutionFailure,
+                                                matter::jsondoc::Value{},
+                                                result.error);
+                                            return;
+                                        }
+                                        if (result.value &&
+                                            result.value->status !=
+                                                viewer::agent::Status::Ok) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                result.value->status,
+                                                result.value->value,
+                                                result.value->message);
+                                            return;
+                                        }
+                                        viewer::jobs::Waiter waiter;
+                                        waiter.request_id = request_id;
+                                        waiter.ticket_id = ticket_id;
+                                        waiter.job_id = job_id;
+                                        waiter.deadline = deadline;
+                                        // A job that is ALREADY terminal is
+                                        // answered now rather than parked for
+                                        // a frame -- the wait has nothing left
+                                        // to wait for.
+                                        const viewer::jobs::Job* job =
+                                            regen_jobs.find(job_id);
+                                        if (job && viewer::jobs::is_terminal(job->state)) {
+                                            resolve_regen_wait(waiter, false);
+                                            return;
+                                        }
+                                        if (!regen_waits.add(std::move(waiter))) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                viewer::agent::Status::NotReady,
+                                                matter::jsondoc::Value{},
+                                                "too many bounded waits are "
+                                                "already pending");
+                                        }
+                                    });
+                            }
+                        }
+                    } else if (begun.request.command == "job.list") {
+                        std::size_t limit = 0;
+                        std::string limit_error;
+                        if (!viewer::jobs::parse_list_limit(begun.request.arguments,
+                                                            limit, limit_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                limit_error);
+                        } else {
+                            viewer::JobList command;
+                            command.limit = limit;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        }
                     } else {
                         const matter::jsondoc::Value* requested =
                             begun.request.arguments.find("command");
@@ -5012,6 +5370,13 @@ int main() {
             resolve_agent_capture(viewer::capture::Resolution::TimedOut, nullptr,
                                   nullptr, nullptr);
         }
+        // Bounded job waits, swept beside the capture deadline and before the
+        // protocol's generic expiry so the job-specific timeout message is the
+        // one that lands in the ordinary case. Both deadlines belong to the
+        // same request, so whichever wins still emits exactly one record.
+        for (const viewer::jobs::WaitList::Ready& released :
+             regen_waits.collect(regen_jobs, viewer::jobs::Clock::now()))
+            resolve_regen_wait(released.waiter, released.timed_out);
         agent_protocol.expire();
         if (const std::string agent_error = agent_protocol.take_io_error();
             !agent_error.empty())
@@ -5686,6 +6051,33 @@ int main() {
         bake_lab.tick_frame(viewer::BakeLab::kDefaultTickBudgetMs);
         matter::Event event;
         while (session->poll_event(event)) {
+            // Regeneration-job ingestion (regen_jobs.h). This drain is the ONE
+            // place the engine's bake lifecycle is observed, so it is also the
+            // one place a job may progress or finish. Every call below applies
+            // to the job the post-frame seam marked running and to nothing
+            // else; an event arriving with no running job (the startup bake, a
+            // world switch's own bake, the deferred tileset phase that follows
+            // a BakeFinished) is dropped rather than attributed to whichever
+            // job happens to be newest.
+            if (event.type == matter::EventType::BakeStarted)
+                regen_jobs.on_bake_started(viewer::jobs::Clock::now());
+            else if (event.type == matter::EventType::BakePartDone)
+                regen_jobs.on_part_done(event.module, event.phase, event.done,
+                                        event.total);
+            else if (event.type == matter::EventType::BakeError)
+                regen_jobs.on_bake_error(
+                    event.module, event.phase,
+                    static_cast<viewer::jobs::ErrorCode>(event.code),
+                    event.message);
+            if (event.type == matter::EventType::BakeFinished &&
+                regen_jobs.running_id() != 0) {
+                bool digest_available = false;
+                const uint64_t digest = regen_content_digest(digest_available);
+                regen_jobs.on_bake_finished(
+                    event.errors, editor_model.revision(),
+                    session ? session->graph_generation() : 0, digest_available,
+                    digest, viewer::jobs::Clock::now());
+            }
             if (event.type == matter::EventType::BakePartDone)
                 std::printf("bake %d/%d %s\n", event.done, event.total,
                             event.module.c_str());
@@ -7025,8 +7417,12 @@ int main() {
         // session op is applied HERE — after end_frame, never mid-ImGui-draw —
         // matching the original flag-based timing. Both UI and FIFO switch/
         // reload funnel to this single apply point.
-        if (binding.pending_reload()) {
-            binding.clear_pending_reload();
+        // The world-reload prologue, shared by the viewer.reload path and the
+        // job ledger's own reload/regenerate. It is the SAME prologue in both
+        // cases by construction: a seeded regeneration is a reload that also
+        // carries a worldSeed override, and letting the two drift would mean a
+        // job-driven reroll quietly kept the previous world's fog or sun.
+        auto prepare_reload_seam = [&]() {
             bake_ready = false;
             screenshot_settle = 0;
             apply_world_camera_after_bake =
@@ -7049,6 +7445,17 @@ int main() {
                                    worlds[stats.world_current].world_name);
             apply_world_props_after_bake = true;
             viewer::prepare_world_reload(stats);
+        };
+        if (binding.pending_reload()) {
+            binding.clear_pending_reload();
+            // A reload that did not come from the job queue (the toolbar
+            // button, the `reload` FIFO verb) still supersedes a running job.
+            // Recorded here rather than inferred from the engine's cancellation
+            // BakeError, which names no job.
+            regen_jobs.note_external_restart(
+                "an editor reload restarted the world while this job was running",
+                viewer::jobs::Clock::now());
+            prepare_reload_seam();
             binding.reload();  // clears app models + session->reload()
         }
         const int pending_switch = binding.pending_switch();
@@ -7079,6 +7486,14 @@ int main() {
                 editor_props.adopt_draw_overrides(session->draw_overrides());
                 viewer::complete_world_switch(stats, false);
             } else {
+                // The switch tore down the session a running job was baking in
+                // and requested a bake on a different world. Recorded only on
+                // the success path: a FAILED open leaves the old session and
+                // its in-flight bake completely intact, so nothing was
+                // superseded there.
+                regen_jobs.note_external_restart(
+                    "the editor switched worlds while this job was running",
+                    viewer::jobs::Clock::now());
                 apply_world_props_after_bake = true;
                 viewer::complete_world_switch(stats, true);
                 stats.world_current = selected;
@@ -7101,6 +7516,58 @@ int main() {
                                               min_projected_size, stats);
             }
         }
+        // Queued regeneration jobs (regen_jobs.h) are applied LAST and only
+        // when nothing else already restarted the world this frame: a job that
+        // began here would otherwise be superseded by the very reload or
+        // switch that ran a few lines above, before the engine ever saw it.
+        // One job per seam, which is what makes `superseded` a recorded
+        // decision -- begin_next() ends the previous job in the same call.
+        if (!binding.pending_reload() && binding.pending_switch() < 0 &&
+            regen_jobs.has_queued()) {
+            viewer::jobs::Job started;
+            if (regen_jobs.begin_next(viewer::jobs::Clock::now(), started)) {
+                prepare_reload_seam();
+                if (started.request.kind == viewer::jobs::Kind::Regenerate) {
+                    binding.regenerate(started.request.seed);
+                    console_log.push(viewer::LogSeverity::Info,
+                                     "Job " + std::to_string(started.id) +
+                                         ": regenerating with seed " +
+                                         std::to_string(started.request.seed));
+                } else {
+                    binding.reload();
+                    console_log.push(viewer::LogSeverity::Info,
+                                     "Job " + std::to_string(started.id) +
+                                         ": reloading the world");
+                }
+            }
+        }
+    }
+
+    // ---- Regeneration jobs: shutdown is a terminal outcome ----------------
+    // The frame loop is over, so no queued job will ever run and no running
+    // bake will ever report. Every live job fails HERE with that as its
+    // reason, and every open bounded wait gets its one terminal record, so an
+    // agent that was waiting learns the editor stopped rather than reading
+    // "running" as the last word and timing out against a dead process.
+    // Placed before any teardown: the protocol, its result-file sink and the
+    // ledger are all still alive at this point.
+    {
+        const viewer::jobs::Clock::time_point shutdown_at = viewer::jobs::Clock::now();
+        std::vector<viewer::jobs::Waiter> abandoned = regen_waits.drain();
+        regen_jobs.shutdown("the editor shut down before this job finished",
+                            shutdown_at);
+        for (const viewer::jobs::Waiter& waiter : abandoned) {
+            const viewer::jobs::Job* job = regen_jobs.find(waiter.job_id);
+            agent_protocol.complete(
+                waiter.request_id, waiter.ticket_id,
+                viewer::agent::Status::ExecutionFailure,
+                job ? viewer::jobs::wait_result_json(*job, false, shutdown_at)
+                    : viewer::jobs::missing_result_json(regen_jobs, waiter.job_id),
+                "the editor shut down before this job finished");
+        }
+        if (const std::string agent_error = agent_protocol.take_io_error();
+            !agent_error.empty())
+            std::fprintf(stderr, "agent protocol: %s\n", agent_error.c_str());
     }
 
     // ---- Auto-file an issue report on a fatal device/Vulkan error ---------

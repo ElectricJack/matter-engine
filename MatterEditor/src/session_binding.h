@@ -136,6 +136,15 @@ public:
     // calls session->reload().
     void reload();
 
+    // Seed-driven reroll: the same in-place shape as `reload` (session reused,
+    // epoch unchanged, app models cleared first), differing only in that the
+    // session stores {"worldSeed": world_seed} as a root-params override before
+    // rebaking. It goes through this class rather than straight to
+    // WorldSession::regenerate for the model-clear: selection and the editor
+    // model reference content the reroll is about to replace, and the clear
+    // must happen at the same post-frame seam a reload's does.
+    void regenerate(uint64_t world_seed);
+
     // The active ActiveSession epoch token (session id + generation), for
     // diagnostics / tests.
     uint64_t current_session_id() const { return current_session_id_; }

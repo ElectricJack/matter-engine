@@ -73,6 +73,7 @@
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/event/command.h"
 #include "agent_protocol.h"
+#include "regen_jobs.h"
 #endif
 #include "matter/props.h"
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
@@ -243,6 +244,51 @@ struct ViewFocus {
     using Result = matter::evt::CommandResult<AgentPayload>;
     bool has_object = false;
     agent::ObjectIdentity object;
+};
+
+// --- typed regeneration job control (regen_jobs.h) --------------------------
+// These five make the reload / regenerate work the engine already does
+// OBSERVABLE, rather than something an agent infers from a sleep. They are
+// App-scoped like the other agent reads: the ledger belongs to the editor
+// process, and a job's own record carries the world and the scene identity it
+// was accepted at, so a world switch is visible in the record instead of
+// silently retargeting a job id.
+//
+// job.start only ACCEPTS. The heavy session operation runs at main.cpp's
+// post-frame seam, the same place viewer.reload lands, because a reload
+// destroys state panels are drawing from. job.wait is the second command in
+// this protocol (after viewport.capture) whose answer is not knowable on the
+// app lane: the handler decides only whether a wait can be armed, and the
+// frame loop emits the one terminal record when the job ends or the deadline
+// passes.
+struct JobStart {
+    MT_COMMAND_NAME("job.start");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    jobs::StartRequest request;
+};
+
+struct JobStatus {
+    MT_COMMAND_NAME("job.status");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    uint64_t job_id = 0;
+};
+
+struct JobWait {
+    MT_COMMAND_NAME("job.wait");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    uint64_t job_id = 0;
+};
+
+struct JobCancel {
+    MT_COMMAND_NAME("job.cancel");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    uint64_t job_id = 0;
+};
+
+struct JobList {
+    MT_COMMAND_NAME("job.list");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    size_t limit = jobs::kDefaultListLimit;
 };
 
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------

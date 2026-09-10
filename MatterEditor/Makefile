@@ -1157,6 +1157,24 @@ build/test_scene_inventory.exe: tests/test_scene_inventory.cpp \
 run-test-scene-inventory: build/test_scene_inventory.exe
 	./build/test_scene_inventory.exe
 
+# Regeneration job ledger (job.start / job.status / job.wait / job.cancel /
+# job.list).  regen_jobs.cpp holds no session, bake or renderer, so overlapping
+# reloads, a superseded result, a script failure with its file:line, editor
+# shutdown and deterministic seeded regeneration are all decidable here with no
+# world open.
+build/test_regen_jobs.exe: tests/test_regen_jobs.cpp \
+        src/regen_jobs.cpp src/regen_jobs.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_regen_jobs.cpp src/regen_jobs.cpp \
+	    src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-regen-jobs
+run-test-regen-jobs: build/test_regen_jobs.exe
+	./build/test_regen_jobs.exe
+
 # Typed selection operations over the shared SelectionSet.  The test keeps the
 # protocol parser, inventory and state mutation together without a renderer.
 build/test_selection_commands.exe: tests/test_selection_commands.cpp \

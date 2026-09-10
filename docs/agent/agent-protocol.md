@@ -370,6 +370,141 @@ at the current scene revision. A graph that has not published yet, or a part
 hash absent from it, returns an explicit unavailable traversal rather than
 guessing from filenames.
 
+## Regeneration jobs
+
+`job.start`, `job.status`, `job.wait`, `job.cancel` and `job.list` make the
+regeneration work the engine already does OBSERVABLE. Before them, an agent
+that reloaded a world had to infer completion from a sleep or from log text.
+They add no second lifecycle: a job is a ledger entry over
+`WorldSession::reload()` / `WorldSession::regenerate(seed)`, written at exactly
+two points — the editor's post-frame seam, the only place a session-heavy
+operation may run, and the drain of the engine's own `BakeStarted` /
+`BakePartDone` / `BakeError` / `BakeFinished` events. The rules live in
+`MatterEditor/src/regen_jobs.h` (unit-tested by
+`MatterEditor/tests/test_regen_jobs.cpp`).
+
+### `job.start`
+
+| Argument | Type | Meaning |
+| --- | --- | --- |
+| `operation` | string, required | `"reload"` rebakes the world as authored; `"regenerate"` rebakes it with a `worldSeed` override. |
+| `seed` | string | Unsigned 64-bit decimal string. REQUIRED for `regenerate`, and REFUSED for `reload` — silently ignoring it would let a caller believe a reload rerolled the world. |
+
+```powershell
+py -3 tools/matter_agent.py job.start `
+  --cmd-file C:\tmp\matter-commands.txt `
+  --result-file C:\tmp\matter-results.jsonl `
+  --args '{"operation":"regenerate","seed":"12345"}'
+```
+
+`ok` here means QUEUED, not finished — the result says so in `note` and the
+job's own `state` is `accepted`. The heavy operation runs at the next
+post-frame seam. `not_ready` when no world session is open.
+
+### Job states
+
+Six states, kept distinct because a caller acts differently on each:
+
+| State | Meaning |
+| --- | --- |
+| `accepted` | Queued in the editor; the seam has not handed it to the engine. |
+| `running` | The seam called `reload()`/`regenerate()`; the engine owns it. |
+| `completed` | A `BakeFinished` with zero failed parts landed for this job. |
+| `failed` | `BakeFinished` reported failed parts, or the editor shut down while the job was live. |
+| `cancelled` | `job.cancel` reached it while it was STILL QUEUED, so nothing ever reached the engine. |
+| `superseded` | A newer regeneration replaced it — the engine's own contract is that a new `request_bake()`/`reload()` supersedes an in-flight bake. A toolbar reload, the `reload` FIFO verb and a world switch supersede a running job too, and then `superseded_by` is unavailable rather than naming a job. |
+
+**Known limit.** A bake that ABORTS never terminates its job. A top-level
+install/compose failure inside the engine's `execute_bake` emits one
+`BakeError` and returns, with no `BakeFinished` behind it, so the job stays
+`running`: its diagnostics are recorded and readable through `job.status`, and
+a bounded `job.wait` on it expires as `timeout` carrying them. It is
+deliberately not called `failed` — nothing in the event stream separates an
+aborting `BakeError` from the per-part skip-and-continue errors that DO reach a
+`BakeFinished`, and guessing would trade a missing terminal state for a wrong
+one. A per-part script failure, the common case, does reach `failed`.
+
+### `job.status` and `job.list`
+
+`job.status{job_id}` is a READ: it succeeds even when the job it describes
+failed, because the failure is in `job.state`, not in the query. An id that is
+gone answers `not_found` with `total_accepted` and `oldest_retained_job_id`, so
+"aged out of the retained window" stays distinguishable from "never existed";
+the window holds 64 jobs, and a job that has not reached a terminal state is
+never evicted from it.
+
+`job.list{limit?}` returns the most recent jobs (1..64, default 16) ordered
+`job_id_ascending`, plus `running_job_id`.
+
+Every job record carries:
+
+- `inputs` — the `operation`, the `world` and `project` the editor recorded
+  (not caller-supplied: naming the world is what makes a job id readable after
+  a world switch), the `world_seed`, and a `digest` — FNV-1a over
+  (operation, project, world, seed). Two requests digest equal exactly when
+  they asked the engine for the same thing;
+- `accepted_context` — the scene revision and generation the job started FROM;
+- `progress` — `parts_done` / `parts_total` / `phase` / `module` straight from
+  `BakePartDone`, marked `advisory` and `indeterminate` because `matter/events.h`
+  says `total` may be 0 and may GROW mid-bake;
+- `result` — the `scene_revision` and `scene_generation` observed when this
+  job's own `BakeFinished` was drained, plus `content_digest`: FNV-1a over the
+  SORTED published part-graph roots (module + resolved content hash — the same
+  identities `scene.list_objects` hands out as `baked_root` ids). Sorted because
+  part-graph iteration order is a hash-map order; two `regenerate` jobs with the
+  same seed against the same world report the same `content_digest`, which is
+  how deterministic seeded regeneration is checked. Unavailable — never 0 — for
+  a job that published no `BakeFinished`, AND for one whose graph published no
+  roots at all: a world-kind (streamed) world such as `StreamMountain` installs
+  sector assets and publishes none, so there is nothing for the digest to
+  distinguish and it says so instead of returning the empty-set constant.
+  Check determinism on such a world through `viewport.capture` plus
+  `MatterEngine3/tools/img_diff.py` instead;
+- `diagnostics` — one row per `BakeError`, with the engine's `module`, `phase`
+  and classification `code` (`script_error`, `io_error`, `gpu_error`,
+  `out_of_memory`, `cancelled`, `internal`), the original `message`, and
+  `source`: the `file` / `line` / `column` PARSED out of the message or its
+  QuickJS stack (the innermost frame — the line that actually threw), or
+  `{"available":false,...}` when the message carried no location. Capped at 32
+  rows with `diagnostics_truncated` reporting the overflow;
+- `superseded_by`, `terminal_reason` and `timing`
+  (`queued_ms` / `running_ms` / `total_ms`).
+
+### `job.wait`
+
+`job.wait{job_id}` is the second command in this protocol (after
+`viewport.capture`) whose answer is not knowable on the app lane. The request's
+own `timeout_ms` bounds it, so a wait is at most 30,000 ms — for a long bake,
+call it again; each call reports the current state. The outcomes are distinct
+and a timeout is never a success:
+
+| Outcome | Code |
+| --- | --- |
+| the job completed with no failed parts | `ok` |
+| the job ended `failed`, `cancelled` or `superseded` | `execution_failure` (the state name and `terminal_reason` say which; `message` carries the first diagnostic's `file:line`) |
+| `timeout_ms` passed with the job still live | `timeout`, with `timed_out: true`, `completed: false` and the job's LAST OBSERVED state |
+| the editor shut down first | `execution_failure` — every live job fails at shutdown and every open wait gets its one terminal record, rather than "running" being the last word |
+| no such job | `not_found` |
+
+A job that is already terminal when the wait dispatches is answered
+immediately.
+
+### `job.cancel`
+
+Cancellation is NOT uniformly supported, and says so rather than pretending.
+`WorldSession` exposes no cancel entry point — supersession is the only
+mechanism it has — so:
+
+| Target | Code | `result.cancel` |
+| --- | --- | --- |
+| a job still `accepted` | `ok` | `supported: true`, `cancelled: true` — it was dropped before the engine ever saw it |
+| a job already `running` | `unsupported_command` | `supported: false`, `cancelled: false`, plus `alternative`: start a newer job, which supersedes this one |
+| a job already terminal | `ok` | `supported: true`, `cancelled: false`, with the state it had already reached |
+| no such job | `not_found` | — |
+
+An unsupported cancel changes nothing. It does not fake a stop, and the job
+keeps running.
+
 ## Shared selection
 
 `selection.replace`, `selection.add`, `selection.remove`, `selection.toggle`,

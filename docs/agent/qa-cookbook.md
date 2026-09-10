@@ -164,6 +164,75 @@ follow-up is AQ task `nimble-dune.8`.  Keep the focused parser/selection/capture
 tests below as the regression guard, but treat a live reload result as blocked
 until that renderer defect is fixed.
 
+## 4c. Bounded regeneration jobs
+
+Reloading or rerolling a world used to leave an agent guessing: `reload` is a
+FIFO verb with no receipt, so completion had to be inferred from a sleep or
+from `wait_event bake.finished`, which cannot tell you WHICH reload finished.
+`job.*` gives the same work an id, a state and a bounded wait.
+
+```bash
+# queue a seeded reroll; this returns immediately with state "accepted"
+python3 tools/matter_agent.py job.start \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"operation":"regenerate","seed":"12345"}'
+
+# wait for it, bounded by the request timeout (30 s max per call)
+python3 tools/matter_agent.py job.wait \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"job_id":"1"}' --timeout 30
+```
+
+Read the result, not the exit status alone:
+
+- `ok` with `job.state:"completed"` is the only success. A `timeout` record
+  carries `timed_out:true`, `completed:false` and the job's last observed
+  state — call `job.wait` again for a bake longer than 30 s rather than
+  treating the timeout as a failure OR as a completion.
+- `execution_failure` with `job.state:"superseded"` means something else
+  restarted the world (another `job.start`, the toolbar Reload, the `reload`
+  FIFO verb, or a world switch). It is not an error in your request.
+- `execution_failure` with `job.state:"failed"` carries `job.diagnostics`, each
+  with the engine's `code` and a parsed `source.file` / `source.line` when the
+  script error had one.
+
+For a determinism check, run two `regenerate` jobs with the same seed and
+compare `job.result.content_digest` — it is FNV-1a over the sorted published
+part-graph roots, so it does not depend on iteration order or on what a frame
+happened to draw. A different seed changes it only for a world whose parts
+actually declare `worldSeed`. A world-kind (streamed) world publishes no graph
+roots at all, so there the digest reports `available:false` with that reason
+and determinism has to be checked through `viewport.capture` +
+`MatterEngine3/tools/img_diff.py`.
+
+`job.cancel` only truly cancels a job that is still `accepted`. A running one
+answers `unsupported_command` with `cancel.supported:false` — `WorldSession`
+has no cancel, and the alternative it names is supersession by a newer
+`job.start`. In practice a client that calls `job.start` and then `job.cancel`
+as two separate requests will nearly always find the job already `running`: the
+editor's post-frame seam starts it within a frame. To reach the cancellable
+window, write both lines into the command file in ONE append so they dispatch
+in the same frame:
+
+```bash
+printf '%s\n%s\n' \
+ 'agent {"version":1,"request_id":"a1","command":"job.start","args":{"operation":"reload"}}' \
+ 'agent {"version":1,"request_id":"a2","command":"job.cancel","args":{"job_id":"1"}}' \
+ >> /mnt/c/tmp/matter-jobs/commands.txt
+```
+
+**2026-09-09 native MSVC acceptance.** On `StreamMountain`: a reload job
+completed in 17.1 s (`queued_ms` 31, `running_ms` 17153); two `job.start`
+requests in flight left job 5 `superseded` naming `superseded_by: "6"` while
+job 6 completed. On `RockGallery`: the same-frame write above returned
+`cancelled: true` and `job.status` then read `cancelled`; a `regenerate` with
+seed `424242` completed in 2.29 s with `content_digest 0e76c92dc6e0b23e`; and
+`job.start` + `job.wait` + `quit` in one write ended the wait as
+`execution_failure` / `state:"failed"` / `completed:false` with
+`"the editor shut down before this job finished"`.
+
 ## 5. Replay an issue shot and diff
 
 ```bash

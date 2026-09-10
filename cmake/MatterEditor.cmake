@@ -12,10 +12,10 @@ set(matter_editor_sources_unique ${matter_editor_sources})
 list(REMOVE_DUPLICATES matter_editor_sources_unique)
 list(LENGTH matter_editor_sources matter_editor_source_count)
 list(LENGTH matter_editor_sources_unique matter_editor_unique_source_count)
-if(NOT matter_editor_source_count EQUAL 44 OR
-        NOT matter_editor_unique_source_count EQUAL 44)
+if(NOT matter_editor_source_count EQUAL 45 OR
+        NOT matter_editor_unique_source_count EQUAL 45)
     message(FATAL_ERROR
-        "editor.sources must provide exactly 44 unique editor C++ sources; "
+        "editor.sources must provide exactly 45 unique editor C++ sources; "
         "count=${matter_editor_source_count}, unique=${matter_editor_unique_source_count}")
 endif()
 
@@ -30,7 +30,7 @@ target_include_directories(matter_editor PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party/raylib/src/external/glfw/include"
 )
 # Headers owned by source-built dependencies retain their own warning policy.
-# /WX below applies to Matter's 44 editor translation units, while MSVC treats
+# /WX below applies to Matter's 45 editor translation units, while MSVC treats
 # these include roots as external at a narrowly suppressed warning level.
 target_include_directories(matter_editor SYSTEM PRIVATE
     "${matter_vulkan_include}"
@@ -130,6 +130,21 @@ if(BUILD_TESTING)
     matter_apply_test_assertion_policy(scene_inventory_tests)
     add_test(NAME scene_inventory_tests COMMAND scene_inventory_tests)
     set_tests_properties(scene_inventory_tests PROPERTIES LABELS "editor;cpu")
+
+    add_executable(regen_job_tests
+        MatterEditor/tests/test_regen_jobs.cpp
+        MatterEditor/src/regen_jobs.cpp
+        MatterEditor/src/agent_protocol.cpp
+        MatterEngine3/src/util/json_doc.cpp
+    )
+    target_include_directories(regen_job_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+    )
+    matter_apply_project_defaults(regen_job_tests)
+    matter_apply_test_assertion_policy(regen_job_tests)
+    add_test(NAME regen_job_tests COMMAND regen_job_tests)
+    set_tests_properties(regen_job_tests PROPERTIES LABELS "editor;cpu")
 
     add_executable(selection_command_tests
         MatterEditor/tests/test_selection_commands.cpp
