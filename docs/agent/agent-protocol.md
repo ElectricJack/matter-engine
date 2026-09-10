@@ -160,6 +160,40 @@ The reserved `agent.subscribe` descriptor is intentionally reported as
 `unsupported_command`: v1 is request/result only. This makes known-but-not-
 implemented distinct from a typo.
 
+## Viewport picking
+
+`viewport.pick` reads, but never changes, the object under one coordinate.
+`viewport.pick_select` makes the same pick and applies it to the editor's one
+`SelectionSet`; its optional `mode` is `replace` (the default), `add`, or
+`toggle`. A replace miss clears selection, exactly like an ordinary empty-space
+viewport click; add/toggle misses leave selection unchanged.
+
+Both take required `args.x` and `args.y`: non-negative, finite **viewport-local
+logical pixels**. `(0,0)` is the top-left of the 3D viewport content, not the
+top-left of the window and not a screenshot/framebuffer pixel. The result
+echoes the measured logical viewport rectangle, its framebuffer-pixel rectangle,
+the X/Y scale between them, the submitted coordinate in both spaces, camera
+pose/projection, and the presented `frame.id` / `view_id` used by the pick.
+Coordinates outside the current logical rectangle are `invalid_input`.
+
+The picker is exactly the interactive picker: first the renderer's GPU identity
+buffer (needed for streamed/baked geometry), then its CPU oriented-bounds
+fallback for live ECS entities. `result.geometry.source` states which path
+answered. GPU identity is pixel-exact but contains no depth, so its
+`world_position` and `distance_meters` are explicitly unavailable; the CPU
+fallback returns both. A miss is `ok` with `hit:false`, not an error. A hit
+whose typed identity no longer exists in the current inventory produces
+`not_found` for `viewport.pick_select` and leaves selection unchanged.
+
+Use `expect.frame_id` or `expect.view_id` from the screenshot/pick result when
+coordinates were derived from an earlier presented image. The standard envelope
+guard rejects a mismatch as `stale_revision` before dispatch. Without either
+expectation, commands operate on the current last-presented view at dispatch;
+there is no separate asynchronous "current-frame" mode. The camera is pinned
+to that same presented production view; a request made before the first frame,
+or while Part Workbench isolation owns the viewport, returns `not_ready` rather
+than mixing a visible image with a different pick world/camera.
+
 ## Scene reads
 
 Two commands answer "what is in this world" and "what exactly is this object".

@@ -213,6 +213,7 @@
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 #include "viewport_pick.h"
+#include "viewport_pick_command.h"
 #include "dsl_bindings.h"
 
 #include "imgui.h"
@@ -2492,6 +2493,14 @@ int main() {
     std::string stats_label;
     int shot_settle = 0;
     viewer::FifoPresentSequencer fifo_present;
+    // Agent viewport coordinates name a PRESENTED image. Keep the exact
+    // production camera that produced that image beside its serial rather than
+    // letting a newly queued `cam` command ray-cast against last frame's ID
+    // buffer with tomorrow's pose.
+    matter::CameraDesc presented_camera = camera;
+    bool presented_camera_available = false;
+    bool presented_production_view = false;
+    uint64_t presented_session_generation = 0;
     // D-03: wall-clock deadman for a `shot`/`shot_now` that can never
     // complete (a world where presents never succeed, or where
     // instances_drawn never goes positive so shot_settle can never reach
@@ -2762,6 +2771,20 @@ int main() {
     agent_protocol.add_command({
         "selection.list", "List selected typed objects and the primary", {}, "object",
         false, {}});
+    agent_protocol.add_command({
+        "viewport.pick",
+        "Read the object at viewport-local logical pixels without changing selection",
+        {{"x", "number", true, "Viewport-local logical X pixel (left = 0)"},
+         {"y", "number", true, "Viewport-local logical Y pixel (top = 0)"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "viewport.pick_select",
+        "Pick at viewport-local logical pixels and update the shared selection",
+        {{"x", "number", true, "Viewport-local logical X pixel (left = 0)"},
+         {"y", "number", true, "Viewport-local logical Y pixel (top = 0)"},
+         {"mode", "string", false,
+          "replace (default), add, or toggle; a replace miss clears selection"}},
+        "object", false, {}});
 
     auto reg_agent_commands =
         registry.must_register_handler<viewer::AgentCommands>(
@@ -3057,6 +3080,243 @@ int main() {
                 false);
             return viewer::SelectionList::Result::succeeded(std::move(payload));
         });
+
+    // Viewport agent commands use the exact same picker as the interactive
+    // click below: GPU identity first (the only path that sees streamed
+    // geometry), then its established CPU OBB fallback. The external x/y pair
+    // is local to the measured ImGui viewport in LOGICAL pixels. The response
+    // records both that rectangle and the GLFW framebuffer scale so a caller
+    // never has to guess whether it should send screenshot pixels.
+    auto viewport_pick_result_json = [&](const viewer::PickResult& pick,
+                                         const viewer::ViewportRect& vp,
+                                         const matter::CameraDesc& pick_camera,
+                                         float x, float y) {
+        using JsonValue = matter::jsondoc::Value;
+        const auto object = [] {
+            JsonValue value;
+            value.kind = JsonValue::Kind::Object;
+            return value;
+        };
+        const auto array3 = [](float x, float y, float z) {
+            JsonValue value;
+            value.kind = JsonValue::Kind::Array;
+            for (float component : {x, y, z}) {
+                JsonValue number;
+                number.kind = JsonValue::Kind::Number;
+                number.num = component;
+                value.arr.push_back(std::move(number));
+            }
+            return value;
+        };
+        const auto number = [](double input) {
+            JsonValue value;
+            value.kind = JsonValue::Kind::Number;
+            value.num = input;
+            return value;
+        };
+        const auto boolean = [](bool input) {
+            JsonValue value;
+            value.kind = JsonValue::Kind::Bool;
+            value.b = input;
+            return value;
+        };
+        const auto string = [](std::string input) {
+            JsonValue value;
+            value.kind = JsonValue::Kind::String;
+            value.str = std::move(input);
+            return value;
+        };
+        const auto unavailable = [&](const char* reason) {
+            JsonValue value = object();
+            value.set("available", boolean(false));
+            value.set("reason", string(reason));
+            return value;
+        };
+
+        int framebuffer_width = 0;
+        int framebuffer_height = 0;
+        glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        const float scale_x = display.x > 0.0f
+                                  ? static_cast<float>(framebuffer_width) / display.x
+                                  : 1.0f;
+        const float scale_y = display.y > 0.0f
+                                  ? static_cast<float>(framebuffer_height) / display.y
+                                  : 1.0f;
+
+        JsonValue result = object();
+        JsonValue viewport = object();
+        JsonValue logical = object();
+        logical.set("x", number(vp.x));
+        logical.set("y", number(vp.y));
+        logical.set("width", number(vp.w));
+        logical.set("height", number(vp.h));
+        viewport.set("logical", std::move(logical));
+        JsonValue framebuffer = object();
+        framebuffer.set("x", number(vp.x * scale_x));
+        framebuffer.set("y", number(vp.y * scale_y));
+        framebuffer.set("width", number(vp.w * scale_x));
+        framebuffer.set("height", number(vp.h * scale_y));
+        viewport.set("framebuffer", std::move(framebuffer));
+        JsonValue scale = object();
+        scale.set("x", number(scale_x));
+        scale.set("y", number(scale_y));
+        viewport.set("framebuffer_scale", std::move(scale));
+        result.set("viewport", std::move(viewport));
+
+        JsonValue coordinate = object();
+        coordinate.set("x", number(x));
+        coordinate.set("y", number(y));
+        coordinate.set("space", string("viewport_local_logical_pixels"));
+        JsonValue framebuffer_coordinate = object();
+        framebuffer_coordinate.set("x", number(x * scale_x));
+        framebuffer_coordinate.set("y", number(y * scale_y));
+        coordinate.set("framebuffer", std::move(framebuffer_coordinate));
+        result.set("coordinate", std::move(coordinate));
+
+        JsonValue camera_json = object();
+        camera_json.set("position", array3(pick_camera.position.x, pick_camera.position.y,
+                                             pick_camera.position.z));
+        camera_json.set("target", array3(pick_camera.target.x, pick_camera.target.y,
+                                           pick_camera.target.z));
+        camera_json.set("up", array3(pick_camera.up.x, pick_camera.up.y,
+                                      pick_camera.up.z));
+        camera_json.set("vertical_fov_radians",
+                        number(pick_camera.vertical_fov_radians));
+        camera_json.set("near_plane", number(pick_camera.near_plane));
+        camera_json.set("far_plane", number(pick_camera.far_plane));
+        result.set("camera", std::move(camera_json));
+        JsonValue frame = object();
+        frame.set("id", string(std::to_string(fifo_present.presented_frame_serial())));
+        frame.set("view_id", string(std::to_string(fifo_present.presented_frame_serial())));
+        result.set("presented", std::move(frame));
+
+        result.set("hit", boolean(pick.hit));
+        if (pick.hit) {
+            result.set("object", viewer::agent::object_identity_json(
+                {pick.object.kind == viewer::SelectedObject::BakedRoot
+                     ? viewer::agent::ObjectIdentity::Kind::BakedRoot
+                     : viewer::agent::ObjectIdentity::Kind::Entity,
+                 pick.object.id}));
+        } else {
+            result.set("object", JsonValue{});
+        }
+        if (pick.geometry == viewer::PickGeometry::GpuIdentity) {
+            JsonValue geometry = object();
+            geometry.set("source", string("gpu_identity"));
+            geometry.set("world_position", unavailable(
+                "GPU identity picking exposes no depth or world position"));
+            geometry.set("distance_meters", unavailable(
+                "GPU identity picking exposes no depth or ray distance"));
+            result.set("geometry", std::move(geometry));
+        } else if (pick.geometry == viewer::PickGeometry::CpuObbFallback) {
+            JsonValue geometry = object();
+            geometry.set("source", string("cpu_obb_fallback"));
+            JsonValue world_position = object();
+            world_position.set("available", boolean(true));
+            world_position.set("value", array3(pick.world_position.x,
+                                                pick.world_position.y,
+                                                pick.world_position.z));
+            geometry.set("world_position", std::move(world_position));
+            JsonValue distance = object();
+            distance.set("available", boolean(true));
+            distance.set("value", number(pick.distance));
+            geometry.set("distance_meters", std::move(distance));
+            result.set("geometry", std::move(geometry));
+        } else {
+            JsonValue geometry = object();
+            geometry.set("source", string("none"));
+            geometry.set("world_position", unavailable("no object was hit"));
+            geometry.set("distance_meters", unavailable("no object was hit"));
+            result.set("geometry", std::move(geometry));
+        }
+        return result;
+    };
+    auto perform_viewport_pick = [&](float x, float y,
+                                     const viewer::ViewportPickSelect::Mode* mode) {
+        viewer::AgentPayload payload;
+        const viewer::ViewportRect vp = ui.viewport_rect();
+        if (vp.w <= 0.0f || vp.h <= 0.0f) {
+            payload.status = viewer::agent::Status::NotReady;
+            payload.message = "the viewport has no drawable logical-pixel rectangle";
+            return payload;
+        }
+        if (!presented_camera_available) {
+            payload.status = viewer::agent::Status::NotReady;
+            payload.message = "no viewport frame has been presented yet";
+            return payload;
+        }
+        if (!presented_production_view) {
+            payload.status = viewer::agent::Status::NotReady;
+            payload.message = "the Part Workbench isolation view owns the viewport";
+            return payload;
+        }
+        if (presented_session_generation != binding.current_generation()) {
+            payload.status = viewer::agent::Status::NotReady;
+            payload.message = "the active world session has not presented a viewport frame";
+            return payload;
+        }
+        if (x >= vp.w || y >= vp.h) {
+            payload.status = viewer::agent::Status::InvalidInput;
+            payload.message = "viewport-local logical coordinates are outside the current viewport";
+            return payload;
+        }
+        const viewer::PickResult pick = viewer::viewport_pick(
+            x, y, static_cast<int>(vp.w), static_cast<int>(vp.h), presented_camera,
+            *session);
+        payload.value = viewport_pick_result_json(pick, vp, presented_camera, x, y);
+        if (!mode) return payload;
+
+        viewer::selection_command::Operation operation =
+            viewer::selection_command::Operation::Replace;
+        if (*mode == viewer::ViewportPickSelect::Mode::Add)
+            operation = viewer::selection_command::Operation::Add;
+        else if (*mode == viewer::ViewportPickSelect::Mode::Toggle)
+            operation = viewer::selection_command::Operation::Toggle;
+
+        // A replace miss matches an ordinary GUI click on empty space: clear
+        // selection. Add/toggle misses leave it untouched, matching modifier
+        // gesture expectations while still reporting the unambiguous miss.
+        viewer::AgentPayload selected;
+        if (pick.hit) {
+            const viewer::agent::ObjectIdentity object{
+                pick.object.kind == viewer::SelectedObject::BakedRoot
+                    ? viewer::agent::ObjectIdentity::Kind::BakedRoot
+                    : viewer::agent::ObjectIdentity::Kind::Entity,
+                pick.object.id};
+            selected = selection_change(operation, {object});
+        } else if (*mode == viewer::ViewportPickSelect::Mode::Replace) {
+            selected = selection_change(viewer::selection_command::Operation::Clear, {});
+        } else {
+            const uint64_t before = selection_set.revision();
+            const viewer::inventory::Snapshot snapshot = prune_selection_to_inventory();
+            if (selection_set.revision() != before) mirror_selection_primary();
+            selected.value = viewer::selection_command::selection_json(
+                snapshot, selection_set, operation, false);
+        }
+        payload.status = selected.status;
+        payload.message = selected.message;
+        if (selected.value.kind == matter::jsondoc::Value::Kind::Object)
+            payload.value.set("selection", std::move(selected.value));
+        else {
+            const viewer::inventory::Snapshot snapshot = prune_selection_to_inventory();
+            payload.value.set("selection", viewer::selection_command::selection_json(
+                snapshot, selection_set, operation, false));
+        }
+        return payload;
+    };
+    auto reg_viewport_pick = registry.must_register_handler<viewer::ViewportPick>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::ViewportPick& command) {
+            return viewer::ViewportPick::Result::succeeded(
+                perform_viewport_pick(command.x, command.y, nullptr));
+        });
+    auto reg_viewport_pick_select =
+        registry.must_register_handler<viewer::ViewportPickSelect>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ViewportPickSelect& command) {
+                return viewer::ViewportPickSelect::Result::succeeded(
+                    perform_viewport_pick(command.x, command.y, &command.mode));
+            });
 
     // ---- Registered viewer commands (S I.11 migration map) ------------------
     // Handlers live where the poll-site code lived (this main loop / the lab
@@ -3888,6 +4148,48 @@ int main() {
                             attach_agent_ticket(
                                 registry.dispatch(std::move(command)),
                                 payload_terminal);
+                        }
+                    } else if (begun.request.command == "viewport.pick" ||
+                               begun.request.command == "viewport.pick_select") {
+                        viewer::viewport_pick_command::Coordinates coordinates;
+                        std::string coordinate_error;
+                        if (!viewer::viewport_pick_command::parse_coordinates(
+                                begun.request.arguments, coordinates, coordinate_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                coordinate_error);
+                        } else if (begun.request.command == "viewport.pick") {
+                            viewer::ViewportPick command;
+                            command.x = coordinates.x;
+                            command.y = coordinates.y;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else {
+                            viewer::viewport_pick_command::SelectionMode mode;
+                            std::string mode_error;
+                            if (!viewer::viewport_pick_command::parse_selection_mode(
+                                    begun.request.arguments, mode, mode_error)) {
+                                agent_protocol.reject_accepted(
+                                    request_id, viewer::agent::Status::InvalidInput,
+                                    mode_error);
+                            } else {
+                                viewer::ViewportPickSelect command;
+                                command.x = coordinates.x;
+                                command.y = coordinates.y;
+                                switch (mode) {
+                                    case viewer::viewport_pick_command::SelectionMode::Replace:
+                                        command.mode = viewer::ViewportPickSelect::Mode::Replace;
+                                        break;
+                                    case viewer::viewport_pick_command::SelectionMode::Add:
+                                        command.mode = viewer::ViewportPickSelect::Mode::Add;
+                                        break;
+                                    case viewer::viewport_pick_command::SelectionMode::Toggle:
+                                        command.mode = viewer::ViewportPickSelect::Mode::Toggle;
+                                        break;
+                                }
+                                attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                    payload_terminal);
+                            }
                         }
                     } else if (begun.request.command == "selection.replace" ||
                                begun.request.command == "selection.add" ||
@@ -5699,6 +6001,13 @@ int main() {
             fifo_present.advance(frame_completed && frame_presented &&
                                      !fatal_error,
                                  !fifo_immediate_capture || capture);
+        if (frame_completed && frame_presented && !fatal_error) {
+            // frame_camera is the production pose the interactive picker uses.
+            presented_camera = frame_camera;
+            presented_camera_available = true;
+            presented_production_view = !show_isolation;
+            presented_session_generation = binding.current_generation();
+        }
         stats.session_status.presented_frame_serial =
             fifo_present.presented_frame_serial();
         for (const viewer::FifoCompletedWait& completed :

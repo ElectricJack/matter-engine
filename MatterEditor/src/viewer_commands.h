@@ -187,6 +187,28 @@ struct SelectionList {
     using Result = matter::evt::CommandResult<AgentPayload>;
 };
 
+// --- typed viewport picking -------------------------------------------------
+// These commands deliberately route to viewport_pick(), the same GPU identity
+// then CPU-OBB fallback used by an interactive viewport click. x/y are
+// viewport-local logical pixels. The app-lane handler snapshots the current
+// viewport geometry/camera and supplies its own framebuffer scale in the
+// response; callers use the regular agent `expect.view_id` guard for a shot.
+struct ViewportPick {
+    MT_COMMAND_NAME("viewport.pick");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+struct ViewportPickSelect {
+    MT_COMMAND_NAME("viewport.pick_select");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    enum class Mode { Replace, Add, Toggle };
+    float x = 0.0f;
+    float y = 0.0f;
+    Mode mode = Mode::Replace;
+};
+
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------
 // The FIRST ActiveSession-scoped commands: each mutates world entity state, so
 // each is stamped with the SessionBinding's ActiveSession epoch token and

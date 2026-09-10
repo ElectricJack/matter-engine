@@ -1,4 +1,5 @@
 #include "../src/selection_commands.h"
+#include "../src/viewport_pick_command.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -143,12 +144,57 @@ void test_rebake_and_world_switch_prune() {
           "selection list reports typed empty state and current revisions");
 }
 
+void test_viewport_pick_arguments() {
+    Value arguments;
+    arguments.kind = Value::Kind::Object;
+    Value x;
+    x.kind = Value::Kind::Number;
+    x.num = 27.5;
+    Value y;
+    y.kind = Value::Kind::Number;
+    y.num = 13.0;
+    arguments.set("x", x);
+    arguments.set("y", y);
+
+    viewer::viewport_pick_command::Coordinates coordinates;
+    std::string error;
+    CHECK(viewer::viewport_pick_command::parse_coordinates(arguments, coordinates, error) &&
+              coordinates.x == 27.5f && coordinates.y == 13.0f,
+          "viewport logical coordinates parse exactly");
+
+    viewer::viewport_pick_command::SelectionMode mode;
+    CHECK(viewer::viewport_pick_command::parse_selection_mode(arguments, mode, error) &&
+              mode == viewer::viewport_pick_command::SelectionMode::Replace,
+          "viewport selection mode defaults to replace");
+    Value mode_value;
+    mode_value.kind = Value::Kind::String;
+    mode_value.str = "toggle";
+    arguments.set("mode", mode_value);
+    CHECK(viewer::viewport_pick_command::parse_selection_mode(arguments, mode, error) &&
+              mode == viewer::viewport_pick_command::SelectionMode::Toggle,
+          "viewport selection mode accepts toggle");
+
+    x.num = -0.5;
+    arguments.set("x", x);
+    CHECK(!viewer::viewport_pick_command::parse_coordinates(arguments, coordinates, error) &&
+              !error.empty(),
+          "negative viewport-local coordinates are rejected before picking");
+    x.num = 1.0;
+    arguments.set("x", x);
+    mode_value.str = "remove";
+    arguments.set("mode", mode_value);
+    CHECK(!viewer::viewport_pick_command::parse_selection_mode(arguments, mode, error) &&
+              !error.empty(),
+          "unsupported viewport selection mode is rejected");
+}
+
 }  // namespace
 
 int main() {
     test_mixed_operations_and_primary();
     test_validation_is_atomic_and_typed();
     test_rebake_and_world_switch_prune();
+    test_viewport_pick_arguments();
     std::printf("Selection command tests passed.\n");
     return 0;
 }
