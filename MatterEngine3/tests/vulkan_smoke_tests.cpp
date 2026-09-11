@@ -7010,13 +7010,13 @@ static void rt_scenario_local_direct_transmission_weighting(
                               {1.0f, 1.0f, -1.09f}, 0u);
     blocker.clusters[0].lods[0].index_count = 6;
     blocker.vertices = {
-        {{0.0f, -1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 1},
+        {{0.0f, -1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 0},
          {0.65f, 0, 1, 1}, kOpaqueBlack, {}},
-        {{1.0f, -1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 1},
+        {{1.0f, -1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 0},
          {0.65f, 0, 1, 1}, kOpaqueBlack, {}},
-        {{1.0f, 1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 1},
+        {{1.0f, 1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 0},
          {0.65f, 0, 1, 1}, kOpaqueBlack, {}},
-        {{0.0f, 1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 1},
+        {{0.0f, 1.0f, -1.1f}, {0, 0, 1}, {0, 0, 0, 0},
          {0.65f, 0, 1, 1}, kOpaqueBlack, {}},
     };
     blocker.indices = {0, 1, 2, 0, 2, 3};
@@ -7113,6 +7113,76 @@ static void rt_scenario_local_direct_transmission_weighting(
     instances[1].object_to_world = viewer::mat4_translation({0.2f, 0.0f, 0.0f});
     CHECK(direct_frame(false) && last_reset && direct_frame(false) && !last_reset,
           "moving RT-only blocker invalidates receiver direct history once");
+    // Sparse secondary radiance must converge without losing its mean.
+    // The fixed RT-only card alternates hits/misses on a static receiver.
+    {
+        materials[kOpaqueBlack].emission_strength[0] = 1.0f;
+        materials[kOpaqueBlack].emission_strength[3] = 4.0f;
+        materials[kOpaqueWhite].base_roughness[3] = 0.25f;
+        materials[kOpaqueWhite].metal_opacity_spec_coat[2] = 1.0f;
+        for (uint32_t c = 0; c < 3; ++c)
+            materials[kOpaqueWhite].specular_tint_coat_roughness[c] = 1.0f;
+        CHECK(renderer.update_materials(materials, 2, 1, error), error.c_str());
+        direct_gi.trace_scale = 1.0f;
+        renderer.set_gi_settings(direct_gi);
+        std::vector<float> raw_diffuse_samples, filtered_diffuse_samples;
+        std::vector<float> raw_specular_samples, filtered_specular_samples;
+        bool secondary_history_stable = true;
+        const uint64_t resets_before = renderer.test_gi_history_reset_count();
+        for (uint32_t index = 0; index < 256; ++index) {
+            CHECK(direct_frame(index == 0), error.c_str());
+            uint32_t history[2]{}, rejection[2]{};
+            matter::Float3 aux{};
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.test_readback_gi_history(kWidth/2, kHeight/2,
+                history, rejection, aux, error) &&
+                renderer.readback_raster_pixel(kWidth/2, kHeight/2, pixel, error),
+                error.c_str());
+            if (index >= 32) {
+                secondary_history_stable &= history[0] == 32u &&
+                    history[1] == 32u && rejection[0] == 0u && rejection[1] == 0u;
+                raw_diffuse_samples.push_back(pixel.raw_diffuse.x);
+                filtered_diffuse_samples.push_back(pixel.accumulated_diffuse.x);
+                raw_specular_samples.push_back(pixel.raw_specular.x);
+                filtered_specular_samples.push_back(pixel.accumulated_specular.x);
+            }
+        }
+        CHECK(secondary_history_stable && raw_diffuse_samples.size() == 224u &&
+                  renderer.test_gi_history_reset_count() == resets_before + 1u,
+              "static secondary histories reach32 without sample-distance or repeated resets");
+        const auto secondary_gate = [&](const std::vector<float>& raw_samples,
+                                         const std::vector<float>& filtered_samples,
+                                         const char* name) {
+            const auto raw = moments(raw_samples);
+            const auto filtered = moments(filtered_samples);
+            std::printf("secondary %s: raw mean/variance=%.7f/%.9f filtered=%.7f/%.9f\n",
+                        name, raw[0], raw[1], filtered[0], filtered[1]);
+            CHECK(raw[0] > 0.001 && std::fabs(filtered[0] - raw[0]) <= raw[0] * 0.15,
+                  "secondary filtering preserves sparse mean radiance within15percent");
+            CHECK(raw[1] > 0.00001 && filtered[1] <= raw[1] * 0.10,
+                  "secondary filtering leaves at most10percent temporal variance");
+        };
+        secondary_gate(raw_diffuse_samples, filtered_diffuse_samples, "diffuse");
+        secondary_gate(raw_specular_samples, filtered_specular_samples, "reflection");
+        const uint64_t settled_resets = renderer.test_gi_history_reset_count();
+        instances[1].object_to_world = viewer::mat4_translation({0.3f, 0, 0});
+        CHECK(direct_frame(false, false) &&
+                  renderer.test_gi_history_reset_count() == settled_resets,
+              "failed secondary scene candidate does not promote its reset");
+        CHECK(direct_frame(false) &&
+                  renderer.test_gi_history_reset_count() == settled_resets + 1u,
+              "moving offscreen reflector resets secondary histories on successful retry");
+        uint32_t moved_history[2]{}, moved_rejection[2]{};
+        matter::Float3 moved_aux{};
+        CHECK(renderer.test_readback_gi_history(kWidth/2, kHeight/2,
+                  moved_history, moved_rejection, moved_aux, error) &&
+                  moved_history[0] == 1u && moved_history[1] == 1u &&
+                  moved_rejection[0] == viewer::kGiRejectReset &&
+                  moved_rejection[1] == viewer::kGiRejectReset &&
+                  direct_frame(false) &&
+                  renderer.test_gi_history_reset_count() == settled_resets + 1u,
+              "geometry reset reaches actual GI pixels once, then resumes accumulation");
+    }
     publication.records.clear();
     CHECK(world_lights::rebuild_local_light_publication(publication, error) &&
               renderer.update_local_lights(publication, error) && direct_frame(false),
@@ -7125,6 +7195,22 @@ static void rt_scenario_local_direct_transmission_weighting(
     renderer.reset();
     CHECK(renderer.test_local_direct_presented_token() == 0,
           "world reset discards primary direct history even when GPU targets survive");
+
+    for (uint32_t mode : {0u, 1u}) {
+        viewer::GiTemporalGpuFixture sparse{};
+        sparse.signal_mode = mode;
+        sparse.raw = {0, 0, 0, 1};
+        sparse.previous_radiance = {0.2f, 0, 0, 1};
+        sparse.previous_moments = {0.04252f, 0.03616f, 0};
+        sparse.previous_history_length = 32u;
+        sparse.raw_aux = {100.0f, 0.25f, 0};
+        sparse.previous_aux = {1.0f, 0.25f, 0};
+        viewer::GiTemporalGpuResult result{};
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(sparse, result, error) &&
+                  result.history_length == 32u && result.rejection_bits == 0u &&
+                  std::fabs(result.radiance.x - 0.19f) < 0.002f,
+              "sparse indirect sample energy survives nine fresh misses without reflection distance reset");
+    }
 
     // Exercise the exact mode-3 shaders in this bounded smoke mode too.
     viewer::GiTemporalGpuFixture temporal_fixture{};
@@ -7964,9 +8050,10 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
         changed_temporal.previous_radiance = {100.0f, 50.0f, 25.0f, 1.0f};
         CHECK(renderer.test_dispatch_gi_temporal_fixture(
                   changed_temporal, temporal_result, error) &&
-                  close4(temporal_result.radiance, changed_temporal.raw,
-                         0.003f),
-              error.empty() ? "GPU temporal 3x3 clip rejects radiance outlier"
+                  temporal_result.radiance.x < 2.0f &&
+                  temporal_result.radiance.y < 2.0f &&
+                  temporal_result.radiance.z < 2.0f,
+              error.empty() ? "GPU temporal variance bounds reject radiance outlier"
                             : error.c_str());
 
         viewer::GiTemporalGpuFixture specular_temporal{};
@@ -7992,9 +8079,9 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
         rough_specular_temporal.previous_aux.y = 1.0f;
         CHECK(renderer.test_dispatch_gi_temporal_fixture(
                   rough_specular_temporal, specular_temporal_result, error) &&
-                  specular_temporal_result.history_length == 16u,
+                  specular_temporal_result.history_length == 32u,
               error.empty()
-                  ? "rough specular extends history to sixteen frames"
+                  ? "rough specular extends history to thirty-two frames"
                   : error.c_str());
         auto disoccluded_specular = specular_temporal;
         disoccluded_specular.raw_aux.x = 8.0f;

@@ -1907,6 +1907,9 @@ public:
     bool readback_filtered_local_direct_pixel(uint32_t x, uint32_t y,
                                              matter::Float4& value,
                                              std::string& error);
+    bool test_readback_gi_history(uint32_t x, uint32_t y,
+                                  uint32_t (&history)[2], uint32_t (&rejection)[2],
+                                  matter::Float3& specular_aux, std::string& error);
     bool test_dispatch_gi_temporal_fixture(
         const GiTemporalGpuFixture& fixture, GiTemporalGpuResult& result,
         std::string& error);
@@ -3347,6 +3350,8 @@ private:
     uint64_t gi_candidate_attempt_token_ = 0;
     uint64_t gi_presented_attempt_token_ = 0;
     uint64_t gi_history_reset_count_ = 0;
+    uint64_t gi_presented_scene_key_ = 0;
+    uint64_t gi_candidate_scene_key_ = 0;
     bool gi_candidate_was_reset_ = false;
     bool gi_candidate_used_diffuse_reset_ = false;
     bool gi_candidate_used_reflection_reset_ = false;

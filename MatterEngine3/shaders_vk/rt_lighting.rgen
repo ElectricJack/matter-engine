@@ -405,12 +405,20 @@ vec3 local_light_visibility(LocalLightGpu light, vec3 receiver_position,
     return visibility_payload.visibility;
 }
 
+// Primary direct and unfiltered smooth transmission retain four area samples.
+// Diffuse/reflection histories accumulate one unbiased visibility sample per
+// local light, avoiding fourfold secondary shadow work in dense interiors.
+const uint PRIMARY_AREA_VISIBILITY_SAMPLES = 4u;
+const uint SECONDARY_AREA_VISIBILITY_SAMPLES = 1u;
+const uint TRANSMISSION_AREA_VISIBILITY_SAMPLES = 4u;
+
 vec3 evaluate_rt_local_light(uint light_index, vec3 receiver_position,
                              vec3 ray_origin_position,
                              vec3 receiver_normal, vec3 geometric_normal,
                              vec3 view_direction,
                              vec3 albedo, float roughness, float metallic,
-                             float transmission_weight, inout uint seed) {
+                             float transmission_weight, inout uint seed,
+                             uint area_visibility_samples) {
     if (light_index >= local_light_counts.x)
         return vec3(0.0);
     LocalLightBrdf brdf = evaluate_local_light_brdf(
@@ -419,7 +427,8 @@ vec3 evaluate_rt_local_light(uint light_index, vec3 receiver_position,
     if (!any(greaterThan(brdf.diffuse + brdf.specular, vec3(0.0))))
         return vec3(0.0);
     LocalLightGpu light = local_lights[light_index];
-    uint visibility_samples = light.color_source_radius.w > 0.0 ? 4u : 1u;
+    uint visibility_samples = light.color_source_radius.w > 0.0
+        ? max(area_visibility_samples, 1u) : 1u;
     vec3 visibility = vec3(0.0);
     for (uint sample_index = 0u; sample_index < visibility_samples;
          ++sample_index) {
@@ -438,7 +447,8 @@ vec3 evaluate_rt_local_lighting(vec3 receiver_position,
                                 vec3 geometric_normal, vec3 view_direction,
                                 vec3 albedo,
                                 float roughness, float metallic,
-                                float transmission_weight, inout uint seed) {
+                                float transmission_weight, inout uint seed,
+                                uint area_visibility_samples) {
     vec3 result = vec3(0.0);
     uint offset = 0u;
     uint count = 0u;
@@ -448,7 +458,7 @@ vec3 evaluate_rt_local_lighting(vec3 receiver_position,
                 local_light_indices[offset + candidate], receiver_position,
                 ray_origin_position, receiver_normal, geometric_normal,
                 view_direction, albedo, roughness, metallic,
-                transmission_weight, seed);
+                transmission_weight, seed, area_visibility_samples);
         }
     }
     for (uint candidate = 0u; candidate < local_light_counts.z; ++candidate) {
@@ -456,13 +466,13 @@ vec3 evaluate_rt_local_lighting(vec3 receiver_position,
             local_light_oversized_indices[candidate], receiver_position,
             ray_origin_position, receiver_normal, geometric_normal,
             view_direction, albedo, roughness, metallic,
-            transmission_weight, seed);
+            transmission_weight, seed, area_visibility_samples);
     }
     return result;
 }
 
 vec3 hit_radiance(RtSurface surface, vec3 view_direction, inout uint seed,
-                  out vec3 base) {
+                  out vec3 base, uint area_visibility_samples) {
     vec3 shading_normal;
     float mean_occlusion;
     float roughness;
@@ -491,7 +501,7 @@ vec3 hit_radiance(RtSurface surface, vec3 view_direction, inout uint seed,
         local = evaluate_rt_local_lighting(
             surface.position, surface.position, shading_normal, surface.normal,
             normalize(view_direction), base, roughness, metallic,
-            transmission_weight, seed);
+            transmission_weight, seed, area_visibility_samples);
     }
     return emission + rt_sky_irradiance(shading_normal) * base * sky_scale +
            local;
@@ -500,7 +510,8 @@ vec3 hit_radiance(RtSurface surface, vec3 view_direction, inout uint seed,
 vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun,
                          vec3 view_direction, inout uint seed) {
     vec3 base;
-    vec3 radiance = hit_radiance(surface, view_direction, seed, base);
+    vec3 radiance = hit_radiance(surface, view_direction, seed, base,
+        TRANSMISSION_AREA_VISIBILITY_SAMPLES);
     vec3 sun_normal = surface.normal;
     if (surface.material_index < rt_materials.length()) {
         RtMaterialGpu sun_material = rt_materials[surface.material_index];
@@ -740,7 +751,7 @@ void main() {
             shading_world, world, direct_normal, direct_normal,
             normalize(unproject(source_uv, 1.0) - shading_world), albedo.rgb,
             clamp(orm.x, 0.02, 1.0), clamp(orm.y, 0.0, 1.0),
-            primary_transmission, direct_seed);
+            primary_transmission, direct_seed, PRIMARY_AREA_VISIBILITY_SAMPLES);
         if (any(isnan(primary_local_direct)) ||
             any(isinf(primary_local_direct)))
             primary_local_direct = vec3(0.0);
@@ -836,7 +847,7 @@ void main() {
         vec3 hit_outgoing;
         if (final_vertex) {
             hit_outgoing = hit_radiance(hit.surface, -direction, seed,
-                                        hit_base);
+                                        hit_base, SECONDARY_AREA_VISIBILITY_SAMPLES);
         } else {
             hit_outgoing = hit_emission(
                 hit.surface, hit_base, hit_shading_normal,
@@ -847,7 +858,8 @@ void main() {
                     hit.surface.position, hit.surface.position,
                     hit_shading_normal,
                     hit.surface.normal, -direction, hit_base, hit_roughness,
-                    hit_metallic, hit_transmission, seed);
+                    hit_metallic, hit_transmission, seed,
+                    SECONDARY_AREA_VISIBILITY_SAMPLES);
             }
         }
         bounce += throughput * horizon_ray_scale * hit_outgoing;
@@ -1003,7 +1015,8 @@ void main() {
                         reflected, constants.max_distance, 1);
             vec3 spec_hit_base;
             vec3 incoming = (hit.surface.flags & RT_SURFACE_VALID) != 0u
-                ? hit_radiance(hit.surface, -reflected, seed, spec_hit_base)
+                ? hit_radiance(hit.surface, -reflected, seed, spec_hit_base,
+                               SECONDARY_AREA_VISIBILITY_SAMPLES)
                 : reflection_environment(reflected, roughness);
             float g = ggx_g1(n_dot_v, roughness) *
                       ggx_g1(n_dot_l, roughness);

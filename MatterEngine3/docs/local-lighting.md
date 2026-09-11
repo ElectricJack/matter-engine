@@ -235,3 +235,33 @@ Keep the complete sampled source region clear of opaque lamp housing. A light
 center tangent to a housing sphere can put much of its finite-radius sample
 disk inside that sphere, creating broad partial occlusion. Accumulation removes
 sampling grain; it does not correct an unintentionally obstructed emitter.
+
+## Sparse indirect-light history
+
+Diffuse GI and rough reflections expand their temporal neighborhood bounds by
+three standard deviations from the previous luminance moments. This preserves
+valid rare light samples when all nine fresh neighborhood rays miss. The bounds
+are scaled in YCoCg to retain saturated indirect colors. Near-mirror reflections
+(roughness at most 0.05) retain hit-distance rejection. Rougher reflections treat
+sampled hit distance as stochastic, relax its spatial edge weight, and reach a
+32-frame history at roughness 0.2. Primary geometry/material edges still guide
+both filters. Transmission mode 2 and primary-direct mode 3 retain their filters.
+Finite-area visibility uses an explicit sample budget: four for primary direct,
+one per diffuse/reflection hit, and four for transmission hits. Each is averaged
+by its own sample count, so the reduced secondary work keeps the estimator's mean.
+The transmission budget remains higher because smooth glass bypasses denoising.
+
+Diffuse/reflection histories also compare the emitted-TLAS scene key, promoted
+only after successful submission. Off-screen geometry motion or camera-driven
+TLAS changes conservatively reset these two signals throughout the frame; no
+additional GPU resources or passes are required.
+
+The fixed-receiver native regression records 256 frames (32 settling, then 224
+measurements). Before this correction, diffuse mean fell from raw **0.982143**
+to filtered **0.385818**, while reflection retained **99.5%** of raw variance and
+rejected 43 sampled distance changes. With the correction, diffuse mean is
+**0.913504** and reflection mean **0.012007** versus raw **0.010705**; remaining
+variances are **0.000009726** and **0.000000241**, respectively. The gate requires
+mean agreement within 15% and at most 10% remaining variance for each signal,
+as well as stable history and failed-submission/moving-reflector reset checks.
+These small-scene correctness results do not establish full-castle performance.

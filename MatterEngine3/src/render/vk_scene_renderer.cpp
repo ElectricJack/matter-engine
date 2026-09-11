@@ -1126,6 +1126,7 @@ struct RasterReadbackRecord {
     uint32_t y;
     uint32_t raw_x;
     uint32_t raw_y;
+    uint32_t image_count = 16;
 };
 
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
@@ -1134,7 +1135,7 @@ void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     constexpr VkDeviceSize offsets[16] = {0, 8, 16, 20, 24, 32,
                                           40, 48, 56, 64, 72, 80,
                                           88, 96, 104, 112};
-    for (size_t i = 0; i < 16; ++i) {
+    for (size_t i = 0; i < record.image_count; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -10363,6 +10364,8 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         std::string* error;
     } record{this, &fixture, upload.buffer, readback.buffer, true, &error};
     const uint64_t saved_presented_token = gi_presented_attempt_token_;
+    const uint64_t saved_candidate_scene_key = gi_candidate_scene_key_;
+    gi_candidate_scene_key_ = gi_presented_scene_key_;
     const uint64_t saved_candidate_serial = gi_candidate_frame_serial_;
     const uint64_t saved_candidate_token = gi_candidate_attempt_token_;
     const bool saved_candidate_reset = gi_candidate_was_reset_;
@@ -10565,6 +10568,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
          gi_spec_history_[1].rejection.lifetime,
          gi_spec_history_[1].aux.lifetime});
     gi_presented_attempt_token_ = saved_presented_token;
+    gi_candidate_scene_key_ = saved_candidate_scene_key;
     gi_candidate_frame_serial_ = saved_candidate_serial;
     gi_candidate_attempt_token_ = saved_candidate_token;
     gi_candidate_was_reset_ = saved_candidate_reset;
@@ -11244,7 +11248,9 @@ bool VkSceneRenderer::record_gi_temporal_signal(
     constants.reset = temporal_frame_.reset || selective_reset ||
         (direct ? direct_state.presented_token == 0 ||
                       direct_state.candidate_scene_key != direct_state.presented_scene_key
-                : gi_history_reset_pending_ || gi_presented_attempt_token_ == 0);
+                : gi_history_reset_pending_ || gi_presented_attempt_token_ == 0 ||
+                      (signal_mode <= 1u &&
+                       gi_candidate_scene_key_ != gi_presented_scene_key_));
     if (!direct) {
         gi_candidate_was_reset_ = gi_candidate_was_reset_ || constants.reset != 0;
         gi_candidate_used_diffuse_reset_ =
@@ -11546,6 +11552,7 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
         if (succeeded) {
             gi_presented_history_index_ = gi_candidate_history_index_;
             gi_presented_attempt_token_ = gi_candidate_attempt_token_;
+            gi_presented_scene_key_ = gi_candidate_scene_key_;
             if (gi_candidate_was_reset_)
                 gi_history_reset_pending_ = false;
             if (gi_candidate_used_diffuse_reset_)
@@ -15404,6 +15411,27 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                 rt_frame_slot);
         }
     }
+    // Primary motion vectors cannot reveal an off-screen shadow/reflection
+    // change. Both diffuse GI and rough reflection therefore compare actual
+    // emitted TLAS records against their last successfully submitted scene.
+    uint64_t key = 14695981039346656037ull;
+    const auto hash_bytes = [&key](const void* data, size_t size) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < size; ++i) {
+            key ^= bytes[i];
+            key *= 1099511628211ull;
+        }
+    };
+    hash_bytes(selected.rt_tlas_instances.data(),
+               selected.rt_tlas_instances.size() *
+                   sizeof(VkAccelerationStructureInstanceKHR));
+    hash_bytes(&rt_geometry_epoch_, sizeof(rt_geometry_epoch_));
+    hash_bytes(&local_light_revision_, sizeof(local_light_revision_));
+    hash_bytes(&material_shading_revision_, sizeof(material_shading_revision_));
+    hash_bytes(&material_geometry_revision_, sizeof(material_geometry_revision_));
+    hash_bytes(&ray_tracing_settings_.bias, sizeof(ray_tracing_settings_.bias));
+    hash_bytes(&gi_settings_.enabled, sizeof(gi_settings_.enabled));
+    gi_candidate_scene_key_ = key;
     if (gi_settings_.enabled || trace_local_direct)
         write_gpu_timestamp(frame.command_buffer, kGpuZoneDenoise, false,
                             rt_frame_slot);
@@ -15412,27 +15440,6 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         if (!record_gi_atrous(frame, error)) return false;
     }
     if (trace_local_direct) {
-        // Include the emitted TLAS records: receiver motion vectors cannot
-        // identify shadows changed by an off-screen moving occluder. This
-        // conservative reset also covers LOD/BLAS changes, without relying on
-        // upload generations that can change for otherwise static frames.
-        uint64_t key = 14695981039346656037ull;
-        const auto hash_bytes = [&key](const void* data, size_t size) {
-            const auto* bytes = static_cast<const unsigned char*>(data);
-            for (size_t i = 0; i < size; ++i) {
-                key ^= bytes[i];
-                key *= 1099511628211ull;
-            }
-        };
-        hash_bytes(selected.rt_tlas_instances.data(),
-                   selected.rt_tlas_instances.size() *
-                       sizeof(VkAccelerationStructureInstanceKHR));
-        hash_bytes(&rt_geometry_epoch_, sizeof(rt_geometry_epoch_));
-        hash_bytes(&local_light_revision_, sizeof(local_light_revision_));
-        hash_bytes(&material_shading_revision_, sizeof(material_shading_revision_));
-        hash_bytes(&material_geometry_revision_, sizeof(material_geometry_revision_));
-        hash_bytes(&ray_tracing_settings_.bias, sizeof(ray_tracing_settings_.bias));
-        hash_bytes(&gi_settings_.enabled, sizeof(gi_settings_.enabled));
         local_direct_history_state_.candidate_scene_key = key;
         if (!record_gi_temporal_signal(frame, 3u, error, true) ||
             !record_gi_atrous_signal(frame, 3u, error, true))
@@ -16566,6 +16573,8 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     gi_candidate_frame_serial_ = 0;
     gi_candidate_attempt_token_ = 0;
     gi_presented_attempt_token_ = 0;
+    gi_presented_scene_key_ = 0;
+    gi_candidate_scene_key_ = 0;
     gi_history_reset_pending_ = true;
     local_direct_history_state_.reset_pending = true;
     raw_diffuse_extent_ = {raw_width, raw_height};
@@ -17563,6 +17572,52 @@ bool VkSceneRenderer::readback_pick_identity(uint32_t x, uint32_t y,
 }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+bool VkSceneRenderer::test_readback_gi_history(
+    uint32_t x, uint32_t y, uint32_t (&history)[2],
+    uint32_t (&rejection)[2], matter::Float3& specular_aux, std::string& error) {
+    if (!gi_settings_.enabled || gi_presented_attempt_token_ == 0 ||
+        x >= raster_extent_.width || y >= raster_extent_.height) {
+        error = "GI history readback requires a submitted GI frame";
+        return false;
+    }
+    auto& diffuse = gi_history_[gi_presented_history_index_];
+    auto& specular = gi_spec_history_[gi_presented_history_index_];
+    matter::VkBufferResource staging;
+    if (!matter::create_buffer(*vulkan_, 32, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging, error)) return false;
+    RasterReadbackRecord record{};
+    matter::VkImageResource* images[] = {&diffuse.history_length,
+        &diffuse.rejection, &specular.history_length, &specular.rejection,
+        &specular.aux};
+    std::vector<std::shared_ptr<void>> retained{staging.lifetime};
+    for (uint32_t i = 0; i < 5; ++i) {
+        record.images[i] = images[i];
+        record.aspects[i] = VK_IMAGE_ASPECT_COLOR_BIT;
+        retained.push_back(images[i]->lifetime);
+    }
+    record.image_count = 5;
+    record.destination = staging.buffer;
+    record.x = x * raw_diffuse_extent_.width / raster_extent_.width;
+    record.y = y * raw_diffuse_extent_.height / raster_extent_.height;
+    if (!matter::submit_immediate(*vulkan_, record_raster_readback, &record,
+            error, matter::ImmediateSubmitPhase::compute_dispatch,
+            std::move(retained))) return false;
+    uint8_t bytes[32]{};
+    if (!matter::readback_buffer(*vulkan_, staging, bytes, sizeof(bytes), 0,
+                                error)) return false;
+    uint16_t diffuse_history = 0, specular_history = 0, aux[2]{};
+    std::memcpy(&diffuse_history, bytes, 2);
+    std::memcpy(&specular_history, bytes + 16, 2);
+    std::memcpy(&rejection[0], bytes + 8, 4);
+    std::memcpy(&rejection[1], bytes + 20, 4);
+    std::memcpy(aux, bytes + 24, 4);
+    history[0] = diffuse_history;
+    history[1] = specular_history;
+    specular_aux = {half_to_float(aux[0]), half_to_float(aux[1]), 0};
+    return true;
+}
+
 bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                             VkRasterPixel& pixel,
                                             std::string& error) {
@@ -17913,6 +17968,8 @@ void VkSceneRenderer::reset() {
     local_direct_owner_ = LocalDirectOwner::Raster;
     local_direct_lane_revision_ = 0;
     local_direct_history_state_ = {};
+    gi_presented_scene_key_ = 0;
+    gi_candidate_scene_key_ = 0;
     ++local_light_generation_;
     if (local_light_generation_ == 0u) local_light_generation_ = 1u;
     parts_.clear();

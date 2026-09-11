@@ -119,8 +119,14 @@ void main() {
             if (secondary) {
                 vec2 aux = texelFetch(auxTex, q, 0).rg;
                 float hitScale = max(0.05, 0.1 * max(centerAux.x, aux.x));
-                wh = exp(-abs(centerAux.x - aux.x) / hitScale) *
-                     exp(-abs(centerAux.y - aux.y) * 8.0);
+                float distanceWeight = exp(-abs(centerAux.x - aux.x) / hitScale);
+                // Rough-reflection hit distance is stochastic. Keep its
+                // roughness/material/primary geometry edges, but do not isolate
+                // bright hit samples from neighboring environment misses.
+                if (pc.signalMode == 1u)
+                    distanceWeight = mix(distanceWeight, 1.0,
+                        smoothstep(0.05, 0.2, max(centerAux.y, aux.y)));
+                wh = distanceWeight * exp(-abs(centerAux.y - aux.y) * 8.0);
             }
             if (localDirect) {
                 vec2 aux = texelFetch(auxTex, q, 0).rg;

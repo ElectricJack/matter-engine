@@ -130,7 +130,12 @@ void main() {
         else if (secondary) {
             vec2 oldAux = texelFetch(previousAux, previousPixel, 0).rg;
             float threshold = max(0.05, 0.1 * max(aux.x, oldAux.x));
-            if (abs(aux.x - oldAux.x) > threshold)
+            // A rough reflection samples a different direction every frame.
+            // Its hit/miss distance is sample noise, not primary disocclusion.
+            // Retain strict distance rejection for near-mirrors and transmission.
+            bool stableDistance = pc.signalMode == 2u ||
+                                  max(aux.y, oldAux.y) <= 0.05;
+            if (stableDistance && abs(aux.x - oldAux.x) > threshold)
                 rejection = REJECT_HIT_DISTANCE;
         }
     }
@@ -150,12 +155,30 @@ void main() {
                 neighborhoodMin = min(neighborhoodMin, value);
                 neighborhoodMax = max(neighborhoodMax, value);
             }
-        vec3 oldRadiance = yCoCgToRgb(clamp(
-            rgbToYCoCg(texelFetch(previousRadiance, previousPixel, 0).rgb),
-            neighborhoodMin, neighborhoodMax));
+        vec3 historyColor = rgbToYCoCg(
+            texelFetch(previousRadiance, previousPixel, 0).rgb);
         vec2 oldMoments = texelFetch(previousMoments, previousPixel, 0).rg;
+        if (pc.signalMode <= 1u) {
+            // Nine fresh rays can all miss a small indirect source. Do not
+            // clamp its valid accumulated energy to zero on that evidence.
+            // Prior temporal variance expands the bounds; scaling in YCoCg
+            // preserves saturated indirect colors despite luminance moments.
+            float variance = max(oldMoments.y - oldMoments.x * oldMoments.x, 0.0);
+            if (texelFetch(previousHistory, previousPixel, 0).r < 2u)
+                variance = max(variance, oldMoments.x * oldMoments.x);
+            vec3 colorScale = max(abs(historyColor) /
+                max(luminance(yCoCgToRgb(historyColor)), 1e-3), vec3(1.0));
+            vec3 margin = 3.0 * sqrt(variance) * colorScale;
+            neighborhoodMin -= margin;
+            neighborhoodMax += margin;
+        }
+        vec3 oldRadiance = yCoCgToRgb(clamp(
+            historyColor, neighborhoodMin, neighborhoodMax));
         uint maxHistory = pc.signalMode == 0u || localDirect ? 32u :
             uint(round(mix(4.0, 16.0, clamp(aux.y, 0.0, 1.0))));
+        if (pc.signalMode == 1u)
+            maxHistory = uint(round(mix(float(maxHistory), 32.0,
+                smoothstep(0.05, 0.2, aux.y))));
         maxHistory = max(1u, uint(round(mix(float(maxHistory), 2.0,
                                            reactivity))));
         historyLength = min(maxHistory,
