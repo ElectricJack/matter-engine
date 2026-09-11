@@ -27,7 +27,7 @@ shot $shots/${prefix}_window-reveal.png
 cam 8 5 -7 4 1.8 -2
 wait_frames 90
 shot $shots/${prefix}_cross-junction.png
-cam 6 1.6 -3.3 6 1.6 -1
+cam 6.4 1.3 -3.65 5.9 2.7 -2
 wait_frames 90
 shot $shots/${prefix}_interior-arch.png
 "@
