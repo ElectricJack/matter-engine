@@ -45,6 +45,11 @@ py -3 tools/castle_scene_capture.py --world CastleBentPalace --timeline D:/tmp/c
 py -3 tools/castle_scene_capture.py --world CastleSiteGallery --timeline D:/tmp/castle-final-captures/CastleSiteGallery/timeline.txt --out-dir D:/tmp/castle-final-captures/CastleSiteGallery --timeout 7200 --env MATTER_WINDOW_WIDTH=1920 --env MATTER_WINDOW_HEIGHT=1080
 ```
 
+The generated launcher reserves 4096 MiB for static vertices and 512 MiB for
+indices, avoiding repeated buffer growth during this detailed gallery's first
+publication. Add `--env MATTER_VK_STATIC_RESERVE_VERTEX_MB=4096 --env
+MATTER_VK_STATIC_RESERVE_INDEX_MB=512` to individual commands for the same setup.
+
 The capture helper waits for final geometry publication and idle acknowledgment
 before submitting camera commands. Timelines intentionally contain no
 `wait_event` or `wait_idle`; the helper owns those barriers. A successful run

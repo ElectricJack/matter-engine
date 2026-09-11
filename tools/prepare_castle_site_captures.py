@@ -446,6 +446,10 @@ def main():
                     "MATTER_WINDOW_WIDTH=1920",
                     "--env",
                     "MATTER_WINDOW_HEIGHT=1080",
+                    "--env",
+                    "MATTER_VK_STATIC_RESERVE_VERTEX_MB=4096",
+                    "--env",
+                    "MATTER_VK_STATIC_RESERVE_INDEX_MB=512",
                 ]
             )
 
