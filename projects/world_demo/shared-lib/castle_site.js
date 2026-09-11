@@ -580,6 +580,19 @@ function buildConnector(connection, index, byId) {
   };
 }
 
+function connectorWallFootprint(connector, span, path) {
+  const offset = scale2(span.normal, span.thickness);
+  let footprint = convexHull([
+    ...span.segment,
+    add2(span.segment[0], offset), add2(span.segment[1], offset),
+  ], path);
+  for (const plane of span.trimPlanes)
+    footprint = clipPolygonHalfPlane(footprint, point => plane.keepSign *
+      (dot2(point, plane.normal) - plane.offset));
+  if (footprint.length < 3) fail(path, 'trim planes remove the solid');
+  return footprint;
+}
+
 function validateConnectorIntrusion(connectors, wingVolumes) {
   for (const connector of connectors) {
     const participantMouths = new Map(connector.mouths.map(mouth => [mouth.wing, mouth]));
@@ -620,16 +633,8 @@ function validateConnectorIntrusion(connectors, wingVolumes) {
     // extruded along its outward normal. Those solids may meet their two host
     // wings at owned jambs, but may never cut into an unrelated wing.
     for (const span of connector.wallSpans) {
-      const offset = scale2(span.normal, span.thickness);
-      let footprint = convexHull([
-        ...span.segment,
-        add2(span.segment[0], offset), add2(span.segment[1], offset),
-      ], `connections.${connector.id}.wallSpans.${span.id}.footprint`);
-      for (const plane of span.trimPlanes)
-        footprint = clipPolygonHalfPlane(footprint, point => plane.keepSign *
-          (dot2(point, plane.normal) - plane.offset));
-      if (footprint.length < 3)
-        fail(`connections.${connector.id}.wallSpans.${span.id}`, 'trim planes remove the solid');
+      const footprint = connectorWallFootprint(connector, span,
+        `connections.${connector.id}.wallSpans.${span.id}.footprint`);
       for (const wingVolume of wingVolumes) {
         if (!yRangesOverlap(volume, wingVolume)) continue;
         if (wallIntrudes(footprint, wingVolume))
@@ -717,6 +722,41 @@ function validateCourtyardIntrusion(courtyards, wingVolumes) {
       }
       if (footprintOverlapsRoom(candidate, wingVolume))
         fail(`courtyards.${courtyard.id}`, `intrudes into wing volume ${wingVolume.id}`);
+    }
+  }
+}
+
+function validateSiteSurfaceOverlap(connectors, courtyards) {
+  const courtFloorVolume = court => ({
+    minY: court.baseY - court.floor.thickness, maxY: court.baseY,
+  });
+  for (let leftIndex = 0; leftIndex < courtyards.length; ++leftIndex) {
+    const left = courtyards[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < courtyards.length; ++rightIndex) {
+      const right = courtyards[rightIndex];
+      if (!yRangesOverlap(courtFloorVolume(left), courtFloorVolume(right))) continue;
+      if (positivePolygonArea(convexIntersection(left.clearPolygon, right.clearPolygon)) >
+          COLLISION_AREA_EPSILON)
+        fail('courtyards', `positive-area overlap between ${left.id} and ${right.id}`);
+    }
+    for (const connector of connectors) {
+      const connectorFloor = { minY: connector.baseY - connector.floor.thickness,
+        maxY: connector.baseY };
+      if (yRangesOverlap(courtFloorVolume(left), connectorFloor) &&
+          positivePolygonArea(convexIntersection(left.clearPolygon, connector.clearPolygon)) >
+            COLLISION_AREA_EPSILON)
+        fail(`courtyards.${left.id}`, `positive-area floor overlap with connector ${connector.id}`);
+      if (!yRangesOverlap(courtFloorVolume(left), {
+        minY: connector.baseY, maxY: connector.baseY + connector.height,
+      })) continue;
+      for (const span of connector.wallSpans) {
+        const footprint = connectorWallFootprint(connector, span,
+          `connections.${connector.id}.wallSpans.${span.id}.footprint`);
+        const overlapArea = positivePolygonArea(convexIntersection(left.clearPolygon, footprint));
+        if (overlapArea > COLLISION_AREA_EPSILON)
+          fail(`courtyards.${left.id}`,
+            `floor overlaps wall solid ${span.id} from connector ${connector.id} (${overlapArea}m2)`);
+      }
     }
   }
 }
@@ -990,6 +1030,7 @@ function compile(site) {
   const wingVolumes = validateWingOverlap(wings);
   validateConnectorIntrusion(connectors, wingVolumes);
   validateCourtyardIntrusion(courtyards, wingVolumes);
+  validateSiteSurfaceOverlap(connectors, courtyards);
   const roomGraph = buildGlobalGraph(wings, connectors, courtyards, entryRef);
   const entrySocket = worldSocket(byId.get(entryRef.wing), entryRef, 'entry');
   const spawn = [
@@ -1065,13 +1106,23 @@ export function siteToSVG(manifest, options = {}) {
   const sx = x => padding + (x - minX) * scale;
   const sz = z => height - padding - (z - minZ) * scale;
   const wallLines = walls.map(({ wing, wall, from, to }) =>
-    `  <line class="wall ${svgEscape(wall.kind)}" data-wing="${svgEscape(wing.id)}" x1="${sx(from[0])}" y1="${sz(from[1])}" x2="${sx(to[0])}" y2="${sz(to[1])}"/>`);
+    `  <line class="wall" data-wing="${svgEscape(wing.id)}" x1="${sx(from[0])}" y1="${sz(from[1])}" x2="${sx(to[0])}" y2="${sz(to[1])}"/>`);
+  const portalLines = manifest.wings.flatMap(wing => wing.manifest.portals
+    .filter(portal => portal.levelId === levelId &&
+      ['door', 'arch', 'open'].includes(portal.kind)).map(portal => {
+      const center = midpoint2([portal.thresholds[0][0], portal.thresholds[0][2]],
+        [portal.thresholds[1][0], portal.thresholds[1][2]]);
+      const normal = normalize2([portal.thresholds[1][0] - portal.thresholds[0][0],
+        portal.thresholds[1][2] - portal.thresholds[0][2]], 'svg.portal.normal');
+      const tangent = [-normal[1], normal[0]], half = portal.clearWidth / 2;
+      const segment = [add2(center, scale2(tangent, -half)),
+        add2(center, scale2(tangent, half))].map(point => transformPointXZ(wing.frame, point));
+      return `  <line class="portal ${svgEscape(portal.kind)}" data-portal="${svgEscape(portal.sourceId)}" data-wing="${svgEscape(wing.id)}" x1="${sx(segment[0][0])}" y1="${sz(segment[0][1])}" x2="${sx(segment[1][0])}" y2="${sz(segment[1][1])}"/>`;
+    }));
   const courtyardPolygons = courtyards.map(courtyard =>
     `  <polygon class="courtyard" data-courtyard="${svgEscape(courtyard.id)}" points="${courtyard.clearPolygon.map(point => `${sx(point[0])},${sz(point[1])}`).join(' ')}"/>`);
   const connectorPolygons = connectors.map(connector =>
     `  <polygon class="connector" data-link="${svgEscape(connector.id)}" points="${connector.clearPolygon.map(point => `${sx(point[0])},${sz(point[1])}`).join(' ')}"/>`);
-  const portalLines = courtyards.flatMap(courtyard => courtyard.sockets.map(mouth =>
-    `  <line class="court-portal" data-portal="${svgEscape(mouth.portalId)}" x1="${sx(mouth.segment[0][0])}" y1="${sz(mouth.segment[0][1])}" x2="${sx(mouth.segment[1][0])}" y2="${sz(mouth.segment[1][1])}"/>`));
   const labels = manifest.wings.flatMap(wing => wing.manifest.rooms
     .filter(room => room.levelId === levelId).map(room => {
     let local;
@@ -1081,8 +1132,11 @@ export function siteToSVG(manifest, options = {}) {
       room.boundary.cells.reduce((sum, cell) => sum + cell[1] + 0.5, 0) / room.boundary.cells.length,
     ];
     const world = transformPointXZ(wing.frame, local);
-    return `  <text data-room="${svgEscape(`${wing.id}:${room.id}`)}" x="${sx(world[0])}" y="${sz(world[1])}">${svgEscape(`${wing.id} ${room.use} ${wing.frame.yawDeg}°`)}</text>`;
-  }));
+    const attributes = `data-room="${svgEscape(namespaceRoom(wing.id, room.id))}" x="${sx(world[0])}" y="${sz(world[1])}"`;
+    const text = svgEscape(`${wing.id} ${room.use} ${wing.frame.yawDeg}°`);
+    return [`  <text class="label-halo" ${attributes}>${text}</text>`,
+      `  <text class="label" ${attributes}>${text}</text>`];
+  })).flat();
   const routes = levelRoutes.map(route => route.waypoints
     .filter(pointOnLevel))
     .filter(waypoints => waypoints.length > 1).map((waypoints, index) =>
@@ -1090,7 +1144,7 @@ export function siteToSVG(manifest, options = {}) {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${svgEscape(manifest.siteId)} ${svgEscape(levelId)} castle site" data-level="${svgEscape(levelId)}">`,
-    '  <style>.wall{stroke:#29251f;stroke-width:5;fill:none}.door,.arch,.open,.court-portal{stroke:#369b63}.courtyard{fill:#c9bd9d;fill-opacity:.58;stroke:#76684a;stroke-width:2}.connector{fill:#d8b978;fill-opacity:.75;stroke:#8a5a24;stroke-width:2}.court-portal{stroke-width:5}.route{fill:none;stroke:#d33856;stroke-width:1.5;stroke-dasharray:5 3}text{font:10px sans-serif;text-anchor:middle;paint-order:stroke;stroke:#f4efe4;stroke-width:3px;fill:#171411}</style>',
+    '  <style>.wall{stroke:#29251f;stroke-width:5;fill:none}.portal{stroke:#369b63;stroke-width:5}.courtyard{fill:#c9bd9d;fill-opacity:.58;stroke:#76684a;stroke-width:2}.connector{fill:#d8b978;fill-opacity:.75;stroke:#8a5a24;stroke-width:2}.route{fill:none;stroke:#d33856;stroke-width:1.5;stroke-dasharray:5 3}text{font:10px sans-serif;text-anchor:middle}.label-halo{stroke:#f4efe4;stroke-width:4px;fill:#f4efe4}.label{stroke:none;fill:#171411}</style>',
     `  <rect width="${width}" height="${height}" fill="#f4efe4"/>`,
     ...courtyardPolygons, ...connectorPolygons, ...wallLines, ...portalLines,
     ...routes, ...labels, '</svg>', '',
