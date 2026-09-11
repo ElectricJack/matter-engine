@@ -381,21 +381,28 @@ function addFacadeBays(plan) {
    endAngle:angle+9, bottom:1.1, height:1.9});
 }
 
+// An upper gallery edge opens only where it overlooks air: a double-height
+// void beside it, or an open court below its exterior side. The court test
+// samples the cell beyond the wall, not the wall line: a gallery wall on a
+// court's edge overlooks it, but one on a hall's outer edge is the keep's
+// outer wall above the lean-tos.
 function addGalleryEdges(plan) {
  const base = compilePlan(plan);
- const authoredRooms = plan.levels[0].rooms;
+ const courts = plan.levels[0].rooms.filter(room => room.rect && room.use === 'court');
  const rooms = new Map(base.rooms.map(room => [room.id, room]));
+ const cells = new Map(base.rooms.map(room => [room.id, new Set((room.boundary.cells || []).map(cell => cell.join(',')))]));
  const groups = new Map();
  for (const wall of base.walls) {
   const adjacent = wall.roomIds.map(id => rooms.get(id));
   const gallery = adjacent.find(room => room.use === 'gallery');
-  if (wall.levelId !== 'upper' || wall.kind !== 'wall' || !gallery || (wall.boundary !== 'exterior' && !adjacent.some(room => room.openToBelow))) continue;
-  const x=(wall.from[0]+wall.to[0])/2,z=(wall.from[1]+wall.to[1])/2;
-  const overVoid=authoredRooms.some(room=>{
-   if (!room.rect || !['court','hall','chapel'].includes(room.use)) return false;
-   const r=room.rect;
-   return x>=r.x && x<=r.x+r.width && z>=r.z && z<=r.z+r.depth;
-  });
+  if (wall.levelId !== 'upper' || wall.kind !== 'wall' || !gallery) continue;
+  let overVoid = adjacent.some(room => room.openToBelow);
+  if (!overVoid && wall.boundary === 'exterior') {
+   const [x,z] = wall.from.map((value,i) => Math.min(value,wall.to[i]));
+   const sides = wall.axis === 'x' ? [[x,z-1],[x,z]] : [[x-1,z],[x,z]];
+   const [cx,cz] = sides.find(cell => !cells.get(gallery.id).has(cell.join(',')));
+   overVoid = courts.some(({rect:r}) => cx >= r.x && cx < r.x+r.width && cz >= r.z && cz < r.z+r.depth);
+  }
   if (!overVoid) continue;
   const axis=wall.axis==='x'?0:1;
   const key=gallery.id+':'+wall.axis+':'+wall.from[1-axis];
