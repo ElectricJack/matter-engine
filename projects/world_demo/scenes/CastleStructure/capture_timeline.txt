@@ -1,0 +1,39 @@
+render_path raster
+cam 19 11 16 4.5 3.5 3
+wait_frames 20
+shot @OUT@/raster_overview.png
+cam 9.6 1.6 0.9 5.4 1.9 4.6
+wait_frames 10
+shot @OUT@/raster_stair_hall.png
+cam 8.2 5.7 0.6 5.0 3.2 3.6
+wait_frames 10
+shot @OUT@/raster_stairwell_above.png
+cam 2.2 1.5 1.4 3.6 3.9 3.2
+wait_frames 10
+shot @OUT@/raster_joist_ceiling.png
+cam 6.2 5.6 1.2 4.8 9.6 3.4
+wait_frames 10
+shot @OUT@/raster_attic_trusses.png
+cam 20 10.5 9 13 10.5 3
+wait_frames 10
+shot @OUT@/raster_conical_roof.png
+cam -9 6 -3 -2 4.6 3
+wait_frames 10
+shot @OUT@/raster_hip_roof.png
+cam 6.3 2.7 3.3 7.5 3.2 2.0
+wait_frames 10
+shot @OUT@/raster_frame_joints.png
+render_path native_rt
+cam 19 11 16 4.5 3.5 3
+wait_frames 160
+shot @OUT@/rt_overview.png
+cam 9.6 1.6 0.9 5.4 1.9 4.6
+wait_frames 160
+shot @OUT@/rt_stair_hall.png
+cam 6.2 5.6 1.2 4.8 9.6 3.4
+wait_frames 160
+shot @OUT@/rt_attic_trusses.png
+cam 20 10.5 9 13 10.5 3
+wait_frames 160
+shot @OUT@/rt_conical_roof.png
+quit

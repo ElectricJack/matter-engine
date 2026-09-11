@@ -56,3 +56,32 @@ TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp"
 
 See `docs/agent/qa-cookbook.md` and the root `CLAUDE.md` QA quick reference
 for the FIFO-driven multi-shot alternative (`MatterEngine3/tools/drive.py`).
+
+## Layers and assembly placements
+
+`structureRecipes()` emits up to two roots per record with one transform: a
+mesh root (`params.layer` 1: slabs, tiles, joint hardware, closed shells) and
+a children root (`layer` 2, `expand: true`) so CastleStone/CastleBeam/
+CastlePlank placements become world instances instead of being flattened into
+the record part. A single expanded assembly root should instead use
+`structureAssemblyRequires(manifest, options)` / `emitStructureAssembly(part,
+manifest, options)`, which place every mesh record and every primitive
+directly (`options.transform` is a rigid row-major base transform, e.g. for
+angled wings; `options.offset` a translation).
+
+## Native capture harness
+
+`capture.sh` takes the fixture's raster and `native_rt` shots from WSL:
+
+```bash
+bash projects/world_demo/scenes/CastleStructure/capture.sh C:/tmp/castle-structure
+```
+
+- **Output path:** the editor's `shot` verb splits its path at the first space,
+  so the output directory must be a space-free Windows path.
+- **When shots are sent:** `bake.finished` fires before parts finish
+  publishing. The script appends `capture_timeline.txt` to the append-only
+  `MATTER_CMD_FIFO` only after the log's `bake N/M` part counter reaches `M`
+  and the log has been quiet for 30 s.
+- **Verification:** it checks each shot's PNG and `.done` sidecar and counts
+  Vulkan validation lines.
