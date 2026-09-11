@@ -150,5 +150,134 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(M.timeline_commands(path)[1], ['D:/tmp/fresh.png'])
 
 
+WALK_SPEC = importlib.util.spec_from_file_location(
+    'castle_walkthrough', Path(__file__).resolve().parents[1] / 'castle_walkthrough_acceptance.py')
+WALK = importlib.util.module_from_spec(WALK_SPEC)
+WALK_SPEC.loader.exec_module(WALK)
+
+
+class WalkthroughPublicationTests(unittest.TestCase):
+    def test_control_commands_cannot_escape_publication_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            session = WALK.NativeSession(SimpleNamespace(output=temp, timeout=2, settle_seconds=.01))
+            for command in ('sim stop', 'character walk on', 'character intent 1 0 0', 'shot_now test.png'):
+                with self.assertRaisesRegex(WALK.EvidenceError, 'blocked until geometry publication'):
+                    session.send(command)
+            self.assertEqual(session.fifo.read_text(), '')
+            session.send('quit')
+            self.assertEqual(session.fifo.read_text(), 'quit\n')
+
+    def test_real_walk_session_requires_numeric_publish_then_fresh_idle(self):
+        # Exercise the actual walkthrough reader, FIFO guard and await method.
+        # The fake stdout iterator never launches an editor or performs physics.
+        for failure in (None, 'idle', 'dirty-bake', 'reader-exit'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                session = WALK.NativeSession(SimpleNamespace(output=temp, timeout=3, settle_seconds=.01))
+                placeholder = threading.Event()
+                release_final = threading.Event()
+                wait_seen = threading.Event()
+                release_idle = threading.Event()
+                stop_reader = threading.Event()
+                result = {}
+
+                class FakeProcess:
+                    returncode = None
+                    def poll(self):
+                        return self.returncode
+                    def generate(self):
+                        yield 'bake finished (0 errors)\n'
+                        yield 'viewer: bake ready\n'
+                        yield 'idle: settled after 5s\n'
+                        yield '[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=1ms\n'
+                        placeholder.set()
+                        if not release_final.wait(2):
+                            raise AssertionError('test did not release final publication')
+                        if failure == 'dirty-bake':
+                            yield 'bake finished (2 errors)\n'
+                            self.returncode = 1
+                            return
+                        if failure == 'reader-exit':
+                            self.returncode = 1
+                            return
+                        yield '[bake-timing] install=0ms compose=0ms publish=42ms total=43ms (resolve-cache-hit)\n'
+                        deadline = time.monotonic() + 2
+                        while not session.fifo.read_text() and time.monotonic() < deadline:
+                            threading.Event().wait(.005)
+                        if not session.fifo.read_text().startswith('wait_idle '):
+                            raise AssertionError('post-publication idle command missing')
+                        wait_seen.set()
+                        if not release_idle.wait(2):
+                            raise AssertionError('test did not release idle acknowledgment')
+                        if failure == 'idle':
+                            yield 'idle: timeout after 1s\n'
+                            self.returncode = 1
+                            return
+                        yield 'idle: settled after .01s\n'
+                        stop_reader.wait(2)
+                        self.returncode = 0
+
+                proc = FakeProcess()
+                proc.stdout = proc.generate()
+                session.proc = proc
+                reader = threading.Thread(target=session.read_output)
+                def await_ready():
+                    try:
+                        result['receipt'] = session.await_publication()
+                    except Exception as error:
+                        result['error'] = str(error)
+                waiter = threading.Thread(target=await_ready)
+                reader.start()
+                waiter.start()
+                try:
+                    self.assertTrue(placeholder.wait(1))
+                    self.assertEqual(session.fifo.read_text(), '')
+                    self.assertFalse(session.publication_released)
+                    release_final.set()
+                    if failure in ('dirty-bake', 'reader-exit'):
+                        waiter.join(2)
+                        self.assertFalse(waiter.is_alive())
+                        self.assertIn('error', result)
+                        self.assertEqual(session.fifo.read_text(), '')
+                    else:
+                        self.assertTrue(wait_seen.wait(1))
+                        self.assertFalse(session.publication_released, 'old pre-publication idle released walking')
+                        self.assertEqual(len(session.fifo.read_text().splitlines()), 1)
+                        release_idle.set()
+                        waiter.join(2)
+                        self.assertFalse(waiter.is_alive())
+                        if failure == 'idle':
+                            self.assertIn('idle: timeout', result['error'])
+                            self.assertFalse(session.publication_released)
+                            self.assertNotIn('character', session.fifo.read_text())
+                        else:
+                            self.assertNotIn('error', result)
+                            self.assertTrue(result['receipt']['published'])
+                            self.assertTrue(result['receipt']['idle_confirmed'])
+                            self.assertEqual(result['receipt']['timing']['publish_ms'], 42)
+                            self.assertTrue((Path(temp) / 'publication.json').is_file())
+                            session.send('sim stop', 'character walk on', 'shot_now test.png')
+                            commands = session.fifo.read_text().splitlines()
+                            self.assertTrue(commands[0].startswith('wait_idle '))
+                            self.assertEqual(commands[1:], ['sim stop', 'character walk on', 'shot_now test.png'])
+                finally:
+                    release_final.set()
+                    release_idle.set()
+                    stop_reader.set()
+                    reader.join(3)
+                    waiter.join(3)
+                    self.assertFalse(reader.is_alive())
+                    self.assertFalse(waiter.is_alive())
+
+    def test_walkthrough_publication_timeout_keeps_fifo_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            session = WALK.NativeSession(SimpleNamespace(output=temp, timeout=1, settle_seconds=.01))
+            session.proc = SimpleNamespace(poll=lambda: None)
+            session.deadline = time.monotonic() - 1
+            with self.assertRaisesRegex(WALK._CAPTURE.CaptureError, 'timeout'):
+                session.await_publication()
+            self.assertEqual(session.fifo.read_text(), '')
+            self.assertFalse(session.publication_released)
+
+
 if __name__ == '__main__':
     unittest.main()

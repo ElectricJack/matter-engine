@@ -43,7 +43,7 @@
 // w = u x up (across the wall); the wall centre plane is w=0.
 
 import {
-  placeBeam, placeStone, stoneParams, beamParams,
+  placeBeam, placeStone, stoneParams,
 } from 'shared-lib/castle_primitives';
 import { primitiveStock } from 'shared-lib/castle_stock';
 
@@ -883,9 +883,10 @@ function railRequired(record) {
 }
 
 function beamPlacement(origin, ax, ay, az, params, role, ownerId) {
+  const stock = primitiveStock('CastleBeam', params);
   return {
-    module: 'CastleBeam', params: beamParams(params), role, ownerId,
-    matrix: frameMatrix(origin, ax, ay, az, [1, 1, 1]),
+    module: stock.module, params: stock.params, role, ownerId,
+    matrix: frameMatrix(origin, ax, ay, az, stock.scale),
   };
 }
 

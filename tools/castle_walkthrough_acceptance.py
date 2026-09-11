@@ -4,8 +4,15 @@
 Prepare (any OS): python tools/castle_walkthrough_acceptance.py --manifest ... \
     --world CastleGridGallery --output /tmp/castle-route --prepare-only
 Run (native Windows Python, prebuilt PhysX editor): py -3 tools/castle_walkthrough_acceptance.py \
-    --manifest build/qa/castle-grid/courtyard-detailed-manifest.json \
-    --world CastleGridGallery --output C:/tmp/castle-walk-01 --start-waypoint 1
+    --manifest path/to/site-manifest.json \
+    --world CastleClusteredCourt --output C:/tmp/castle-walk-01 --run
+
+Native execution shares castle_scene_capture.PublicationGate: numeric completed
+publication, a clean bake, viewer readiness, then a fresh wait_idle acknowledgment
+are required before ANY simulation/player/camera controls. Cached publication
+placeholders cannot release walking. publication.json and result.json retain
+the receipt; timeout/error never starts traversal. Only closed-world scenes
+are supported by this publication gate.
 
 The authored player must spawn at route.json's suggested_spawn. There is no
 teleport/spawn command in this driver. One initial sim stop restores the authored
@@ -33,6 +40,7 @@ This proves the selected route, not every castle room or every collision surface
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -46,6 +54,12 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# Load the sibling helper by path so both CLI execution and importlib-based
+# prepare-only clients share its publication contract from any working directory.
+_CAPTURE_SPEC = importlib.util.spec_from_file_location(
+    'castle_walk_publication', Path(__file__).with_name('castle_scene_capture.py'))
+_CAPTURE = importlib.util.module_from_spec(_CAPTURE_SPEC)
+_CAPTURE_SPEC.loader.exec_module(_CAPTURE)
 BAD_LOG = re.compile(r'\btimeout\b|\bFATAL\b|Validation Error|VUID-|character: failed|cmd: unrecognized|'
                      r'dispatch failed|event:.*aborted|\[error\]|validation errors:\s*[1-9]|'
                      r'PhysX[^\n]*(?:disabled|fallback|unavailable)|'
@@ -366,8 +380,14 @@ class NativeSession:
         self.serial = 0
         self.deadline = time.monotonic() + args.timeout
         self.started_ns = time.time_ns()
+        self.publication_gate = _CAPTURE.PublicationGate()
+        self.publication_released = False
+        self.reader_done = False
 
     def send(self, *commands):
+        if not self.publication_released:
+            require(all(command == 'quit' or command.startswith('wait_idle ') for command in commands),
+                    'player/camera commands are blocked until geometry publication and fresh idle acknowledgment')
         with self.fifo.open('a', encoding='utf-8', newline='\n') as stream:
             stream.write('\n'.join(commands) + '\n')
             stream.flush()
@@ -385,25 +405,62 @@ class NativeSession:
         self.reader.start()
 
     def read_output(self):
-        with (self.output / 'log.txt').open('w', encoding='utf-8') as log:
-            for line in self.proc.stdout:
-                log.write(line)
-                log.flush()
-                with self.condition:
-                    self.lines.append(line)
-                    if BAD_LOG.search(line):
-                        self.error = line.strip()
-                    if line.startswith('character_status '):
-                        try:
-                            row = json.loads(line[len('character_status '):])
-                            label = row['label']
-                            require(label not in self.rows, 'duplicate telemetry label')
-                            self.rows[label] = row
-                            with (self.output / 'telemetry.jsonl').open('a', encoding='utf-8') as out:
-                                out.write(json.dumps(row) + '\n')
-                        except (ValueError, KeyError, EvidenceError) as error:
-                            self.error = str(error)
-                    self.condition.notify_all()
+        try:
+            with (self.output / 'log.txt').open('w', encoding='utf-8') as log:
+                for line in self.proc.stdout:
+                    log.write(line)
+                    log.flush()
+                    with self.condition:
+                        self.lines.append(line)
+                        self.publication_gate.feed(line)
+                        if BAD_LOG.search(line):
+                            self.error = line.strip()
+                        if self.publication_gate.error:
+                            self.error = self.publication_gate.error
+                        if line.startswith('character_status '):
+                            try:
+                                row = json.loads(line[len('character_status '):])
+                                label = row['label']
+                                require(label not in self.rows, 'duplicate telemetry label')
+                                self.rows[label] = row
+                                with (self.output / 'telemetry.jsonl').open('a', encoding='utf-8') as out:
+                                    out.write(json.dumps(row) + '\n')
+                            except (ValueError, KeyError, EvidenceError) as error:
+                                self.error = str(error)
+                        if self.error:
+                            self.publication_gate.error = self.error
+                        self.condition.notify_all()
+        except Exception as error:
+            with self.condition:
+                self.error = self.publication_gate.error = 'log reader failed: ' + str(error)
+        finally:
+            with self.condition:
+                self.reader_done = True
+                self.condition.notify_all()
+
+    def await_publication(self):
+        """Release walking only after completed publication and a fresh idle ACK."""
+        require(self.proc is not None, 'editor has not launched')
+        require(not self.publication_released, 'publication barrier already released')
+        gate = self.publication_gate
+        _CAPTURE.await_gate(self.condition, gate, lambda: gate.published, self.deadline,
+                            lambda: not self.reader_done, 'complete geometry publication before walking')
+        with self.condition:
+            # An idle line arriving during bake/resolve is not the acknowledgment
+            # of the idle command issued AFTER the numeric publication barrier.
+            gate.idle = False
+            self.send(f'wait_idle {self.args.settle_seconds} {self.args.timeout}')
+        _CAPTURE.await_gate(self.condition, gate, lambda: gate.published and gate.idle,
+                            self.deadline, lambda: not self.reader_done, 'post-publication idle before walking')
+        with self.condition:
+            require(self.error is None and gate.published and gate.idle,
+                    'publication invalidated before walking')
+            require(not self.reader_done and self.proc.poll() is None,
+                    'editor/log reader exited before walking publication release')
+            self.publication_released = True
+            receipt = gate.receipt()
+        write_json(self.output / 'publication.json', receipt)
+        return receipt
 
     def status(self, commands=()):
         self.serial += 1
@@ -412,7 +469,7 @@ class NativeSession:
         with self.condition:
             while label not in self.rows:
                 require(self.error is None, f'native error: {self.error}')
-                require(self.proc.poll() is None, 'editor exited before telemetry')
+                require(self.proc.poll() is None and not self.reader_done, 'editor/log reader exited before telemetry')
                 require(time.monotonic() < self.deadline, 'native run timeout waiting for ' + label)
                 self.condition.wait(min(.25, max(.01, self.deadline - time.monotonic())))
             require(self.error is None, f'native error: {self.error}')
@@ -436,8 +493,8 @@ class NativeSession:
     def close(self):
         if self.proc and self.proc.poll() is None:
             latest = next(reversed(self.rows.values()), {})
-            commands = ['character intent 0 0 0'] if latest.get('walk_enabled') else []
-            if latest.get('mode') == 'play':
+            commands = ['character intent 0 0 0'] if self.publication_released and latest.get('walk_enabled') else []
+            if self.publication_released and latest.get('mode') == 'play':
                 commands.append('pause')
             self.send(*commands, 'quit')
             try:
@@ -475,13 +532,10 @@ def execute(args, plan):
               'manifest_sha256': plan['manifest_sha256'], 'world': args.world, 'player': args.player,
               'door_crossings': [], 'waypoint_arrivals': [], 'screenshots': []}
     try:
-        session.send(f'wait_event bake.finished {args.timeout}', f'wait_idle {args.settle_seconds} {args.timeout}', 'sim stop', 'wait_frames 2')
-        session.launch()
+        session.launch()  # FIFO remains empty throughout geometry publication.
         result['native_executed'] = True
-        spawn = session.status()
-        log = ''.join(session.lines)
-        for marker in ('viewer: bake ready', 'event: bake.finished', 'idle: settled after'):
-            require(marker in log, 'missing native readiness marker: ' + marker)
+        result['publication_before_walk'] = session.await_publication()
+        spawn = session.status(['sim stop', 'wait_frames 2'])
         require(distance(spawn['position'], plan['waypoints'][0]) <= .2, 'authored spawn is not at route start; see suggested_spawn')
         row = session.status(['character walk on', 'pause', 'character intent 0 0 0', 'wait_frames 2'])
         require(row['generation'] == spawn['generation'], 'generation changed while enabling walking')
@@ -581,6 +635,8 @@ def execute(args, plan):
             session.close()
         except Exception as error:
             result.update(status='failed', cleanup_error=str(error))
+        result['publication'] = session.publication_gate.receipt()
+        result['publication_released'] = session.publication_released
         result['last_telemetry'] = next(reversed(session.rows.values()), None)
         result['finished_ns'] = time.time_ns()
         result['editor_exit_code'] = session.proc.returncode if session.proc else None
@@ -781,9 +837,11 @@ def main():
     parser.add_argument('--speed', type=float, default=4.5)
     parser.add_argument('--timeout', type=int, default=1800)
     parser.add_argument('--settle-seconds', type=float, default=5,
-                        help='sector stability after bake readiness (default: 5 seconds)')
+                        help='idle stability after completed numeric publication (default: 5 seconds)')
     parser.add_argument('--start-waypoint', type=int, default=0)
-    parser.add_argument('--prepare-only', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--prepare-only', action='store_true')
+    mode.add_argument('--run', action='store_true', help='execute native physical walkthrough (also the default)')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
     if args.self_test:
