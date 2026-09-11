@@ -1244,7 +1244,18 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_composite_ms\":" << frame_stats.gpu_composite_ms
            << ",\"gpu_vt_ms\":" << frame_stats.gpu_vt_ms
            << ",\"gpu_water_animation_ms\":"
-           << frame_stats.gpu_water_animation_ms;
+           << frame_stats.gpu_water_animation_ms
+           << ",\"local_light_count\":" << frame_stats.local_light_count
+           << ",\"local_light_cells\":"
+           << frame_stats.local_light_occupied_cells
+           << ",\"local_light_index_entries\":"
+           << frame_stats.local_light_index_entries
+           << ",\"local_light_index_bytes\":"
+           << frame_stats.local_light_index_bytes
+           << ",\"local_light_max_candidates\":"
+           << frame_stats.local_light_max_candidates
+           << ",\"local_light_oversized\":"
+           << frame_stats.local_light_oversized;
     matter::append_water_forward_perf_json(output, frame_stats);
     // CPU render-thread split (last sampled frame).
     output << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
@@ -6828,12 +6839,13 @@ int main() {
         // visibility, 4 -> 4.0 raw GBuffer albedo (the horizon diagnostic).
         // 5 (LOD levels) and 6 (Wireframe) are geometry views and deliberately
         // fall through to 0.0 here -- both are already in the G-buffer albedo
-        // this composites.
+        // this composites. 7 is the appended local-light candidate heatmap.
         options.vulkan_lighting.composite_debug_view =
             stats.debug_view_mode == 1   ? 2.0f
             : stats.debug_view_mode == 2 ? 3.0f
             : stats.debug_view_mode == 3 ? 1.0f
             : stats.debug_view_mode == 4 ? 4.0f
+            : stats.debug_view_mode == 7 ? 5.0f
                                          : 0.0f;
         options.atmosphere = stats.atmosphere;
         options.volumetrics = stats.volumetrics;

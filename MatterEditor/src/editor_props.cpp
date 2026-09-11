@@ -730,7 +730,8 @@ const auto s_overlay = matter::props::group<AnimationDebugOverlayOptions>(
 // tint, and this index is the single-int form a shot descriptor can store.
 const char* const kDebugViewLabels[] = {"None", "Normals", "Depth",
                                         "Sun visibility", "Raw albedo",
-                                        "LOD levels", "Wireframe"};
+                                        "LOD levels", "Wireframe",
+                                        "Local-light candidates"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
                                        "Integrated", "Cloud density",
                                        "Cloud shadow transmittance"};
@@ -738,8 +739,8 @@ const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
 const auto s_viewer_debug = matter::props::group<ViewerStats>(
     "viewer.debug", "Viewer Debug Views",
     prop(&ViewerStats::debug_view_mode, "debug_view_mode")
-        .label("Debug view").enums(kDebugViewLabels, 7)
-        .doc("0-4 select composite views; \"LOD levels\" tints each surface by "
+        .label("Debug view").enums(kDebugViewLabels, 8)
+        .doc("Composite views include indexed local-light candidates; \"LOD levels\" tints each surface by "
              "the rung the GPU cull actually selected for it, and "
              "\"Wireframe\" draws its edges."),
     prop(&ViewerStats::wireframe, "wireframe")
