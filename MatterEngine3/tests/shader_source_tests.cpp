@@ -416,6 +416,44 @@ int main() {
     const std::string composite = read_shader("../shaders_vk/composite.frag");
     const std::string rt = read_shader("../shaders_vk/rt_lighting.rgen");
     const std::string volume = read_shader("../shaders_vk/vol_scatter.comp");
+    const std::string local_lighting =
+        read_shader("../shaders_vk/local_lighting.glsl");
+    assert(!local_lighting.empty());
+    for (const char* binding : {
+             "layout(set = 2, binding = 0, std430)",
+             "layout(set = 2, binding = 1, std430)",
+             "layout(set = 2, binding = 2, std430)",
+             "layout(set = 2, binding = 3, std430)",
+             "layout(set = 2, binding = 4, std430)"})
+        assert(local_lighting.find(binding) != std::string::npos);
+    assert(local_lighting.find("0x8da6b343u") != std::string::npos &&
+           local_lighting.find("0xd8163841u") != std::string::npos &&
+           local_lighting.find("0xcb1ab31fu") != std::string::npos);
+    assert(local_lighting.find("uvec3 reserved;") == std::string::npos &&
+           local_lighting.find("uint reserved0;") != std::string::npos &&
+           local_lighting.find("uint reserved1;") != std::string::npos &&
+           local_lighting.find("uint reserved2;") != std::string::npos);
+    assert(local_lighting.find("normalized_delta = delta / range") !=
+               std::string::npos &&
+           local_lighting.find("cutoff * cutoff") != std::string::npos &&
+           local_lighting.find("light.kind == LOCAL_LIGHT_SPOT") !=
+               std::string::npos);
+    assert(local_lighting.find("vec3 metal_f") == std::string::npos &&
+           local_lighting.find(
+               "mix(vec3(0.04), albedo, clamp(metallic, 0.0, 1.0))") !=
+               std::string::npos);
+    assert(composite.find("#include \"local_lighting.glsl\"") !=
+               std::string::npos &&
+           composite.find("local_light_indices[offset + candidate]") !=
+               std::string::npos &&
+           composite.find("candidate < local_light_counts.z") !=
+               std::string::npos &&
+           composite.find("candidate < local_light_counts.x") ==
+               std::string::npos);
+    assert(composite.find("raw_diffuse + local_direct.diffuse") !=
+               std::string::npos &&
+           composite.find("specular + local_direct.specular") !=
+               std::string::npos);
     assert(composite.find("environment.direct_world_sun_ratio.rgb") !=
                std::string::npos &&
            composite.find("environment.sun_disc_reserved.rgb") !=
@@ -599,6 +637,9 @@ int main() {
     const std::string engine_make = read_shader("../Makefile");
     const std::string editor_make = read_shader("../../MatterEditor/Makefile");
     assert(engine_make.find("build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl") !=
+           std::string::npos);
+    assert(engine_make.find(
+               "build/shaders_vk/composite.frag.spv: shaders_vk/local_lighting.glsl") !=
            std::string::npos);
     // 2026-08-14: MatterEditor/Makefile used to keep a second, independently
     // maintained copy of the VK_SPV list and every .glsl dependency edge,
