@@ -111,8 +111,10 @@ At overlapping elevations, positive-area court/court, court/connector-floor
 and court/connector-wall intersections are also rejected; shared edges remain
 valid. Elevation tests use the complete floor slab interval
 `[baseY - floor.thickness, baseY]`, not only the walking surface, so a raised
-court cannot descend into the top of a connector wall. Solids that only meet
-at one elevation boundary are permitted.
+court cannot descend into the top of a connector wall. Connector walls are
+also tested against the walking surface itself: a wall standing on the court's
+level may share an edge with its clear polygon but never occupy it. Solids
+that only meet the slab's underside are permitted.
 
 ## Compiled site
 
