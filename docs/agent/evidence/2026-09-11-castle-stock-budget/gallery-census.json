@@ -1,7 +1,7 @@
 {
   "changedAcrossScenes": [],
   "schema": "matter.castle-bake-census/v1",
-  "generatedAt": "2026-09-11T16:54:29.222Z",
+  "generatedAt": "2026-09-11T17:42:13.065Z",
   "mode": "requires-and-build",
   "note": "Keys are module plus merged static/default scalar params. Requested keys are also counted. World placement transforms are excluded. This is recipe/placement evidence, not native content hashes, LOD variants, bake time or GPU performance. Material numbers are stable symbolic IDs within this census; material names are included.",
   "scenes": [
@@ -6586,12 +6586,12 @@
       "sourceHashes": {
         "MatterEngine3/src/part_base.js.h": "b78f329808c252bc2cd7880ce814fe550baa0c63f7c72d396331d0f8c5726d39",
         "projects/world_demo/scenes/CastleSiteGallery/CastleSiteGallery.js": "269c1d6a149614bc69e836598aa62712ef620fc19fa431b3fdd883f00a2380bc",
-        "projects/world_demo/shared-lib/castle_site_world.js": "68d0b77c67fa9b6bc80641fd776007ab836769450d1a4f1eb64fb00b83132a87",
+        "projects/world_demo/shared-lib/castle_site_world.js": "de2270b4b349216aaa26683584c23fe8b60da1b04658af0f131fa72042f63f55",
         "projects/world_demo/shared-lib/castle_site.js": "45c475351e4b2c390c839c06beace694ddcecec46ab20aba73ac72bdc575b50f",
         "projects/world_demo/shared-lib/castle_frames.js": "6aabcfb6c57e4b8232ea542990dbe00fe9c7d18032d302472e3499f2b6829a4e",
         "projects/world_demo/shared-lib/castle_site_catalog.js": "0dce4c90d223bc3765f84c17bcf942b0072f9bdeb0222c35db3218f2bcdcfb10",
         "projects/world_demo/shared-lib/castle_world.js": "7d71422834e334e553f129acc0955a3129510ff57b92f951e746e9333a60955b",
-        "projects/world_demo/shared-lib/castle_furnishings.js": "e8c018ee9d73738fb794f5e5b7ef2f603728c8fea58f7bfbe71f979d6a824428",
+        "projects/world_demo/shared-lib/castle_furnishings.js": "f64b75332efc854ea44a1046ca99f9d38c84b87dad894f9cf164d509d031bd46",
         "projects/world_demo/shared-lib/castle_furnishing_layout.js": "5694cf51b51e0f0bf244662d020a762f1465c66077a08aba4116c9106ea5be5e",
         "projects/world_demo/shared-lib/castle_collision.js": "f41f50a412b91c8cbbb3b8245ec217dba681e4c26eff4631ba9708d76677310f",
         "projects/world_demo/shared-lib/castle_structure_collision.js": "fa39e3db54719d6ca583ecdae2361ff731794bd1e6ce33dada42627f2b7bbad1",
@@ -6601,7 +6601,7 @@
         "projects/world_demo/shared-lib/castle_wing_interiors.js": "2ea0bd02207fa1e528a7cd4a69098e941ec6d95adb32adb93510f12faf018f2e",
         "projects/world_demo/shared-lib/castle_site_programs.js": "f8aa5ba11af402a8ebcc5db8f8931cf79fb26fc982d7cde3e405c10d5cf1fd48",
         "projects/world_demo/shared-lib/castle_variants.js": "d8429a7ea1c8edacc3ad77b1b64455857e86db981c5254d9703d5c773bb92449",
-        "projects/world_demo/shared-lib/castle_structure.js": "49aea5ce4f10cd818a5eb6fe9905ba2e299602e0b9b1c011fe1ecfcfab033e8a",
+        "projects/world_demo/shared-lib/castle_structure.js": "e50f519c3f7367b88702023ce7dde0f90c933d3c560ba7d0b9aea608357f8cf4",
         "projects/world_demo/shared-lib/castle_primitives.js": "3baa45c17cd0a6cebd5b77e3133974d830da3633a520d42de68e1b3ef4f2c6be",
         "projects/world_demo/shared-lib/castle_stock.js": "e6f1b1f5bbc97ea29042bcdadaf1a6f7ea2aa4311149806274c304a6dfa63372",
         "projects/world_demo/shared-lib/castle_materials.js": "be9e53fb2f965ad0d6f54093aaad3bc85b5c02e045fccff24ec15477d90ad560",

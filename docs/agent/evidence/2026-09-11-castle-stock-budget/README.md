@@ -50,4 +50,12 @@ CASTLE_STOCK_CENSUS_OUTPUT=/tmp/castle-gallery-census.json node projects/world_d
 | CastleMortarCore | 1 | 2,752 |
 | CastlePlinth | 1 | 1 |
 
+Refreshed from frozen authoring sources at **2026-09-11T17:42:13.065Z**, after the
+legacy-roof support, 8 mm candle source radius and sun-side scene camera updates.
+The comparison to the archived previous census preserves all **204 recipes and
+69,849 placements**, including **8 ordinary stone recipes**; every per-module
+recipe and placement count is unchanged. Executed source hashes were rechecked
+against the checkout before retaining this evidence. The matching 32-frame camera
+plan is `/mnt/d/tmp/castle-final-captures-v4/camera-manifest.json`.
+
 These are CPU authoring measurements, not native visual or physical acceptance.

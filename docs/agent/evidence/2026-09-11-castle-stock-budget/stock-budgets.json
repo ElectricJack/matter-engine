@@ -1,10 +1,10 @@
 {
   "schema": "matter.castle-stock-budget/v1",
   "scene": "CastleSiteGallery",
-  "generatedAt": "2026-09-11T16:54:29.222Z",
-  "baseline": "/mnt/d/tmp/castle-bake-census-stock-progress.json",
-  "baselineGeneratedAt": "2026-09-11T15:16:36.586Z",
-  "census": "/mnt/d/tmp/castle-bake-census-final-stock.json",
+  "generatedAt": "2026-09-11T17:42:13.065Z",
+  "baseline": "/mnt/d/tmp/castle-bake-census-stock-before-v4.json",
+  "baselineGeneratedAt": "2026-09-11T16:54:29.222Z",
+  "census": "/mnt/d/tmp/castle-bake-census-final-stock-v4.json",
   "rows": [
     {
       "module": "CastleStone",
@@ -18,7 +18,7 @@
     {
       "module": "CastleBeam",
       "limit": 12,
-      "beforeUnique": 24,
+      "beforeUnique": 12,
       "afterUnique": 12,
       "afterPlacedUnique": 12,
       "placements": 3420,
@@ -45,7 +45,7 @@
     {
       "module": "CastleTriangularStone",
       "limit": 2,
-      "beforeUnique": 0,
+      "beforeUnique": 2,
       "afterUnique": 2,
       "afterPlacedUnique": 2,
       "placements": 816,
@@ -71,5 +71,10 @@
     }
   ],
   "retainedProfileCuts": 18,
-  "note": "Counts include merged default parameters and every actual recursive requires/build recipe. Real arch/corner profiles are exempt from ordinary stock limits. No aggregate recipe cap is imposed."
+  "note": "Counts include merged default parameters and every actual recursive requires/build recipe. Real arch/corner profiles are exempt from ordinary stock limits. No aggregate recipe cap is imposed.",
+  "baselineSha256": "3071fc7ebeec51e0019fa43668bf7d5195988dbc7247af0233be3a538290a052",
+  "baselineUniqueEffectiveRecipes": 204,
+  "currentUniqueEffectiveRecipes": 204,
+  "currentRecursivePlacements": 69849,
+  "censusSha256": "1a6880da68045c520795868a894357a682d2e14ab98fd994341c8c1faab2ece6"
 }
