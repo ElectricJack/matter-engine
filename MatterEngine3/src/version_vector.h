@@ -99,7 +99,10 @@ namespace components {
 //   8 -> 9 : script voxel meshing honors absolute brush spacing for every
 //            primitive and CSG operation, uniformly across each expression.
 //            Old fat-only parts ignored fine spacing and must be rebaked.
-inline constexpr uint32_t kEngineBake = 9u;
+//   9 -> 10: flattened instance normals use the row-major inverse transpose.
+//            Previous rotated/sheared children stored inverse-transformed
+//            normals, so serialized shading normals must be rebaked.
+inline constexpr uint32_t kEngineBake = 10u;
 
 // The physics library. A settle that lands differently is different content.
 inline constexpr uint32_t kBox3d = 1u;

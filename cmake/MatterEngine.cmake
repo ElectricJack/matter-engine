@@ -164,6 +164,20 @@ endif()
 matter_apply_project_defaults(matter_engine_headless)
 
 if(BUILD_TESTING)
+    # Shared normal math is header-only; keep its correctness gate independent
+    # of the engine archive, graphics/device setup and generated asset caches.
+    add_executable(mat_math_tests MatterEngine3/tests/mat_math_tests.cpp)
+    target_include_directories(mat_math_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+    )
+    target_link_libraries(mat_math_tests PRIVATE matter_math)
+    matter_apply_project_defaults(mat_math_tests)
+    matter_apply_test_assertion_policy(mat_math_tests)
+    add_test(NAME mat_math_tests COMMAND mat_math_tests)
+    set_tests_properties(mat_math_tests PROPERTIES LABELS cpu)
+    set_property(GLOBAL APPEND PROPERTY MATTER_ENGINE_CPU_TARGETS mat_math_tests)
+
     function(matter_add_engine_cpu_test target)
         add_executable("${target}" ${ARGN})
         matter_engine_include_directories("${target}" PRIVATE)
