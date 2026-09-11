@@ -1151,8 +1151,11 @@ export function emitSconce(part, input) {
     const base = [ax, sconceCandleBase(), p.reach];
     candle(part, p, base, flame[1] - FLAME_LIFT - base[1], 0.021);
     if (p.style === 1) {
-      // Glazed lantern: iron corner posts, conical cap, and four real panes
-      // (6 mm closed glass volumes) standing on the drip pan.
+      // Glazed lantern: iron corner posts, conical cap, and real panes (6 mm
+      // closed glass volumes) standing on the drip pan. The front pane is a
+      // door hinged on the +X post and propped open 110 degrees: the flame
+      // proxy is rayTraced(false), so under RT it is only seen directly, not
+      // through glass (rays transmitted by a pane skip it).
       const top = flame[1] + 0.07, h = 0.055, t = 0.003;
       part.fill(p.ironMaterial);
       for (const sx of [-1, 1]) for (const sz of [-1, 1])
@@ -1160,10 +1163,19 @@ export function emitSconce(part, input) {
       ring(part, [ax, top, p.reach], h * Math.SQRT2, 0.005, 'y', 16);
       part.cone([ax, top, p.reach], [ax, top + 0.07, p.reach], 0.085, 0.012);
       ring(part, [ax, top + 0.085, p.reach], 0.016, 0.004, 'z', 10);
-      part.fill(p.glassMaterial);
       const midY = (top - 0.008) / 2, halfY = (top + 0.008) / 2 - 0.006;
-      for (const sz of [-1, 1]) part.box([ax, midY, p.reach + sz * h], [h - 0.006, halfY, t]);
+      const opened = 110 * Math.PI / 180;
+      const hinge = [ax + h, midY, p.reach + h];
+      const d = [-Math.cos(opened), 0, Math.sin(opened)];
+      const leafEnd = [hinge[0] + d[0] * 2 * h, 0, hinge[2] + d[2] * 2 * h];
+      for (const y of [-0.004, top - 0.004])
+        part.capsule([hinge[0], y, hinge[2]], [leafEnd[0], y, leafEnd[2]], 0.004);
+      part.cylinder([leafEnd[0], -0.004, leafEnd[2]], [leafEnd[0], top - 0.004, leafEnd[2]], 0.004);
+      part.fill(p.glassMaterial);
+      part.box([ax, midY, p.reach - h], [h - 0.006, halfY, t]);
       for (const sx of [-1, 1]) part.box([ax + sx * h, midY, p.reach], [t, halfY, h - 0.006]);
+      orientedBox(part, [hinge[0] + d[0] * h, midY, hinge[2] + d[2] * h],
+        [d, [0, 1, 0], [-d[2], 0, d[0]]], [h - 0.006, halfY, t]);
     }
   });
   return p;
@@ -1358,11 +1370,12 @@ export function windowLayout(input) {
   const lights = p.mullions + 1;
   const mullionX = [];
   for (let i = 1; i < lights; ++i) mullionX.push(-half + i * p.width / lights);
-  // Two-light windows carry a quatrefoil oculus above the lancet apexes
-  // (lancet rise 0.866 * light width), clear of the outer rim.
-  const oculusRadius = 0.17 * p.width;
+  // Two-light windows carry a quatrefoil oculus resting on the lancet apexes
+  // (lancet rise 0.866 * light width). Radius 0.15 W centred 0.8 r above the
+  // apexes keeps its top ~0.16 W below the outer apex, clear of the rim.
+  const oculusRadius = 0.15 * p.width;
   const oculus = p.arch && p.mullions === 1
-    ? { radius: oculusRadius, y: spring + 0.866 * (p.width / 2) + oculusRadius + p.barWidth * 0.5 }
+    ? { radius: oculusRadius, y: spring + 0.866 * (p.width / 2) + oculusRadius * 0.8 }
     : null;
   return { p, half, spring, lights, mullionX, oculus,
     paneThickness: p.thin ? 0.004 : p.glassThickness,

@@ -1,7 +1,7 @@
 import { glazingHalfWidthAt, glazingSpringY } from 'shared-lib/castle_furnishings';
 
 // Fixture-only backdrop: flagged floor, three wall runs with real window
-// openings (pointed heads follow the glazing outline in 25 mm courses, so the
+// openings (pointed heads follow the glazing outline in 10 mm courses, so the
 // stepped edge stays hidden behind the tracery rim), and a tie beam carrying
 // the chandelier hook. Masonry detail belongs to the masonry kit, not here.
 const WALL_HEIGHT = 5.0, THICKNESS = 0.4;
@@ -23,8 +23,8 @@ function wallRun(emit, u0, u1, openings) {
     emit(left, right, o.sill + o.height, WALL_HEIGHT);
     const spring = glazingSpringY({ ...o.recipe, width: o.width, height: o.height, barWidth: 0.07 });
     if (spring < o.height) {
-      for (let y = spring; y < o.height - 1e-6; y += 0.025) {
-        const top = Math.min(o.height, y + 0.025);
+      for (let y = spring; y < o.height - 1e-6; y += 0.01) {
+        const top = Math.min(o.height, y + 0.01);
         const half = glazingHalfWidthAt({ ...o.recipe, barWidth: 0.07 }, top);
         emit(left, o.x - half, o.sill + y, o.sill + top);
         emit(o.x + half, right, o.sill + y, o.sill + top);
