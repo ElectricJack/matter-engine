@@ -96,7 +96,10 @@ namespace components {
 //            This is what separates the new default from the old one, which no
 //            salt can do: the old artifacts were written when OFF was the
 //            default and therefore carry a zero salt too.
-inline constexpr uint32_t kEngineBake = 8u;
+//   8 -> 9 : script voxel meshing honors absolute brush spacing for every
+//            primitive and CSG operation, uniformly across each expression.
+//            Old fat-only parts ignored fine spacing and must be rebaked.
+inline constexpr uint32_t kEngineBake = 9u;
 
 // The physics library. A settle that lands differently is different content.
 inline constexpr uint32_t kBox3d = 1u;

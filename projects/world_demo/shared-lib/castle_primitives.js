@@ -166,8 +166,7 @@ function chamferedBox(part, centerY, length, height, depth, bevel) {
 
   // Twelve oriented half-space cutters produce planar 45-degree arrises. This
   // is deliberately ordered voxel CSG rather than an axis-aligned stepped
-  // approximation; the large cutter faces survive the script mesher's native
-  // ~67 mm sampling while preserving broad planar beds between them.
+  // approximation; the cutter faces preserve broad planar beds between them.
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     const point = [sx * (hx - b * 0.5), centerY, sz * (hz - b * 0.5)];
     bevelCut(part, point, [sx * rootHalf, 0, sz * rootHalf], [0, 1, 0],
@@ -244,10 +243,8 @@ export function emitStone(part, input = {}) {
   const hx = p.length * 0.5, hy = p.height * 0.5, hz = p.depth * 0.5;
 
   part.beginModifier();
-  // Two ordered sessions are intentional. The native script mesher takes the
-  // first brush as its base detail and later, smaller brush spacing selects a
-  // finer division rung. A single all-0.02 session would remain on its coarse
-  // baseline despite the authored spacing.
+  // Sessions separate core construction from fine surface work. The engine
+  // honors the finest authored spacing across both sessions and all brushes.
   part.beginVoxels(0.08);
   part.fill(p.material);
   // Low smoothing softens cutter intersections but does not crown the beds.
@@ -317,8 +314,8 @@ function emitTimberCore(part, p, thicknessName, salt) {
   const bevel = Math.max(0.024, Math.min(0.045, minSection * range(random, 0.13, 0.20)));
 
   part.beginModifier();
-  // As with stone, a coarse core followed by a fine ordered-detail session
-  // forces the mesher above its otherwise fixed script-part baseline.
+  // The engine samples the whole expression at its finest authored spacing;
+  // sessions retain the structural core / surface-detail authoring grouping.
   part.beginVoxels(0.08);
   part.fill(p.material);
   part.smoothing(Math.min(0.006, bevel * 0.22));
@@ -407,7 +404,9 @@ function emitTimberCore(part, p, thicknessName, salt) {
   }
 
   part.endVoxels();
-  part.endModifier([{ simplify: thicknessName === 'thickness' ? 0.42 : 0.32 }]);
+  // Preserve fine joinery and thin board silhouettes. An unconstrained author
+  // simplifier can move vertices into fins on these nearly planar sections.
+  part.endModifier([]);
   emitTimberSurfaceDetail(part, p, random, hx, hy, hz);
   return p;
 }
