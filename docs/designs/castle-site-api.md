@@ -195,7 +195,15 @@ portal opening or allowing a long connector to cut through another room.
 The authored vestibule `height` may exceed a door aperture: a 3.6m enclosure
 meeting a 2.8m arch is ordinary architecture. `height` drives side walls and
 the roof base; `clearHeight` is `min(height, both portal clear heights)` and
-drives walk/capsule clearance.
+drives walk/capsule clearance. The connector kit additionally checks the finite
+18 by 14 cm rafter cores, transformed with the same yaw/pitch as the rendered
+stock beams and clipped against the full `clearPolygon`. If a core dips below
+`baseY + clearHeight`, normalization fails with `roof.rafters[index]` and requires
+an explicitly higher enclosure. The closed roof shell sits above `height`;
+rafters sit below its timber soffit. `connectorRoofClearance(record)` exports
+per-rafter oriented faces, clipped minimum Y and the clearance reserve for
+inspection. This validation preserves the declared passage instead of silently
+reducing headroom on low-rise or long connectors.
 
 The frozen executable fixture is
 `projects/world_demo/tests/fixtures/castle_site_angled_study.js`. It contains a

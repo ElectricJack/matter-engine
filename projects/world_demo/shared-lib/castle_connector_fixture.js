@@ -103,7 +103,8 @@ function makeRecord(yawDeg, id) {
       wallSpan('north', northSegment[0], northSegment[1], northNormal),
     ],
     floor: { thickness: 0.22, material: 'castle.flagstone', owner: `connector:${id}:floor` },
-    clearHeight: 3.6,
+    // The soffit and finite hip rafters need structural depth above passage.
+    height: 3.9, clearHeight: 3.6,
     roof: { kind: 'low-hip', rise: 0.8, material: 'castle.roofTile', overhang: 0.18 },
     routeWaypoints: [
       [coreInside[0], 0, coreInside[1]], [coreOutside[0], 0, coreOutside[1]],

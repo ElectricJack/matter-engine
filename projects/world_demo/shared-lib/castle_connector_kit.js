@@ -11,6 +11,7 @@ export const CONNECTOR_MIN_PASSAGE_WIDTH =
 export const CASTLE_CUT_STONE_VARIANT_COUNT = 2;
 
 const EPS = 1e-8;
+const RAFTER_WIDTH = 0.14, RAFTER_HEIGHT = 0.18;
 
 function fail(path, message) {
   throw new Error(`castle connector ${path}: ${message}`);
@@ -337,8 +338,13 @@ function normalizedRecord(input) {
   }
   const clearancePolygon = insetConvexPolygon(clearPolygon,
     CONNECTOR_MIN_CAPSULE_RADIUS + CONNECTOR_MIN_SIDE_CLEARANCE);
-  return { id, level, baseY, clearPolygon, mouths, wallSpans, floor,
+  const record = { id, level, baseY, clearPolygon, mouths, wallSpans, floor,
     height, clearHeight, roof, routeWaypoints, clearancePolygon };
+  for (const rafter of roofClearance(record))
+    if (rafter.clearance < -1e-7)
+      fail(`roof.rafters[${rafter.index}]`,
+        `finite beam intrudes ${(-rafter.clearance).toFixed(4)}m into promised clearHeight; increase enclosure height`);
+  return record;
 }
 
 export function validateConnectorRecord(input) {
@@ -599,6 +605,60 @@ export function emitConnectorCutStone(part, input = {}) {
   return p;
 }
 
+// Canonical CCW triangle (-.5,-.5),(.5,-.5),(-.5,.5), height .3m.
+// Its hypotenuse is an internal fan seam and deliberately has no dress losses.
+export function triangularStoneParams(input = {}) {
+  return { seed: wrappedSeed(input.seed),
+    material: Math.max(0, Math.floor(Number.isFinite(input.material) ? input.material : 8)),
+    detail: Math.max(0.5, Math.min(3, Number.isFinite(input.detail) ? input.detail : 1)) };
+}
+
+export function emitTriangularStone(part, input = {}) {
+  const p = triangularStoneParams(input), height = 0.3;
+  part.beginModifier(); part.beginVoxels(0.018 / p.detail);
+  part.fill(p.material); part.smoothing(0);
+  part.box([0, height * 0.5, 0], [0.5, height * 0.5, 0.5]);
+  // Dressed/chiseled exterior vertical faces. All marks stay away from the
+  // three vertical corners, horizontal beds and the undressed shared diagonal.
+  for (let face = 0; face < 2; ++face) for (let mark = 0; mark < 4; ++mark) {
+    const t = ((mark * 7 + p.seed * 3 + face * 5) % 17) / 17;
+    const along = -0.32 + t * 0.48, y = 0.065 + ((mark + p.seed) % 3) * 0.08;
+    const a = face === 0 ? [along - 0.035, y, -0.507] : [-0.507, y, along - 0.035];
+    const b = face === 0 ? [along + 0.03, y + 0.018, -0.507] : [-0.507, y + 0.018, along + 0.03];
+    part.capsule(a, b, 0.019); part.difference();
+  }
+  for (let mark = 0; mark < 2; ++mark) {
+    part.sphere([-0.29 + mark * 0.12, height + 0.015,
+      -0.26 + p.seed * 0.06], 0.027); part.difference();
+  }
+  // Final hard clips define the exact prism; no union or smoothing follows.
+  cutPlane(part, [-0.5, 0], [1, 0], height, 1);
+  cutPlane(part, [0, -0.5], [0, 1], height, 1);
+  cutPlane(part, [0, 0], [-Math.SQRT1_2, -Math.SQRT1_2], height, 1);
+  part.endVoxels(); part.endModifier([]);
+  return p;
+}
+
+export function cutStoneTrianglePlacements(input) {
+  const p = connectorCutStoneParams(input), h = p.depth * 0.5;
+  const polygon = [[p.leftFront, -h], [p.rightFront, -h],
+    [p.rightBack, h], [p.leftBack, h]];
+  // Each triangle's first corner joins its TWO exterior faces. Its opposite
+  // edge is the shared diagonal, mapping to the stock's undressed hypotenuse.
+  const triangles = [[polygon[1], polygon[2], polygon[0]],
+    [polygon[3], polygon[0], polygon[2]]];
+  const params = triangularStoneParams(p);
+  return triangles.map(triangle => {
+    const [a, b, c] = triangle, ax = b[0] - a[0], az = b[1] - a[1];
+    const bx = c[0] - a[0], bz = c[1] - a[1];
+    if (ax * bz - bx * az <= EPS) fail('cutStone.triangle', 'affine fit must have positive determinant');
+    return { module: 'CastleTriangularStone', params, polygon: triangle,
+      matrix: [ax, 0, bx, (b[0] + c[0]) * 0.5,
+        0, p.height / 0.3, 0, 0,
+        az, 0, bz, (b[1] + c[1]) * 0.5, 0, 0, 0, 1] };
+  });
+}
+
 export function connectorCutStoneChildVariants(base = {}, seeds) {
   const variants = seeds ?? Array.from({ length: CASTLE_CUT_STONE_VARIANT_COUNT }, (_, seed) => seed);
   if (!Array.isArray(variants)) fail('cutStoneChildVariants.seeds', 'must be an array');
@@ -834,8 +894,12 @@ function placeWallCourses(part, record, span, params) {
         childParams = connectorCutStoneParams({ seed, height: courseHeight,
           depth: span.thickness, ...placedProfile,
           material: params.stoneMaterial, detail: params.detail });
-        part.placeChild('CastleConnectorCutStone', childParams);
-        cutStones.push({ spanId: span.id, course, index, world, params: childParams,
+        const triangles = cutStoneTrianglePlacements(childParams);
+        for (const triangle of triangles) {
+          part.pushMatrix(); part.applyMatrix(triangle.matrix);
+          part.placeChild(triangle.module, triangle.params); part.popMatrix();
+        }
+        cutStones.push({ spanId: span.id, course, index, world, params: childParams, triangles,
           yaw: Math.atan2(-span.tangent[1], span.tangent[0]),
           owners: first ? [span.cornerOwners[0], span.jambOwners[0]] :
             [span.cornerOwners[1], span.jambOwners[1]] });
@@ -851,7 +915,7 @@ function placeWallCourses(part, record, span, params) {
       }
       part.popMatrix();
       bricks.push({ spanId: span.id, course, index, from: a, to: b, cut: isCut,
-        module: isCut ? 'CastleConnectorCutStone' : 'CastleStone',
+        module: isCut ? 'CastleTriangularStone' : 'CastleStone',
         params: childParams, scale: childScale });
     }
   }
@@ -879,7 +943,7 @@ function placeBeamBetween(part, a, b, params, seed) {
   part.translate((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5);
   part.rotateY(yaw); part.rotateZ(pitch);
   const stock = primitiveStock('CastleBeam', {
-    seed, length, width: 0.14, height: 0.18,
+    seed, length, width: RAFTER_WIDTH, height: RAFTER_HEIGHT,
     material: params.timberMaterial, endMaterial: params.timberMaterial,
     ironMaterial: params.timberMaterial, joint: 1, strap: 0, detail: params.detail,
   });
@@ -888,32 +952,110 @@ function placeBeamBetween(part, a, b, params, seed) {
   part.popMatrix();
 }
 
-function emitRoof(part, record, params, { mesh = true, children = true } = {}) {
+function roofLayout(record) {
   const shellPolygon = convexHull([
     ...record.clearPolygon,
     ...record.wallSpans.flatMap(span => spanFootprint(span)),
   ], 'roof.shellPolygon');
   const polygon = outsetConvexPolygon(shellPolygon, record.roof.overhang);
-  const eaveY = record.baseY + record.height;
+  // Put the full shell above enclosure height, preserving promised headroom.
+  const shellThickness = 0.08;
+  const eaveY = record.baseY + record.height + shellThickness;
   const centroid = polygon.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0])
     .map(value => value / polygon.length);
   const apex = [centroid[0], eaveY + record.roof.rise, centroid[1]];
-  const facets = [], tiles = [], rafters = [];
+  const rafterDrop = shellThickness + RAFTER_HEIGHT * 0.5 + 0.01;
+  const rafters = polygon.map(point => [
+    [point[0], eaveY - rafterDrop, point[1]],
+    [apex[0], apex[1] - rafterDrop, apex[2]],
+  ]);
+  return { polygon, shellThickness, eaveY, apex, rafters };
+}
+
+function rafterBoxFaces([a, b]) {
+  const delta = b.map((value, axis) => value - a[axis]);
+  const length = Math.hypot(...delta), horizontal = Math.hypot(delta[0], delta[2]);
+  const along = delta.map(value => value / length);
+  const up = [-delta[0] / horizontal * delta[1] / length, horizontal / length,
+    -delta[2] / horizontal * delta[1] / length];
+  const side = [-delta[2] / horizontal, 0, delta[0] / horizontal];
+  const center = a.map((value, axis) => (value + b[axis]) * 0.5);
+  const vertices = [];
+  for (let mask = 0; mask < 8; ++mask) vertices.push(center.map((value, axis) =>
+    value + along[axis] * (mask & 1 ? 1 : -1) * length * 0.5 +
+    up[axis] * (mask & 2 ? 1 : -1) * RAFTER_HEIGHT * 0.5 +
+    side[axis] * (mask & 4 ? 1 : -1) * RAFTER_WIDTH * 0.5));
+  return [[0, 2, 6, 4], [1, 3, 7, 5], [0, 1, 5, 4],
+    [2, 3, 7, 6], [0, 1, 3, 2], [4, 5, 7, 6]]
+    .map(indices => indices.map(index => vertices[index]));
+}
+
+function clipFaceToClearPolygon(face, polygon) {
+  let clipped = face;
+  for (let edge = 0; edge < polygon.length && clipped.length; ++edge) {
+    const a = polygon[edge], b = polygon[(edge + 1) % polygon.length];
+    const distance = point => (b[0] - a[0]) * (point[2] - a[1]) -
+      (b[1] - a[1]) * (point[0] - a[0]);
+    const input = clipped;
+    clipped = [];
+    for (let i = 0; i < input.length; ++i) {
+      const from = input[i], to = input[(i + 1) % input.length];
+      const d0 = distance(from), d1 = distance(to);
+      if (d0 >= -EPS) clipped.push(from);
+      if ((d0 < -EPS && d1 >= -EPS) || (d0 >= -EPS && d1 < -EPS))
+        clipped.push(mix3(from, to, d0 / (d0 - d1)));
+    }
+  }
+  return clipped;
+}
+
+export function connectorRoofClearance(input) {
+  const record = normalizedRecord(input);
+  return roofClearance(record);
+}
+
+function roofClearance(record) {
+  const layout = roofLayout(record);
+  return layout.rafters.map((segment, index) => {
+    const faces = rafterBoxFaces(segment);
+    const clipped = faces.map(face => clipFaceToClearPolygon(face, record.clearPolygon));
+    const minimumY = Math.min(...clipped.flat().map(point => point[1]));
+    return { index, segment, faces, minimumY,
+      requiredY: record.baseY + record.clearHeight,
+      clearance: minimumY - (record.baseY + record.clearHeight) };
+  });
+}
+
+function emitRoof(part, record, params, { mesh = true, children = true } = {}) {
+  const { polygon, shellThickness, eaveY, apex, rafters: rafterSegments } = roofLayout(record);
+  const facets = [], undersides = [], fascias = [], tiles = [], rafters = [];
   for (let edge = 0; edge < polygon.length; ++edge) {
     const pa = polygon[edge], pb = polygon[(edge + 1) % polygon.length];
     const a = [pa[0], eaveY, pa[1]], b = [pb[0], eaveY, pb[1]];
     if (mesh) emitTriangle(part, b, a, apex, params.tileMaterial);
     facets.push([b, a, apex]);
+    const lower = point => [point[0], point[1] - shellThickness, point[2]];
+    const underA = lower(a), underB = lower(b), underApex = lower(apex);
+    const underside = [underA, underB, underApex];
+    const fascia = [[a, b, underB], [a, underB, underA]];
+    if (mesh) {
+      emitTriangle(part, ...underside, params.timberMaterial);
+      for (const triangle of fascia) emitTriangle(part, ...triangle, params.timberMaterial);
+    }
+    undersides.push(underside);
+    fascias.push(...fascia);
     const rows = Math.max(2, Math.ceil(Math.hypot(apex[0] - (a[0] + b[0]) * 0.5,
       apex[2] - (a[2] + b[2]) * 0.5) / 0.42));
     for (let row = 0; row < rows; ++row) {
-      const t0 = row / rows, t1 = (row + 1) / rows;
+      // Small open joints expose the roof bed below instead of tessellating
+      // one perfectly coplanar sheet that only pretends to be separate tiles.
+      const t0 = (row + 0.018) / rows, t1 = (row + 0.982) / rows;
       const left0 = mix3(a, apex, t0), right0 = mix3(b, apex, t0);
       const left1 = mix3(a, apex, t1), right1 = mix3(b, apex, t1);
       const columns = Math.max(1, Math.ceil(Math.hypot(
         right0[0] - left0[0], right0[2] - left0[2]) / 0.36));
       for (let column = 0; column < columns; ++column) {
-        const u0 = column / columns, u1 = (column + 1) / columns;
+        const u0 = (column + 0.018) / columns, u1 = (column + 0.982) / columns;
         const q0 = mix3(left0, right0, u0), q1 = mix3(left0, right0, u1);
         const q2 = mix3(left1, right1, Math.min(1, u1));
         const q3 = mix3(left1, right1, Math.min(1, u0));
@@ -926,11 +1068,14 @@ function emitRoof(part, record, params, { mesh = true, children = true } = {}) {
         tiles.push([q0, q3, q2, q1]);
       }
     }
+    // Rafters support the timber soffit from below. Centering them on the
+    // upper tile plane exposed their upper half through the finished roof.
+    const [rafterA, rafterApex] = rafterSegments[edge];
     if (children)
-      placeBeamBetween(part, a, apex, params, wrappedSeed(params.seed + edge));
-    rafters.push([a, apex]);
+      placeBeamBetween(part, rafterA, rafterApex, params, wrappedSeed(params.seed + edge));
+    rafters.push([rafterA, rafterApex]);
   }
-  return { facets, tiles, rafters };
+  return { facets, undersides, fascias, tiles, rafters };
 }
 
 export function connectorChildVariants(input, params = {}) {
@@ -938,7 +1083,7 @@ export function connectorChildVariants(input, params = {}) {
   const p = normalizedEmitParams(params);
   const variants = [];
   const collector = {
-    pushMatrix() {}, popMatrix() {}, translate() {}, scale() {}, rotateY() {}, rotateZ() {},
+    pushMatrix() {}, popMatrix() {}, translate() {}, scale() {}, rotateY() {}, rotateZ() {}, applyMatrix() {},
     placeChild(module, childParams) { variants.push({ module, params: childParams }); },
   };
   placeFloorChildren(collector, record, p);
@@ -972,7 +1117,11 @@ export function emitConnectorMesh(part, input, params = {}) {
     emitPolygonPrism(part, piece.polygon, record.baseY - record.floor.thickness,
       record.baseY, p.floorMaterial);
   for (const span of record.wallSpans) {
-    const mortar = spanFootprint({ ...span, thickness: span.thickness * 0.86 });
+    // Recess every face, including oblique jamb trim planes. Recessing only
+    // the two long faces leaves mortar coplanar with the end stones and
+    // produces visible striping/z-fighting on native trimmed jambs.
+    const recess = Math.min(0.025, span.thickness * 0.07);
+    const mortar = insetConvexPolygon(spanFootprint(span), recess);
     emitPolygonPrism(part, mortar, record.baseY + 0.012,
       record.baseY + record.height - 0.012, p.mortarMaterial);
   }
@@ -980,7 +1129,7 @@ export function emitConnectorMesh(part, input, params = {}) {
   return {
     id: record.id, floorPieces: floorPieces.map(piece => piece.polygon),
     inlineFloorPieces: inlineFloorPieces.map(piece => piece.polygon),
-    roofFacets: roof.facets, roofTiles: roof.tiles,
+    roofFacets: roof.facets, roofUndersides: roof.undersides, roofFascias: roof.fascias, roofTiles: roof.tiles,
   };
 }
 
@@ -1006,7 +1155,8 @@ export function emitConnector(part, input, params = {}) {
     floorPieces: mesh.floorPieces, inlineFloorPieces: mesh.inlineFloorPieces,
     floorStones: children.floorStones,
     wallBricks: children.wallBricks, cutStones: children.cutStones,
-    roofFacets: mesh.roofFacets, roofTiles: mesh.roofTiles, rafters: children.rafters,
+    roofFacets: mesh.roofFacets, roofUndersides: mesh.roofUndersides,
+    roofFascias: mesh.roofFascias, roofTiles: mesh.roofTiles, rafters: children.rafters,
     solidVolumes: connectorSolidVolumes(record),
     clearancePolygon: record.clearancePolygon,
   };
