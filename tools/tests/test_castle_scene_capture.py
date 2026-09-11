@@ -89,6 +89,8 @@ class PublicationTests(unittest.TestCase):
 
                 class FakeProcess:
                     def __init__(self, *unused, **options):
+                        assert options['env']['MATTER_HIDE_WINDOW'] == '1'
+                        assert options['env']['MATTER_IMPOSTOR'] == '0'
                         self.returncode = None
                         self.pid = 0  # Fake process: never passed to an OS kill call.
                         self.stdout = self.generate()
@@ -137,6 +139,7 @@ class PublicationTests(unittest.TestCase):
                         result = M.capture(args)
                         self.assertTrue(result['published'])
                         self.assertTrue(result['idle_confirmed'])
+                        self.assertEqual(result['render_environment']['MATTER_IMPOSTOR'], '0')
                         self.assertTrue((output/'capture.json').exists())
 
     def test_timelines_cannot_own_unsafe_waits_or_change_world(self):

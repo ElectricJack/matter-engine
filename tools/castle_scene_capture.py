@@ -218,6 +218,7 @@ def capture(args):
     # race this driver's publication barrier. Explicit overrides remain allowed.
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith('MATTER_')}
     env['MATTER_HIDE_WINDOW'] = '1'
+    env['MATTER_IMPOSTOR'] = '0'
     for item in args.env:
         if '=' not in item:
             raise CaptureError('--env requires K=V')
@@ -282,7 +283,12 @@ def capture(args):
             raise CaptureError('editor exited with code ' + str(code))
         verify_shots(shots, editor_dir, gate)
         receipt = gate.receipt()
-        receipt.update(world=args.world, shots=shots, editor_exit=code)
+        receipt.update(world=args.world, shots=shots, editor_exit=code,
+                       render_environment={key: env[key] for key in (
+                           'MATTER_HIDE_WINDOW', 'MATTER_IMPOSTOR',
+                           'MATTER_WINDOW_WIDTH', 'MATTER_WINDOW_HEIGHT',
+                           'MATTER_VK_STATIC_RESERVE_VERTEX_MB',
+                           'MATTER_VK_STATIC_RESERVE_INDEX_MB') if key in env})
         (out / 'capture.json').write_text(json.dumps(receipt, indent=2)+'\n')
         return receipt
     except Exception as error:

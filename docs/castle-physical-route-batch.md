@@ -50,6 +50,9 @@ connector mouth planes; local stair approaches cross internal doors where those
 are on the compiler-selected route. Native acceptance requires measured finite
 opening crossings, grounded arrivals, complete stair progression, bounded motion,
 no jumps, valid publication and current screenshots. No thresholds are relaxed.
+Walking uses raster rendering and mesh representations (`MATTER_IMPOSTOR=0`),
+matching the castle capture cache. Raster/RT lighting comparisons have separate
+capture receipts; the physical test retains the full authored geometry in view.
 
 The current 13 routes collectively plan 14 internal doorway crossings and 18
 unique connector-mouth crossings (nine complete connectors). They do **not**

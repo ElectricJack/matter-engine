@@ -50,8 +50,11 @@ indices, avoiding repeated buffer growth during this detailed gallery's first
 publication. Add `--env MATTER_VK_STATIC_RESERVE_VERTEX_MB=4096 --env
 MATTER_VK_STATIC_RESERVE_INDEX_MB=512` to individual commands for the same setup.
 
-The capture helper waits for final geometry publication and idle acknowledgment
-before submitting camera commands. Timelines intentionally contain no
+The capture helper defaults to a hidden native window with mesh representations
+(`MATTER_HIDE_WINDOW=1`, `MATTER_IMPOSTOR=0`). Its receipt records these settings
+and any explicit static-buffer reserves, so repeated runs can match the cache.
+It waits for final geometry publication and idle acknowledgment before
+submitting camera commands. Timelines intentionally contain no
 `wait_event` or `wait_idle`; the helper owns those barriers. A successful run
 writes PNGs, `.done` markers, the editor log and `capture.json`. Keep the manifest
 with those receipts when reviewing results. See

@@ -308,15 +308,17 @@ def main():
                     }
                 )
 
-            # Distinct opposite-side panorama chosen to reveal each site's internal court.
+            # The authored sun travels [.42, -.78, -.46]; cameras on the
+            # opposite horizontal vector see directly lit west/south facades.
+            # Retain elevation and distance so courts and complete roofs read.
             vector = np.array(
-                [[0.9, 0.72, -1.05], [0.8, 0.78, -1.0], [-1.05, 0.68, -0.8]][i]
+                [[-0.9, 0.72, 1.05], [-0.8, 0.78, 1.0], [-1.05, 0.68, 0.8]][i]
             )
             add(
                 "01-exterior",
                 center + vector * extent * 1.15,
                 [center[0], 6, center[2]],
-                "Elevated three-quarter view showing connected angled wings and complete roofs.",
+                "Sun-side elevated three-quarter view showing lit facades, connected angled wings and complete roofs.",
             )
             court = d["site"]["courtyards"][-1 if i == 2 else 0]
             p = np.mean(court["clearPolygon"], axis=0)
@@ -373,7 +375,7 @@ def main():
         lo, hi = points.min(axis=0), points.max(axis=0)
         center = (lo + hi) / 2
         # Wide axis lies nearly horizontal on screen. 45deg vertical FOV gives72.7deg horizontal.
-        galleryeye = np.array([center[0] + 12, 100, center[2] - 155])
+        galleryeye = np.array([center[0] - 35, 100, center[2] + 165])
         target = np.array([center[0], 4, center[2]])
         manifest["worlds"].append(
             {
@@ -385,7 +387,7 @@ def main():
                         "eye": galleryeye.tolist(),
                         "target": target.tolist(),
                         "lighting": "daylight",
-                        "note": "All three castles visible left-to-right, with enough elevation to read the distinct floor plans.",
+                        "note": "Sun-side overview of all three castles, with enough elevation to read lit facades and the distinct floor plans.",
                         "checks": {
                             "eyeAboveAllGeometryMetres": float(galleryeye[1] - hi[1])
                         },
@@ -518,6 +520,13 @@ def main():
             )
             for pose in w["poses"]:
                 if "exterior" in pose["id"] or "overview" in pose["id"]:
+                    sun_horizontal = np.array([-.42, .46])
+                    view_horizontal = (np.array(pose["eye"]) - np.array(pose["target"]))[[0, 2]]
+                    sun_alignment = float(np.dot(view_horizontal, sun_horizontal) /
+                                          (np.linalg.norm(view_horizontal) * np.linalg.norm(sun_horizontal)))
+                    assert view_horizontal[0] < 0 < view_horizontal[1] and sun_alignment > .8, (
+                        "exterior camera must face sunlit facades", w["world"], sun_alignment)
+                    pose["checks"]["horizontalSunSideAlignment"] = sun_alignment
                     b = w["bounds"]
                     points = [
                         [x, y, z]

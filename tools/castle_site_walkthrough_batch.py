@@ -488,6 +488,8 @@ def main():
                 if (
                     native_result.get("manifest_sha256") != route["manifest_sha256"]
                     or native_result.get("static_buffer_reserve_env") != RESERVES
+                    or native_result.get("render_path") != "raster"
+                    or native_result.get("impostors_enabled") is not False
                     or native_result.get("world") != route["world"]
                     or native_result.get("editor_sha256") != binaries[str(args.editor)]
                     or native_result.get("cmake_cache_sha256")
