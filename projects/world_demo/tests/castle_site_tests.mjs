@@ -320,6 +320,37 @@ reversedCourt.courtyards[0].sockets.reverse();
 assert.equal(siteToJSON(compileSite(reversedCourt)), siteToJSON(compileSite(orderedCourt)),
   'courtyard socket input order does not change compiled IDs or routes');
 
+const overlappingCourts = clone(orderedCourt);
+const sharedCourtPolygon = clone(overlappingCourts.courtyards[0].clearPolygon);
+const [firstCourtSocket, secondCourtSocket] = overlappingCourts.courtyards[0].sockets;
+overlappingCourts.courtyards = [
+  { id: 'court-a', level: 'ground', clearPolygon: sharedCourtPolygon,
+    floor: 'stone', sockets: [firstCourtSocket] },
+  { id: 'court-b', level: 'ground', clearPolygon: sharedCourtPolygon,
+    floor: 'stone', sockets: [secondCourtSocket] },
+];
+expectInvalid(overlappingCourts, /courtyards.*positive-area overlap between court-a and court-b/);
+
+const connectorCourtOverlap = clone(angledStudySite(0));
+const connectorCoreLevel = connectorCourtOverlap.wings.find(wing => wing.id === 'core').plan.levels[0];
+const connectorPortal = connectorCoreLevel.edgeOverrides.find(override => override.id === 'east-hall');
+connectorPortal.from = [12, 3];
+connectorPortal.to = [12, 9];
+connectorPortal.opening.offset = 1.8;
+connectorCoreLevel.edgeOverrides.push({
+  id: 'east-court', from: [12, 9], to: [12, 12], kind: 'arch',
+  connects: ['outside', 'core-ground'],
+  opening: { width: 1.2, height: 2.8, offset: 0.9 },
+});
+connectorCourtOverlap.courtyards = [{
+  id: 'connector-court', level: 'ground', baseY: 0,
+  clearPolygon: [[11.7, 5], [18, 5], [18, 11.1], [11.7, 11.1]],
+  floor: { material: 'stone', thickness: 0.25 },
+  sockets: [{ wing: 'core', level: 'ground', portal: 'east-court' }],
+}];
+expectInvalid(connectorCourtOverlap,
+  /courtyards\.connector-court.*positive-area floor overlap with connector vestibule/);
+
 // Tuple components are escaped before global namespacing, so authored colons
 // cannot alias the reserved courtyard node namespace.
 const collisionSafe = clone(courtyardSite);
@@ -401,7 +432,10 @@ assert.match(upperSvg, /core solar/);
 assert.doesNotMatch(upperSvg, /hall feasting-hall/);
 const courtyardSvg = siteToSVG(courtyardManifest, { scale: 10, padding: 12 });
 assert.match(courtyardSvg, /class="courtyard" data-courtyard="inner-court"/);
-assert.match(courtyardSvg, /class="court-portal" data-portal="north-court"/);
+assert.match(courtyardSvg, /class="portal arch" data-portal="north-court"/);
+assert.match(courtyardSvg, /class="label-halo"/);
+assert.match(courtyardSvg, /class="label"/);
+assert.doesNotMatch(courtyardSvg, /paint-order/);
 
 // Validation failures: off-grid yaw, cyclic placement, socket reuse, narrow
 // capsule clearance, through-wing intrusion, positive overlap and elevations.

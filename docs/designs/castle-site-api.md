@@ -33,7 +33,9 @@ both throw an error beginning with `castle site` and an input path on failure.
 to a legible ground-level sheet and filters walls, rooms, links and routes by
 `levelId`; request `upper` (or another authored level) for a separate sheet.
 It draws actual transformed walls, courtyard floors and portals, convex
-connector polygons, named room uses, wing angles and global routes.
+connector polygons, named room uses, wing angles and global routes. Door/arch
+overlays use the finite compiled aperture width instead of coloring an entire
+source wall span, and labels use separate portable halo/foreground elements.
 
 `castle_frames.js` publishes point/vector and inverse transforms,
 frame solve/compose, yaw/direction/quaternion conversion, row-major root
@@ -105,6 +107,9 @@ not merge the court with `outside`. This lets an enclosed outdoor court remain
 reachable while the selected `entry` stays the site's only outside edge. Court
 socket arrays are sorted by their semantic wing/level/portal tuple, and a court
 floor that cuts through a wing beyond its host wall interface is rejected.
+At overlapping elevations, positive-area court/court, court/connector-floor
+and court/connector-wall intersections are also rejected; shared edges remain
+valid.
 
 ## Compiled site
 
