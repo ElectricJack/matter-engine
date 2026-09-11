@@ -559,6 +559,26 @@ function pointInsideFloorHole(point, holes) {
   })());
 }
 
+function segmentEntersExpandedRect(from, to, rect, radius) {
+  const epsilon = 1e-7;
+  const mins = [rect.x - radius, rect.z - radius];
+  const maxs = [rect.x + rect.width + radius, rect.z + rect.depth + radius];
+  const starts = [from[0], from[2]], deltas = [to[0] - from[0], to[2] - from[2]];
+  let first = 0, last = 1;
+  for (let axis = 0; axis < 2; ++axis) {
+    if (Math.abs(deltas[axis]) < 1e-9) {
+      if (starts[axis] <= mins[axis] + epsilon || starts[axis] >= maxs[axis] - epsilon)
+        return false;
+      continue;
+    }
+    const a = (mins[axis] - starts[axis]) / deltas[axis];
+    const b = (maxs[axis] - starts[axis]) / deltas[axis];
+    first = Math.max(first, Math.min(a, b));
+    last = Math.min(last, Math.max(a, b));
+  }
+  return Math.max(first, epsilon) < Math.min(last, 1 - epsilon) - epsilon;
+}
+
 function roomSegmentLeg(room, from, to, width, holes) {
   const dx = to[0] - from[0], dz = to[2] - from[2];
   const length = Math.hypot(dx, dz);
@@ -572,11 +592,8 @@ function roomSegmentLeg(room, from, to, width, holes) {
     minZ: Math.min(from[2], to[2]) - Math.abs(pz) * width / 2,
     maxZ: Math.max(from[2], to[2]) + Math.abs(pz) * width / 2,
   };
-  if (holes.some(hole => hole.replacementLandingId === null && (() => {
-    const region = boundsFromRect(hole.footprint);
-    return bounds.minX < region.maxX - 1e-9 && region.minX < bounds.maxX - 1e-9 &&
-      bounds.minZ < region.maxZ - 1e-9 && region.minZ < bounds.maxZ - 1e-9;
-  })())) return null;
+  if (holes.some(hole => hole.replacementLandingId === null &&
+      segmentEntersExpandedRect(from, to, hole.footprint, width / 2))) return null;
   const samples = Math.max(1, Math.ceil(length / 0.2));
   for (let i = 0; i <= samples; ++i) {
     const t = i / samples;
@@ -1361,6 +1378,7 @@ function buildOpenBoundaries(walls) {
 }
 
 function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, floors) {
+  const stairsById = new Map(stairs.map(stair => [stair.id, stair]));
   const nodes = rooms.map(room => ({
     id: room.id, levelId: room.levelId, use: room.use,
     required: room.required !== false, walkable: !room.openToBelow,
@@ -1429,6 +1447,20 @@ function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, flo
   }
   const missing = nodes.filter(node => node.required && !reachable.has(node.id)).map(node => node.id);
   if (missing.length) fail('roomGraph', `required rooms are unreachable from ${entryRoomId}: ${missing.join(', ')}`);
+  const routeObstaclesForRoom = (roomId, floor) => [
+    ...floor.holes,
+    ...stairs.filter(stair => stair.lowerRoomId === roomId).flatMap(stair => [
+      ...stair.flights.map(flight => ({
+        id: `route-obstacle:${flight.id}`, footprint: flight.footprint,
+        replacementLandingId: null,
+      })),
+      ...stair.landings.filter(landing => landing.kind !== 'lower' &&
+        landing.elevation < floor.elevation + MIN_PORTAL_HEIGHT - 1e-9).map(landing => ({
+        id: `route-obstacle:${landing.id}`, footprint: landing.bounds,
+        replacementLandingId: null,
+      })),
+    ]),
+  ];
   const walkRoute = [...reachable].sort().map(roomId => {
     const path = [], routeEdges = [];
     for (let cursor = roomId; cursor !== undefined; cursor = parent.get(cursor)) {
@@ -1450,7 +1482,7 @@ function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, flo
       const segment = validateRoomSegment(rooms.find(room => room.id === sharedRoomId),
         fullEdges[i].roomThresholds[sharedRoomId],
         fullEdges[i + 1].roomThresholds[sharedRoomId],
-        MIN_PORTAL_WIDTH, floor.holes,
+        MIN_PORTAL_WIDTH, routeObstaclesForRoom(sharedRoomId, floor),
         `walkRoute.${roomId}`);
       segment.id = `route-segment:${roomId}:${i}`;
       for (const beam of beamMembers)
@@ -1476,11 +1508,24 @@ function buildRoomGraph(plan, rooms, portals, stairs, beamMembers, fixtures, flo
       from: [...thresholdFor(edge, traversalPairs[index].fromRoomId)],
       to: [...thresholdFor(edge, traversalPairs[index].toRoomId)],
     }));
+    const traversalWaypoints = (edge, traversal) => {
+      if (edge.kind !== 'stair') return [traversal.from, traversal.to];
+      const stair = stairsById.get(edge.portalVolumeId);
+      if (!stair) fail(`walkRoute.${roomId}`, `stair edge ${edge.id} has no stair record`);
+      const forward = traversal.fromRoomId === stair.lowerRoomId &&
+        traversal.toRoomId === stair.upperRoomId;
+      const reverse = traversal.fromRoomId === stair.upperRoomId &&
+        traversal.toRoomId === stair.lowerRoomId;
+      if (!forward && !reverse)
+        fail(`walkRoute.${roomId}`, `stair ${stair.id} traversal rooms do not match its endpoints`);
+      return (forward ? stair.route.waypoints : [...stair.route.waypoints].reverse())
+        .map(point => [...point]);
+    };
     const waypoints = [];
     if (traversals.length) {
       waypoints.push([...traversals[0].from]);
       for (let i = 0; i < traversals.length; ++i) {
-        waypoints.push([...traversals[i].to]);
+        waypoints.push(...traversalWaypoints(fullEdges[i], traversals[i]).slice(1));
         if (roomSegments[i])
           waypoints.push(...roomSegments[i].waypoints.slice(1).map(point => [...point]));
       }

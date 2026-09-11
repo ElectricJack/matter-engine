@@ -508,13 +508,20 @@ Each `walkRoute` item publishes `{roomId,fromEntry,edgeIds,sweptVolumeIds,
 waypoints,traversals,roomSegments}`. Each `traversal` names its `edgeId`,
 `fromRoomId`, `toRoomId`, and directionally ordered `from`/`to` thresholds;
 `outside` is explicit on an entry traversal. A stair graph edge uses the first
-and last point of `stair.route.waypoints`; consumers needing intermediate
-flight centre lines read that stair route directly. Between consecutive
+and last point of `stair.route.waypoints`. The top-level route includes every
+point from that stair route in traversal order (reversed when descending), so a
+consumer following only `walkRoute[].waypoints` still visits each flight and
+landing rather than taking a lower-to-upper shortcut. Between consecutive
 connectors the compiler emits a `roomSegment`
 with `roomId`, `from`, `to`, `width`, routed `waypoints`, per-leg `segments`,
 and aggregate `sweptBounds`. It uses 1.2m width, checks width-offset samples
 remain in the shared room and do not enter a floor hole, and rejects headroom
-overlap with beam bounds or fixture clearance. Its ID is also in
+overlap with beam bounds or fixture clearance. On a stair's lower level, every
+rising flight footprint is a routing obstacle expanded by half the 1.2m route
+width; a low intermediate landing is also blocked when its underside does not
+leave 2.1m clearance. The declared lower landing remains the only flat-route
+handoff into `stair.route`; upper landings with sufficient under-clearance do
+not seal a return stair's approach. Each room-segment ID is also in
 `sweptVolumeIds`. The top-level `waypoints` form one ordered polyline by
 interleaving directed traversals and those in-room segment waypoints. Room ID
 reachability alone is therefore not clearance evidence.
