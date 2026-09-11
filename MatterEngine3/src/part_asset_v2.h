@@ -282,7 +282,19 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              uint64_t resolved_hash);
 
 // Atomically publish source_path at target_path, replacing an existing target
-// without deleting it first. Failure leaves the previous target intact.
+// without deleting it first. Failure leaves the previous target intact and the
+// source in place; the caller decides whether to delete the source.
+//
+// TRANSIENT FAILURES (Windows). MoveFileEx refuses to replace a target that
+// some other handle holds open without FILE_SHARE_DELETE: an antivirus or
+// indexer scanning a freshly closed file, or an in-process part_bundle reader
+// (bundle reads take no lock). None of that is a corruption hazard, only a
+// liveness one, so ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED /
+// ERROR_LOCK_VIOLATION are retried with exponential backoff (1, 2, 4 ... ms)
+// for up to kReplaceFileMaxAttempts renames, about 0.5 s of waiting, before
+// the call gives up with NotReplaced. Any other error fails on the first
+// attempt. POSIX rename has no such failure mode and is attempted once.
+inline constexpr uint32_t kReplaceFileMaxAttempts = 10;
 enum class FileReplaceOutcome {
     NotReplaced,        // the rename failed; the previous target is still intact
     ReplacedDurable,    // renamed AND the directory entry was flushed to disk
@@ -291,13 +303,30 @@ enum class FileReplaceOutcome {
                                      // the test seam fired): the file is correct
                                      // now but may not survive power loss
 };
-FileReplaceOutcome replace_file_atomic_detailed(const std::string& source_path,
-                                                const std::string& target_path);
+// Why a replace failed, for callers that log it. os_error is the last failed
+// rename's GetLastError() (Windows) or errno (POSIX), and 0 once the rename
+// succeeded; attempts counts rename calls, so anything above 1 means transient
+// retries happened.
+struct FileReplaceDiagnostics {
+    uint32_t os_error = 0;
+    uint32_t attempts = 0;
+};
+FileReplaceOutcome replace_file_atomic_detailed(
+    const std::string& source_path, const std::string& target_path,
+    FileReplaceDiagnostics* diagnostics = nullptr);
 bool replace_file_atomic(const std::string& source_path,
                          const std::string& target_path);
 // Deterministic test seam: makes the next completed rename report that parent
 // directory durability could not be confirmed.
 void set_replace_file_atomic_test_post_rename_failure_once();
+// Deterministic test seam for the Windows transient-retry loop: called after
+// every failed rename that WILL be retried, with its 0-based attempt index and
+// OS error, before the backoff sleep. A test holding the target open releases
+// it here. Pass nullptr to clear; production never sets it.
+using ReplaceFileRetryHook = void (*)(uint32_t attempt, uint32_t os_error,
+                                      void* user);
+void set_replace_file_atomic_test_retry_hook(ReplaceFileRetryHook hook,
+                                             void* user);
 
 // Reconstruct managers from a v2 file; returns the child table and LOD levels to the
 // caller (passive — no backend action). Returns false (caller regenerates) on any

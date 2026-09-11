@@ -10,6 +10,19 @@
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef NOGDI
+#define NOGDI
+#endif
+#ifndef NOUSER
+#define NOUSER
+#endif
+#include <windows.h>
 #endif
 
 #include "check.h"
@@ -233,19 +246,124 @@ static void test_atomic_replace_preserves_target_on_failure() {
     write_text_file(target, "old");
     CHECK(!replace_file_atomic(source, target),
           "atomic replace reports missing-source failure");
+    FileReplaceDiagnostics missing;
+    CHECK(replace_file_atomic_detailed(source, target, &missing) ==
+              FileReplaceOutcome::NotReplaced,
+          "detailed atomic replace reports missing-source failure");
+    CHECK(missing.os_error != 0, "failed atomic replace reports the OS error");
+    CHECK(missing.attempts == 1,
+          "a missing source is a hard failure, not retried as transient");
     std::vector<uint8_t> old = read_file(target);
     CHECK(std::string(old.begin(), old.end()) == "old",
           "failed atomic replace preserves old target bytes");
 
     write_text_file(source, "new");
-    CHECK(replace_file_atomic(source, target),
+    FileReplaceDiagnostics published;
+    CHECK(replace_file_atomic_detailed(source, target, &published) ==
+              FileReplaceOutcome::ReplacedDurable,
           "atomic replace succeeds over existing target");
+    CHECK(published.attempts == 1 && published.os_error == 0,
+          "an uncontended replace takes one attempt and reports no error");
     std::vector<uint8_t> replaced = read_file(target);
     CHECK(std::string(replaced.begin(), replaced.end()) == "new",
           "successful atomic replace publishes complete new bytes");
     CHECK(read_file(source).empty(), "successful atomic replace consumes source");
     remove(target); remove(source);
 }
+
+#ifdef _WIN32
+// Hold `path` open the way a virus scanner or an in-process bundle reader
+// (fopen "rb") does: without FILE_SHARE_DELETE, so MoveFileEx cannot replace
+// it for as long as the handle lives.
+static HANDLE hold_without_share_delete(const char* path) {
+    return CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+static bool is_transient_error(uint32_t error) {
+    return error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED ||
+           error == ERROR_LOCK_VIOLATION;
+}
+
+struct TransientHolder {
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    uint32_t retries = 0;
+    uint32_t first_error = 0;
+    bool release_on_first_retry = false;
+};
+
+static void on_replace_retry(uint32_t attempt, uint32_t os_error, void* user) {
+    TransientHolder& holder = *static_cast<TransientHolder*>(user);
+    if (holder.retries++ == 0) holder.first_error = os_error;
+    if (holder.release_on_first_retry && attempt == 0 &&
+        holder.handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(holder.handle);
+        holder.handle = INVALID_HANDLE_VALUE;
+    }
+}
+
+// crisp-beacon: a cold CastleMasonry bake failed a whole part because one
+// bundle publish hit a sharing violation. The replace must ride out a holder
+// that lets go, and must still fail (bounded, target and source intact) when
+// the holder never does.
+static void test_atomic_replace_retries_transient_holder() {
+    using namespace part_asset;
+    const char* target = "test_atomic_replace_retry.target";
+    const char* source = "test_atomic_replace_retry.source";
+    remove(target); remove(source);
+    write_text_file(target, "old");
+    write_text_file(source, "new");
+
+    TransientHolder brief;
+    brief.handle = hold_without_share_delete(target);
+    brief.release_on_first_retry = true;
+    CHECK(brief.handle != INVALID_HANDLE_VALUE,
+          "test can hold the replace target open");
+    set_replace_file_atomic_test_retry_hook(on_replace_retry, &brief);
+    FileReplaceDiagnostics retried;
+    const FileReplaceOutcome retried_outcome =
+        replace_file_atomic_detailed(source, target, &retried);
+    set_replace_file_atomic_test_retry_hook(nullptr, nullptr);
+    if (brief.handle != INVALID_HANDLE_VALUE) CloseHandle(brief.handle);
+    CHECK(is_transient_error(brief.first_error),
+          "a held target fails the rename with a transient error");
+    CHECK(retried_outcome == FileReplaceOutcome::ReplacedDurable,
+          "replace succeeds once the transient holder lets go");
+    CHECK(retried.attempts == 2 && brief.retries == 1,
+          "a holder released after the first failure costs exactly one retry");
+    CHECK(retried.os_error == 0, "a replace that recovered reports no error");
+    std::vector<uint8_t> after_retry = read_file(target);
+    CHECK(std::string(after_retry.begin(), after_retry.end()) == "new",
+          "the retried replace publishes the new bytes");
+    CHECK(read_file(source).empty(), "the retried replace consumes the source");
+
+    write_text_file(source, "newer");
+    TransientHolder stuck;
+    stuck.handle = hold_without_share_delete(target);
+    CHECK(stuck.handle != INVALID_HANDLE_VALUE,
+          "test can hold the replace target open for the whole call");
+    set_replace_file_atomic_test_retry_hook(on_replace_retry, &stuck);
+    FileReplaceDiagnostics exhausted;
+    const FileReplaceOutcome exhausted_outcome =
+        replace_file_atomic_detailed(source, target, &exhausted);
+    set_replace_file_atomic_test_retry_hook(nullptr, nullptr);
+    if (stuck.handle != INVALID_HANDLE_VALUE) CloseHandle(stuck.handle);
+    CHECK(exhausted_outcome == FileReplaceOutcome::NotReplaced,
+          "replace gives up while the holder never lets go");
+    CHECK(exhausted.attempts == kReplaceFileMaxAttempts &&
+              stuck.retries == kReplaceFileMaxAttempts - 1,
+          "the transient retry budget is bounded");
+    CHECK(is_transient_error(exhausted.os_error),
+          "an exhausted retry reports the transient OS error");
+    std::vector<uint8_t> kept = read_file(target);
+    CHECK(std::string(kept.begin(), kept.end()) == "new",
+          "an exhausted retry leaves the previous target intact");
+    std::vector<uint8_t> unconsumed = read_file(source);
+    CHECK(std::string(unconsumed.begin(), unconsumed.end()) == "newer",
+          "an exhausted retry leaves the source for the caller");
+    remove(target); remove(source);
+}
+#endif
 
 static void test_save_v2_header() {
     using namespace part_asset;
@@ -915,6 +1033,9 @@ static void test_static_lod_plan_sidecar() {
 
 int main() {
     test_atomic_replace_preserves_target_on_failure();
+#ifdef _WIN32
+    test_atomic_replace_retries_transient_holder();
+#endif
     test_cache_path_resolved();
     test_resolved_hash();
     test_resolved_hash_carries_version_vector();

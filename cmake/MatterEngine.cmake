@@ -304,6 +304,10 @@ if(BUILD_TESTING)
         MatterEngine3/tests/part_graph_tests.cpp)
     matter_add_engine_cpu_test(partstore_tests
         MatterEngine3/tests/partstore_tests.cpp)
+    # Also the only suite that exercises replace_file_atomic's Windows
+    # transient-sharing retry, which POSIX rename never reaches.
+    matter_add_engine_cpu_test(part_asset_v2_tests
+        MatterEngine3/tests/part_asset_v2_tests.cpp)
     matter_add_engine_cpu_test(eval_world_tests
         MatterEngine3/tests/eval_world_tests.cpp)
     matter_add_engine_cpu_test(lod_distance_tests
