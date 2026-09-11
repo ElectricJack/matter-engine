@@ -6919,7 +6919,7 @@ static void rt_scenario_local_direct_transmission_weighting(
 
     const auto render = [&](uint64_t hash, uint32_t material_index,
                             bool gi_enabled, float diffuse_multiplier,
-                            viewer::VkRasterPixel& pixel) {
+                            matter::Float4& local_direct) {
         matter::VulkanGiSettings gi{};
         gi.enabled = gi_enabled;
         gi.diffuse_multiplier = diffuse_multiplier;
@@ -6941,16 +6941,19 @@ static void rt_scenario_local_direct_transmission_weighting(
         renderer.finish_ray_tracing_frame(frame.serial, rendered);
         if (!rendered) return false;
         vulkan.wait_idle();
+        viewer::VkRasterPixel pixel{};
         return renderer.readback_raster_pixel(kWidth / 2u, kHeight / 2u,
                                               pixel, error) &&
-               pixel.material_index == material_index;
+               pixel.material_index == material_index &&
+               renderer.readback_local_direct_pixel(
+                   kWidth / 2u, kHeight / 2u, local_direct, error);
     };
 
-    viewer::VkRasterPixel white{};
-    viewer::VkRasterPixel black{};
-    viewer::VkRasterPixel glass_gi_off{};
-    viewer::VkRasterPixel glass_gi_on{};
-    viewer::VkRasterPixel glass_diffuse_three{};
+    matter::Float4 white{};
+    matter::Float4 black{};
+    matter::Float4 glass_gi_off{};
+    matter::Float4 glass_gi_on{};
+    matter::Float4 glass_diffuse_three{};
     CHECK(render(kWhiteHash, kOpaqueWhite, false, 1.0f, white) &&
               render(kBlackHash, kOpaqueBlack, false, 1.0f, black) &&
               render(kGlassHash, kGlass, false, 1.0f, glass_gi_off) &&
@@ -6967,18 +6970,10 @@ static void rt_scenario_local_direct_transmission_weighting(
         1.0f - kTransmission * (1.0f - fresnel0);
     const float gi_on_weight = 1.0f - kTransmission;
     bool formula_matches = true;
-    const float white_rgb[3] = {white.raw_local_direct.x,
-                                white.raw_local_direct.y,
-                                white.raw_local_direct.z};
-    const float black_rgb[3] = {black.raw_local_direct.x,
-                                black.raw_local_direct.y,
-                                black.raw_local_direct.z};
-    const float off_rgb[3] = {glass_gi_off.raw_local_direct.x,
-                              glass_gi_off.raw_local_direct.y,
-                              glass_gi_off.raw_local_direct.z};
-    const float on_rgb[3] = {glass_gi_on.raw_local_direct.x,
-                             glass_gi_on.raw_local_direct.y,
-                             glass_gi_on.raw_local_direct.z};
+    const float white_rgb[3] = {white.x, white.y, white.z};
+    const float black_rgb[3] = {black.x, black.y, black.z};
+    const float off_rgb[3] = {glass_gi_off.x, glass_gi_off.y, glass_gi_off.z};
+    const float on_rgb[3] = {glass_gi_on.x, glass_gi_on.y, glass_gi_on.z};
     for (uint32_t channel = 0; channel < 3; ++channel) {
         const float diffuse = white_rgb[channel] - black_rgb[channel];
         const float expected_off = black_rgb[channel] +
@@ -6995,14 +6990,11 @@ static void rt_scenario_local_direct_transmission_weighting(
     }
     CHECK(formula_matches,
           "local-direct glass follows GI-off Fresnel fallback and GI-on transmission coverage");
-    CHECK(glass_gi_off.raw_local_direct.x >
-              glass_gi_on.raw_local_direct.x + 0.01f,
+    CHECK(glass_gi_off.x > glass_gi_on.x + 0.01f,
           "scene GI state changes glass diffuse weighting on the separate direct dispatch");
-    CHECK(close4(glass_gi_on.raw_local_direct,
-                 glass_diffuse_three.raw_local_direct, 0.0f),
+    CHECK(close4(glass_gi_on, glass_diffuse_three, 0.0f),
           "GI diffuse multiplier does not scale primary local direct");
-    CHECK(glass_gi_off.raw_local_direct.w > 0.9f &&
-              glass_gi_on.raw_local_direct.w > 0.9f,
+    CHECK(glass_gi_off.w > 0.9f && glass_gi_on.w > 0.9f,
           "local-direct glass lane publishes valid coverage");
     std::printf(
         "local-direct glass: off=%.5f/%.5f/%.5f on=%.5f/%.5f/%.5f "
@@ -9634,17 +9626,9 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
                                                rendered && presented);
             return rendered;
         };
-        CHECK(render_temporal_control(238) &&
-                  renderer.test_gi_history_reset_count() == 1u,
-              error.empty() ? "settle pre-existing GI history reset"
-                            : error.c_str());
-        CHECK(render_temporal_control(239) &&
-                  renderer.test_gi_history_reset_count() == 1u,
-              error.empty() ? "establish stable pre-toggle GI history"
-                            : error.c_str());
         // Drain setup invalidation so the following checks isolate RT
-        // ownership changes. A stable GI candidate makes the public consume
-        // path mirror the editor's pre-frame temporal invalidation.
+        // ownership changes without adding frames to this established
+        // absolute-count sequence.
         (void)renderer.consume_dlss_history_reset();
         matter::VulkanRayTracingSettings rt_disabled = enabled;
         rt_disabled.enabled = false;
@@ -14327,6 +14311,20 @@ int main() {
             (std::string(smoke_mode) == "raster" ||
              std::string(smoke_mode) == "rt-disabled")) {
             run_raster_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "rt-local-direct") {
+            std::string local_direct_error;
+            rt_scenario_local_direct_transmission_weighting(
+                *vulkan, local_direct_error);
+            CHECK(vulkan->validation_error_count() == 0,
+                  "local-direct glass scenario has no Vulkan validation errors");
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
