@@ -233,6 +233,10 @@ function normalizeSpan(input, index) {
     (input.from && input.to ? [input.from, input.to] : undefined);
   const segment = [point2(segmentInput?.[0], `${path}.segment[0]`),
     point2(segmentInput?.[1], `${path}.segment[1]`)];
+  const segmentLength = Math.hypot(segment[1][0] - segment[0][0],
+    segment[1][1] - segment[0][1]);
+  if (segmentLength < 0.18 - EPS)
+    fail(`${path}.segment`, 'must retain at least 0.18m of masonry run');
   const tangent = normalize2(input.tangent ?? input.tangentXZ, `${path}.tangent`);
   const normal = normalize2(input.normal ?? input.outward ?? input.outwardXZ, `${path}.normal`);
   const along = normalize2([segment[1][0] - segment[0][0],
@@ -250,7 +254,14 @@ function normalizeSpan(input, index) {
   const thickness = positive(input.thickness, `${path}.thickness`);
   if (thickness < 0.16 - EPS)
     fail(`${path}.thickness`, 'must be at least 0.16m for exact masonry geometry');
-  return {
+  const trimPlanes = Array.isArray(input.trimPlanes) ? input.trimPlanes.map((plane, planeIndex) =>
+    normalizeTrimPlane(plane, `${path}.trimPlanes[${planeIndex}]`)) :
+    fail(`${path}.trimPlanes`, 'must be an array');
+  for (const [planeIndex, plane] of trimPlanes.entries()) for (const endpoint of segment)
+    if (plane.keepSign * (plane.normal[0] * endpoint[0] +
+      plane.normal[1] * endpoint[1] - plane.offset) < -1e-6)
+      fail(`${path}.trimPlanes[${planeIndex}]`, 'must preserve both declared span endpoints');
+  const span = {
     id: requiredString(input.id, `${path}.id`), segment, tangent, normal,
     thickness,
     courseOrigin: point3(input.courseOrigin, `${path}.courseOrigin`),
@@ -258,10 +269,12 @@ function normalizeSpan(input, index) {
       [input.startJointOwnerId, input.endJointOwnerId], 'cornerOwners'),
     jambOwners: ownership(input.jambOwners ??
       [input.startJointOwnerId, input.endJointOwnerId], 'jambOwners'),
-    trimPlanes: Array.isArray(input.trimPlanes) ? input.trimPlanes.map((plane, planeIndex) =>
-      normalizeTrimPlane(plane, `${path}.trimPlanes[${planeIndex}]`)) :
-      fail(`${path}.trimPlanes`, 'must be an array'),
+    trimPlanes,
   };
+  const { front, back } = spanBedRanges(span);
+  if (Math.min(front[1] - front[0], back[1] - back[0]) < 0.16 - EPS)
+    fail(path, 'trimmed front and back masonry beds must retain at least 0.16m');
+  return span;
 }
 
 function normalizedRecord(input) {
@@ -768,6 +781,20 @@ function sectionRangeAtZ(localPolygon, z) {
   return [Math.min(...xs), Math.max(...xs)];
 }
 
+function spanBedRanges(span) {
+  const footprint = spanFootprint(span);
+  const center = [
+    (span.segment[0][0] + span.segment[1][0]) * 0.5 + span.normal[0] * span.thickness * 0.5,
+    (span.segment[0][1] + span.segment[1][1]) * 0.5 + span.normal[1] * span.thickness * 0.5,
+  ];
+  const local = footprint.map(point => localCoordinates(point, center, span.tangent, span.normal));
+  return {
+    footprint, center, local,
+    front: sectionRangeAtZ(local, -span.thickness * 0.5 + 1e-7),
+    back: sectionRangeAtZ(local, span.thickness * 0.5 - 1e-7),
+  };
+}
+
 function placedCutProfile(span, profile) {
   // rotateY maps local +X to tangent and local +Z to tangent's left normal.
   // South/right-handed spans therefore need their authored front/back beds
@@ -788,12 +815,7 @@ function placeWallCourses(part, record, span, params) {
   // masonry run to the connector. Its endpoint owner IDs identify the one
   // connector-owned corner/jamb instances; records assigning them elsewhere
   // are rejected while normalizing the mouth ownership contract above.
-  const footprint = spanFootprint(span);
-  const center = [(span.segment[0][0] + span.segment[1][0]) * 0.5 + span.normal[0] * span.thickness * 0.5,
-    (span.segment[0][1] + span.segment[1][1]) * 0.5 + span.normal[1] * span.thickness * 0.5];
-  const local = footprint.map(point => localCoordinates(point, center, span.tangent, span.normal));
-  const front = sectionRangeAtZ(local, -span.thickness * 0.5 + 1e-7);
-  const back = sectionRangeAtZ(local, span.thickness * 0.5 - 1e-7);
+  const { footprint, center, front, back } = spanBedRanges(span);
   const runMin = Math.min(front[0], back[0]), runMax = Math.max(front[1], back[1]);
   // Match castle_masonry's nominal 0.3m course grid at the shared base.
   const courseCount = Math.max(1, Math.round(record.height / 0.3));

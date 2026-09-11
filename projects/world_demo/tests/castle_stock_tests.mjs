@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
-await import('./castle_shared_lib_hooks.mjs');
-const {primitiveStock,fitStockTransform}=await import('../shared-lib/castle_stock.js');
+import {readFileSync} from 'node:fs';
+const primitiveSource=readFileSync(new URL('../shared-lib/castle_primitives.js',import.meta.url),'utf8');
+const primitiveUrl='data:text/javascript;base64,'+Buffer.from(primitiveSource).toString('base64');
+const stockSource=readFileSync(new URL('../shared-lib/castle_stock.js',import.meta.url),'utf8')
+ .replace("'shared-lib/castle_primitives'",JSON.stringify(primitiveUrl));
+const stockUrl='data:text/javascript;base64,'+Buffer.from(stockSource).toString('base64');
+const {primitiveStock,fitStockTransform}=await import(stockUrl);
 const seen=new Map();
 for(let i=0;i<1000;i++)for(const module of ['CastleStone','CastleBeam','CastlePlank']) {
  const input={seed:i,length:.4+i*.007,height:.15+i%5*.04,depth:.2+i%3*.03,width:.14+i%7*.02,thickness:.1+i%3*.03,material:8+i%5};
