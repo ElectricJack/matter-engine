@@ -10,11 +10,6 @@ function transform(x, y, z, yaw = 0) {
   return [c, 0, s, x, 0, 1, 0, y, -s, 0, c, z, 0, 0, 0, 1];
 }
 
-function pitchTransform(x, y, z, pitch) {
-  const c = Math.cos(pitch), s = Math.sin(pitch);
-  return [1, 0, 0, x, 0, c, -s, y, 0, s, c, z, 0, 0, 0, 1];
-}
-
 const stones = [];
 for (let seed = 0; seed < 12; ++seed) {
   const column = seed % 4, row = Math.floor(seed / 4);
@@ -31,6 +26,9 @@ for (let seed = 0; seed < 12; ++seed) {
 
 class CastleMaterials extends World {
   static camera = { position: [5.6, 3.2, 8.0], target: [0.1, 1.15, 0] };
+  // A pale studio-ground environment prevents reflective samples from losing
+  // their lower hemisphere into the physical sky's dark default planet.
+  static atmosphere = { groundAlbedo: 0.72 };
   static roots = [
     {
       module: 'CastleMaterialsGround',
@@ -57,37 +55,20 @@ class CastleMaterials extends World {
       transform: transform(1.1, 0.72, 0.65, 0.12),
     },
     {
-      module: 'CastleBeam',
+      module: 'CastleMaterialSamples',
       params: {
-        seed: 6, length: 1.25, width: 0.38, height: 0.38,
-        material: M.gold, endMaterial: M.gold, ironMaterial: M.agedGold,
-        joint: 0, strap: 1, detail: 1,
+        gold: M.gold, agedGold: M.agedGold,
+        clearGlass: M.clearGlass, coloredGlass: M.coloredGlass,
+        plaster: M.plaster, limestone: M.limestone[0],
+        targetMaterial: M.terracotta,
       },
-      // Tilt the broad face toward the sky/sun so metallic=1 reads as a warm
-      // reflected highlight rather than reflecting only the dark horizon.
-      transform: pitchTransform(3.8, 1.55, 0.2, -0.38),
-    },
-    {
-      module: 'CastlePlank',
-      params: {
-        seed: 1, length: 1.45, width: 1.05, thickness: 0.16,
-        material: M.clearGlass, endMaterial: M.clearGlass,
-        ironMaterial: M.iron, joint: 0, strap: 0, detail: 1,
-      },
-      transform: pitchTransform(3.7, 0.78, 0.7, -Math.PI * 0.5),
-    },
-    {
-      module: 'CastlePlank',
-      params: {
-        seed: 2, length: 1.15, width: 0.82, thickness: 0.14,
-        material: M.coloredGlass, endMaterial: M.coloredGlass,
-        ironMaterial: M.iron, joint: 0, strap: 0, detail: 1,
-      },
-      transform: pitchTransform(3.65, 2.15, 0.72, -Math.PI * 0.5),
+      transform: transform(3.72, 0, 0.18),
     },
   ];
   static lights = {
     sun: { dir: [0.42, -0.78, -0.46], color: [1.0, 0.91, 0.76] },
-    sky: { color: [0.24, 0.31, 0.43] },
+    // Bright warm-neutral sky light keeps metals from reflecting a nearly
+    // black horizon and illuminates the fixture's neutral reflection cards.
+    sky: { color: [0.78, 0.67, 0.52] },
   };
 }

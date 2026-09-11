@@ -186,6 +186,11 @@ for (const [emit, input, expected] of [
   assert.ok(part.ops.some((op) => op.kind === 'box' &&
     op.material === input.ironMaterial), expected + ' straps own iron material');
   assert.ok(part.ops.some((op) => op.csg === 'difference'), expected + ' uses CSG joinery');
+  const lastVoxel = part.ops.map((op) => op.kind).lastIndexOf('endVoxels');
+  const directRelief = part.ops.slice(lastVoxel + 1)
+    .filter((op) => op.kind === 'capsule' && op.csg === 'union');
+  assert.ok(directRelief.length >= 14,
+    expected + ' retains raised face grain and radial end detail below voxel size');
 }
 
 const jointStreams = [];

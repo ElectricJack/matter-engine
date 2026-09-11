@@ -17,6 +17,10 @@ expanded assemblies should use functional `static requires(p)` together with
 `stoneChildVariants`, `beamChildVariants`, or `plankChildVariants`, then use the
 matching `placeStone`, `placeBeam`, or `placePlank` helper. Both paths call the
 same canonicalizer, so declared and placed child parameters are identical.
+Use a small catalogue of canonical dimensions for those baked child variants,
+then fit clipped runs with the placement affine transform where practical.
+Passing every computed floating-point span as a child dimension defeats cache
+reuse by creating a separately baked shape for each nearly-identical length.
 
 Stone dimensions are `length` (+X), `height` (+Y), and `depth` (+Z), with the
 bottom bed at y=0. Beam dimensions are `length` (+X), `height` (+Y), and
@@ -31,6 +35,12 @@ and straps stand slightly proud. Plank thickness has a 0.10 m native minimum.
 world-local scalar values and must be passed through Part params; tint is not a
 substitute. The glass materials are transmitting volume boundaries and the
 gold materials have `metallic: 1`.
+
+The fixture-only rounded samples put polished and aged gold beside closed clear
+and colored glass volumes. Pale overhead and side cards provide a neutral form
+for the metals to reflect; limestone targets behind the glass make transmission
+and refraction readable in a still frame. These presentation objects are not
+part of the reusable primitive API.
 
 The voxel emitters intentionally use a coarse core session followed by a finer
 ordered-detail session. This makes the native script mesher select a detail
