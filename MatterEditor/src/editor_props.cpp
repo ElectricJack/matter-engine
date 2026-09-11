@@ -843,6 +843,18 @@ const auto s_gpu = matter::props::group<GpuPrefs>(
         .doc("Native renders at output resolution; the upscaling modes render "
              "smaller and reconstruct. Watch dlss internal/output in the HUD "
              "to see it land."));
+
+const auto s_gi = matter::props::group<GiPrefs>(
+    "render.gi", "Ray-Traced GI",
+    prop(&GiPrefs::enabled, "enabled")
+        .label("GI enabled")
+        .doc("Enables diffuse GI, reflections and transmission. Traced local "
+             "direct lighting remains active when this is off."),
+    prop(&GiPrefs::diffuse_multiplier, "diffuse_multiplier")
+        .label("Diffuse multiplier")
+        .range(0.0f, 4.0f)
+        .doc("Scales only diffuse indirect radiance; zero leaves local direct "
+             "lighting visible for A/B validation."));
 // ---------------------------------------------------------------------------
 // One-shot world-file migration: render.volumetrics' fog multipliers
 // (issue 80c66789)
@@ -1078,6 +1090,7 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
     // trace rays and how hard DLSS should upscale is a property of the machine
     // sitting in front of the user, not of the project.
     gpu_ = registry_.bind(s_gpu, &gpu_prefs_, Scope::User);
+    gi_ = registry_.bind(s_gi, &gi_prefs_, Scope::Session);
     // Same engine-owned deal, with one extra step: `workers` has no compiled
     // default worth showing (it scales with the machine), so the engine's own
     // env pass — which also seeds that default — must run BEFORE bind captures
@@ -1169,6 +1182,7 @@ matter::props::Binding* EditorProps::vt_enrich() {
 }
 
 matter::props::Binding* EditorProps::gpu() { return registry_.get(gpu_); }
+matter::props::Binding* EditorProps::gi() { return registry_.get(gi_); }
 
 bool EditorProps::set_dlss_mode(int index) {
     matter::props::Binding* b = registry_.get(gpu_);

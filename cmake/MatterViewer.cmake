@@ -147,6 +147,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vt_compositor.cpp
         MatterEngine3/src/render/vt_enrich.cpp
         MatterEngine3/src/terrain_field.cpp
+        MatterEngine3/src/world_lights.cpp
         MatterEngine3/tests/vulkan_smoke_tileset_bake_stub.cpp
         MatterEngine3/src/tileset_gtex.cpp
         MatterEngine3/src/render/vk_volumetrics.cpp

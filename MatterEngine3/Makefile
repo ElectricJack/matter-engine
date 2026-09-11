@@ -425,7 +425,8 @@ build/shaders_vk/rt_shadow.rgen.spv: shaders_vk/tileset_common.glsl
 build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
     shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
 
-build/shaders_vk/composite.frag.spv: shaders_vk/local_lighting.glsl
+build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
+    shaders_vk/local_lighting.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     shaders_vk/gi_common.glsl

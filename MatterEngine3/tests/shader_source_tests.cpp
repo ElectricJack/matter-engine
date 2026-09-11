@@ -450,9 +450,33 @@ int main() {
                std::string::npos &&
            composite.find("candidate < local_light_counts.x") ==
                std::string::npos);
-    assert(composite.find("raw_diffuse + local_direct.diffuse") !=
+    assert(rt.find("#include \"local_lighting.glsl\"") !=
                std::string::npos &&
-           composite.find("specular + local_direct.specular") !=
+           rt.find("layout(set = 0, binding = 26, rgba16f)") !=
+               std::string::npos &&
+           rt.find("local_light_indices[offset + candidate]") !=
+               std::string::npos &&
+           rt.find("local_light_oversized_indices[candidate]") !=
+               std::string::npos);
+    assert(rt.find("distance_to_sample - constants.bias") !=
+               std::string::npos &&
+           rt.find("gl_RayFlagsTerminateOnFirstHitEXT |") !=
+               std::string::npos &&
+           rt.find("0x01, 0, 0, 0, origin") != std::string::npos &&
+           rt.find("0x02, 0, 0, 0,") != std::string::npos);
+    assert(rt.find("surface.position, shading_normal, surface.normal") !=
+               std::string::npos &&
+           rt.find("hit.surface.position, hit_shading_normal,") !=
+               std::string::npos);
+    assert(composite.find("layout(set = 0, binding = 11) uniform sampler2D "
+                          "local_direct_texture") != std::string::npos &&
+           composite.find("local_light_counts.w == LOCAL_DIRECT_RAY_TRACED") !=
+               std::string::npos &&
+           composite.find("texture(local_direct_texture, in_uv).rgb") !=
+               std::string::npos);
+    assert(composite.find("raw_diffuse + local_direct.diffuse") ==
+               std::string::npos &&
+           composite.find("specular + local_direct.specular") ==
                std::string::npos);
     assert(composite.find("environment.direct_world_sun_ratio.rgb") !=
                std::string::npos &&
@@ -639,8 +663,10 @@ int main() {
     assert(engine_make.find("build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl") !=
            std::string::npos);
     assert(engine_make.find(
-               "build/shaders_vk/composite.frag.spv: shaders_vk/local_lighting.glsl") !=
-           std::string::npos);
+               "build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \\") !=
+               std::string::npos &&
+           engine_make.find("    shaders_vk/local_lighting.glsl") !=
+               std::string::npos);
     // 2026-08-14: MatterEditor/Makefile used to keep a second, independently
     // maintained copy of the VK_SPV list and every .glsl dependency edge,
     // regenerating the SAME shaders_gen/embedded_spirv.h -- the two drifted,
