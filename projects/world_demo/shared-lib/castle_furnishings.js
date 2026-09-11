@@ -33,6 +33,7 @@
 // children, and an expanded root does not place its own geometry.
 
 import { beamParams, plankParams, stoneParams } from 'shared-lib/castle_primitives';
+import { primitiveStock, fitStockTransform } from 'shared-lib/castle_stock';
 import { defineCastleMaterials } from 'shared-lib/castle_materials';
 
 const TAU = Math.PI * 2;
@@ -123,6 +124,9 @@ const len = (d, lo, hi) => ['num', d, lo, hi];
 const int = (d, lo, hi) => ['int', d, lo, hi];
 const flag = (d) => ['flag', d];
 const SEED = ['seed', 0];
+// These seeds describe visible wear, not placement identity. Two reusable
+// designs per dimensional recipe keep a whole furnished site in a small cache.
+export const FURNISHING_VARIANT_COUNT = 2;
 
 const WOOD = {
   material: mat(14), endMaterial: mat(14), ironMaterial: mat(3),
@@ -220,8 +224,8 @@ function canonical(schema, input) {
     else if (type === 'flag') out[key] = finite(raw, fallback) ? 1 : 0;
     else if (type === 'mat') out[key] = Math.max(0, Math.floor(finite(raw, fallback)));
     else {
-      const seed = Math.floor(finite(raw, fallback)) % 65536;
-      out[key] = seed < 0 ? seed + 65536 : seed;
+      const seed = Math.floor(finite(raw, fallback)) % FURNISHING_VARIANT_COUNT;
+      out[key] = seed < 0 ? seed + FURNISHING_VARIANT_COUNT : seed;
     }
   }
   return out;
@@ -451,9 +455,10 @@ function stone(p, k, dims, at) {
 
 function placeMembers(part, members) {
   for (const m of members) {
+    const stock = primitiveStock(m.module, m.params);
     part.pushMatrix();
-    part.applyMatrix(basisMatrix(m.basis, m.at));
-    part.placeChild(m.module, m.params);
+    part.applyMatrix(fitStockTransform(basisMatrix(m.basis, m.at), stock.scale));
+    part.placeChild(m.module, stock.params);
     part.popMatrix();
   }
 }
@@ -462,10 +467,11 @@ function uniqueChildren(members) {
   const seen = new Set();
   const out = [];
   for (const m of members) {
-    const key = m.module + JSON.stringify(m.params);
+    const stock = primitiveStock(m.module, m.params);
+    const key = m.module + JSON.stringify(stock.params);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ module: m.module, params: m.params });
+    out.push({ module: m.module, params: stock.params });
   }
   return out;
 }

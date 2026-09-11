@@ -12,6 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+await import('./castle_shared_lib_hooks.mjs');
 
 globalThis.World = class {};
 
@@ -54,6 +55,14 @@ const furnishingsUrl = dataUrl(furnishingsSource);
 
 const F = await import(furnishingsUrl);
 const CM = await import(materialsUrl);
+
+// Placement identifiers must not multiply baked furniture. Real dimensions
+// remain part of a design; arbitrary world seeds select one of two wear forms.
+for (const kind of F.FURNISHING_KINDS) {
+  const variants=new Set();
+  for(let seed=-100;seed<100;seed++)variants.add(JSON.stringify(F.furnishingParams(kind,{seed})));
+  assert.equal(variants.size,2,kind+' has only two seeded wear variants');
+}
 
 const {
   FURNISHING_KINDS, FURNISHING_MODULES, FURNISHING_DEFAULTS, FIXTURE_GLOW_DEFAULTS,

@@ -45,16 +45,19 @@
 import {
   placeBeam, placeStone, stoneParams, beamParams,
 } from 'shared-lib/castle_primitives';
+import { primitiveStock } from 'shared-lib/castle_stock';
 
 export const CASTLE_MASONRY_VERSION = 1;
 
-// Canonical catalogue sizes. Stones are scaled by their placement transform to
-// the exact course/joint geometry, so requires stays a small fixed list.
+// Nominal layout categories, not separate bake shapes. Ordinary blocks from
+// every category use primitiveStock: two rough forms per material, with exact
+// dimensions fitted by their placement matrix. Cut planes remain separate.
 export const MASONRY_STONE_SHAPES = Object.freeze({
   wythe: Object.freeze({ length: 0.7, height: 0.3, depth: 0.3 }),
   through: Object.freeze({ length: 0.7, height: 0.3, depth: 0.6 }),
   lintel: Object.freeze({ length: 1.8, height: 0.34, depth: 0.6 }),
 });
+// Legacy color-selection period, not the number of baked stone variants.
 export const MASONRY_STONE_SEEDS = 12;
 export const MASONRY_RAIL_SEEDS = 4;
 
@@ -292,17 +295,22 @@ function splitInterval(interval, lineKey, course, options) {
 
 function stonePlacement(frame, options, palette, shapeName, seedKey, box, role, ownerId) {
   const shape = MASONRY_STONE_SHAPES[shapeName];
-  const seed = hash32(seedKey) % MASONRY_STONE_SEEDS;
-  const params = stoneParams({
-    ...shape, seed, material: palette[seed % palette.length], detail: options.detail,
-  });
+  const hash = hash32(seedKey), seed = hash % MASONRY_STONE_SEEDS;
+  // Preserve the authored color choice while separating its hash bits from
+  // roughness selection. Otherwise seed%2 would give each of four materials
+  // only one of the two stock forms because color also used seed%paletteSize.
+  const stock = primitiveStock('CastleStone', stoneParams({
+    ...shape, seed: Math.floor(hash / palette.length),
+    material: palette[seed % palette.length], detail: options.detail,
+  }));
+  const params = stock.params;
   const length = box.a1 - box.a0, height = box.v1 - box.v0, depth = box.c1 - box.c0;
   const origin = frame.point((box.a0 + box.a1) / 2, box.v0, (box.c0 + box.c1) / 2);
   const solid = boxCorners(frame, box);
   return {
     module: 'CastleStone', params, role, ownerId,
     matrix: frameMatrix(origin, frame.u, [0, 1, 0], frame.w,
-      [length / shape.length, height / shape.height, depth / shape.depth]),
+      [length / params.length, height / params.height, depth / params.depth]),
     solid, bounds: boundsOf(solid),
   };
 }
