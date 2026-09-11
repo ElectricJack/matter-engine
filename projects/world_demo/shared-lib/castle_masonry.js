@@ -426,6 +426,17 @@ function lineAperturePlans(manifest, levelId, axis, line, grid, height, options)
     if (!volume) continue;
     corners.push(axis === 'x' ? [volume.minX, volume.maxX] : [volume.minZ, volume.maxZ]);
   }
+  // The compiler lets windows touch a corner's trim volume; the corner stays
+  // solid, so narrow such an opening to the corner face (declaredWidth keeps
+  // the authored width for sockets and diagnostics).
+  for (const ap of plans) {
+    ap.declaredWidth = ap.e - ap.s;
+    for (const [c0, c1] of corners) {
+      if (c1 <= ap.s + 1e-9 || c0 >= ap.e - 1e-9) continue;
+      if (c1 - ap.s < ap.e - c0) ap.s = Math.max(ap.s, c1); else ap.e = Math.min(ap.e, c0);
+    }
+  }
+  for (let i = plans.length - 1; i >= 0; --i) if (plans[i].e - plans[i].s < 0.2) plans.splice(i, 1);
   for (let i = 0; i < plans.length; ++i) {
     const ap = plans[i];
     const left = i > 0 ? (plans[i - 1].e + ap.s) / 2 : -Infinity;
@@ -541,12 +552,15 @@ export function emitCutStone(part, input = {}) {
   const xs = polygon.map(v => v[0]), ys = polygon.map(v => v[1]);
   for (const side of [-1, 1])
     for (let i = 0, placed = 0; i < 24 && placed < 3; ++i) {
+      // Radii first: an additive bump must sit a full radius (plus margin)
+      // inside every profile edge or it would regrow stone into a joint.
+      const rx = range(0.04, 0.09), ry = range(0.03, 0.07);
       const x = range(Math.min(...xs), Math.max(...xs)), y = range(Math.min(...ys), Math.max(...ys));
-      if (!inset(x, y, 0.07)) continue;
+      if (!inset(x, y, Math.max(rx, ry) + 0.005)) continue;
       const rz = range(0.02, Math.min(0.04, p.depth * 0.1));
       part.pushMatrix();
       part.translate(x, y, side * (hd - rz * 0.45));
-      part.scale(range(0.04, 0.09), range(0.03, 0.07), rz);
+      part.scale(rx, ry, rz);
       part.sphere([0, 0, 0], 1);
       part.popMatrix();
       if (((placed + p.seed + (side > 0 ? 1 : 0)) & 1) === 0) part.difference();
@@ -765,7 +779,7 @@ export function layoutWallModule(record, manifest, opts) {
     run: { levelId: record.levelId, axis: g.axis, line: g.line, a0: g.runA, a1: g.runB,
       thickness: t, baseY: g.level.baseY, height: g.height },
     apertures: g.apertures.map(ap => ({
-      id: ap.id, kind: ap.kind, a0: Math.max(g.runA, ap.s), a1: Math.min(g.runB, ap.e),
+      id: ap.id, kind: ap.kind, s: ap.s, e: ap.e, a0: Math.max(g.runA, ap.s), a1: Math.min(g.runB, ap.e),
       voidBottom: ap.voidBottom, voidTop: ap.headBottom, sillBottom: ap.sillBottom,
       arch: ap.arch
         ? { cx: ap.arch.cx, cy: ap.arch.cy, a: ap.arch.a, phi0: ap.arch.phi0, n: ap.arch.n, springY: ap.headBottom }
@@ -789,7 +803,8 @@ export function wallModuleSockets(record, manifest, opts) {
         role: ap.kind === 'window' ? 'glazing' : ap.kind === 'door' ? 'door-leaf' : 'arch',
         origin: g.frame.point(centre, ap.voidBottom, 0).map(round6),
         u: g.frame.u, up: [0, 1, 0], w: g.frame.w,
-        width: round6(ap.e - ap.s), clearBottom: ap.voidBottom, clearTop: round6(ap.headBottom),
+        width: round6(ap.e - ap.s), declaredWidth: round6(ap.declaredWidth),
+        clearBottom: ap.voidBottom, clearTop: round6(ap.headBottom),
         declaredTop: ap.top, thickness: g.thickness, exteriorSide: g.exterior,
         head: ap.arch ? 'arch' : ap.hasHead ? 'lintel' : 'open',
         arch: ap.arch ? {
@@ -1042,7 +1057,7 @@ export function wedgeParams(p = {}) {
     length: clampNumber(p.length, 0.7, 0.18, 4),
     height: clampNumber(p.height, 0.3, 0.12, 2),
     depth: clampNumber(p.depth, 0.3, 0.12, 2),
-    taper: Math.floor(clampNumber(p.taper, 1, 0.4, 1) * 100 + 1e-6) / 100,
+    taper: Math.floor(clampNumber(p.taper, 1, 0.1, 1) * 100 + 1e-6) / 100,
     axis: clampNumber(p.axis, 0, 0, 1) >= 0.5 ? 1 : 0,
     material: Math.max(0, Math.floor(clampNumber(p.material, 8, 0, 1e9))),
     detail: clampNumber(p.detail, 1, 0.5, 3),

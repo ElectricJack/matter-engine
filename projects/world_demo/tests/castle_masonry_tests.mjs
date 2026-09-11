@@ -156,7 +156,8 @@ function assertMasonry(manifest, label) {
 
   // Masonry units never overlap (junction ownership, module trims, apertures,
   // tangent curve contacts).
-  const stones = placements.filter(item => item.module === 'CastleStone' || item.module === 'CastleWedgeStone');
+  const stones = placements.filter(item => item.module === 'CastleStone' ||
+    item.module === 'CastleWedgeStone' || item.module === 'CastleCutStone');
   let overlaps = 0;
   for (const [a, b] of spatialPairs(stones))
     if (solidsOverlap(stones[a], stones[b])) {
@@ -175,9 +176,11 @@ function assertMasonry(manifest, label) {
       ++apertureCount;
       const half = run.thickness / 2;
       const y0 = run.baseY + ap.voidBottom, y1 = run.baseY + ap.voidTop;
+      // The whole (unclipped) effective opening must be empty, including any
+      // part of it that lies over a neighbouring module or a corner volume.
       const box = run.axis === 'x'
-        ? { min: [ap.a0, y0, run.line - half], max: [ap.a1, y1, run.line + half] }
-        : { min: [run.line - half, y0, ap.a0], max: [run.line + half, y1, ap.a1] };
+        ? { min: [ap.s, y0, run.line - half], max: [ap.e, y1, run.line + half] }
+        : { min: [run.line - half, y0, ap.s], max: [run.line + half, y1, ap.e] };
       for (const solid of solids)
         assert.ok(!overlap(box, solid.bounds, 1e-5) || !solidsOverlap({ bounds: box, solid: [
           [box.min[0], box.min[1], box.min[2]], [box.min[0], box.min[1], box.max[2]],
@@ -409,6 +412,70 @@ for (const curve of manifest.curves) {
   M.emitWedgeStone(new Proxy({}, { get: (_, name) => (...args) => ops1.push({ name, args }) }),
     { seed: 3, length: 0.7, height: 0.3, depth: 0.6, taper: 0.7, axis: 1, material: 41 });
   assert.ok(ops1.some(op => op.name === 'rotateZ'), 'voussoir cutters rotate in the wall plane');
+  // Tight thick curves need tapers far below 0.4; the canonicalizer must not
+  // widen them (a wider wedge overlaps its neighbour).
+  assert.equal(M.wedgeParams({ taper: 1 / 3 }).taper, 0.33);
+}
+
+// Cut-stone relief never re-grows stone past a profile (joint) face: every
+// additive ellipsoid stays inside the polygon by at least its in-plane radius.
+{
+  const cutStones = fixture.placements.filter(item => item.module === 'CastleCutStone');
+  let additive = 0;
+  for (const stone of cutStones) {
+    const polygon = M.cutStonePolygon(stone.params);
+    const ops = [];
+    const stack = [[0, 0, 0, 1, 1, 1]];
+    const part = new Proxy({}, { get: (_, name) => (...args) => {
+      const top = stack[stack.length - 1];
+      if (name === 'pushMatrix') stack.push([...top]);
+      else if (name === 'popMatrix') stack.pop();
+      else if (name === 'translate') { top[0] += args[0]; top[1] += args[1]; top[2] += args[2]; }
+      else if (name === 'scale') { top[3] *= args[0]; top[4] *= args[1]; top[5] *= args[2]; }
+      ops.push({ name, args, frame: [...top] });
+    } });
+    M.emitCutStone(part, stone.params);
+    const fine = ops.findIndex((op, i) => op.name === 'beginVoxels' && i > 0 &&
+      ops.slice(0, i).some(prev => prev.name === 'endVoxels'));
+    for (let i = fine; i < ops.length; ++i) {
+      const op = ops[i];
+      if (op.name !== 'sphere' || op.args[1] !== 1) continue;
+      if (ops[i + 1]?.name === 'difference') continue;
+      ++additive;
+      const [x, y, , rx, ry] = op.frame;
+      for (let k = 0; k < polygon.length; ++k) {
+        const a = polygon[k], b = polygon[(k + 1) % polygon.length];
+        const ex = b[0] - a[0], ey = b[1] - a[1], len = Math.hypot(ex, ey);
+        if (len < 1e-9) continue;
+        const inside = (ex * (y - a[1]) - ey * (x - a[0])) / len;
+        assert.ok(inside >= Math.max(rx, ry) - 1e-9,
+          `cut-stone relief stays behind its joint faces (${stone.role}, edge ${k}, ${inside.toFixed(4)} < ${Math.max(rx, ry).toFixed(4)})`);
+      }
+    }
+  }
+  assert.ok(additive > 0, 'cut stones carry additive face relief');
+}
+
+// A window authored flush against a wall corner: the compiler accepts it, so
+// masonry narrows the opening to the corner face and keeps the corner solid.
+{
+  const cornerWindow = compilePlan({
+    schema: 'matter.castle-plan/v1', id: 'corner-window', seed: 3, entryRoomId: 'g',
+    levels: [{ id: 'ground', baseY: 0, height: 4,
+      rooms: [{ id: 'g', use: 'hall', rect: { x: 0, z: 0, width: 4, depth: 4 } }],
+      edgeOverrides: [
+        { id: 'w', from: [0, 0], to: [2, 0], kind: 'window', opening: { offset: 0, width: 1.2, bottom: 1, height: 1.4 } },
+        { id: 'entry', from: [0, 4], to: [4, 4], kind: 'door', connects: ['g', 'outside'],
+          opening: { offset: 1.4, width: 1.2, bottom: 0, height: 2.2 } },
+      ] }],
+    stairs: [], beams: [], curves: [], fixtures: [], roofs: [], localLights: [],
+  });
+  const result = assertMasonry(cornerWindow, 'corner-window');
+  const window = result.layouts.flatMap(layout => layout.apertures || []).find(ap => ap.id.endsWith(':w'));
+  assert.ok(window && window.s >= 0.3 - 1e-9, 'corner window starts at the corner volume face');
+  const socket = cornerWindow.wallModules.flatMap(record => M.wallModuleSockets(record, cornerWindow, OPTIONS))
+    .find(item => item.apertureId.endsWith(':w'));
+  assert.ok(socket.width < 1.2 && socket.declaredWidth === 1.2, 'socket reports the narrowed clear width');
 }
 
 // Canonical transforms are row-major with translation in m[3], m[7], m[11].
@@ -481,7 +548,10 @@ const qaDir = process.env.CASTLE_QA_DIR ??
 const real = {};
 for (const name of ['courtyard', 'roundkeep', 'cloister']) {
   const path = `${qaDir}/${name}-detailed-manifest.json`;
-  if (!existsSync(path)) continue;
+  if (!existsSync(path)) {
+    console.log(`castle masonry: SKIP real ${name} (no ${path}; set CASTLE_QA_DIR to the castle-grid QA directory)`);
+    continue;
+  }
   const castle = JSON.parse(readFileSync(path, 'utf8'));
   const result = assertMasonry(castle, name);
   real[name] = { stones: result.stones, apertures: result.apertures, edges: result.edges,
