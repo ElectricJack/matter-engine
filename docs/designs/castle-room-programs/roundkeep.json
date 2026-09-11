@@ -1,0 +1,576 @@
+{
+  "id": "roundkeep",
+  "name": "Round-tower keep",
+  "width": 28,
+  "depth": 28,
+  "levels": [
+    {
+      "name": "Ground / Y=0",
+      "y": 0,
+      "rooms": [
+        [
+          "tower",
+          "Round stair tower",
+          [
+            -4,
+            0,
+            8,
+            8
+          ],
+          "stair",
+          "circle"
+        ],
+        [
+          "lobby",
+          "Tower lobby",
+          [
+            4,
+            0,
+            4,
+            8
+          ],
+          "gallery"
+        ],
+        [
+          "kitchen",
+          "Kitchen",
+          [
+            8,
+            0,
+            8,
+            8
+          ],
+          "service"
+        ],
+        [
+          "chapel",
+          "Oratory",
+          [
+            16,
+            0,
+            8,
+            8
+          ],
+          "chapel"
+        ],
+        [
+          "store",
+          "Stores",
+          [
+            0,
+            8,
+            4,
+            14
+          ],
+          "service"
+        ],
+        [
+          "hall",
+          "Double-height hall",
+          [
+            4,
+            8,
+            16,
+            14
+          ],
+          "hall"
+        ],
+        [
+          "guard",
+          "Guard / service",
+          [
+            20,
+            8,
+            4,
+            14
+          ],
+          "guard"
+        ],
+        [
+          "westentry",
+          "Armoury",
+          [
+            0,
+            22,
+            4,
+            6
+          ],
+          "guard"
+        ],
+        [
+          "entry",
+          "Entrance hall",
+          [
+            4,
+            22,
+            16,
+            6
+          ],
+          "gallery"
+        ],
+        [
+          "eastentry",
+          "Watch room",
+          [
+            20,
+            22,
+            4,
+            6
+          ],
+          "guard"
+        ]
+      ],
+      "portals": [
+        [
+          10,
+          28,
+          14,
+          28
+        ],
+        [
+          10,
+          22,
+          14,
+          22
+        ],
+        [
+          4,
+          3,
+          4,
+          5
+        ],
+        [
+          5,
+          8,
+          7,
+          8
+        ],
+        [
+          8,
+          3,
+          8,
+          5
+        ],
+        [
+          16,
+          3,
+          16,
+          5
+        ],
+        [
+          20,
+          14,
+          20,
+          16
+        ],
+        [
+          4,
+          14,
+          4,
+          16
+        ],
+        [
+          4,
+          24,
+          4,
+          26
+        ],
+        [
+          20,
+          24,
+          20,
+          26
+        ]
+      ],
+      "stairs": [
+        [
+          -1.5,
+          2.5,
+          3,
+          4
+        ]
+      ],
+      "route": [
+        [
+          12,
+          30
+        ],
+        [
+          12,
+          25
+        ],
+        [
+          12,
+          15
+        ],
+        [
+          6,
+          15
+        ],
+        [
+          6,
+          4
+        ],
+        [
+          2.5,
+          4
+        ],
+        [
+          2.5,
+          1.75
+        ],
+        [
+          -0.75,
+          1.75
+        ]
+      ],
+      "stairRecords": [
+        {
+          "id": "tower",
+          "kind": "return",
+          "lowerY": 0,
+          "upperY": 4,
+          "flightWidths": 1.5,
+          "risersPerFlight": 10,
+          "tread": 0.25,
+          "lowerFlight": [
+            -1.5,
+            2.5,
+            1.5,
+            2.5
+          ],
+          "upperFlight": [
+            0,
+            2.5,
+            1.5,
+            2.5
+          ],
+          "lowerDirection": [
+            0,
+            1
+          ],
+          "upperDirection": [
+            0,
+            -1
+          ],
+          "middleLanding": [
+            -1.5,
+            5,
+            3,
+            1.5
+          ],
+          "lowerLanding": [
+            -1.5,
+            1,
+            1.5,
+            1.5
+          ],
+          "upperLanding": [
+            0,
+            1,
+            1.5,
+            1.5
+          ],
+          "destinationHole": [
+            -1.5,
+            2.5,
+            3,
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Upper / Y=4",
+      "y": 4,
+      "rooms": [
+        [
+          "tower",
+          "Tower landing",
+          [
+            -4,
+            0,
+            8,
+            8
+          ],
+          "stair",
+          "circle"
+        ],
+        [
+          "lobby",
+          "Landing",
+          [
+            4,
+            0,
+            4,
+            8
+          ],
+          "gallery"
+        ],
+        [
+          "solar",
+          "Solar",
+          [
+            8,
+            0,
+            8,
+            8
+          ],
+          "chamber"
+        ],
+        [
+          "study",
+          "Treasury",
+          [
+            16,
+            0,
+            8,
+            8
+          ],
+          "chamber"
+        ],
+        [
+          "westgallery",
+          "Hall gallery",
+          [
+            4,
+            8,
+            2,
+            14
+          ],
+          "gallery"
+        ],
+        [
+          "eastgallery",
+          "Hall gallery",
+          [
+            18,
+            8,
+            2,
+            14
+          ],
+          "gallery"
+        ],
+        [
+          "southgallery",
+          "Gallery",
+          [
+            4,
+            22,
+            16,
+            2
+          ],
+          "gallery"
+        ],
+        [
+          "chambers",
+          "Private chambers",
+          [
+            4,
+            24,
+            16,
+            4
+          ],
+          "chamber"
+        ]
+      ],
+      "portals": [
+        [
+          4,
+          3,
+          4,
+          5
+        ],
+        [
+          8,
+          3,
+          8,
+          5
+        ],
+        [
+          16,
+          3,
+          16,
+          5
+        ],
+        [
+          4,
+          8,
+          6,
+          8
+        ],
+        [
+          18,
+          8,
+          20,
+          8
+        ],
+        [
+          10,
+          24,
+          12,
+          24
+        ],
+        [
+          4,
+          22,
+          6,
+          22
+        ],
+        [
+          18,
+          22,
+          20,
+          22
+        ]
+      ],
+      "stairs": [
+        [
+          -1.5,
+          2.5,
+          3,
+          4
+        ]
+      ],
+      "route": [
+        [
+          0.75,
+          1.75
+        ],
+        [
+          2.5,
+          1.75
+        ],
+        [
+          2.5,
+          4
+        ],
+        [
+          6,
+          4
+        ],
+        [
+          5,
+          4
+        ],
+        [
+          5,
+          15
+        ],
+        [
+          5,
+          23
+        ],
+        [
+          11,
+          23
+        ],
+        [
+          11,
+          26
+        ],
+        [
+          11,
+          23
+        ],
+        [
+          19,
+          23
+        ],
+        [
+          19,
+          12
+        ],
+        [
+          19,
+          4
+        ],
+        [
+          12,
+          4
+        ]
+      ],
+      "stairRecords": [
+        {
+          "id": "tower",
+          "kind": "return",
+          "lowerY": 0,
+          "upperY": 4,
+          "flightWidths": 1.5,
+          "risersPerFlight": 10,
+          "tread": 0.25,
+          "lowerFlight": [
+            -1.5,
+            2.5,
+            1.5,
+            2.5
+          ],
+          "upperFlight": [
+            0,
+            2.5,
+            1.5,
+            2.5
+          ],
+          "lowerDirection": [
+            0,
+            1
+          ],
+          "upperDirection": [
+            0,
+            -1
+          ],
+          "middleLanding": [
+            -1.5,
+            5,
+            3,
+            1.5
+          ],
+          "lowerLanding": [
+            -1.5,
+            1,
+            1.5,
+            1.5
+          ],
+          "upperLanding": [
+            0,
+            1,
+            1.5,
+            1.5
+          ],
+          "destinationHole": [
+            -1.5,
+            2.5,
+            3,
+            4
+          ]
+        }
+      ]
+    }
+  ],
+  "towerEntry": {
+    "kind": "radial-throat",
+    "centre": [
+      0,
+      4
+    ],
+    "radius": 4,
+    "width": 2,
+    "floorBridge": [
+      3.4,
+      3,
+      1.2,
+      2
+    ],
+    "gridPlaneX": 4,
+    "source": "tower",
+    "destination": "lobby"
+  },
+  "status": "concept program; translate to frozen compiler API before building",
+  "walkClearance": {
+    "width": 1.2,
+    "headroom": 2.1,
+    "eyeHeight": 1.7
+  },
+  "galleryEdges": "rail at vertical void, explicit open portals between adjoining gallery segments",
+  "supports": "Ground stone bearing; upper floors require declared joist bearings and posts; unresolved here"
+}
