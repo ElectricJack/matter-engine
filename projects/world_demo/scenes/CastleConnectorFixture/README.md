@@ -6,6 +6,11 @@ cut stones at the jambs, a tiled low hip and timber rafters. Static collision is
 generated from the same solid volumes as the visible layout: rectangular pieces
 use oriented boxes and boundary pieces use flat-point convex hulls.
 
+Each connector is two coincident roots: an unexpanded inline mesh layer for
+clipped boundary flags/mortar/roof tiles, and an expanded child-only assembly
+for reusable interior flagstones, masonry and rafters. This keeps fine voxel
+children instanced and below the native static-vertex reserve.
+
 The +30 record preserves the frozen study's world mouth centres `[12,0,6]` and
 `[18,0,6]`; its hall origin metadata remains `[16,0,2.5358983849]`. The other
 bays exercise signed 15-degree increments without quantizing world coordinates.

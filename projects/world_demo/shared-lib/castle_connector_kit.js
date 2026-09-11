@@ -134,6 +134,25 @@ export function insetConvexPolygon(input, distance) {
   return canonicalPolygon(inset, 'clearancePolygon');
 }
 
+function outsetConvexPolygon(input, distance) {
+  const polygon = canonicalPolygon(input);
+  if (distance <= EPS) return polygon;
+  return polygon.map((point, index) => {
+    const previous = polygon[(index + polygon.length - 1) % polygon.length];
+    const next = polygon[(index + 1) % polygon.length];
+    const previousDirection = normalize2(
+      [point[0] - previous[0], point[1] - previous[1]], `roof.edge[${index}].previous`);
+    const nextDirection = normalize2(
+      [next[0] - point[0], next[1] - point[1]], `roof.edge[${index}].next`);
+    const previousPoint = [point[0] + previousDirection[1] * distance,
+      point[1] - previousDirection[0] * distance];
+    const nextPoint = [point[0] + nextDirection[1] * distance,
+      point[1] - nextDirection[0] * distance];
+    return lineIntersection(previousPoint, previousDirection, nextPoint, nextDirection,
+      `roof.vertex[${index}]`);
+  });
+}
+
 function pointInsideConvex(point, polygon, tolerance = EPS) {
   for (let i = 0; i < polygon.length; ++i) {
     const a = polygon[i], b = polygon[(i + 1) % polygon.length];
@@ -237,7 +256,12 @@ function normalizedRecord(input) {
   if (portalIds.size !== 2) fail('mouths', 'must refer to two distinct portals');
   if (!Array.isArray(input.wallSpans) || input.wallSpans.length < 2)
     fail('wallSpans', 'must contain finite boundary spans');
-  const wallSpans = input.wallSpans.map(normalizeSpan);
+  const wallSpans = input.wallSpans.map(normalizeSpan)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const mouthJambOwners = new Set(mouths.map(mouth => mouth.jambOwner));
+  for (const span of wallSpans) for (const owner of span.jambOwners)
+    if (!mouthJambOwners.has(owner))
+      fail(`wallSpans.${span.id}.jambOwners`, `${owner} is not owned by either connector mouth`);
   const floor = {
     thickness: positive(input.floor?.thickness, 'floor.thickness'),
     material: input.floor?.material ?? 'stone',
@@ -251,6 +275,7 @@ function normalizedRecord(input) {
     material: input.roof?.material ?? 'tile',
     overhang: input.roof?.overhang === undefined ? 0 : finite(input.roof.overhang, 'roof.overhang'),
   };
+  if (roof.overhang < 0) fail('roof.overhang', 'must be non-negative');
   if (roof.kind !== 'low-hip') fail('roof.kind', 'only low-hip is supported');
   if (!Array.isArray(input.routeWaypoints) || input.routeWaypoints.length < 2)
     fail('routeWaypoints', 'must contain a continuous route');
@@ -569,6 +594,19 @@ function materialId(materials, key, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function recipeParams(recordIndex, materials, detail) {
+  return {
+    connectorIndex: recordIndex,
+    seed: wrappedSeed(recordIndex),
+    detail: Math.max(0.5, Math.min(3, detail)),
+    stoneMaterial: materialId(materials, 'stone', 8),
+    mortarMaterial: materialId(materials, 'mortar', 9),
+    floorMaterial: materialId(materials, 'floor', 8),
+    tileMaterial: materialId(materials, 'tile', 10),
+    timberMaterial: materialId(materials, 'timber', 14),
+  };
+}
+
 export function connectorRecipes(siteOrRecords, {
   module = 'CastleConnector', materials = {}, detail = 1,
 } = {}) {
@@ -576,16 +614,7 @@ export function connectorRecipes(siteOrRecords, {
     .sort((a, b) => a.id.localeCompare(b.id));
   return records.map((record, recordIndex) => ({
     module,
-    params: {
-      connectorIndex: recordIndex,
-      seed: wrappedSeed(recordIndex),
-      detail: Math.max(0.5, Math.min(3, detail)),
-      stoneMaterial: materialId(materials, 'stone', 8),
-      mortarMaterial: materialId(materials, 'mortar', 9),
-      floorMaterial: materialId(materials, 'floor', 8),
-      tileMaterial: materialId(materials, 'tile', 10),
-      timberMaterial: materialId(materials, 'timber', 14),
-    },
+    params: recipeParams(recordIndex, materials, detail),
     recordId: record.id,
     expand: false,
     expanded: false,
@@ -593,11 +622,39 @@ export function connectorRecipes(siteOrRecords, {
   }));
 }
 
+// Native-safe split: inline exact polygons remain in an unexpanded mesh root;
+// high-detail stones and rafters live in an expanded child-only root so their
+// triangles stay instanced instead of flattening into one giant asset.
+export function connectorLayerRecipes(siteOrRecords, {
+  meshModule = 'CastleConnectorMesh',
+  assemblyModule = 'CastleConnectorAssembly',
+  materials = {}, detail = 1,
+} = {}) {
+  const records = connectorRecords(siteOrRecords).map(record => normalizedRecord(record))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return records.flatMap((record, recordIndex) => {
+    const params = recipeParams(recordIndex, materials, detail);
+    return [{
+      module: meshModule, params: { ...params }, recordId: record.id,
+      layer: 'mesh', expand: false, expanded: false, inlineGeometry: true,
+    }, {
+      module: assemblyModule, params: { ...params }, recordId: record.id,
+      layer: 'children', expand: true, expanded: true, inlineGeometry: false,
+    }];
+  });
+}
+
 function emitPolygonPrism(part, polygon, bottomY, topY, material) {
   if (topY - bottomY <= EPS) return;
   part.fill(material);
   part.beginShape(SHAPE.polygon);
-  for (const point of polygon) part.vertex(point[0], point[1]);
+  // The extruder's +Y-path frame maps profile (u,v) to world (-v,-u).
+  // Reverse the CCW XZ ring while applying that basis inverse so the emitted
+  // prism exactly matches its world-coordinate collision polygon.
+  for (let index = polygon.length - 1; index >= 0; --index) {
+    const point = polygon[index];
+    part.vertex(-point[1], -point[0]);
+  }
   part.endShape();
   part.extrude([[0, bottomY, 0], [0, topY, 0]]);
 }
@@ -624,6 +681,37 @@ function gridClippedPolygons(polygon, cellSize) {
   return pieces;
 }
 
+function floorLayout(record, params) {
+  return gridClippedPolygons(record.clearPolygon, params.flagSize ?? 0.9)
+    .map((polygon, index) => ({
+      id: `${record.id}:floor:${index}`, polygon,
+      rectangle: orientedRectangle(polygon),
+    }));
+}
+
+function placeFloorChildren(part, record, params) {
+  const placements = [];
+  for (const piece of floorLayout(record, params)) {
+    if (!piece.rectangle) continue;
+    const rectangle = piece.rectangle;
+    const childParams = stoneParams({
+      seed: wrappedSeed(params.seed + placements.length * 7),
+      length: rectangle.length, height: record.floor.thickness,
+      depth: rectangle.depth, material: params.floorMaterial,
+      detail: params.detail,
+    });
+    part.pushMatrix();
+    part.translate(rectangle.center[0], record.baseY - record.floor.thickness,
+      rectangle.center[1]);
+    part.rotateY(rectangle.yaw);
+    part.placeChild('CastleStone', childParams);
+    part.popMatrix();
+    placements.push({ id: piece.id, polygon: piece.polygon,
+      module: 'CastleStone', params: childParams });
+  }
+  return placements;
+}
+
 function localCoordinates(point, origin, tangent, normal) {
   const delta = [point[0] - origin[0], point[1] - origin[1]];
   return [delta[0] * tangent[0] + delta[1] * tangent[1],
@@ -644,7 +732,26 @@ function sectionRangeAtZ(localPolygon, z) {
   return [Math.min(...xs), Math.max(...xs)];
 }
 
+function placedCutProfile(span, profile) {
+  // rotateY maps local +X to tangent and local +Z to tangent's left normal.
+  // South/right-handed spans therefore need their authored front/back beds
+  // exchanged so the child profile still follows span.normal in world XZ.
+  const placedNormal = [-span.tangent[1], span.tangent[0]];
+  const sameNormal = placedNormal[0] * span.normal[0] +
+    placedNormal[1] * span.normal[1] > 0;
+  return sameNormal ? profile : {
+    leftFront: profile.leftBack,
+    leftBack: profile.leftFront,
+    rightFront: profile.rightBack,
+    rightBack: profile.rightFront,
+  };
+}
+
 function placeWallCourses(part, record, span, params) {
+  // A wallSpan is the compiler's explicit assignment of this complete finite
+  // masonry run to the connector. Its endpoint owner IDs identify the one
+  // connector-owned corner/jamb instances; records assigning them elsewhere
+  // are rejected while normalizing the mouth ownership contract above.
   const footprint = spanFootprint(span);
   const center = [(span.segment[0][0] + span.segment[1][0]) * 0.5 + span.normal[0] * span.thickness * 0.5,
     (span.segment[0][1] + span.segment[1][1]) * 0.5 + span.normal[1] * span.thickness * 0.5];
@@ -652,12 +759,15 @@ function placeWallCourses(part, record, span, params) {
   const front = sectionRangeAtZ(local, -span.thickness * 0.5 + 1e-7);
   const back = sectionRangeAtZ(local, span.thickness * 0.5 - 1e-7);
   const runMin = Math.min(front[0], back[0]), runMax = Math.max(front[1], back[1]);
-  const courseCount = Math.max(1, Math.ceil(record.clearHeight / 0.29));
+  // Match castle_masonry's nominal 0.3m course grid at the shared base.
+  const courseCount = Math.max(1, Math.round(record.clearHeight / 0.3));
   const courseHeight = record.clearHeight / courseCount;
+  const courseOrigin = localCoordinates(
+    [span.courseOrigin[0], span.courseOrigin[2]], center, span.tangent, span.normal)[0];
   const bricks = [], cutStones = [];
   for (let course = 0; course < courseCount; ++course) {
     const target = 0.70;
-    const offset = course & 1 ? target * 0.5 : 0;
+    const offset = courseOrigin + (course & 1 ? target * 0.5 : 0);
     const breaks = [runMin];
     const firstSafeBreak = Math.max(front[0], back[0]) + 0.18;
     const lastSafeBreak = Math.min(front[1], back[1]) - 0.18;
@@ -681,11 +791,15 @@ function placeWallCourses(part, record, span, params) {
       const seed = wrappedSeed(params.seed + course * 17 + index * 5);
       const isCut = first || last || Math.abs(lf - lb) > 1e-6 || Math.abs(rf - rb) > 1e-6;
       if (isCut) {
+        const placedProfile = placedCutProfile(span, {
+          leftFront: lf, leftBack: lb, rightFront: rf, rightBack: rb,
+        });
         const childParams = connectorCutStoneParams({ seed, height: courseHeight,
-          depth: span.thickness, leftFront: lf, leftBack: lb, rightFront: rf,
-          rightBack: rb, material: params.stoneMaterial, detail: params.detail });
+          depth: span.thickness, ...placedProfile,
+          material: params.stoneMaterial, detail: params.detail });
         part.placeChild('CastleConnectorCutStone', childParams);
         cutStones.push({ spanId: span.id, course, index, world, params: childParams,
+          yaw: Math.atan2(-span.tangent[1], span.tangent[0]),
           owners: first ? [span.cornerOwners[0], span.jambOwners[0]] :
             [span.cornerOwners[1], span.jambOwners[1]] });
       } else {
@@ -727,8 +841,8 @@ function placeBeamBetween(part, a, b, params, seed) {
   part.popMatrix();
 }
 
-function emitRoof(part, record, params) {
-  const polygon = record.clearPolygon;
+function emitRoof(part, record, params, { mesh = true, children = true } = {}) {
+  const polygon = outsetConvexPolygon(record.clearPolygon, record.roof.overhang);
   const eaveY = record.baseY + record.clearHeight;
   const centroid = polygon.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0])
     .map(value => value / polygon.length);
@@ -737,8 +851,8 @@ function emitRoof(part, record, params) {
   for (let edge = 0; edge < polygon.length; ++edge) {
     const pa = polygon[edge], pb = polygon[(edge + 1) % polygon.length];
     const a = [pa[0], eaveY, pa[1]], b = [pb[0], eaveY, pb[1]];
-    emitTriangle(part, a, b, apex, params.tileMaterial);
-    facets.push([a, b, apex]);
+    if (mesh) emitTriangle(part, b, a, apex, params.tileMaterial);
+    facets.push([b, a, apex]);
     const rows = Math.max(2, Math.ceil(Math.hypot(apex[0] - (a[0] + b[0]) * 0.5,
       apex[2] - (a[2] + b[2]) * 0.5) / 0.42));
     for (let row = 0; row < rows; ++row) {
@@ -753,13 +867,16 @@ function emitRoof(part, record, params) {
         const q2 = mix3(left1, right1, Math.min(1, u1));
         const q3 = mix3(left1, right1, Math.min(1, u0));
         for (const q of [q0, q1, q2, q3]) q[1] += 0.025;
-        emitTriangle(part, q0, q1, q2, params.tileMaterial);
-        if (Math.hypot(q2[0] - q3[0], q2[2] - q3[2]) > EPS)
-          emitTriangle(part, q0, q2, q3, params.tileMaterial);
-        tiles.push([q0, q1, q2, q3]);
+        if (mesh) {
+          emitTriangle(part, q0, q2, q1, params.tileMaterial);
+          if (Math.hypot(q2[0] - q3[0], q2[2] - q3[2]) > EPS)
+            emitTriangle(part, q0, q3, q2, params.tileMaterial);
+        }
+        tiles.push([q0, q3, q2, q1]);
       }
     }
-    placeBeamBetween(part, a, apex, params, wrappedSeed(params.seed + edge));
+    if (children)
+      placeBeamBetween(part, a, apex, params, wrappedSeed(params.seed + edge));
     rafters.push([a, apex]);
   }
   return { facets, tiles, rafters };
@@ -770,16 +887,17 @@ export function connectorChildVariants(input, params = {}) {
   const p = {
     seed: wrappedSeed(params.seed), detail: Math.max(0.5, Math.min(3, params.detail ?? 1)),
     stoneMaterial: params.stoneMaterial ?? 8,
+    floorMaterial: params.floorMaterial ?? 8,
     timberMaterial: params.timberMaterial ?? 14,
   };
   const variants = [];
   const collector = {
     pushMatrix() {}, popMatrix() {}, translate() {}, rotateY() {}, rotateZ() {},
-    fill() {}, beginShape() {}, vertex() {}, endShape() {},
     placeChild(module, childParams) { variants.push({ module, params: childParams }); },
   };
+  placeFloorChildren(collector, record, p);
   for (const span of record.wallSpans) placeWallCourses(collector, record, span, p);
-  emitRoof(collector, record, p);
+  emitRoof(collector, record, p, { mesh: false, children: true });
   const seen = new Set();
   return variants.filter(variant => {
     const key = `${variant.module}:${JSON.stringify(variant.params)}`;
@@ -789,32 +907,59 @@ export function connectorChildVariants(input, params = {}) {
   });
 }
 
-export function emitConnector(part, input, params = {}) {
-  const record = normalizedRecord(input);
-  const p = {
+function normalizedEmitParams(params) {
+  return {
     seed: wrappedSeed(params.seed), detail: Math.max(0.5, Math.min(3, params.detail ?? 1)),
     stoneMaterial: params.stoneMaterial ?? 8, mortarMaterial: params.mortarMaterial ?? 9,
     floorMaterial: params.floorMaterial ?? 8, tileMaterial: params.tileMaterial ?? 10,
-    timberMaterial: params.timberMaterial ?? 14,
+    timberMaterial: params.timberMaterial ?? 14, flagSize: params.flagSize ?? 0.9,
   };
-  const floorPieces = gridClippedPolygons(record.clearPolygon, params.flagSize ?? 0.9);
-  for (const polygon of floorPieces)
-    emitPolygonPrism(part, polygon, record.baseY - record.floor.thickness,
+}
+
+export function emitConnectorMesh(part, input, params = {}) {
+  const record = normalizedRecord(input);
+  const p = normalizedEmitParams(params);
+  const floorPieces = floorLayout(record, p);
+  const inlineFloorPieces = floorPieces.filter(piece => !piece.rectangle);
+  for (const piece of inlineFloorPieces)
+    emitPolygonPrism(part, piece.polygon, record.baseY - record.floor.thickness,
       record.baseY, p.floorMaterial);
-  const wallBricks = [], cutStones = [];
   for (const span of record.wallSpans) {
     const mortar = spanFootprint({ ...span, thickness: span.thickness * 0.86 });
     emitPolygonPrism(part, mortar, record.baseY + 0.012,
       record.baseY + record.clearHeight - 0.012, p.mortarMaterial);
+  }
+  const roof = emitRoof(part, record, p, { mesh: true, children: false });
+  return {
+    id: record.id, floorPieces: floorPieces.map(piece => piece.polygon),
+    inlineFloorPieces: inlineFloorPieces.map(piece => piece.polygon),
+    roofFacets: roof.facets, roofTiles: roof.tiles,
+  };
+}
+
+export function emitConnectorChildren(part, input, params = {}) {
+  const record = normalizedRecord(input);
+  const p = normalizedEmitParams(params);
+  const floorStones = placeFloorChildren(part, record, p);
+  const wallBricks = [], cutStones = [];
+  for (const span of record.wallSpans) {
     const result = placeWallCourses(part, record, span, p);
     wallBricks.push(...result.bricks); cutStones.push(...result.cutStones);
   }
-  const roof = emitRoof(part, record, p);
+  const roof = emitRoof(part, record, p, { mesh: false, children: true });
+  return { id: record.id, floorStones, wallBricks, cutStones, rafters: roof.rafters };
+}
+
+export function emitConnector(part, input, params = {}) {
+  const record = normalizedRecord(input);
+  const mesh = emitConnectorMesh(part, record, params);
+  const children = emitConnectorChildren(part, record, params);
   return {
     id: record.id,
-    floorPieces,
-    wallBricks, cutStones,
-    roofFacets: roof.facets, roofTiles: roof.tiles, rafters: roof.rafters,
+    floorPieces: mesh.floorPieces, inlineFloorPieces: mesh.inlineFloorPieces,
+    floorStones: children.floorStones,
+    wallBricks: children.wallBricks, cutStones: children.cutStones,
+    roofFacets: mesh.roofFacets, roofTiles: mesh.roofTiles, rafters: children.rafters,
     solidVolumes: connectorSolidVolumes(record),
     clearancePolygon: record.clearancePolygon,
   };
