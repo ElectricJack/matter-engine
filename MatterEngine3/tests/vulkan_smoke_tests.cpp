@@ -6798,6 +6798,219 @@ static viewer::VkScenePart rt_horizontal_part(uint64_t hash, float y,
     return part;
 }
 
+// Behavioral regression for the primary local-direct glass contract. The
+// local-direct raygen is dispatched separately from GI, so it must receive the
+// scene GI state explicitly to match composite's transmission coverage.
+static void rt_scenario_local_direct_transmission_weighting(
+    matter::VulkanDevice& vulkan, std::string& error) {
+    constexpr uint32_t kOpaqueWhite = 0u;
+    constexpr uint32_t kOpaqueBlack = 1u;
+    constexpr uint32_t kGlass = 2u;
+    constexpr float kTransmission = 0.8f;
+    constexpr float kIor = 1.5f;
+    constexpr uint32_t kWidth = 320u;
+    constexpr uint32_t kHeight = 200u;
+
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize local-direct glass regression renderer"
+                        : error.c_str());
+
+    std::vector<MaterialGpuRecord> materials(3);
+    for (auto& material : materials) {
+        material.base_roughness[3] = 0.65f;
+        material.metal_opacity_spec_coat[0] = 0.0f;
+        material.metal_opacity_spec_coat[1] = 1.0f;
+        material.scattering_shape[3] = 1.0f;
+    }
+    for (uint32_t channel = 0; channel < 3; ++channel) {
+        materials[kOpaqueWhite].base_roughness[channel] = 1.0f;
+        materials[kGlass].base_roughness[channel] = 1.0f;
+        materials[kOpaqueBlack].base_roughness[channel] = 0.0f;
+    }
+    materials[kGlass].transmission[0] = kTransmission;
+    materials[kGlass].transmission[1] = kIor;
+    materials[kGlass].transmission[2] = 0.2f;
+    materials[kGlass].transmission[3] = 100.0f;
+
+    const auto receiver_part = [](uint64_t hash, uint32_t material_index) {
+        viewer::VkScenePart part = fixed_part(
+            hash, {-3.0f, -2.0f, -2.01f}, {3.0f, 3.0f, -1.99f}, 0u);
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 white{1.0f, 1.0f, 1.0f, 0.0f};
+        const matter::Float4 orm{0.65f, 0.0f, 1.0f, 1.0f};
+        part.vertices = {
+            {{-3.0f, -2.0f, -2.0f}, normal, white, orm,
+             material_index, {}},
+            {{3.0f, -2.0f, -2.0f}, normal, white, orm,
+             material_index, {}},
+            {{0.0f, 3.0f, -2.0f}, normal, white, orm,
+             material_index, {}},
+        };
+        part.indices = {0u, 1u, 2u};
+        return part;
+    };
+    constexpr uint64_t kWhiteHash = UINT64_C(0x4c44475245535748);
+    constexpr uint64_t kBlackHash = UINT64_C(0x4c4447524553424c);
+    constexpr uint64_t kGlassHash = UINT64_C(0x4c4447524553474c);
+    CHECK(renderer.update_materials(materials, 1u, 1u, error) &&
+              renderer.ensure_part(receiver_part(kWhiteHash, kOpaqueWhite),
+                                   error) >= 0 &&
+              renderer.ensure_part(receiver_part(kBlackHash, kOpaqueBlack),
+                                   error) >= 0 &&
+              renderer.ensure_part(receiver_part(kGlassHash, kGlass), error) >=
+                  0,
+          error.empty() ? "prepare local-direct glass receiver materials"
+                        : error.c_str());
+
+    world_lights::LocalLightPublication publication;
+    publication.records.resize(1);
+    auto& light = publication.records[0];
+    light.position[0] = 0.0f;
+    light.position[1] = 0.0f;
+    light.position[2] = -1.0f;
+    light.range = 4.0f;
+    light.color[0] = 8.0f;
+    light.color[1] = 6.0f;
+    light.color[2] = 4.0f;
+    light.source_radius = 0.0f;
+    light.cos_inner = 1.0f;
+    light.cos_outer = -1.0f;
+    light.kind = static_cast<uint32_t>(world_lights::LocalLightKind::Point);
+    light.flags = 0u;
+    CHECK(world_lights::rebuild_local_light_publication(publication, error) &&
+              renderer.update_local_lights(publication, error),
+          error.empty() ? "publish deterministic local-direct glass light"
+                        : error.c_str());
+
+    matter::VulkanRayTracingSettings rt{};
+    rt.enabled = true;
+    rt.max_distance = 100.0f;
+    rt.bias = 0.001f;
+    rt.samples = 1u;
+    renderer.set_ray_tracing_settings(rt);
+    viewer::VkSceneLighting lighting{};
+    lighting.sun_intensity = 0.0f;
+    lighting.authored_sun_rgb = {};
+    lighting.atmosphere_sources.authored_display_sky_chroma_rgb = {};
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb = {};
+    renderer.set_lighting(lighting);
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, kWidth, kHeight, matrices,
+                                       error),
+          error.empty() ? "build local-direct glass regression matrices"
+                        : error.c_str());
+    viewer::TemporalFrame temporal{};
+    temporal.current_unjittered = matrices;
+    temporal.previous_unjittered = matrices;
+    temporal.current_jittered = matrices;
+    temporal.previous_jittered = matrices;
+    temporal.internal_extent = {kWidth, kHeight};
+    temporal.output_extent = {kWidth, kHeight};
+    uint64_t attempt_token = 6000u;
+
+    const auto render = [&](uint64_t hash, uint32_t material_index,
+                            bool gi_enabled, float diffuse_multiplier,
+                            viewer::VkRasterPixel& pixel) {
+        matter::VulkanGiSettings gi{};
+        gi.enabled = gi_enabled;
+        gi.diffuse_multiplier = diffuse_multiplier;
+        gi.trace_scale = 1.0f;
+        renderer.set_gi_settings(gi);
+        temporal.reset = true;
+        temporal.attempt_token = attempt_token++;
+        renderer.set_temporal_frame(temporal);
+        if (!renderer.update_instances({{hash, identity_matrix()}}, error))
+            return false;
+        matter::VulkanFrame frame{};
+        const bool rendered = vulkan.begin_frame(frame, error) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error) &&
+            vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, rendered);
+        if (!rendered) return false;
+        vulkan.wait_idle();
+        return renderer.readback_raster_pixel(kWidth / 2u, kHeight / 2u,
+                                              pixel, error) &&
+               pixel.material_index == material_index;
+    };
+
+    viewer::VkRasterPixel white{};
+    viewer::VkRasterPixel black{};
+    viewer::VkRasterPixel glass_gi_off{};
+    viewer::VkRasterPixel glass_gi_on{};
+    viewer::VkRasterPixel glass_diffuse_three{};
+    CHECK(render(kWhiteHash, kOpaqueWhite, false, 1.0f, white) &&
+              render(kBlackHash, kOpaqueBlack, false, 1.0f, black) &&
+              render(kGlassHash, kGlass, false, 1.0f, glass_gi_off) &&
+              render(kGlassHash, kGlass, true, 1.0f, glass_gi_on) &&
+              render(kGlassHash, kGlass, true, 3.0f,
+                     glass_diffuse_three),
+          error.empty() ? "render local-direct glass weighting controls"
+                        : error.c_str());
+
+    const float fresnel0 =
+        ((1.0f - kIor) / (1.0f + kIor)) *
+        ((1.0f - kIor) / (1.0f + kIor));
+    const float gi_off_weight =
+        1.0f - kTransmission * (1.0f - fresnel0);
+    const float gi_on_weight = 1.0f - kTransmission;
+    bool formula_matches = true;
+    const float white_rgb[3] = {white.raw_local_direct.x,
+                                white.raw_local_direct.y,
+                                white.raw_local_direct.z};
+    const float black_rgb[3] = {black.raw_local_direct.x,
+                                black.raw_local_direct.y,
+                                black.raw_local_direct.z};
+    const float off_rgb[3] = {glass_gi_off.raw_local_direct.x,
+                              glass_gi_off.raw_local_direct.y,
+                              glass_gi_off.raw_local_direct.z};
+    const float on_rgb[3] = {glass_gi_on.raw_local_direct.x,
+                             glass_gi_on.raw_local_direct.y,
+                             glass_gi_on.raw_local_direct.z};
+    for (uint32_t channel = 0; channel < 3; ++channel) {
+        const float diffuse = white_rgb[channel] - black_rgb[channel];
+        const float expected_off = black_rgb[channel] +
+                                   diffuse * gi_off_weight;
+        const float expected_on = black_rgb[channel] +
+                                  diffuse * gi_on_weight;
+        const float off_tolerance = std::max(0.01f, std::fabs(expected_off) *
+                                                       0.03f);
+        const float on_tolerance = std::max(0.01f, std::fabs(expected_on) *
+                                                      0.03f);
+        formula_matches = formula_matches && diffuse > 0.02f &&
+            std::fabs(off_rgb[channel] - expected_off) <= off_tolerance &&
+            std::fabs(on_rgb[channel] - expected_on) <= on_tolerance;
+    }
+    CHECK(formula_matches,
+          "local-direct glass follows GI-off Fresnel fallback and GI-on transmission coverage");
+    CHECK(glass_gi_off.raw_local_direct.x >
+              glass_gi_on.raw_local_direct.x + 0.01f,
+          "scene GI state changes glass diffuse weighting on the separate direct dispatch");
+    CHECK(close4(glass_gi_on.raw_local_direct,
+                 glass_diffuse_three.raw_local_direct, 0.0f),
+          "GI diffuse multiplier does not scale primary local direct");
+    CHECK(glass_gi_off.raw_local_direct.w > 0.9f &&
+              glass_gi_on.raw_local_direct.w > 0.9f,
+          "local-direct glass lane publishes valid coverage");
+    std::printf(
+        "local-direct glass: off=%.5f/%.5f/%.5f on=%.5f/%.5f/%.5f "
+        "weights=%.3f/%.3f\n",
+        off_rgb[0], off_rgb[1], off_rgb[2], on_rgb[0], on_rgb[1], on_rgb[2],
+        gi_off_weight, gi_on_weight);
+}
+
 // ---------------------------------------------------------------------------
 // Context struct holding shared mutable state across run_native_ray_tracing_path
 // sub-scenarios.  All members are references/values that live in the driver
@@ -9421,14 +9634,38 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
                                                rendered && presented);
             return rendered;
         };
+        CHECK(render_temporal_control(238) &&
+                  renderer.test_gi_history_reset_count() == 1u,
+              error.empty() ? "settle pre-existing GI history reset"
+                            : error.c_str());
+        CHECK(render_temporal_control(239) &&
+                  renderer.test_gi_history_reset_count() == 1u,
+              error.empty() ? "establish stable pre-toggle GI history"
+                            : error.c_str());
+        // Drain setup invalidation so the following checks isolate RT
+        // ownership changes. A stable GI candidate makes the public consume
+        // path mirror the editor's pre-frame temporal invalidation.
+        (void)renderer.consume_dlss_history_reset();
         matter::VulkanRayTracingSettings rt_disabled = enabled;
         rt_disabled.enabled = false;
         renderer.set_ray_tracing_settings(rt_disabled);
+        const bool rt_disable_invalidated =
+            renderer.consume_dlss_history_reset();
+        const bool rt_disable_repeated =
+            renderer.consume_dlss_history_reset();
+        CHECK(rt_disable_invalidated && !rt_disable_repeated,
+              "RT disable invalidates whole-frame temporal history once");
         CHECK(render_temporal_control(240) &&
                   renderer.test_gi_history_reset_count() == 1u,
               error.empty() ? "RT disable preserves pending stale-history invalidation"
                             : error.c_str());
         renderer.set_ray_tracing_settings(enabled);
+        const bool rt_enable_invalidated =
+            renderer.consume_dlss_history_reset();
+        const bool rt_enable_repeated =
+            renderer.consume_dlss_history_reset();
+        CHECK(rt_enable_invalidated && !rt_enable_repeated,
+              "RT re-enable invalidates whole-frame temporal history once");
         CHECK(render_temporal_control(241) &&
                   renderer.test_gi_history_reset_count() == 2u,
               error.empty() ? "RT re-enable resets stale GI history once"
@@ -10919,6 +11156,9 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     rt_scenario_visibility_classification(vulkan, error);
     CHECK(vulkan.validation_error_count() == 0,
           "visibility-classification scenario has no Vulkan validation errors");
+    rt_scenario_local_direct_transmission_weighting(vulkan, error);
+    CHECK(vulkan.validation_error_count() == 0,
+          "local-direct glass scenario has no Vulkan validation errors");
 
     // Shared state for all renderer-based scenarios.
     viewer::VkSceneRenderer renderer(vulkan);

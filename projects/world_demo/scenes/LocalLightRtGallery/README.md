@@ -22,7 +22,9 @@ The small glowing source meshes are a separate
 the source power, while the iron lamp bodies remain in the RT-visible physical
 fixture. `localLightRtGalleryRoots(false)` omits only that cosmetic Part, and
 `localLightRtGalleryLights(false)` produces the exact zero-local-light control.
-The Node fixture check asserts both contracts.
+The Node fixture check asserts both contracts. It also proves geometrically
+that the neutral source cannot see either outlined pale receiver while the
+terracotta card does see them around the positive-z end of the return.
 
 ## Native capture setup
 
@@ -32,10 +34,28 @@ Build with the canonical Windows toolchain first:
 ./tools/build-windows-from-wsl.sh RelWithDebInfo matter_editor
 ```
 
-Then launch from `MatterEditor/` with an append-only Windows command file. Use
-the same process for every A/B image so camera, exposure, and accumulated state
-remain fixed. The `history_reset` and settle wait after each property change are
-intentional.
+For the reopened GI/material/proxy evidence, run the checked-in driver from a
+native PowerShell at the repository root:
+
+```powershell
+& .\projects\world_demo\scenes\LocalLightRtGallery\capture-reopen.ps1 `
+    -OutputDir C:\tmp\local-light-rt-reopen
+```
+
+It launches `MatterEngine3/tools/drive.py`, removes stale expected shots through
+that driver, and writes the six PNG/`.done` pairs plus `run/log.txt` below the
+output directory. Each comparison uses one camera command, explicit exposure
+and GI/emission baselines, an explicit history reset, and an equal 96-frame
+presented wait on both sides (followed by `shot`'s identical three-frame
+settle). It fails if native RT or a property is unavailable, a bake/idle wait
+times out, or the log reports a bake or Vulkan validation error. The Node
+fixture test pins the exact command ordering so the two sides cannot silently
+drift.
+
+For the doorway/spot cases or the authoring-time zero-light reload, launch from
+`MatterEditor/` with an append-only Windows command file. Use the same process
+for every A/B image so camera, exposure, and accumulated state remain fixed.
+The `history_reset` and settle wait after each property change are intentional.
 
 ```bash
 mkdir -p /mnt/c/tmp/local-light-rt
@@ -77,22 +97,27 @@ indirect fill but disabling it must not disable local direct.
 ### 2. Colored bounce around the corner
 
 ```text
-cam 5.4 2.9 6.4 1.3 1.25 0.3
-set render.gi.enabled true
-set render.gi.diffuse_multiplier 0
-history_reset
-wait_frames 48
-shot C:/tmp/local-light-rt/corner-diffuse-gi-zero.png
+render_path native_rt
 set render.gi.diffuse_multiplier 1
+set render.lighting.emission_multiplier 1
+set render.lighting.exposure_ev 0
+cam 5.8 3.2 7.4 1.5 1.30 1.05
+set render.gi.enabled false
 history_reset
-wait_frames 64
-shot C:/tmp/local-light-rt/corner-diffuse-gi-one.png
+wait_frames 96
+shot C:/tmp/local-light-rt/corner-gi-off.png
+set render.gi.enabled true
+history_reset
+wait_frames 96
+shot C:/tmp/local-light-rt/corner-gi-on.png
 ```
 
-Expected: direct illumination that is visible elsewhere does not change when
-the diffuse multiplier reaches zero. The pale sphere/wall around the solid
-return gains a red-orange component only in the second image. A bright direct
-spot on that receiver is a visibility failure.
+Expected: primary direct illumination visible elsewhere remains in both images.
+The pale sphere and the pale panel inside the dark three-sided outline gain a
+red-orange component only with GI on. Their direct path to the neutral source
+crosses the solid return; the enlarged terracotta card's path to them clears its
+positive-z end. A bright neutral direct spot inside the outline is a visibility
+failure. There is deliberately no second `cam` command inside the pair.
 
 ### 3. Spot cone and traced occlusion
 
@@ -115,14 +140,17 @@ spot must not illuminate behind the apex or beyond its ten-metre range.
 
 ```text
 render_path native_rt
+set render.gi.diffuse_multiplier 1
+set render.lighting.emission_multiplier 1
+set render.lighting.exposure_ev 0
 cam 14.0 2.85 6.2 13.5 1.45 0.1
 set render.gi.enabled false
 history_reset
-wait_frames 48
+wait_frames 96
 shot C:/tmp/local-light-rt/materials-gi-off.png
 set render.gi.enabled true
 history_reset
-wait_frames 64
+wait_frames 96
 shot C:/tmp/local-light-rt/materials-gi-on.png
 ```
 
@@ -135,15 +163,20 @@ visibility semantics; it must not be treated as an opaque wall or ignored.
 ### 5. Cosmetic proxy toggle
 
 ```text
+render_path native_rt
+set render.gi.diffuse_multiplier 1
+set render.lighting.exposure_ev 0
+cam 12.8 3.1 5.5 11.5 1.8 1.0
 set render.gi.enabled true
 set render.lighting.emission_multiplier 1
 history_reset
-wait_frames 48
+wait_frames 96
 shot C:/tmp/local-light-rt/proxy-visible.png
 set render.lighting.emission_multiplier 0
 history_reset
-wait_frames 48
+wait_frames 96
 shot C:/tmp/local-light-rt/proxy-hidden.png
+set render.lighting.emission_multiplier 1
 ```
 
 Expected: only the tiny visible glow dots disappear. Local direct, local-light
@@ -154,14 +187,47 @@ contains none.
 
 ### 6. True zero-light source control
 
-The zero-list state is an authoring fixture rather than a live render property:
-change only the two default factory calls at the bottom of
-`LocalLightRtGallery.js` to `localLightRtGalleryRoots(false)` and
-`localLightRtGalleryLights(false)`, reload, and capture the overview camera
-`cam 23 11 27 0 1.7 0`. Expected: no local-light illumination, no glow proxies,
-and no bake/descriptor/validation error. Restore both arguments to `true`
-before committing or taking the other captures. The automated fixture check
-exercises the same zero-list factory without editing the source.
+The zero-list state is an authoring fixture rather than a live render property.
+Keep the raw-FIFO editor running with the normal defaults and first append:
+
+```text
+render_path native_rt
+set render.gi.diffuse_multiplier 1
+set render.lighting.emission_multiplier 1
+set render.lighting.exposure_ev 0
+set render.gi.enabled true
+cam 23 11 27 0 1.7 0
+history_reset
+wait_frames 96
+shot C:/tmp/local-light-rt/zero-before-reload.png
+```
+
+Wait for `zero-before-reload.png.done`. Change only the two default factory
+calls at the bottom of `LocalLightRtGallery.js` to
+`localLightRtGalleryRoots(false)` and `localLightRtGalleryLights(false)`, then
+append this block to the same command file:
+
+```text
+reload
+wait_event bake.finished 900
+wait_idle 2 120
+render_path native_rt
+set render.gi.diffuse_multiplier 1
+set render.lighting.emission_multiplier 1
+set render.lighting.exposure_ev 0
+set render.gi.enabled true
+cam 23 11 27 0 1.7 0
+history_reset
+wait_frames 96
+shot C:/tmp/local-light-rt/zero-after-reload.png
+quit
+```
+
+Expected: the first shot has the authored local illumination and glow proxies;
+the second has neither, with no bake, descriptor, or validation error. Restore
+both arguments to `true` after the `.done` sidecar appears and before committing
+or taking other captures. The automated fixture check exercises the same
+zero-list factories without editing the source.
 
 Finite-radius sources use four deterministic visibility samples, producing a
 stable bounded-cost penumbra. Do not infer a performance target from this
@@ -174,5 +240,8 @@ From the repository root:
 
 ```bash
 node --check projects/world_demo/scenes/LocalLightRtGallery/LocalLightRtGallery.js
+node --check projects/world_demo/scenes/LocalLightRtGallery/objects/LocalLightRtGalleryFixture.js
+node --check projects/world_demo/scenes/LocalLightRtGallery/objects/LocalLightRtGlowProxy.js
+node --check projects/world_demo/scenes/LocalLightRtGallery/fixture_tests.mjs
 node projects/world_demo/scenes/LocalLightRtGallery/fixture_tests.mjs
 ```

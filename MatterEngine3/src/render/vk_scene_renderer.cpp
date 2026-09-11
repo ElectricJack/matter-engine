@@ -1119,8 +1119,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 struct RasterReadbackRecord {
-    matter::VkImageResource* images[16];
-    VkImageAspectFlags aspects[16];
+    matter::VkImageResource* images[17];
+    VkImageAspectFlags aspects[17];
     VkBuffer destination;
     uint32_t x;
     uint32_t y;
@@ -1131,10 +1131,10 @@ struct RasterReadbackRecord {
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
     // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[16] = {0, 8, 16, 20, 24, 32,
+    constexpr VkDeviceSize offsets[17] = {0, 8, 16, 20, 24, 32,
                                           40, 48, 56, 64, 72, 80,
-                                          88, 96, 104, 112};
-    for (size_t i = 0; i < 16; ++i) {
+                                          88, 96, 104, 112, 120};
+    for (size_t i = 0; i < 17; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -1143,8 +1143,11 @@ void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
         copy.bufferOffset = offsets[i];
         copy.imageSubresource.aspectMask = record.aspects[i];
         copy.imageSubresource.layerCount = 1;
-        const uint32_t copy_x = i >= 9 ? record.raw_x : record.x;
-        const uint32_t copy_y = i >= 9 ? record.raw_y : record.y;
+        // GI/denoiser lanes 9..15 can be sub-resolution. Local direct at 16
+        // is deliberately full-resolution and therefore uses raster x/y.
+        const bool raw_gi_lane = i >= 9 && i < 16;
+        const uint32_t copy_x = raw_gi_lane ? record.raw_x : record.x;
+        const uint32_t copy_y = raw_gi_lane ? record.raw_y : record.y;
         copy.imageOffset = {static_cast<int32_t>(copy_x),
                             static_cast<int32_t>(copy_y), 0};
         copy.imageExtent = {1, 1, 1};
@@ -2455,8 +2458,14 @@ bool VkSceneRenderer::wireframe_available() const noexcept {
 
 void VkSceneRenderer::set_ray_tracing_settings(
     const matter::VulkanRayTracingSettings& settings) {
-    if (ray_tracing_settings_.enabled != settings.enabled)
+    if (ray_tracing_settings_.enabled != settings.enabled) {
         gi_history_reset_pending_ = true;
+        // RT enablement also changes who owns primary local direct (raster or
+        // traced). Whole-frame temporal upscaling must not reuse the previous
+        // owner's lighting, even though the GI histories have their own reset.
+        dlss_history_reset_pending_ = true;
+        temporal_history_changed_ = true;
+    }
     ray_tracing_settings_ = settings;
     ray_tracing_settings_.samples =
         std::max(1u, std::min(settings.samples, 16u));
@@ -14863,11 +14872,12 @@ bool VkSceneRenderer::emit_ray_instances(
 }
 
 // Writes the RT descriptor set from current renderer state and records up to
-// two traces plus the denoisers: the shadow raygen at the full trace extent,
-// then (when GI is enabled) the lighting raygen at raw_diffuse_extent_, then
-// record_gi_temporal + record_gi_atrous.
+// three traces plus the denoisers: the shadow raygen at the full trace extent,
+// the full-resolution local-direct lighting raygen when local lights exist,
+// then (when GI is enabled) the lighting raygen at raw_diffuse_extent_, followed
+// by record_gi_temporal + record_gi_atrous.
 //
-// The whole 21-write descriptor array is rebuilt every frame rather than
+// The whole 22-write descriptor array is rebuilt every frame rather than
 // patched, so a tileset slot load or a VT state change needs no separate "on
 // change" write for the RT set -- and bindings 15-19 are built from exactly
 // the same live/dummy state write_vt_descriptors_for_frame() uses, so a ray
@@ -15201,10 +15211,20 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         gi.water_animation_time_seconds = water_animation_time_seconds_;
         const uint32_t local_shadow_samples =
             atmosphere_replay_constants_.rt_shadow_samples & 0xffffu;
+        // The raygen needs both the dispatch kind and the actual scene GI
+        // state. In particular, primary local-direct is a separate full-rate
+        // dispatch even when GI is enabled, but glass weighting must match the
+        // transmission lane that composite will consume later in the frame.
+        constexpr uint32_t kGiDispatchBit = 0x80000000u;
+        constexpr uint32_t kLocalDirectDispatchBit = 0x40000000u;
+        constexpr uint32_t kSceneGiEnabledBit = 0x20000000u;
+        const uint32_t scene_gi_state =
+            gi_settings_.enabled ? kSceneGiEnabledBit : 0u;
         const VkStridedDeviceAddressRegionKHR gi_raygen{
             rt_sbt_lighting_raygen_address_, handle_stride, handle_stride};
         if (trace_local_direct) {
-            gi.shadow_samples = local_shadow_samples | 0x40000000u;
+            gi.shadow_samples = local_shadow_samples |
+                                kLocalDirectDispatchBit | scene_gi_state;
             vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi),
                                &gi);
@@ -15226,7 +15246,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         if (gi_settings_.enabled) {
             write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, false,
                                 rt_frame_slot);
-            gi.shadow_samples = local_shadow_samples | 0x80000000u;
+            gi.shadow_samples = local_shadow_samples |
+                                kGiDispatchBit | scene_gi_state;
             vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi),
                                &gi);
@@ -17375,7 +17396,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkBufferResource staging;
-    constexpr VkDeviceSize readback_size = 120;
+    constexpr VkDeviceSize readback_size = 128;
     if (!matter::create_buffer(
             *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -17400,12 +17421,14 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                  &accumulated_specular,
                                  &raw_transmission_,
                                  &accumulated_transmission,
-                                 &raw_transmission_aux_},
+                                 &raw_transmission_aux_,
+                                 &raw_local_direct_},
                                 {VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_DEPTH_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
@@ -17434,7 +17457,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         accumulated_diffuse.lifetime,
         raw_specular_.lifetime, accumulated_specular.lifetime,
         raw_transmission_.lifetime, accumulated_transmission.lifetime,
-        raw_transmission_aux_.lifetime,
+        raw_transmission_aux_.lifetime, raw_local_direct_.lifetime,
         staging.lifetime};
     if (!matter::submit_immediate(
             *vulkan_, record_raster_readback, &record, error,
@@ -17554,6 +17577,14 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                 sizeof(transmission_aux_half));
     pixel.transmission_aux = {half_to_float(transmission_aux_half[0]),
                               half_to_float(transmission_aux_half[1]), 0.0f};
+    uint16_t local_direct_half[4]{};
+    std::memcpy(local_direct_half, bytes.data() + 120,
+                sizeof(local_direct_half));
+    pixel.raw_local_direct = {
+        half_to_float(local_direct_half[0]),
+        half_to_float(local_direct_half[1]),
+        half_to_float(local_direct_half[2]),
+        half_to_float(local_direct_half[3])};
     return true;
 }
 

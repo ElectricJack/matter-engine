@@ -1,6 +1,18 @@
 // Physical geometry for the native-RT local-light acceptance scene.  The
 // cosmetic glow sources live in LocalLightRtGlowProxy and are intentionally a
 // separate non-ray-traced Part; this Part remains visible to all RT ray kinds.
+const LOCAL_LIGHT_RT_CORNER_FIXTURE = Object.freeze({
+  // The source and receiver centers are separated by the x=0.8 return.  The
+  // card is far enough beyond its z=3.25 end that card-to-receiver rays clear
+  // the masonry instead of grazing it (the old z=4.75 card clipped the end).
+  returnX: 0.8,
+  returnMaxZ: 3.25,
+  source: Object.freeze([-2.5, 2.1, 0.0]),
+  card: Object.freeze([-0.50, 1.65, 5.75]),
+  wallReceiver: Object.freeze([2.35, 1.40, 1.85]),
+  sphereReceiver: Object.freeze([2.20, 0.72, 1.05]),
+});
+
 class LocalLightRtGalleryFixture extends Part {
   static params = {
     plaster: 0, limestone: 0, foundation: 0, terracotta: 0,
@@ -47,10 +59,17 @@ class LocalLightRtGalleryFixture extends Part {
     wall([0.8, 2.15, 0.0], [0.16, 2.15, 3.25]);
     wall([-0.9, 2.15, -3.1], [1.70, 2.15, 0.16]);
     this.fill(p.terracotta);
-    this.box([-0.50, 1.55, 4.75], [0.95, 1.45, 0.10]);
+    this.box(LOCAL_LIGHT_RT_CORNER_FIXTURE.card, [1.15, 1.55, 0.10]);
     this.fill(p.plaster);
-    this.box([2.25, 1.3, 1.65], [1.15, 1.30, 0.10]);
-    this.sphere([2.20, 0.68, 0.85], 0.62);
+    this.box(LOCAL_LIGHT_RT_CORNER_FIXTURE.wallReceiver,
+             [1.30, 1.40, 0.10]);
+    this.sphere(LOCAL_LIGHT_RT_CORNER_FIXTURE.sphereReceiver, 0.68);
+    // A dark outline makes the pale wall receiver unambiguous in a tight A/B
+    // capture without adding an emissive or alternative colored surface.
+    this.fill(p.iron);
+    this.box([2.35, 2.83, 1.97], [1.42, 0.045, 0.055]);
+    this.box([1.00, 1.40, 1.97], [0.045, 1.43, 0.055]);
+    this.box([3.70, 1.40, 1.97], [0.045, 1.43, 0.055]);
 
     // ------------------------------------------------------------------
     // C. Spotlight footprint plus reflective/transmissive secondary hits.
