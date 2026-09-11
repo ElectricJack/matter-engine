@@ -25,6 +25,10 @@ The small glowing source meshes are a separate
 the source power, while the iron lamp bodies remain in the RT-visible physical
 fixture. `localLightRtGalleryRoots(false)` omits only that cosmetic Part, and
 `localLightRtGalleryLights(false)` produces the exact zero-local-light control.
+Each analytic source is separated from its iron housing by more than the sum
+of the housing and authored source radii. This is load-bearing: the raw direct
+lane uses four fixed area samples and is intentionally unfiltered, so an
+intersecting housing produces a stable black-pepper visibility pattern.
 The Node fixture check asserts both contracts. It also proves geometrically
 that the neutral source cannot see either outlined pale receiver while the
 terracotta card does see them around the positive-z end of the return.

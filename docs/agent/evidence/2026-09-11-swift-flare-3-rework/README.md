@@ -23,11 +23,13 @@ multi-attachment raster/GI readback.
 publication line. Every comparison uses one camera, an explicit history reset,
 and equal 96-frame settling:
 
-- `corner-gi-off.png` / `corner-gi-on.png`: primary direct remains in both;
-  the outlined receiver gains the intended colored indirect contribution.
+- `corner-gi-off.png` / `corner-gi-on.png`: primary direct remains in both,
+  but the outlined receiver is not visually unambiguous enough to close the
+  colored-bounce gate.
 - `materials-gi-off.png` / `materials-gi-on.png`: the warm gold and closed
-  glass remain locally lit, with the off-screen green response visible under
-  GI.
+  glass remain locally lit, but all native-lit surfaces expose a stable
+  black-pepper pattern. These six shots are diagnostic evidence, not final
+  visual acceptance.
 - `proxy-visible.png` / `proxy-hidden.png`: only the cosmetic emitter mesh
   disappears; analytic illumination and physical fixture bodies remain.
 
@@ -44,3 +46,20 @@ arguments were temporarily changed from `true` to `false`, followed by
 `[bake-timing]` publication line. The log records `published 0 lights, 0
 cells/0 buckets`; the after image is black. Both source arguments were restored
 to `true` before this evidence was committed.
+
+## Pending grain controls
+
+Read-only diagnosis found that the raw local-direct lane uses four fixed
+finite-radius visibility samples and no temporal filter. The fixture's old
+analytic point/spot locations were tangent to or inside their RT-visible iron
+housings, so those fixed rays made the intersection error stable. The follow-up
+moves each housing farther than `housingRadius + sourceRadius`, with a Node
+geometry guard.
+
+`grain-old.timeline`, `grain-cleared.timeline`, and
+`grain-zero-radius.timeline` pin the same GI-off material camera and independent
+history resets at one and 96 presented frames. Run `grain-old.timeline` at
+`241d2d52`; run `grain-cleared.timeline` at the housing-fix commit; then
+temporarily set all six authored `sourceRadius` fields to zero, reload, and run
+`grain-zero-radius.timeline`. The GPU run is deliberately deferred while the
+root connector fixture owns the device.
