@@ -193,6 +193,13 @@ function clipPolygonHalfPlane(polygon, signedDistance) {
   return result;
 }
 
+function polygonProjectionSlab(polygon, origin, axis, minimum, maximum) {
+  const projected = point => dot2(subtract2(point, origin), axis);
+  const aboveMinimum = clipPolygonHalfPlane(polygon,
+    point => projected(point) - minimum);
+  return clipPolygonHalfPlane(aboveMinimum, point => maximum - projected(point));
+}
+
 function transformPolygon(frame, polygon) {
   return polygon.map(point => transformPointXZ(frame, point));
 }
@@ -421,19 +428,22 @@ function buildWallSpans(id, polygon, mouthGroups, thickness, baseY, height, mate
     // each directed boundary edge.
     const normal = [tangent[1], -tangent[0]];
     const spanId = `connector:${id}:wall:${spans.length}`;
-    const jambOwners = segment.map(endpoint => [...mouthGroups].sort((left, right) =>
+    const jambGroups = segment.map(endpoint => [...mouthGroups].sort((left, right) =>
       squaredDistanceToPoints(endpoint, left.points) - squaredDistanceToPoints(endpoint, right.points) ||
-      cmp(left.owner, right.owner))[0].owner);
+      cmp(left.owner, right.owner))[0]);
+    const jambOwners = jambGroups.map(group => group.owner);
     spans.push({
       id: spanId, segment: segment.map(point => [...point]), tangent, normal,
       thickness, height, material,
       courseOrigin: [segment[0][0], baseY, segment[0][1]],
       cornerOwners: [`${spanId}:start`, `${spanId}:end`],
       jambOwners,
-      trimPlanes: [
-        { normal: [tangent[0], tangent[1]], offset: dot2(segment[0], tangent), keepSign: 1 },
-        { normal: [tangent[0], tangent[1]], offset: dot2(segment[1], tangent), keepSign: -1 },
-      ],
+      // Clip the outward-thickness prism at both authored inside wall faces.
+      // This keeps an oblique side wall out of either participant's room while
+      // leaving its exact wall-slab miter for the connector kit.
+      trimPlanes: jambGroups.map(group => ({
+        normal: [...group.outward], offset: dot2(group.inside, group.outward), keepSign: 1,
+      })),
     });
   }
   if (spans.length < 2) fail(`connections.${id}.wallSpans`, 'needs two finite side spans');
@@ -496,9 +506,11 @@ function buildConnector(connection, index, byId) {
   const wallMaterial = connection.wallMaterial ?? 'castle.stone';
   const wallSpans = buildWallSpans(id, clearPolygon,
     [{ owner: `connector:${id}:mouth:a:jambs`,
-      points: [...a.insideSegment, ...a.segment, ...a.outsideSegment] },
+      points: [...a.insideSegment, ...a.segment, ...a.outsideSegment],
+      inside: [a.inside[0], a.inside[2]], outward: a.outward },
     { owner: `connector:${id}:mouth:b:jambs`,
-      points: [...b.insideSegment, ...b.segment, ...b.outsideSegment] }], wallThickness,
+      points: [...b.insideSegment, ...b.segment, ...b.outsideSegment],
+      inside: [b.inside[0], b.inside[2]], outward: b.outward }], wallThickness,
     aBaseY, height, wallMaterial);
   const floorMaterial = connection.floor ?? 'stone';
   const floorThickness = positive(connection.floorThickness ?? 0.25, `${path}.floorThickness`);
@@ -545,22 +557,11 @@ function validateConnectorIntrusion(connectors, wingVolumes) {
       const mouth = participantMouths.get(wingVolume.wing);
       if (overlapArea <= EPSILON || !mouth) return overlapArea;
       const inside = [mouth.inside[0], mouth.inside[2]];
-      // The owned jamb joint is bounded longitudinally by the host wall,
-      // never by an arbitrarily oversized connector wall supplied by the
-      // caller. Its finite tangential reach covers an oblique miter no longer
-      // than the connector itself.
-      const otherMouth = connector.mouths.find(candidate => candidate !== mouth);
-      const connectorLength = length2(subtract2(
-        [otherMouth.center[0], otherMouth.center[2]], [mouth.center[0], mouth.center[2]]));
-      const interfaceDepth = mouth.wallThickness;
-      const halfWidth = mouth.clearWidth / 2 + connectorLength;
-      const depth = mouth.wallThickness;
-      const corner = (along, across) => add2(inside,
-        add2(scale2(mouth.outward, along), scale2(mouth.tangent, across)));
-      const jambEnvelope = convexHull([corner(-interfaceDepth, -halfWidth),
-        corner(depth, -halfWidth), corner(depth, halfWidth),
-        corner(-interfaceDepth, halfWidth)],
-      `connections.${connector.id}.mouths.${mouth.wing}.jambEnvelope`);
+      // The exact allowed interface is this finite wall solid clipped to the
+      // authored host-wall slab. Connector length and requested wall thickness
+      // cannot expand that longitudinal allowance.
+      const jambEnvelope = polygonProjectionSlab(footprint, inside,
+        mouth.outward, 0, mouth.wallThickness);
       const permittedArea = positivePolygonArea(convexIntersection(overlap, jambEnvelope));
       return Math.max(0, overlapArea - permittedArea);
     };
@@ -575,10 +576,15 @@ function validateConnectorIntrusion(connectors, wingVolumes) {
     // wings at owned jambs, but may never cut into an unrelated wing.
     for (const span of connector.wallSpans) {
       const offset = scale2(span.normal, span.thickness);
-      const footprint = convexHull([
+      let footprint = convexHull([
         ...span.segment,
         add2(span.segment[0], offset), add2(span.segment[1], offset),
       ], `connections.${connector.id}.wallSpans.${span.id}.footprint`);
+      for (const plane of span.trimPlanes)
+        footprint = clipPolygonHalfPlane(footprint, point => plane.keepSign *
+          (dot2(point, plane.normal) - plane.offset));
+      if (footprint.length < 3)
+        fail(`connections.${connector.id}.wallSpans.${span.id}`, 'trim planes remove the solid');
       for (const wingVolume of wingVolumes) {
         if (!yRangesOverlap(volume, wingVolume)) continue;
         const area = wallIntrusionArea(footprint, wingVolume);
@@ -983,13 +989,28 @@ export function siteToSVG(manifest, options = {}) {
     fail('manifest.schema', `must be ${CASTLE_SITE_MANIFEST_SCHEMA}`);
   const scale = positive(options.scale ?? 24, 'svg.scale');
   const padding = positive(options.padding ?? 24, 'svg.padding');
-  const walls = manifest.wings.flatMap(wing => wing.manifest.walls.map(wall => ({
+  const levelId = string(options.levelId ?? 'ground', 'svg.levelId');
+  const walls = manifest.wings.flatMap(wing => wing.manifest.walls
+    .filter(wall => wall.levelId === levelId).map(wall => ({
     wing, wall, from: transformPointXZ(wing.frame, wall.from), to: transformPointXZ(wing.frame, wall.to),
   })));
-  const routePoints = manifest.walkRoutes.flatMap(route => route.waypoints.map(point => [point[0], point[2]]));
+  const connectors = manifest.connectors.filter(connector => connector.level.split('|').includes(levelId));
+  const courtyards = manifest.courtyards.filter(courtyard => courtyard.level === levelId);
+  const levelElevations = manifest.wings.flatMap(wing => wing.manifest.levels
+    .filter(level => level.id === levelId).map(level => level.baseY + wing.frame.origin[1]))
+    .concat(courtyards.map(courtyard => courtyard.baseY));
+  const pointOnLevel = point => levelElevations.some(elevation => near(point[1], elevation));
+  const nodeById = new Map(manifest.roomGraph.nodes.map(node => [node.id, node]));
+  const nodeOnLevel = node => node && (node.wingId
+    ? node.levelId === `${idToken(node.wingId)}:${idToken(levelId)}`
+    : node.levelId === `site:${levelId}`);
+  const levelRoutes = manifest.walkRoutes.filter(route => nodeOnLevel(nodeById.get(route.roomId)));
+  const routePoints = levelRoutes.flatMap(route => route.waypoints
+    .filter(pointOnLevel).map(point => [point[0], point[2]]));
   const points = [
     ...walls.flatMap(item => [item.from, item.to]),
-    ...manifest.connectors.flatMap(connector => connector.clearPolygon),
+    ...connectors.flatMap(connector => connector.clearPolygon),
+    ...courtyards.flatMap(courtyard => courtyard.clearPolygon),
     ...routePoints,
   ];
   if (!points.length) fail('svg', 'has no drawable geometry');
@@ -1003,9 +1024,14 @@ export function siteToSVG(manifest, options = {}) {
   const sz = z => height - padding - (z - minZ) * scale;
   const wallLines = walls.map(({ wing, wall, from, to }) =>
     `  <line class="wall ${svgEscape(wall.kind)}" data-wing="${svgEscape(wing.id)}" x1="${sx(from[0])}" y1="${sz(from[1])}" x2="${sx(to[0])}" y2="${sz(to[1])}"/>`);
-  const connectorPolygons = manifest.connectors.map(connector =>
+  const courtyardPolygons = courtyards.map(courtyard =>
+    `  <polygon class="courtyard" data-courtyard="${svgEscape(courtyard.id)}" points="${courtyard.clearPolygon.map(point => `${sx(point[0])},${sz(point[1])}`).join(' ')}"/>`);
+  const connectorPolygons = connectors.map(connector =>
     `  <polygon class="connector" data-link="${svgEscape(connector.id)}" points="${connector.clearPolygon.map(point => `${sx(point[0])},${sz(point[1])}`).join(' ')}"/>`);
-  const labels = manifest.wings.flatMap(wing => wing.manifest.rooms.map(room => {
+  const portalLines = courtyards.flatMap(courtyard => courtyard.sockets.map(mouth =>
+    `  <line class="court-portal" data-portal="${svgEscape(mouth.portalId)}" x1="${sx(mouth.segment[0][0])}" y1="${sz(mouth.segment[0][1])}" x2="${sx(mouth.segment[1][0])}" y2="${sz(mouth.segment[1][1])}"/>`));
+  const labels = manifest.wings.flatMap(wing => wing.manifest.rooms
+    .filter(room => room.levelId === levelId).map(room => {
     let local;
     if (room.boundary.kind === 'circle') local = room.boundary.center;
     else local = [
@@ -1015,14 +1041,17 @@ export function siteToSVG(manifest, options = {}) {
     const world = transformPointXZ(wing.frame, local);
     return `  <text data-room="${svgEscape(`${wing.id}:${room.id}`)}" x="${sx(world[0])}" y="${sz(world[1])}">${svgEscape(`${wing.id} ${room.use} ${wing.frame.yawDeg}°`)}</text>`;
   }));
-  const routes = manifest.walkRoutes.filter(route => route.waypoints.length > 1).map(route =>
-    `  <polyline class="route" data-room="${svgEscape(route.roomId)}" points="${route.waypoints.map(point => `${sx(point[0])},${sz(point[2])}`).join(' ')}"/>`);
+  const routes = levelRoutes.map(route => route.waypoints
+    .filter(pointOnLevel))
+    .filter(waypoints => waypoints.length > 1).map((waypoints, index) =>
+      `  <polyline class="route" data-route="${index}" points="${waypoints.map(point => `${sx(point[0])},${sz(point[2])}`).join(' ')}"/>`);
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${svgEscape(manifest.siteId)} castle site">`,
-    '  <style>.wall{stroke:#29251f;stroke-width:5;fill:none}.door,.arch,.open{stroke:#369b63}.connector{fill:#d8b978;fill-opacity:.75;stroke:#8a5a24;stroke-width:2}.route{fill:none;stroke:#d33856;stroke-width:1.5;stroke-dasharray:5 3}text{font:10px sans-serif;text-anchor:middle;fill:#171411}</style>',
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${svgEscape(manifest.siteId)} ${svgEscape(levelId)} castle site" data-level="${svgEscape(levelId)}">`,
+    '  <style>.wall{stroke:#29251f;stroke-width:5;fill:none}.door,.arch,.open,.court-portal{stroke:#369b63}.courtyard{fill:#c9bd9d;fill-opacity:.58;stroke:#76684a;stroke-width:2}.connector{fill:#d8b978;fill-opacity:.75;stroke:#8a5a24;stroke-width:2}.court-portal{stroke-width:5}.route{fill:none;stroke:#d33856;stroke-width:1.5;stroke-dasharray:5 3}text{font:10px sans-serif;text-anchor:middle;paint-order:stroke;stroke:#f4efe4;stroke-width:3px;fill:#171411}</style>',
     `  <rect width="${width}" height="${height}" fill="#f4efe4"/>`,
-    ...connectorPolygons, ...wallLines, ...routes, ...labels, '</svg>', '',
+    ...courtyardPolygons, ...connectorPolygons, ...wallLines, ...portalLines,
+    ...routes, ...labels, '</svg>', '',
   ].join('\n');
 }
 
