@@ -822,7 +822,7 @@ function placeWallCourses(part, record, span, params) {
       part.translate(world[0], record.baseY + course * courseHeight, world[1]);
       part.rotateY(Math.atan2(-span.tangent[1], span.tangent[0]));
       const seed = wrappedSeed(params.seed + course * 17 + index * 5);
-      const isCut = first || last || Math.abs(lf - lb) > 1e-6 || Math.abs(rf - rb) > 1e-6;
+      const isCut = Math.abs(lf - lb) > 1e-6 || Math.abs(rf - rb) > 1e-6;
       let childParams, childScale = [1, 1, 1];
       if (isCut) {
         const placedProfile = placedCutProfile(span, {
