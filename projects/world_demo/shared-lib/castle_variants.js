@@ -318,7 +318,7 @@ export function castleBasePlan(name = 'courtyard', seed = 9411) {
    const side=[-1,1].map(sign=>level.rooms.find(r=>contains(r,x+sign*(-dz)/len*.01,z+sign*dx/len*.01)));
    const connects=side.map(r=>r?roomId(index,r[0]):'outside');
    const open=side.every(r=>r&&r[3]==='gallery');
-   return {id:`${levelId}-portal-${x1}-${z1}-${x2}-${z2}`,from:[x1,z1],to:[x2,z2],kind:open?'open':'arch',connects,opening:{offset:open?0:.35,width:len-(open?0:.7),height:open?4:2.8,bottom:0}};
+   return {id:`${levelId}-portal-${x1}-${z1}-${x2}-${z2}`,from:[x1,z1],to:[x2,z2],kind:open?'open':'arch',connects,opening:{offset:open?0:.35,width:len-(open?0:.7),height:open?3.5:2.8,bottom:0}};
   });
   plan.levels.push({id:levelId,baseY:level.y,height:4,rooms,edgeOverrides});
   if(name==='roundkeep')plan.curves.push({id:`${levelId}-tower`,levelId,roomId:roomId(index,'tower'),kind:'ring',center:[0,4],radius:4,thickness:.6,height:4,apertures:[{id:`${levelId}-throat`,kind:'arch',startAngle:-16,endAngle:16,connects:[roomId(index,'tower'),roomId(index,'lobby')],bottom:0,height:2.8,throat:{targetRoomId:roomId(index,'lobby'),direction:'E',width:1.3,depth:.6}}]});
@@ -466,8 +466,8 @@ function addRoofsAndTimber(plan, name) {
   const count=Math.max(1,Math.ceil(length/4));
   for(let i=0;i<=count;i++){
    const along=length*i/count;
-   const a=alongX?[b.x+along,r.baseY+(r.baseY>=8?.36:-.5),b.z]:[b.x,r.baseY+(r.baseY>=8?.36:-.5),b.z+along];
-   const c=alongX?[b.x+along,r.baseY+(r.baseY>=8?.36:-.5),b.z+span]:[b.x+span,r.baseY+(r.baseY>=8?.36:-.5),b.z+along];
+   const a=alongX?[b.x+along,r.baseY-(r.baseY>=8?.12:.5),b.z]:[b.x,r.baseY-(r.baseY>=8?.12:.5),b.z+along];
+   const c=alongX?[b.x+along,r.baseY-(r.baseY>=8?.12:.5),b.z+span]:[b.x+span,r.baseY-(r.baseY>=8?.12:.5),b.z+along];
    beam(r.id+'-tie-'+i,a,c,[.28,span>10?.48:.36],'roof-tie',r.levelId);
   }
  }
