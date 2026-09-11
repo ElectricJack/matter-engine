@@ -415,7 +415,7 @@ class NativeSession:
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith('MATTER_')}
         env.update(static_buffer_reserve_env(self.args))
         env.update(MATTER_WORLD=self.args.world, MATTER_CMD_FIFO=str(self.fifo),
-                   MATTER_HIDE_UI='1', MATTER_VK_VALIDATION='1',
+                   MATTER_HIDE_UI='1', MATTER_HIDE_WINDOW='1', MATTER_VK_VALIDATION='1',
                    MATTER_WINDOW_WIDTH='1280', MATTER_WINDOW_HEIGHT='720',
                    TMP=tempfile.gettempdir(), TEMP=tempfile.gettempdir())
         self.proc = subprocess.Popen([str(Path(self.args.editor).resolve())], cwd=ROOT / 'MatterEditor',

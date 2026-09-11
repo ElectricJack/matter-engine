@@ -1323,7 +1323,11 @@ int main() {
     // session. Keeping its window hidden prevents the Windows desktop manager
     // from clipping oversized acceptance resolutions to the work area or
     // throttling an occluded surface to roughly one present per second.
-    if (registration_census_mode || perf.enabled)
+    // FIFO capture/walkthrough sessions also need a real hidden surface:
+    // minimizing a visible editor can suspend publication and frame barriers.
+    const char* hide_window_env = std::getenv("MATTER_HIDE_WINDOW");
+    if (registration_census_mode || perf.enabled ||
+        (hide_window_env && std::strcmp(hide_window_env, "1") == 0))
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     if (perf.enabled)
         glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);

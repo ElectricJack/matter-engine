@@ -304,6 +304,11 @@ Grouped by area. All are read via `std::getenv("MATTER_...")` unless noted as an
 - `MATTER_ISSUE_DIR` — overrides where issue reports are written/read (see
   `docs/agent/issue-system.md`).
 - `MATTER_HIDE_UI` — hides all ImGui panels at startup.
+- `MATTER_HIDE_WINDOW=1` — creates a hidden GLFW window for native automation.
+  Rendering, FIFO commands and screenshots continue without a desktop window
+  that can be minimized and suspend publication or frame barriers. The castle
+  capture and walkthrough helpers enable this by default; the capture helper
+  accepts `--env MATTER_HIDE_WINDOW=0` for an explicitly visible test session.
 - `MATTER_CAPTURE_LIGHTING_UI` — capture-only aid: focuses the Lighting panel
   for automated verification screenshots; inert outside a capture.
 - `MATTER_TIME_SCALE` — initial simulation time scale.

@@ -47,6 +47,7 @@ class ReserveTests(unittest.TestCase):
             self.assertEqual(env["MATTER_VK_STATIC_RESERVE_VERTEX_MB"], "4096")
             self.assertEqual(env["MATTER_VK_STATIC_RESERVE_INDEX_MB"], "512")
             self.assertEqual(env["MATTER_VK_VALIDATION"], "1")
+            self.assertEqual(env["MATTER_HIDE_WINDOW"], "1")
             self.assertNotIn("MATTER_SCREENSHOT", env)
             self.assertEqual(walk.static_buffer_reserve_env(SimpleNamespace()), {})
 

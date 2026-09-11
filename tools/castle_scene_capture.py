@@ -217,6 +217,7 @@ def capture(args):
     # Clear inherited automation so a stale screenshot/camera timeline cannot
     # race this driver's publication barrier. Explicit overrides remain allowed.
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith('MATTER_')}
+    env['MATTER_HIDE_WINDOW'] = '1'
     for item in args.env:
         if '=' not in item:
             raise CaptureError('--env requires K=V')
