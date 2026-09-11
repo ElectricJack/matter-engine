@@ -1,8 +1,9 @@
 // Deterministic composition of complete castle-plan manifests in independent
 // rigid frames. Detailed connector meshes/colliders deliberately belong to
 // castle_connector_kit.js; this module publishes their validated geometry.
-import { compilePlan } from './castle_plan.js';
+import { compilePlan, routeManifestRoomSegment } from './castle_plan.js';
 import {
+  inverseTransformPoint,
   makePlanarFrame,
   planarFrameMatrix,
   rotateXZ,
@@ -12,6 +13,7 @@ import {
   transformPointXZ,
   transformSpotLight,
   transformVector,
+  transformYawDeg,
 } from './castle_frames.js';
 
 export const CASTLE_SITE_SCHEMA = 'matter.castle-site/v1';
@@ -345,25 +347,27 @@ function validateWingOverlap(wings) {
   return volumes;
 }
 
-function insideFaceSegment(mouth) {
+function shiftedMouthSegment(mouth, threshold) {
   const center = [mouth.center[0], mouth.center[2]];
-  const inside = [mouth.inside[0], mouth.inside[2]];
-  const offset = subtract2(inside, center);
+  const face = [threshold[0], threshold[2]];
+  const offset = subtract2(face, center);
   return mouth.segment.map(point => add2(point, offset));
 }
 
-function segmentMatches(edge, segment) {
-  return (samePoint(edge[0], segment[0]) && samePoint(edge[1], segment[1])) ||
-    (samePoint(edge[0], segment[1]) && samePoint(edge[1], segment[0]));
+function belongsToMouthEdge(edge, mouthPointGroups) {
+  return mouthPointGroups.some(points => edge.every(endpoint =>
+    points.some(point => samePoint(point, endpoint))));
 }
 
-function buildWallSpans(id, polygon, mouthSegments, thickness, baseY, height, material) {
+function buildWallSpans(id, polygon, mouthPointGroups, thickness, baseY, height, material) {
   const spans = [];
   for (let index = 0; index < polygon.length; ++index) {
     const segment = [polygon[index], polygon[(index + 1) % polygon.length]];
-    if (mouthSegments.some(mouth => segmentMatches(segment, mouth))) continue;
+    if (belongsToMouthEdge(segment, mouthPointGroups)) continue;
     const tangent = normalize2(subtract2(segment[1], segment[0]), `connections.${id}.wallSpans`);
-    const normal = [-tangent[1], tangent[0]];
+    // clearPolygon is counter-clockwise, so its exterior is to the right of
+    // each directed boundary edge.
+    const normal = [tangent[1], -tangent[0]];
     const spanId = `connector:${id}:wall:${spans.length}`;
     spans.push({
       id: spanId, segment: segment.map(point => [...point]), tangent, normal,
@@ -372,8 +376,8 @@ function buildWallSpans(id, polygon, mouthSegments, thickness, baseY, height, ma
       cornerOwners: [`${spanId}:start`, `${spanId}:end`],
       jambOwners: [`connector:${id}:mouth:a:jambs`, `connector:${id}:mouth:b:jambs`],
       trimPlanes: [
-        { normal: [-tangent[0], -tangent[1]], offset: -dot2(segment[0], tangent), keepSign: 1 },
-        { normal: [tangent[0], tangent[1]], offset: dot2(segment[1], tangent), keepSign: 1 },
+        { normal: [tangent[0], tangent[1]], offset: dot2(segment[0], tangent), keepSign: 1 },
+        { normal: [tangent[0], tangent[1]], offset: dot2(segment[1], tangent), keepSign: -1 },
       ],
     });
   }
@@ -406,33 +410,43 @@ function buildConnector(connection, index, byId) {
   if (length2(centerDelta) <= EPSILON) fail(path, 'portal mouths coincide');
   if (dot2(centerDelta, a.outward) <= EPSILON || dot2(scale2(centerDelta, -1), b.outward) <= EPSILON)
     fail(path, 'portal mouths do not face the connector without intruding through a wing');
-  const aFace = insideFaceSegment(a), bFace = insideFaceSegment(b);
-  const clearPolygon = convexHull([...aFace, ...bFace], `${path}.clearPolygon`);
+  const aFaces = [shiftedMouthSegment(a, a.inside), a.segment,
+    shiftedMouthSegment(a, a.outside)];
+  const bFaces = [shiftedMouthSegment(b, b.inside), b.segment,
+    shiftedMouthSegment(b, b.outside)];
+  const aPoints = aFaces.flat(), bPoints = bFaces.flat();
+  const clearPolygon = convexHull([...aPoints, ...bPoints], `${path}.clearPolygon`);
   if (!isConvexPolygon(clearPolygon)) fail(`${path}.clearPolygon`, 'must be convex');
   const minimumWidth = polygonMinimumWidth(clearPolygon);
   if (minimumWidth + EPSILON < CASTLE_SITE_MIN_CLEAR_WIDTH)
     fail(`${path}.clearPolygon`, `narrow join ${minimumWidth}m cannot fit radius 0.4 capsule with 0.2m clearance`);
-  const clearHeight = positive(connection.height ?? Math.min(a.clearHeight, b.clearHeight), `${path}.height`);
-  if (clearHeight > Math.min(a.clearHeight, b.clearHeight) + EPSILON)
-    fail(`${path}.height`, 'exceeds a portal clear height');
+  // The vestibule enclosure may rise above its door apertures. Detailed
+  // geometry uses height; walk/headroom validation uses the smaller physical
+  // aperture clearance.
+  const height = positive(connection.height ?? Math.min(a.clearHeight, b.clearHeight), `${path}.height`);
+  const clearHeight = Math.min(height, a.clearHeight, b.clearHeight);
   const wallThickness = positive(connection.wallThickness ?? Math.max(a.wallThickness, b.wallThickness),
     `${path}.wallThickness`);
   const wallMaterial = connection.wallMaterial ?? 'castle.stone';
-  const wallSpans = buildWallSpans(id, clearPolygon, [aFace, bFace], wallThickness,
-    aBaseY, clearHeight, wallMaterial);
+  const wallSpans = buildWallSpans(id, clearPolygon, [aPoints, bPoints], wallThickness,
+    aBaseY, height, wallMaterial);
   const floorMaterial = connection.floor ?? 'stone';
   const floorThickness = positive(connection.floorThickness ?? 0.25, `${path}.floorThickness`);
   const roof = connection.roof && typeof connection.roof === 'object'
     ? { ...connection.roof, material: connection.roof.material ?? 'slate', overhang: connection.roof.overhang ?? 0.2 }
     : { kind: 'low-hip', rise: 0.8, material: 'slate', overhang: 0.2 };
   positive(roof.rise, `${path}.roof.rise`);
-  const routeWaypoints = [a.inside, a.outside, b.outside, b.inside].map(point => [...point]);
+  // Threshold-to-mouth-to-mouth-to-threshold keeps the path centred in each
+  // finite aperture. Using the exterior face centres as turns can put a 0.6m
+  // swept capsule against an oblique side wall even though the convex passage
+  // itself is wide enough.
+  const routeWaypoints = [a.inside, a.center, b.center, b.inside].map(point => [...point]);
   return {
     id, level: aRef.level === bRef.level ? aRef.level : `${aRef.level}|${bRef.level}`,
     baseY: aBaseY, clearPolygon, minimumWidth,
     mouths: [publicMouth(a, id, 'a'), publicMouth(b, id, 'b')], wallSpans,
     floor: { thickness: floorThickness, material: floorMaterial, owner: `connector:${id}:floor` },
-    clearHeight, roof, routeWaypoints,
+    height, clearHeight, roof, routeWaypoints,
     _rooms: [`${a.wing}:${a.roomId}`, `${b.wing}:${b.roomId}`],
   };
 }
@@ -447,6 +461,63 @@ function validateConnectorIntrusion(connectors, wingVolumes) {
         fail(`connections.${connector.id}`, `intrudes into wing volume ${wingVolume.id}`);
     }
   }
+}
+
+function buildCourtyard(source, index, byId) {
+  const path = `courtyards[${index}]`;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) fail(path, 'must be an object');
+  const id = string(source.id, `${path}.id`);
+  const level = string(source.level, `${path}.level`);
+  if (!Array.isArray(source.clearPolygon)) fail(`${path}.clearPolygon`, 'must be an array');
+  const clearPolygon = source.clearPolygon.map((point, pointIndex) =>
+    point2(point, `${path}.clearPolygon[${pointIndex}]`));
+  if (!isConvexPolygon(clearPolygon) || polygonArea(clearPolygon) <= EPSILON)
+    fail(`${path}.clearPolygon`, 'must be counter-clockwise, convex and positive-area');
+  if (polygonMinimumWidth(clearPolygon) + EPSILON < CASTLE_SITE_MIN_CLEAR_WIDTH)
+    fail(`${path}.clearPolygon`, `must retain ${CASTLE_SITE_MIN_CLEAR_WIDTH}m passage width`);
+  if (!Array.isArray(source.sockets) || source.sockets.length === 0)
+    fail(`${path}.sockets`, 'must contain at least one wing socket');
+  const sockets = source.sockets.map((value, socketIndex) => {
+    const reference = normalizeSocketReference(value, `${path}.sockets[${socketIndex}]`);
+    const wing = byId.get(reference.wing);
+    if (!wing) fail(`${path}.sockets[${socketIndex}].wing`, `unknown wing ${reference.wing}`);
+    const socket = worldSocket(wing, reference, `${path}.sockets[${socketIndex}]`);
+    if (reference.level !== level)
+      fail(`${path}.sockets[${socketIndex}].level`, `must match courtyard level ${level}`);
+    for (const point of [...socket.segment, [socket.outside[0], socket.outside[2]]])
+      if (!pointInConvex(point, clearPolygon))
+        fail(`${path}.sockets[${socketIndex}]`, 'mouth and exterior threshold need courtyard floor support');
+    return socket;
+  });
+  const inferredBaseY = levelFor(byId.get(sockets[0].wing).manifest, level, `${path}.level`).baseY +
+    byId.get(sockets[0].wing).frame.origin[1];
+  const baseY = finite(source.baseY ?? inferredBaseY, `${path}.baseY`);
+  for (const [socketIndex, socket] of sockets.entries())
+    if (!near(socket.outside[1], baseY))
+      fail(`${path}.sockets[${socketIndex}]`, `incompatible elevation ${socket.outside[1]} and ${baseY}`);
+  const floorInput = typeof source.floor === 'object' && source.floor !== null ? source.floor : {};
+  const floor = {
+    thickness: positive(floorInput.thickness ?? source.floorThickness ?? 0.25, `${path}.floor.thickness`),
+    material: typeof source.floor === 'string' ? source.floor : (floorInput.material ?? 'stone'),
+    owner: `site:courtyard:${id}:floor`,
+  };
+  const centroid = clearPolygon.reduce((sum, point) =>
+    [sum[0] + point[0] / clearPolygon.length, sum[1] + point[1] / clearPolygon.length], [0, 0]);
+  return {
+    id, nodeId: `site:courtyard:${id}`, level, baseY,
+    clearPolygon: clearPolygon.map(point => [...point]), floor,
+    required: source.required !== false,
+    sockets: sockets.map((socket, socketIndex) => ({
+      ...publicMouth(socket, `courtyard:${id}`, socketIndex),
+      roomId: socket.roomId, center: [...socket.center], clearWidth: socket.clearWidth,
+      courtyardThreshold: point3FromXZ(centroid, baseY),
+    })),
+  };
+}
+
+function pointInConvex(point, polygon) {
+  return polygon.every((a, index) =>
+    cross(a, polygon[(index + 1) % polygon.length], point) >= -EPSILON);
 }
 
 function namespaceRoom(wingId, roomId) { return roomId === 'outside' ? 'outside' : `${wingId}:${roomId}`; }
@@ -491,14 +562,60 @@ function orientEdgeWaypoints(edge, fromRoom, toRoom) {
   return [...edge.routeWaypoints].reverse().map(point => [...point]);
 }
 
-function buildGlobalGraph(wings, connectors, entryRef) {
+function transformRoomSegment(wing, roomId, segment, index) {
+  return {
+    id: `route-segment:${roomId}:${index}`,
+    roomId,
+    from: transformPoint(wing.frame, segment.from),
+    to: transformPoint(wing.frame, segment.to),
+    width: segment.width,
+    waypoints: segment.waypoints.map(point => transformPoint(wing.frame, point)),
+    segments: segment.segments.map((leg, legIndex) => ({
+      id: `route-leg:${roomId}:${index}:${legIndex}`,
+      from: transformPoint(wing.frame, leg.from),
+      to: transformPoint(wing.frame, leg.to),
+      localBounds: { ...leg.bounds },
+      orientedBounds: transformAabbToObb(wing.frame, leg.bounds),
+    })),
+    localSweptBounds: { ...segment.sweptBounds },
+    orientedSweptBounds: transformAabbToObb(wing.frame, segment.sweptBounds),
+  };
+}
+
+function courtyardGraphEdges(courtyards) {
+  return courtyards.flatMap(courtyard => courtyard.sockets.map((mouth, index) => {
+    const roomId = `${mouth.wing}:${mouth.roomId}`;
+    const routeWaypoints = [mouth.inside, mouth.center, mouth.outside,
+      mouth.courtyardThreshold].map(point => [...point]);
+    return {
+      id: `route:courtyard:${idToken(courtyard.id)}:${index}:${idToken(mouth.wing)}:${idToken(mouth.portalId)}`,
+      kind: 'courtyard', sourceId: courtyard.id,
+      rooms: [roomId, courtyard.nodeId].sort(),
+      portalVolumeId: `courtyard:${courtyard.id}:mouth:${index}`,
+      floorIds: [courtyard.floor.owner], clearWidth: mouth.clearWidth,
+      thresholds: [mouth.inside, mouth.courtyardThreshold].map(point => [...point]),
+      roomThresholds: {
+        [roomId]: [...mouth.inside], [courtyard.nodeId]: [...mouth.courtyardThreshold],
+      },
+      sweptVolumeIds: [`courtyard:${courtyard.id}:route:${index}`], routeWaypoints,
+    };
+  }));
+}
+
+function buildGlobalGraph(wings, connectors, courtyards, entryRef) {
   const entryWing = wings.find(wing => wing.id === entryRef.wing);
   const entrySocket = worldSocket(entryWing, entryRef, 'entry');
   const entryRoomId = `${entryWing.id}:${entrySocket.roomId}`;
+  const roomOwners = new Map();
   const nodes = wings.flatMap(wing => wing.manifest.roomGraph.nodes.map(node => ({
-    ...node, id: `${wing.id}:${node.id}`, wingId: wing.id,
+    ...node, id: `${wing.id}:${node.id}`, wingId: wing.id, localRoomId: node.id,
     levelId: `${wing.id}:${node.levelId}`,
+  }))).concat(courtyards.map(courtyard => ({
+    id: courtyard.nodeId, levelId: `site:${courtyard.level}`, use: 'court',
+    required: courtyard.required, walkable: true, courtyardId: courtyard.id,
   }))).sort((a, b) => cmp(a.id, b.id));
+  for (const node of nodes) if (node.wingId)
+    roomOwners.set(node.id, { wing: wings.find(wing => wing.id === node.wingId), roomId: node.localRoomId });
   const edges = [];
   for (const wing of wings) for (const edge of wing.manifest.roomGraph.edges) {
     if (edge.rooms.includes('outside')) {
@@ -507,6 +624,7 @@ function buildGlobalGraph(wings, connectors, entryRef) {
     edges.push(transformGraphEdge(wing, edge));
   }
   edges.push(...connectors.map(connectorGraphEdge));
+  edges.push(...courtyardGraphEdges(courtyards));
   edges.sort((a, b) => cmp(a.id, b.id));
   const adjacency = new Map(nodes.map(node => [node.id, []]));
   for (const edge of edges) {
@@ -535,41 +653,76 @@ function buildGlobalGraph(wings, connectors, entryRef) {
       if (parentEdge.has(cursor)) edgePath.push(parentEdge.get(cursor));
     }
     roomPath.reverse(); edgePath.reverse();
-    const waypoints = [[...entrySocket.inside]];
+    const waypoints = [[...entrySocket.inside]], traversals = [], roomSegments = [];
     let currentRoom = entryRoomId;
-    for (const edge of edgePath) {
+    for (let edgeIndex = 0; edgeIndex < edgePath.length; ++edgeIndex) {
+      const edge = edgePath[edgeIndex];
       const nextRoom = edge.rooms.find(room => room !== 'outside' && room !== currentRoom);
       const from = edge.roomThresholds[currentRoom], to = edge.roomThresholds[nextRoom];
-      if (!samePoint(waypoints[waypoints.length - 1], from)) waypoints.push([...from]);
-      for (const point of orientEdgeWaypoints(edge, currentRoom, nextRoom).slice(1))
+      if (!samePoint(waypoints[waypoints.length - 1], from)) {
+        const owner = roomOwners.get(currentRoom);
+        if (owner) {
+          const localSegment = routeManifestRoomSegment(owner.wing.manifest, owner.roomId,
+            inverseTransformPoint(owner.wing.frame, waypoints[waypoints.length - 1]),
+            inverseTransformPoint(owner.wing.frame, from));
+          const worldSegment = transformRoomSegment(owner.wing, currentRoom, localSegment, edgeIndex);
+          roomSegments.push(worldSegment);
+          for (const point of worldSegment.waypoints.slice(1))
+            if (!samePoint(waypoints[waypoints.length - 1], point)) waypoints.push([...point]);
+        } else {
+          // Courtyard polygons are convex, so their threshold-to-threshold
+          // chord remains on the declared supported stone floor.
+          waypoints.push([...from]);
+        }
+      }
+      const edgeWaypoints = orientEdgeWaypoints(edge, currentRoom, nextRoom);
+      traversals.push({ edgeId: edge.id, fromRoomId: currentRoom, toRoomId: nextRoom,
+        from: [...from], to: [...to], waypoints: edgeWaypoints.map(point => [...point]) });
+      for (const point of edgeWaypoints.slice(1))
         if (!samePoint(waypoints[waypoints.length - 1], point)) waypoints.push(point);
       currentRoom = nextRoom;
     }
-    return { roomId, fromEntry: roomPath, edgeIds: edgePath.map(edge => edge.id), waypoints };
+    return {
+      roomId, fromEntry: roomPath, edgeIds: edgePath.map(edge => edge.id),
+      sweptVolumeIds: [
+        ...edgePath.flatMap(edge => edge.sweptVolumeIds || []),
+        ...roomSegments.map(segment => segment.id),
+      ],
+      waypoints, traversals, roomSegments,
+    };
   });
   return {
     entryRoomId, entryPortalId: `${entryWing.id}:${entrySocket.portal.id}`,
-    nodes, edges, reachableRoomIds: [...reachable].sort(), walkRoutes,
+    nodes, edges, reachableRoomIds: [...reachable].sort(),
+    walkRoute: walkRoutes, walkRoutes,
   };
 }
 
 function worldWingSummary(wing) {
   const rootTransform = planarFrameMatrix(wing.frame);
   const occupiedVolumes = wing.manifest.occupiedVolumes.map(volume => {
-    if (volume.bounds) return { ...volume, id: `${wing.id}:${volume.id}`,
-      orientedBounds: transformAabbToObb(wing.frame, volume.bounds) };
+    if (volume.bounds) {
+      const { bounds, ...record } = volume;
+      return { ...record, id: `${wing.id}:${volume.id}`, localBounds: { ...bounds },
+        orientedBounds: transformAabbToObb(wing.frame, bounds) };
+    }
     if (volume.center) return { ...volume, id: `${wing.id}:${volume.id}`,
-      center: transformPointXZ(wing.frame, volume.center) };
+      center: transformPointXZ(wing.frame, volume.center),
+      minY: volume.minY + wing.frame.origin[1], maxY: volume.maxY + wing.frame.origin[1] };
     return { ...volume, id: `${wing.id}:${volume.id}` };
   });
-  const fixtures = wing.manifest.fixtures.map(fixture => ({
-    ...fixture, id: `${wing.id}:${fixture.id}`,
-    ...(fixture.position ? { position: transformPoint(wing.frame, fixture.position) } : {}),
-    ...(fixture.direction ? { direction: transformVector(wing.frame, fixture.direction) } : {}),
-    ...(fixture.yaw !== undefined ? { yaw: fixture.yaw + wing.frame.yawDeg } : {}),
-    ...(fixture.bounds ? { orientedBounds: transformAabbToObb(wing.frame, fixture.bounds) } : {}),
-    ...(fixture.clearance ? { orientedClearance: transformAabbToObb(wing.frame, fixture.clearance) } : {}),
-  }));
+  const fixtures = wing.manifest.fixtures.map(fixture => {
+    const { bounds, clearance, ...record } = fixture;
+    return {
+      ...record, id: `${wing.id}:${fixture.id}`,
+      ...(fixture.position ? { position: transformPoint(wing.frame, fixture.position) } : {}),
+      ...(fixture.direction ? { direction: transformVector(wing.frame, fixture.direction) } : {}),
+      ...(fixture.yaw !== undefined ? { yaw: transformYawDeg(wing.frame, fixture.yaw) } : {}),
+      ...(bounds ? { localBounds: { ...bounds }, orientedBounds: transformAabbToObb(wing.frame, bounds) } : {}),
+      ...(clearance ? { localClearance: { ...clearance },
+        orientedClearance: transformAabbToObb(wing.frame, clearance) } : {}),
+    };
+  });
   const localLights = wing.manifest.localLights.map(light => ({
     ...(light.kind === 'spot' ? transformSpotLight(wing.frame, light) : light),
     id: `${wing.id}:${light.id}`,
@@ -608,20 +761,35 @@ function compile(site) {
     }
     return buildConnector(connection, index, byId);
   }), connector => connector.id);
+  const courtyardIds = new Set();
+  const courtyards = stableSort((site.courtyards || []).map((courtyard, index) => {
+    const id = string(courtyard?.id, `courtyards[${index}].id`);
+    if (courtyardIds.has(id)) fail(`courtyards[${index}].id`, `duplicate id ${id}`);
+    courtyardIds.add(id);
+    for (const [socketIndex, value] of (courtyard.sockets || []).entries()) {
+      const reference = normalizeSocketReference(value, `courtyards[${index}].sockets[${socketIndex}]`);
+      const key = socketKey(reference);
+      if (consumed.has(key))
+        fail(`courtyards[${index}].sockets[${socketIndex}]`, `socket ${key} is already consumed`);
+      consumed.add(key);
+    }
+    return buildCourtyard(courtyard, index, byId);
+  }), courtyard => courtyard.id);
   const wingVolumes = validateWingOverlap(wings);
   validateConnectorIntrusion(connectors, wingVolumes);
-  const roomGraph = buildGlobalGraph(wings, connectors, entryRef);
+  const roomGraph = buildGlobalGraph(wings, connectors, courtyards, entryRef);
   const entrySocket = worldSocket(byId.get(entryRef.wing), entryRef, 'entry');
   const spawn = [
-    entrySocket.inside[0] - entrySocket.outward[0] * 0.5,
+    entrySocket.inside[0] + entrySocket.outward[0] * 0.5,
     entrySocket.inside[1],
-    entrySocket.inside[2] - entrySocket.outward[1] * 0.5,
+    entrySocket.inside[2] + entrySocket.outward[1] * 0.5,
   ];
   return {
     schema: CASTLE_SITE_MANIFEST_SCHEMA, siteId, seed, grid, angleStep,
     wings: wings.map(worldWingSummary),
     connectors: connectors.map(({ _rooms, ...connector }) => connector),
-    roomGraph, walkRoutes: roomGraph.walkRoutes,
+    courtyards,
+    roomGraph, walkRoute: roomGraph.walkRoutes, walkRoutes: roomGraph.walkRoutes,
     entry: { wing: entryRef.wing, level: entryRef.level, portalId: entryRef.portal,
       roomId: roomGraph.entryRoomId, inside: entrySocket.inside, outside: entrySocket.outside },
     spawn,

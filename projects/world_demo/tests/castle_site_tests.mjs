@@ -1,0 +1,350 @@
+import assert from 'node:assert/strict';
+import {
+  CASTLE_SITE_CAPSULE_RADIUS,
+  CASTLE_SITE_CLEARANCE,
+  CASTLE_SITE_MANIFEST_SCHEMA,
+  compileSite,
+  siteToJSON,
+  siteToSVG,
+} from '../shared-lib/castle_site.js';
+import {
+  transformPoint,
+  transformVector,
+  yawDegToQuaternion,
+} from '../shared-lib/castle_frames.js';
+import {
+  ANGLED_STUDY_CORE_PLAN,
+  ANGLED_STUDY_HALL_PLAN,
+  CASTLE_SITE_ANGLED_STUDY,
+  angledStudySite,
+} from './fixtures/castle_site_angled_study.js';
+
+const EPSILON = 1e-8;
+const clone = value => structuredClone(value);
+
+function near(actual, expected, label = 'value', epsilon = EPSILON) {
+  if (Array.isArray(expected)) {
+    assert.ok(Array.isArray(actual), `${label} must be an array`);
+    assert.equal(actual.length, expected.length, `${label} length`);
+    for (let index = 0; index < expected.length; ++index)
+      near(actual[index], expected[index], `${label}[${index}]`, epsilon);
+    return;
+  }
+  assert.ok(Math.abs(actual - expected) <= epsilon,
+    `${label}: expected ${expected}, received ${actual}`);
+}
+
+function midpoint(a, b) {
+  return a.map((value, index) => (value + b[index]) / 2);
+}
+
+function signedArea(polygon) {
+  return polygon.reduce((sum, point, index) => {
+    const next = polygon[(index + 1) % polygon.length];
+    return sum + point[0] * next[1] - point[1] * next[0];
+  }, 0) / 2;
+}
+
+function pointInConvexPolygon(point, polygon, epsilon = EPSILON) {
+  let sign = 0;
+  for (let index = 0; index < polygon.length; ++index) {
+    const a = polygon[index], b = polygon[(index + 1) % polygon.length];
+    const cross = (b[0] - a[0]) * (point[1] - a[1]) -
+      (b[1] - a[1]) * (point[0] - a[0]);
+    if (Math.abs(cross) <= epsilon) continue;
+    if (sign && Math.sign(cross) !== sign) return false;
+    sign = Math.sign(cross);
+  }
+  return true;
+}
+
+function portalCenter(planManifest, sourceId) {
+  const portal = planManifest.portals.find(candidate => candidate.sourceId === sourceId);
+  assert.ok(portal, `missing portal ${sourceId}`);
+  return midpoint(portal.thresholds[0], portal.thresholds[1]);
+}
+
+function expectInvalid(site, pattern) {
+  assert.throws(() => compileSite(site), pattern);
+}
+
+const manifest = compileSite(CASTLE_SITE_ANGLED_STUDY);
+assert.equal(manifest.schema, CASTLE_SITE_MANIFEST_SCHEMA);
+assert.equal(manifest.siteId, 'angled-study-30');
+assert.deepEqual(manifest.wings.map(wing => wing.id), ['core', 'hall']);
+
+const core = manifest.wings.find(wing => wing.id === 'core');
+const hall = manifest.wings.find(wing => wing.id === 'hall');
+near(portalCenter(core.manifest, 'east-hall'), [12, 0, 6], 'core local east mouth');
+near(portalCenter(hall.manifest, 'west-entry'), [0, 0, 4], 'hall local west mouth');
+near(hall.frame.origin, [16, 0, 2.5358983848622456], '30 degree hall origin');
+
+const connector = manifest.connectors[0];
+assert.equal(connector.id, 'vestibule');
+assert.equal(connector.level, 'ground');
+assert.equal(connector.baseY, 0);
+assert.equal(connector.floor.material, 'stone');
+assert.equal(connector.floor.owner, 'connector:vestibule:floor');
+assert.equal(connector.clearHeight, 3.2);
+assert.equal(connector.roof.kind, 'low-hip');
+assert.ok(signedArea(connector.clearPolygon) > 0, 'connector polygon is counter-clockwise');
+assert.ok(connector.minimumWidth + EPSILON >=
+  2 * (CASTLE_SITE_CAPSULE_RADIUS + CASTLE_SITE_CLEARANCE));
+assert.deepEqual(connector.mouths.map(mouth => mouth.portalId), ['east-hall', 'west-entry']);
+near(midpoint(...connector.mouths[0].segment), [12, 6], 'core world mouth');
+near(midpoint(...connector.mouths[1].segment), [18, 6], 'hall world mouth');
+
+for (const mouth of connector.mouths) {
+  assert.equal(mouth.segment.length, 2);
+  assert.equal(mouth.tangent.length, 2);
+  assert.equal(mouth.outward.length, 2);
+  near(Math.hypot(...mouth.tangent), 1, `${mouth.wing} tangent length`);
+  near(Math.hypot(...mouth.outward), 1, `${mouth.wing} outward length`);
+  assert.ok(mouth.hostModules.length > 0);
+  assert.ok(mouth.hostModules.every(id => id.startsWith(`${mouth.wing}:`)));
+  for (const point of [...mouth.segment, [mouth.inside[0], mouth.inside[2]],
+    [mouth.outside[0], mouth.outside[2]]])
+    assert.ok(pointInConvexPolygon(point, connector.clearPolygon),
+      `${mouth.wing} full mouth and thresholds lie on connector support`);
+}
+
+const polygonCentroid = connector.clearPolygon.reduce((sum, point) =>
+  [sum[0] + point[0] / connector.clearPolygon.length,
+    sum[1] + point[1] / connector.clearPolygon.length], [0, 0]);
+const cornerOwners = [];
+for (const span of connector.wallSpans) {
+  assert.equal(span.segment.length, 2);
+  near(Math.hypot(...span.tangent), 1, `${span.id} tangent length`);
+  near(Math.hypot(...span.normal), 1, `${span.id} normal length`);
+  near(span.tangent[0] * span.normal[0] + span.tangent[1] * span.normal[1], 0,
+    `${span.id} frame orthogonality`);
+  const center = midpoint(...span.segment);
+  const towardInterior = [polygonCentroid[0] - center[0], polygonCentroid[1] - center[1]];
+  assert.ok(span.normal[0] * towardInterior[0] + span.normal[1] * towardInterior[1] < 0,
+    `${span.id} normal points outward`);
+  assert.equal(span.trimPlanes.length, 2);
+  assert.ok(span.cornerOwners.every(owner => owner.startsWith(`${span.id}:`)));
+  assert.deepEqual(span.jambOwners,
+    ['connector:vestibule:mouth:a:jambs', 'connector:vestibule:mouth:b:jambs']);
+  cornerOwners.push(...span.cornerOwners);
+}
+assert.equal(new Set(cornerOwners).size, cornerOwners.length, 'miter corners have one owner each');
+assert.deepEqual(connector.mouths.map(mouth => mouth.jambOwner),
+  ['connector:vestibule:mouth:a:jambs', 'connector:vestibule:mouth:b:jambs']);
+
+// The connector route is supported at floor baseY and includes both wall-face
+// thresholds. Reversing it gives the exact hall-to-core traversal.
+assert.ok(connector.routeWaypoints.every(point => point[1] === connector.baseY));
+near(connector.routeWaypoints[0], connector.mouths[0].inside, 'connector route core start');
+near(connector.routeWaypoints.at(-1), connector.mouths[1].inside, 'connector route hall end');
+const reverseTraversal = [...connector.routeWaypoints].reverse();
+near(reverseTraversal[0], connector.mouths[1].inside, 'reverse route hall start');
+near(reverseTraversal.at(-1), connector.mouths[0].inside, 'reverse route core end');
+for (const point of connector.routeWaypoints)
+  assert.ok(pointInConvexPolygon([point[0], point[2]], connector.clearPolygon),
+    'route remains on connector floor support');
+
+const connectorEdge = manifest.roomGraph.edges.find(edge => edge.kind === 'connector');
+assert.deepEqual(connectorEdge.rooms, ['core:core-ground', 'hall:hall-ground']);
+assert.deepEqual(connectorEdge.floorIds, ['connector:vestibule:floor']);
+assert.deepEqual(connectorEdge.sweptVolumeIds, ['connector:vestibule:clearance']);
+assert.ok(manifest.roomGraph.reachableRoomIds.includes('hall:hall-ground'));
+const hallRoute = manifest.walkRoutes.find(route => route.roomId === 'hall:hall-ground');
+assert.deepEqual(hallRoute.fromEntry, ['core:core-ground', 'hall:hall-ground']);
+assert.deepEqual(hallRoute.edgeIds, ['route:connector:vestibule']);
+near(hallRoute.waypoints.at(-1), connector.mouths[1].inside, 'entry-to-hall route');
+
+const upperRoute = manifest.walkRoutes.find(route => route.roomId === 'core:core-upper');
+assert.deepEqual(upperRoute.fromEntry, ['core:core-ground', 'core:core-upper']);
+assert.ok(upperRoute.edgeIds.some(id => id.includes('stair')));
+assert.equal(upperRoute.waypoints[0][1], 0);
+assert.equal(upperRoute.waypoints.at(-1)[1], 4);
+
+// Global stitching must call the plan compiler's obstacle-aware room transit,
+// not draw a straight entry-to-connector chord through central furniture.
+const obstructedTransitSite = clone(CASTLE_SITE_ANGLED_STUDY);
+obstructedTransitSite.wings.find(wing => wing.id === 'core').plan.fixtures.push({
+  id: 'central-table', levelId: 'ground',
+  clearance: { minX: 4, maxX: 8, minY: 0, maxY: 2.2, minZ: 5.2, maxZ: 6.8 },
+});
+const obstructedHallRoute = compileSite(obstructedTransitSite).walkRoutes
+  .find(route => route.roomId === 'hall:hall-ground');
+assert.equal(obstructedHallRoute.roomSegments.length, 1);
+assert.equal(obstructedHallRoute.roomSegments[0].roomId, 'core:core-ground');
+assert.ok(obstructedHallRoute.roomSegments[0].waypoints.length >= 4,
+  'global route detours around the central furnishing clearance');
+assert.ok(obstructedHallRoute.roomSegments[0].waypoints.some(point =>
+  point[2] <= 4.6 + EPSILON || point[2] >= 7.4 - EPSILON));
+assert.ok(obstructedHallRoute.roomSegments[0].segments.every(segment =>
+  !('bounds' in segment) && segment.orientedBounds && segment.localBounds),
+  'rotated global swept bounds remain oriented instead of becoming world AABBs');
+
+// A consumed compound-link socket must no longer retain an independent outside
+// graph edge. The sole site exterior edge is the selected core entry.
+const outsideEdges = manifest.roomGraph.edges.filter(edge => edge.rooms.includes('outside'));
+assert.equal(outsideEdges.length, 1);
+assert.equal(outsideEdges[0].sourceId, 'core:main-entry');
+assert.equal(manifest.entry.portalId, 'main-entry');
+assert.equal(manifest.entry.roomId, 'core:core-ground');
+near(manifest.spawn, [-0.2, 0, 6], 'entry-opening spawn');
+
+// Every supported angle uses the exact placement equation; world coordinates
+// remain fractional instead of being rounded to the metre grid.
+for (const yawDeg of [15, 30, 45, -15, -30, -45]) {
+  const angled = compileSite(angledStudySite(yawDeg));
+  const angledHall = angled.wings.find(wing => wing.id === 'hall');
+  const radians = yawDeg * Math.PI / 180;
+  near(angledHall.frame.origin,
+    [18 - Math.sin(radians) * 4, 0, 6 - Math.cos(radians) * 4],
+    `${yawDeg} degree solved origin`);
+  near(midpoint(...angled.connectors[0].mouths[1].segment), [18, 6],
+    `${yawDeg} degree hall mouth`);
+  assert.equal(angledHall.frame.yawDeg, yawDeg);
+}
+
+// Add a north wing at runtime to make wing and connection ordering genuinely
+// observable while leaving the canonical fixture frozen.
+function multiConnectionSite() {
+  const site = clone(CASTLE_SITE_ANGLED_STUDY);
+  const coreSource = site.wings.find(wing => wing.id === 'core');
+  coreSource.plan.levels.find(level => level.id === 'ground').edgeOverrides.push({
+    id: 'north-hall', from: [0, 12], to: [12, 12], kind: 'arch',
+    connects: ['outside', 'core-ground'],
+    opening: { width: 2.4, height: 3.2, offset: 4.8 },
+  });
+  site.wings.push({
+    id: 'north', plan: clone(ANGLED_STUDY_HALL_PLAN),
+    placement: {
+      socket: { level: 'ground', portal: 'west-entry' },
+      relativeTo: { wing: 'core', level: 'ground', portal: 'north-hall' },
+      yawDeg: -30, outset: 6, lateral: 0,
+    },
+  });
+  site.connections.push({
+    id: 'north-link',
+    a: { wing: 'core', level: 'ground', portal: 'north-hall' },
+    b: { wing: 'north', level: 'ground', portal: 'west-entry' },
+    floor: 'stone', height: 3.2, roof: { kind: 'low-hip', rise: 0.8 },
+  });
+  return site;
+}
+
+const ordered = multiConnectionSite();
+const reordered = clone(ordered);
+reordered.wings.reverse();
+reordered.connections.reverse();
+assert.deepEqual(compileSite(reordered), compileSite(ordered),
+  'wing and connection input order does not affect the manifest');
+
+// Outdoor courts are explicit walkable site nodes, not aliases for the one
+// global outside node. Their stone polygon supports each consumed socket.
+const courtyardSite = clone(CASTLE_SITE_ANGLED_STUDY);
+courtyardSite.wings.find(wing => wing.id === 'core').plan.levels[0].edgeOverrides.push({
+  id: 'north-court', from: [0, 12], to: [12, 12], kind: 'arch',
+  connects: ['outside', 'core-ground'],
+  opening: { width: 2.4, height: 3.2, offset: 4.8 },
+});
+courtyardSite.courtyards = [{
+  id: 'inner-court', level: 'ground',
+  clearPolygon: [[4, 11.7], [8, 11.7], [8, 18], [4, 18]],
+  floor: { material: 'stone', thickness: 0.3 },
+  sockets: [{ wing: 'core', level: 'ground', portal: 'north-court' }],
+}];
+const courtyardManifest = compileSite(courtyardSite);
+assert.equal(courtyardManifest.courtyards[0].nodeId, 'site:courtyard:inner-court');
+assert.ok(courtyardManifest.roomGraph.reachableRoomIds.includes('site:courtyard:inner-court'));
+assert.equal(courtyardManifest.roomGraph.edges.filter(edge => edge.kind === 'courtyard').length, 1);
+assert.equal(courtyardManifest.roomGraph.edges.filter(edge => edge.rooms.includes('outside')).length, 1,
+  'courtyard access never creates a second global outside connection');
+const courtRoute = courtyardManifest.walkRoutes.find(route =>
+  route.roomId === 'site:courtyard:inner-court');
+assert.ok(courtRoute.waypoints.length >= 4);
+assert.match(courtRoute.traversals.at(-1).edgeId, /^route:courtyard:/);
+
+// Site summaries rotate record positions, AABBs and spot-light directions with
+// the solved wing frame rather than replacing them with axis-aligned bounds.
+const transformedRecordsSite = clone(CASTLE_SITE_ANGLED_STUDY);
+const transformedHallPlan = transformedRecordsSite.wings.find(wing => wing.id === 'hall').plan;
+transformedHallPlan.fixtures.push({
+  id: 'bench', levelId: 'ground', position: [3, 0.5, 2],
+  bounds: { minX: 2, maxX: 4, minY: 0, maxY: 1, minZ: 1.5, maxZ: 2.5 },
+});
+transformedHallPlan.localLights.push({
+  id: 'west-spot', levelId: 'ground', kind: 'spot',
+  position: [2, 2.5, 4], direction: [1, -0.5, 0], intensity: 900,
+});
+const transformedRecords = compileSite(transformedRecordsSite).wings.find(wing => wing.id === 'hall');
+const frame = transformedRecords.frame;
+const bench = transformedRecords.world.fixtures.find(fixture => fixture.sourceId === 'bench');
+near(bench.position, transformPoint(frame, [3, 0.5, 2]), 'fixture position');
+near(bench.orientedBounds.center, transformPoint(frame, [3, 0.5, 2]), 'fixture OBB center');
+near(bench.orientedBounds.halfExtents, [1, 0.5, 0.5], 'fixture OBB half extents');
+near(bench.orientedBounds.rotation, yawDegToQuaternion(30), 'fixture OBB rotation');
+const spot = transformedRecords.world.localLights.find(light => light.sourceId === 'west-spot');
+near(spot.position, transformPoint(frame, [2, 2.5, 4]), 'spot position');
+near(spot.direction, transformVector(frame, [1, -0.5, 0]), 'spot direction');
+
+// Exporters retain the semantic ids, wing angles, connector and routes.
+const json = siteToJSON(manifest);
+assert.equal(json, siteToJSON(compileSite(clone(CASTLE_SITE_ANGLED_STUDY))));
+assert.equal(JSON.parse(json).connectors[0].id, 'vestibule');
+const svg = siteToSVG(manifest, { scale: 10, padding: 12 });
+assert.match(svg, /^<\?xml version="1\.0"/);
+assert.match(svg, /data-wing="hall"/);
+assert.match(svg, /data-link="vestibule"/);
+assert.match(svg, /30°/);
+assert.match(svg, /class="route"/);
+
+// Validation failures: off-grid yaw, cyclic placement, socket reuse, narrow
+// capsule clearance, through-wing intrusion, positive overlap and elevations.
+const offGrid = angledStudySite(22.5);
+expectInvalid(offGrid, /yawDeg.*angleStep 15/);
+
+const cyclic = clone(CASTLE_SITE_ANGLED_STUDY);
+cyclic.wings[0] = {
+  id: 'core', plan: clone(ANGLED_STUDY_CORE_PLAN),
+  placement: {
+    socket: { level: 'ground', portal: 'east-hall' },
+    relativeTo: { wing: 'hall', level: 'ground', portal: 'west-entry' },
+    yawDeg: 0, outset: 6, lateral: 0,
+  },
+};
+expectInvalid(cyclic, /cyclic placement dependency/);
+
+const reused = clone(CASTLE_SITE_ANGLED_STUDY);
+reused.connections.push({
+  ...clone(reused.connections[0]), id: 'reused-link',
+});
+expectInvalid(reused, /socket core:ground:east-hall is already consumed/);
+
+const narrow = clone(CASTLE_SITE_ANGLED_STUDY);
+for (const wing of narrow.wings) for (const override of wing.plan.levels[0].edgeOverrides) {
+  if (override.id === 'east-hall') {
+    override.opening.width = 1.19;
+    override.opening.offset = 5.405;
+  } else if (override.id === 'west-entry') {
+    override.opening.width = 1.19;
+    override.opening.offset = 3.405;
+  }
+}
+expectInvalid(narrow, /circulation portal must be at least 1\.2m wide/);
+
+const intruding = clone(CASTLE_SITE_ANGLED_STUDY);
+intruding.wings.find(wing => wing.id === 'hall').placement.outset = -1;
+expectInvalid(intruding, /mouths do not face the connector|intrud/);
+
+const overlapping = clone(CASTLE_SITE_ANGLED_STUDY);
+overlapping.wings.push({
+  id: 'overlap', plan: clone(ANGLED_STUDY_HALL_PLAN),
+  frame: { origin: [2, 0, 2], yawDeg: 0 },
+});
+expectInvalid(overlapping, /positive-area overlap/);
+
+const elevated = clone(CASTLE_SITE_ANGLED_STUDY);
+elevated.wings[1] = {
+  id: 'hall', plan: clone(ANGLED_STUDY_HALL_PLAN),
+  frame: { origin: [16, 1, 2.5358983848622456], yawDeg: 30 },
+};
+expectInvalid(elevated, /incompatible elevations 0 and 1/);
+
+console.log('castle_site_tests: ok');
