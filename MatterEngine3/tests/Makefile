@@ -1093,7 +1093,7 @@ EXAMPLE_TARGET = build/example_world
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/script/world_definition_loader.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
+              ../src/script/world_definition_loader.cpp ../src/world_lights.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
               ../src/impostor_bake.cpp \
               ../src/retopo_blacklist.cpp \
@@ -1440,7 +1440,6 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_collider.cpp \
               ../src/tileset_part_collider.cpp ../src/tileset_torus_bvh.cpp \
-              ../src/world_lights.cpp \
               ../src/world_tracer.cpp \
               ../src/shader_source.cpp \
               $(VIEWER_PIPELINE_CPP)

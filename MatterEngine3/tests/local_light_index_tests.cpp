@@ -266,6 +266,13 @@ void test_spot_cone_and_finite_range_attenuation() {
     CHECK(std::isfinite(
               world_lights::local_light_attenuation(light, at_source)),
           "source-radius softening prevents a singularity");
+
+    light.kind = static_cast<std::uint32_t>(
+        world_lights::LocalLightKind::Point);
+    light.range = 1.0e20f;
+    const float one_metre_away[3] = {1.0f, 0.0f, 0.0f};
+    CHECK(world_lights::local_light_attenuation(light, one_metre_away) > 0.0f,
+          "large finite ranges do not overflow the cutoff calculation");
 }
 
 } // namespace

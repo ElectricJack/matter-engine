@@ -403,19 +403,32 @@ float local_light_attenuation(const LocalLight& light,
     const float dx = receiver_position[0] - light.position[0];
     const float dy = receiver_position[1] - light.position[1];
     const float dz = receiver_position[2] - light.position[2];
-    const float distance2 = dx * dx + dy * dy + dz * dz;
-    const float range2 = light.range * light.range;
-    if (!std::isfinite(distance2) || !std::isfinite(range2) ||
-        distance2 >= range2)
+    // Form the cutoff in range-normalized space. Squaring range directly would
+    // overflow for valid finite authoring such as range=1e20, incorrectly
+    // extinguishing receivers close to the source. This algebra is also safe
+    // to reproduce with shader floats.
+    const float scaled_x = dx / light.range;
+    const float scaled_y = dy / light.range;
+    const float scaled_z = dz / light.range;
+    const float normalized_distance2 =
+        scaled_x * scaled_x + scaled_y * scaled_y + scaled_z * scaled_z;
+    if (!std::isfinite(normalized_distance2) ||
+        normalized_distance2 >= 1.0f)
         return 0.0f;
 
     float cone = 1.0f;
     if (light.kind == static_cast<std::uint32_t>(LocalLightKind::Spot) &&
-        distance2 > 0.0f) {
-        const float inverse_distance = 1.0f / std::sqrt(distance2);
+        (dx != 0.0f || dy != 0.0f || dz != 0.0f)) {
+        const float direction_scale = std::max(
+            std::fabs(dx), std::max(std::fabs(dy), std::fabs(dz)));
+        const float unit_x = dx / direction_scale;
+        const float unit_y = dy / direction_scale;
+        const float unit_z = dz / direction_scale;
+        const float inverse_scaled_length = 1.0f /
+            std::sqrt(unit_x * unit_x + unit_y * unit_y + unit_z * unit_z);
         const float cos_theta =
-            (light.direction[0] * dx + light.direction[1] * dy +
-             light.direction[2] * dz) * inverse_distance;
+            (light.direction[0] * unit_x + light.direction[1] * unit_y +
+             light.direction[2] * unit_z) * inverse_scaled_length;
         const float width = light.cos_inner - light.cos_outer;
         if (width <= 1.0e-7f) {
             cone = cos_theta >= light.cos_inner ? 1.0f : 0.0f;
@@ -427,10 +440,21 @@ float local_light_attenuation(const LocalLight& light,
         }
     }
 
-    const float cutoff = 1.0f - distance2 / range2;
+    const float cutoff = 1.0f - normalized_distance2;
     const float effective_radius = std::max(light.source_radius, 1.0e-4f);
-    return cone * cutoff * cutoff /
-           (distance2 + effective_radius * effective_radius);
+    const float distance_scale = std::max(
+        effective_radius,
+        std::max(std::fabs(dx), std::max(std::fabs(dy), std::fabs(dz))));
+    const float distance_x = dx / distance_scale;
+    const float distance_y = dy / distance_scale;
+    const float distance_z = dz / distance_scale;
+    const float radius = effective_radius / distance_scale;
+    const float scaled_denominator =
+        distance_x * distance_x + distance_y * distance_y +
+        distance_z * distance_z + radius * radius;
+    const float inverse_distance_term =
+        (1.0f / distance_scale) / distance_scale / scaled_denominator;
+    return cone * cutoff * cutoff * inverse_distance_term;
 }
 
 void evaluate_local_light_irradiance(const LocalLight& light,
