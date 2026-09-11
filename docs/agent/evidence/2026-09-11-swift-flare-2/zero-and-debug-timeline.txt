@@ -1,0 +1,15 @@
+render_path raster
+wait_idle 2 60
+set viewer.debug.debug_view_mode 7
+wait_frames 3
+shot C:/tmp/swift-flare-2/local-light-candidates.png
+set viewer.debug.debug_view_mode 0
+world LightingGarden
+wait_idle 2 60
+stats zero-local-lights
+shot C:/tmp/swift-flare-2/zero-local-lights.png
+world LocalLightGallery
+wait_idle 2 60
+stats local-lights-restored
+shot C:/tmp/swift-flare-2/local-lights-restored.png
+quit
