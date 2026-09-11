@@ -38,6 +38,11 @@ function verify(source,label) {
    assert.ok(b.minY-f.floorY>=2.15,'fixture leaves walk headroom');
   }
   if(p.mount==='floor') {
+   assert.ok(near(b.minY,f.floorY),'floor furniture sits on its declared storey');
+   if(p.kind==='barrel') {
+    assert.ok(near(f.position[1],f.floorY+.004),'barrel stave ends, not nominal origin, sit on the deck');
+    assert.ok(near(b.maxY,f.floorY+p.params.height+.008),'full stave height is preserved');
+   }
    assert.ok(floors.some(y=>near(y,b.minY)),'floor furniture sits on its own storey');
    // Dense samples across the full body, including perimeter, must have an
    // actual slab/landing beneath them; no furniture may bridge an atrium hole.
@@ -70,14 +75,17 @@ for(const [kind,storeys] of [['keep',1],['keep',3],['keep',4],['hall',2],['chape
  }
  if(kind==='hall')assert.ok(open.fixtures.some(f=>f.kind==='table')&&open.fixtures.some(f=>f.kind==='bench'));
  if(kind==='chapel')assert.ok(open.fixtures.some(f=>f.kind==='chandelier'));
- if(kind==='service'&&storeys===1)assert.ok(open.fixtures.some(f=>f.kind==='barrel'));
+ if(kind==='service'&&storeys===1) {
+  assert.ok(open.fixtures.some(f=>f.kind==='barrel'),'service retains useful storage with every socket open');
+  assert.ok(closed.fixtures.some(f=>f.kind==='barrel'),'service retains storage when unused sockets are sealed');
+ }
 }
 // The three authored sites seal different sockets. Every chapel must retain
 // its north-end altar, and every wing must still compile after decoration.
 const {castleSitePlan,CASTLE_SITE_NAMES}=await import('../shared-lib/castle_site_programs.js');
 let siteWingCount=0;
 for(const name of CASTLE_SITE_NAMES)for(const wing of castleSitePlan(name).wings) {
- const plan=decorateCastleWingPlan(wing.plan);compilePlan(plan);siteWingCount++;
+ const plan=verify(wing.plan,`${name}:${wing.id}`);siteWingCount++;
  if(plan.wingProgram.kind==='chapel') {
   const altars=plan.fixtures.filter(f=>f.kind==='altar');
   assert.equal(altars.length,1,`${name} has a usable altar`);

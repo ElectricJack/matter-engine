@@ -97,7 +97,14 @@ export function decorateCastleWingPlan(source) {
    position:[x,y,z],yaw,seed:(plan.seed+sequence)%65536,floorY:level.baseY,...recipe};
  }
  function accept(f,room,level,{mount=false}={}) {
-  const placement=furnishingPlacement(castleFurnishingRecord(f));
+  let placement=furnishingPlacement(castleFurnishingRecord(f));
+  // Catalogue origins need not be their lowest physical point: barrel staves
+  // extend 4mm below their nominal bed. Seat the complete body on this floor
+  // instead of rejecting every barrel for penetrating its supporting slab.
+  if(!mount&&Math.abs(placement.footprint.aabb.minY-level.baseY)>EPS) {
+   f.position[1]+=level.baseY-placement.footprint.aabb.minY;
+   placement=furnishingPlacement(castleFurnishingRecord(f));
+  }
   const body=placement.footprint.aabb,access=placement.clearance.aabb,clearance=inflate(body,mount?0:.07);
   if(!contains(inset(room.rect,mount?.28:.34),body))return false;
   if(!mount&&!contains(inset(room.rect,.32),access))return false;
