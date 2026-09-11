@@ -1518,7 +1518,8 @@ public:
         std::string& error);
     LocalLightRenderStats local_light_stats() const noexcept;
     LocalDirectLightingContract local_direct_contract() const noexcept {
-        return {LocalDirectOwner::Raster, local_light_revision_, 0u};
+        return {local_direct_owner_, local_light_revision_,
+                local_direct_lane_revision_};
     }
 
     // ---- occlusion culling (M4) -------------------------------------------
@@ -1694,12 +1695,7 @@ public:
     bool wireframe_available() const noexcept;
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings);
-    void set_gi_settings(const matter::VulkanGiSettings& settings) {
-        gi_settings_ = settings;
-        gi_settings_.max_bounces = 1u;
-        gi_settings_.samples_per_pixel = 1u;
-        gi_settings_.trace_scale = std::max(0.125f, std::min(settings.trace_scale, 1.0f));
-    }
+    void set_gi_settings(const matter::VulkanGiSettings& settings);
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
@@ -2607,6 +2603,9 @@ private:
         uint64_t command_generation = 0;
         uint64_t material_generation = 0;
         uint64_t local_light_generation = 0;
+        LocalDirectOwner local_direct_owner = LocalDirectOwner::Raster;
+        uint64_t local_direct_lane_revision = 0;
+        uint64_t local_direct_candidate_serial = 0;
         uint64_t material_upload_record_count = 0;
         VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
@@ -2768,6 +2767,10 @@ private:
     void update_composite_descriptor(FrameResources& frame);
     void update_local_light_descriptor(FrameResources& frame);
     bool upload_local_lights(FrameResources& frame, std::string& error);
+    bool publish_local_direct_owner(FrameResources& frame,
+                                    LocalDirectOwner owner,
+                                    uint64_t lane_revision,
+                                    std::string& error);
     void update_water_forward_descriptor(FrameResources& frame);
     bool upload_water_forward_constants(FrameResources& frame,
                                         const FrameMatrices& matrices,
@@ -3089,6 +3092,7 @@ private:
     // RT PBR Phase 1: (hit_t, roughness) sibling of raw_specular_aux_ for the
     // transmission denoiser lane.
     matter::VkImageResource raw_transmission_aux_;
+    matter::VkImageResource raw_local_direct_;
     matter::VkImageResource vol_dummy_3d_;
     VkExtent2D raw_diffuse_extent_{};
 
@@ -3411,6 +3415,8 @@ private:
     world_lights::LocalLightPublication local_light_publication_{};
     uint64_t local_light_revision_ = 0;
     uint64_t local_light_generation_ = 1;
+    LocalDirectOwner local_direct_owner_ = LocalDirectOwner::Raster;
+    uint64_t local_direct_lane_revision_ = 0;
     bool gi_history_reset_pending_ = false;
     bool gi_diffuse_history_reset_pending_ = false;
     bool gi_reflection_history_reset_pending_ = false;
