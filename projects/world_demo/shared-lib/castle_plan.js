@@ -731,6 +731,44 @@ function landingSupportsFlightEnd(landing, flight, atEnd) {
     point[0] - half >= bounds.minX - 1e-9 && point[0] + half <= bounds.maxX + 1e-9;
 }
 
+// Match the compiler's 1.2m walking corridor: a 0.4m capsule plus 0.2m
+// lateral clearance. Intermediate turns must clear the full flight edge before
+// moving sideways; walking along that edge touches the next flight's riser.
+function intermediateLandingTransit(landing, incoming, outgoing, path) {
+  const clearance = MIN_PORTAL_WIDTH / 2;
+  const bounds = boundsFromRect(landing.bounds);
+  const inset = {
+    minX: bounds.minX + clearance, maxX: bounds.maxX - clearance,
+    minZ: bounds.minZ + clearance, maxZ: bounds.maxZ - clearance,
+  };
+  const start = incoming.centerline[1], end = outgoing.centerline[0];
+  const inside = point => point[0] >= inset.minX - 1e-9 && point[0] <= inset.maxX + 1e-9 &&
+    point[2] >= inset.minZ - 1e-9 && point[2] <= inset.maxZ + 1e-9;
+  const insetAlongFlight = (point, direction) => {
+    const axis = direction[0] === 0 ? 2 : 0;
+    const sign = direction[0] || direction[1];
+    const middle = axis === 0 ? (bounds.minX + bounds.maxX) / 2 :
+      (bounds.minZ + bounds.maxZ) / 2;
+    const result = [...point];
+    result[axis] = sign > 0 ? Math.max(middle, point[axis] + clearance) :
+      Math.min(middle, point[axis] - clearance);
+    if (!inside(result))
+      fail(path, `intermediate landing ${landing.sourceId} lacks directed inset walking clearance`);
+    return result;
+  };
+  const enter = insetAlongFlight(start, CARDINAL[incoming.direction]);
+  const leave = insetAlongFlight(end, CARDINAL[outgoing.direction].map(value => -value));
+  // The eroded rectangle is convex. An axis-aligned connection between these
+  // anchors stays inside its supported floor and the existing checked landing
+  // headroom volume. Keep flight endpoints untouched for ascent interpolation.
+  const points = [enter];
+  if (Math.abs(enter[0] - leave[0]) > 1e-9 && Math.abs(enter[2] - leave[2]) > 1e-9)
+    points.push([leave[0], landing.elevation, enter[2]]);
+  points.push(leave);
+  return points.filter((point, index) => index === 0 ||
+    point.some((value, axis) => Math.abs(value - points[index - 1][axis]) > 1e-9));
+}
+
 function angleInside(angle, start, end) {
   return [angle - 360, angle, angle + 360].some(value => value >= start - 1e-9 && value <= end + 1e-9);
 }
@@ -1196,7 +1234,11 @@ function buildStairs(plan, levelsById, roomsById, beamMembers) {
         waypoints: [
           [lowerLandings[0].bounds.x + lowerLandings[0].bounds.width / 2, lower.baseY,
             lowerLandings[0].bounds.z + lowerLandings[0].bounds.depth / 2],
-          ...flights.flatMap(flight => flight.centerline),
+          ...flights.flatMap((flight, flightIndex) => [
+            ...flight.centerline,
+            ...(flightIndex < intermediates.length ? intermediateLandingTransit(
+              intermediates[flightIndex], flight, flights[flightIndex + 1], `${path}.landings`) : []),
+          ]),
           [upperLandings[0].bounds.x + upperLandings[0].bounds.width / 2, upper.baseY,
             upperLandings[0].bounds.z + upperLandings[0].bounds.depth / 2],
         ],

@@ -2,8 +2,8 @@
 
 This is the shared contract between World JavaScript, the provider/cache, CPU
 reference tests, deferred raster lighting, and ray-traced hit lighting. The CPU
-transport and spatial index are implemented; Vulkan upload and shading consume
-this contract in the following lighting tasks.
+transport, spatial index, Vulkan publication, and deferred raster consumer are
+implemented. Ray-traced local-light visibility remains a later lighting task.
 
 ## World JavaScript API
 
@@ -157,6 +157,27 @@ Full and live world reloads already rebuild the manifest and reset Vulkan
 temporal state. Light-only source edits change the light revision while leaving
 part content hashes stable; camera movement changes neither and must not rebuild
 the index or geometry. Local direct illumination is a separate contribution and
-must remain enabled when the diffuse-GI multiplier is zero. GPU upload,
-descriptor lifetime, composite shading, RT visibility, and history plumbing are
-owned by the subsequent renderer tasks.
+must remain enabled when the diffuse-GI multiplier is zero.
+
+The deferred composite binds one immutable publication per retired frame slot
+as descriptor set 2: records at binding 0, cells at 1, compact indices at 2,
+oversized indices at 3, and a 32-byte metadata record at 4. The metadata carries
+record/bucket/oversized counts, cell size and inverse, worst candidate count,
+and the direct-light owner. `LocalLightCell` must compile to std430 array stride
+32; its three reserved words are scalar `uint`s in GLSL because a `uvec3` there
+would align to byte 32 and incorrectly produce stride 48.
+
+Raster reconstructs each visible G-buffer pixel's world position, probes only
+that cell plus the oversized list, and evaluates the shared finite-range/spot
+attenuation and energy-conscious diffuse/GGX BRDF. The contribution is
+independent of diffuse GI. Baseline raster local lights are intentionally
+unshadowed; flag bit 0 is retained for the RT visibility task.
+
+`LocalDirectOwner::Raster` is the current ownership state. The RT follow-up must
+publish a separate RT local-direct lane and may switch the metadata owner to
+`RayTraced` only when that lane is ready for the same light revision. Composite
+must select exactly one owner; it must never sum raster and RT local direct.
+Debug-view index 7 (`Local-light candidates`) visualizes the indexed candidate
+count at reconstructed world positions without scanning the complete light
+array. Frame telemetry reports light count, occupied cells, worst candidates,
+oversized count, compact entries, and upload bytes.
