@@ -104,5 +104,5 @@ export function castleSiteWorldDefinition(name='clustered-court') {
   RigidBody:{type:'static'},BoxCollider:{halfExtents:[groundWidth/2,.45,groundDepth/2]},
  }});
  return {roots,entities,lights:{sun:{dir:[.42,-.78,-.46],color:[1,.92,.8]},sky:{color:[.14,.19,.27]},points,spots},
-  camera:{position:[cx+extent*.95,extent*.75,cz-extent*.95],target:[cx,5,cz]},atmosphere:{groundAlbedo:.3}};
+  camera:{position:[cx-extent*.95,extent*.75,cz+extent*.95],target:[cx,5,cz]},atmosphere:{groundAlbedo:.3}};
 }

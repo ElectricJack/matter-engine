@@ -1331,7 +1331,8 @@ export function fixtureLightsLocal(kind, input, color = CANDLE_COLOR) {
   const points = [], spots = [];
   if (FIXTURE_CODES[kind] === undefined) return { points, spots };
   const p = KINDS[kind].params(input);
-  const sourceRadius = kind === 'sconce' && p.style === 1 ? 0.03 : 0.015;
+  // Wick tips sit 12 mm below the flame center; leave 4 mm of clearance.
+  const sourceRadius = 0.008;
   for (const position of fixtureFlamePoints(kind, p)) {
     const light = {
       position, color: [...color], intensity: p.lightIntensity, range: p.lightRange,
