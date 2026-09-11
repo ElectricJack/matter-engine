@@ -13,6 +13,13 @@ const LOCAL_LIGHT_RT_CORNER_FIXTURE = Object.freeze({
   sphereReceiver: Object.freeze([2.20, 0.72, 1.05]),
 });
 
+const LOCAL_LIGHT_RT_HOUSING_FIXTURE = Object.freeze({
+  pointOffset: 0.55,
+  pointRadius: 0.16,
+  spotOffset: 0.40,
+  spotRadius: 0.15,
+});
+
 class LocalLightRtGalleryFixture extends Part {
   static params = {
     plaster: 0, limestone: 0, foundation: 0, terracotta: 0,
@@ -108,13 +115,17 @@ class LocalLightRtGalleryFixture extends Part {
       [-14.5, 2.35, -0.8], [-2.5, 2.1, 0.0], [10.2, 3.35, 3.1],
       [16.5, 2.0, -3.2], [18.4, 3.0, 3.4],
     ]) {
+      const housingY = source[1] - LOCAL_LIGHT_RT_HOUSING_FIXTURE.pointOffset;
       this.cylinder([source[0], 0.08, source[2]],
-                    [source[0], source[1] - 0.16, source[2]], 0.035);
-      this.sphere([source[0], source[1] - 0.16, source[2]], 0.16);
+                    [source[0], housingY, source[2]], 0.035);
+      this.sphere([source[0], housingY, source[2]],
+                  LOCAL_LIGHT_RT_HOUSING_FIXTURE.pointRadius);
     }
     // Spot housing hangs above the cone apex; the lens proxy itself is not in
     // the TLAS, so it cannot duplicate the analytic spot's energy.
-    this.cylinder([8.1, 7.42, -1.0], [8.1, 7.85, -1.0], 0.11);
-    this.sphere([8.1, 7.46, -1.0], 0.19);
+    const spotHousingY = 7.3 + LOCAL_LIGHT_RT_HOUSING_FIXTURE.spotOffset;
+    this.cylinder([8.1, spotHousingY, -1.0], [8.1, 8.10, -1.0], 0.11);
+    this.sphere([8.1, spotHousingY, -1.0],
+                LOCAL_LIGHT_RT_HOUSING_FIXTURE.spotRadius);
   }
 }

@@ -1,0 +1,13 @@
+render_path native_rt
+set render.gi.diffuse_multiplier 1
+set render.lighting.emission_multiplier 1
+set render.lighting.exposure_ev 0
+set render.gi.enabled false
+cam 14.0 2.85 6.2 13.5 1.45 0.1
+history_reset
+wait_frames 1
+shot C:/tmp/local-light-rt-grain-controls/old-frame-1.png
+history_reset
+wait_frames 96
+shot C:/tmp/local-light-rt-grain-controls/old-frame-96.png
+quit

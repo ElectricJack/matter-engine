@@ -83,7 +83,7 @@ globalThis.Part = class {
 };
 globalThis.MAT = { lightWarmLow: 26 };
 const fixtureModule = await import('data:text/javascript;base64,' +
-  Buffer.from(fixtureSource + '\nexport { LocalLightRtGalleryFixture, LOCAL_LIGHT_RT_CORNER_FIXTURE };').toString('base64'));
+  Buffer.from(fixtureSource + '\nexport { LocalLightRtGalleryFixture, LOCAL_LIGHT_RT_CORNER_FIXTURE, LOCAL_LIGHT_RT_HOUSING_FIXTURE };').toString('base64'));
 const fixture = new fixtureModule.LocalLightRtGalleryFixture();
 fixture.build({
   plaster: 1, limestone: 2, foundation: 6, terracotta: 7,
@@ -92,6 +92,16 @@ fixture.build({
 });
 assert.ok(fixture.geometryCalls >= 35);
 assert.equal(fixture.rt, true);
+
+// Analytic emitters must sit wholly outside their RT-visible iron housings.
+// A tangent/intersecting housing turns the four fixed area-light samples into
+// a stable black-pepper pattern because the raw direct lane is not filtered.
+const housing = fixtureModule.LOCAL_LIGHT_RT_HOUSING_FIXTURE;
+for (const light of lights.points) {
+  assert.ok(housing.pointOffset > housing.pointRadius + light.sourceRadius);
+}
+assert.ok(housing.spotOffset >
+          housing.spotRadius + lights.spots[0].sourceRadius);
 
 // The colored-bounce witness must encode a real two-segment visibility test:
 // neutral source -> pale receiver is blocked by the return, while lit colored
