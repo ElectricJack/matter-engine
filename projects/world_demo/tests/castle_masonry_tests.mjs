@@ -418,6 +418,24 @@ const centre = [(sample.bounds.min[0] + sample.bounds.max[0]) / 2, sample.bounds
 assert.ok(Math.abs(sample.matrix[3] - centre[0]) < 1e-6 && Math.abs(sample.matrix[7] - centre[1]) < 1e-6 &&
   Math.abs(sample.matrix[11] - centre[2]) < 1e-6, 'row-major translation locates the stone bed centre');
 
+// Generic wall frames (angled wings): orthonormal, right-handed with up, and
+// the axis-aligned runs are the 0/90 degree special cases.
+for (const degrees of [0, 15, 30, 45, 90, 135]) {
+  const r = degrees * Math.PI / 180;
+  const frame = M.lineFrame([2, -3], [Math.cos(r), Math.sin(r)], 4);
+  assert.ok(Math.abs(Math.hypot(...frame.u) - 1) < 1e-12 && Math.abs(Math.hypot(...frame.w) - 1) < 1e-12);
+  assert.ok(Math.abs(frame.u[0] * frame.w[0] + frame.u[2] * frame.w[2]) < 1e-12, 'u is perpendicular to w');
+  // w = u x up
+  assert.ok(Math.abs(frame.w[0] + frame.u[2]) < 1e-12 && Math.abs(frame.w[2] - frame.u[0]) < 1e-12);
+  const p = frame.point(1.5, 0.25, -0.2);
+  assert.ok(Math.abs(p[0] - (2 + frame.u[0] * 1.5 - frame.w[0] * 0.2)) < 1e-12 && p[1] === 4.25);
+}
+{
+  const x = M.lineFrame([0, 5], [1, 0], 0), z = M.lineFrame([5, 0], [0, 1], 0);
+  assert.deepEqual(x.point(2, 1, 0.3), [2, 1, 5.3]);
+  assert.deepEqual(z.point(2, 1, 0.3), [4.7, 1, 2]);
+}
+
 // Sockets: one per owned aperture.
 const sockets = manifest.wallModules.flatMap(record => M.wallModuleSockets(record, manifest, OPTIONS));
 const apertureIds = new Set(manifest.wallModules.flatMap(record => record.apertureIds));

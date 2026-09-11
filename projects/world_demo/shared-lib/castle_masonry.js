@@ -170,16 +170,23 @@ function indexManifest(manifest) {
   return index;
 }
 
-// Wall line frame for an axis-aligned run. `line` is the fixed coordinate.
-function wallFrame(axis, line, baseY) {
-  if (axis === 'x') return {
-    u: [1, 0, 0], w: [0, 0, 1],
-    point: (a, v, c) => [a, baseY + v, line + c],
-  };
+// Generic wall-line frame: `origin` [x,z] is where a=0, `direction` [dx,dz]
+// the run's unit tangent u; w = u x up is the wall normal (right-handed with
+// up), so any plan angle (15/30/45 deg wings) reuses the same coursing code.
+export function lineFrame(origin, direction, baseY) {
+  const len = Math.hypot(direction[0], direction[1]);
+  const ux = direction[0] / len, uz = direction[1] / len;
+  const u = [ux, 0, uz], w = [-uz, 0, ux];
   return {
-    u: [0, 0, 1], w: [-1, 0, 0],
-    point: (a, v, c) => [line - c, baseY + v, a],
+    u: u.map(v => v === 0 ? 0 : v), w: w.map(v => v === 0 ? 0 : v),
+    point: (a, v, c) => [origin[0] + ux * a - uz * c, baseY + v, origin[1] + uz * a + ux * c],
   };
+}
+
+// Axis-aligned run frame. `line` is the fixed coordinate; a is the absolute
+// coordinate along the axis.
+function wallFrame(axis, line, baseY) {
+  return axis === 'x' ? lineFrame([0, line], [1, 0], baseY) : lineFrame([line, 0], [0, 1], baseY);
 }
 
 // Side (+1 = +w, -1 = -w) of the wall that faces outside, 0 for partitions.
