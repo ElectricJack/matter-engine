@@ -193,7 +193,7 @@ const SCHEMAS = {
     barWidth: len(0.07, 0.04, 0.16), barDepth: len(0.14, 0.06, 0.4),
     glassThickness: len(0.012, 0.006, 0.03), thin: flag(0), stained: flag(0),
     quarry: len(0.16, 0.08, 0.4), traceryMaterial: mat(8),
-    glassMaterial: mat(4), coloredMaterial: mat(6), rubyMaterial: mat(24),
+    glassMaterial: mat(4), coloredMaterial: mat(6), rubyMaterial: mat(6),
     thinGlassMaterial: mat(4), cameMaterial: mat(3),
   },
 };
@@ -474,8 +474,12 @@ function uniqueChildren(members) {
 
 function tableLayout(p) {
   const bearerH = 0.12, footH = 0.12;
+  // Planks are at least 0.12 m wide, so narrow tops use fewer boards rather
+  // than overlapping coplanar ones.
+  const boards = Math.max(1, Math.min(p.boards, Math.floor(p.width / 0.125)));
   return {
-    boardW: p.width / p.boards,
+    boards,
+    boardW: p.width / boards,
     tx: p.length / 2 - clamp(p.length * 0.17, 0.3, 0.6),
     bearerH, footH,
     bearerY: p.height - p.topThickness - bearerH / 2,
@@ -487,7 +491,7 @@ function tableLayout(p) {
 export function tableMembers(input) {
   const p = tableParams(input), L = tableLayout(p);
   const members = [];
-  for (let i = 0; i < p.boards; ++i)
+  for (let i = 0; i < L.boards; ++i)
     members.push(plank(p, i, {
       length: p.length, width: L.boardW - 0.004, thickness: p.topThickness, strap: 1,
     }, [0, p.height - p.topThickness / 2, -p.width / 2 + (i + 0.5) * L.boardW], AXIS.X));
@@ -520,7 +524,7 @@ export function emitTable(part, input) {
     }
   }
   // Butterfly keys across the board seams near each end.
-  for (let j = 1; j < p.boards; ++j) {
+  for (let j = 1; j < L.boards; ++j) {
     const z = -p.width / 2 + j * L.boardW;
     for (const x of [-(p.length / 2 - 0.3), p.length / 2 - 0.3])
       for (const a of [-0.32, 0.32])
@@ -581,7 +585,9 @@ export function emitBench(part, input) {
 // --- chair / throne ---------------------------------------------------------
 
 function chairLayout(p) {
-  const s = p.throne ? 0.14 : 0.12;
+  // Posts are thicker than the 0.12 m rails so no rail face is coplanar with
+  // a post face (separate child meshes on shared planes would z-fight).
+  const s = p.throne ? 0.16 : 0.14;
   const armY = p.seatHeight + 0.24;
   const crestAngle = 0.42;
   return {
@@ -647,7 +653,11 @@ export function emitChair(part, input) {
   const top = p.backHeight;
   if (p.gold || p.throne) {
     part.fill(p.goldMaterial);
-    for (const side of [-1, 1]) finial(part, [side * L.px, top, -L.pz], 0.05);
+    // On a throne the crest board covers the post tops; its upper face at the
+    // post line is top + (s/2) tan(angle) + 0.07 / cos(angle).
+    const finialBase = p.throne
+      ? top + (L.s / 2) * Math.tan(L.crestAngle) + 0.07 / Math.cos(L.crestAngle) + 0.005 : top;
+    for (const side of [-1, 1]) finial(part, [side * L.px, finialBase, -L.pz], 0.05);
     // Gold band across the back panel face.
     part.box([0, L.panelTop - 0.06, -L.pz + 0.056], [p.width / 2 - L.s, 0.014, 0.006]);
   } else {
@@ -667,13 +677,15 @@ export function emitChair(part, input) {
     part.beginVoxels(0.08);
     part.fill(p.cushionMaterial);
     part.smoothing(0.02);
-    part.box([0, p.seatHeight + 0.045, 0.01], [p.width / 2 - L.s - 0.005, 0.04, p.depth / 2 - L.s * 0.5]);
+    part.box([0, p.seatHeight + 0.04, 0.01], [p.width / 2 - L.s - 0.005, 0.04, p.depth / 2 - L.s * 0.5]);
     part.endVoxels();
     part.beginVoxels(0.02);
     part.fill(p.cushionMaterial);
     part.smoothing(0.03);
-    part.box([0, (L.panelBottom + L.panelTop) / 2 + 0.06, -L.pz + 0.09],
-      [p.width / 2 - L.s - 0.02, (L.panelTop - L.panelBottom) / 2 - 0.08, 0.035]);
+    // Back cushion rests on the panel face (-pz + 0.05); its half height is
+    // clamped so a low back still yields a valid pad.
+    part.box([0, (L.panelBottom + L.panelTop) / 2 + 0.06, -L.pz + 0.085],
+      [p.width / 2 - L.s - 0.02, Math.max(0.04, (L.panelTop - L.panelBottom) / 2 - 0.08), 0.035]);
     for (const x of [-0.12, 0.12]) for (const z of [-0.1, 0.1]) {
       part.sphere([x, p.seatHeight + 0.092, z], 0.018);
       part.difference();
@@ -703,6 +715,8 @@ export function bedMembers(input) {
   const p = bedParams(input), L = bedLayout(p);
   const members = [];
   const inner = Math.max(0.3, p.width - 2 * L.s);
+  // Slats run 20 mm into the 0.12 m side rails (inner faces at width/2 - 0.13).
+  const slatLength = Math.max(0.3, p.width - 0.22);
   for (const side of [-1, 1]) {
     members.push(beam(p, 0, { length: L.headLen, width: L.s, height: L.s, joint: 1 },
       [side * L.px, L.headLen / 2, -L.pz], AXIS.Y));
@@ -723,7 +737,7 @@ export function bedMembers(input) {
   }
   const slats = Math.max(3, Math.floor((p.length - 0.4) / 0.4) + 1);
   for (let i = 0; i < slats; ++i)
-    members.push(plank(p, 4, { length: inner, width: 0.14, thickness: 0.10 },
+    members.push(plank(p, 4, { length: slatLength, width: 0.14, thickness: 0.10 },
       [0, L.mattressBottom - 0.05, -L.pz + 0.2 + i * (2 * L.pz - 0.4) / (slats - 1)], AXIS.X));
   members.push(plank(p, 5, { length: inner, width: L.headTop - p.railHeight, thickness: 0.10 },
     [0, (p.railHeight + L.headTop) / 2, -L.pz], AXIS.BOARD_XY));
@@ -768,17 +782,18 @@ export function emitBed(part, input) {
     const y = p.postHeight;
     part.fill(p.woolMaterial);
     part.box([0, y + 0.008, 0], [p.width / 2 - 0.02, 0.008, p.length / 2 - 0.02]);
+    // Valances hang against the canopy rails' outer faces (width/2 - 0.01)
+    // and run into the posts; the dosser hangs against the posts' back faces.
     for (const side of [-1, 1]) {
-      part.box([side * (p.width / 2 + 0.008), y - 0.15, 0], [0.006, 0.15, p.length / 2]);
-      part.box([0, y - 0.15, side * (p.length / 2 + 0.008)], [p.width / 2, 0.15, 0.006]);
+      part.box([side * (p.width / 2 - 0.004), y - 0.15, 0], [0.006, 0.15, p.length / 2]);
+      part.box([0, y - 0.15, side * (p.length / 2 - 0.004)], [p.width / 2, 0.15, 0.006]);
     }
-    // Dosser hanging behind the headboard.
-    part.box([0, (L.headTop + 0.12 + y) / 2, -p.length / 2 - 0.012],
+    part.box([0, (L.headTop + 0.12 + y) / 2, -p.length / 2 + 0.006],
       [p.width / 2 - 0.02, (y - L.headTop - 0.12) / 2, 0.006]);
     part.fill(p.goldMaterial);
     for (const side of [-1, 1]) {
-      part.box([side * (p.width / 2 + 0.012), y - 0.3, 0], [0.006, 0.012, p.length / 2]);
-      part.box([0, y - 0.3, side * (p.length / 2 + 0.012)], [p.width / 2, 0.012, 0.006]);
+      part.box([side * (p.width / 2 + 0.004), y - 0.3, 0], [0.006, 0.012, p.length / 2]);
+      part.box([0, y - 0.3, side * (p.length / 2 + 0.004)], [p.width / 2, 0.012, 0.006]);
       for (const end of [-1, 1]) part.sphere([side * L.px, y + 0.03, end * L.pz], 0.04);
     }
   } else if (p.gold) {
@@ -838,8 +853,8 @@ export function emitChest(part, input) {
     part.box([sx * (p.length / 2 + 0.004), L.bodyH / 2, fz - 0.03], [0.004, L.bodyH / 2 - 0.02, 0.03]);
   }
   // Hasp hanging from the lid lip, with its hinge knuckle.
-  part.box([0, H - 0.15, lidZ + 0.01], [0.022, 0.08, 0.005]);
-  part.cylinder([-0.03, H - 0.07, lidZ + 0.01], [0.03, H - 0.07, lidZ + 0.01], 0.008);
+  part.box([0, H - 0.15, lidZ + 0.005], [0.022, 0.08, 0.005]);
+  part.cylinder([-0.03, H - 0.07, lidZ + 0.006], [0.03, H - 0.07, lidZ + 0.006], 0.008);
   part.box([0, H - 0.25, fz + 0.005], [0.075, 0.065, 0.005]);
   // Drop ring handles on the ends.
   for (const sx of [-1, 1]) {
@@ -878,17 +893,19 @@ export function cupboardMembers(input) {
   for (const sx of [-1, 1]) for (const sz of [-1, 1])
     members.push(beam(p, 0, { length: L.innerH, width: L.s, height: L.s, joint: 2 },
       [sx * (p.width / 2 - L.s / 2), L.midY, sz * hz], AXIS.Y));
+  // Plinth and cornice stay flush with the back plane (z = -depth/2) so the
+  // press stands against a wall; the cornice projects only at front/sides.
   for (const sz of [-1, 1]) {
     members.push(beam(p, 1, { length: p.width + 0.04, width: 0.12, height: L.plinthH },
       [0, L.plinthH / 2, sz * hz], AXIS.X));
     members.push(beam(p, 3, { length: p.width + 0.12, width: 0.16, height: L.corniceH },
-      [0, p.height - L.corniceH / 2, sz * (hz + 0.02)], AXIS.X));
+      [0, p.height - L.corniceH / 2, sz > 0 ? hz + 0.02 : -(hz - 0.02)], AXIS.X));
   }
   for (const sx of [-1, 1]) {
-    members.push(beam(p, 2, { length: p.depth + 0.04, width: 0.12, height: L.plinthH },
+    members.push(beam(p, 2, { length: p.depth, width: 0.12, height: L.plinthH },
       [sx * (p.width / 2 - L.s / 2), L.plinthH / 2, 0], AXIS.Z));
-    members.push(beam(p, 4, { length: p.depth + 0.1, width: 0.16, height: L.corniceH },
-      [sx * (p.width / 2 - L.s / 2 + 0.02), p.height - L.corniceH / 2, 0], AXIS.Z));
+    members.push(beam(p, 4, { length: p.depth + 0.04, width: 0.16, height: L.corniceH },
+      [sx * (p.width / 2 - L.s / 2 + 0.02), p.height - L.corniceH / 2, 0.02], AXIS.Z));
     members.push(plank(p, 5, { length: p.depth - 2 * L.s + 0.04, width: L.innerH - 0.02, thickness: 0.10 },
       [sx * (p.width / 2 - 0.06), L.midY, 0], AXIS.BOARD_ZY));
   }
@@ -915,8 +932,9 @@ export function emitCupboard(part, input) {
       orientedBox(part, [inner, y, face + 0.004],
         [[Math.SQRT1_2, Math.SQRT1_2, 0], [-Math.SQRT1_2, Math.SQRT1_2, 0], [0, 0, 1]],
         [0.024, 0.024, 0.004]);
-      part.cylinder([outer + sx * 0.02, y - 0.045, face + 0.012],
-        [outer + sx * 0.02, y + 0.045, face + 0.012], 0.012);
+      // Pintle knuckle bears on the stile face (depth/2 = face - 0.005).
+      part.cylinder([outer + sx * 0.02, y - 0.045, face + 0.007],
+        [outer + sx * 0.02, y + 0.045, face + 0.007], 0.012);
       nails(part, [outer, y, face + 0.009], [inner, y, face + 0.009], 4, 0.007);
     }
     // Ring pull on a rosette backplate.
@@ -955,7 +973,7 @@ export function altarMembers(input) {
   const plinthW = p.width + 0.12;
   for (let i = 0; i < 3; ++i)
     members.push(stone(p, i, {
-      length: plinthW / 3 - L.joint, height: L.plinthH - 0.004, depth: p.depth + 0.12,
+      length: plinthW / 3 - L.joint, height: L.plinthH, depth: p.depth + 0.12,
     }, [-plinthW / 2 + (i + 0.5) * plinthW / 3, 0, 0]));
   for (let c = 0; c < 3; ++c) {
     const fractions = c % 2 ? [1 / 6, 1 / 3, 1 / 3, 1 / 6] : [1 / 3, 1 / 3, 1 / 3];
@@ -978,9 +996,10 @@ export function emitAltar(part, input) {
   const p = altarParams(input), L = altarLayout(p);
   placeMembers(part, altarMembers(p));
   const H = p.height, top = (p.width + 0.16) / 2, front = (p.depth + 0.16) / 2;
-  // Mortar core read through the dressed joints.
+  // Mortar core read through the dressed joints, plinth course included.
   part.fill(p.mortarMaterial);
-  part.box([0, L.plinthH + L.bodyH / 2, 0], [L.bodyW / 2 - 0.04, L.bodyH / 2, p.depth / 2 - 0.04]);
+  part.box([0, (0.02 + L.plinthH + L.bodyH) / 2, 0],
+    [L.bodyW / 2 - 0.04, (L.plinthH + L.bodyH - 0.02) / 2, p.depth / 2 - 0.04]);
   // Altar linen: top cloth, frontal falling over the front edge, side drops.
   part.fill(p.clothMaterial);
   part.box([0, H + 0.003, 0], [top + 0.004, 0.003, front + 0.004]);
@@ -1077,6 +1096,9 @@ function candle(part, p, base, height, radius) {
     [base[0], base[1] + height + 0.012, base[2]], 0.0025);
 }
 
+const LANTERN_HALF = 0.036;
+const LANTERN_DOOR_ANGLE = 110 * Math.PI / 180;
+
 function sconceArms(p) {
   return p.arms === 2 ? [-0.15, 0.15] : [0];
 }
@@ -1156,17 +1178,17 @@ export function emitSconce(part, input) {
       // door hinged on the +X post and propped open 110 degrees: the flame
       // proxy is rayTraced(false), so under RT it is only seen directly, not
       // through glass (rays transmitted by a pane skip it).
-      const top = flame[1] + 0.07, h = 0.055, t = 0.003;
+      // Half-width h keeps the corner posts (radius h * sqrt2) on the 55 mm pan.
+      const top = flame[1] + 0.07, h = LANTERN_HALF, t = 0.003;
       part.fill(p.ironMaterial);
       for (const sx of [-1, 1]) for (const sz of [-1, 1])
         part.cylinder([ax + sx * h, -0.008, p.reach + sz * h], [ax + sx * h, top, p.reach + sz * h], 0.005);
       ring(part, [ax, top, p.reach], h * Math.SQRT2, 0.005, 'y', 16);
-      part.cone([ax, top, p.reach], [ax, top + 0.07, p.reach], 0.085, 0.012);
+      part.cone([ax, top, p.reach], [ax, top + 0.07, p.reach], 0.065, 0.012);
       ring(part, [ax, top + 0.085, p.reach], 0.016, 0.004, 'z', 10);
       const midY = (top - 0.008) / 2, halfY = (top + 0.008) / 2 - 0.006;
-      const opened = 110 * Math.PI / 180;
       const hinge = [ax + h, midY, p.reach + h];
-      const d = [-Math.cos(opened), 0, Math.sin(opened)];
+      const d = [-Math.cos(LANTERN_DOOR_ANGLE), 0, Math.sin(LANTERN_DOOR_ANGLE)];
       const leafEnd = [hinge[0] + d[0] * 2 * h, 0, hinge[2] + d[2] * 2 * h];
       for (const y of [-0.004, top - 0.004])
         part.capsule([hinge[0], y, hinge[2]], [leafEnd[0], y, leafEnd[2]], 0.004);
@@ -1222,15 +1244,20 @@ export function emitChandelier(part, input) {
   const flames = fixtureFlamePoints('chandelier', p);
   const seats = chandelierCandleSeats(p);
   const crownY = -p.drop * 0.45;
+  const upper = chandelierTiers(p)[0];
   part.fill(p.ironMaterial);
   part.cylinder([0, 0, 0], [0, -0.02, 0], 0.09);
-  ring(part, [0, -0.075, 0], 0.035, 0.007, 'x', 12);
-  chain(part, [0, -0.1, 0], [0, crownY + 0.02, 0]);
+  // Hook ring hangs from the ceiling plate (top at -0.02).
+  ring(part, [0, -0.055, 0], 0.035, 0.007, 'x', 12);
+  chain(part, [0, -0.09, 0], [0, crownY + 0.02, 0]);
   ring(part, [0, crownY, 0], 0.12, 0.009, 'y', 16);
   for (let i = 0; i < p.chains; ++i) {
     const a = TAU * i / p.chains;
+    // Crown spider arm carries the ring from the main chain's last link.
+    part.capsule([0, crownY + 0.02, 0], [0.12 * Math.cos(a), crownY, 0.12 * Math.sin(a)], 0.008);
+    // Drop chains end on the upper hoop of the corona.
     chain(part, [0.12 * Math.cos(a), crownY, 0.12 * Math.sin(a)],
-      [p.radius * 0.97 * Math.cos(a), -p.drop + 0.06, p.radius * 0.97 * Math.sin(a)]);
+      [upper.radius * Math.cos(a), upper.y + 0.035, upper.radius * Math.sin(a)]);
   }
   for (const tier of chandelierTiers(p)) {
     ring(part, [0, tier.y + 0.035, 0], tier.radius, 0.012, 'y', 40);
@@ -1363,6 +1390,31 @@ function pointedArchBars(part, x0, x1, y, inset, width, depth) {
   arcBars(part, [x1, y], radius, Math.PI, Math.PI - theta, 10, width, depth);
 }
 
+// Lancet bar centrelines of light i: jamb-bar centre or mullion centre.
+function lancetSpan(L, i) {
+  const bw = L.p.barWidth;
+  const x0 = i === 0 ? -L.half + bw / 2 : L.mullionX[i - 1];
+  const x1 = i === L.lights - 1 ? L.half - bw / 2 : L.mullionX[i];
+  return [x0, x1];
+}
+
+// Two-light oculus: centred on x=0, its ring (centreline radius r, bar
+// width mw) is externally tangent to both lancets' extrados and internally
+// tangent to the outer rim's inner edge. With the left lancet's inner half
+// struck from c = (x0, spring) at radius s and the rim's inner edge struck
+// from (half, spring) at radius W - bw:
+//   x0^2 + t^2 = (s + mw + r)^2,   half^2 + t^2 = (W - bw - mw/2 - r)^2.
+// Subtracting gives r linearly; t is the centre height above springing.
+function oculusFor(p, half, spring, mw) {
+  const x0 = -half + p.barWidth / 2;
+  const s = -x0;
+  const A = p.width - p.barWidth - mw / 2, B = s + mw;
+  const r = (A * A - B * B - (half * half - x0 * x0)) / (2 * (A + B));
+  if (!(r > mw)) return null;
+  const t = Math.sqrt(Math.max(0, (B + r) * (B + r) - x0 * x0));
+  return { radius: r, y: spring + t };
+}
+
 export function windowLayout(input) {
   const p = windowParams(input);
   const half = p.width / 2;
@@ -1370,14 +1422,9 @@ export function windowLayout(input) {
   const lights = p.mullions + 1;
   const mullionX = [];
   for (let i = 1; i < lights; ++i) mullionX.push(-half + i * p.width / lights);
-  // Two-light windows carry a quatrefoil oculus resting on the lancet apexes
-  // (lancet rise 0.866 * light width). Radius 0.15 W centred 0.8 r above the
-  // apexes keeps its top ~0.16 W below the outer apex, clear of the rim.
-  const oculusRadius = 0.15 * p.width;
-  const oculus = p.arch && p.mullions === 1
-    ? { radius: oculusRadius, y: spring + 0.866 * (p.width / 2) + oculusRadius * 0.8 }
-    : null;
-  return { p, half, spring, lights, mullionX, oculus,
+  const mullionWidth = p.barWidth * 0.8;
+  return { p, half, spring, lights, mullionX, mullionWidth,
+    oculus: p.arch && p.mullions === 1 ? oculusFor(p, half, spring, mullionWidth) : null,
     paneThickness: p.thin ? 0.004 : p.glassThickness,
     cameWidth: 0.012 };
 }
@@ -1427,6 +1474,12 @@ export function emitWindowGlazing(part, input) {
   rows.forEach(([y0, y1, rowHalf], r) => {
     for (let c = 0; c + 1 < columns.length; ++c) {
       const lo = Math.max(columns[c], -rowHalf), hi = Math.min(columns[c + 1], rowHalf);
+      // Above the springing line the lancet legs curve off the mullion, so a
+      // came must cover the pane seam at each column boundary.
+      if (c > 0 && y0 >= L.spring - 1e-9 && Math.abs(columns[c]) < rowHalf) {
+        part.fill(p.cameMaterial);
+        part.box([columns[c], (y0 + y1) / 2, 0], [L.cameWidth / 2, (y1 - y0) / 2, t / 2 + 0.003]);
+      }
       if (hi - lo < 0.02) continue;
       const cuts = [lo];
       const first = Math.ceil((lo + 1e-6) / p.quarry), last = Math.floor((hi - 1e-6) / p.quarry);
@@ -1457,13 +1510,17 @@ export function emitWindowGlazing(part, input) {
     part.box([sx * (L.half - bw / 2), L.spring / 2, 0], [bw / 2, L.spring / 2, bd / 2]);
   if (p.arch) pointedArchBars(part, -L.half, L.half, L.spring, bw / 2, bw, bd);
   else part.box([0, p.height - bw / 2, 0], [L.half, bw / 2, bd / 2]);
-  const mw = bw * 0.8;
+  const mw = L.mullionWidth;
   for (const x of L.mullionX) part.box([x, L.spring / 2, 0], [mw / 2, L.spring / 2, bd * 0.45]);
   if (p.transom && L.spring > 1.2)
     part.box([0, L.spring * 0.55, 0], [L.half, mw * 0.5, bd * 0.4]);
   if (p.arch && p.mullions >= 1) {
-    for (let i = 0; i < columns.length - 1; ++i)
-      pointedArchBars(part, columns[i], columns[i + 1], L.spring, mw / 2, mw, bd * 0.9);
+    // Lancet bars are struck on bar centrelines, so their legs continue the
+    // jamb and mullion exactly and each head is symmetric about its light.
+    for (let i = 0; i < L.lights; ++i) {
+      const [x0, x1] = lancetSpan(L, i);
+      pointedArchBars(part, x0, x1, L.spring, 0, mw, bd * 0.9);
+    }
     if (L.oculus) {
       const c = [0, L.oculus.y];
       arcBars(part, c, L.oculus.radius, 0, TAU, 20, mw, bd * 0.9);
@@ -1495,17 +1552,21 @@ function envelopeOf(kind, p) {
       clearance: { front: 0.6, back: 0.35, left: 0.2, right: 0.2 } };
     case 'chair': {
       const L = chairLayout(p);
-      const top = p.throne ? p.backHeight + L.crestLength * Math.sin(L.crestAngle) + 0.22 : p.backHeight + 0.1;
+      // Throne: crest apex, 0.04 sphere lift, 0.05 + 0.14 fleur cones + radius.
+      const top = p.throne ? p.backHeight + L.crestLength * Math.sin(L.crestAngle) + 0.27 : p.backHeight + 0.1;
+      // Pegs stand 20 mm proud of the posts; crest corners overhang slightly.
       return {
-        body: box3(-p.width / 2, p.width / 2, 0, top, -p.depth / 2, p.depth / 2 + (p.throne ? 0.12 : 0)),
+        body: box3(-p.width / 2 - 0.035, p.width / 2 + 0.035, 0, top,
+          -p.depth / 2 - 0.035, p.depth / 2 + (p.throne ? 0.12 : 0.035)),
         clearance: p.throne ? { front: 1.0, back: 0.1, left: 0.3, right: 0.3 }
           : { front: 0.6, back: 0.1, left: 0.15, right: 0.15 } };
     }
     case 'bed': {
       const L = bedLayout(p);
+      // Rail pegs stand 33 mm proud of the post faces.
       return {
-        body: box3(-p.width / 2 - 0.02, p.width / 2 + 0.02, 0,
-          p.canopy ? p.postHeight + 0.08 : L.headLen + 0.2, -p.length / 2 - 0.02, p.length / 2 + 0.02),
+        body: box3(-p.width / 2 - 0.035, p.width / 2 + 0.035, 0,
+          p.canopy ? p.postHeight + 0.08 : L.headLen + 0.2, -p.length / 2 - 0.035, p.length / 2 + 0.035),
         clearance: { front: 0.5, back: 0, left: 0.6, right: 0.6 } };
     }
     case 'chest': return {
@@ -1514,24 +1575,36 @@ function envelopeOf(kind, p) {
     case 'cupboard': {
       const L = cupboardLayout(p);
       return {
-        body: box3(-p.width / 2 - 0.08, p.width / 2 + 0.08, 0, p.height + 0.11, -p.depth / 2, p.depth / 2 + 0.08),
+        // Cornice finials rise 0.115 m (spike tip plus cone radius).
+        body: box3(-p.width / 2 - 0.08, p.width / 2 + 0.08, 0, p.height + 0.12, -p.depth / 2, p.depth / 2 + 0.08),
         clearance: { front: L.doorW + 0.3, back: 0, left: 0.05, right: 0.05, doorSwing: L.doorW } };
     }
     case 'altar': return {
-      body: box3(-p.width / 2 - 0.1, p.width / 2 + 0.1, 0, p.height + 0.62, -p.depth / 2 - 0.1, p.depth / 2 + 0.1),
+      // Side drops hang 0.135 m and the frontal 0.14 m beyond the body.
+      body: box3(-p.width / 2 - 0.145, p.width / 2 + 0.145, 0, p.height + 0.63,
+        -p.depth / 2 - 0.09, p.depth / 2 + 0.15),
       clearance: { front: 1.2, back: 0.3, left: 0.6, right: 0.6 } };
     case 'sconce': {
-      const lantern = p.style === 1 ? 0.16 : 0.06;
-      const halfX = p.arms === 2 ? 0.22 : 0.09;
+      const flameY = sconceCandleBase() + p.candleHeight + FLAME_LIFT;
+      const armX = Math.max(...sconceArms(p).map(Math.abs));
+      const h = LANTERN_HALF;
+      const doorReach = h + Math.sin(LANTERN_DOOR_ANGLE) * 2 * h + 0.006;
+      const doorX = h + Math.max(0, -Math.cos(LANTERN_DOOR_ANGLE)) * 2 * h + 0.006;
+      // Lantern: cap cone to top + 0.07 plus its 20 mm handle ring.
+      const top = p.style === 1 ? flameY + 0.07 + 0.105 : flameY + 0.05;
+      const halfX = Math.max(0.1, armX + (p.style === 1 ? doorX : 0.07));
       return {
-        body: box3(-halfX, halfX, -0.2, sconceCandleBase() + p.candleHeight + FLAME_LIFT + lantern, 0, p.reach + 0.09),
+        body: box3(-halfX, halfX, -0.2, top, 0,
+          p.reach + (p.style === 1 ? Math.max(0.07, doorReach) : 0.07)),
         clearance: { front: 0, back: 0, left: 0, right: 0 } };
     }
     case 'chandelier': return {
       body: box3(-p.radius - 0.06, p.radius + 0.06, -p.drop - 0.25, 0, -p.radius - 0.06, p.radius + 0.06),
       clearance: { front: 0, back: 0, left: 0, right: 0 } };
+    // Stave ends run 2 mm past each head plus their tilt (3.5 mm total).
     case 'barrel': return {
-      body: box3(-p.diameter / 2 - 0.015, p.diameter / 2 + 0.015, 0, p.height, -p.diameter / 2 - 0.015, p.diameter / 2 + 0.015),
+      body: box3(-p.diameter / 2 - 0.015, p.diameter / 2 + 0.015, -0.004, p.height + 0.004,
+        -p.diameter / 2 - 0.015, p.diameter / 2 + 0.015),
       clearance: { front: 0.4, back: 0, left: 0.1, right: 0.1 } };
     case 'window': return {
       body: box3(-p.width / 2, p.width / 2, 0, p.height, -p.barDepth / 2, p.barDepth / 2),
@@ -1575,9 +1648,12 @@ function kindOf(record) {
   return kind;
 }
 
+// Snaps to 5 cm and to a clean decimal (Math.round(v / 0.05) * 0.05 alone
+// yields e.g. 1.4000000000000001), so equal plan sizes produce identical
+// Part params and therefore shared child bakes.
 function quantized(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.round(value / 0.05) * 0.05 : undefined;
+    ? Number((Math.round(value / 0.05) * 0.05).toFixed(2)) : undefined;
 }
 
 // Converts a plan-manifest fixture record
@@ -1596,14 +1672,23 @@ export function recordFromManifest(fixture) {
     x: finite(pos[0], 0), y: finite(pos[1], 0), z: finite(pos[2], 0),
     yaw: finite(f.yaw, 0) * Math.PI / 180, seed: finite(f.seed, 0),
   };
+  // A bed's length is its local Z. A manifest footprint longer in X than Z
+  // is turned a quarter: local +Z (foot) then points along +X after yaw, so
+  // the head sits at the footprint's -X end (rotated with the manifest yaw).
+  let bedWidth = W, bedLength = D;
+  if (kind === 'bed' && W !== undefined && D !== undefined && W > D) {
+    bedWidth = D; bedLength = W;
+    record.yaw += Math.PI / 2;
+  }
   if (f.roomId !== undefined) record.roomId = f.roomId;
   if (f.levelId !== undefined) record.levelId = f.levelId;
   if (f.floorY !== undefined) record.floorY = f.floorY;
   const dims = {
     table: { length: W, width: D, height: H },
     bench: { length: W, width: D, height: H },
-    chair: { width: W, depth: D, backHeight: H !== undefined && H > 0.8 ? H : undefined },
-    bed: { width: W, length: D },
+    // Manifest height is overall; a plain chair's finials add 0.1 m.
+    chair: { width: W, depth: D, backHeight: H !== undefined && H > 0.9 ? H - 0.1 : undefined },
+    bed: { width: bedWidth, length: bedLength },
     chest: { length: W, depth: D, height: H },
     cupboard: { width: W, depth: D, height: H },
     altar: { width: W, depth: D, height: H },
@@ -1713,7 +1798,7 @@ export function furnishingPlacement(record, options = {}) {
       bottomY,
       floorY: Number.isFinite(floorY) ? floorY : null,
       required: WALK_HEADROOM,
-      clear: Number.isFinite(floorY) ? bottomY - floorY >= WALK_HEADROOM : null,
+      clear: Number.isFinite(floorY) ? bottomY - floorY >= WALK_HEADROOM - 1e-6 : null,
     };
   }
   return placement;
