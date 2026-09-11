@@ -34,6 +34,8 @@ layout(set = 0, binding = 7, std430) readonly buffer RtMaterialTable {
     RtMaterialGpu rt_materials[];
 };
 
+#include "local_lighting.glsl"
+
 const uint MATERIAL_THIN_WALLED = 1u << 0u;
 
 layout(set = 0, binding = 8) uniform sampler2D transmission_texture;
@@ -85,6 +87,36 @@ vec3 compute_view_ray(vec2 uv) {
     return normalize(fwd +
         right * ndc.x * lighting.aspect_ratio * lighting.tan_half_fov +
         up    * ndc.y * lighting.tan_half_fov);
+}
+
+LocalLightBrdf evaluate_raster_local_direct(vec3 world_position, vec3 normal,
+                                            vec3 view_direction, vec3 albedo,
+                                            float roughness, float metallic) {
+    LocalLightBrdf total;
+    total.diffuse = vec3(0.0);
+    total.specular = vec3(0.0);
+    if (local_light_counts.w != LOCAL_DIRECT_RASTER)
+        return total;
+
+    uint offset = 0u;
+    uint count = 0u;
+    if (local_light_cell_span(world_position, offset, count)) {
+        for (uint candidate = 0u; candidate < count; ++candidate) {
+            LocalLightBrdf contribution = evaluate_local_light_brdf(
+                local_light_indices[offset + candidate], world_position,
+                normal, view_direction, albedo, roughness, metallic);
+            total.diffuse += contribution.diffuse;
+            total.specular += contribution.specular;
+        }
+    }
+    for (uint candidate = 0u; candidate < local_light_counts.z; ++candidate) {
+        LocalLightBrdf contribution = evaluate_local_light_brdf(
+            local_light_oversized_indices[candidate], world_position, normal,
+            view_direction, albedo, roughness, metallic);
+        total.diffuse += contribution.diffuse;
+        total.specular += contribution.specular;
+    }
+    return total;
 }
 
 // ---- debug_view 3.0: linear depth ------------------------------------------
@@ -198,6 +230,37 @@ void main() {
     // Ahead of the depth view for the same reason that one is ahead of the sky
     // early-out: these are ordered highest-mode-first, and `> 2.5` would
     // otherwise swallow mode 4.
+    // debug_view 5.0: indexed candidates at the reconstructed world position.
+    // Black means no candidate; blue->cyan->yellow approaches the world's
+    // worst occupied-cell count. This diagnoses sparse lookup independently of
+    // light intensity and never scans the complete light list.
+    if (lighting.debug_view > 4.5) {
+        float hw_depth = texture(depth_texture, in_uv).r;
+        if (hw_depth <= 0.0) {
+            out_hdr = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
+        float linear_depth = composite_linear_depth(hw_depth);
+        vec3 view_ray = compute_view_ray(in_uv);
+        vec3 camera_forward = normalize(vec3(
+            lighting.camera_fwd_x, lighting.camera_fwd_y,
+            lighting.camera_fwd_z));
+        float ray_distance = linear_depth /
+            max(dot(view_ray, camera_forward), 1.0e-4);
+        vec3 world_position =
+            vec3(lighting.camera_pos_x, lighting.camera_y,
+                 lighting.camera_pos_z) + view_ray * ray_distance;
+        uint candidates = local_light_candidate_count(world_position);
+        float scale = log2(float(max(local_light_debug.x, 1u)) + 1.0);
+        float heat = candidates == 0u ? 0.0
+            : clamp(log2(float(candidates) + 1.0) / scale, 0.0, 1.0);
+        vec3 color = heat < 0.5
+            ? mix(vec3(0.0), vec3(0.0, 0.8, 1.0), heat * 2.0)
+            : mix(vec3(0.0, 0.8, 1.0), vec3(1.0, 0.85, 0.0),
+                  (heat - 0.5) * 2.0);
+        out_hdr = vec4(color, 1.0);
+        return;
+    }
     if (lighting.debug_view > 3.5) {
         out_hdr = vec4(texture(albedo_texture, in_uv).rgb, 1.0);
         return;
@@ -282,6 +345,9 @@ void main() {
     vec3 receiver_world_pos =
         vec3(lighting.camera_pos_x, lighting.camera_y, lighting.camera_pos_z) +
         receiver_view_ray * receiver_ray_t;
+    LocalLightBrdf local_direct = evaluate_raster_local_direct(
+        receiver_world_pos, normal, normalize(-receiver_view_ray), albedo.rgb,
+        roughness, metallic);
     float cloud_visibility = sample_cloud_transmittance(
         receiver_world_pos,
         cloud_receiver_distance_to_top(receiver_world_pos, to_sun));
@@ -429,8 +495,9 @@ void main() {
         }
     }
     vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +
-                       raw_diffuse) * (1.0 - transmission_coverage) +
-                      emission + specular +
+                       raw_diffuse + local_direct.diffuse) *
+                          (1.0 - transmission_coverage) +
+                      emission + specular + local_direct.specular +
                       transmission.rgb * transmission_coverage +
                       glass_reflection;
 

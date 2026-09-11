@@ -25,6 +25,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,27 @@ static void test_atmosphere_transaction_public_abi() {
     CHECK(fail_generation != nullptr && fail_publication != nullptr,
           "renderer exposes one-shot atmosphere failure injection controls");
 #endif
+}
+
+static void test_local_light_renderer_public_abi() {
+    printf("\n[test_local_light_renderer_public_abi]\n");
+    static_assert(sizeof(viewer::LocalLightGpuMeta) == 32,
+                  "local-light metadata is two std430 lanes");
+    CHECK(offsetof(viewer::LocalLightGpuMeta, cell_size) == 16,
+          "local-light floating index config begins at byte 16");
+    viewer::LocalDirectLightingContract contract{};
+    CHECK(contract.owner == viewer::LocalDirectOwner::Raster &&
+              contract.light_revision == 0u && contract.lane_revision == 0u,
+          "raster owns local direct until a revision-matched RT lane exists");
+    viewer::LocalLightRenderStats stats{};
+    CHECK(stats.light_count == 0u && stats.index_upload_bytes == 0u,
+          "zero-light renderer stats construct as a true empty census");
+    using PublishSignature = bool (viewer::VkSceneRenderer::*)(
+        const world_lights::LocalLightPublication&, std::string&);
+    static_assert(std::is_same_v<
+                      decltype(&viewer::VkSceneRenderer::update_local_lights),
+                      PublishSignature>,
+                  "renderer exposes the immutable local-light publication API");
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,6 +1079,7 @@ int main() {
     printf("GpuRtPartRecord 48-byte layout with index_address.\n");
 
     test_atmosphere_transaction_public_abi();
+    test_local_light_renderer_public_abi();
     test_vk_scene_lod_fields();
     test_rt_geometry_selection_fields();
     test_two_lod_rt_payload_indexed();

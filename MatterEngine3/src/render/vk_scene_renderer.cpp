@@ -568,6 +568,7 @@ struct RasterRecord {
     VkPipelineLayout composite_layout;
     VkDescriptorSet composite_set;
     VkDescriptorSet environment_set;
+    VkDescriptorSet local_light_set;
     VkBuffer vertex_buffer;
     VkBuffer index_buffer;
     VkBuffer indirect_buffer;
@@ -1104,9 +1105,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       record.composite_pipeline);
     const VkDescriptorSet composite_sets[] = {record.composite_set,
-                                               record.environment_set};
+                                               record.environment_set,
+                                               record.local_light_set};
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            record.composite_layout, 0, 2,
+                            record.composite_layout, 0, 3,
                             composite_sets, 0, nullptr);
     vkCmdPushConstants(command_buffer, record.composite_layout,
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -2637,6 +2639,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipelineLayout(device, composite_pipeline_layout_, nullptr);
     if (composite_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
+    if (local_light_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, local_light_set_layout_, nullptr);
     if (water_forward_static_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, water_forward_static_pipeline_, nullptr);
     if (water_forward_direct_pipeline_ != VK_NULL_HANDLE)
@@ -2698,6 +2702,7 @@ void VkSceneRenderer::destroy_pipeline() {
     skin_set_layout_ = VK_NULL_HANDLE;
     composite_set_layout_ = VK_NULL_HANDLE;
     environment_set_layout_ = VK_NULL_HANDLE;
+    local_light_set_layout_ = VK_NULL_HANDLE;
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
@@ -3895,11 +3900,34 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateDescriptorSetLayout(composite)", result,
                        error);
+
+    // Set 2 is intentionally separate from the composite's image-heavy set 0:
+    // the follow-up RT local-light task can bind this exact five-buffer ABI at
+    // arbitrary hit positions without inheriting G-buffer descriptors.
+    std::array<VkDescriptorSetLayoutBinding, 5> local_light_bindings{};
+    const VkShaderStageFlags local_light_stages =
+        VK_SHADER_STAGE_FRAGMENT_BIT |
+        (vulkan_->ray_tracing_available() ? VK_SHADER_STAGE_RAYGEN_BIT_KHR
+                                          : VkShaderStageFlags{0});
+    for (uint32_t binding = 0; binding < local_light_bindings.size(); ++binding)
+        local_light_bindings[binding] = descriptor_binding(
+            binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, local_light_stages);
+    VkDescriptorSetLayoutCreateInfo local_light_layout{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    local_light_layout.bindingCount =
+        static_cast<uint32_t>(local_light_bindings.size());
+    local_light_layout.pBindings = local_light_bindings.data();
+    result = vkCreateDescriptorSetLayout(device, &local_light_layout, nullptr,
+                                         &local_light_set_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorSetLayout(local lights)", result,
+                       error);
     VkPipelineLayoutCreateInfo composite_layout{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     const VkDescriptorSetLayout composite_sets[] = {composite_set_layout_,
-                                                     environment_set_layout_};
-    composite_layout.setLayoutCount = 2;
+                                                     environment_set_layout_,
+                                                     local_light_set_layout_};
+    composite_layout.setLayoutCount = 3;
     composite_layout.pSetLayouts = composite_sets;
     VkPushConstantRange lighting_range{};
     lighting_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -4674,9 +4702,9 @@ bool VkSceneRenderer::ensure_index_buffer(VkDeviceSize required_size,
 }
 
 // Allocates `frames_` and everything that is per-swapchain-frame-slot: a fresh
-// descriptor pool, 18 descriptor sets per slot (frame, scene, skin, composite,
-// environment, display, 3 GI-temporal, 9 GI-A-trous), one seed allocation of
-// every per-frame buffer, and a timestamp query pool.
+// descriptor pool, 19 descriptor sets per slot (frame, scene, skin, composite,
+// environment, display, 3 GI-temporal, 9 GI-A-trous, local lights), one seed
+// allocation of every per-frame buffer, and a timestamp query pool.
 //
 // Idempotent while the slot count does not grow. When it does, the OLD pool is
 // destroyed after a wait_idle -- so this must not be called with a frame in
@@ -4718,7 +4746,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // draw-override table at binding 14, +3 for the M4 ID pass's
         // unfiltered command/transform lists and the visibility mask (17-19),
         // +1 for the per-part occlusion-class table at binding 19.
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 33},
+        // +5 for the standalone local-light publication set (records, hashed
+        // cells, compact indices, oversized indices, metadata).
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 38},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
              (132 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
@@ -4726,7 +4756,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 18;
+    pool.maxSets = frame_slot_count * 19;
     pool.poolSizeCount = 4;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
@@ -4764,7 +4794,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 18);
+    layouts.reserve(frame_slot_count * 19);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
@@ -4776,6 +4806,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             layouts.push_back(gi_temporal_set_layout_);
         for (uint32_t i = 0; i < 9; ++i)
             layouts.push_back(gi_atrous_set_layout_);
+        // Appended so every pre-existing descriptor index above stays stable.
+        layouts.push_back(local_light_set_layout_);
     }
     std::vector<VkDescriptorSet> sets(layouts.size());
     VkDescriptorSetAllocateInfo allocate{
@@ -4819,17 +4851,18 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 18];
-        frame.descriptor_sets[1] = sets[index * 18 + 1];
-        frame.skin_descriptor_set = sets[index * 18 + 2];
-        frame.composite_descriptor_set = sets[index * 18 + 3];
-        frame.environment_descriptor_set = sets[index * 18 + 4];
-        frame.display_descriptor_set = sets[index * 18 + 5];
+        frame.descriptor_sets[0] = sets[index * 19];
+        frame.descriptor_sets[1] = sets[index * 19 + 1];
+        frame.skin_descriptor_set = sets[index * 19 + 2];
+        frame.composite_descriptor_set = sets[index * 19 + 3];
+        frame.environment_descriptor_set = sets[index * 19 + 4];
+        frame.display_descriptor_set = sets[index * 19 + 5];
         frame.water_forward_descriptor_set = water_sets[index];
         for (uint32_t i = 0; i < 3; ++i)
-            frame.gi_temporal_descriptor_sets[i] = sets[index * 18 + 6 + i];
+            frame.gi_temporal_descriptor_sets[i] = sets[index * 19 + 6 + i];
         for (uint32_t i = 0; i < 9; ++i)
-            frame.gi_atrous_descriptor_sets[i] = sets[index * 18 + 9 + i];
+            frame.gi_atrous_descriptor_sets[i] = sets[index * 19 + 9 + i];
+        frame.local_light_descriptor_set = sets[index * 19 + 18];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
@@ -4948,6 +4981,10 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // before the initial neutral write; VkBufferResource lifetime owns the
         // matching unmap/reset if a later frame-slot allocation fails.
         if (!matter::map_buffer(frame.environment_constants, error)) {
+            destroy_candidate_pools();
+            return false;
+        }
+        if (!upload_local_lights(frame, error)) {
             destroy_candidate_pools();
             return false;
         }
@@ -8284,6 +8321,199 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[10].pBufferInfo = &material_info;
     vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
+}
+
+void VkSceneRenderer::update_local_light_descriptor(FrameResources& frame) {
+    const matter::VkBufferResource* buffers[] = {
+        &frame.local_light_records,
+        &frame.local_light_cells,
+        &frame.local_light_indices,
+        &frame.local_light_oversized_indices,
+        &frame.local_light_meta,
+    };
+    VkDescriptorBufferInfo infos[5]{};
+    VkWriteDescriptorSet writes[5]{};
+    for (uint32_t binding = 0; binding < 5; ++binding) {
+        infos[binding] = {buffers[binding]->buffer, 0, buffers[binding]->size};
+        writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[binding].dstSet = frame.local_light_descriptor_set;
+        writes[binding].dstBinding = binding;
+        writes[binding].descriptorCount = 1;
+        writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[binding].pBufferInfo = &infos[binding];
+    }
+    vkUpdateDescriptorSets(vulkan_->device(), 5, writes, 0, nullptr);
+}
+
+bool VkSceneRenderer::upload_local_lights(FrameResources& frame,
+                                          std::string& error) {
+    if (frame.local_light_generation == local_light_generation_)
+        return true;
+
+    const auto& publication = local_light_publication_;
+    const auto& index = publication.index;
+    const auto checked_bytes = [&](size_t count, size_t stride,
+                                   const char* label,
+                                   VkDeviceSize& result) -> bool {
+        if (count > std::numeric_limits<VkDeviceSize>::max() / stride) {
+            error = std::string(label) + " byte size overflow";
+            return false;
+        }
+        result = static_cast<VkDeviceSize>(count) * stride;
+        if (result > limits_.max_storage_buffer_range ||
+            result > limits_.max_buffer_size) {
+            error = std::string(label) + " exceeds Vulkan storage-buffer limits";
+            return false;
+        }
+        return true;
+    };
+
+    VkDeviceSize record_bytes = 0, cell_bytes = 0, compact_bytes = 0,
+                 oversized_bytes = 0;
+    if (!checked_bytes(publication.records.size(),
+                       sizeof(world_lights::LocalLight), "local-light records",
+                       record_bytes) ||
+        !checked_bytes(index.cells.size(), sizeof(world_lights::LocalLightCell),
+                       "local-light cells", cell_bytes) ||
+        !checked_bytes(index.light_indices.size(), sizeof(uint32_t),
+                       "local-light compact indices", compact_bytes) ||
+        !checked_bytes(index.oversized_light_indices.size(), sizeof(uint32_t),
+                       "local-light oversized indices", oversized_bytes)) {
+        return false;
+    }
+
+    const world_lights::LocalLight zero_light{};
+    const world_lights::LocalLightCell zero_cell{};
+    const uint32_t zero_index = 0u;
+    LocalLightGpuMeta meta{};
+    meta.light_count = static_cast<uint32_t>(publication.records.size());
+    meta.cell_bucket_count = static_cast<uint32_t>(index.cells.size());
+    meta.oversized_light_count =
+        static_cast<uint32_t>(index.oversized_light_indices.size());
+    meta.direct_owner = static_cast<uint32_t>(LocalDirectOwner::Raster);
+    meta.cell_size = index.cell_size;
+    meta.inverse_cell_size = index.cell_size > 0.0f ? 1.0f / index.cell_size : 0.0f;
+    meta.max_candidates_per_cell = index.stats.max_candidates_per_cell;
+
+    matter::VkBufferResource records, cells, compact, oversized, metadata;
+    const auto make_buffer = [&](matter::VkBufferResource& output,
+                                 VkDeviceSize payload_bytes,
+                                 VkDeviceSize empty_bytes,
+                                 const void* payload,
+                                 const void* empty_payload) -> bool {
+        const VkDeviceSize bytes = payload_bytes == 0 ? empty_bytes
+                                                       : payload_bytes;
+        if (!matter::create_buffer(
+                *vulkan_, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                output, error)) {
+            return false;
+        }
+        return matter::upload_buffer(*vulkan_, output,
+                                     payload_bytes == 0 ? empty_payload : payload,
+                                     static_cast<size_t>(bytes), 0, error);
+    };
+    if (!make_buffer(records, record_bytes, sizeof(zero_light),
+                     publication.records.data(), &zero_light) ||
+        !make_buffer(cells, cell_bytes, sizeof(zero_cell), index.cells.data(),
+                     &zero_cell) ||
+        !make_buffer(compact, compact_bytes, sizeof(zero_index),
+                     index.light_indices.data(), &zero_index) ||
+        !make_buffer(oversized, oversized_bytes, sizeof(zero_index),
+                     index.oversized_light_indices.data(), &zero_index) ||
+        !make_buffer(metadata, sizeof(meta), sizeof(meta), &meta, &meta)) {
+        return false;
+    }
+
+    // Commit all five resources together. Until this point the frame slot and
+    // its descriptor still name the previous complete publication.
+    frame.local_light_records = std::move(records);
+    frame.local_light_cells = std::move(cells);
+    frame.local_light_indices = std::move(compact);
+    frame.local_light_oversized_indices = std::move(oversized);
+    frame.local_light_meta = std::move(metadata);
+    frame.local_light_generation = local_light_generation_;
+    update_local_light_descriptor(frame);
+    return true;
+}
+
+bool VkSceneRenderer::update_local_lights(
+    const world_lights::LocalLightPublication& publication,
+    std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (publication.revision == 0u) {
+        error = "local-light publication revision must be nonzero";
+        return false;
+    }
+    if (publication.revision == local_light_revision_)
+        return true;
+
+    try {
+        // Rebuild from records/config so malformed offsets, counts or hashes
+        // never reach a shader. The revision comparison proves the provider
+        // and renderer used the same canonical content.
+        world_lights::LocalLightPublication candidate;
+        candidate.records = publication.records;
+        world_lights::LocalLightIndexConfig config;
+        config.cell_size = publication.index.cell_size;
+        config.max_cells_per_light = publication.index.max_cells_per_light;
+        if (!world_lights::rebuild_local_light_publication(candidate, config,
+                                                            error)) {
+            error = "local-light publication rejected: " + error;
+            return false;
+        }
+        if (candidate.revision != publication.revision) {
+            error = "local-light publication revision does not match its records/index config";
+            return false;
+        }
+        local_light_publication_ = std::move(candidate);
+    } catch (const std::bad_alloc&) {
+        error = "local-light renderer publication allocation failed";
+        return false;
+    }
+
+    local_light_revision_ = publication.revision;
+    ++local_light_generation_;
+    if (local_light_generation_ == 0u) local_light_generation_ = 1u;
+
+    // Local-light edits affect primary direct, RT bounce inputs and the final
+    // presentation. Raster remains the sole direct owner until a future RT
+    // lane explicitly proves itself ready for this same revision.
+    gi_history_reset_pending_ = true;
+    gi_diffuse_history_reset_pending_ = true;
+    gi_reflection_history_reset_pending_ = true;
+    dlss_history_reset_pending_ = true;
+    temporal_history_changed_ = true;
+    const LocalLightRenderStats stats = local_light_stats();
+    MATTER_LOGI("local-light",
+                "published %u lights, %u cells/%u buckets, %llu index bytes, max %u candidates\n",
+                stats.light_count, stats.occupied_cell_count,
+                stats.bucket_count,
+                static_cast<unsigned long long>(stats.index_upload_bytes),
+                stats.max_candidates_per_cell);
+    return true;
+}
+
+LocalLightRenderStats VkSceneRenderer::local_light_stats() const noexcept {
+    LocalLightRenderStats result{};
+    const auto& publication = local_light_publication_;
+    const auto& stats = publication.index.stats;
+    result.light_count = static_cast<uint32_t>(publication.records.size());
+    result.occupied_cell_count = stats.occupied_cell_count;
+    result.bucket_count = stats.bucket_count;
+    result.oversized_light_count = stats.oversized_light_count;
+    result.max_candidates_per_cell = stats.max_candidates_per_cell;
+    result.list_entry_count = stats.list_entry_count;
+    result.light_upload_bytes =
+        publication.records.size() * sizeof(world_lights::LocalLight);
+    result.index_upload_bytes = stats.gpu_index_bytes + sizeof(LocalLightGpuMeta);
+    result.publication_generation = local_light_generation_;
+    return result;
 }
 
 void VkSceneRenderer::update_atmosphere_replay_constants() noexcept {
@@ -13336,6 +13566,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+    if (!upload_local_lights(selected, error)) return false;
     if (!upload_water_forward_constants(selected, matrices, raster_extent_,
                                         error))
         return false;
@@ -15145,6 +15376,11 @@ bool VkSceneRenderer::record_cull_and_render(
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         material_instance_.lifetime, reactivity_.lifetime,
         selected.materials.lifetime,
+        selected.local_light_records.lifetime,
+        selected.local_light_cells.lifetime,
+        selected.local_light_indices.lifetime,
+        selected.local_light_oversized_indices.lifetime,
+        selected.local_light_meta.lifetime,
         depth_.lifetime, hdr_.lifetime,
         opaque_hdr_.lifetime, opaque_depth_.lifetime,
         selected.water_forward_constants.lifetime,
@@ -15384,6 +15620,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         composite_pipeline_layout_,
                         selected.composite_descriptor_set,
                         selected.environment_descriptor_set,
+                        selected.local_light_descriptor_set,
                         vertices_.buffer,
                         indices_.buffer,
                         selected.commands.buffer,
@@ -16094,6 +16331,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.composite_layout = composite_pipeline_layout_;
     record.composite_set = selected.composite_descriptor_set;
     record.environment_set = selected.environment_descriptor_set;
+    record.local_light_set = selected.local_light_descriptor_set;
     record.vertex_buffer = vertices_.buffer;
     record.index_buffer = indices_.buffer;
     record.indirect_buffer = selected.commands.buffer;
@@ -17255,6 +17493,13 @@ void VkSceneRenderer::reset() {
         hdr_.reset();
         raster_extent_ = {};
     }
+    // A world switch is an explicit local-light clear. Invalidate the accepted
+    // revision even when frame resources survive so an identical publication
+    // on the next world is uploaded again rather than mistaken for a no-op.
+    local_light_publication_ = {};
+    local_light_revision_ = 0u;
+    ++local_light_generation_;
+    if (local_light_generation_ == 0u) local_light_generation_ = 1u;
     parts_.clear();
     slot_of_.clear();
     ++slot_of_version_;

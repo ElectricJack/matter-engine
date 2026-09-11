@@ -1705,8 +1705,9 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // meaning what the captures on disk say it means.
     const char* debug_views[] = { "None", "Normals", "Depth",
                                   "Sun visibility", "Raw albedo",
-                                  "LOD levels", "Wireframe" };
-    ImGui::Combo("View", &s.debug_view_mode, debug_views, 7);
+                                  "LOD levels", "Wireframe",
+                                  "Local-light candidates" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 8);
     // The wireframe checkbox is the composable form: tick it with "LOD levels"
     // selected and the edges carry the rung colour, which is the pair that
     // actually shows LOD changing GEOMETRY rather than only changing a colour.

@@ -396,6 +396,14 @@ struct FrameStats {
     uint64_t vk_static_full_uploads = 0;
     uint64_t vk_static_append_uploads = 0;
     uint64_t vk_immediate_submits = 0;
+    // Local-light world/index census. Candidate count is the worst populated
+    // cell (including oversized fallbacks), not a world-wide light scan.
+    uint32_t local_light_count = 0;
+    uint32_t local_light_occupied_cells = 0;
+    uint32_t local_light_max_candidates = 0;
+    uint32_t local_light_oversized = 0;
+    uint64_t local_light_index_entries = 0;
+    uint64_t local_light_index_bytes = 0;
     // WP-E (chart-space virtual texturing) residency census. All zero when the
     // VT runtime never started (no chart-bearing part in the scene).
     bool     vt_active = false;
